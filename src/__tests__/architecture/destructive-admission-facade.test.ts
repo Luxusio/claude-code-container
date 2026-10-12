@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES, evaluateDestructivePolicy } from "../../../device-lab-mcp/src/policy/destructive.mjs";
-import { cleanupDeviceLabMcpTestContext, createDeviceLabMcpTestContext, TIMEOUT, type DeviceLabMcpTestContext } from "../helpers/device-lab-mcp-fixture.js";
+import { ownerId } from "@ccc/device-lab/providers/context.mjs";
+import { ownerStateFile, readOwnerDevices } from "@ccc/device-lab/providers/state/device-store.mjs";
+import { writeBrokerDevices } from "../helpers/host-broker-test-fixture.js";
+import { cleanupDeviceLabMcpTestContext, createDeviceLabMcpTestContext, repoRoot, TIMEOUT, type DeviceLabMcpTestContext } from "../helpers/device-lab-mcp-fixture.js";
 function payload(result: Awaited<ReturnType<DeviceLabMcpTestContext["client"]["callTool"]>>) {
     return JSON.parse((result.content as Array<{ text?: string }>)[0].text ?? "");
 }
@@ -30,11 +33,24 @@ describe("destructive admission compatibility facade", () => {
     });
 
     let context: DeviceLabMcpTestContext;
+    let definitionFile: string;
+    let definitionBytes: Buffer;
+    let definition: { id: string; name: string; backend: string; status: string; avdName: string; port: number; incarnationId: string };
+    function expectDefinitionRetained() {
+        expect(readFileSync(definitionFile)).toEqual(definitionBytes);
+        expect(readOwnerDevices("android")).toEqual([definition]);
+    }
     beforeAll(async () => {
         context = await createDeviceLabMcpTestContext({ rawPublicCalls: true, setupHome(home) {
-            mkdirSync(join(home, "fixture-state"));
-            writeFileSync(join(home, "fixture-state/device.json"), '{"present":true}');
+            const owner = ownerId({}, repoRoot);
+            definition = { id: "android-admission-owned", name: "Admission Android", backend: "android-emulator", status: "stopped", avdName: `ccc-${owner}-admission`, port: 5580, incarnationId: "a".repeat(32) };
+            const root = writeBrokerDevices(owner, "android", [definition]);
+            definitionFile = join(home, ".ccc/devices/owners", owner, "android", "devices.json");
+            expect(join(root, "devices.json")).toBe(definitionFile);
+            definitionBytes = readFileSync(definitionFile);
         } });
+        expect(ownerStateFile("android")).toBe(definitionFile);
+        expectDefinitionRetained();
     }, TIMEOUT);
     afterAll(async () => { await cleanupDeviceLabMcpTestContext(context); }, TIMEOUT);
 
@@ -48,6 +64,7 @@ describe("destructive admission compatibility facade", () => {
             confirmationField: "confirmDestructive", actions: ["device-delete"],
         } }));
         expect(snapshot(context.homeDir)).toEqual(before);
+        expectDefinitionRetained();
     });
 
     it("preserves public validation presentation and refuses parent flow confirmation", { timeout: TIMEOUT }, async () => {
@@ -73,5 +90,6 @@ describe("destructive admission compatibility facade", () => {
         expect(payload(step)).toMatchObject({ ok: false, stoppedAt: 0, results: [{ isError: true,
             content: [{ value: { policy: { error: "destructive-action-confirmation-required", actions: ["app-data-clear"] } } }] }] });
         expect(snapshot(context.homeDir)).toEqual(before);
+        expectDefinitionRetained();
     });
 });
