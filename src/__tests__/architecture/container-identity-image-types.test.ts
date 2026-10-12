@@ -20,17 +20,18 @@ function contracts(ports: IdentityImagePorts, publicIdentity: PublicIdentity, im
     const lock: IdentityImagePorts = { ...ports, withIdentityLock: async () => id };
     // @ts-expect-error Locked callbacks cannot defer their workflow.
     ports.withIdentityLock("key", async () => id);
-    // @ts-expect-error Digest capture must occur synchronously before label serialization.
-    const digest: IdentityImagePorts = { ...ports, captureLabelsDigest: async () => ports.captureLabelsDigest() };
-    // @ts-expect-error A captured digest must produce the hash synchronously.
-    const digestResult: IdentityImagePorts = { ...ports, captureLabelsDigest: () => async () => "hash" };
+    const digest: IdentityImagePorts = {
+        ...ports,
+        // @ts-expect-error A serialized-label digest must produce its hash synchronously.
+        labelsDigest: async () => "hash",
+    };
     // @ts-expect-error Inspection is synchronous and observes the original image.
     const inspect: IdentityImagePorts = { ...ports, inspectImage: async () => image };
-    // @ts-expect-error The account probe retains the lazy inspected observation.
+    // @ts-expect-error The account probe requires the inspected image observation.
     ports.observeAccount("image-id");
     // @ts-expect-error Mutation cleanup is required, not optional.
-    prepareIdentityImage(id, inward, { captureLabelsDigest: ports.captureLabelsDigest });
-    void [tag, build, removal, lock, inspect, digest, digestResult];
+    prepareIdentityImage(id, inward, { labelsDigest: ports.labelsDigest });
+    void [tag, build, removal, lock, inspect, digest];
     return id;
 }
 

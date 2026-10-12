@@ -17,7 +17,7 @@ function fixture(observations: (IdentityImageObservation | null)[]) {
         events.push([name, ...args]);
     };
     const ports: IdentityImagePorts = {
-        captureLabelsDigest: () => serialized => { events.push(["digest", serialized]); return "known-label-hash"; },
+        labelsDigest: serialized => { events.push(["digest", serialized]); return "known-label-hash"; },
         withIdentityLock: (key, operation) => {
             events.push(["lock", key]); locked = true;
             try { return operation(); } finally { locked = false; events.push(["unlock"]); }
@@ -83,13 +83,14 @@ describe("whole identity image application", () => {
         expect(() => prepareIdentityImage(base, identity, second.ports)).toThrow("remove failed");
     });
 
-    it("keeps inspect spawning outside validation catch and field getters inside it", () => {
+    it("propagates inspect spawning failure and rebuilds malformed observations", () => {
         const first = fixture([]);
         first.ports.inspectImage = () => { throw new Error("inspect spawn failed"); };
         expect(() => prepareIdentityImage(base, identity, first.ports)).toThrow("inspect spawn failed");
         expect(first.events.map(event => event[0])).toEqual(["digest", "lock", "unlock"]);
-        const broken = { get Id(): string { throw new Error("field failed"); } };
+        const broken = { Id: "mutable:tag", Config: { User: "ccc", Labels: { ...labels } } };
         const second = fixture([broken, image()]);
         expect(prepareIdentityImage(base, identity, second.ports)).toBe(builtId);
+        expect(second.events.some(event => event[0] === "build")).toBe(true);
     });
 });

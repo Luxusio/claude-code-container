@@ -88,11 +88,7 @@ function buildImage(baseTag: string, name: string, identity: ContainerIdentity, 
 /** Build-time account changes have no access to projects or credentials. */
 export function ensureIdentityImage(baseImageId: string, identity: ContainerIdentity): string {
     return prepareIdentityImage(baseImageId, identity, {
-        captureLabelsDigest: () => {
-            const hash = createHash("sha256");
-            const update: (data: string) => typeof hash = hash.update;
-            return serialized => update.call(hash, serialized).digest("hex");
-        },
+        labelsDigest: serializedLabels => createHash("sha256").update(serializedLabels).digest("hex"),
         withIdentityLock: (key, operation) => {
             const lock = join(locksDir(), `identity-${key}.lock`);
             return withSharedMutationLock(lock, operation, { waitMs: IDENTITY_LOCK_WAIT_MS, reclaimStale: false });

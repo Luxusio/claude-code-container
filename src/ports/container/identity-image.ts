@@ -1,7 +1,7 @@
 import type { ContainerIdentity, IdentityImageObservation } from "../../domain/container/identity-image.js";
 
 export interface IdentityImagePorts {
-    captureLabelsDigest(): (serializedLabels: string) => string;
+    labelsDigest(serializedLabels: string): string;
     withIdentityLock(key: string, operation: () => string): string;
     inspectImage(name: string): IdentityImageObservation | null;
     observeAccount(image: IdentityImageObservation): string;

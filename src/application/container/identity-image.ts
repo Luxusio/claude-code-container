@@ -17,7 +17,7 @@ function validatedImage(name: string, labels: Record<string, string>, identity: 
 /** Entire cache/build/revalidation/derived-only compensation policy. */
 export function prepareIdentityImage(baseImageId: string, identity: ContainerIdentity, ports: IdentityImagePorts): string {
     const labels = identityImageLabels(baseImageId, identity);
-    const key = ports.captureLabelsDigest()(JSON.stringify(labels));
+    const key = ports.labelsDigest(JSON.stringify(labels));
     const name = `ccc-identity:${key}`;
     return ports.withIdentityLock(key, () => {
         const cached = validatedImage(name, labels, identity, ports);

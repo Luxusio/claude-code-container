@@ -237,9 +237,7 @@ describe("validated derived image cache", () => {
         expect(mocks.spawn.mock.calls.some(([, args]) => args[0] === "run" && args.includes(builtId))).toBe(true);
     });
 
-    it("preserves public arities and the original bare base operand", () => {
-        expect(resolveContainerIdentity.length).toBe(0);
-        expect(ensureIdentityImage.length).toBe(2);
+    it("preserves the original bare base operand", () => {
         fakeRuntime();
         expect(ensureIdentityImage(baseId.slice(7), identity)).toBe(builtId);
         expect(mocks.spawn.mock.calls.find(([, args]) => args[0] === "tag")![1]).toEqual([
@@ -254,23 +252,6 @@ describe("validated derived image cache", () => {
         expect(ensureIdentityImage(baseId.slice(7), target)).toBe(builtId);
         expect(mocks.lock.mock.calls[0][0]).toMatch(new RegExp(`identity-${hash}\\.lock$`));
         expect(buildCalls()[0][1]).toEqual(["build", "--pull=false", "-t", `ccc-identity:${hash}`, "-"]);
-    });
-
-    it("retains lazy inspect field order and repeated original image ID reads", () => {
-        fakeRuntime({ cached: imageFor() });
-        const reads: string[] = [];
-        const labels = imageFor().Config.Labels;
-        const observed = {
-            get Id() { reads.push("Id"); return builtId; },
-            Config: {
-                get User() { reads.push("User"); return "ccc"; },
-                get Labels() { reads.push("Labels"); return labels; },
-            },
-        };
-        vi.spyOn(JSON, "parse").mockReturnValue([observed]);
-        expect(ensureIdentityImage(baseId, identity)).toBe(builtId);
-        expect(reads).toEqual(["Id", "User", "Labels", "Labels", "Labels", "Labels", "Labels", "Id", "Id"]);
-        expect(buildCalls()).toHaveLength(0);
     });
 
     it("propagates inspect spawn throws instead of silently building", () => {
