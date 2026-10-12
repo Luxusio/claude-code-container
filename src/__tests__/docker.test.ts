@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
 import { createHash } from "crypto";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { ContainerRestartRequiredError, formatContainerStartupError } from "../container-restart-guidance.js";
 
 // Image building and retained-state repair have dedicated shell/identity suites.
@@ -2907,7 +2907,7 @@ describe("docker.ts module exports", () => {
                 );
                 mountMarkers.set(
                     markerName,
-                    path.startsWith(`${extraMount.hostPath}/`)
+                    resolve(dirname(path)) === resolve(extraMount.hostPath)
                         ? "wrong-mounted-directory"
                         : content,
                 );
@@ -3331,10 +3331,10 @@ describe("docker.ts module exports", () => {
         });
 
         it("matches running Windows container identity through an equivalent junction path", () => {
-            const junctionPath = "/junction/my-project";
-            const physicalPath = "/physical/my-project";
+            const junctionPath = resolve("/junction/my-project");
+            const physicalPath = resolve("/physical/my-project");
             mockRealpathSync.mockImplementation((path: string) => {
-                if (path === junctionPath || path === projectPath) return physicalPath;
+                if (path === junctionPath || path === resolve(projectPath)) return physicalPath;
                 return path;
             });
             const originalPlatform = process.platform;
@@ -6120,26 +6120,17 @@ describe("docker.ts module exports", () => {
 
         it("recreates container when host git identity directory mounts are missing", () => {
             mockExistsSync.mockImplementation((p: string) => p.endsWith(join(".config", "git")));
-
-            const missingGitIdentityMountsJson = fullCredentialMountsJson()
-                .replace(/,\{"Source":"\/host\/home\/user\/\.config\/git","Destination":"\/home\/ccc\/\.config\/git"\}/, "");
-
-            spawnSyncMock
-                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
-                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
-                .mockReturnValueOnce(makeResult(0, "abc123\n"))
-                // Immutable provenance read precedes contract verification.
-                .mockReturnValueOnce(makeResult(0, missingGitIdentityMountsJson)) // previous immutable provenance
-                .mockReturnValueOnce(makeResult(0, "abc123\n")) // lifecycle repeats pinned namespace observation
-                .mockReturnValueOnce(makeResult(0, missingGitIdentityMountsJson)) // inspect -> missing git identity mount
-                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // initial stopped identity
-                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
-                .mockReturnValueOnce(makeResult(0))                  // docker rm
-                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
-                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            expect(inspected.Mounts.some((mount: {Destination: string}) => mount.Destination === "/home/ccc/.config/git")).toBe(true);
+            inspected.Mounts = inspected.Mounts.filter((mount: {Destination: string}) => mount.Destination !== "/home/ccc/.config/git");
+            inspected.State = {Running: false};
+            mockReplacementRuntime(JSON.stringify(inspected), {identityRunning: false});
 
             startWithApprovedReplacement();
+            expect(spawnSyncMock.mock.calls.filter(([, args]) => (args as string[])[0] === "rm")
+                .map(([, args]) => args)).toEqual([["rm", "abc123"]]);
+            const created = spawnSyncMock.mock.calls.find(([, args]) => (args as string[])[0] === "run");
+            expect(created?.[1]).toContain(`${join(homedir(), ".config", "git")}:/home/ccc/.config/git:ro`);
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
