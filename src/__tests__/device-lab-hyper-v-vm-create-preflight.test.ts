@@ -186,8 +186,8 @@ describe("cloning the base image", () => {
         expect(statSync(imagePath).size).toBe(fault === "empty" ? 0 : fault === "growth" ? 64 * 1024 ** 3 + 1 : bytes.length);
     });
     it.skipIf(process.platform === "win32")("refuses a real FIFO substituted before opening the qualified clone source", () => {
-        const source = fileURLToPath(new URL("../../packages/device-lab/src/device-lab/broker/hyper-v/vm-create-preflight.ts", import.meta.url));
-        const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+        const source = fileURLToPath(new URL("../../packages/device-lab/dist/device-lab/broker/hyper-v/vm-create-preflight.js", import.meta.url));
+        const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
             import fs from 'node:fs';
             import { execFileSync } from 'node:child_process';
             import { createHash } from 'node:crypto';
