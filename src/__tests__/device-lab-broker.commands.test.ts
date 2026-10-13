@@ -7006,30 +7006,28 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
         const lease = { backend: "android-device", hardwareId: serial, ownerId, deviceId, claimId: "recording-claim", claimNonce: "recording-nonce", expiresAt: new Date(Date.now() + 60_000).toISOString() };
         const successorLease = { ...lease, ownerId: "foreign-owner", claimNonce: "foreign-nonce" };
         const binDir = join(fixtureHome!, `recording-bin-${stage}`);
-        const fakeAdb = join(binDir, "adb"), logPath = join(fixtureHome!, `recording-adb-${stage}.jsonl`);
+        const fakeAdb = join(binDir, process.platform === "win32" ? "adb.cmd" : "adb"), logPath = join(fixtureHome!, `recording-adb-${stage}.jsonl`);
+        const adbProgram = process.platform === "win32" ? join(binDir, "adb.cjs") : fakeAdb;
         const ready = join(fixtureHome!, `recording-ready-${stage}`), stopFile = join(fixtureHome!, `recording-stop-${stage}`);
-        const preload = join(fixtureHome!, `recording-routing-${stage}.cjs`);
-        const originalNodeOptions = process.env.NODE_OPTIONS;
         const originalKill = process.kill.bind(process);
-        let restoreRouting: (() => void) | undefined, restoreKill: (() => void) | undefined;
+        let restoreKill: (() => void) | undefined;
         let recorder: ReturnType<typeof spawn> | undefined, server: ReturnType<typeof createDeviceBrokerServer> | undefined;
         let recorderClosed = false, replacement: Promise<void> | undefined;
         try {
             mkdirSync(leaseDir, { recursive: true });
             writeFileSync(leaseFile, JSON.stringify(lease));
             mkdirSync(binDir);
-            writeFileSync(fakeAdb, [
+            writeFileSync(adbProgram, [
                 "#!/usr/bin/env node", "const fs = require('node:fs'); const args = process.argv.slice(2);",
                 `if (args[0] !== '-s' || args[1] !== ${JSON.stringify(serial)}) throw new Error('unexpected physical recording target');`,
                 `fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + '\\n');`,
                 `if (args[2] === 'pull') { fs.writeFileSync(args[4], 'video'); ${stage === "after-copy" ? `fs.writeFileSync(${JSON.stringify(leaseFile)}, ${JSON.stringify(JSON.stringify(successorLease))});` : ""} }`,
                 "",
             ].join("\n"));
-            chmodSync(fakeAdb, 0o755);
-            writeFileSync(preload, nodeProviderFixturePreloadSource(binDir));
-            // Native provider worker threads and subprocesses inherit this existing routing preload.
-            process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${JSON.stringify(preload)}`].filter(Boolean).join(" ");
-            restoreRouting = installNodeProviderFixtureRouting(binDir);
+            if (process.platform === "win32") {
+                // Exercise the production .cmd provider launcher with the real Node executable.
+                writeFileSync(fakeAdb, `@echo off\r\n"${process.execPath}" "${adbProgram}" %*\r\nexit /b %errorlevel%\r\n`);
+            } else chmodSync(fakeAdb, 0o755);
             recorder = spawn(process.execPath, ["-e", `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{if(fs.existsSync(${JSON.stringify(stopFile)}))process.exit(0);},25);`], { detached: process.platform !== "win32", windowsHide: true, stdio: "ignore" });
             const ownedRecorder = recorder;
             ownedRecorder.once("error", () => undefined);
@@ -7098,14 +7096,7 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
                     try {
                         if (server) await close(server);
                     } finally {
-                        try { cleanupOwner(ownerId); }
-                        finally {
-                            try { restoreRouting?.(); }
-                            finally {
-                                if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
-                                else process.env.NODE_OPTIONS = originalNodeOptions;
-                            }
-                        }
+                        cleanupOwner(ownerId);
                     }
                 }
             }
