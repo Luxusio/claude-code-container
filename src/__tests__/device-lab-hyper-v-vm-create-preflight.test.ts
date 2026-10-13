@@ -1,6 +1,6 @@
 import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 import { createHash } from "crypto";
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from "fs";
 import { tmpdir } from "os";
 import { promises as fsPromises } from "fs";
 import { join } from "path";
@@ -53,11 +53,12 @@ function devicePaths(): { deviceRoot: string; diskPath: string } {
     return { deviceRoot, diskPath };
 }
 
-async function withWindowsFileObservations<T>(source: string, fault: "none" | "volume" | "inode" | "open" | "path-swap", body: (live: Set<Awaited<ReturnType<typeof fsPromises.open>>>) => Promise<T>): Promise<T> {
+async function withWindowsFileObservations<T>(source: string, fault: "none" | "volume" | "inode" | "open" | "path-swap" | "admitted-volume", body: (live: Set<Awaited<ReturnType<typeof fsPromises.open>>>) => Promise<T>): Promise<T> {
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     const realOpen = fsPromises.open.bind(fsPromises), realLstat = fsPromises.lstat.bind(fsPromises);
     const live = new Set<Awaited<ReturnType<typeof fsPromises.open>>>();
     let sourceOpens = 0;
+    let admittedObserved = false;
     const metadata = (stat: any, pathname: boolean, fresh = false) => {
         const bigint = typeof stat.ino === "bigint";
         const inode = BigInt(stat.ino) + 2n ** 60n + (fresh && fault === "inode" ? 1n : 0n);
@@ -70,6 +71,10 @@ async function withWindowsFileObservations<T>(source: string, fault: "none" | "v
     vi.spyOn(fsPromises, "lstat").mockImplementation((async (path: Parameters<typeof fsPromises.lstat>[0], ...args: any[]) => {
         const stat = await realLstat(path, ...args);
         const observed = metadata(stat, true);
+        if (path === source && typeof stat.ino === "bigint" && !admittedObserved) {
+            admittedObserved = true;
+            if (fault === "admitted-volume") observed.dev = 574283788n;
+        }
         if (path === source && sourceOpens >= 2 && fault === "path-swap") observed.ino = typeof observed.ino === "bigint" ? observed.ino + 1n : observed.ino + 1;
         return observed;
     }) as typeof fsPromises.lstat);
@@ -146,6 +151,40 @@ describe("Hyper-V disk capacity", () => {
 });
 
 describe("cloning the base image", () => {
+    for (const fault of ["growth", "empty", "replacement"] as const) it.skipIf(fault === "growth" && process.platform === "win32")(`refuses changed initial source admission before clone I/O (${fault})`, async () => {
+        const bytes = Buffer.from("original admitted clone source");
+        const { imageRoot, imagePath, sha256 } = writeBaseImage(bytes);
+        const { deviceRoot, diskPath } = devicePaths();
+        const retained = join(imageRoot, "retained.vhdx");
+        const realLstat = fsPromises.lstat.bind(fsPromises), realOpen = fsPromises.open.bind(fsPromises);
+        const live = new Set<Awaited<ReturnType<typeof fsPromises.open>>>();
+        let mutated = false, reads = 0;
+        const created = vi.fn();
+        vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => {
+            const stat = await realLstat(...args);
+            if (String(args[0]) === imagePath && typeof stat?.ino === "bigint" && !mutated) {
+                mutated = true;
+                if (fault === "replacement") { renameSync(imagePath, retained); writeFileSync(imagePath, bytes); }
+                else truncateSync(imagePath, fault === "empty" ? 0 : 64 * 1024 ** 3 + 1);
+            }
+            return stat;
+        }) as typeof fsPromises.lstat);
+        vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+            const handle = await realOpen(...args); live.add(handle);
+            const close = handle.close.bind(handle);
+            vi.spyOn(handle, "close").mockImplementation(async () => { await close(); live.delete(handle); });
+            if (String(args[0]) === imagePath) vi.spyOn(handle, "read").mockImplementation(async () => { reads++; throw new Error("unexpected source read"); });
+            return handle;
+        });
+        await expect(cloneHyperVBaseImage({ baseImageRoot: imageRoot, baseImagePath: imagePath, expectedSha256: sha256, deviceRoot, diskPath, onDestinationCreated: created })).rejects.toThrow();
+        expect(mutated).toBe(true);
+        expect(reads).toBe(0);
+        expect(created).not.toHaveBeenCalled();
+        expect(() => statSync(diskPath)).toThrow();
+        expect(live.size).toBe(0);
+        if (fault === "replacement") expect(readFileSync(retained)).toEqual(bytes);
+        expect(statSync(imagePath).size).toBe(fault === "empty" ? 0 : fault === "growth" ? 64 * 1024 ** 3 + 1 : bytes.length);
+    });
     it.skipIf(process.platform === "win32")("refuses a real FIFO substituted before opening the qualified clone source", () => {
         const source = fileURLToPath(new URL("../../packages/device-lab/src/device-lab/broker/hyper-v/vm-create-preflight.ts", import.meta.url));
         const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
@@ -190,7 +229,7 @@ describe("cloning the base image", () => {
             expect(live.size).toBe(0);
         });
     });
-    it.each(["volume", "inode", "open", "path-swap"] as const)("refuses unsafe Windows source qualification (%s) and closes every handle", async fault => {
+    it.each(["volume", "inode", "open", "path-swap", "admitted-volume"] as const)("refuses unsafe Windows source qualification (%s) and closes every handle", async fault => {
         const bytes = Buffer.from("source must remain untouched");
         const { imageRoot, imagePath, sha256 } = writeBaseImage(bytes);
         const { deviceRoot, diskPath } = devicePaths();

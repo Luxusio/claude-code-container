@@ -1,6 +1,6 @@
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { createHash } from "crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "fs";
 import { promises as fsPromises } from "fs";
 import { tmpdir } from "os";
 import { dirname, join, relative } from "path";
@@ -16,6 +16,9 @@ import {
     inspectHyperVUbuntuImageCache,
     readHyperVImageManifestMetadata,
     resolveHyperVImageForCreate,
+    inspectLargeRegularFile,
+    stageLargeRegularFileFromProject,
+    sha256LargeRegularFile,
     type HyperVImageCommandResult,
     type HyperVImageStoreRuntime,
     type HyperVUbuntuImageCacheInspection,
@@ -51,7 +54,7 @@ void imagePreparationCapabilityContracts;
 // Pass-through record of every hash the image store starts, so the readiness cache inspection
 // can prove it never hashes the multi-gigabyte base image.
 const hashing = vi.hoisted(() => ({ algorithms: [] as string[] }));
-const windowsImageFs = vi.hoisted(() => ({ enabled: false, target: "", fault: "none", opens: 0, live: new Map<number, boolean>() }));
+const windowsImageFs = vi.hoisted(() => ({ enabled: false, tracking: false, afterLstat: null as null | ((path: string, bigint: boolean) => void), target: "", fault: "none", opens: 0, live: new Map<number, boolean>() }));
 vi.mock("fs", async importOriginal => {
     const actual = await importOriginal<typeof import("fs")>();
     const metadata = (stat: any, pathname: boolean, fresh = false) => {
@@ -65,7 +68,7 @@ vi.mock("fs", async importOriginal => {
             const fresh = windowsImageFs.enabled && String(args[0]) === windowsImageFs.target && ++windowsImageFs.opens >= 2;
             if (fresh && windowsImageFs.fault === "open") throw Object.assign(new Error("fresh open denied"), { code: "EACCES" });
             const fd = actual.openSync(...args);
-            if (windowsImageFs.enabled) windowsImageFs.live.set(fd, fresh);
+            if (windowsImageFs.enabled || windowsImageFs.tracking) windowsImageFs.live.set(fd, fresh);
             return fd;
         },
         fstatSync: (...args: Parameters<typeof actual.fstatSync>) => {
@@ -74,6 +77,7 @@ vi.mock("fs", async importOriginal => {
         },
         lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
             const stat = actual.lstatSync(...args);
+            windowsImageFs.afterLstat?.(String(args[0]), typeof stat?.ino === "bigint");
             return windowsImageFs.enabled ? metadata(stat, true) : stat;
         },
         closeSync: (fd: number) => { actual.closeSync(fd); windowsImageFs.live.delete(fd); },
@@ -156,6 +160,66 @@ function automaticUbuntuStep(
 }
 
 describe("Hyper-V image store module", () => {
+    for (const fault of ["growth", "empty", "replacement"] as const) it.skipIf(fault === "growth" && process.platform === "win32")(`retains the initial regular-image admission during synchronous inspection (${fault})`, () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-image-admission-sync-"));
+        const source = join(root, "source.vhdx"), retained = join(root, "retained.vhdx"), bytes = Buffer.from("original admitted image");
+        writeFileSync(source, bytes);
+        let mutated = false;
+        windowsImageFs.tracking = true;
+        windowsImageFs.afterLstat = (path, bigint) => {
+            if (path !== source || !bigint || mutated) return;
+            mutated = true;
+            if (fault === "replacement") { renameSync(source, retained); writeFileSync(source, bytes); }
+            else truncateSync(source, fault === "empty" ? 0 : 64 * 1024 ** 3 + 1);
+        };
+        try {
+            expect(() => inspectLargeRegularFile(root, source, "admission")).toThrow();
+            expect(mutated).toBe(true);
+            expect(windowsImageFs.live.size).toBe(0);
+            if (fault === "replacement") expect(readFileSync(retained)).toEqual(bytes);
+            expect(existsSync(source)).toBe(true);
+        } finally { windowsImageFs.afterLstat = null; windowsImageFs.tracking = false; rmSync(root, { recursive: true, force: true }); }
+    });
+
+    for (const [operation, fault] of [
+        ["stage", "growth"], ["stage", "empty"], ["stage", "replacement"],
+        ["hash", "growth"], ["hash", "empty"], ["hash", "replacement"],
+    ] as const) it.skipIf(fault === "growth" && process.platform === "win32")(`refuses changed initial admission before ${operation} source I/O (${fault})`, async () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-image-admission-async-"));
+        const source = join(root, "source.vhdx"), retained = join(root, "retained.vhdx"), destination = join(root, "staging"), bytes = Buffer.from("original admitted image");
+        writeFileSync(source, bytes);
+        const realLstat = fsPromises.lstat.bind(fsPromises), realOpen = fsPromises.open.bind(fsPromises);
+        const live = new Set<Awaited<ReturnType<typeof fsPromises.open>>>();
+        let mutated = false, reads = 0, destinationOpens = 0;
+        vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => {
+            const stat = await realLstat(...args);
+            if (String(args[0]) === source && typeof stat?.ino === "bigint" && !mutated) {
+                mutated = true;
+                if (fault === "replacement") { renameSync(source, retained); writeFileSync(source, bytes); }
+                else truncateSync(source, fault === "empty" ? 0 : 64 * 1024 ** 3 + 1);
+            }
+            return stat;
+        }) as typeof fsPromises.lstat);
+        vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+            if (String(args[0]).startsWith(destination)) destinationOpens++;
+            const handle = await realOpen(...args); live.add(handle);
+            const close = handle.close.bind(handle);
+            vi.spyOn(handle, "close").mockImplementation(async () => { await close(); live.delete(handle); });
+            if (String(args[0]) === source) vi.spyOn(handle, "read").mockImplementation(async () => { reads++; throw new Error("unexpected source read"); });
+            return handle;
+        });
+        try {
+            const pending = operation === "stage" ? stageLargeRegularFileFromProject(root, source, destination, "admission") : sha256LargeRegularFile(root, source, "admission");
+            await expect(pending).rejects.toThrow();
+            expect(mutated).toBe(true);
+            expect(reads).toBe(0);
+            expect(destinationOpens).toBe(0);
+            expect(existsSync(destination)).toBe(false);
+            expect(live.size).toBe(0);
+            if (fault === "replacement") expect(readFileSync(retained)).toEqual(bytes);
+            expect(existsSync(source)).toBe(true);
+        } finally { vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); }
+    });
     it.skipIf(process.platform === "win32")("refuses a real regular-to-FIFO replacement before image inspection opens its read descriptor", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-image-fifo-"));
         const source = fileURLToPath(new URL("../../packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts", import.meta.url));

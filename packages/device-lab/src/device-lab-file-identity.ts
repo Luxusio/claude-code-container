@@ -15,12 +15,18 @@ function namedObject(opened: BigIntStats, named: BigIntStats): boolean {
 function assertIdentity(opened: BigIntStats, named: BigIntStats, expected: BigIntStats | undefined, label: string): void {
     if (opened.dev <= 0n || opened.ino <= 0n || (!opened.isFile() && !opened.isDirectory())
         || (opened.isFile() && opened.nlink !== 1n) || !namedObject(opened, named)
-        || (expected && !sameObject(expected, opened))) throw new Error(`${label}-identity-changed`);
+        || (expected && !(sameObject(expected, opened)
+            || (process.platform === 'win32' && expected.dev === 0n && expected.ino > 0n
+                && expected.isFile() && expected.nlink === 1n && expected.size > 0n
+                && namedObject(opened, expected))))) throw new Error(`${label}-identity-changed`);
 }
 const readFlags = constants.O_RDONLY | (typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0)
     | (typeof constants.O_NONBLOCK === 'number' ? constants.O_NONBLOCK : 0);
 
-/** Qualifies pathname observations against positive, exact native handle identity. */
+/** Qualifies pathname observations against positive, exact native handle identity.
+ * An admitted Windows regular-file pathname snapshot may lack its volume ID;
+ * its other facts must still match, and both fresh handles must prove the volume.
+ */
 export function readDeviceLabFileIdentity(path: string, label: string, expected?: BigIntStats): BigIntStats {
     const initial = lstatSync(path, { bigint: true });
     if (initial.isSymbolicLink() || (!initial.isFile() && !initial.isDirectory())) throw new Error(`${label}-identity-changed`);

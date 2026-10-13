@@ -337,7 +337,8 @@ export function inspectLargeRegularFile(root: string, file: string, label: strin
     assertDeviceLabPathWithinRoot(root, absolute, label);
     let pathStat = lstatSync(absolute, { bigint: true });
     if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n || pathStat.size <= 0n) throw new Error(`${label}-invalid`);
-    pathStat = readDeviceLabFileIdentity(absolute, label);
+    pathStat = readDeviceLabFileIdentity(absolute, label, pathStat);
+    if (pathStat.size <= 0n) throw new Error(`${label}-invalid`);
     const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
     const descriptor = openSync(absolute, fsConstants.O_RDONLY | noFollow | (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0));
     try {
@@ -374,7 +375,8 @@ export async function stageLargeRegularFileFromProject(
         if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n || pathStat.size <= 0n || pathStat.size > BigInt(HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES)) {
             throw new Error(`${label}-invalid`);
         }
-        pathStat = await readDeviceLabFileIdentityAsync(absolute, label);
+        pathStat = await readDeviceLabFileIdentityAsync(absolute, label, pathStat);
+        if (pathStat.size <= 0n || pathStat.size > BigInt(HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES)) throw new Error(`${label}-invalid`);
         const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
         sourceDescriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow | (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0));
         const openedSource = await sourceDescriptor.stat({ bigint: true });
@@ -441,7 +443,8 @@ export async function sha256LargeRegularFile(
     assertDeviceLabPathWithinRoot(root, absolute, label);
     let pathStat = await fsPromises.lstat(absolute, { bigint: true });
     if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n || pathStat.size <= 0n) throw new Error(`${label}-invalid`);
-    pathStat = await readDeviceLabFileIdentityAsync(absolute, label);
+    pathStat = await readDeviceLabFileIdentityAsync(absolute, label, pathStat);
+    if (pathStat.size <= 0n) throw new Error(`${label}-invalid`);
     const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
     const descriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow | (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0));
     const hash = createHash("sha256");

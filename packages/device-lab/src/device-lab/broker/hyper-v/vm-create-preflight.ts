@@ -221,7 +221,8 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
         throw new Error("hyper-v-base-image-invalid");
     }
 
-    sourceStat = await readDeviceLabFileIdentityAsync(request.baseImagePath, label);
+    sourceStat = await readDeviceLabFileIdentityAsync(request.baseImagePath, label, sourceStat);
+    if (sourceStat.size <= 0n) throw new Error("hyper-v-base-image-invalid");
 
     // Absent on Windows, where it resolves to 0 and the open stops being NOFOLLOW. That is why
     // `Assert-NoReparsePath` stays in the PowerShell prologue: it is the only check in this
