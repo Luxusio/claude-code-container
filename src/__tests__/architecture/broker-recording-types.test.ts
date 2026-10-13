@@ -24,6 +24,9 @@ function recordingCapabilityContracts(ports: BrokerRecordingPorts, request: Brok
     ports.stopAndroidRecording(context, "emulator-5580");
     ports.pullAndroidRecording(context, "emulator-5580", "/sdcard/video.mp4", "/private/video.mp4");
     ports.removeAndroidRecording(context, "emulator-5580", "/sdcard/video.mp4");
+    ports.publish("owner", "android", "pixel", context.recording, null, context.target);
+    // @ts-expect-error Publication requires the captured device identity as well as the recording.
+    ports.publish("owner", "android", "pixel", context.recording, null);
     // @ts-expect-error A serial alone carries no recording generation or owner authority.
     ports.stopAndroidRecording("emulator-5580");
     // @ts-expect-error Artifact copying requires the captured recording and target.

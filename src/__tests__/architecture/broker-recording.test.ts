@@ -67,7 +67,8 @@ function stoppedFixture() {
         effects.push("remove");
         return { status: 0, receipt: {} };
     };
-    ports.publish = (_owner, _state, _id, expected, replacement) => {
+    ports.publish = (_owner, _state, _id, expected, replacement, target) => {
+        expect(target).toEqual({ stateKey: "android", backend: "android-emulator", device });
         expect(device.recording).toEqual(expected);
         effects.push(replacement === null ? "clear" : replacement.artifactCopied ? "copied" : "pending");
         device.recording = replacement;

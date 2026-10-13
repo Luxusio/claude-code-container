@@ -94,6 +94,8 @@ export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(p
             stateKey, backend, deviceId: id, changed: false
         };
         const physical = isPhysicalState(stateKey);
+        const retainRecordingAttachment = stateKey === 'android-device' && cleanupRecord(device.recording)
+            && recordingCopyPending({...device.recording, active: false, stoppedAt: ports.timestamp()});
         if (physical && options.detachPhysical && !guard)
             return ports.withLeaseGuard(ownerId, stateKey, device, lease => cleanupDevice(ownerId, stateKey, device, options, lease));
         if (guard?.admission.kind === 'refused') {
@@ -128,7 +130,7 @@ export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(p
                 cleared: signal.ok, signal
             };
         }
-        if (physical && options.detachPhysical && guard) {
+        if (physical && options.detachPhysical && guard && !retainRecordingAttachment) {
             const lease = ports.releaseLease(ownerId, guard);
             if (lease.ok && updated.status !== 'detached') {
                 updated.status = 'detached';

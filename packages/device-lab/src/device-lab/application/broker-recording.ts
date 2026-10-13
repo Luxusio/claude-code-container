@@ -24,7 +24,7 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
             ? {...observedRecording, active: false, stoppedAt: ports.timestamp()} : null;
         const recovery = stopped && recordingCopyPending(stopped) ? {...stopped, artifactCopyPending: true} : null;
         const transition = !pending && observedRecording && recorderEnded
-            ? transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), observedRecording, recovery)
+            ? transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), observedRecording, recovery, match)
             : null;
         const recording = transition?.matched ? transition.device?.recording || null
             : transition ? transition.currentRecording : match.device.recording || null;
@@ -88,7 +88,7 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
             pid: execution.pid ?? null,
             ...(execution.processIdentity ? { processIdentity: execution.processIdentity } : {}),
         };
-        const transition = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), currentRecording, recording);
+        const transition = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), currentRecording, recording, match);
         if (!transition.matched) {
             const rollback = ports.signal(recording, "SIGINT");
             return {kind: "refused", reason: "conflict", error: "recording-runtime-state-conflict", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, found: transition.found, currentRecording: transition.currentRecording, rollback};
@@ -157,7 +157,7 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
         let expectedRecording = recording;
         if (android && serial && recordingCopyPending(stoppedRecording)) {
             stoppedRecording = {...stoppedRecording, artifactCopyPending: true};
-            const retained = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), recording, stoppedRecording);
+            const retained = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), recording, stoppedRecording, match);
             if (!retained.matched) {
                 return {kind: "refused", reason: "conflict", error: "recording-runtime-state-conflict", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, found: retained.found, currentRecording: retained.currentRecording, signal, executions};
             }
@@ -169,7 +169,7 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
                     return {kind: "stopped-with-copy-failure", error: "recording-artifact-copy-failed", ownerId, tool: parsed.tool, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, provider, signal, executions, recording: stoppedRecording, device: retained.device};
                 }
                 const copiedRecording = {...stoppedRecording, artifactCopied: true};
-                const copied = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), stoppedRecording, copiedRecording);
+                const copied = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), stoppedRecording, copiedRecording, match);
                 if (!copied.matched) {
                     return {kind: "refused", reason: "conflict", error: "recording-runtime-state-conflict", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, found: copied.found, currentRecording: copied.currentRecording, signal, executions};
                 }
@@ -182,7 +182,7 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
             }
             expectedRecording = stoppedRecording;
         }
-        const transition = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), expectedRecording, null);
+        const transition = transitionOwnerRecordingRuntime(ownerId, match.stateKey, String(parsed.deviceId), expectedRecording, null, match);
         if (!transition.matched) {
             return {kind: "refused", reason: "conflict", error: "recording-runtime-state-conflict", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, found: transition.found, currentRecording: transition.currentRecording, signal, executions};
         }

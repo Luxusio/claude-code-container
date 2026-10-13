@@ -5,7 +5,7 @@ import {planBrokerMacosCreateCommand as semanticMacosCreate, planBrokerMacosExis
 import type {BrokerAndroidPreparationPorts} from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 import {NativeProviderLifecycleEffect, renderBrokerAndroidLifecycle, renderBrokerIosMacosLifecycle, renderBrokerSandboxLifecycle, renderBrokerProviderRollback} from "./device-lab/broker/broker-outcomes-codec.js";
 import {renderBrokerOwnerResolution, renderBrokerDeviceStatus, renderBrokerRecording, renderBrokerAppium, NativeBrokerExecutionReceipt, NativeRecordingSignalReceipt, NativeAppiumTerminationReceipt, NativeAppiumVerificationReceipt, NativeAppiumRuntimeReceipt, NativeAppiumInstrumentationReceipt, type NativeStatusConnection} from "./device-lab/broker/broker-outcomes-codec.js";
-import { recordingRuntimeMatches, recordingSerial, type BrokerRecordingRefusal, type BrokerRecordingRequest, type BrokerRecordingTarget } from "./device-lab/domain/broker-recording.js";
+import { recordingRuntimeMatches, recordingTargetMatches, recordingSerial, type BrokerRecordingRefusal, type BrokerRecordingRequest, type BrokerRecordingTarget } from "./device-lab/domain/broker-recording.js";
 import type {BrokerRecordingArtifactContext} from "./device-lab/ports/broker-recording.js";
 import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
 import type {BrokerAppiumInstrumentationStep} from "./device-lab/ports/broker-appium.js";
@@ -3525,9 +3525,7 @@ function brokerRecordingApplication(normalized: NormalizedBrokerOptions) {
                 readOwnerDevices(ownerId, target.stateKey).find(candidate => cleanupRecord(candidate) && candidate.id === deviceId));
             if (!cleanupRecord(current) || !recordingRuntimeMatches(recording, current.recording)
                 || !cleanupRecord(current.recording) || !isDeepStrictEqual(recording.processIdentity, current.recording.processIdentity)
-                || current.incarnationId !== target.device.incarnationId
-                || recordingSerial(current) !== recordingSerial(target.device)
-                || (target.stateKey === "android-device" && (current.leaseClaimId !== target.device.leaseClaimId || current.leaseClaimNonce !== target.device.leaseClaimNonce)))
+                || !recordingTargetMatches(target, current))
                 return refuse("recording-runtime-state-conflict");
             return effect();
         };
@@ -3674,8 +3672,9 @@ function transitionOwnerRecordingRuntime(
     deviceId: string,
     expected: unknown,
     replacement: Record<string, unknown> | null,
+    target: BrokerRecordingTarget,
 ) {
-    return ownerRepository.transitionRecording(ownerId, stateKey, deviceId, expected, replacement);
+    return ownerRepository.transitionRecording(ownerId, stateKey, deviceId, expected, replacement, target);
 }
 
 function brokerDeviceToolSupportedMethods(backend: string | null): Set<string> {

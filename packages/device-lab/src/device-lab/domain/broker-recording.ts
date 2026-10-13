@@ -54,6 +54,16 @@ export function recordingRuntimeMatches(expected: unknown, current: unknown): bo
     return identityFields.every((field) => expectedRecord[field] === currentRecord[field]);
 }
 
+/** Captured recording target identity excludes mutable recording, status and heartbeat fields. */
+export function recordingTargetMatches(target: BrokerRecordingTarget, current: unknown): boolean {
+    if (!recordingObject(current) || Array.isArray(current)) return false;
+    const fields = ["id", "backend", "incarnationId", "createdAt"];
+    if (target.stateKey === "android" || target.stateKey === "android-device") fields.push("serial", "port");
+    if (target.stateKey === "ios" || target.stateKey === "ios-device") fields.push("udid", "simulatorName");
+    if (target.stateKey === "android-device" || target.stateKey === "ios-device") fields.push("leaseClaimId", "leaseClaimNonce");
+    return fields.every(field => target.device[field] === current[field]);
+}
+
 /** A stopped Android artifact remains recoverable until remote cleanup and state clearing succeed. */
 export function recordingCopyPending(value: unknown): boolean {
     return recordingObject(value) && !Array.isArray(value)

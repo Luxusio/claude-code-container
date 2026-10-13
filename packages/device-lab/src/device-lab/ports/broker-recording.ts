@@ -7,7 +7,7 @@ export interface BrokerRecordingPorts {
     findTarget(ownerId: string, request: BrokerRecordingRequest): BrokerRecordingTarget | BrokerRecordingRefusal;
     heartbeat(ownerId: string, target: BrokerRecordingTarget, deviceId: string): BrokerRecordingRefusal | null;
     observeProcess(identity: unknown, pid: number): {status: "match" | "mismatch" | "exited" | "unavailable"};
-    publish(ownerId: string, stateKey: string, deviceId: string, expected: unknown, replacement: Record<string, unknown> | null): BrokerRecordingTransition;
+    publish(ownerId: string, stateKey: string, deviceId: string, expected: unknown, replacement: Record<string, unknown> | null, target: BrokerRecordingTarget): BrokerRecordingTransition;
     resolveIosTarget(ownerId: string, device: Record<string, unknown>): {ok: true; target: string} | {ok: false; error: string; missing?: unknown};
     localPath(ownerId: string, stateKey: string, deviceId: string, extension: string): string;
     prepareOutput(path: string): undefined;

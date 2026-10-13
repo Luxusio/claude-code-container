@@ -1,7 +1,7 @@
 import type { BrokerOwnerRepositoryPorts } from '../ports/broker-owner-repository.js';
 import { assertUniqueOwnerDeviceIds, ownerIdentityConflict, ownerObject, ownerRecord } from '../domain/broker-owner-repository.js';
 import { physicalOwnerConflict } from '../domain/broker-physical-devices.js';
-import { recordingRuntimeMatches, recordingPublication } from '../domain/broker-recording.js';
+import { recordingRuntimeMatches, recordingTargetMatches, recordingPublication, type BrokerRecordingTarget } from '../domain/broker-recording.js';
 import { appiumRuntimeMatches, appiumRecordReplacement } from '../domain/broker-appium.js';
 import { cleanupRecord } from '../domain/broker-owner-cleanup.js';
 import { retainAfterWindowsConfigFailure } from '../domain/lifecycle/windows-sandbox-create.js';
@@ -69,7 +69,7 @@ export function createBrokerOwnerRepository(ports: BrokerOwnerRepositoryPorts) {
             return { ok: true as const, device, reattached: true };
         });
     }
-    function transitionRecording(owner: string, key: string, id: string, expected: unknown, replacement: Record<string, unknown> | null): {found:boolean;matched:boolean;currentRecording:unknown;device:Record<string,unknown>|null} {
+    function transitionRecording(owner: string, key: string, id: string, expected: unknown, replacement: Record<string, unknown> | null, target: BrokerRecordingTarget): {found:boolean;matched:boolean;currentRecording:unknown;device:Record<string,unknown>|null} {
         let found = false, matched = false;
         let currentRecording: unknown = null;
         let device: Record<string, unknown> | null = null;
@@ -77,7 +77,7 @@ export function createBrokerOwnerRepository(ports: BrokerOwnerRepositoryPorts) {
             if (!ownerRecord(candidate) || candidate.id !== id) return candidate;
             found = true;
             currentRecording = candidate.recording ?? null;
-            if (!recordingRuntimeMatches(expected, currentRecording)) return candidate;
+            if (target.stateKey !== key || !recordingTargetMatches(target, candidate) || !recordingRuntimeMatches(expected, currentRecording)) return candidate;
             matched = true;
             device = recordingPublication(candidate, replacement, ports.timestamp());
             return device;

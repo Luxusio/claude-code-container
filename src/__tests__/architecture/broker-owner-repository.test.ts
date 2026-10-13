@@ -100,7 +100,7 @@ describe("broker owner repository publication", () => {
         expect(f.app.transitionSnapshot("owner", "windows-vm", "absent", {}, {})).toEqual({ found: false, matched: false, device: null });
         expect(f.published()).toEqual([]);
         const recording = repository();
-        expect(recording.app.transitionRecording("owner", "android", "absent", null, null)).toEqual({ found: false, matched: false, currentRecording: null, device: null });
+        expect(recording.app.transitionRecording("owner", "android", "absent", null, null, { stateKey: "android", backend: "android-emulator", device: { id: "absent", backend: "android-emulator" } })).toEqual({ found: false, matched: false, currentRecording: null, device: null });
         expect(recording.published()).toEqual([]);
         const appium = repository();
         expect(appium.app.transitionAppium("owner", "android", "absent", null, null)).toEqual({ found: false, matched: false, currentAppium: null, device: null });
@@ -110,7 +110,7 @@ describe("broker owner repository publication", () => {
     it("preserves current runtime generations on mismatches while still publishing the unchanged list", () => {
         const recording = { runtimeId: "new-recording" }, appium = { runtimeId: "new-appium" };
         const f = repository([{ id: "one", recording, appium, name: "current" }]);
-        expect(f.app.transitionRecording("owner", "android", "one", { runtimeId: "old" }, null)).toEqual({ found: true, matched: false, currentRecording: recording, device: null });
+        expect(f.app.transitionRecording("owner", "android", "one", { runtimeId: "old" }, null, { stateKey: "android", backend: "android-emulator", device: { id: "one", recording, appium, name: "current" } })).toEqual({ found: true, matched: false, currentRecording: recording, device: null });
         expect(f.published()).toEqual([{ id: "one", recording, appium, name: "current" }]);
         const appiumRepository = repository([{ id: "one", recording, appium, name: "current" }]);
         expect(appiumRepository.app.transitionAppium("owner", "android", "one", { runtimeId: "old" }, null)).toEqual({ found: true, matched: false, currentAppium: appium, device: null });
@@ -120,11 +120,34 @@ describe("broker owner repository publication", () => {
     it("updates matching runtimes without losing unrelated current fields and honors Appium's timestamp", () => {
         const recording = { runtimeId: "recording" }, appium = { runtimeId: "appium" };
         const f = repository([{ id: "one", recording, appium, name: "current", custom: 42 }]);
-        f.app.transitionRecording("owner", "android", "one", recording, null);
+        f.app.transitionRecording("owner", "android", "one", recording, null, { stateKey: "android", backend: "android-emulator", device: { id: "one", recording, appium, name: "current", custom: 42 } });
         expect(f.stored()).toEqual([{ id: "one", recording: null, appium, name: "current", custom: 42, updatedAt: "repository-time" }]);
         const replacement = { runtimeId: "next", port: 4723, updatedAt: "runtime-time" };
         f.app.transitionAppium("owner", "android", "one", appium, replacement);
         expect(f.stored()).toEqual([{ id: "one", recording: null, appium: replacement, appiumPort: 4723, name: "current", custom: 42, updatedAt: "runtime-time" }]);
+    });
+
+    it.each([
+        { incarnationId: "successor-device" }, { serial: "successor-serial" },
+        { leaseClaimId: "successor-claim" }, { leaseClaimNonce: "successor-nonce" },
+    ])("refuses an atomic copied-receipt publication against a replacement physical target: %j", changed => {
+        const pending = { runtimeId: "recording", active: false, artifactCopyPending: true, stoppedAt: "verified-stop", remotePath: "/sdcard/video.mp4", localPath: "/private/video.mp4" };
+        const captured = { id: "phone", backend: "android-device", serial: "serial", incarnationId: "captured-device", leaseClaimId: "claim", leaseClaimNonce: "nonce", status: "attached", recording: pending };
+        const successor = { ...captured, ...changed }, unrelated = { id: "other", status: "running" };
+        const f = repository([unrelated, successor]);
+        let locked = false;
+        const publish = f.ports.publish;
+        f.ports.withLock = (_owner, _state, operation) => {
+            locked = true;
+            try { return operation(); } finally { locked = false; }
+        };
+        f.ports.read = () => { expect(locked).toBe(true); return [unrelated, successor]; };
+        f.ports.publish = (...args) => { expect(locked).toBe(true); return publish(...args); };
+        expect(f.app.transitionRecording("owner", "android-device", "phone", pending, { ...pending, artifactCopied: true }, {
+            stateKey: "android-device", backend: "android-device", device: captured,
+        })).toEqual({ found: true, matched: false, currentRecording: pending, device: null });
+        expect(f.stored()).toEqual([unrelated, successor]);
+        expect(f.published()).toEqual([unrelated, successor]);
     });
 
     it("merges snapshot repair into current fields with repository clock precedence", () => {
