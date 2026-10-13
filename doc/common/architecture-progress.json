@@ -1561,7 +1561,7 @@
       "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json",
       "title": "브로커 상태·녹화·Appium 결과",
       "workStatus": "partial",
-      "remainingWork": "797f5613의 Appium HTTP5개 의미 포트 분리(제품5·테스트4·문서3)는 실제 Code/Security/Docs 리뷰와 Linux 빌드·strict(skipLibCheck=false)·lint·CLI·shipping·MCP59 및7개 전체 파일120PASS0FAIL0SKIP 통과. Native QA는 CRLF 인증 불일치 후 빌드·테스트 전 중단; 실제 native QA와 기존 recording 후보의 공동 qualification·로컬 통합이 남음.",
+      "remainingWork": "Main의 recording 복구·captured-target CAS·physical cleanup 보존과 Windows fixture를4개 선형 커밋으로 통합했다. 독립 코드·보안 리뷰와 Linux 코어183/선택26PASS, Windows 코어177/선택23PASS 및 strict 타입 검사 통과(Windows 기존9개 platform skip; 양쪽130개 이름 필터는 비검증). 자동 attestation에 따른 formal close는 별도. 기존797f5613 Appium native/공동 통합 중단과 semantic-result 잔여 범위는 유지하며 R17 완료 credit은 부여하지 않는다.",
       "completionCriteria": "상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at0cebcfe0: semantic owner resolution/device status, broker recording and Appium outcomes with finite native effects and outward HTTP presentation. Actual independent Code DEEP/Security/Docs and QA484 across13 whole files, genuine build1330, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Prior compiler/runtime failures corrected and retained. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -1632,6 +1632,163 @@
           },
           "committedCandidate": "recoverable Git object; raw evidence availability separate",
           "nativeGuestEvidence": "not checked; no VM inspection or native acceptance credit"
+        }
+      },
+      "latestContribution": {
+        "taskId": "TASK__linear-native-guard-integration-20261013",
+        "runId": "01a13511-494b-7bc8-be3f-125e70d61575",
+        "workspace": "Main feature/device-mcp-squashed",
+        "stage": "committed-independent-reviews-and-bounded-Linux-Windows-QA-PASS-formal-close-unaccepted",
+        "sourceChanged": true,
+        "sourceBase": "40c90ffbe26d906d1bedaa2b5b95a4d315a7522d",
+        "groupCompletionCredit": false,
+        "portableTypecheck": {
+          "sourceFiles": 1202,
+          "diagnostics": 0,
+          "checkJs": true,
+          "skipLibCheck": false,
+          "scope": "Process-local compiler host resolves the actual current workspace source; direct architecture tsc still fails on inaccessible @ccc links. No link or compiler-option repair."
+        },
+        "independentReviews": {
+          "code": "Actual fresh formal-only DEEP PASS atd39517edc285b4bd057e07a19339cb81b6d92183 after full final21-path review and five verified finding corrections across two remediation commits.",
+          "security": "Actual fresh PASS at37a17b454554544680764ef0a988c765316708e9; no further production changes planned."
+        },
+        "formalClose": "not-accepted; required ordered automatic receipt verification and task_close remain separate from actual review/QA PASS",
+        "integration": "four-Main-task-commits-present-no-group-completion-credit",
+        "evidenceRoot": "results/architecture-forward-13511/",
+        "scope": "Preserve pending/copy-complete Android recording media and exact captured state; fence each native stop/copy/remove against device generation and physical attachment lease. Both owner cleanup paths retain recovery evidence.",
+        "portableTests": {
+          "corePassed": 51,
+          "coreFailed": 0,
+          "coreSkipped": 0,
+          "coreWholeFiles": 3,
+          "nativeBindingPassed": 26,
+          "nativeBindingFailed": 0,
+          "nativeBindingFilteredSkips": 130,
+          "nativeBindingScope": "broker.commands recording/recordings/auxiliary metadata selection; remaining130 tests were filtered, not executed or accepted",
+          "measuredCommit": "37a17b454554544680764ef0a988c765316708e9"
+        },
+        "testFiles": 4,
+        "sourceCommits": [
+          "c8ab5df41b26cc210ded6b552cbe88bcab8bd198",
+          "e801890e3008595769bd55f0dc63abdfdbb400e0",
+          "37a17b454554544680764ef0a988c765316708e9",
+          "d39517edc285b4bd057e07a19339cb81b6d92183"
+        ],
+        "reviewRemediation": {
+          "sourceFindings": [
+            "Captured target identity must atomically fence recording publication.",
+            "Physical cleanup must retain attachment until artifact recovery completes."
+          ],
+          "testFindings": [
+            "Native Worker preload missing on Windows.",
+            "Fixture acquisition failed before cleanup protection."
+          ],
+          "additionalSourcePath": "packages/device-lab/src/device-lab/application/broker-owner-repository.ts",
+          "additionalTestPath": "src/__tests__/architecture/broker-owner-repository.test.ts"
+        },
+        "nativePreparation": {
+          "candidateHead": "d39517edc285b4bd057e07a19339cb81b6d92183",
+          "verifiedPacketFiles": 21,
+          "hashChecks": 83,
+          "mismatches": 0,
+          "facadeInputFiles": 6,
+          "facadeOutputFiles": 12,
+          "facadeDiagnostics": 0,
+          "testsExecuted": false,
+          "dependenciesChanged": false,
+          "manifestSha256": "c1b58470c1625414ce5ec41ef481c3adcfc348a4f255f2b1a3be246208af91bb",
+          "evidence": "results/architecture-forward-13511/native-prequalification/final-testdelta-d39517ed.json"
+        },
+        "implementationPaths": 7,
+        "fixtureCorrectionCheck": {
+          "commit": "d39517edc285b4bd057e07a19339cb81b6d92183",
+          "passed": 3,
+          "failed": 0,
+          "nameFiltered": 153,
+          "scope": "Only three physical-recording lease cases on Linux; Windows .cmd behavior still requires native QA.",
+          "strictDiagnostics": 0,
+          "strictSourceFiles": 1202,
+          "skipLibCheck": false
+        },
+        "freshQa": {
+          "status": "actual-independent-PASS",
+          "agent": "qa_cli_lock_recording_13511",
+          "candidateHead": "d39517edc285b4bd057e07a19339cb81b6d92183",
+          "verificationDepth": "test-suite",
+          "linuxCoreWholeFiles": 5,
+          "linuxCorePassed": 183,
+          "linuxCoreFailed": 0,
+          "linuxCoreSkipped": 0,
+          "linuxBrokerPassed": 26,
+          "linuxBrokerFailed": 0,
+          "linuxBrokerNameFiltered": 130,
+          "linuxStrictSourceFiles": 1202,
+          "linuxStrictDiagnostics": 0,
+          "checkJs": true,
+          "skipLibCheck": false,
+          "linuxLintSourcePaths": 6,
+          "requiredCommandExitCodes": "all0 captured numerically",
+          "evidence": "results/architecture-forward-13511/final-qa-d39517ed/linux-complete.json",
+          "scope": "Frozen21-path bounded contribution; both actual independent review PASS preceded this QA. Broader R14/R17, exhaustive source universe, joint authorization/broker E2E and shipping acceptance remain open."
+        },
+        "historicalNativePrequalification": {
+          "status": "historical-prequalification-FAIL-preserved-final-fixture-correction-awaits-fresh-QA",
+          "deviceId": "windows-vm-ccc-architecture-qa-20261012-ec46602c",
+          "incarnationId": "28509f2c1ae0973163bd177fcce54057",
+          "sourceDirectory": "C:\\ccc-qa\\lock-recording-13511-20261013\\source",
+          "evidence": "results/architecture-forward-13511/native-prequalification/observations.json",
+          "combinedCore": {
+            "passed": 156,
+            "failed": 1,
+            "platformSkipped": 6,
+            "failure": "Missing compiled facade in isolated source snapshot; six-file native facade closure subsequently emitted with standard TypeScript, zero diagnostics. No corrected tests run yet."
+          },
+          "brokerSelection": {
+            "passed": 19,
+            "failed": 1,
+            "platformSkipped": 3,
+            "nameFiltered": 130,
+            "failure": "Historical after-copy native extensionless ADB ENOENT retained. Late NODE_OPTIONS defect confirmed by primary Node source and isolated Node22 probe. Fixture corrected ind39517ed to owned Windows .cmd launcher through unchanged production runner; no corrected native tests run yet."
+          }
+        },
+        "nativeQa": {
+          "status": "actual-independent-qa-cli-PASS",
+          "candidateHead": "d39517edc285b4bd057e07a19339cb81b6d92183",
+          "deviceId": "windows-vm-ccc-architecture-qa-20261012-ec46602c",
+          "incarnationId": "28509f2c1ae0973163bd177fcce54057",
+          "sourceDirectory": "C:\\ccc-qa\\lock-recording-13511-20261013\\source",
+          "coreWholeFiles": 5,
+          "corePassed": 177,
+          "coreFailed": 0,
+          "corePlatformSkipped": 6,
+          "brokerPassed": 23,
+          "brokerFailed": 0,
+          "brokerPlatformSkipped": 3,
+          "brokerNameFiltered": 130,
+          "numericExitCodes": [
+            0,
+            0,
+            0
+          ],
+          "strictSourceFiles": 1199,
+          "strictDiagnostics": 0,
+          "checkJs": true,
+          "skipLibCheck": false,
+          "afterCopyLeaseCase": "PASS with one actual pull via production .cmd launcher; successor lease preserved; no removal",
+          "beforeAfterSourceHashes": 21,
+          "recordedHashChecks": 82,
+          "hashMismatches": 0,
+          "retainedFacadeInputs": 23,
+          "retainedFacadeOutputs": 12,
+          "evidence": "results/architecture-forward-13511/final-qa-d39517ed/native-captured/native-complete.json",
+          "archiveSha256": "7e64180b52fd21daa2545152b0d0add60657efb3b7871b19904aac0515eaf781",
+          "scope": "Actual native Windows Node/CIM/file/provider-worker/lease bindings with controlled Node fixtures; not real Android hardware or packaged CLI/shipping acceptance."
+        },
+        "verificationFrictionDisposition": {
+          "nativeDetachedLaunch": "confirmed bounded transport timeout while owned child completion succeeded; preserved evidence; one-off QA operational note, no new product framework",
+          "nestedDownload": "existing destination fence already handled by precreating only the owned artifact destination; no product change",
+          "lateWorkerPreload": "confirmed and captured by committed native .cmd fixture in d39517ed; no production Worker change"
         }
       }
     },
@@ -2330,7 +2487,7 @@
       "coveredOperationIds": [],
       "title": "Shared mutation-lock ownership policy",
       "workStatus": "in-progress",
-      "remainingWork": "공유 mutation lock 소유권 정책 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음.",
+      "remainingWork": "Main의 publicationTimes 의미 포트·native codec과 legacy PID-reuse 회귀를c8ab5df4에 통합했다. 결합 변경의 독립 코드·보안 리뷰와 Linux 코어5개 파일183PASS/Windows177PASS(6개 platform skip), strict 타입 검사 통과; native host/provider cold-sync·async·warm identity 경로도 통과. 자동 attestation에 따른 formal close 및 기존7147 인증·브로커 E2E 공동 FAIL은 별도로 남으며 R14 완료 credit은 부여하지 않는다.",
       "completionCriteria": "Unknown/live owners block bounded acquisition; only qualified dead PID, verified identity mismatch or different boot permits reclamation. Qualify exact-record release, successor protection and sync/async callers through current review, joint QA and delivery.",
       "confirmedAtCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
       "sourceTrace": {
@@ -2350,7 +2507,148 @@
       },
       "status": "Implementation and independent review complete;7147 Linux51PASS and both native package cases PASS. Joint QA FAIL from native auth rotation and broker E2E; integration and completion credit pending.",
       "taskId": "TASK__architecture-final-source-remediation",
-      "currentQualificationTask": "TASK__windows-native-termination-observation-budget"
+      "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
+      "latestContribution": {
+        "taskId": "TASK__linear-native-guard-integration-20261013",
+        "runId": "01a13511-494b-7bc8-be3f-125e70d61575",
+        "workspace": "Main feature/device-mcp-squashed",
+        "stage": "committed-independent-reviews-and-bounded-Linux-Windows-QA-PASS-formal-close-unaccepted",
+        "sourceChanged": true,
+        "sourceBase": "40c90ffbe26d906d1bedaa2b5b95a4d315a7522d",
+        "groupCompletionCredit": false,
+        "portableTypecheck": {
+          "sourceFiles": 1202,
+          "diagnostics": 0,
+          "checkJs": true,
+          "skipLibCheck": false,
+          "scope": "Process-local compiler host resolves the actual current workspace source; direct architecture tsc still fails on inaccessible @ccc links. No link or compiler-option repair."
+        },
+        "independentReviews": {
+          "code": "Actual fresh formal-only DEEP PASS atd39517edc285b4bd057e07a19339cb81b6d92183 after full final21-path review and five verified finding corrections across two remediation commits.",
+          "security": "Actual fresh PASS at37a17b454554544680764ef0a988c765316708e9; no further production changes planned."
+        },
+        "formalClose": "not-accepted; required ordered automatic receipt verification and task_close remain separate from actual review/QA PASS",
+        "integration": "four-Main-task-commits-present-no-group-completion-credit",
+        "evidenceRoot": "results/architecture-forward-13511/",
+        "scope": "Normalize lock publication observations through one finite fact port and checked native codec; preserve existing legacy PID-reuse recovery, strict one-second comparison, timestamp compatibility and bounded-query behavior.",
+        "portableTests": {
+          "passed": 132,
+          "failed": 0,
+          "skipped": 0,
+          "wholeFiles": 2,
+          "measuredCommit": "37a17b454554544680764ef0a988c765316708e9"
+        },
+        "testFiles": 1,
+        "sourceCommits": [
+          "c8ab5df41b26cc210ded6b552cbe88bcab8bd198",
+          "e801890e3008595769bd55f0dc63abdfdbb400e0",
+          "37a17b454554544680764ef0a988c765316708e9",
+          "d39517edc285b4bd057e07a19339cb81b6d92183"
+        ],
+        "nativePreparation": {
+          "candidateHead": "d39517edc285b4bd057e07a19339cb81b6d92183",
+          "verifiedPacketFiles": 21,
+          "hashChecks": 83,
+          "mismatches": 0,
+          "facadeInputFiles": 6,
+          "facadeOutputFiles": 12,
+          "facadeDiagnostics": 0,
+          "testsExecuted": false,
+          "dependenciesChanged": false,
+          "manifestSha256": "c1b58470c1625414ce5ec41ef481c3adcfc348a4f255f2b1a3be246208af91bb",
+          "evidence": "results/architecture-forward-13511/native-prequalification/final-testdelta-d39517ed.json"
+        },
+        "implementationPaths": 8,
+        "fixtureCorrectionCheck": {
+          "commit": "d39517edc285b4bd057e07a19339cb81b6d92183",
+          "passed": 3,
+          "failed": 0,
+          "nameFiltered": 153,
+          "scope": "Only three physical-recording lease cases on Linux; Windows .cmd behavior still requires native QA.",
+          "strictDiagnostics": 0,
+          "strictSourceFiles": 1202,
+          "skipLibCheck": false
+        },
+        "freshQa": {
+          "status": "actual-independent-PASS",
+          "agent": "qa_cli_lock_recording_13511",
+          "candidateHead": "d39517edc285b4bd057e07a19339cb81b6d92183",
+          "verificationDepth": "test-suite",
+          "linuxCoreWholeFiles": 5,
+          "linuxCorePassed": 183,
+          "linuxCoreFailed": 0,
+          "linuxCoreSkipped": 0,
+          "linuxBrokerPassed": 26,
+          "linuxBrokerFailed": 0,
+          "linuxBrokerNameFiltered": 130,
+          "linuxStrictSourceFiles": 1202,
+          "linuxStrictDiagnostics": 0,
+          "checkJs": true,
+          "skipLibCheck": false,
+          "linuxLintSourcePaths": 6,
+          "requiredCommandExitCodes": "all0 captured numerically",
+          "evidence": "results/architecture-forward-13511/final-qa-d39517ed/linux-complete.json",
+          "scope": "Frozen21-path bounded contribution; both actual independent review PASS preceded this QA. Broader R14/R17, exhaustive source universe, joint authorization/broker E2E and shipping acceptance remain open."
+        },
+        "historicalNativePrequalification": {
+          "status": "historical-prequalification-FAIL-preserved-final-fixture-correction-awaits-fresh-QA",
+          "deviceId": "windows-vm-ccc-architecture-qa-20261012-ec46602c",
+          "incarnationId": "28509f2c1ae0973163bd177fcce54057",
+          "sourceDirectory": "C:\\ccc-qa\\lock-recording-13511-20261013\\source",
+          "evidence": "results/architecture-forward-13511/native-prequalification/observations.json",
+          "combinedCore": {
+            "passed": 156,
+            "failed": 1,
+            "platformSkipped": 6,
+            "failure": "Missing compiled facade in isolated source snapshot; six-file native facade closure subsequently emitted with standard TypeScript, zero diagnostics. No corrected tests run yet."
+          },
+          "brokerSelection": {
+            "passed": 19,
+            "failed": 1,
+            "platformSkipped": 3,
+            "nameFiltered": 130,
+            "failure": "Historical after-copy native extensionless ADB ENOENT retained. Late NODE_OPTIONS defect confirmed by primary Node source and isolated Node22 probe. Fixture corrected ind39517ed to owned Windows .cmd launcher through unchanged production runner; no corrected native tests run yet."
+          }
+        },
+        "nativeQa": {
+          "status": "actual-independent-qa-cli-PASS",
+          "candidateHead": "d39517edc285b4bd057e07a19339cb81b6d92183",
+          "deviceId": "windows-vm-ccc-architecture-qa-20261012-ec46602c",
+          "incarnationId": "28509f2c1ae0973163bd177fcce54057",
+          "sourceDirectory": "C:\\ccc-qa\\lock-recording-13511-20261013\\source",
+          "coreWholeFiles": 5,
+          "corePassed": 177,
+          "coreFailed": 0,
+          "corePlatformSkipped": 6,
+          "brokerPassed": 23,
+          "brokerFailed": 0,
+          "brokerPlatformSkipped": 3,
+          "brokerNameFiltered": 130,
+          "numericExitCodes": [
+            0,
+            0,
+            0
+          ],
+          "strictSourceFiles": 1199,
+          "strictDiagnostics": 0,
+          "checkJs": true,
+          "skipLibCheck": false,
+          "afterCopyLeaseCase": "PASS with one actual pull via production .cmd launcher; successor lease preserved; no removal",
+          "beforeAfterSourceHashes": 21,
+          "recordedHashChecks": 82,
+          "hashMismatches": 0,
+          "retainedFacadeInputs": 23,
+          "retainedFacadeOutputs": 12,
+          "evidence": "results/architecture-forward-13511/final-qa-d39517ed/native-captured/native-complete.json",
+          "archiveSha256": "7e64180b52fd21daa2545152b0d0add60657efb3b7871b19904aac0515eaf781",
+          "scope": "Actual native Windows Node/CIM/file/provider-worker/lease bindings with controlled Node fixtures; not real Android hardware or packaged CLI/shipping acceptance."
+        },
+        "verificationFrictionDisposition": {
+          "nativeDetachedLaunch": "confirmed bounded transport timeout while owned child completion succeeded; preserved evidence; one-off QA operational note, no new product framework",
+          "nestedDownload": "existing destination fence already handled by precreating only the owned artifact destination; no product change",
+          "lateWorkerPreload": "confirmed and captured by committed native .cmd fixture in d39517ed; no production Worker change"
+        }
+      }
     },
     {
       "id": "release-workspace-version-synchronization-structural",
@@ -2976,6 +3274,21 @@
       "distDisposition": "1020 qualified files coherently copied;419 old files backed up;97 user changes and staging preserved.",
       "timeoutDiagnosis": "HostConfig.Tmpfs inspection and single asynchronous session acquisition already existed in source; previous Main dist matched user legacy stack. Host PID29728 identity read unavailable; holder phase/liveness and timeout root cause remain unverified.",
       "formalDisposition": "Empty automatic receipts parked; no global native or structural acceptance credit."
+    },
+    "currentContributionQualification": {
+      "taskId": "TASK__linear-native-guard-integration-20261013",
+      "runId": "01a13511-494b-7bc8-be3f-125e70d61575",
+      "stage": "committed-independent-reviews-and-bounded-Linux-Windows-QA-PASS-formal-close-unaccepted",
+      "groups": [
+        "R14",
+        "R17"
+      ],
+      "completionCredit": false,
+      "scope": "Bounded new Main lock/recording contribution; no broad migration/native/reliability/source-universe acceptance. Historical7147 joint FAIL and archived Appium/QEMU/release candidates remain separate debt.",
+      "evidenceRoot": "results/architecture-forward-13511/",
+      "candidateHead": "d39517edc285b4bd057e07a19339cb81b6d92183",
+      "verificationDepth": "test-suite",
+      "formalClose": "not-accepted; actual ordered automatic receipt gate remains required"
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
