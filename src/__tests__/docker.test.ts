@@ -840,7 +840,7 @@ describe("docker.ts module exports", () => {
             expect(spawnSyncMock).toHaveBeenCalledWith(
                 "docker",
                 ["ps", "-q", "-f", "name=^my-container$"],
-                { encoding: "utf-8" },
+                { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL" },
             );
         });
 
@@ -857,7 +857,7 @@ describe("docker.ts module exports", () => {
             expect(spawnSyncMock).toHaveBeenCalledWith(
                 "docker",
                 ["ps", "-q", "-f", `id=${containerId}`],
-                { encoding: "utf-8" },
+                { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL" },
             );
         });
 
@@ -1857,13 +1857,13 @@ describe("docker.ts module exports", () => {
             mockExit.mockRestore();
         });
 
-        it("calls process.exit(1) when Docker is not running", () => {
+        it("throws through cleanup when Docker is not running", () => {
             spawnSyncMock.mockReturnValue(makeResult(1));
             const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
                 throw new Error("process.exit");
             });
-            expect(() => ensureDockerRunning()).toThrow("process.exit");
-            expect(mockExit).toHaveBeenCalledWith(1);
+            expect(() => ensureDockerRunning()).toThrow("docker is not running.");
+            expect(mockExit).not.toHaveBeenCalled();
             mockExit.mockRestore();
         });
     });
@@ -6808,14 +6808,14 @@ describe("docker.ts module exports", () => {
             expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
 
-        it("calls process.exit(1) when Docker is not running", () => {
+        it("throws through cleanup when Docker is not running", () => {
             spawnSyncMock.mockReturnValueOnce(makeResult(1)); // docker info -> fail
 
             const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
                 throw new Error("process.exit");
             });
-            expect(() => stopProjectContainer(projectPath)).toThrow("process.exit");
-            expect(mockExit).toHaveBeenCalledWith(1);
+            expect(() => stopProjectContainer(projectPath)).toThrow("docker is not running.");
+            expect(mockExit).not.toHaveBeenCalled();
             mockExit.mockRestore();
         });
     });
@@ -6907,14 +6907,14 @@ describe("docker.ts module exports", () => {
             expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
 
-        it("calls process.exit(1) when Docker is not running", () => {
+        it("throws through cleanup when Docker is not running", () => {
             spawnSyncMock.mockReturnValueOnce(makeResult(1)); // docker info -> fail
 
             const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
                 throw new Error("process.exit");
             });
-            expect(() => removeProjectContainer(projectPath)).toThrow("process.exit");
-            expect(mockExit).toHaveBeenCalledWith(1);
+            expect(() => removeProjectContainer(projectPath)).toThrow("docker is not running.");
+            expect(mockExit).not.toHaveBeenCalled();
             mockExit.mockRestore();
         });
     });

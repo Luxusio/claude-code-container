@@ -45,6 +45,7 @@ function windowsProcessStartToken(pid: number): string | null {
     const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf8",
         timeout: 5000,
+        killSignal: "SIGKILL",
         windowsHide: true,
     });
     const value = result.status === 0 ? result.stdout?.trim() : "";
@@ -56,6 +57,7 @@ function psProcessStartToken(pid: number, platform: NodeJS.Platform): string | n
     const result = spawnSync(executable, ["-p", String(pid), "-o", "lstart="], {
         encoding: "utf8",
         timeout: 5000,
+        killSignal: "SIGKILL",
         windowsHide: true,
     });
     const value = result.status === 0 ? result.stdout?.trim() : "";
@@ -95,6 +97,7 @@ function windowsProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | nul
     const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf8",
         timeout: 5000,
+        killSignal: "SIGKILL",
         windowsHide: true,
     });
     if (result.status !== 0 || !result.stdout?.trim()) return null;
@@ -133,6 +136,7 @@ function windowsProcessIdentityAsync(pid: number): Promise<DeviceRuntimeProcessI
         execFile(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)]), {
             encoding: "utf8",
             timeout: 5000,
+            killSignal: "SIGKILL",
             windowsHide: true,
             maxBuffer: 64 * 1024,
         }, (error, stdout) => {
@@ -143,7 +147,7 @@ function windowsProcessIdentityAsync(pid: number): Promise<DeviceRuntimeProcessI
 
 function psProcessIdentity(pid: number, platform: NodeJS.Platform): DeviceRuntimeProcessIdentity | null {
     const executable = platform === "darwin" ? "/bin/ps" : "ps";
-    const command = spawnSync(executable, ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout: 5000, windowsHide: true });
+    const command = spawnSync(executable, ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", windowsHide: true });
     const commandLine = command.status === 0 ? command.stdout?.trim() : "";
     return identity(pid, psProcessStartToken(pid, platform), commandLine || null);
 }
@@ -153,6 +157,7 @@ function execFileText(executable: string, args: string[]): Promise<string> {
         execFile(executable, args, {
             encoding: "utf8",
             timeout: 5000,
+            killSignal: "SIGKILL",
             windowsHide: true,
             maxBuffer: 64 * 1024,
         }, (error, stdout) => resolve(error ? "" : stdout?.trim() || ""));

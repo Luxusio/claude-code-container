@@ -112,12 +112,16 @@ describe("device-lab shared mutation lock", () => {
             const cold = withSharedMutationLock(file, record);
             assert.equal(existsSync(file), false, "cold sync claim must release its token");
             if (process.platform === "win32") {
-                assert.equal(cold.processIdentityStatus, "unavailable", "cold Windows sync claim must remain unavailable");
-                assert.equal(cold.processIdentity, undefined);
+                assert.equal(cold.processIdentityStatus, "recorded", "cold Windows sync claim must record native identity");
+                assert.ok(cold.processIdentity, "Native Windows cold synchronous process identity is unavailable");
+                assert.equal(cold.processIdentity.pid, process.pid);
+                assert.ok(cold.processIdentity.startToken.length > 0);
+                assert.match(cold.processIdentity.commandHash, /^[a-f0-9]{64}$/);
             }
             const captured = await withSharedMutationLockAsync(file, record, { waitMs: 15000 });
             assert.equal(existsSync(file), false, "async claim must release its token");
             const identity = captured.processIdentity;
+            if (process.platform === "win32") assert.deepEqual(identity, cold.processIdentity, "async claim must retain cold synchronous native identity");
             assert.ok(identity, "Native " + process.platform + " async process identity is unavailable; cold/warm qualification cannot pass");
             assert.equal(identity.pid, process.pid);
             assert.equal(typeof identity.startToken, "string");

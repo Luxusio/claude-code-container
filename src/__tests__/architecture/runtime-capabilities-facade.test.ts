@@ -31,12 +31,15 @@ describe("runtime capability native facade", () => {
         const raw = result(0, "Docker 27.1.1"); native.spawn.mockReturnValue(raw);
         const observations = createNativeRuntimeCapabilitiesObservations(() => null);
         expect(observations.observeVersion("docker")).toBe("27.1.1");
-        expect(native.trace).toEqual([["spawn", "docker", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }]]);
+        expect(native.trace).toEqual([["spawn", "docker", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" }]]);
         observations.observeDockerOperatingSystem(); observations.observePodmanRemote(); observations.observeDockerSecurityOptions(); observations.observePodmanRootless();
         expect(native.trace.slice(1).map(call => call.slice(1, 3))).toEqual([
             ["docker", ["info", "--format", "{{.OperatingSystem}}"]], ["podman", ["info", "--format", "{{.Host.Remote}}"]],
             ["docker", ["info", "--format", "{{json .SecurityOptions}}"]], ["podman", ["info", "--format", "{{.Host.Security.Rootless}}"]],
         ]);
+        for (const call of native.trace) {
+            expect(call[3]).toEqual({ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" });
+        }
     });
     it.each([
         [0, "Docker version 27.1.1", "27.1.1"], [0, "podman version 5.2", "5.2"],

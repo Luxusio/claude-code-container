@@ -99,6 +99,8 @@ function isRuntimeOnPath(name: RuntimeName): boolean {
     const result = spawnSync(name, ["--version"], {
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+        killSignal: "SIGKILL",
     });
     return result.status === 0;
 }
@@ -125,7 +127,7 @@ const dockerEndpoint = createDockerEndpointResolver({
         const result = spawnSync(
             "docker",
             args,
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
         );
         if (result.status !== 0) return null;
         return (result.stdout ?? "").trim() || null;
@@ -325,7 +327,7 @@ function getCurrentContainerMounts(): Array<{ source: string; destination: strin
     const result = spawnSync(
         "docker",
         ["inspect", name, "--format", "{{json .Mounts}}"],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (result.status !== 0) return _currentContainerMounts;
 

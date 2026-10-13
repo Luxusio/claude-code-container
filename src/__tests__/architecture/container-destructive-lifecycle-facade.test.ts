@@ -76,8 +76,8 @@ describe("native destructive lifecycle composition", () => {
         native.runtime.mockReturnValueOnce("docker").mockReturnValueOnce("podman");
         const f = fixture(); expect(f.lifecycle.remove("input")).toBeUndefined();
         expect(native.spawn.mock.calls).toEqual([
-            ["docker", ["stop", id], { stdio: "inherit" }],
-            ["podman", ["rm", id], { stdio: "inherit" }],
+            ["docker", ["stop", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }],
+            ["podman", ["rm", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }],
         ]);
         expect(native.runtime).toHaveBeenCalledTimes(2);
         expect(native.order).toEqual(["log:Stopping container...", "log:Container stopped", "log:Removing container...", "log:Container removed"]);
@@ -147,7 +147,7 @@ describe("native destructive lifecycle composition", () => {
     it("propagates presentation failure after stop without removal or rollback", () => {
         vi.mocked(console.log).mockImplementation(message => { if (message === "Container stopped") throw new Error("log-failed"); });
         const f = fixture(); expect(() => f.lifecycle.remove("input")).toThrow("log-failed");
-        expect(native.spawn.mock.calls).toEqual([["docker", ["stop", id], { stdio: "inherit" }]]);
+        expect(native.spawn.mock.calls).toEqual([["docker", ["stop", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }]]);
     });
 });
 
@@ -184,8 +184,8 @@ describe("public Docker destructive facade through actual application and compos
         ]);
         expect(native.cleanup).toHaveBeenCalledExactlyOnceWith(resolve(root), 5000, undefined);
         expect(native.spawn.mock.calls.filter(call => ["stop", "rm"].includes(call[1][0]))).toEqual([
-            ["docker", ["stop", id], { stdio: "inherit" }],
-            ...(operation === "remove" ? [["docker", ["rm", id], { stdio: "inherit" }]] : []),
+            ["docker", ["stop", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }],
+            ...(operation === "remove" ? [["docker", ["rm", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }]] : []),
         ]);
     });
 
@@ -213,6 +213,6 @@ describe("public Docker destructive facade through actual application and compos
         expect(removeProjectContainer(root)).toBeUndefined();
         expect(console.error).toHaveBeenCalledExactlyOnceWith("[ccc] device cleanup failed before container stop: cleanup-failed");
         expect(console.log).not.toHaveBeenCalledWith("Container stopped");
-        expect(native.spawn.mock.calls.filter(call => ["stop", "rm"].includes(call[1][0]))).toEqual([["docker", ["rm", id], { stdio: "inherit" }]]);
+        expect(native.spawn.mock.calls.filter(call => ["stop", "rm"].includes(call[1][0]))).toEqual([["docker", ["rm", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }]]);
     });
 });

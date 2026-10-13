@@ -21,7 +21,7 @@ export function createNativeRuntimeCapabilitiesObservations(
         readPlatform: () => process.platform,
         observeVersion: runtime => {
             const result = spawnSync(runtime, ["--version"], {
-                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL",
             });
             if (result.status !== 0) return null;
             const match = (result.stdout ?? "").toString().match(/\b(\d+\.\d+(?:\.\d+)?)/);
@@ -29,7 +29,7 @@ export function createNativeRuntimeCapabilitiesObservations(
         },
         observeDockerOperatingSystem: () => {
             const result = spawnSync("docker", ["info", "--format", "{{.OperatingSystem}}"], {
-                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL",
             });
             const operatingSystem = result.status === 0 ? (result.stdout ?? "").trim().toLowerCase() : "";
             if (!operatingSystem) return "unavailable";
@@ -38,19 +38,19 @@ export function createNativeRuntimeCapabilitiesObservations(
         readSelectedDockerEndpoint,
         observePodmanRemote: () => {
             const result = spawnSync("podman", ["info", "--format", "{{.Host.Remote}}"], {
-                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL",
             });
             return result.status === 0 && (result.stdout ?? "").trim().toLowerCase() === "true";
         },
         observeDockerSecurityOptions: () => {
             const result = spawnSync("docker", ["info", "--format", "{{json .SecurityOptions}}"], {
-                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL",
             });
             return result.status === 0 && decodeDockerRootlessOptions((result.stdout ?? "").trim());
         },
         observePodmanRootless: () => {
             const result = spawnSync("podman", ["info", "--format", "{{.Host.Security.Rootless}}"], {
-                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+                encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL",
             });
             if (result.status !== 0) return null;
             const rootless = (result.stdout ?? "").trim().toLowerCase();

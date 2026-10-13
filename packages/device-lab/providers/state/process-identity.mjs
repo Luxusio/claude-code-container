@@ -37,6 +37,7 @@ function windowsProcessIdentity(pid) {
     const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf-8",
         timeout: 5000,
+        killSignal: "SIGKILL",
         windowsHide: true,
     });
     if (result.status !== 0 || !result.stdout?.trim()) return null;
@@ -66,6 +67,7 @@ function windowsProcessIdentityAsync(pid) {
         execFile(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)]), {
             encoding: "utf-8",
             timeout: 5000,
+            killSignal: "SIGKILL",
             windowsHide: true,
             maxBuffer: 64 * 1024,
         }, (error, stdout) => {
@@ -76,8 +78,8 @@ function windowsProcessIdentityAsync(pid) {
 
 function psProcessIdentity(pid) {
     const executable = process.platform === "darwin" ? "/bin/ps" : "ps";
-    const started = spawnSync(executable, ["-p", String(pid), "-o", "lstart="], { encoding: "utf-8", timeout: 5000, windowsHide: true });
-    const command = spawnSync(executable, ["-p", String(pid), "-o", "command="], { encoding: "utf-8", timeout: 5000, windowsHide: true });
+    const started = spawnSync(executable, ["-p", String(pid), "-o", "lstart="], { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL", windowsHide: true });
+    const command = spawnSync(executable, ["-p", String(pid), "-o", "command="], { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL", windowsHide: true });
     const startToken = started.status === 0 ? started.stdout?.trim() : "";
     const commandLine = command.status === 0 ? command.stdout?.trim() : "";
     return processIdentity(pid, startToken ? `ps:${startToken}` : null, commandLine);
@@ -88,6 +90,7 @@ function execFileText(executable, args) {
         execFile(executable, args, {
             encoding: "utf-8",
             timeout: 5000,
+            killSignal: "SIGKILL",
             windowsHide: true,
             maxBuffer: 64 * 1024,
         }, (error, stdout) => resolve(error ? "" : stdout?.trim() || ""));

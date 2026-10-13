@@ -13,11 +13,11 @@ export function createNativeContainerDestructiveLifecycle(
     return createContainerDestructiveLifecycle({
         ...ports,
         stop: (id) => {
-            const stopped = spawnSync(runtimeCli(), ["stop", id], { stdio: "inherit" });
+            const stopped = spawnSync(runtimeCli(), ["stop", id], { stdio: "inherit", timeout: 30_000, killSignal: "SIGKILL" });
             if (stopped.error || stopped.status !== 0) throw new Error("Failed to stop container.");
         },
         remove: (id) => {
-            const removed = spawnSync(runtimeCli(), ["rm", id], { stdio: "inherit" });
+            const removed = spawnSync(runtimeCli(), ["rm", id], { stdio: "inherit", timeout: 30_000, killSignal: "SIGKILL" });
             if (removed.error || removed.status !== 0) throw new Error("Failed to remove container.");
         },
         reportNotFound: () => { console.log("Container not found"); },

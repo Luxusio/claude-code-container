@@ -292,7 +292,7 @@ function combineLiveSourceProof(
 }
 
 export function readDirectoryMountMarker(containerId: string, markerPath: string) {
-    const options = { encoding: "utf-8" as const, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], timeout: 5000 };
+    const options = { encoding: "utf-8" as const, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" as const };
     const result = spawnSync(runtimeCli(), ["exec", containerId, "cat", markerPath], options);
     const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
     if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
@@ -363,6 +363,7 @@ function proveContainerSeesCurrentBindSource(
                     stdio: ["pipe", "pipe", "pipe"],
                     maxBuffer: 1024 * 1024 + 1,
                     timeout: 5000,
+                    killSignal: "SIGKILL",
                 },
             );
             const engineFailure = result.status !== 0 ? containerEngineFailureHint(Buffer.isBuffer(result.stderr) ? result.stderr.toString("utf8") : result.stderr) : undefined;
@@ -530,6 +531,7 @@ function containerManagerSocketTargetsCurrentDockerDaemon(containerId: string): 
         encoding: "utf-8" as const,
         stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
         timeout: 10_000,
+        killSignal: "SIGKILL" as const,
         windowsHide: true,
     };
     const hostIdentity = dockerDaemonIdentity(spawnSync(
@@ -968,7 +970,7 @@ export function findManagedProjectNamespaceCollision(
     const listed = spawnSync(
         runtimeCli(),
         ["ps", "-aq", "--no-trunc", "--filter", "label=ccc.managed=true"],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (listed.error || listed.status !== 0) {
         throw new Error(
@@ -1220,6 +1222,8 @@ export function isDockerRunning(): boolean {
     const result = spawnSync(runtimeCli(), ["info"], {
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
+        timeout: 10_000,
+        killSignal: "SIGKILL",
     });
     if (result.status !== 0 && process.env.DEBUG) {
         const stderr = (result.stderr ?? "").toString().trim();
@@ -1245,7 +1249,7 @@ export function ensureDockerRunning(): void {
 
     console.error(`Error: ${result.runtime} is not running.`);
     console.error(CONTAINER_RUNTIME_REPAIR_HINTS[result.repairCategory]);
-    process.exit(1);
+    throw new Error(`${result.runtime} is not running.`);
 }
 
 export function isContainerRunning(
@@ -1259,7 +1263,7 @@ export function isContainerRunning(
     const result = spawnSync(
         runtimeCli(),
         ["ps", "-q", "-f", containerFilter],
-        { encoding: "utf-8" },
+        { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL" },
     );
     return (result.stdout ?? "").trim().length > 0;
 }
@@ -1274,7 +1278,7 @@ export function getContainerIdentity(containerName: string): ContainerIdentity |
     const result = spawnSync(
         runtimeCli(),
         ["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}"],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (result.error || result.status !== 0) return null;
     const [containerId, running, ...extra] = (result.stdout ?? "").trim().split("|");
@@ -1358,7 +1362,7 @@ export function canExecContainer(containerName: string, timeoutMs = CONTAINER_EX
     const result = spawnSync(
         runtimeCli(),
         ["exec", containerName, "true"],
-        { stdio: ["ignore", "ignore", "ignore"], timeout: Math.max(1, timeoutMs) },
+        { stdio: ["ignore", "ignore", "ignore"], timeout: Math.max(1, timeoutMs), killSignal: "SIGKILL" },
     );
     return result.status === 0;
 }
@@ -1379,7 +1383,7 @@ export function isContainerExists(containerName: string): boolean {
     const result = spawnSync(
         runtimeCli(),
         ["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
-        { encoding: "utf-8" },
+        { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL" },
     );
     // Unknown must not bypass contract validation or authorize creation of a
     // same-name container. Callers treat it as potentially existing and use
@@ -1392,7 +1396,7 @@ function getListedContainerId(containerName: string): { known: boolean; containe
     const result = spawnSync(
         runtimeCli(),
         ["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (result.error || result.status !== 0) return { known: false, containerId: null };
     const ids = (result.stdout ?? "").trim().split(/\s+/).filter(Boolean);
@@ -1482,7 +1486,7 @@ export function getCurrentImageId(): string | null {
     const result = spawnSync(
         runtimeCli(),
         ["inspect", IMAGE_NAME, "--format", "{{.Id}}"],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (result.status !== 0) return null;
     return (result.stdout ?? "").trim() || null;
@@ -1660,7 +1664,7 @@ function inspectContainerJsonOnce(containerId: string): Record<string, unknown> 
     const result = spawnSync(
         runtimeCli(),
         ["inspect", "-f", "{{json .}}", containerId],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
     if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);

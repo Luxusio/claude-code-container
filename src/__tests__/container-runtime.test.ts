@@ -240,6 +240,9 @@ describe("container-runtime", () => {
                 "-v",
                 "/run/desktop/mnt/host/c/Users/TestUser/.ccc/codex/config.toml:/tmp/config.toml",
             ]);
+            expect(spawnSyncMock).toHaveBeenCalledWith("docker",
+                ["inspect", "ccc-parent", "--format", "{{json .Mounts}}"],
+                expect.objectContaining({ timeout: 5000, killSignal: "SIGKILL" }));
         });
 
         it("keeps current-container paths unchanged for nested local podman", () => {
@@ -341,7 +344,7 @@ describe("container-runtime", () => {
                 .mockReturnValueOnce(result(0, "ssh://remote@example.test\n"))
                 .mockReturnValue(result(1));
             expect(getRuntimeInfo().dockerDesktop).toBe(false);
-            expect(spawnSyncMock).toHaveBeenCalledWith("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}", "--", "selected-remote"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+            expect(spawnSyncMock).toHaveBeenCalledWith("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}", "--", "selected-remote"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" });
         });
         it("reflects the cached remote flag", () => {
             _setRuntimeInfoForTest({ runtime: "docker", remote: true });

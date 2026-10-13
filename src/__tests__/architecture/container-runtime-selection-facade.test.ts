@@ -16,7 +16,7 @@ const { spawnSync: nativeSpawnSync } = await vi.importActual<typeof import("node
 const runtime = await import("../../container-runtime.js");
 const originalEnv = { ...process.env };
 const versionArgs = ["--version"];
-const probeOptions = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] };
+const probeOptions = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" };
 const noRuntimeError = "No container runtime found. Install podman or docker and ensure the CLI is on PATH.";
 
 function response(status: number | null, stdout = ""): SpawnSyncReturns<string> {

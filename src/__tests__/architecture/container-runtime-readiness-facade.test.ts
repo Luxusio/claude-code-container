@@ -13,7 +13,7 @@ vi.mock("../../container-runtime.js", async original => ({
 
 // Both the public Docker facade and its application policy remain real.
 const docker = await import("../../docker.js");
-const options = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] };
+const options = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000, killSignal: "SIGKILL" };
 const cases: Array<[RuntimeName, string, string]> = [
     ["docker", "docker-desktop", "Please start Docker Desktop and try again."],
     ["docker", "docker-native", "Please start the docker service (e.g. `sudo systemctl start docker`) and try again."],
@@ -97,10 +97,11 @@ describe("container runtime readiness public facade", () => {
         assertOnlyInfoProbe();
     });
 
-    it.each(cases)("prints exact %s/%s guidance and exits once without service commands", (runtime, flavor, hint) => {
+    it.each(cases)("prints exact %s/%s guidance and throws so callers can release guards", (runtime, flavor, hint) => {
         const f = fixture(runtime, flavor);
-        expect(docker.ensureDockerRunning()).toBeUndefined();
-        expect(f.trace).toEqual(["cli", "probe", "info", `Error: ${runtime} is not running.`, hint, "exit:1"]);
+        expect(() => docker.ensureDockerRunning()).toThrow(`${runtime} is not running.`);
+        expect(process.exit).not.toHaveBeenCalled();
+        expect(f.trace).toEqual(["cli", "probe", "info", `Error: ${runtime} is not running.`, hint]);
         expect(native.info).toHaveBeenCalledTimes(1);
         assertOnlyInfoProbe();
     });
@@ -113,11 +114,12 @@ describe("container runtime readiness public facade", () => {
     ] as const)("preserves DEBUG %s with stderr %s before refusal", (debug, stderr, visible) => {
         const f = fixture("docker", "docker-native", 1, stderr);
         vi.stubEnv("DEBUG", debug);
-        docker.ensureDockerRunning();
+        expect(() => docker.ensureDockerRunning()).toThrow("docker is not running.");
+        expect(process.exit).not.toHaveBeenCalled();
         expect(f.trace).toEqual([
             "cli", "probe",
             ...(visible ? ["cli", "[ccc:debug] fixture-runtime info failed: native failure"] : []),
-            "info", "Error: docker is not running.", cases[1][2], "exit:1",
+            "info", "Error: docker is not running.", cases[1][2],
         ]);
         assertOnlyInfoProbe();
     });
@@ -125,7 +127,7 @@ describe("container runtime readiness public facade", () => {
 });
 
 describe("container runtime readiness facade failure behavior", () => {
-    const steps = ["cli", "probe", "info", "report:1", "report:2", "exit"];
+    const steps = ["cli", "probe", "info", "report:1", "report:2"];
 
     it.each(steps)("preserves Error and non-Error throws at %s and stops later effects", step => {
         for (const failure of [new Error("native failure"), { failure: step }]) {

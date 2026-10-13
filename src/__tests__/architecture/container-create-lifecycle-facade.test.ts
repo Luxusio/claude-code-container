@@ -520,7 +520,7 @@ describe("public Docker creation cutover", () => {
         expect(run?.[1]).toContain(`ccc.project.path=${project}`);
         expect(native.spawn.mock.calls.some(call => call[1][0] === "rm")).toBe(false);
         expect(native.spawn.mock.calls.filter(call => call[1].includes("{{.Id}}"))).toEqual([
-            ["captured-runtime", ["inspect", IMAGE_NAME, "--format", "{{.Id}}"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }],
+            ["captured-runtime", ["inspect", IMAGE_NAME, "--format", "{{.Id}}"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" }],
         ]);
         expect(console.log).toHaveBeenCalledWith("Creating container...");
     });

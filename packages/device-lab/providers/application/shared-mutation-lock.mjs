@@ -25,9 +25,10 @@ export function createSharedMutationLock(ports) {
         try { return await operation(); }
         finally { const next = waiters.shift(); if (next) next(); else active--; }
     }
-    function currentIdentity() {
+    /** @param {boolean} allowWindowsProbe */
+    function currentIdentity(allowWindowsProbe) {
         if (ownIdentity) return ownIdentity;
-        if (ports.platform() === 'win32') return null;
+        if (ports.platform() === 'win32' && !allowWindowsProbe) return null;
         if (ownIdentity === undefined || ownIdentity === null && ports.now() >= ownRetryAt) {
             ownIdentity = ports.identitySync(ports.pid());
             ownRetryAt = ownIdentity ? 0 : ports.now()+60000;
@@ -38,7 +39,8 @@ export function createSharedMutationLock(ports) {
         if (ownIdentity) return ownIdentity;
         if (ownIdentity === null && ports.now() < ownRetryAt) return null;
         if (!ownPending) ownPending = slot(() => ports.identityAsync(ports.pid())).then(identity => {
-            ownIdentity = identity; ownRetryAt = identity ? 0 : ports.now()+60000; return identity;
+            ownIdentity = identity ?? ownIdentity ?? null;
+            ownRetryAt = ownIdentity ? 0 : ports.now()+60000; return ownIdentity;
         }).finally(() => { ownPending = null; });
         return ownPending;
     }
@@ -151,12 +153,13 @@ export function createSharedMutationLock(ports) {
         /** @type {T|undefined} */
         let result;
         try {
+            const value = record(token,currentIdentity(!options.waitBudget));
             while (true) {
                 wait.check();
                 try {
                     check(); const fd = ports.openClaim(file);
                     claimed = true; ownedClaims.set(key,token);
-                    publish(fd,() => JSON.stringify(record(token,currentIdentity())),failures);
+                    publish(fd,() => JSON.stringify(value),failures);
                     check(); break;
                 } catch (error) {
                     if (claimed || ports.errorCode(error) !== 'EEXIST') throw error;
@@ -191,7 +194,7 @@ export function createSharedMutationLock(ports) {
             throw Object.assign(new Error(`Asynchronous wait on ancestor-owned shared mutation lock: ${file}`), {code:'shared-mutation-lock-self-contention'});
         }
         const check = () => ports.check(fence);
-        const value = record(token,options.waitBudget ? currentIdentity() : await currentIdentityAsync());
+        const value = record(token,options.waitBudget ? currentIdentity(false) : await currentIdentityAsync());
         let claimed = false;
         /** @type {unknown[]} */
         const failures = [];

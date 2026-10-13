@@ -40,7 +40,7 @@ export function proveWslBindSourceIdentity(source: string, expected: BindSourceI
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "0:0",
             "--mount", `type=bind,source=${source},target=/ccc-bind-proof,readonly`,
             "--entrypoint", "/usr/bin/stat", imageId, "-c", "%d:%i", "--", "/ccc-bind-proof",
-        ], { encoding: "utf-8", timeout: 15_000, maxBuffer: 4096 });
+        ], { encoding: "utf-8", timeout: 15_000, killSignal: "SIGKILL", maxBuffer: 4096 });
         if (result.error || result.status !== 0 || typeof result.stdout !== "string") return null;
         const observed = result.stdout.trim();
         if (!/^[0-9]+:[0-9]+$/.test(observed)) return null;
@@ -54,7 +54,7 @@ export function proveWslBindSourceIdentity(source: string, expected: BindSourceI
             try {
                 const cid = readFileSync(join(scratch, "cid"), "utf-8").trim();
                 if (runtime && /^[a-f0-9]{64}$/.test(cid)) {
-                    spawnSync(runtime, ["rm", "-f", cid], { encoding: "utf-8", timeout: 5000, stdio: "ignore" });
+                    spawnSync(runtime, ["rm", "-f", cid], { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL", stdio: "ignore" });
                 }
             } catch { /* --rm may already have completed, or creation never succeeded. */ }
             rmSync(scratch, { recursive: true, force: true });
