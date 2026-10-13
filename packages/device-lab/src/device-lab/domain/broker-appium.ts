@@ -1,6 +1,6 @@
 export type BrokerAppiumExecution = {status?: number | null; error?: string; pid?: number; processIdentity?: unknown; receipt: unknown};
-/** Genuine Appium/WebDriver HTTP protocol evidence, not a CCC response. */
-export type BrokerAppiumHttpResponse = {ok: boolean; status: number | null; body: unknown};
+/** Semantic effect facts; native protocol evidence remains opaque to policy. */
+export type AppiumEffectObservation = {ok: boolean; receipt: unknown};
 export type BrokerAppiumVerification = {ok: true; serverUrl: string; port?: number; receipt: unknown} | {ok: false; error: string; receipt: unknown};
 export type BrokerAppiumTermination = {ok: boolean; error?: string; stale?: boolean; attempted?: boolean; receipt: unknown};
 export type BrokerAppiumInstrumentationRecovery = {attempted: boolean; ok: boolean; error?: string; results: BrokerAppiumExecution[]; receipt?: unknown};
@@ -9,10 +9,10 @@ export type BrokerAppiumRefusal = {
     kind: "refused"; reason: "invalid" | "forbidden" | "missing" | "conflict" | "provider-failed" | "state-read-failed" | "deadline";
     error: string; allowed?: string[]; ownerId?: string; backend?: string; stateKey?: string; deviceId?: string;
     detail?: string; missing?: unknown; leaseError?: string; remedy?: string; appium?: unknown; found?: boolean; currentAppium?: unknown;
-    response?: BrokerAppiumHttpResponse; rollback?: BrokerAppiumTermination | BrokerAppiumHttpResponse; verification?: BrokerAppiumVerification;
-    readiness?: {ok: boolean; response: BrokerAppiumHttpResponse | null}; signal?: BrokerAppiumTermination;
+    response?: AppiumEffectObservation; rollback?: BrokerAppiumTermination | AppiumEffectObservation; verification?: BrokerAppiumVerification;
+    readiness?: {ok: boolean; response: AppiumEffectObservation | null}; signal?: BrokerAppiumTermination;
     replaced?: BrokerAppiumTermination; portSelection?: unknown; portCleanup?: BrokerAppiumTermination;
-    runtime?: BrokerAppiumRuntimeFailure; execution?: BrokerAppiumExecution; statusObservation?: BrokerAppiumHttpResponse; sessionObservation?: BrokerAppiumHttpResponse | null;
+    runtime?: BrokerAppiumRuntimeFailure; execution?: BrokerAppiumExecution; statusObservation?: AppiumEffectObservation; sessionObservation?: AppiumEffectObservation | null;
     instrumentationRecovery?: BrokerAppiumInstrumentationRecovery;
 };
 export type BrokerAppiumContext = {ownerId: string; backend: string; stateKey: string; deviceId: string};
@@ -22,10 +22,10 @@ export type BrokerAppiumResponse = BrokerAppiumRefusal
     | (BrokerAppiumContext & {kind: "server-reused"; device: unknown; appium: unknown; started: false; reused: true})
     | (BrokerAppiumContext & {kind: "server-started"; appium: Record<string, unknown>; started: true; reused: false; replaced: BrokerAppiumTermination; execution: BrokerAppiumExecution; portCleanup: BrokerAppiumTermination; portSelection: unknown; runtime: {provisioned: boolean; source: "provider-path" | "broker-runtime"}; session: null})
     | (BrokerAppiumContext & {kind: "server-stopped"; stopped: true; stalePid: boolean; signal: BrokerAppiumTermination})
-    | (BrokerAppiumContext & {kind: "session-created" | "session-reused"; appium: Record<string, unknown>; device?: unknown; created: boolean; reused: boolean; response?: BrokerAppiumHttpResponse})
-    | (BrokerAppiumContext & {kind: "session-deleted"; deleted: boolean; appium?: Record<string, unknown>; device?: unknown; response?: BrokerAppiumHttpResponse})
-    | (BrokerAppiumContext & {kind: "session-delete-failed"; error: "appium-session-delete-failed"; appium: Record<string, unknown>; deleted?: false; created?: false; reused?: false; response: BrokerAppiumHttpResponse})
-    | (BrokerAppiumContext & {kind: "request-completed" | "request-failed"; error?: "appium-request-failed"; method: DeviceBrokerAppiumRequestMethod; path: string; response: BrokerAppiumHttpResponse});
+    | (BrokerAppiumContext & {kind: "session-created" | "session-reused"; appium: Record<string, unknown>; device?: unknown; created: boolean; reused: boolean; response?: AppiumEffectObservation})
+    | (BrokerAppiumContext & {kind: "session-deleted"; deleted: boolean; appium?: Record<string, unknown>; device?: unknown; response?: AppiumEffectObservation})
+    | (BrokerAppiumContext & {kind: "session-delete-failed"; error: "appium-session-delete-failed"; appium: Record<string, unknown>; deleted?: false; created?: false; reused?: false; response: AppiumEffectObservation})
+    | (BrokerAppiumContext & {kind: "request-completed" | "request-failed"; error?: "appium-request-failed"; method: DeviceBrokerAppiumRequestMethod; path: string; response: AppiumEffectObservation});
 
 export type BrokerAppiumRecordOutcome = BrokerAppiumRefusal | Extract<BrokerAppiumResponse, {kind: "metadata-recorded"}>;
 export type BrokerAppiumClearOutcome = BrokerAppiumRefusal | Extract<BrokerAppiumResponse, {kind: "metadata-cleared"}>;
@@ -323,12 +323,6 @@ export function appiumCapabilities(backend: string, device: unknown) {
         ...(typeof record.udid === "string" && record.udid ? { "appium:udid": record.udid } : {}),
         ...(backend === "ios-device" ? { "appium:realDevice": true } : {}),
     };
-}
-
-export function appiumInstrumentationInitializationFailed(response: { body: unknown }) {
-    const text = JSON.stringify(response.body || {}).toLowerCase();
-    return text.includes("instrumentation process cannot be initialized")
-        || text.includes("uiautomator2 server cannot be started");
 }
 
 export function brokerOwnedAppiumPid(appium: unknown) {

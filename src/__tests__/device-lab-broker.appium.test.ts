@@ -10,15 +10,23 @@ import { AddressInfo } from "net";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appiumWebDriverRequestTimeoutMs, createDeviceBrokerServer, DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES, DEVICE_BROKER_APPIUM_RESPONSE_LIMIT_BYTES, managedAppiumCommandLine, registerDeviceBrokerOwner } from "@ccc/device-lab/device-lab-broker.js";
+import { appiumWebDriverRequestTimeoutMs, createDeviceBrokerServer, DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES, DEVICE_BROKER_APPIUM_RESPONSE_LIMIT_BYTES, DEVICE_BROKER_COMMAND_OUTPUT_LIMIT, managedAppiumCommandLine, registerDeviceBrokerOwner } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { readDeviceRuntimeProcessIdentity } from "@ccc/device-lab/device-lab-process-identity.js";
 import { cleanupOwner, close, listen, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
+import { renderBrokerAppium } from "@ccc/device-lab/device-lab/broker/broker-outcomes-codec.js";
 
 vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import("fs")>() }));
 
-async function createFakeAppiumServer(sessionId = "BROKER-SESSION-1", options: { deleteStatus?: number; readyAfterStatusRequests?: number; sessionCreateFailures?: number; onSessionCreated?: () => void } = {}) {
+async function createFakeAppiumServer(sessionId = "BROKER-SESSION-1", options: {
+    deleteStatus?: number; readyAfterStatusRequests?: number; sessionCreateFailures?: number; onSessionCreated?: () => void;
+    statusBody?: unknown; statusStatus?: number; onStatus?: () => void;
+    sessionBody?: unknown; sessionFailureMessage?: string; onSessionCreate?: () => void;
+    inspectStatus?: number; onSessionInspected?: () => void;
+    commandStatus?: number; commandBody?: unknown; commandRaw?: string;
+} = {}) {
     const requests: Array<{ method: string; url: string; body: unknown }> = [];
+    const sessionPath = `/session/${encodeURIComponent(sessionId)}`;
     let statusRequests = 0;
     let sessionCreateRequests = 0;
     const server = createServer((req, res) => {
@@ -27,26 +35,37 @@ async function createFakeAppiumServer(sessionId = "BROKER-SESSION-1", options: {
         req.on("end", () => {
             const body = raw ? JSON.parse(raw) : null;
             requests.push({ method: req.method || "GET", url: req.url || "/", body });
+            if (req.method === "POST" && req.url === "/session") options.onSessionCreate?.();
             const sessionCreateFailure = req.method === "POST"
                 && req.url === "/session"
                 && ++sessionCreateRequests <= (options.sessionCreateFailures || 0);
             const status = sessionCreateFailure
                 ? 500
-                : req.method === "DELETE" && req.url === `/session/${sessionId}` ? options.deleteStatus || 200 : 200;
+                : req.method === "DELETE" && req.url === sessionPath ? options.deleteStatus || 200
+                : req.method === "GET" && req.url === "/status" ? options.statusStatus || 200
+                : req.method === "GET" && req.url === sessionPath ? options.inspectStatus || 200
+                : req.url === `${sessionPath}/source` ? options.commandStatus || 200 : 200;
             res.writeHead(status, { "content-type": "application/json" });
             if (req.method === "GET" && req.url === "/status") {
                 statusRequests += 1;
-                return res.end(JSON.stringify({ value: { ready: statusRequests >= (options.readyAfterStatusRequests || 1) } }));
+                options.onStatus?.();
+                return res.end(JSON.stringify("statusBody" in options ? options.statusBody
+                    : { value: { ready: statusRequests >= (options.readyAfterStatusRequests || 1) } }));
             }
-            if (sessionCreateFailure) return res.end(JSON.stringify({ value: { error: "unknown error", message: "The instrumentation process cannot be initialized." } }));
+            if (sessionCreateFailure) return res.end(JSON.stringify({ value: { error: "unknown error", message: options.sessionFailureMessage || "The instrumentation process cannot be initialized." } }));
             if (req.method === "POST" && req.url === "/session") {
                 options.onSessionCreated?.();
-                return res.end(JSON.stringify({ value: { sessionId, capabilities: body?.capabilities?.alwaysMatch || {} } }));
+                return res.end(JSON.stringify("sessionBody" in options ? options.sessionBody
+                    : { value: { sessionId, capabilities: body?.capabilities?.alwaysMatch || {} } }));
             }
-            if (req.method === "GET" && req.url === `/session/${sessionId}`) return res.end(JSON.stringify({ value: { sessionId } }));
-            if (req.method === "GET" && req.url === `/session/${sessionId}/source`) return res.end(JSON.stringify({ value: "<AppiumAUT />" }));
-            if (req.method === "POST" && req.url === `/session/${sessionId}/actions`) return res.end(JSON.stringify({ value: null }));
-            if (req.method === "DELETE" && req.url === `/session/${sessionId}`) return res.end(JSON.stringify(status >= 400 ? { value: { error: "delete failed" } } : { value: null }));
+            if (req.method === "GET" && req.url === sessionPath) {
+                options.onSessionInspected?.();
+                return res.end(JSON.stringify(status >= 400 ? { value: { error: "inspection failed" } } : { value: { sessionId } }));
+            }
+            if (req.method === "GET" && req.url === `${sessionPath}/source`) return res.end(options.commandRaw
+                ?? JSON.stringify("commandBody" in options ? options.commandBody : { value: "<AppiumAUT />" }));
+            if (req.method === "POST" && req.url === `${sessionPath}/actions`) return res.end(JSON.stringify({ value: null }));
+            if (req.method === "DELETE" && req.url === sessionPath) return res.end(JSON.stringify(status >= 400 ? { value: { error: "delete failed" } } : { value: null }));
             res.end(JSON.stringify({ value: null }));
         });
     });
@@ -146,6 +165,13 @@ describe("device-lab host broker Appium session authority", () => {
         expect(appiumWebDriverRequestTimeoutMs(5000)).toBe(30000);
         expect(appiumWebDriverRequestTimeoutMs(60000)).toBe(60000);
         expect(appiumWebDriverRequestTimeoutMs(600000)).toBe(300000);
+    });
+
+    it("retains null readiness evidence without inventing response or compensation fields", () => {
+        expect(renderBrokerAppium({ kind: "refused", reason: "provider-failed", error: "appium-server-not-ready",
+            readiness: { ok: false, response: null } })).toEqual({ status: 502, payload: {
+            ok: false, error: "appium-server-not-ready", readiness: { ok: false, response: null },
+        } });
     });
 
     it.each(["headers", "body"])("aborts a stalled Appium %s within the explicit observation allowance", async (stall) => {
@@ -1673,12 +1699,15 @@ describe("device-lab host broker Appium session authority", () => {
                 }),
             });
             expect(response.status).toBe(409);
-            expect(await response.json()).toEqual(expect.objectContaining({
+            const payload = await response.json();
+            expect(payload).toEqual(expect.objectContaining({
                 ok: false,
                 error: "appium-runtime-state-conflict",
                 currentAppium: expect.objectContaining({ runtimeId: successor.runtimeId, serverPid: 90001 }),
                 rollback: expect.objectContaining({ attempted: false, ok: true, simulated: true }),
             }));
+            expect(payload.rollback).not.toHaveProperty("receipt");
+            expect(payload.rollback).not.toHaveProperty("body");
             expect(killSpy).not.toHaveBeenCalled();
             const persisted = JSON.parse(readFileSync(join(root, "devices.json"), "utf8")) as { devices: Array<Record<string, unknown>> };
             expect(persisted.devices[0]?.appium).toEqual(successor);
@@ -1807,6 +1836,291 @@ describe("device-lab host broker Appium session authority", () => {
         }
     });
 
+    it.each([
+        { name: "nested ID wins", body: { sessionId: "LEGACY", value: { sessionId: "NESTED" } }, sessionId: "NESTED" },
+        { name: "legacy ID fallback", body: { sessionId: "LEGACY", value: {} }, sessionId: "LEGACY" },
+        { name: "nonstring nested ID falls back", body: { sessionId: "LEGACY", value: { sessionId: 42 } }, sessionId: "LEGACY" },
+        { name: "empty nested ID shadows legacy", body: { sessionId: "LEGACY", value: { sessionId: "" } }, sessionId: null },
+        { name: "missing ID", body: { value: {} }, sessionId: null },
+    ])("decodes $name without requiring a ready property or changing native evidence", async ({ body, sessionId }) => {
+        const cwd = "/project/broker-appium-session-id-decoding";
+        const ownerId = deviceLabOwnerId(cwd);
+        const upstream = await createFakeAppiumServer("NESTED", { sessionBody: body, statusBody: { value: {} } });
+        const commandRunner = vi.fn(() => { throw new Error("unexpected process effect"); });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner });
+        const baseUrl = await listen(broker);
+        const previous = currentProcessAppiumRuntime(upstream.url, upstream.port, "session-decoding-runtime");
+        const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", name: "Pixel", port: 5580,
+            backend: "android-emulator", status: "running", appium: previous }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.ensure", params: { backend: "android-emulator", deviceId: "pixel" } }) });
+            const payload = await response.json();
+            expect(response.status).toBe(sessionId ? 200 : 502);
+            if (sessionId) {
+                expect(payload.result.appium.sessionId).toBe(sessionId);
+                expect(payload.result.response).toEqual({ ok: true, status: 200, body });
+            } else {
+                expect(payload).toMatchObject({ ok: false, error: "appium-session-id-missing" });
+                expect(payload.response).toEqual({ ok: true, status: 200, body });
+            }
+            const persisted = JSON.parse(readFileSync(join(root, "devices.json"), "utf8"));
+            expect(persisted.devices[0].appium).toEqual(sessionId ? expect.objectContaining({ sessionId }) : previous);
+            expect(upstream.requests.map(request => `${request.method} ${request.url}`)).toEqual(["GET /status", "POST /session"]);
+            expect(upstream.requests[1].body).toEqual({ capabilities: { alwaysMatch: expect.objectContaining({
+                platformName: "Android", "appium:automationName": "UiAutomator2", "appium:udid": "emulator-5580",
+            }) } });
+            expect(commandRunner).not.toHaveBeenCalled();
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it("creates a session when native status reports ready:null", async () => {
+        const cwd = "/project/broker-appium-null-readiness";
+        const ownerId = deviceLabOwnerId(cwd);
+        const statusBody = { value: { ready: null } };
+        const sessionBody = { value: { sessionId: "NULL-READY-SESSION", capabilities: { platformName: "Android" } } };
+        const upstream = await createFakeAppiumServer("NULL-READY-SESSION", { statusBody, sessionBody });
+        const commandRunner = vi.fn(() => { throw new Error("unexpected process effect"); });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner });
+        const baseUrl = await listen(broker);
+        const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running",
+            appium: currentProcessAppiumRuntime(upstream.url, upstream.port, "null-readiness-runtime") }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.ensure", params: { backend: "android-emulator", deviceId: "pixel" } }) });
+            const payload = await response.json();
+            expect(response.status).toBe(200);
+            expect(payload).toMatchObject({ ok: true, result: { created: true, reused: false,
+                appium: { sessionId: "NULL-READY-SESSION" }, response: { ok: true, status: 200, body: sessionBody } } });
+            expect(upstream.requests.map(request => `${request.method} ${request.url}`)).toEqual(["GET /status", "POST /session"]);
+            expect(upstream.requests[0].body).toBeNull();
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium.sessionId).toBe("NULL-READY-SESSION");
+            expect(commandRunner).not.toHaveBeenCalled();
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it("encodes reserved characters in exact session IDs for inspection, commands, and deletion", async () => {
+        const cwd = "/project/broker-appium-reserved-session-id";
+        const ownerId = deviceLabOwnerId(cwd);
+        const sessionId = "SESSION/space ?#%&+=ü";
+        const sessionPath = "/session/SESSION%2Fspace%20%3F%23%25%26%2B%3D%C3%BC";
+        const upstream = await createFakeAppiumServer(sessionId);
+        const commandRunner = vi.fn(() => { throw new Error("unexpected process effect"); });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner });
+        const baseUrl = await listen(broker);
+        const previous = currentProcessAppiumRuntime(upstream.url, upstream.port, "reserved-session-runtime", { sessionId });
+        const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running", appium: previous }]);
+        const invoke = (method: string, params: Record<string, unknown> = {}) => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+            method: "POST", headers: ownerRpcHeaders(ownerId),
+            body: JSON.stringify({ method, params: { backend: "android-emulator", deviceId: "pixel", ...params } }),
+        });
+        const actionsBody = { actions: [{ type: "pointer", id: "tap", parameters: { pointerType: "touch" }, actions: [
+            { type: "pointerMove", duration: 0, x: 10, y: 20 }, { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 },
+        ] }] };
+        try {
+            const reuse = await invoke("broker.appium.session.ensure");
+            expect(reuse.status).toBe(200);
+            expect(await reuse.json()).toMatchObject({ ok: true, result: { created: false, reused: true, appium: { sessionId } } });
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium).toEqual(previous);
+
+            const source = await invoke("broker.appium.request", { method: "GET", path: "/source" });
+            expect(source.status).toBe(200);
+            expect(await source.json()).toMatchObject({ ok: true, result: { method: "GET", path: "/source",
+                response: { ok: true, status: 200, body: { value: "<AppiumAUT />" } } } });
+
+            const actions = await invoke("broker.appium.request", { method: "POST", path: "/actions", body: actionsBody });
+            expect(actions.status).toBe(200);
+            expect(await actions.json()).toMatchObject({ ok: true, result: { method: "POST", path: "/actions",
+                response: { ok: true, status: 200, body: { value: null } } } });
+
+            const deletion = await invoke("broker.appium.session.delete");
+            expect(deletion.status).toBe(200);
+            expect(await deletion.json()).toMatchObject({ ok: true, result: { deleted: true,
+                response: { ok: true, status: 200, body: { value: null } } } });
+            const persisted = JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium;
+            expect(persisted).not.toHaveProperty("sessionId");
+            expect(persisted).toMatchObject({ runtimeId: previous.runtimeId, serverUrl: previous.serverUrl, serverPid: previous.serverPid });
+            expect(upstream.requests).toEqual([
+                { method: "GET", url: "/status", body: null },
+                { method: "GET", url: sessionPath, body: null },
+                { method: "GET", url: `${sessionPath}/source`, body: null },
+                { method: "POST", url: `${sessionPath}/actions`, body: actionsBody },
+                { method: "DELETE", url: sessionPath, body: null },
+            ]);
+            expect(commandRunner).not.toHaveBeenCalled();
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it.each([false, null])("reuses an existing session while status ready is %s without exposing observations", async (ready) => {
+        const cwd = "/project/broker-appium-ready-compatibility-reuse";
+        const ownerId = deviceLabOwnerId(cwd);
+        const upstream = await createFakeAppiumServer("REUSED", { statusBody: { value: { ready } } });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner: vi.fn() });
+        const baseUrl = await listen(broker);
+        const previous = currentProcessAppiumRuntime(upstream.url, upstream.port, "reuse-runtime", { sessionId: "REUSED" });
+        const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running", appium: previous }]);
+        const before = readFileSync(join(root, "devices.json"), "utf8");
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.ensure", params: { backend: "android-emulator", deviceId: "pixel" } }) });
+            const payload = await response.json();
+            expect(response.status).toBe(200);
+            expect(payload.result).toMatchObject({ created: false, reused: true, appium: previous });
+            expect(payload.result).not.toHaveProperty("response");
+            expect(payload).not.toHaveProperty("statusObservation");
+            expect(payload).not.toHaveProperty("sessionObservation");
+            expect(upstream.requests).toEqual([
+                { method: "GET", url: "/status", body: null },
+                { method: "GET", url: "/session/REUSED", body: null },
+            ]);
+            expect(readFileSync(join(root, "devices.json"), "utf8")).toBe(before);
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it.each(["status", "inspection"])("renders failed reuse %s evidence and preserves a concurrent successor", async (failure) => {
+        const cwd = "/project/broker-appium-reuse-probe-conflict";
+        const ownerId = deviceLabOwnerId(cwd);
+        let root = "";
+        const successor = { authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start",
+            runtimeId: "successor", serverUrl: "http://127.0.0.1:8702", sessionId: "SUCCESSOR" };
+        const recordSuccessor = () => writeFileSync(join(root, "devices.json"), JSON.stringify({ devices: [
+            { id: "pixel", backend: "android-emulator", status: "running", appium: successor },
+        ] }));
+        const statusBody = { value: { ready: false } };
+        const upstream = await createFakeAppiumServer("REUSED", { statusBody,
+            statusStatus: failure === "status" ? 503 : 200, inspectStatus: 500,
+            ...(failure === "status" ? { onStatus: recordSuccessor } : { onSessionInspected: recordSuccessor }) });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner: vi.fn() });
+        const baseUrl = await listen(broker);
+        root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running",
+            appium: currentProcessAppiumRuntime(upstream.url, upstream.port, "previous", { sessionId: "REUSED", sessionCapabilities: { platformName: "Android" } }) }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.ensure", params: { backend: "android-emulator", deviceId: "pixel" } }) });
+            const payload = await response.json();
+            expect(response.status).toBe(409);
+            expect(payload).toMatchObject({ ok: false, error: "appium-runtime-state-conflict", currentAppium: successor });
+            expect(payload.status).toEqual({ ok: failure !== "status", status: failure === "status" ? 503 : 200, body: statusBody });
+            expect(payload.session).toEqual(failure === "status" ? null : { ok: false, status: 500, body: { value: { error: "inspection failed" } } });
+            expect(payload).not.toHaveProperty("statusObservation");
+            expect(payload).not.toHaveProperty("sessionObservation");
+            expect(upstream.requests.map(request => `${request.method} ${request.url}`)).toEqual(failure === "status"
+                ? ["GET /status"] : ["GET /status", "GET /session/REUSED"]);
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium).toEqual(successor);
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it("returns raw false-readiness evidence and simulated process termination without waiting sixty seconds", async () => {
+        const cwd = "/project/broker-appium-permanent-false-readiness";
+        const ownerId = deviceLabOwnerId(cwd);
+        let clock = Date.now();
+        vi.spyOn(Date, "now").mockImplementation(() => clock);
+        const statusBody = { value: { ready: false, message: "warming" } };
+        const upstream = await createFakeAppiumServer("UNCREATED", { statusBody, onStatus: () => { clock += 60001; } });
+        const commandRunner = vi.fn(() => { throw new Error("unexpected provider command"); });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner });
+        const baseUrl = await listen(broker);
+        const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running",
+            appium: currentProcessAppiumRuntime(upstream.url, upstream.port, "not-ready-runtime") }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.ensure", params: { backend: "android-emulator", deviceId: "pixel" } }) });
+            const payload = await response.json();
+            expect(response.status).toBe(502);
+            expect(payload).toMatchObject({ ok: false, error: "appium-server-not-ready" });
+            expect(payload.readiness).toEqual({ ok: false, response: { ok: true, status: 200, body: statusBody } });
+            expect(payload.signal).toEqual(expect.objectContaining({ attempted: false, ok: true, simulated: true }));
+            expect(payload.signal).not.toHaveProperty("body");
+            expect(payload.signal).not.toHaveProperty("receipt");
+            expect(upstream.requests).toEqual([{ method: "GET", url: "/status", body: null }]);
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium).toBeNull();
+            expect(commandRunner).not.toHaveBeenCalled();
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it.each([
+        { message: "The instrumentation process cannot be initialized.", failures: 1, serial: true, creates: 2, status: 200 },
+        { message: "UiAutomator2 server cannot be started", failures: 1, serial: true, creates: 2, status: 200 },
+        { message: "UiAutomator2 server cannot be started", failures: 2, serial: true, creates: 2, status: 502 },
+        { message: "UiAutomator2 server cannot be started", failures: 1, serial: false, creates: 1, status: 502 },
+        { message: "ordinary session failure", failures: 1, serial: true, creates: 1, status: 502 },
+    ])("selects one conditional instrumentation retry for $message (serial=$serial, failures=$failures)", async ({ message, failures, serial, creates, status }) => {
+        const cwd = "/project/broker-appium-instrumentation-classification";
+        const ownerId = deviceLabOwnerId(cwd);
+        const trace: string[] = [];
+        const upstream = await createFakeAppiumServer("RECOVERED", { sessionCreateFailures: failures, sessionFailureMessage: message,
+            onSessionCreate: () => { trace.push("create-session"); } });
+        const commandRunner = vi.fn((command) => {
+            trace.push(command.args.join(" "));
+            return { mode: command.mode, provider: command.provider, executable: command.executable, args: command.args, status: 0, stdout: "", stderr: "" };
+        });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner,
+            providerPaths: { adb: "/fake/adb" } });
+        const baseUrl = await listen(broker);
+        writeBrokerDevices(ownerId, "android", [{ id: "pixel", ...(serial ? { port: 5580 } : {}), backend: "android-emulator", status: "running",
+            appium: currentProcessAppiumRuntime(upstream.url, upstream.port, "instrumentation-runtime") }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.ensure", params: { backend: "android-emulator", deviceId: "pixel" } }) });
+            const payload = await response.json();
+            expect(response.status).toBe(status);
+            expect(upstream.requests.filter(request => request.method === "POST" && request.url === "/session")).toHaveLength(creates);
+            const recovered = creates === 2;
+            expect(trace).toEqual(recovered ? [
+                "create-session",
+                "-s emulator-5580 shell am force-stop io.appium.uiautomator2.server",
+                "-s emulator-5580 shell am force-stop io.appium.uiautomator2.server.test",
+                "-s emulator-5580 uninstall io.appium.uiautomator2.server",
+                "-s emulator-5580 uninstall io.appium.uiautomator2.server.test",
+                "-s emulator-5580 uninstall io.appium.settings",
+                "create-session",
+            ] : ["create-session"]);
+            if (status === 502) expect(payload.response).toEqual({ ok: false, status: 500, body: { value: { error: "unknown error", message } } });
+            else expect(payload.result.appium).toMatchObject({ sessionId: "RECOVERED", instrumentationRecovery: { attempted: true, recovered: true } });
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it.each([
+        { status: 200, body: { value: { error: "unknown error", message: "upstream protocol evidence" } } },
+        { status: 503, body: { value: { error: "unavailable", detail: "upstream evidence" } } },
+    ])("projects native HTTP $status and body without reclassifying WebDriver errors", async ({ status, body }) => {
+        const cwd = "/project/broker-appium-public-native-response";
+        const ownerId = deviceLabOwnerId(cwd);
+        const upstream = await createFakeAppiumServer("COMMAND", { commandStatus: status, commandBody: body });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner: vi.fn() });
+        const baseUrl = await listen(broker);
+        writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running",
+            appium: currentProcessAppiumRuntime(upstream.url, upstream.port, "command-runtime", { sessionId: "COMMAND" }) }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.request", params: { backend: "android-emulator", deviceId: "pixel", method: "GET", path: "/source" } }) });
+            const payload = await response.json();
+            expect(response.status).toBe(status === 200 ? 200 : 502);
+            expect(payload.ok).toBe(status === 200);
+            expect(payload.result.response).toEqual({ ok: status === 200, status, body });
+            expect(upstream.requests).toEqual([{ method: "GET", url: "/session/COMMAND/source", body: null }]);
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it("preserves bounded non-JSON upstream evidence on the public response", async () => {
+        const cwd = "/project/broker-appium-non-json-response";
+        const ownerId = deviceLabOwnerId(cwd);
+        const raw = "native response: " + "x".repeat(DEVICE_BROKER_COMMAND_OUTPUT_LIMIT + 64);
+        const upstream = await createFakeAppiumServer("RAW", { commandRaw: raw });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner: vi.fn() });
+        const baseUrl = await listen(broker);
+        writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running",
+            appium: currentProcessAppiumRuntime(upstream.url, upstream.port, "raw-runtime", { sessionId: "RAW" }) }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.request", params: { backend: "android-emulator", deviceId: "pixel", method: "GET", path: "/source" } }) });
+            const payload = await response.json();
+            expect(response.status).toBe(200);
+            expect(payload.result.response).toEqual({ ok: true, status: 200, body: { raw: raw.slice(0, DEVICE_BROKER_COMMAND_OUTPUT_LIMIT) } });
+            expect(upstream.requests).toEqual([{ method: "GET", url: "/session/RAW/source", body: null }]);
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
     it("creates, reuses, proxies, and deletes broker-owned WebDriver sessions", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-appium-webdriver-test");
         const fakeAppium = await createFakeAppiumServer("ANDROID-BROKER-SESSION-1", { readyAfterStatusRequests: 3, sessionCreateFailures: 1 });
@@ -1844,7 +2158,8 @@ describe("device-lab host broker Appium session authority", () => {
                 }),
             });
             expect(ensure.status).toBe(200);
-            expect(await ensure.json()).toEqual(expect.objectContaining({
+            const ensured = await ensure.json();
+            expect(ensured).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     created: true,
@@ -1867,6 +2182,9 @@ describe("device-lab host broker Appium session authority", () => {
                     }),
                 }),
             }));
+            expect(ensured.result.response).toEqual({ ok: true, status: 200, body: { value: {
+                sessionId: "ANDROID-BROKER-SESSION-1", capabilities: ensured.result.appium.sessionCapabilities,
+            } } });
             expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
                 provider: "appium",
                 args: ["server", "--port", String(fakeAppium.port), "--base-path", "/", "--allow-insecure", "uiautomator2:adb_shell"],
@@ -1902,10 +2220,12 @@ describe("device-lab host broker Appium session authority", () => {
                 }),
             });
             expect(reuse.status).toBe(200);
-            expect(await reuse.json()).toEqual(expect.objectContaining({
+            const reused = await reuse.json();
+            expect(reused).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({ created: false, reused: true }),
             }));
+            expect(reused.result).not.toHaveProperty("response");
 
             const source = await fetch(endpoint, {
                 method: "POST",
@@ -1921,7 +2241,7 @@ describe("device-lab host broker Appium session authority", () => {
                 result: expect.objectContaining({
                     method: "GET",
                     path: "/source",
-                    response: expect.objectContaining({ body: { value: "<AppiumAUT />" } }),
+                    response: { ok: true, status: 200, body: { value: "<AppiumAUT />" } },
                 }),
             }));
 
@@ -1955,7 +2275,7 @@ describe("device-lab host broker Appium session authority", () => {
             expect(actions.status).toBe(200);
             expect(await actions.json()).toEqual(expect.objectContaining({
                 ok: true,
-                result: expect.objectContaining({ method: "POST", path: "/actions" }),
+                result: expect.objectContaining({ method: "POST", path: "/actions", response: { ok: true, status: 200, body: { value: null } } }),
             }));
 
             const deleteSession = await fetch(endpoint, {
@@ -1969,7 +2289,7 @@ describe("device-lab host broker Appium session authority", () => {
             expect(deleteSession.status).toBe(200);
             expect(await deleteSession.json()).toEqual(expect.objectContaining({
                 ok: true,
-                result: expect.objectContaining({ deleted: true }),
+                result: expect.objectContaining({ deleted: true, response: { ok: true, status: 200, body: { value: null } } }),
             }));
             const devicesFile = JSON.parse(readFileSync(join(root, "devices.json"), "utf8")) as { devices: Array<{ id: string; appium: { sessionId?: unknown } }> };
             expect(devicesFile.devices.find((device) => device.id === "pixel-owned")?.appium.sessionId).toBeUndefined();
@@ -2035,7 +2355,7 @@ describe("device-lab host broker Appium session authority", () => {
                 ok: false,
                 error: "appium-runtime-state-conflict",
                 currentAppium: expect.objectContaining({ runtimeId: successor.runtimeId }),
-                rollback: expect.objectContaining({ ok: true, status: 200 }),
+                rollback: { ok: true, status: 200, body: { value: null } },
             }));
             expect(fakeAppium.requests.map((request) => `${request.method} ${request.url}`)).toEqual(expect.arrayContaining([
                 "POST /session",
@@ -2348,6 +2668,7 @@ describe("device-lab host broker Appium session authority", () => {
                 result: expect.objectContaining({
                     created: false,
                     appium: expect.objectContaining({ sessionId: "FORCE-DELETE-FAIL" }),
+                    response: { ok: false, status: 500, body: { value: { error: "delete failed" } } },
                 }),
             }));
             expect(fakeAppium.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
@@ -2403,6 +2724,7 @@ describe("device-lab host broker Appium session authority", () => {
                 result: expect.objectContaining({
                     deleted: false,
                     appium: expect.objectContaining({ sessionId: "DELETE-FAIL-SESSION" }),
+                    response: { ok: false, status: 500, body: { value: { error: "delete failed" } } },
                 }),
             }));
             const devicesFile = JSON.parse(readFileSync(join(root, "devices.json"), "utf8")) as { devices: Array<{ id: string; appium: { sessionId?: unknown } }> };

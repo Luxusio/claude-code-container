@@ -4,7 +4,7 @@ import {planBrokerIosCreateCommand as semanticIosCreate, planBrokerIosExistingCo
 import {planBrokerMacosCreateCommand as semanticMacosCreate, planBrokerMacosExistingCommand as semanticMacosExisting} from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import type {BrokerAndroidPreparationPorts} from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 import {NativeProviderLifecycleEffect, renderBrokerAndroidLifecycle, renderBrokerIosMacosLifecycle, renderBrokerSandboxLifecycle, renderBrokerProviderRollback} from "./device-lab/broker/broker-outcomes-codec.js";
-import {renderBrokerOwnerResolution, renderBrokerDeviceStatus, renderBrokerRecording, renderBrokerAppium, NativeBrokerExecutionReceipt, NativeRecordingSignalReceipt, NativeAppiumTerminationReceipt, NativeAppiumVerificationReceipt, NativeAppiumRuntimeReceipt, NativeAppiumInstrumentationReceipt, type NativeStatusConnection} from "./device-lab/broker/broker-outcomes-codec.js";
+import {renderBrokerOwnerResolution, renderBrokerDeviceStatus, renderBrokerRecording, renderBrokerAppium, NativeBrokerExecutionReceipt, NativeRecordingSignalReceipt, NativeAppiumResponseReceipt, NativeAppiumTerminationReceipt, NativeAppiumVerificationReceipt, NativeAppiumRuntimeReceipt, NativeAppiumInstrumentationReceipt, type NativeStatusConnection} from "./device-lab/broker/broker-outcomes-codec.js";
 import { recordingRuntimeMatches, recordingTargetMatches, recordingSerial, type BrokerRecordingRefusal, type BrokerRecordingRequest, type BrokerRecordingTarget } from "./device-lab/domain/broker-recording.js";
 import type {BrokerRecordingArtifactContext} from "./device-lab/ports/broker-recording.js";
 import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
@@ -9538,7 +9538,35 @@ function brokerAppiumApplication(normalized: NormalizedBrokerOptions) {
         terminatePortListener: port => { const receipt = terminateManagedAppiumPortListener(port, normalized); return {ok: receipt.ok, ...("error" in receipt && typeof receipt.error === "string" ? {error: receipt.error} : {}), ...("stale" in receipt ? {stale: receipt.stale === true} : {}), ...("attempted" in receipt ? {attempted: receipt.attempted === true} : {}), receipt: new NativeAppiumTerminationReceipt(receipt)}; },
         portListener: port => normalized.portProcessResolver(port, normalized.platform),
         portSeed: (ownerId, backend, deviceId) => createHash("sha256").update(`${ownerId}:${backend}:${deviceId}:appium`).digest().readUInt16BE(0),
-        resolveIosTarget: (owner, device) => resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized), http: fetchAppiumJson,
+        resolveIosTarget: (owner, device) => resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized),
+        status: async (endpoint, timeoutMs) => {
+            const response = await fetchAppiumJson(`${endpoint}/status`, {method: "GET", timeoutMs});
+            const body = response.body as {value?: {ready?: unknown}} | null;
+            return {ok: response.ok, ready: body?.value?.ready !== false, receipt: new NativeAppiumResponseReceipt(response)};
+        },
+        inspectSession: async (endpoint, sessionId, timeoutMs) => {
+            const response = await fetchAppiumJson(`${endpoint}/session/${encodeURIComponent(sessionId)}`, {method: "GET", timeoutMs});
+            return {ok: response.ok, receipt: new NativeAppiumResponseReceipt(response)};
+        },
+        createSession: async (endpoint, capabilities, timeoutMs) => {
+            const response = await fetchAppiumJson(`${endpoint}/session`, {method: "POST", body: {capabilities: {alwaysMatch: capabilities}}, timeoutMs});
+            const body = response.body as {value?: {sessionId?: unknown}; sessionId?: unknown} | null;
+            const sessionId = typeof body?.value?.sessionId === "string" ? body.value.sessionId
+                : typeof body?.sessionId === "string" ? body.sessionId : null;
+            const text = JSON.stringify(response.body || {}).toLowerCase();
+            return {ok: response.ok, sessionId, instrumentationInitializationFailed: text.includes("instrumentation process cannot be initialized")
+                || text.includes("uiautomator2 server cannot be started"), receipt: new NativeAppiumResponseReceipt(response)};
+        },
+        deleteSession: async (endpoint, sessionId, timeoutMs) => {
+            const response = await fetchAppiumJson(`${endpoint}/session/${encodeURIComponent(sessionId)}`, {method: "DELETE", timeoutMs});
+            return {ok: response.ok, receipt: new NativeAppiumResponseReceipt(response)};
+        },
+        sessionCommand: async (endpoint, sessionId, request, timeoutMs) => {
+            const response = await fetchAppiumJson(`${endpoint}/session/${encodeURIComponent(sessionId)}${request.path}`, {
+                method: request.method, body: request.method === "GET" ? undefined : request.body, timeoutMs,
+            });
+            return {ok: response.ok, receipt: new NativeAppiumResponseReceipt(response)};
+        },
         captureRuntime: () => {
             const packageRoot = packageRootForBroker();
             const runtimeRoot = brokerAppiumRuntimeRoot();

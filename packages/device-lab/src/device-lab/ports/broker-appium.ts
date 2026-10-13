@@ -1,7 +1,7 @@
 import type { BrokerAppiumBudget } from "../domain/broker-appium.js";
 
-import type {BrokerAppiumExecution, BrokerAppiumHttpResponse, BrokerAppiumVerification, BrokerAppiumTermination, BrokerAppiumRefusal} from "../domain/broker-appium.js";
-export type {BrokerAppiumExecution, BrokerAppiumHttpResponse, BrokerAppiumVerification, BrokerAppiumTermination} from "../domain/broker-appium.js";
+import type {BrokerAppiumExecution, AppiumEffectObservation, BrokerAppiumVerification, BrokerAppiumTermination, BrokerAppiumRefusal} from "../domain/broker-appium.js";
+export type {BrokerAppiumExecution, AppiumEffectObservation, BrokerAppiumVerification, BrokerAppiumTermination} from "../domain/broker-appium.js";
 export type BrokerAppiumTransition = {
     found: boolean; matched: boolean; currentAppium: unknown; device: Record<string, unknown> | null;
 };
@@ -28,7 +28,11 @@ export interface BrokerAppiumPorts<Runtime> {
     portListener(port: number): unknown;
     portSeed(ownerId: string, backend: string, deviceId: string): number;
     resolveIosTarget(ownerId: string, device: unknown): { ok: true; target: string } | { ok: false; error: string; missing?: unknown };
-    http(url: string, options: { method?: string; body?: unknown; timeoutMs?: number }): Promise<BrokerAppiumHttpResponse>;
+    status(endpoint: string, timeoutMs: number): Promise<AppiumEffectObservation & {ready: boolean}>;
+    inspectSession(endpoint: string, sessionId: string, timeoutMs: number): Promise<AppiumEffectObservation>;
+    createSession(endpoint: string, capabilities: Record<string, unknown>, timeoutMs: number): Promise<AppiumEffectObservation & {sessionId: string | null; instrumentationInitializationFailed: boolean}>;
+    deleteSession(endpoint: string, sessionId: string, timeoutMs: number): Promise<AppiumEffectObservation>;
+    sessionCommand(endpoint: string, sessionId: string, request: {method: "GET" | "POST"; path: string; body: unknown}, timeoutMs: number): Promise<AppiumEffectObservation>;
     captureRuntime(): BrokerAppiumRuntimeCapture<Runtime>;
     runtimeReceipt(runtime: Runtime): unknown;
     launchServer(runtime: Runtime, request: {backend: string; port: number; timeoutMs: number}): Promise<BrokerAppiumExecution>;

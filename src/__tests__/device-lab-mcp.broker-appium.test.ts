@@ -287,6 +287,7 @@ describe("device-lab MCP broker Appium routing", () => {
                             "appium:realDevice": true,
                         }),
                     }),
+                    response: { ok: true, status: 200, body: { value: { sessionId: "MCP-BROKER-SESSION-1" } } },
                 }),
             }));
 
@@ -321,7 +322,7 @@ describe("device-lab MCP broker Appium routing", () => {
                 method: "broker.appium.request",
                 result: expect.objectContaining({
                     path: "/actions",
-                    response: expect.objectContaining({ ok: true }),
+                    response: { ok: true, status: 200, body: { value: null } },
                 }),
             }));
 
@@ -338,7 +339,7 @@ describe("device-lab MCP broker Appium routing", () => {
             expect(JSON.parse(((deleteSession.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
                 ok: true,
                 method: "broker.appium.session.delete",
-                result: expect.objectContaining({ deleted: true }),
+                result: expect.objectContaining({ deleted: true, response: { ok: true, status: 200, body: { value: null } } }),
             }));
             expect(fakeAppium.requests.map((entry) => `${entry.method} ${entry.url}`)).toEqual(expect.arrayContaining([
                 "POST /session",

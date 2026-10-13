@@ -51,12 +51,15 @@ export function renderBrokerDeviceStatus(outcome: DeviceStatusOutcome<NativeStat
                     command: hyperV ? redactProviderCommandInput(execution, true, success ? undefined : "hyper-v-provider-command-failed") : execution } } } };
 }
 import type { BrokerRecordingResponse, BrokerRecordingExecution, BrokerRecordingSignal } from "../domain/broker-recording.js";
-import type { BrokerAppiumResponse, BrokerAppiumExecution, BrokerAppiumTermination, BrokerAppiumVerification } from "../domain/broker-appium.js";
+import type { BrokerAppiumResponse, AppiumEffectObservation, BrokerAppiumExecution, BrokerAppiumTermination, BrokerAppiumVerification } from "../domain/broker-appium.js";
 export class NativeBrokerExecutionReceipt {
     constructor(readonly value: ProviderCommandResult, readonly preparedCommand?: ProviderCommand) { }
 }
 export class NativeRecordingSignalReceipt {
     constructor(readonly value: unknown) { }
+}
+export class NativeAppiumResponseReceipt {
+    constructor(readonly value: {ok: boolean; status: number | null; body: unknown}) { }
 }
 export class NativeAppiumTerminationReceipt {
     constructor(readonly value: unknown) { }
@@ -124,6 +127,9 @@ function appiumExecution(observation: BrokerAppiumExecution) {
     const { receipt, ...facts } = observation;
     return receipt instanceof NativeBrokerExecutionReceipt ? receipt.value : facts;
 }
+function appiumResponse(observation: AppiumEffectObservation) {
+    return observation.receipt instanceof NativeAppiumResponseReceipt ? observation.receipt.value : {ok: observation.ok};
+}
 function appiumTermination(observation: BrokerAppiumTermination) {
     const { receipt, ...facts } = observation;
     return receipt instanceof NativeAppiumTerminationReceipt ? receipt.value : facts;
@@ -146,15 +152,17 @@ function appiumInstrumentation(recovery: import("../domain/broker-appium.js").Br
 }
 export function renderBrokerAppium(outcome: BrokerAppiumResponse): WireResult {
     if (outcome.kind === "refused") {
-        const { kind: _kind, reason, execution, signal, replaced, portCleanup, verification, runtime, instrumentationRecovery, rollback, statusObservation, sessionObservation, ...facts } = outcome;
+        const { kind: _kind, reason, execution, signal, replaced, portCleanup, verification, runtime, instrumentationRecovery, response, readiness, rollback, statusObservation, sessionObservation, ...facts } = outcome;
         return { status: refusalStatus(reason, outcome.error), payload: { ok: false, ...facts,
                 ...(execution ? { execution: appiumExecution(execution) } : {}), ...(signal ? { signal: appiumTermination(signal) } : {}),
                 ...(replaced ? { replaced: appiumTermination(replaced) } : {}), ...(portCleanup ? { portCleanup: appiumTermination(portCleanup) } : {}),
                 ...(verification ? { verification: appiumVerification(verification) } : {}),
                 ...(runtime ? { runtime: appiumRuntimeFailure(runtime) } : {}),
                 ...(instrumentationRecovery ? { instrumentationRecovery: appiumInstrumentation(instrumentationRecovery) } : {}),
-                ...(rollback ? { rollback: "receipt" in rollback ? appiumTermination(rollback) : rollback } : {}),
-                ...(statusObservation ? { status: statusObservation } : {}), ...(sessionObservation !== undefined ? { session: sessionObservation } : {}),
+                ...(response !== undefined ? {response: appiumResponse(response)} : {}),
+                ...(readiness ? {readiness: {ok: readiness.ok, response: readiness.response === null ? null : appiumResponse(readiness.response)}} : {}),
+                ...(rollback ? { rollback: rollback.receipt instanceof NativeAppiumResponseReceipt ? appiumResponse(rollback) : appiumTermination(rollback) } : {}),
+                ...(statusObservation ? { status: appiumResponse(statusObservation) } : {}), ...(sessionObservation !== undefined ? { session: sessionObservation === null ? null : appiumResponse(sessionObservation) } : {}),
                 ...(outcome.error === "appium-runtime-state-conflict" && signal ? { authority: "host-broker" } : {}) } };
     }
     switch (outcome.kind) {
@@ -165,7 +173,7 @@ export function renderBrokerAppium(outcome: BrokerAppiumResponse): WireResult {
         case "session-reused":
         case "session-deleted": {
             const { kind: _kind, ...facts } = outcome;
-            return { status: 200, payload: { ok: true, result: { ...facts, authority: "host-broker" } } };
+            return { status: 200, payload: { ok: true, result: { ...facts, ...("response" in outcome && outcome.response !== undefined ? {response: appiumResponse(outcome.response)} : {}), authority: "host-broker" } } };
         }
         case "server-started": {
             const { kind: _kind, execution, replaced, portCleanup, ...facts } = outcome;
@@ -177,12 +185,12 @@ export function renderBrokerAppium(outcome: BrokerAppiumResponse): WireResult {
         }
         case "session-delete-failed": {
             const { kind: _kind, error, ...facts } = outcome;
-            return { status: 502, payload: { ok: false, error, result: { ...facts, authority: "host-broker" } } };
+            return { status: 502, payload: { ok: false, error, result: { ...facts, ...("response" in outcome && outcome.response !== undefined ? {response: appiumResponse(outcome.response)} : {}), authority: "host-broker" } } };
         }
         case "request-completed":
         case "request-failed": {
             const { kind, error, ...facts } = outcome;
-            return { status: kind === "request-completed" ? 200 : 502, payload: { ok: kind === "request-completed", ...(error ? { error } : {}), result: { ...facts, authority: "host-broker" } } };
+            return { status: kind === "request-completed" ? 200 : 502, payload: { ok: kind === "request-completed", ...(error ? { error } : {}), result: { ...facts, ...("response" in outcome && outcome.response !== undefined ? {response: appiumResponse(outcome.response)} : {}), authority: "host-broker" } } };
         }
     }
 }

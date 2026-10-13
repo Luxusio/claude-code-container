@@ -1,4 +1,4 @@
-import { brokerOwnedAppiumRuntime, validateAppiumParams, isPlainRecord, validateAppiumRequestParams, requestedAppiumPort, appiumAutomationName, appiumProviderName, appiumCapabilities, appiumInstrumentationInitializationFailed, claimsBrokerOwnedAppiumRuntime, brokerOwnedAppiumEndpoint, brokerLaunchedAppiumServerUrl, appiumMetadata, appiumRuntimeOperationError, appiumParamError, appiumWebDriverRequestTimeoutMs } from "../domain/broker-appium.js";
+import { brokerOwnedAppiumRuntime, validateAppiumParams, isPlainRecord, validateAppiumRequestParams, requestedAppiumPort, appiumAutomationName, appiumProviderName, appiumCapabilities, claimsBrokerOwnedAppiumRuntime, brokerOwnedAppiumEndpoint, brokerLaunchedAppiumServerUrl, appiumMetadata, appiumRuntimeOperationError, appiumParamError, appiumWebDriverRequestTimeoutMs } from "../domain/broker-appium.js";
 import type { AppiumParamSuccess, BrokerAppiumResponse, BrokerAppiumBudget, BrokerAppiumRefusal, BrokerAppiumInstrumentationRecovery, BrokerAppiumRuntimeFailure, BrokerAppiumRecordOutcome, BrokerAppiumClearOutcome, BrokerAppiumStartOutcome, BrokerAppiumStopOutcome, BrokerAppiumSessionOutcome, BrokerAppiumDeleteSessionOutcome, BrokerAppiumRequestOutcome } from "../domain/broker-appium.js";
 import type { BrokerAppiumPorts, BrokerAppiumTransition, BrokerAppiumVerification } from "../ports/broker-appium.js";
 const DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS = 60000;
@@ -16,7 +16,7 @@ type AppiumRequestBudget = BrokerAppiumBudget;
 export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<Runtime>) {
     const readOwnerDevices = ports.readDevices, ownerDeviceStateFailure = ports.stateFailure, ownerDeviceNotFound = ports.notFound, transitionOwnerAppiumRuntime = ports.publish;
     const verifyBrokerOwnedAppiumListener = ports.verifyListener, terminateBrokerOwnedAppiumAndWait = ports.terminateRuntime, terminateManagedAppiumPortListener = ports.terminatePortListener;
-    const fetchAppiumJson = ports.http, sleep = ports.sleep, withOwnerDeviceOperation = ports.withDeviceOperation, refreshPhysicalDeviceLeaseForOperation = ports.heartbeat;
+    const sleep = ports.sleep, withOwnerDeviceOperation = ports.withDeviceOperation, refreshPhysicalDeviceLeaseForOperation = ports.heartbeat;
     const isDeviceOperationLockTimeout = ports.isLockTimeout, deviceOperationLockFailure = ports.lockFailure;
     const ensureBrokerAppiumRuntimeDirectory = ports.ensureRuntimeDirectory, inspectBrokerAppiumRuntimeDirectory = ports.inspectRuntimeDirectory, inspectBrokerAppiumNodeModulesDirectory = ports.inspectNodeModules, brokerAppiumRuntimeEntryIsValid = ports.entryIsValid;
     const DEVICE_BROKER_PHYSICAL_BACKENDS = new Set(["android-device", "ios-device"]);
@@ -231,7 +231,7 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
         }
         const existingServerUrl = existingVerification?.ok ? existingVerification.serverUrl : null;
         if (existingServerUrl && typeof appium.sessionId === "string" && force) {
-            const deleteResponse = await fetchAppiumJson(`${existingServerUrl}/session/${encodeURIComponent(appium.sessionId)}`, { method: "DELETE", timeoutMs: ports.commandTimeoutMs });
+            const deleteResponse = await ports.deleteSession(existingServerUrl, appium.sessionId, ports.commandTimeoutMs);
             if (!deleteResponse.ok) {
                 return {kind: "session-delete-failed", error: "appium-session-delete-failed", ownerId, backend: parsed.backend, stateKey: parsed.stateKey, deviceId: parsed.deviceId, appium, created: false, reused: false, response: deleteResponse};
             }
@@ -241,8 +241,8 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
             if (!transition.matched) return appiumRuntimeStateConflict(ownerId, parsed, transition, { response: deleteResponse });
         }
         if (existingServerUrl && typeof appium.sessionId === "string" && !force) {
-            const status = await fetchAppiumJson(`${existingServerUrl}/status`, { method: "GET", timeoutMs: ports.commandTimeoutMs });
-            const session = status.ok ? await fetchAppiumJson(`${existingServerUrl}/session/${encodeURIComponent(appium.sessionId)}`, { method: "GET", timeoutMs: ports.commandTimeoutMs }) : null;
+            const status = await ports.status(existingServerUrl, ports.commandTimeoutMs);
+            const session = status.ok ? await ports.inspectSession(existingServerUrl, appium.sessionId, ports.commandTimeoutMs) : null;
             if (status.ok && session?.ok) {
                 return {kind: "session-reused", ownerId, backend: parsed.backend, stateKey: parsed.stateKey, deviceId: parsed.deviceId, appium, reused: true, created: false};
             }
@@ -280,31 +280,18 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
             return {kind: "refused", reason: "provider-failed", error: "appium-server-not-ready", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, readiness, signal};
         }
         const capabilities = appiumCapabilities(parsed.backend, device);
-        let response = await fetchAppiumJson(`${serverUrl}/session`, {
-            method: "POST",
-            body: { capabilities: { alwaysMatch: capabilities } },
-            timeoutMs: DEVICE_BROKER_APPIUM_SESSION_TIMEOUT_MS,
-        });
+        let response = await ports.createSession(serverUrl, capabilities, DEVICE_BROKER_APPIUM_SESSION_TIMEOUT_MS);
         let instrumentationRecovery = null;
-        if (!response.ok && parsed.backend.startsWith("android") && appiumInstrumentationInitializationFailed(response)) {
+        if (!response.ok && parsed.backend.startsWith("android") && response.instrumentationInitializationFailed) {
             instrumentationRecovery = resetAndroidAppiumInstrumentation(device);
             if (instrumentationRecovery.attempted) {
-                response = await fetchAppiumJson(`${serverUrl}/session`, {
-                    method: "POST",
-                    body: { capabilities: { alwaysMatch: capabilities } },
-                    timeoutMs: DEVICE_BROKER_APPIUM_SESSION_TIMEOUT_MS,
-                });
+                response = await ports.createSession(serverUrl, capabilities, DEVICE_BROKER_APPIUM_SESSION_TIMEOUT_MS);
             }
         }
         if (!response.ok) {
             return {kind: "refused", reason: "provider-failed", error: "appium-session-create-failed", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, response, ...(instrumentationRecovery ? { instrumentationRecovery } : {})};
         }
-        const responseBody = response.body as { value?: { sessionId?: unknown }; sessionId?: unknown } | null;
-        const sessionId = typeof responseBody?.value?.sessionId === "string"
-            ? responseBody.value.sessionId
-            : typeof responseBody?.sessionId === "string"
-                ? responseBody.sessionId
-                : null;
+        const sessionId = response.sessionId;
         if (!sessionId) {
             return {kind: "refused", reason: "provider-failed", error: "appium-session-id-missing", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, response};
         }
@@ -318,7 +305,7 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
         };
         const transition = writeUpdatedAppiumDevice(ownerId, parsed, appium, updatedAppium);
         if (!transition.matched) {
-            const rollback = await fetchAppiumJson(`${serverUrl}/session/${encodeURIComponent(sessionId)}`, { method: "DELETE", timeoutMs: ports.commandTimeoutMs });
+            const rollback = await ports.deleteSession(serverUrl, sessionId, ports.commandTimeoutMs);
             return appiumRuntimeStateConflict(ownerId, parsed, transition, { response, rollback });
         }
         const updatedDevice = transition.device;
@@ -344,7 +331,7 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
         const listenerVerification = verifyBrokerOwnedAppiumListener(appium);
         if (!listenerVerification.ok) return appiumListenerOwnershipFailure(ownerId, parsed, listenerVerification);
         const serverUrl = listenerVerification.serverUrl;
-        const response = await fetchAppiumJson(`${serverUrl}/session/${encodeURIComponent(appium.sessionId)}`, { method: "DELETE", timeoutMs: ports.commandTimeoutMs });
+        const response = await ports.deleteSession(serverUrl, appium.sessionId, ports.commandTimeoutMs);
         if (!response.ok) {
             return {kind: "session-delete-failed", error: "appium-session-delete-failed", ownerId, backend: parsed.backend, stateKey: parsed.stateKey, deviceId: parsed.deviceId, appium, deleted: false, response};
         }
@@ -381,11 +368,11 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
         const serverUrl = listenerVerification.serverUrl;
         const timeoutMs = waitBudget ? Math.ceil(waitBudget.remaining()) : appiumWebDriverRequestTimeoutMs(ports.commandTimeoutMs);
         if (timeoutMs <= 0) return appiumRequestBudgetFailure();
-        const response = await fetchAppiumJson(`${serverUrl}/session/${encodeURIComponent(appium.sessionId)}${parsed.path}`, {
+        const response = await ports.sessionCommand(serverUrl, appium.sessionId, {
             method: parsed.method,
-            body: parsed.method === "GET" ? undefined : parsed.body,
-            timeoutMs,
-        });
+            path: parsed.path,
+            body: parsed.body,
+        }, timeoutMs);
         if (waitBudget && waitBudget.remaining() <= 0) return appiumRequestBudgetFailure();
         return {kind: response.ok ? "request-completed" : "request-failed", ...(response.ok ? {} : { error: "appium-request-failed" }), ownerId, backend: parsed.backend, stateKey: parsed.stateKey, deviceId: parsed.deviceId, method: parsed.method, path: parsed.path, response};
     }
@@ -431,15 +418,11 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
 
     async function waitForAppiumServerReady(serverUrl: string, timeoutMs = DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS) {
         const deadline = ports.now() + Math.max(1, timeoutMs);
-        let response: Awaited<ReturnType<typeof fetchAppiumJson>> | null = null;
+        let response: Awaited<ReturnType<typeof ports.status>> | null = null;
         while (ports.now() <= deadline) {
             const remainingMs = Math.max(1, deadline - ports.now());
-            response = await fetchAppiumJson(`${serverUrl}/status`, {
-                method: "GET",
-                timeoutMs: Math.min(2000, remainingMs),
-            });
-            const body = response.body as { value?: { ready?: unknown } } | null;
-            if (response.ok && body?.value?.ready !== false) return { ok: true, response };
+            response = await ports.status(serverUrl, Math.min(2000, remainingMs));
+            if (response.ok && response.ready) return { ok: true, response };
             if (ports.now() < deadline) await sleep(Math.min(200, Math.max(1, deadline - ports.now())));
         }
         return { ok: false, response };
