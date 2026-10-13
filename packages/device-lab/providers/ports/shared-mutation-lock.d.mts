@@ -1,5 +1,6 @@
 import type { PublicationDirectory } from './state-file-publication.mjs';
 export interface LockProcessIdentity { pid:number;startToken:string;commandHash:string }
+export type LockPublicationTimes = {kind:'known';processStartedAtMs:number;claimCreatedAtMs:number}|{kind:'unavailable'};
 export type LockObservationStatus = 'match'|'mismatch'|'exited'|'unavailable';
 export interface MutationLockRecord { token:string;pid:number;host:string;bootId?:string;createdAt?:string;processIdentityStatus?:'recorded'|'unavailable';processIdentity?:LockProcessIdentity }
 export interface MutationLockOptions { reclaimStale?:boolean;waitMs?:number;staleMs?:number;waitBudget?:{remaining():number} }
@@ -16,6 +17,7 @@ export interface SharedMutationLockPorts<Fence extends readonly PublicationDirec
     mtime(file:string):number|null;alive(pid:number):boolean;
     identitySync(pid:number):LockProcessIdentity|null;
     identityAsync(pid:number):Promise<LockProcessIdentity|null>;
+    publicationTimes(identity:LockProcessIdentity,createdAt:string|undefined):LockPublicationTimes;
     observe(identity:LockProcessIdentity,pid:number):LockObservationStatus;
     matches(expected:LockProcessIdentity,current:LockProcessIdentity):boolean;
     moveQualified(file:string,token:string,suffix:'stale'|'release',fence:Fence):boolean;

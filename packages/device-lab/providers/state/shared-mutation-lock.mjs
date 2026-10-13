@@ -2,6 +2,7 @@ import { ownerContext, runOwnerContext } from "./mutation-lock-context.mjs";
 import { randomUUID } from "crypto";
 import { createStateFilePublication } from "../application/state-file-publication.mjs";
 import { createSharedMutationLock } from "../application/shared-mutation-lock.mjs";
+import { readLockPublicationTimes } from "../adapters/lock-publication-times.mjs";
 import { chmodSync, closeSync, constants as fsConstants, copyFileSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { hostname, uptime } from "os";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "path";
@@ -296,6 +297,7 @@ const lockPorts = {
     alive: processIsAlive,
     identitySync: readProcessIdentity,
     identityAsync: readProcessIdentityAsync,
+    publicationTimes: readLockPublicationTimes,
     observe: (identity, pid) => inspectProcessIdentity(identity, pid).status,
     matches: processIdentityMatches,
     moveQualified: (file, token, suffix, fence) => moveIfTokenMatches(file, token, suffix, () => assertStateDirectoriesUnchanged(fence)),

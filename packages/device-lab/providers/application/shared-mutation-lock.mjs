@@ -91,6 +91,9 @@ export function createSharedMutationLock(ports) {
                 if (!asynchronous && ports.platform() === 'win32') return {stale:false};
                 return {probe:{...lock,processIdentity:lock.processIdentity}};
             }
+            if (asynchronous && ports.platform() === 'win32' && lock.createdAt) {
+                return {legacyProbe:lock};
+            }
             return {stale:false};
         }
         return {stale:false};
@@ -98,7 +101,20 @@ export function createSharedMutationLock(ports) {
     /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs */
     function stale(file,lock,staleMs) { const facts = staleFacts(file,lock,staleMs,false); if (!facts.probe) return facts.stale; const status = observation(facts.probe); return status === 'mismatch' || status === 'exited'; }
     /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs */
-    async function staleAsync(file,lock,staleMs) { const facts = staleFacts(file,lock,staleMs,true); if (!facts.probe) return facts.stale; const status = await observationAsync(facts.probe); return status === 'mismatch' || status === 'exited'; }
+    async function staleAsync(file,lock,staleMs) {
+        const facts = staleFacts(file,lock,staleMs,true);
+        if (facts.legacyProbe) {
+            const current = await slot(() => ports.identityAsync(facts.legacyProbe.pid));
+            if (!current) return !ports.alive(facts.legacyProbe.pid);
+            // A process born after publication cannot own this claim, even when
+            // the old identity is missing.
+            const times = ports.publicationTimes(current,facts.legacyProbe.createdAt);
+            return times.kind === 'known' && times.processStartedAtMs > times.claimCreatedAtMs + 1000;
+        }
+        if (!facts.probe) return facts.stale;
+        const status = await observationAsync(facts.probe);
+        return status === 'mismatch' || status === 'exited';
+    }
     /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockOptions} options */
     function waitFor(file,options) {
         const waitMs = options.waitMs ?? 5000;
