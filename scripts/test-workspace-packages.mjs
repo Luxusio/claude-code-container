@@ -33,6 +33,14 @@ function validatePackageLayout(packageRoot) {
     const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
     assert.equal(manifest.type, "module");
     assert.equal(typeof manifest.version, "string");
+    // The Unix payload deliberately has a minimal root manifest; check publication pins in the archive.
+    if (manifest.name === "claude-code-container") {
+        for (const name of ["@ccc/device-lab", "@ccc/hyper-v"]) assert.equal(manifest.devDependencies?.[name], manifest.version);
+        const mcp = JSON.parse(readFileSync(join(packageRoot, "device-lab-mcp/package.json"), "utf8"));
+        assert.equal(mcp.name, "@ccc/device-lab-mcp");
+        assert.equal(mcp.version, manifest.version);
+        assert.equal(mcp.dependencies?.["@ccc/device-lab"], manifest.version);
+    }
     for (const file of ["dist/index.js", "dist/device-lab-mcp/server.mjs", "scripts/install.js",
         "scripts/build-distribution-image.mjs", "Dockerfile", "Dockerfile.distribution", "Containerfile"]) {
         requireFile(join(packageRoot, file));
@@ -44,6 +52,7 @@ function validatePackageLayout(packageRoot) {
         const pkg = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
         assert.equal(pkg.name, `@ccc/${name}`);
         assert.equal(pkg.version, manifest.version);
+        if (name === "device-lab") assert.equal(pkg.dependencies?.["@ccc/hyper-v"], manifest.version);
         assert(pkg.exports && Object.keys(pkg.exports).length > 0, `Missing ${name} public exports`);
         const files = readdirSync(directory, { recursive: true }).filter(file => lstatSync(join(directory, file)).isFile());
         const targets = value => typeof value === "string" ? [value] : Object.values(value || {}).flatMap(targets);
