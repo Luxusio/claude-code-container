@@ -339,7 +339,7 @@ export function inspectLargeRegularFile(root: string, file: string, label: strin
     if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n || pathStat.size <= 0n) throw new Error(`${label}-invalid`);
     pathStat = readDeviceLabFileIdentity(absolute, label);
     const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-    const descriptor = openSync(absolute, fsConstants.O_RDONLY | noFollow);
+    const descriptor = openSync(absolute, fsConstants.O_RDONLY | noFollow | (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0));
     try {
         const descriptorStat = fstatSync(descriptor, { bigint: true });
         if (!descriptorStat.isFile() || descriptorStat.nlink !== 1n
@@ -376,7 +376,7 @@ export async function stageLargeRegularFileFromProject(
         }
         pathStat = await readDeviceLabFileIdentityAsync(absolute, label);
         const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-        sourceDescriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow);
+        sourceDescriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow | (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0));
         const openedSource = await sourceDescriptor.stat({ bigint: true });
         const currentSource = await readDeviceLabFileIdentityAsync(absolute, label);
         if (!openedSource.isFile() || openedSource.nlink !== 1n
@@ -443,7 +443,7 @@ export async function sha256LargeRegularFile(
     if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1n || pathStat.size <= 0n) throw new Error(`${label}-invalid`);
     pathStat = await readDeviceLabFileIdentityAsync(absolute, label);
     const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-    const descriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow);
+    const descriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow | (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0));
     const hash = createHash("sha256");
     const buffer = Buffer.allocUnsafe(1024 * 1024);
     try {

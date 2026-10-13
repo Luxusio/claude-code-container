@@ -4,6 +4,8 @@ import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, stat
 import { tmpdir } from "os";
 import { promises as fsPromises } from "fs";
 import { join } from "path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -144,6 +146,40 @@ describe("Hyper-V disk capacity", () => {
 });
 
 describe("cloning the base image", () => {
+    it.skipIf(process.platform === "win32")("refuses a real FIFO substituted before opening the qualified clone source", () => {
+        const source = fileURLToPath(new URL("../../packages/device-lab/src/device-lab/broker/hyper-v/vm-create-preflight.ts", import.meta.url));
+        const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+            import fs from 'node:fs';
+            import { execFileSync } from 'node:child_process';
+            import { createHash } from 'node:crypto';
+            import { join } from 'node:path';
+            import { pathToFileURL } from 'node:url';
+            const { cloneHyperVBaseImage } = await import(pathToFileURL(process.argv[1]).href);
+            const root = process.argv[2], image = join(root, 'base.vhdx'), retained = join(root, 'retained.vhdx');
+            const deviceRoot = join(root, 'device'), diskPath = join(deviceRoot, 'disk.vhdx');
+            fs.mkdirSync(deviceRoot);
+            const bytes = Buffer.from('clone source bytes');
+            fs.writeFileSync(image, bytes);
+            const open = fs.promises.open.bind(fs.promises), live = new Set();
+            let sourceOpens = 0, refused = false, destinationCreated = false;
+            fs.promises.open = async (...args) => {
+                if (String(args[0]) === image && ++sourceOpens === 3) {
+                    fs.renameSync(image, retained);
+                    execFileSync('mkfifo', [image]);
+                }
+                const handle = await open(...args); live.add(handle);
+                const close = handle.close.bind(handle);
+                handle.close = async () => { await close(); live.delete(handle); };
+                return handle;
+            };
+            try { await cloneHyperVBaseImage({ baseImageRoot: root, baseImagePath: image, expectedSha256: createHash('sha256').update(bytes).digest('hex'), deviceRoot, diskPath, onDestinationCreated: () => { destinationCreated = true; } }); }
+            catch { refused = true; }
+            console.log(JSON.stringify({ refused, live: live.size, swapped: sourceOpens === 3, destinationCreated, destinationExists: fs.existsSync(diskPath), fifoRetained: fs.lstatSync(image).isFIFO(), bytes: fs.readFileSync(retained, 'utf8') }));
+        `, source, root], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
+        expect(child.error, child.stderr).toBeUndefined();
+        expect(child.status, child.stderr).toBe(0);
+        expect(JSON.parse(child.stdout.trim())).toEqual({ refused: true, live: 0, swapped: true, destinationCreated: false, destinationExists: false, fifoRetained: true, bytes: "clone source bytes" });
+    });
     it("copies and verifies actual bytes despite Windows pathname dev0 and precise bigint inode", async () => {
         const bytes = Buffer.alloc(1024 * 1024 + 17, 7);
         const { imageRoot, imagePath, sha256 } = writeBaseImage(bytes);

@@ -4,6 +4,8 @@ Authentication, image use and owned artifact cleanup must accept a stable regula
 
 Pathname metadata alone does not grant authority. Opened handles must provide matching positive volume and exact bigint inode identities. A Windows pathname volume of zero requires independent read-only handle qualification and fresh pathname checks. Missing identity, replacement, links where forbidden, or a failed verification open must refuse the operation and preserve its artifacts.
 
+Admit supported pathname kinds before opening, and use available nonblocking read-only flags to cover replacement between inspection and open. Revalidate the opened type and identity before reading. A writerless FIFO must not stall broker requests or retain a cleanup lock. Cleanup handles special entries through checked rename and unlink only, without opening them.
+
 Authentication retains its bounded 4096-byte read, owner and secret validation, and directory admission. Host and MCP readers share this implementation. A valid credential remains stable across repeated authenticated requests; a rejected credential cannot dispatch an authenticated operation. Secret bytes are read only from the original validated descriptor.
 
 Image copy and hashing retain single-link regular-file checks, size and byte bounds, hashes, exclusive destinations and deadlines. Verification handles close before compensation.

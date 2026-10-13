@@ -17,12 +17,13 @@ function assertIdentity(opened: BigIntStats, named: BigIntStats, expected: BigIn
         || (opened.isFile() && opened.nlink !== 1n) || !namedObject(opened, named)
         || (expected && !sameObject(expected, opened))) throw new Error(`${label}-identity-changed`);
 }
-const readFlags = constants.O_RDONLY | (typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0);
+const readFlags = constants.O_RDONLY | (typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0)
+    | (typeof constants.O_NONBLOCK === 'number' ? constants.O_NONBLOCK : 0);
 
 /** Qualifies pathname observations against positive, exact native handle identity. */
 export function readDeviceLabFileIdentity(path: string, label: string, expected?: BigIntStats): BigIntStats {
     const initial = lstatSync(path, { bigint: true });
-    if (initial.isSymbolicLink()) throw new Error(`${label}-identity-changed`);
+    if (initial.isSymbolicLink() || (!initial.isFile() && !initial.isDirectory())) throw new Error(`${label}-identity-changed`);
     const descriptor = openSync(path, readFlags);
     try {
         const opened = fstatSync(descriptor, { bigint: true });
@@ -40,7 +41,7 @@ export function readDeviceLabFileIdentity(path: string, label: string, expected?
 
 export async function readDeviceLabFileIdentityAsync(path: string, label: string, expected?: BigIntStats): Promise<BigIntStats> {
     const initial = await fsPromises.lstat(path, { bigint: true });
-    if (initial.isSymbolicLink()) throw new Error(`${label}-identity-changed`);
+    if (initial.isSymbolicLink() || (!initial.isFile() && !initial.isDirectory())) throw new Error(`${label}-identity-changed`);
     const descriptor = await fsPromises.open(path, readFlags);
     try {
         const opened = await descriptor.stat({ bigint: true });

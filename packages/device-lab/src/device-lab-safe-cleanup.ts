@@ -42,7 +42,8 @@ function safeCleanupMutationLockFile(): string {
 }
 
 function sameEntryIdentity(original: BigIntStats, quarantined: BigIntStats): boolean {
-    if (original.dev !== quarantined.dev || original.ino !== quarantined.ino) return false;
+    if (original.dev !== quarantined.dev || original.ino !== quarantined.ino
+        || (original.mode & BigInt(fsConstants.S_IFMT)) !== (quarantined.mode & BigInt(fsConstants.S_IFMT))) return false;
     return original.isDirectory() === quarantined.isDirectory()
         && original.isSymbolicLink() === quarantined.isSymbolicLink();
 }
@@ -63,7 +64,7 @@ function removeBoundDirectory(
 ): void {
     let descriptor: number | null = null;
     try {
-        descriptor = openSync(path, fsConstants.O_RDONLY);
+        descriptor = openSync(path, fsConstants.O_RDONLY | (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0));
     } catch {
         // Windows does not consistently expose directory descriptors through
         // fs.open; the identity checks below remain mandatory on that path.
@@ -83,19 +84,20 @@ function removeBoundDirectory(
             assertBound();
             const child = join(anchored, entry);
             const childPathStats = lstatSync(child, { bigint: true });
-            const childStats = childPathStats.isSymbolicLink() ? childPathStats : cleanupFileIdentity(child, "quarantined-cleanup-target");
+            const childStats = childPathStats.isFile() || childPathStats.isDirectory()
+                ? cleanupFileIdentity(child, "quarantined-cleanup-target") : childPathStats;
             beforeRemoveEntry?.(child);
             assertBound();
             const stagedChild = join(anchored, `.ccc-entry-${randomBytes(16).toString("hex")}`);
             renameSync(child, stagedChild);
             assertBound();
-            const stagedStats = childStats.isSymbolicLink() ? lstatSync(stagedChild, { bigint: true }) : cleanupFileIdentity(stagedChild, "quarantined-cleanup-target", childStats);
+            const stagedStats = childStats.isFile() || childStats.isDirectory() ? cleanupFileIdentity(stagedChild, "quarantined-cleanup-target", childStats) : lstatSync(stagedChild, { bigint: true });
             if (!sameEntryIdentity(childStats, stagedStats)) {
                 throw new Error("quarantined-cleanup-target-invalid");
             }
             beforeDeleteEntry?.(stagedChild);
             assertBound();
-            const deleteStats = stagedStats.isSymbolicLink() ? lstatSync(stagedChild, { bigint: true }) : cleanupFileIdentity(stagedChild, "quarantined-cleanup-target", stagedStats);
+            const deleteStats = stagedStats.isFile() || stagedStats.isDirectory() ? cleanupFileIdentity(stagedChild, "quarantined-cleanup-target", stagedStats) : lstatSync(stagedChild, { bigint: true });
             if (!sameEntryIdentity(stagedStats, deleteStats)) throw new Error("quarantined-cleanup-target-invalid");
             if (childStats.isSymbolicLink() || !childStats.isDirectory()) unlinkSync(stagedChild);
             else removeBoundDirectory(stagedChild, deleteStats, undefined, undefined, beforeDeleteEntry, beforeDeleteRoot);

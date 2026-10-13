@@ -230,7 +230,7 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
     let source: Awaited<ReturnType<typeof fsPromises.open>> | null = null;
     let target: Awaited<ReturnType<typeof fsPromises.open>> | null = null;
     try {
-        source = await fsPromises.open(request.baseImagePath, fsConstants.O_RDONLY | noFollow);
+        source = await fsPromises.open(request.baseImagePath, fsConstants.O_RDONLY | noFollow | (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0));
         const openedSource = await source.stat({ bigint: true });
         if (!openedSource.isFile() || openedSource.nlink !== 1n
             || openedSource.dev !== sourceStat.dev

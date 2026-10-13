@@ -2,6 +2,8 @@ import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { quarantineAndRemoveDirectory, type QuarantinedCleanupError } from "@ccc/device-lab/device-lab-safe-cleanup.js";
 
@@ -44,6 +46,29 @@ describe("quarantineAndRemoveDirectory", () => {
     afterEach(() => {
         windowsFs.enabled = false;
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    });
+
+    it.skipIf(process.platform === "win32")("quarantines and unlinks a real nested FIFO without waiting for a writer", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-safe-cleanup-fifo-"));
+        roots.push(root);
+        const source = fileURLToPath(new URL("../../packages/device-lab/src/device-lab-safe-cleanup.ts", import.meta.url));
+        const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+            import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+            import { execFileSync } from 'node:child_process';
+            import { join } from 'node:path';
+            import { pathToFileURL } from 'node:url';
+            const { quarantineAndRemoveDirectory } = await import(pathToFileURL(process.argv[1]).href);
+            const target = join(process.argv[2], 'device');
+            mkdirSync(join(target, 'nested'), { recursive: true });
+            writeFileSync(join(target, 'owned.txt'), 'owned');
+            execFileSync('mkfifo', [join(target, 'nested', 'pipe')]);
+            const result = quarantineAndRemoveDirectory(target, () => {});
+            console.log(JSON.stringify({ removed: !existsSync(target), quarantineRemoved: !existsSync(result.quarantineRoot) }));
+        `, source, root], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
+        expect(child.error, child.stderr).toBeUndefined();
+        expect(child.status, child.stderr).toBe(0);
+        expect(JSON.parse(child.stdout.trim())).toEqual({ removed: true, quarantineRemoved: true });
+        expect(readdirSync(root)).toEqual([]);
     });
 
     it("removes a quarantined nested directory with Windows dev0 paths and exact bigint descriptors", () => {

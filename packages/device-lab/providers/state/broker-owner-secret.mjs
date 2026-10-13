@@ -23,8 +23,12 @@ function readBoundedUtf8Descriptor(descriptor, limitBytes) {
 export function readBrokerOwnerSecret(file, ownerId, onVerifiedDescriptor) {
     let fd = null;
     try {
+        const before = lstatSync(file, { bigint: true });
+        if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) return null;
         const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-        fd = openSync(file, fsConstants.O_RDONLY | noFollow);
+        const nonBlock = typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0;
+        const readFlags = fsConstants.O_RDONLY | noFollow | nonBlock;
+        fd = openSync(file, readFlags);
         const stat = fstatSync(fd, { bigint: true });
         const pathStat = lstatSync(file, { bigint: true });
         if (!stat.isFile() || !pathStat.isFile() || pathStat.isSymbolicLink()
@@ -34,7 +38,7 @@ export function readBrokerOwnerSecret(file, ownerId, onVerifiedDescriptor) {
             // Some supported Windows Node versions omit the pathname's volume ID.
             // Prove it with another opened handle; a zero pathname ID is not proof.
             if (process.platform !== "win32" || pathStat.dev !== 0n || stat.dev === 0n) return null;
-            const verificationFd = openSync(file, fsConstants.O_RDONLY | noFollow);
+            const verificationFd = openSync(file, readFlags);
             try {
                 const verification = fstatSync(verificationFd, { bigint: true });
                 const currentPath = lstatSync(file, { bigint: true });

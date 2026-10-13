@@ -712,6 +712,95 @@ describe("device-lab host broker daemon", () => {
         expect(closed).toContain(opened[0]);
     });
 
+    it.runIf(process.platform !== "win32").each(["writerless-fifo", "regular-to-fifo"] as const)(
+        "promptly refuses authenticated broker RPC with an unreadable special credential: %s", async scenario => {
+            const brokerSource = pathToFileURL(resolve("packages/device-lab/src/device-lab-broker.ts")).href;
+            const environmentHelper = pathToFileURL(resolve("src/__tests__/helpers/device-lab-test-environment.ts")).href;
+            const program = `
+import * as fs from 'node:fs';
+import {createRequire,syncBuiltinESMExports} from 'node:module';
+import {spawnSync} from 'node:child_process';
+import {join,dirname} from 'node:path';
+import {isolateDeviceLabTestEnvironment} from ${JSON.stringify(environmentHelper)};
+const phase = name => console.error(JSON.stringify({phase:name,at:Date.now()}));
+phase('before-broker-import');
+const {createDeviceBrokerServer,deviceBrokerOwnerToken,deviceBrokerAuthSecretFile} = await import(${JSON.stringify(brokerSource)});
+phase('after-broker-import');
+const home = ${JSON.stringify(fixtureHome)}, scenario = ${JSON.stringify(scenario)};
+const restore = isolateDeviceLabTestEnvironment(home);
+const owner = ${JSON.stringify(deviceLabOwnerId(process.cwd()))}, token = deviceBrokerOwnerToken(owner), file = deviceBrokerAuthSecretFile(owner);
+const mutableFs = createRequire(import.meta.url)('node:fs');
+const originalOpen = mutableFs.openSync, originalClose = mutableFs.closeSync, originalRead = mutableFs.readSync;
+const live = new Set();
+let opened = 0, closed = 0, reads = 0, providerCalls = 0, swapped = false;
+const server = createDeviceBrokerServer({ownerId:owner,host:'127.0.0.1',port:0,commandRunner(){providerCalls++;throw new Error('unexpected provider effect');}});
+await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+phase('after-server-listen');
+process.send({ready:true});
+function makeFifo() {
+ fs.rmSync(file);
+ const result = spawnSync('mkfifo', [file], {encoding:'utf8',timeout:1000});
+ if (result.status !== 0) throw new Error(result.stderr || 'mkfifo failed');
+}
+if (scenario === 'writerless-fifo') makeFifo();
+mutableFs.openSync = function(path, ...args) {
+ if (String(path) === file && scenario === 'regular-to-fifo' && !swapped) {swapped=true;makeFifo();}
+ const fd = originalOpen(path, ...args);
+ if (String(path) === file) {opened++;live.add(fd);}
+ return fd;
+};
+mutableFs.readSync = function(fd,...args) {if(live.has(fd)) reads++;return originalRead(fd,...args);};
+mutableFs.closeSync = function(fd) {if(live.delete(fd)) closed++;return originalClose(fd);};
+syncBuiltinESMExports();
+const entries = fs.readdirSync(dirname(file)).sort();
+try {
+ const response = await fetch('http://127.0.0.1:'+server.address().port+'/v1/owners/'+owner+'/rpc', {
+  method:'POST',headers:{'content-type':'application/json','x-ccc-device-token':token},
+  body:JSON.stringify({method:'broker.echo',params:{mustRefuse:true}})
+ });
+ const body = await response.json();
+ phase('after-http-refusal');
+ console.log(JSON.stringify({status:response.status,body,fifo:fs.lstatSync(file).isFIFO(),
+  opened,closed,reads,live:live.size,providerCalls,swapped,entriesUnchanged:JSON.stringify(entries)===JSON.stringify(fs.readdirSync(dirname(file)).sort())}));
+} finally {
+ await new Promise(resolve => server.close(resolve));
+ phase('after-server-close');
+ restore();
+ process.disconnect();
+}
+`;
+            // Importing the full TS broker can take longer than the security
+            // deadline. Start the five-second watchdog once the owned child is
+            // ready, before it creates or opens either real FIFO scenario.
+            const completed = await new Promise<{ code: number | null; output: string; diagnostics: string; timeout: string | null }>((resolveChild, reject) => {
+                const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", program], {
+                    cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe", "ipc"],
+                });
+                let output = "", diagnostics = "", timeout: string | null = null;
+                let timer = setTimeout(() => { timeout = "startup"; child.kill("SIGKILL"); }, 20_000);
+                child.stdout!.on("data", chunk => { output += chunk.toString(); });
+                child.stderr!.on("data", chunk => { diagnostics += chunk.toString(); });
+                child.on("message", message => {
+                    if (message && typeof message === "object" && "ready" in message && message.ready === true) {
+                        clearTimeout(timer);
+                        timer = setTimeout(() => { timeout = "FIFO admission"; child.kill("SIGKILL"); }, 5000);
+                    }
+                });
+                child.on("error", error => { clearTimeout(timer); reject(error); });
+                child.on("close", code => { clearTimeout(timer); resolveChild({ code, output, diagnostics, timeout }); });
+            });
+            expect(completed.timeout, completed.diagnostics).toBeNull();
+            expect(completed.code, completed.diagnostics).toBe(0);
+            const result = JSON.parse(completed.output.trim());
+            expect(result).toMatchObject({
+                status: 401, body: { ok: false, error: "invalid-owner-token" },
+                fifo: true, opened: scenario === "regular-to-fifo" ? 1 : 0,
+                closed: scenario === "regular-to-fifo" ? 1 : 0, reads: 0, live: 0,
+                providerCalls: 0, swapped: scenario === "regular-to-fifo", entriesUnchanged: true,
+            });
+        },
+    );
+
     it("atomically replaces owner-mismatched auth metadata", () => {
         const ownerId = "0a0b0c0d0e0f1112";
         const secretFile = deviceBrokerAuthSecretFile(ownerId);

@@ -4,6 +4,8 @@ import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, 
 import { promises as fsPromises } from "fs";
 import { tmpdir } from "os";
 import { dirname, join, relative } from "path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
     cleanupIncompleteHyperVImageArtifacts,
@@ -154,6 +156,40 @@ function automaticUbuntuStep(
 }
 
 describe("Hyper-V image store module", () => {
+    it.skipIf(process.platform === "win32")("refuses a real regular-to-FIFO replacement before image inspection opens its read descriptor", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-image-fifo-"));
+        const source = fileURLToPath(new URL("../../packages/device-lab/src/device-lab/broker/hyper-v/image-store.ts", import.meta.url));
+        try {
+            const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+                import fs from 'node:fs';
+                import { execFileSync } from 'node:child_process';
+                import { syncBuiltinESMExports } from 'node:module';
+                import { join } from 'node:path';
+                import { pathToFileURL } from 'node:url';
+                const { inspectLargeRegularFile } = await import(pathToFileURL(process.argv[1]).href);
+                const root = process.argv[2], image = join(root, 'image.vhdx'), retained = join(root, 'retained.vhdx');
+                fs.writeFileSync(image, 'original image bytes');
+                const open = fs.openSync.bind(fs), close = fs.closeSync.bind(fs);
+                const live = new Set();
+                let sourceOpens = 0, refused = false;
+                fs.openSync = (...args) => {
+                    if (String(args[0]) === image && ++sourceOpens === 3) {
+                        fs.renameSync(image, retained);
+                        execFileSync('mkfifo', [image]);
+                    }
+                    const fd = open(...args); live.add(fd); return fd;
+                };
+                fs.closeSync = fd => { close(fd); live.delete(fd); };
+                syncBuiltinESMExports();
+                try { inspectLargeRegularFile(root, image, 'image-probe'); }
+                catch { refused = true; }
+                console.log(JSON.stringify({ refused, live: live.size, swapped: sourceOpens === 3, fifoRetained: fs.lstatSync(image).isFIFO(), bytes: fs.readFileSync(retained, 'utf8') }));
+            `, source, root], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
+            expect(child.error, child.stderr).toBeUndefined();
+            expect(child.status, child.stderr).toBe(0);
+            expect(JSON.parse(child.stdout.trim())).toEqual({ refused: true, live: 0, swapped: true, fifoRetained: true, bytes: "original image bytes" });
+        } finally { rmSync(root, { recursive: true, force: true }); }
+    });
     it("imports relative project/source paths through native resolution and retains image safety boundaries", async () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-relative-import-"));
         const projectRoot = join(root, "project"), privateRoot = join(root, "private");
