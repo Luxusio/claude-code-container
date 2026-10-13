@@ -1,6 +1,15 @@
+import { recordingCopyPending } from "../domain/broker-recording.js";
 import { cleanupRecord, isPhysicalState, deviceHasRuntimeMetadata, shouldStopOwnerDevice, cleanupFailureCount, ownerCleanupSelection, type PhysicalRecord, type CleanupLeaseGuard, type CleanupOptions, type CleanupDeviceOutcome, type CleanupCommandTarget, type AuxiliaryOutcome, type CleanupDeviceReport, type CleanupBackendReport, type OwnerCleanupOutcome } from '../domain/broker-owner-cleanup.js';
 import type { BrokerOwnerCleanupPorts } from '../ports/broker-owner-cleanup.js';
 export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(ports: BrokerOwnerCleanupPorts<Handle, Prepared, Receipt>) {
+    function cleanupRecording(recording: PhysicalRecord) {
+        if (recordingCopyPending(recording))
+            return {attempted: false, ok: false, reason: 'recording-artifact-copy-pending'};
+        const signal = ports.signalRecording(recording);
+        // A signal does not prove recorder exit or complete Android artifact recovery.
+        return signal.ok && recordingCopyPending({...recording, active: false, stoppedAt: ports.timestamp()})
+            ? {...signal, ok: false, reason: 'recording-artifact-copy-pending'} : signal;
+    }
     function auxiliary(ownerId: string, parsed: CleanupCommandTarget, expected: unknown): AuxiliaryOutcome {
         const observed = ports.read(ownerId, parsed.stateKey).find((candidate): candidate is PhysicalRecord => cleanupRecord(candidate) && candidate.id === parsed.deviceId);
         if (!observed || !ports.equal(observed, expected))
@@ -20,7 +29,7 @@ export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(p
         const record = observed;
         const appiumSignal = record.appium != null ? ports.terminateAppium(record.appium) : null;
         const recording = cleanupRecord(record.recording) ? record.recording : null;
-        const recordingSignal = recording ? ports.signalRecording(recording) : null;
+        const recordingSignal = recording ? cleanupRecording(recording) : null;
         const minimizeWatchdog = cleanupRecord(record.minimizeWatchdog) ? record.minimizeWatchdog : null;
         const minimizeWatchdogOwned = minimizeWatchdog?.processOwner === 'host-broker'
             && minimizeWatchdog?.startedBy === 'broker.windows-sandbox.minimize-watchdog';
@@ -110,7 +119,7 @@ export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(p
             };
         }
         if (device.recording != null) {
-            const signal = ports.signalRecording(cleanupRecord(device.recording) ? device.recording : {});
+            const signal = cleanupRecording(cleanupRecord(device.recording) ? device.recording : {});
             if (signal.ok) {
                 updated.recording = null;
                 changed = true;

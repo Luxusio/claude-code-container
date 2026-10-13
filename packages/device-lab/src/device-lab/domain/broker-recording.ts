@@ -48,9 +48,19 @@ export function recordingRuntimeMatches(expected: unknown, current: unknown): bo
     const currentRecord = current;
     const expectedRuntimeId = typeof expectedRecord.runtimeId === "string" ? expectedRecord.runtimeId : null;
     const currentRuntimeId = typeof currentRecord.runtimeId === "string" ? currentRecord.runtimeId : null;
-    if (expectedRuntimeId || currentRuntimeId) return expectedRuntimeId !== null && expectedRuntimeId === currentRuntimeId;
-    const identityFields = ["authority", "processOwner", "startedBy", "pid", "provider", "startedAt", "remotePath", "localPath"];
+    if ((expectedRuntimeId || currentRuntimeId) && (expectedRuntimeId === null || expectedRuntimeId !== currentRuntimeId)) return false;
+    const identityFields = ["authority", "processOwner", "startedBy", "pid", "provider", "startedAt", "remotePath", "localPath",
+        "active", "stoppedAt", "artifactCopyPending", "artifactCopied"];
     return identityFields.every((field) => expectedRecord[field] === currentRecord[field]);
+}
+
+/** A stopped Android artifact remains recoverable until remote cleanup and state clearing succeed. */
+export function recordingCopyPending(value: unknown): boolean {
+    return recordingObject(value) && !Array.isArray(value)
+        && value.active === false && typeof value.stoppedAt === "string" && Boolean(value.stoppedAt)
+        && value.provider === "adb-screenrecord" && typeof value.remotePath === "string" && Boolean(value.remotePath)
+        && value.authority === "host-broker" && value.processOwner === "host-broker"
+        && value.startedBy === "broker.device.recording.start";
 }
 
 export function recordingSerial(device: Record<string, unknown>): string | null {

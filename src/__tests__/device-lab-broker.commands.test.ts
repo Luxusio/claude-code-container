@@ -6602,6 +6602,8 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
         const hostRecordingPath = join(hostProjectPath, "artifacts", "owned.mp4");
         const ownerB = "bbbbaaaaddddcccc";
         const commands: unknown[] = [];
+        const processIdentity = readDeviceRuntimeProcessIdentity(process.pid);
+        if (!processIdentity) throw new Error("current process identity unavailable");
         const commandRunner = vi.fn((command) => {
             commands.push(command);
             return {
@@ -6610,7 +6612,8 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
                 executable: command.executable,
                 args: command.args,
                 status: 0,
-                pid: command.mode === "detached" ? 24680 : undefined,
+                pid: command.mode === "detached" ? process.pid : undefined,
+                processIdentity: command.mode === "detached" ? processIdentity : undefined,
                 stdout: "ok",
                 stderr: "",
             };
@@ -6685,7 +6688,7 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
                         remotePath: "/sdcard/owned.mp4",
                         localPath: hostRecordingPath,
                         timeLimitSec: 12,
-                        pid: 24680,
+                        pid: process.pid,
                     }),
                 }),
             }));
@@ -6740,16 +6743,16 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
         }
     });
 
-    it("reports a failed artifact copy after clearing the stopped recording", async () => {
+    it("retains pending media through repeated failed artifact copies and then completes recovery", async () => {
         const cwd = "/project/broker-recording-copy-failure-test";
         const ownerId = deviceLabOwnerId(cwd);
         const localPath = join(ownerRoot(ownerId), "artifacts", "partial.mp4");
-        const commandRunner = vi.fn((command) => ({
-            ...command,
-            status: command.args?.includes("pull") ? 17 : 0,
-            stdout: "",
-            stderr: command.args?.includes("pull") ? "artifact transfer denied" : "",
-        }));
+        let copies = 0;
+        const commandRunner = vi.fn((command) => {
+            const failed = command.args?.includes("pull") && ++copies < 3;
+            if (command.args?.includes("pull") && !failed) writeFileSync(localPath, "recovered video");
+            return { ...command, status: failed ? 17 : 0, stdout: "", stderr: failed ? "artifact transfer denied" : "" };
+        });
         const server = createDeviceBrokerServer({
             cwd, host: "127.0.0.1", port: 0, providerPaths: { adb: "/fake/adb" }, commandRunner,
         });
@@ -6758,38 +6761,266 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
             writeBrokerDevices(ownerId, "android", [{
                 id: "pixel-copy-failed", status: "running", backend: "android-emulator", port: 5580,
                 recording: {
-                    active: true, provider: "adb-screenrecord", authority: "host-broker",
+                    active: false, artifactCopyPending: true, stoppedAt: "2026-10-13T00:00:00.000Z", provider: "adb-screenrecord", authority: "host-broker",
                     processOwner: "host-broker", startedBy: "broker.device.recording.start",
                     runtimeId: "copy-failure-runtime", pid: 24680,
+                    processIdentity: { pid: 24680, startToken: "fixture:stopped-copy", commandHash: "a".repeat(64) },
                     remotePath: "/sdcard/partial.mp4", localPath,
                 },
             }]);
-            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+            const invoke = (tool: string) => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST", headers: ownerRpcHeaders(ownerId),
                 body: JSON.stringify({ method: "broker.device.tool.invoke", params: {
-                    tool: "device_record_video_stop", backend: "android-emulator", deviceId: "pixel-copy-failed",
+                    tool, backend: "android-emulator", deviceId: "pixel-copy-failed",
                 } }),
             });
-            expect(response.status).toBe(502);
-            expect(await response.json()).toMatchObject({
-                ok: false, error: "recording-artifact-copy-failed",
-                result: {
-                    stopped: true, recording: { active: false, localPath },
-                    device: { id: "pixel-copy-failed", recording: null },
-                    executions: expect.arrayContaining([expect.objectContaining({
-                        args: ["-s", "emulator-5580", "pull", "/sdcard/partial.mp4", localPath],
-                        status: 17, stderr: "artifact transfer denied",
-                    })]),
-                },
-            });
-            expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
-                args: ["-s", "emulator-5580", "shell", "rm", "-f", "/sdcard/partial.mp4"],
-            }), expect.any(Object));
+            for (let attempt = 1; attempt <= 2; attempt++) {
+                const response = await invoke("device_record_video_stop");
+                expect(response.status).toBe(502);
+                expect(await response.json()).toMatchObject({
+                    ok: false, error: "recording-artifact-copy-failed",
+                    result: {
+                        stopped: true, recording: { active: false, artifactCopyPending: true, runtimeId: "copy-failure-runtime", localPath },
+                        device: { id: "pixel-copy-failed", recording: { active: false, artifactCopyPending: true } },
+                        executions: expect.arrayContaining([expect.objectContaining({
+                            args: ["-s", "emulator-5580", "pull", "/sdcard/partial.mp4", localPath],
+                            status: 17, stderr: "artifact transfer denied",
+                        })]),
+                    },
+                });
+                expect(commandRunner.mock.calls.some(([command]) => command.args?.includes("rm"))).toBe(false);
+                const pending = JSON.parse(readFileSync(join(backendRoot(ownerId, "android"), "devices.json"), "utf8")).devices[0].recording;
+                expect(pending).toMatchObject({ active: false, artifactCopyPending: true, runtimeId: "copy-failure-runtime", remotePath: "/sdcard/partial.mp4", localPath });
+                const status = await invoke("device_record_video_status");
+                expect(await status.json()).toMatchObject({ ok: true, result: { recording: pending } });
+                expect((await invoke("device_record_video_start")).status).toBe(409);
+                expect(existsSync(localPath)).toBe(false);
+            }
+            const recovered = await invoke("device_record_video_stop");
+            expect(recovered.status).toBe(200);
+            expect(await recovered.json()).toMatchObject({ ok: true, result: { stopped: true, device: { recording: null } } });
+            expect(copies).toBe(3);
+            expect(commandRunner.mock.calls.filter(([command]) => command.args?.includes("rm"))).toHaveLength(1);
+            expect(commandRunner.mock.calls.some(([command]) => command.args?.includes("pkill"))).toBe(false);
             expect(JSON.parse(readFileSync(join(backendRoot(ownerId, "android"), "devices.json"), "utf8")).devices[0].recording).toBeNull();
-            expect(existsSync(localPath)).toBe(false);
+            expect(readFileSync(localPath, "utf8")).toBe("recovered video");
         } finally {
             await close(server);
             cleanupOwner(ownerId);
+        }
+    });
+
+    it.each([false, true])("refuses malformed expected recording identity before native effects when pending=%s", async pending => {
+        const cwd = `/project/broker-recording-malformed-identity-${pending}`;
+        const ownerId = deviceLabOwnerId(cwd), deviceId = "malformed-recording";
+        const current = readDeviceRuntimeProcessIdentity(process.pid);
+        if (!current) throw new Error("current process identity unavailable");
+        const recording = {
+            active: !pending, ...(pending ? { artifactCopyPending: true, stoppedAt: "2026-10-13T00:00:00.000Z" } : {}),
+            provider: "adb-screenrecord", authority: "host-broker", processOwner: "host-broker",
+            startedBy: "broker.device.recording.start", runtimeId: "malformed-runtime", pid: process.pid,
+            processIdentity: { ...current, commandHash: "" }, remotePath: "/sdcard/protected.mp4",
+            localPath: join(ownerRoot(ownerId), "protected.mp4"),
+        };
+        const root = writeBrokerDevices(ownerId, "android", [{ id: deviceId, status: "running", backend: "android-emulator", port: 5580, recording }]);
+        const commandRunner = vi.fn(() => { throw new Error("malformed identity must authorize no native effect"); });
+        const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, providerPaths: { adb: "/fake/adb" }, commandRunner });
+        const baseUrl = await listen(server);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: "device_record_video_stop", backend: "android-emulator", deviceId } }),
+            });
+            expect(response.status).not.toBe(200);
+            expect(await response.json()).toMatchObject({ ok: false });
+            expect(commandRunner).not.toHaveBeenCalled();
+            expect(killSpy).not.toHaveBeenCalled();
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].recording).toEqual(recording);
+        } finally { killSpy.mockRestore(); await close(server); cleanupOwner(ownerId); }
+    });
+
+    it.each(["recording", "device-incarnation"] as const)("fences removal after a same-path %s replacement during copy", async replaced => {
+        const cwd = `/project/broker-recording-copy-replacement-${replaced}`;
+        const ownerId = deviceLabOwnerId(cwd), deviceId = "copy-replaced";
+        const recording = {
+            active: false, artifactCopyPending: true, stoppedAt: "2026-10-13T00:00:00.000Z", provider: "adb-screenrecord", authority: "host-broker",
+            processOwner: "host-broker", startedBy: "broker.device.recording.start", runtimeId: "previous-runtime", pid: 24680,
+            processIdentity: { pid: 24680, startToken: "fixture:stopped", commandHash: "a".repeat(64) },
+            remotePath: "/sdcard/shared.mp4", localPath: join(ownerRoot(ownerId), "shared.mp4"),
+        };
+        const device = { id: deviceId, status: "running", backend: "android-emulator", port: 5580, incarnationId: "previous-device", recording };
+        const successor = replaced === "recording"
+            ? { ...device, recording: { ...recording, active: true, artifactCopyPending: false, runtimeId: "successor-runtime" } }
+            : { ...device, incarnationId: "successor-device" };
+        const root = writeBrokerDevices(ownerId, "android", [device]);
+        const commandRunner = vi.fn((command) => {
+            if (command.args?.includes("pull")) writeFileSync(join(root, "devices.json"), JSON.stringify({ devices: [successor] }));
+            return { ...command, status: 0, stdout: "", stderr: "" };
+        });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, providerPaths: { adb: "/fake/adb" }, commandRunner });
+        const baseUrl = await listen(server);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: "device_record_video_stop", backend: "android-emulator", deviceId } }),
+            });
+            expect(response.status).not.toBe(200);
+            expect(await response.json()).toMatchObject({ ok: false });
+            expect(commandRunner.mock.calls.filter(([command]) => command.args?.includes("pull"))).toHaveLength(1);
+            expect(commandRunner.mock.calls.some(([command]) => command.args?.includes("rm") || command.args?.includes("pkill"))).toBe(false);
+            const latest = JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0];
+            expect(latest.incarnationId).toBe(successor.incarnationId);
+            expect(latest.recording.runtimeId).toBe(successor.recording.runtimeId);
+            expect(latest.recording).not.toBeNull();
+        } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
+    it("retries failed native removal from its copied receipt without repeating artifact pull", async () => {
+        const cwd = "/project/broker-recording-removal-retry", ownerId = deviceLabOwnerId(cwd), deviceId = "removal-retry";
+        const recording = {
+            active: false, artifactCopyPending: true, stoppedAt: "2026-10-13T00:00:00.000Z", provider: "adb-screenrecord", authority: "host-broker",
+            processOwner: "host-broker", startedBy: "broker.device.recording.start", runtimeId: "removal-runtime", pid: 24680,
+            processIdentity: { pid: 24680, startToken: "fixture:stopped", commandHash: "a".repeat(64) },
+            remotePath: "/sdcard/retry.mp4", localPath: join(ownerRoot(ownerId), "retry.mp4"),
+        };
+        const root = writeBrokerDevices(ownerId, "android", [{ id: deviceId, status: "running", backend: "android-emulator", port: 5580, recording }]);
+        let removals = 0;
+        const commandRunner = vi.fn((command) => ({ ...command, status: command.args?.includes("rm") && ++removals === 1 ? 17 : 0, stdout: "", stderr: "" }));
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, providerPaths: { adb: "/fake/adb" }, commandRunner });
+        const baseUrl = await listen(server);
+        const invoke = () => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+            method: "POST", headers: ownerRpcHeaders(ownerId),
+            body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: "device_record_video_stop", backend: "android-emulator", deviceId } }),
+        });
+        try {
+            const failed = await invoke();
+            expect(failed.status).not.toBe(200);
+            expect(await failed.json()).toMatchObject({ ok: false });
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].recording).toMatchObject({ active: false, artifactCopyPending: true, artifactCopied: true, runtimeId: recording.runtimeId });
+            expect((await invoke()).status).toBe(200);
+            expect(commandRunner.mock.calls.filter(([command]) => command.args?.includes("pull"))).toHaveLength(1);
+            expect(removals).toBe(2);
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].recording).toBeNull();
+        } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
+    it.each([false, true])("retains pending recording evidence through both native cleanup paths when copied=%s", async copied => {
+        const cwd = `/project/broker-recording-pending-cleanup-${copied}`, ownerId = deviceLabOwnerId(cwd), deviceId = "pending-cleanup";
+        const recording = {
+            active: false, artifactCopyPending: true, stoppedAt: "2026-10-13T00:00:00.000Z", ...(copied ? { artifactCopied: true } : {}),
+            provider: "adb-screenrecord", authority: "host-broker", processOwner: "host-broker",
+            startedBy: "broker.device.recording.start", runtimeId: "pending-cleanup-runtime", pid: 24680,
+            processIdentity: { pid: 24680, startToken: "fixture:stopped", commandHash: "a".repeat(64) },
+            remotePath: "/sdcard/pending.mp4", localPath: join(ownerRoot(ownerId), "pending.mp4"),
+        };
+        const root = writeBrokerDevices(ownerId, "android", [{ id: deviceId, status: "stopped", backend: "android-emulator", port: 5580, avdName: `ccc-${ownerId}-pending`, recording }]);
+        const commandRunner = vi.fn(() => { throw new Error("pending recording cleanup must not execute a provider command"); });
+        const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, providerPaths: { adb: "/fake/adb" }, commandRunner });
+        const baseUrl = await listen(server);
+        const invoke = (method: string, params: Record<string, unknown>) => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+            method: "POST", headers: ownerRpcHeaders(ownerId), body: JSON.stringify({ method, params }),
+        });
+        try {
+            const auxiliary = await invoke("broker.command.invoke", { command: "device_stop", backend: "android-emulator", deviceId });
+            expect(auxiliary.status).not.toBe(200);
+            expect(await auxiliary.json()).toMatchObject({ ok: false, result: { auxiliaryCleanup: { recording: { cleared: false } } } });
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].recording).toEqual(recording);
+            const ownerCleanup = await invoke("broker.cleanup.owner", { backend: "android-emulator", stopDevices: false, detachPhysical: false });
+            expect(ownerCleanup.status).toBe(200);
+            expect(await ownerCleanup.json()).toMatchObject({ ok: false, result: {
+                failed: 1, changedDevices: 0,
+                results: [{ stateKey: "android", devices: [{ deviceId, recording: { cleared: false, signal: { attempted: false, ok: false, reason: "recording-artifact-copy-pending" } } }] }],
+            } });
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].recording).toEqual(recording);
+            expect(commandRunner).not.toHaveBeenCalled();
+            expect(killSpy).not.toHaveBeenCalled();
+        } finally { killSpy.mockRestore(); await close(server); cleanupOwner(ownerId); }
+    });
+
+    it.each(["before-stop", "during-exit", "after-copy"] as const)("rechecks a physical recording lease %s", async stage => {
+        const cwd = `/project/broker-recording-physical-fence-${stage}`, ownerId = deviceLabOwnerId(cwd), deviceId = "physical-recording", serial = `USB-RECORDING-${stage}`;
+        const leaseDir = join(process.env.HOME!, ".ccc/devices/physical-leases/android-device/locks");
+        mkdirSync(leaseDir, { recursive: true });
+        const leaseFile = join(leaseDir, `${encodeURIComponent(serial)}.json`), mutationLock = join(leaseDir, `${encodeURIComponent(serial)}.mutation.lock`);
+        const lease = { backend: "android-device", hardwareId: serial, ownerId, deviceId, claimId: "recording-claim", claimNonce: "recording-nonce", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+        const successorLease = { ...lease, ownerId: "foreign-owner", claimNonce: "foreign-nonce" };
+        writeFileSync(leaseFile, JSON.stringify(lease));
+        const binDir = join(fixtureHome!, `recording-bin-${stage}`);
+        mkdirSync(binDir);
+        const fakeAdb = join(binDir, "adb"), logPath = join(fixtureHome!, `recording-adb-${stage}.jsonl`);
+        const ready = join(fixtureHome!, `recording-ready-${stage}`), stopFile = join(fixtureHome!, `recording-stop-${stage}`);
+        writeFileSync(fakeAdb, [
+            "#!/usr/bin/env node", "const fs = require('node:fs'); const args = process.argv.slice(2);",
+            `if (args[0] !== '-s' || args[1] !== ${JSON.stringify(serial)}) throw new Error('unexpected physical recording target');`,
+            `fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + '\\n');`,
+            `if (args[2] === 'pull') { fs.writeFileSync(args[4], 'video'); ${stage === "after-copy" ? `fs.writeFileSync(${JSON.stringify(leaseFile)}, ${JSON.stringify(JSON.stringify(successorLease))});` : ""} }`,
+            "",
+        ].join("\n"));
+        chmodSync(fakeAdb, 0o755);
+        const preload = join(fixtureHome!, `recording-routing-${stage}.cjs`);
+        writeFileSync(preload, nodeProviderFixturePreloadSource(binDir));
+        const originalExecArgv = [...process.execArgv];
+        // The default synchronous provider runner creates a native worker thread.
+        process.execArgv.push("--require", preload);
+        const restoreRouting = installNodeProviderFixtureRouting(binDir);
+        const recorder = spawn(process.execPath, ["-e", `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{if(fs.existsSync(${JSON.stringify(stopFile)}))process.exit(0);},25);`], { detached: process.platform !== "win32", windowsHide: true, stdio: "ignore" });
+        recorder.unref();
+        await vi.waitFor(() => expect(existsSync(ready)).toBe(true));
+        const processIdentity = readDeviceRuntimeProcessIdentity(recorder.pid);
+        if (!processIdentity) throw new Error("recorder process identity unavailable");
+        const recording = {
+            active: true, provider: "adb-screenrecord", authority: "host-broker", processOwner: "host-broker",
+            startedBy: "broker.device.recording.start", runtimeId: "physical-recording-runtime", pid: recorder.pid, processIdentity,
+            remotePath: "/sdcard/physical.mp4", localPath: join(ownerRoot(ownerId), "physical.mp4"),
+        };
+        const root = writeBrokerDevices(ownerId, "android-device", [{ id: deviceId, status: "attached", backend: "android-device", physical: true, serial, leaseClaimId: lease.claimId, leaseClaimNonce: lease.claimNonce, recording }]);
+        const originalKill = process.kill.bind(process);
+        let signalled = false, replacement: Promise<void> | undefined, replacedWhileAlive = false;
+        const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+            if (Math.abs(pid) === recorder.pid && signal === "SIGINT") {
+                signalled = true;
+                if (stage === "before-stop") writeFileSync(leaseFile, JSON.stringify(successorLease));
+                // Dispatch only this fixture recorder's admitted stop through a portable control file.
+                if (stage !== "during-exit") writeFileSync(stopFile, "stop");
+                return true;
+            }
+            if (Math.abs(pid) === recorder.pid && stage === "during-exit" && signalled && signal === 0 && !replacement) {
+                replacement = withSharedMutationLockAsync(mutationLock, () => {
+                    replacedWhileAlive = readDeviceRuntimeProcessIdentity(recorder.pid) !== null;
+                    writeFileSync(leaseFile, JSON.stringify(successorLease));
+                    writeFileSync(stopFile, "stop");
+                }, { waitMs: 1000, staleMs: 60_000 });
+            }
+            return originalKill(pid, signal);
+        });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, providerPaths: { adb: fakeAdb } });
+        const baseUrl = await listen(server);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: "device_record_video_stop", backend: "android-device", deviceId } }),
+            });
+            expect(response.status).not.toBe(200);
+            const responseBody = await response.json();
+            expect(responseBody).toMatchObject({ ok: false });
+            if (replacement) await replacement;
+            if (stage === "during-exit") expect(replacedWhileAlive).toBe(true);
+            const operations: string[][] = existsSync(logPath) ? readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
+            expect(operations.some(args => args.includes("rm"))).toBe(false);
+            if (stage !== "after-copy") expect(operations.some(args => args.includes("pull"))).toBe(false);
+            if (stage === "before-stop") expect(operations.some(args => args.includes("pkill"))).toBe(false);
+            if (stage === "after-copy") expect(operations.filter(args => args.includes("pull")), JSON.stringify({ response: responseBody, operations })).toHaveLength(1);
+            expect(JSON.parse(readFileSync(leaseFile, "utf8"))).toEqual(successorLease);
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].recording).not.toBeNull();
+        } finally {
+            killSpy.mockRestore();
+            writeFileSync(stopFile, "stop");
+            try { originalKill(recorder.pid!, "SIGKILL"); } catch { /* fixture recorder already exited */ }
+            if (replacement) await replacement;
+            await close(server); cleanupOwner(ownerId); restoreRouting();
+            process.execArgv.splice(0, process.execArgv.length, ...originalExecArgv);
         }
     });
 
@@ -7092,6 +7323,8 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
 
     it("preserves a concurrent recording successor while the previous recording stops", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-recording-stop-generation-race-test");
+        const processIdentity = readDeviceRuntimeProcessIdentity(process.pid);
+        if (!processIdentity) throw new Error("current process identity unavailable");
         const previous = {
             active: true,
             authority: "host-broker",
@@ -7099,11 +7332,12 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             startedBy: "broker.device.recording.start",
             runtimeId: "previous-recording-generation",
             provider: "adb-screenrecord",
-            pid: 32001,
+            pid: process.pid,
+            processIdentity,
             remotePath: "/sdcard/previous.mp4",
             startedAt: "2026-07-14T00:00:00.000Z",
         };
-        const successor = { ...previous, runtimeId: "successor-recording-generation", pid: 32002, remotePath: "/sdcard/successor.mp4" };
+        const successor = { ...previous, runtimeId: "successor-recording-generation", pid: 32002 };
         let root = "";
         const commandRunner = vi.fn((command) => {
             if (command.args?.includes("pkill")) {
@@ -7139,6 +7373,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 currentRecording: expect.objectContaining({ runtimeId: successor.runtimeId, pid: 32002 }),
             }));
             expect(killSpy).not.toHaveBeenCalled();
+            expect(commandRunner.mock.calls.some(([command]) => command.args?.includes("pull") || command.args?.includes("rm"))).toBe(false);
             expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].recording).toEqual(successor);
         } finally {
             await close(server);
@@ -7225,8 +7460,9 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
         }
     });
 
-    it("refuses to stop a broker recording when its pid has been reused", async () => {
+    it("recovers broker recording media after verified PID reuse without signalling the successor", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-recording-reused-pid-stop-test");
+        const localPath = join(ownerRoot(ownerId), "reused-pid.mp4");
         const current = readDeviceRuntimeProcessIdentity(process.pid);
         if (!current) throw new Error("current process identity unavailable");
         const recording = {
@@ -7235,6 +7471,9 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             processOwner: "host-broker",
             startedBy: "broker.device.recording.start",
             runtimeId: "stale-stop-runtime",
+            provider: "adb-screenrecord",
+            remotePath: "/sdcard/reused-pid.mp4",
+            localPath,
             pid: process.pid,
             processIdentity: { ...current, startToken: `${current.startToken}-stale` },
         };
@@ -7246,11 +7485,16 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             recording,
         }]);
         const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+        const commandRunner = vi.fn((command) => {
+            if (command.args?.includes("pull")) writeFileSync(localPath, "previous generation video");
+            return { ...command, status: 0, stdout: "", stderr: "" };
+        });
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-recording-reused-pid-stop-test",
             host: "127.0.0.1",
             port: 0,
             providerPaths: { adb: "/fake/adb" },
+            commandRunner,
         });
         const baseUrl = await listen(server);
         try {
@@ -7262,18 +7506,13 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                     params: { tool: "device_record_video_stop", backend: "android-emulator", deviceId: "android-reused-recording-stop" },
                 }),
             });
-            expect(response.status).toBe(502);
-            expect(await response.json()).toEqual(expect.objectContaining({
-                ok: false,
-                error: "recording-stop-signal-failed",
-                signal: expect.objectContaining({
-                    attempted: false,
-                    ok: false,
-                    reason: "runtime-process-identity-mismatch",
-                }),
-            }));
+            expect(response.status).toBe(200);
+            expect(await response.json()).toMatchObject({ ok: true, result: { stopped: true, recording: { active: false, runtimeId: recording.runtimeId }, device: { recording: null } } });
             expect(killSpy).not.toHaveBeenCalled();
-            expect(JSON.parse(readFileSync(join(backendRoot(ownerId, "android"), "devices.json"), "utf8")).devices[0].recording).toEqual(recording);
+            expect(commandRunner.mock.calls.some(([command]) => command.args?.includes("pkill"))).toBe(false);
+            expect(commandRunner.mock.calls.filter(([command]) => command.args?.includes("pull"))).toHaveLength(1);
+            expect(readFileSync(localPath, "utf8")).toBe("previous generation video");
+            expect(JSON.parse(readFileSync(join(backendRoot(ownerId, "android"), "devices.json"), "utf8")).devices[0].recording).toBeNull();
         } finally {
             await close(server);
             cleanupOwner(ownerId);

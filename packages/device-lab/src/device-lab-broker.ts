@@ -5,7 +5,8 @@ import {planBrokerMacosCreateCommand as semanticMacosCreate, planBrokerMacosExis
 import type {BrokerAndroidPreparationPorts} from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 import {NativeProviderLifecycleEffect, renderBrokerAndroidLifecycle, renderBrokerIosMacosLifecycle, renderBrokerSandboxLifecycle, renderBrokerProviderRollback} from "./device-lab/broker/broker-outcomes-codec.js";
 import {renderBrokerOwnerResolution, renderBrokerDeviceStatus, renderBrokerRecording, renderBrokerAppium, NativeBrokerExecutionReceipt, NativeRecordingSignalReceipt, NativeAppiumTerminationReceipt, NativeAppiumVerificationReceipt, NativeAppiumRuntimeReceipt, NativeAppiumInstrumentationReceipt, type NativeStatusConnection} from "./device-lab/broker/broker-outcomes-codec.js";
-import type {BrokerRecordingRefusal, BrokerRecordingRequest, BrokerRecordingTarget} from "./device-lab/domain/broker-recording.js";
+import { recordingRuntimeMatches, recordingSerial, type BrokerRecordingRefusal, type BrokerRecordingRequest, type BrokerRecordingTarget } from "./device-lab/domain/broker-recording.js";
+import type {BrokerRecordingArtifactContext} from "./device-lab/ports/broker-recording.js";
 import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
 import type {BrokerAppiumInstrumentationStep} from "./device-lab/ports/broker-appium.js";
 import type {DeviceStatusPreparation, DeviceStatusPhysicalAdmission} from "./device-lab/domain/broker-observation.js";
@@ -3494,12 +3495,50 @@ function recordingNativeTarget(ownerId: string, request: BrokerRecordingRequest)
     return matches[0];
 }
 
+function recordingExpectedProcessIdentityValid(identity: unknown, pid: unknown): boolean {
+    return cleanupRecord(identity) && typeof pid === "number" && Number.isInteger(pid) && pid > 0 && identity.pid === pid
+        && typeof identity.startToken === "string" && identity.startToken.length > 0
+        && typeof identity.commandHash === "string" && /^[a-f0-9]{64}$/i.test(identity.commandHash);
+}
+
+function observeBrokerRecordingProcess(identity: unknown, pid: number): {status: "match" | "mismatch" | "exited" | "unavailable"} {
+    return recordingExpectedProcessIdentityValid(identity, pid)
+        ? inspectDeviceRuntimeProcessIdentity(identity, pid) : {status: "unavailable"};
+}
+
 function brokerRecordingApplication(normalized: NormalizedBrokerOptions) {
     const observed = (receipt: ProviderCommandResult) => ({ status: receipt.status, error: receipt.error, pid: receipt.pid, processIdentity: receipt.processIdentity, receipt: new NativeBrokerExecutionReceipt(receipt) });
     const launch = async (command: ProviderCommand, label: string) => observed(normalized.usesDefaultCommandRunner
         ? await startDetachedProviderCommand(command, normalized, label)
         : normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }));
     const adbEffect = (serial: string, args: string[]) => observed(normalized.commandRunner({ mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["-s", serial, ...args] }, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }));
+    const recordingEffect = <T>(context: BrokerRecordingArtifactContext, refuse: (error: string) => T, effect: () => T): T => {
+        const {ownerId, target, recording} = context;
+        if (recording.authority !== "host-broker" || recording.processOwner !== "host-broker" || recording.startedBy !== "broker.device.recording.start")
+            return refuse("recording-process-not-broker-owned");
+        if (!recordingExpectedProcessIdentityValid(recording.processIdentity, recording.pid)) return refuse("recording-process-identity-unavailable");
+        const deviceId = String(target.device.id);
+        const run = () => {
+            if (target.stateKey === "android-device" && !physicalDeviceLeaseMatches(ownerId, target.stateKey, deviceId, target.device))
+                return refuse("physical-device-not-attached");
+            const current = withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, target.stateKey), () =>
+                readOwnerDevices(ownerId, target.stateKey).find(candidate => cleanupRecord(candidate) && candidate.id === deviceId));
+            if (!cleanupRecord(current) || !recordingRuntimeMatches(recording, current.recording)
+                || !cleanupRecord(current.recording) || !isDeepStrictEqual(recording.processIdentity, current.recording.processIdentity)
+                || current.incarnationId !== target.device.incarnationId
+                || recordingSerial(current) !== recordingSerial(target.device)
+                || (target.stateKey === "android-device" && (current.leaseClaimId !== target.device.leaseClaimId || current.leaseClaimNonce !== target.device.leaseClaimNonce)))
+                return refuse("recording-runtime-state-conflict");
+            return effect();
+        };
+        if (target.stateKey !== "android-device") return run();
+        const serial = recordingSerial(target.device);
+        return serial ? withSharedMutationLock(physicalLeaseMutationLockFile(target.stateKey, serial), run) : refuse("physical-device-not-attached");
+    };
+    const refusedAdb = (error: string) => observed({mode: "exec", provider: "adb", status: 1, error});
+    const artifactEffect = (context: BrokerRecordingArtifactContext, serial: string, remote: string | null, effect: () => ReturnType<typeof adbEffect>) =>
+        recordingEffect(context, refusedAdb, () => recordingSerial(context.target.device) === serial
+            && (remote === null || context.recording.remotePath === remote) ? effect() : refusedAdb("recording-runtime-state-conflict"));
     return createBrokerRecordingApplication({
         findTarget: recordingNativeTarget,
         heartbeat: (owner, target, id) => {
@@ -3507,15 +3546,33 @@ function brokerRecordingApplication(normalized: NormalizedBrokerOptions) {
             return admission.kind === "admitted" ? null : { kind: "refused", reason: "conflict", error: "physical-device-not-attached", ownerId: owner, backend: target.backend, deviceId: id,
                 ...(admission.failure ? { leaseError: admission.failure.error } : {}), remedy: "attach the physical device before using host-backed device tools" };
         },
-        observeProcess: (identity, pid) => inspectDeviceRuntimeProcessIdentity(identity, pid), publish: transitionOwnerRecordingRuntime,
+        observeProcess: observeBrokerRecordingProcess, publish: transitionOwnerRecordingRuntime,
         resolveIosTarget: (owner, device) => resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized), localPath: ownerRecordingLocalPath,
         prepareOutput: path => { mkdirSync(dirname(path), {recursive: true}); return undefined; },
         launchAndroidRecording: (serial, remote, limit, _local, label) => launch({ mode: "detached", provider: "adb", executable: executableFor("adb", normalized), args: ["-s", serial, "shell", "screenrecord", "--time-limit", String(limit), remote] }, label),
         launchIosRecording: (udid, local, label) => launch({ mode: "detached", provider: "xcrun", executable: executableFor("xcrun", normalized), args: ["simctl", "io", udid, "recordVideo", local] }, label),
-        stopAndroidRecording: serial => adbEffect(serial, ["shell", "pkill", "-2", "screenrecord"]),
-        pullAndroidRecording: (serial, remote, local) => adbEffect(serial, ["pull", remote, local]),
-        removeAndroidRecording: (serial, remote) => adbEffect(serial, ["shell", "rm", "-f", remote]),
-        signal: (recording, signal) => { const receipt = signalBrokerOwnedRecording(recording, normalized, signal); return {attempted: receipt.attempted, ok: receipt.ok, ...("stale" in receipt ? {stale: receipt.stale === true} : {}), receipt: new NativeRecordingSignalReceipt(receipt)}; },
+        stopAndroidRecording: (context, serial) => artifactEffect(context, serial, null, () => {
+            const observation = observeBrokerRecordingProcess(context.recording.processIdentity, Number(context.recording.pid));
+            if (observation.status === "unavailable") return refusedAdb("recording-process-identity-unavailable");
+            // A process-name command must never stop a successor after the captured host recorder ended.
+            return observation.status === "match" ? adbEffect(serial, ["shell", "pkill", "-2", "screenrecord"])
+                : observed({mode: "exec", provider: "adb", status: 0});
+        }),
+        pullAndroidRecording: (context, serial, remote, local) => artifactEffect(context, serial, remote, () =>
+            context.recording.localPath === local ? adbEffect(serial, ["pull", remote, local]) : refusedAdb("recording-runtime-state-conflict")),
+        removeAndroidRecording: (context, serial, remote) => artifactEffect(context, serial, remote, () => adbEffect(serial, ["shell", "rm", "-f", remote])),
+        signal: (recording, signal, context) => {
+            const refuse = (error: string) => ({attempted: false, ok: false, reason: error});
+            const stop = () => {
+                const observation = observeBrokerRecordingProcess(recording.processIdentity, Number(recording.pid));
+                if (observation.status === "unavailable") return refuse("recording-process-identity-unavailable");
+                return observation.status === "mismatch" || observation.status === "exited"
+                    ? {attempted: false, ok: true, stale: true, reason: "recording-process-ended"}
+                    : signalBrokerOwnedRecording(recording, normalized, signal);
+            };
+            const receipt = context ? recordingEffect<{attempted: boolean; ok: boolean; stale?: boolean}>(context, refuse, stop) : signalBrokerOwnedRecording(recording, normalized, signal);
+            return {attempted: receipt.attempted, ok: receipt.ok, ...("stale" in receipt ? {stale: receipt.stale === true} : {}), receipt: new NativeRecordingSignalReceipt(receipt)};
+        },
         waitForExit: (pid, timeout) => normalized.usesDefaultCommandRunner ? waitForProcessExit(pid, timeout) : Promise.resolve(true),
         timestamp: () => new Date().toISOString(), runtimeId: () => randomBytes(16).toString("hex"),
     });
