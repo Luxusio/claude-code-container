@@ -62,4 +62,13 @@ def hook_digest(identity):
 def require_hook_trust(state, digest):
     if state.get("trusted_hash") != digest or state.get("enabled") is False:
         raise RuntimeError("existing Harness hook trust is missing, stale, or disabled; preserved")
+
+def managed_python_version(command, home):
+    prefix = str(home) + "/.local/share/mise/installs/python/"
+    if not command.startswith(prefix):
+        return None
+    match = re.fullmatch(r"(3\.([0-9]{1,3})\.[0-9]{1,4})/bin/python(3\.[0-9]{1,3})", command[len(prefix):])
+    if not match or int(match[2]) < 11 or match[3] != "3." + match[2]:
+        return None
+    return match[1]
 `;

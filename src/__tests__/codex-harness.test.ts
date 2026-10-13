@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, copyFileSync } from "fs";
 import { tmpdir } from "os";
 import { createHash } from "crypto";
 import { join } from "path";
@@ -16,7 +16,7 @@ const { spawnSync: realSpawn } = await vi.importActual<typeof import("child_proc
 const temporary: string[] = [];
 const pin = "90a7afe02a9377d9e20cedd62e2c0d88e426d814";
 
-function fixture(hookPrefix = "") {
+function fixture(hookPrefix = "", managedVersion?: string) {
     const home = mkdtempSync(join(tmpdir(), "ccc-harness-test-"));
     temporary.push(home);
     mkdirSync(join(home, ".codex"));
@@ -28,13 +28,18 @@ function fixture(hookPrefix = "") {
     const source = join(home, ".codex/harness");
     const root = join(source, "plugins/harness");
     const cache = join(home, ".codex/plugins/cache/harness/harness/2.3.0");
-    const hookCommand = `${hookPrefix}/usr/bin/python3 ${join(cache, "scripts/session-start.py")}`;
+    const interpreter = managedVersion ? join(home, `.local/share/mise/installs/python/${managedVersion}/bin/python3.12`) : "/usr/bin/python3";
+    if (managedVersion) {
+        mkdirSync(join(interpreter, ".."), { recursive: true });
+        copyFileSync("/usr/bin/python3", interpreter);
+    }
+    const hookCommand = `${hookPrefix}${interpreter} ${join(cache, "scripts/session-start.py")}`;
     // Keys ordered as the official installer's canonical JSON representation.
     const trustHash = "sha256:" + createHash("sha256").update(JSON.stringify({
         event_name: "session_start",
         hooks: [{ async: false, command: hookCommand, timeout: 600, type: "command" }],
     })).digest("hex");
-    const contents = `model = "preserve-me"\n[plugins."harness@harness"]\nenabled = true\n[marketplaces.harness]\nsource_type = "local"\nsource = ${JSON.stringify(source)}\n[mcp_servers.harness]\ncommand = "/usr/bin/python3"\nargs = [${JSON.stringify(join(root, "mcp/harness_server.py"))}]\n[features]\nplugin_hooks = true\n[hooks.state."harness@harness:hooks.json:session_start:0:0"]\ntrusted_hash = "${trustHash}"\n`;
+    const contents = `model = "preserve-me"\n[plugins."harness@harness"]\nenabled = true\n[marketplaces.harness]\nsource_type = "local"\nsource = ${JSON.stringify(source)}\n[mcp_servers.harness]\ncommand = ${JSON.stringify(interpreter)}\nargs = [${JSON.stringify(join(root, "mcp/harness_server.py"))}]\n[features]\nplugin_hooks = true\n[hooks.state."harness@harness:hooks.json:session_start:0:0"]\ntrusted_hash = "${trustHash}"\n`;
     const files: Record<string, string> = {
         [config]: contents,
         [join(root, ".codex-plugin/plugin.json")]: JSON.stringify({ version: "2.3.0" }),
@@ -46,12 +51,14 @@ function fixture(hookPrefix = "") {
         [join(cache, "scripts/session-start.py")]: "# hook",
         [join(cache, "hooks.json")]: JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: hookCommand }] }] } }),
     };
-    writeFileSync(join(home, "installer.py"), `import json, pathlib, sys\nassert sys.argv[1:] == ['--codex-only']\nassert pathlib.Path.cwd() == pathlib.Path.home()\nfiles = json.loads(${JSON.stringify(JSON.stringify(files))})\nfor name, contents in files.items():\n p = pathlib.Path(name)\n p.parent.mkdir(parents=True, exist_ok=True)\n p.write_text(contents)\n`);
+    writeFileSync(join(home, "installer.py"), `import json, pathlib, sys\nassert sys.argv[1:] == ['--codex-only']\nassert pathlib.Path.cwd() == pathlib.Path.home()\nassert sys.executable.startswith('/usr/bin/python3')\nfiles = json.loads(${JSON.stringify(JSON.stringify(files))})\nfor name, contents in files.items():\n p = pathlib.Path(name)\n p.parent.mkdir(parents=True, exist_ok=True)\n p.write_text(contents)\n`);
+    mkdirSync(join(home, ".local/bin"), { recursive: true });
+    writeFileSync(join(home, ".local/bin/mise"), `#!/usr/bin/python3\nimport os, pathlib, shutil, sys\nhome=pathlib.Path.home()\n(home/'mise-calls').write_text(' '.join(sys.argv[1:]))\nassert sys.argv[1:] == ['install','python@3.12.14']\nif os.environ.get('FAIL_MISE'): sys.exit(2)\n${managedVersion ? `shutil.copyfile('/usr/bin/python3',${JSON.stringify(interpreter)}); os.chmod(${JSON.stringify(interpreter)},0o755)` : "raise RuntimeError('unexpected runtime installation')"}\n`, { mode: 0o755 });
     const run = (env: Record<string, string> = {}, script = CODEX_HARNESS_BOOTSTRAP) => realSpawn("python3", ["-"], {
         input: script, encoding: "utf-8", timeout: 10000,
         env: { ...process.env, HOME: home, PATH: `${join(home, "bin")}:${process.env.PATH}`, ...env },
     });
-    return { home, config, cache, run };
+    return { home, config, cache, run, interpreter };
 }
 
 beforeEach(() => {
@@ -66,6 +73,51 @@ afterEach(() => {
 });
 
 describe("Harness bootstrap script", () => {
+    it("restores a trusted missing managed Python without changing registration, then reuses it", () => {
+        const f = fixture("", "3.12.14");
+        expect(f.run().status).toBe(0);
+        const config = readFileSync(f.config, "utf8");
+        const hooks = readFileSync(join(f.cache, "hooks.json"), "utf8");
+        const gitCalls = readFileSync(join(f.home, "git-calls"), "utf8");
+        rmSync(f.interpreter);
+        const restored = f.run({ FAIL_FETCH: "1" });
+        expect(restored.status, restored.stderr).toBe(0);
+        expect(restored.stdout).toContain("Restoring Harness Python 3.12.14");
+        expect(readFileSync(join(f.home, "mise-calls"), "utf8")).toBe("install python@3.12.14");
+        expect(readFileSync(f.config, "utf8")).toBe(config);
+        expect(readFileSync(join(f.cache, "hooks.json"), "utf8")).toBe(hooks);
+        expect(readFileSync(join(f.home, "git-calls"), "utf8")).toBe(gitCalls);
+        const reuse = f.run({ FAIL_MISE: "1", FAIL_FETCH: "1" });
+        expect(reuse.status, reuse.stderr).toBe(0);
+        expect(reuse.stdout).toBe("");
+    });
+    it.each(["trust", "payload", "custom", "version"])("preserves missing interpreter registration without installing when %s is invalid", (kind) => {
+        const f = fixture("", "3.12.14");
+        expect(f.run().status).toBe(0);
+        rmSync(f.interpreter);
+        if (kind === "trust") writeFileSync(f.config, readFileSync(f.config, "utf8").replace(/sha256:[a-f0-9]+/, "sha256:stale"));
+        if (kind === "payload") rmSync(join(f.cache, "scripts/session-start.py"));
+        if (kind === "custom" || kind === "version") {
+            const replacement = kind === "custom" ? join(f.home, "custom/python3.12") : f.interpreter.replace("bin/python3.12", "bin/python3.11");
+            writeFileSync(f.config, readFileSync(f.config, "utf8").replace(f.interpreter, replacement));
+        }
+        const before = readFileSync(f.config, "utf8");
+        const result = f.run({ FAIL_FETCH: "1" });
+        expect(result.status).toBe(1);
+        expect(existsSync(join(f.home, "mise-calls"))).toBe(false);
+        expect(readFileSync(f.config, "utf8")).toBe(before);
+    });
+    it("preserves registered commands and reports a failed interpreter restoration", () => {
+        const f = fixture("", "3.12.14");
+        expect(f.run().status).toBe(0);
+        const before = readFileSync(f.config, "utf8");
+        rmSync(f.interpreter);
+        const result = f.run({ FAIL_MISE: "1", FAIL_FETCH: "1" });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("failed");
+        expect(existsSync(f.interpreter)).toBe(false);
+        expect(readFileSync(f.config, "utf8")).toBe(before);
+    });
     it("preserves an installed payload when its registration is absent", () => {
         const f = fixture();
         expect(f.run().status).toBe(0);
@@ -139,7 +191,7 @@ describe("Harness bootstrap script", () => {
         expect(result.stderr).toContain("hook trust");
         expect(readFileSync(f.config, "utf8")).toBe(contents);
     });
-    it.each([{ FAIL_FETCH: "1" }, { REVISION: "wrong" }])("rejects download failures and pin mismatches", (env) => {
+    it.each<Record<string, string>>([{ FAIL_FETCH: "1" }, { REVISION: "wrong" }])("rejects download failures and pin mismatches", (env) => {
         const f = fixture();
         expect(f.run(env).status).toBe(1);
         expect(existsSync(f.config)).toBe(false);

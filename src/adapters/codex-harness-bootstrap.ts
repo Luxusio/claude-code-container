@@ -76,7 +76,13 @@ class NativeBootstrapPorts(CodexBootstrapPorts):
         return run
 
     def installer_interpreter(self):
-        return sys.executable
+        # The installer resolves this path into future hook/MCP registrations.
+        # Use the image's Python rather than a replaceable Mise patch release.
+        return "/usr/bin/python3"
+
+    def restore_interpreter(self, version):
+        print(f"[ccc] Restoring Harness Python {version}...", flush=True)
+        run([str(Path.home() / ".local/bin/mise"), "install", f"python@{version}"], Path.home())
 
     def installer_path(self, temp):
         return str(Path(temp) / "install.py")

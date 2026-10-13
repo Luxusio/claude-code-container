@@ -13,6 +13,7 @@ class CodexBootstrapPorts:
     installation_workspace: object
     run_command: object
     installer_interpreter: object
+    restore_interpreter: object
     installer_path: object
     installer_home: object
     report_installing: object
