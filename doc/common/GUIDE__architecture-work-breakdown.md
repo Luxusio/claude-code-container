@@ -4,8 +4,8 @@ Updated: 2026\-10\-13. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
-확인된 구조 정리 그룹: **13/23 완료 (56.5%)**, **10개 남음**.
-부분 완료: **6**; 진행 중: **4**; 미착수: **0**.
+확인된 구조 정리 그룹: **14/23 완료 (60.9%)**, **9개 남음**.
+부분 완료: **6**; 진행 중: **3**; 미착수: **0**.
 
 이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
 
@@ -20,7 +20,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | R12 | Codex credential runtime observations | 진행 중 | 없음 | Credential runtime 의미 관측 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. Runtime publication 수정은 계획 리뷰 후 uncommitted 작성했으나 /tmp 후보가 사라져 복구/재작성·제품 리뷰·QA 필요\. managedBy 충돌·inode fixture 약점은 확인; 개별7147 실패 원인은 미입증\. |
 | R13 | Top\-level installer presentation and materialization | 진행 중 | 없음 | Installer 네이티브 표현·파일 생성 분리 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. 별도70b1b4de postinstall 수정은 Main 전달·빌드 및8개 파일528PASS; native npm\-stub subprocess3건은 full Windows build나 timeout 원인 검증이 아님\. 구조 완료 credit 없음\. |
 | R14 | Shared mutation\-lock ownership policy | 진행 중 | 없음 | Main의 publicationTimes 의미 포트·native codec과 legacy PID\-reuse 회귀를c8ab5df4에 통합했다\. 결합 변경의 독립 코드·보안 리뷰와 Linux 코어5개 파일183PASS/Windows177PASS\(6개 platform skip\), strict 타입 검사 통과; native host/provider cold\-sync·async·warm identity 경로도 통과\. 자동 attestation에 따른 formal close 및 기존7147 인증·브로커 E2E 공동 FAIL은 별도로 남으며 R14 완료 credit은 부여하지 않는다\. |
-| R15 | Release workspace version synchronization | 진행 중 | 없음 | 버전·내부 의존성 동기화와 Docker 태그 검증 구현, 독립 Code/Security 리뷰·로컬 패키징 QA 통과\. 공동 후보 검증·로컬 통합이 남음; 자동 리뷰·QA 기록 누락으로 formal close는 보류\. Hosted release는 실행하지 않음\. 현재 정확한 /tmp 후보·raw QA 경로는 없음; Git commit은 복구 가능하고 기존 PASS 측정은 보존한다\. 후보5c63d800에서만 scripts/set\-release\-version\.mjs를 추가했으며 현재 Main 파일 경로가 아니다\. |
 | R16 | Remote 연결·전송 경계 | 부분 완료 | 없음 | 원격 probe의 시간·응답 경계 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. |
 | R17 | 브로커 상태·녹화·Appium 결과 | 부분 완료 | 없음 | Main의 recording 복구·captured\-target CAS·physical cleanup 보존과 Windows fixture를4개 선형 커밋으로 통합했다\. 독립 코드·보안 리뷰와 Linux 코어183/선택26PASS, Windows 코어177/선택23PASS 및 strict 타입 검사 통과\(Windows 기존9개 platform skip; 양쪽130개 이름 필터는 비검증\)\. 자동 attestation에 따른 formal close는 별도\. 기존797f5613 Appium native/공동 통합 중단과 semantic\-result 잔여 범위는 유지하며 R17 완료 credit은 부여하지 않는다\. |
 | R18 | 브로커 provider 수명주기 결과 | 부분 완료 | 없음 | Android/iOS/macOS 직접 수명주기 framing과 Android 접근 명령을 어댑터로 분리하고 리뷰·QA·통합한다\. 기존 deadline 수정·provider routing의 공동 QA·통합도 남음\. R17/R19와 공유하는 브로커·codec 파일 연결은 순차 처리한다\. Android 같은 backend 파일 변경은 순차 처리; iOS/macOS 독립 파일은 별도 처리 가능\. |
@@ -61,12 +60,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 완료 조건: Unknown/live owners block bounded acquisition; only qualified dead PID, verified identity mismatch or different boot permits reclamation\. Qualify exact\-record release, successor protection and sync/async callers through current review, joint QA and delivery\.
 
 확인한 소스: [packages/device\-lab/providers/application/shared\-mutation\-lock\.mjs](../../packages/device-lab/providers/application/shared-mutation-lock.mjs), [packages/device\-lab/providers/domain/shared\-mutation\-lock\.mjs](../../packages/device-lab/providers/domain/shared-mutation-lock.mjs), [packages/device\-lab/providers/ports/shared\-mutation\-lock\.d\.mts](../../packages/device-lab/providers/ports/shared-mutation-lock.d.mts)
-
-### R15. Release workspace version synchronization
-
-완료 조건: Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI\.
-
-확인한 소스: [scripts/test\-workspace\-packages\.mjs](../../scripts/test-workspace-packages.mjs), [\.github/workflows/release\.yml](../../.github/workflows/release.yml)
 
 ### R16. Remote 연결·전송 경계
 
@@ -109,6 +102,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | 기완료 | 컨테이너 identity digest | `6d1e2a15` | labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다\. |
 | R09 | iOS 앱 관리 | `6ea57ca5` | 코어는 앱 작업 선택·physical 제한·대상 소유권·컨테이너 fence·reset 공개를 유지하고, 어댑터가 설치·실행·종료·삭제·권한의 네이티브 효과와 응답을 처리한다\. |
 | R10 | iOS 관측·접근 | `6ea57ca5` | 코어는 session 수명주기·동일성·예산·fallback 순서·staging·recording 거절을 유지하고, 어댑터가 유한한 관측·접근 효과와 응답을 제공한다\. |
+| R15 | Release workspace version synchronization | `1b699b6d` | Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI\. |
 
 각 그룹의 stable ID, 과거 기여, 실제 QA·통합 근거는 progress overlay의 해당 planningLanes 항목에 유지한다. 새 잔여 작업이 확인되면 기존 그룹을 부분 완료로 되돌리고 조건을 갱신한다. helper·포트·테스트 파일을 별도 작업으로 세지 않는다.
 

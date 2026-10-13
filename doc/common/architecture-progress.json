@@ -2656,10 +2656,10 @@
       "dependsOn": [],
       "coveredOperationIds": [],
       "title": "Release workspace version synchronization",
-      "workStatus": "in-progress",
-      "remainingWork": "버전·내부 의존성 동기화와 Docker 태그 검증 구현, 독립 Code/Security 리뷰·로컬 패키징 QA 통과. 공동 후보 검증·로컬 통합이 남음; 자동 리뷰·QA 기록 누락으로 formal close는 보류. Hosted release는 실행하지 않음. 현재 정확한 /tmp 후보·raw QA 경로는 없음; Git commit은 복구 가능하고 기존 PASS 측정은 보존한다. 후보5c63d800에서만 scripts/set-release-version.mjs를 추가했으며 현재 Main 파일 경로가 아니다.",
+      "workStatus": "completed",
+      "remainingWork": "R15 범위의 구현·독립 Code/Security 리뷰·현재 소스 CLI 및 실제 package assembly/shipping QA·로컬 통합 완료. Hosted CI·publish·Docker build 실행과 native 전체 패키지 검증, 전체 전환의 formal close는 별도 미검증 조건으로 유지한다.",
       "completionCriteria": "Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI.",
-      "confirmedAtCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
+      "confirmedAtCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
       "sourceTrace": {
         "owningPaths": [
           ".github/workflows/release.yml",
@@ -2667,19 +2667,20 @@
           "package-lock.json",
           "packages/device-lab/package.json",
           "packages/hyper-v/package.json",
-          "device-lab-mcp/package.json"
+          "device-lab-mcp/package.json",
+          "scripts/set-release-version.mjs",
+          "scripts/test-workspace-packages.mjs",
+          "scripts/tests/set-release-version.test.mjs",
+          "doc/common/REQ__workspace-release-version-sync.md"
         ],
         "nativeConsumers": [
           "scripts/workspace-build.mjs"
         ],
-        "remainingPaths": [
-          "scripts/test-workspace-packages.mjs",
-          ".github/workflows/release.yml"
-        ]
+        "remainingPaths": []
       },
-      "status": "Corrected5c63d800 candidate actual independent Code/Security and local QA PASS:19 rejection cases preserve files, exact versions/pins and308 other lock records plus3 links preserved,15 real workflow-fragment executions, genuine build/shipping/public CLI/MCP59. Initial Docker-tag review failure fixed and retained. No hosted CI, release or publish; qualified joint integration pending. Empty automatic receipt park recorded after one task_verify; no formal close or completion credit.",
-      "taskId": "TASK__architecture-release-version-sync",
-      "currentImplementationCandidate": {
+      "status": "Main1b699b6d qualified by actual independent Code/Security PASS and subsequent executed-command QA PASS. Linux and native Windows helper CLI:6tests each, no skips. Current private-source build/assembly, npm archive and Unix CLI/public exports/MCP passed. R15 structural completion only; no hosted CI, publication, native full-package or whole Goal/formal close claim.",
+      "taskId": "TASK__release-sync-recovery-20261013",
+      "historicalCandidateBeforeMainRecovery": {
         "workspace": "/tmp/ccc-architecture-release-version-20261012",
         "branch": "refactor/architecture-release-version-20261012",
         "commit": "5c63d800a1be9c04632a9fde42e64523db1a3955",
@@ -2709,7 +2710,36 @@
           "shippingEvidenceExists": false,
           "committedCandidate": "recoverable Git object; original recorded PASS retained, local raw /tmp artifacts missing"
         }
-      }
+      },
+      "currentImplementationCandidate": {
+        "workspace": "/project/claude-code-container-e60025dac1cf",
+        "branch": "feature/device-mcp-squashed",
+        "commit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
+        "taskId": "TASK__release-sync-recovery-20261013",
+        "status": "qualified-local-integration",
+        "recoveredFrom": "5c63d800a1be9c04632a9fde42e64523db1a3955",
+        "qualificationSummary": "현재 Main 소스의 독립 Code/Security·실행 QA PASS. Linux/Windows 실제 CLI 각각6PASS0FAIL0SKIP와32child calls, 실제 metadata11cases, workspace links3·lock312records 중 외부305records 보존. 세 workflow의 실제 shell21cases(3success/18refusals), private build·assembly·shipping exit0. 보존 npm archive1208entries와 Unix payload의 CLI·exports·MCP59 각각 통과. 실제 root 버전1.1.90과 보호된111hashes 보존. 과거5c63d800 측정과 분리; hosted CI/publish 및 native 전체 packaging 증명은 아님.",
+        "reviewEvidence": {
+          "codeReviewer": "/root/code_review_release_sync_135ab",
+          "securityReviewer": "/root/security_review_release_sync_135ab",
+          "codeVerdict": "PASS",
+          "securityVerdict": "PASS",
+          "qaReviewer": "/root/qa_cli_release_sync_135ab",
+          "qaVerdict": "PASS",
+          "verificationDepth": "executed-command",
+          "formalAttestation": "Substantive finals are NON-ATTESTING where automatic receipts are absent; formal ordered receipt close is not claimed."
+        },
+        "qaEvidence": "results/architecture-release-135ab-20261013/qa-summary.json",
+        "shippingEvidence": "results/architecture-release-135ab-20261013/granular-shipping.json",
+        "nativeCliEvidence": "results/architecture-release-135ab-20261013/native-cli.json",
+        "qaObservedClockUTC": "2026-10-13T15:08:46Z",
+        "qualificationLimits": [
+          "No hosted Node24 CI, publication, Docker build or push executed",
+          "Native Windows tier is helper CLI only, not complete packaged CLI proof",
+          "Sequential OS write failure is intentionally nontransactional; no transactional I/O guarantee claimed"
+        ]
+      },
+      "acceptedIntegrationCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54"
     }
   ],
   "currentSourceQualificationAudit": {
@@ -2842,18 +2872,18 @@
     "scope": "Nine existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery, including direct physical attach/detach at b14321e7. Only known recording start/finalize/status operations remain partial. Historical twelve-operation retraction and prior seven-credit qualification retained; no exhaustive/native/formal certification."
   },
   "confirmedStructuralScopeAudit": {
-    "sourceCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
+    "sourceCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
     "previousCompleted": 19,
     "previousGroups": 19,
     "confirmedGroups": 23,
-    "completedGroups": 13,
+    "completedGroups": 14,
     "partialGroups": 6,
-    "inProgressGroups": 4,
+    "inProgressGroups": 3,
     "pendingGroups": 0,
-    "remainingGroups": 10,
+    "remainingGroups": 9,
     "sourceUniverseCertified": false,
-    "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음.",
-    "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
+    "scope": "완료14/23(60.9%)·잔여9개(부분6·진행3). R15 현재 Main의 버전 동기화는 독립 Code/Security 및 현재 소스 실행 QA·실제 package shipping·로컬 통합으로 완료. R08/R11/R12/R13/R14/R16 후보의 공동 qualification·통합, R17 Appium 현재 native/공동 qualification·통합과 R18/R19 framing이 남음. 아래 원래71473106 joint FAIL과 과거 측정은 보존하며 R15 개별 PASS로 해당 공동 FAIL을 덮어쓰지 않는다. Native 전체·reliability·전수 범위·formal 조건 미검증.",
+    "currentQualificationTask": "TASK__release-sync-recovery-20261013",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",
       "independentReviews": "Smoke route correction2fca1f74: actual independent Code/Security PASS; committed WBS71473106 documentation PASS. Final QA remains FAIL; no integration or completion credit.",
@@ -3289,7 +3319,17 @@
       "candidateHead": "d39517edc285b4bd057e07a19339cb81b6d92183",
       "verificationDepth": "test-suite",
       "formalClose": "not-accepted; actual ordered automatic receipt gate remains required"
-    }
+    },
+    "historicalStructuralAccountingBeforeReleaseRecovery": {
+      "sourceCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
+      "completedGroups": 13,
+      "partialGroups": 6,
+      "inProgressGroups": 4,
+      "pendingGroups": 0,
+      "remainingGroups": 10,
+      "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음."
+    },
+    "currentQualificationScope": "Top-level structural accounting includes qualified R15 Main recovery. The existing currentQualification object below retains historical71473106 joint failure and follow-ups; it is not the current R15 verdict. Current R15 evidence is in planningLanes/release-workspace-version-synchronization-structural."
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
     "sourceCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
