@@ -15,7 +15,7 @@ import { createFakeMacosMcpContext, cleanupFakeMacosMcpContext } from "./helpers
 import { installNodeProviderFixtureRouting, nodeProviderFixturePreloadSource } from "./helpers/node-provider-fixture.js";
 import { spawn } from "child_process";
 import { createHash } from "crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { createServer, request } from "http";
 import { hostname, tmpdir, uptime } from "os";
 import { delimiter, dirname, join, resolve } from "path";
@@ -397,7 +397,7 @@ describe("device-lab host broker lifecycle commands", () => {
     let fixtureHome: string | undefined;
 
     beforeEach(() => {
-        fixtureHome = mkdtempSync(join(tmpdir(), "ccc-device-broker-test-home-"));
+        fixtureHome = realpathSync.native(mkdtempSync(join(tmpdir(), "ccc-device-broker-test-home-")));
         originalHomeRestore = isolateDeviceLabTestEnvironment(fixtureHome);
     });
 
@@ -4876,8 +4876,9 @@ describe("device-lab host broker lifecycle commands", () => {
             }
             retryOutput = "Other_Owners_Avd\nOther_Owners_Avd\nOK\n";
             const response = await remove();
-            expect(response.status).toBe(200);
-            expect((await response.json()).ok).toBe(true);
+            const body = await response.json();
+            expect(response.status, JSON.stringify(body)).toBe(200);
+            expect(body.ok).toBe(true);
             expect(existsSync(artifact)).toBe(false);
             expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
                 provider: "adb", args: ["-s", "emulator-5584", "emu", "avd name\navd name"],
@@ -6150,7 +6151,7 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
                 expect(response.status).toBe(200);
                 const body = await response.json() as { ok: boolean; result: { deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
                 expect(body).toMatchObject({ ok: true, result: { deviceId, backend: "ios-simulator", provider: "device-lab-backend-child" } });
-                expect(body.result.mcpResult.isError).not.toBe(true);
+                expect(body.result.mcpResult.isError, JSON.stringify(body.result.mcpResult)).not.toBe(true);
                 expect(JSON.parse(body.result.mcpResult.content[0].text)).toMatchObject({
                     [resultKey]: { localPath, remotePath: join("Documents", "broker.txt"), bundleId: "com.example.Test", containerType: "data" },
                     containerRoot, provider: "simctl-app-container",
@@ -7728,8 +7729,9 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 expect(state().status).toBe("stopped");
                 deleting = true;
                 const deleted = await invoke("device_delete");
-                expect(deleted.status).toBe(200);
-                expect((await deleted.json()).ok).toBe(true);
+                const deletedBody = await deleted.json();
+                expect(deleted.status, JSON.stringify(deletedBody)).toBe(200);
+                expect(deletedBody.ok).toBe(true);
                 expect(existsSync(artifact)).toBe(false);
             }
             expect(observations.length).toBeGreaterThan(0);

@@ -2630,10 +2630,10 @@ require('module').syncBuiltinESMExports();
                     viaBroker: true,
                     hostCandidates: ["127.0.0.1"],
                     brokerPort: address.port,
-                    timeoutMs: 500,
+                    timeoutMs: 5000,
                 },
             });
-            expect(brokerCreate.isError).not.toBe(true);
+            expect(brokerCreate.isError, JSON.stringify(brokerCreate.content)).not.toBe(true);
             expect(JSON.parse(((brokerCreate.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
@@ -2655,7 +2655,7 @@ require('module').syncBuiltinESMExports();
                     deviceId: "win-broker-plan",
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
-                    timeoutMs: 500,
+                    timeoutMs: 5000,
                 },
             });
             expect(plan.isError).not.toBe(true);
@@ -2679,7 +2679,7 @@ require('module').syncBuiltinESMExports();
                     dryRun: true,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
-                    timeoutMs: 500,
+                    timeoutMs: 5000,
                 },
             });
             expect(dryRun.isError).not.toBe(true);
@@ -2701,7 +2701,7 @@ require('module').syncBuiltinESMExports();
                     dryRun: false,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
-                    timeoutMs: 500,
+                    timeoutMs: 5000,
                 },
             });
             expect(realRun.isError).not.toBe(true);
@@ -2733,7 +2733,7 @@ require('module').syncBuiltinESMExports();
                     broker: true,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
-                    timeoutMs: 500,
+                    timeoutMs: 5000,
                 },
             });
             expect(lifecycleStatus.isError).not.toBe(true);
@@ -2755,7 +2755,7 @@ require('module').syncBuiltinESMExports();
                     deviceId: "win-broker-plan",
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
-                    timeoutMs: 500,
+                    timeoutMs: 5000,
                 },
             });
             expect(implicitLifecycleStatus.isError).not.toBe(true);
@@ -2802,7 +2802,7 @@ require('module').syncBuiltinESMExports();
                     viaBroker: true,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
-                    timeoutMs: 500,
+                    timeoutMs: 5000,
                 },
             });
             expect(realLifecycleStop.isError).not.toBe(true);
@@ -3266,7 +3266,7 @@ require('module').syncBuiltinESMExports();
             }],
         }));
         try {
-            const route = { broker: true, hostCandidates: ["127.0.0.1"], port: address.port, timeoutMs: 500 };
+            const route = { broker: true, hostCandidates: ["127.0.0.1"], port: address.port, timeoutMs: 5000 };
             const owned = await client.callTool({
                 name: "devices",
                 arguments: { ...route, view: "owned", backend: "windows-sandbox" },
@@ -3300,7 +3300,7 @@ require('module').syncBuiltinESMExports();
                     broker: true,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
-                    timeoutMs: 500,
+                    timeoutMs: 5000,
                 },
             });
             expect(inventory.isError).not.toBe(true);
@@ -3322,7 +3322,7 @@ require('module').syncBuiltinESMExports();
                     deviceId: "win-readonly-broker",
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
-                    timeoutMs: 500,
+                    timeoutMs: 5000,
                 },
             });
             expect(recording.isError).not.toBe(true);

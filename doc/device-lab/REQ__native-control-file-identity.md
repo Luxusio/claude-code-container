@@ -8,6 +8,10 @@ Admit supported pathname kinds before opening, and use available nonblocking rea
 
 Authentication retains its bounded 4096-byte read, owner and secret validation, and directory admission. Host and MCP readers share this implementation. A valid credential remains stable across repeated authenticated requests; a rejected credential cannot dispatch an authenticated operation. Secret bytes are read only from the original validated descriptor.
 
+Malformed existing Windows Sandbox singleton ownership state must refuse start
+before native runtime discovery, including starts with an already prepared
+provider command. The runtime snapshot still precedes the actual singleton claim.
+
 Image copy and hashing retain single-link regular-file checks, size and byte bounds, hashes, exclusive destinations and deadlines. Qualification must preserve the originally admitted source inode, type, link count and size; replacement, truncation or growth cannot become a new baseline. Qualified source bounds must pass before reading or creating a destination. Verification handles close before compensation.
 
 Owned directory cleanup retains atomic quarantine, containment, successor checks and symlink entry unlink-only behavior. Directory size and link counts may change during traversal; the qualified volume, inode and type must remain the same before removal.

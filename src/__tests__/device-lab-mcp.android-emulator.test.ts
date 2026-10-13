@@ -1392,7 +1392,21 @@ if (args[0] === '-s' && args[2] === 'shell' && args[3] === 'getprop' && args[4] 
                 expect((refused.content as Array<{ text?: string }>)[0]?.text).toContain("android-avd-active-or-liveness-unverified");
                 expect(readFileSync(userdata, "utf8")).toBe("owned bytes must survive unavailable native liveness");
                 expect(readFileSync(ini, "utf8")).toBe(originalIni);
-                expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual(originalState);
+                const retainedState = JSON.parse(readFileSync(statePath, "utf8"));
+                const retainedDevice = retainedState.devices.find((device: { id: string }) => device.id === deviceId);
+                const originalDevice = originalState.devices.find((device: { id: string }) => device.id === deviceId);
+                expect(typeof retainedDevice.updatedAt).toBe("string");
+                expect(Number.isFinite(Date.parse(retainedDevice.updatedAt))).toBe(true);
+                expect(Date.parse(retainedDevice.updatedAt)).toBeGreaterThanOrEqual(Date.parse(originalDevice.updatedAt));
+                const withoutTargetTimestamp = (state: typeof retainedState) => ({
+                    ...state,
+                    devices: state.devices.map((device: { id: string; updatedAt?: string }) => {
+                        if (device.id !== deviceId) return device;
+                        const { updatedAt: _updatedAt, ...retained } = device;
+                        return retained;
+                    }),
+                });
+                expect(withoutTargetTimestamp(retainedState)).toEqual(withoutTargetTimestamp(originalState));
                 const effects = readFileSync(logPath, "utf8").slice(beforeLog.length);
                 expect(effects).toContain(`android-avd-liveness ${failure === "query" ? "query-failed" : "resolver-refused"}`);
                 expect(effects).not.toContain(`avdmanager delete avd --name ${avdName}`);

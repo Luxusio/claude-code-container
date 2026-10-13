@@ -22,6 +22,10 @@ framing produce failure, followed by owned-stage finalization. Byte limits,
 staging validation and destination publication policy remain in the application;
 native encoding and decoding belong to adapters.
 
+Resolved iOS app-container paths use the host's native path semantics. An owned
+descendant remains valid on Windows and POSIX; sibling, ancestor and resolved
+link escapes must be rejected before transferring bytes.
+
 Application tests exercise execution throws, unexpected actions, malformed or
 oversized artifacts, remote cleanup throws, combined failures and cleanup failure
 after publication. Native file/SDK qualification is separate from these composed

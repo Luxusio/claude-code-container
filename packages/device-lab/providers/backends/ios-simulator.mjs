@@ -14,7 +14,7 @@ import { spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { dirname, isAbsolute, join, normalize } from "path";
+import { dirname, isAbsolute, join, normalize, relative, sep } from "path";
 import { commandPath, localBinPath, run, runWithInput, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { validateLocalOutputPath } from "../policy/files.mjs";
@@ -326,7 +326,8 @@ function pathInsideContainer(containerRoot, requestedPath) {
 }
 
 function realPathIsInside(parent, child) {
-    return child === parent || child.startsWith(`${parent}/`);
+    const path = relative(parent, child);
+    return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
 }
 
 function ensureContainerPathForWrite(containerRoot, targetPath) {

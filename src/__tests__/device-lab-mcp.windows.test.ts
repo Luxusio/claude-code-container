@@ -1539,7 +1539,12 @@ require('node:module').syncBuiltinESMExports();`);
         });
         expect(firstStart.isError).not.toBe(true);
         const firstLock = readFileSync(staleLockPath, "utf-8");
-        const logBeforeDuplicateStart = readFileSync(logPath, { encoding: "utf-8", flag: "a+" });
+        const firstSandboxId = JSON.parse(firstLock).sandboxId;
+        expect(firstSandboxId).toMatch(/^[0-9a-f-]{36}$/);
+        const firstConnect = new RegExp(`wsb connect --id ${firstSandboxId}(?:\\r?\\n|$)`);
+        const logBeforeDuplicateStart = await waitForLog(logPath, firstConnect);
+        expect(logBeforeDuplicateStart).toMatch(firstConnect);
+        expect((logBeforeDuplicateStart.match(/wsb connect --id/g) || []).length).toBe(1);
         const duplicateFirstStart = await client.callTool({
             name: "start",
             arguments: { waitForBoot: false, deviceId: "windows-singleton-one" },

@@ -1,4 +1,5 @@
 import * as processIdentity from "@ccc/device-lab/providers/state/process-identity.mjs";
+import * as brokerOwnerSecret from "@ccc/device-lab/providers/state/broker-owner-secret.mjs";
 import { installNodeProviderFixtureRouting } from "./node-provider-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "./device-lab-test-environment.js";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
@@ -114,10 +115,12 @@ fs.writeFileSync(last, "fakepng");
     const readIdentity = processIdentity.readProcessIdentity;
     const inspectIdentity = processIdentity.inspectProcessIdentity;
     const signalRuntime = processIdentity.signalOwnedRuntimeProcess;
+    const readSecret = brokerOwnerSecret.readBrokerOwnerSecret;
     const identitySpies = [
         vi.spyOn(processIdentity, "readProcessIdentity").mockImplementation((...args) => nativeCall(() => readIdentity(...args))),
         vi.spyOn(processIdentity, "inspectProcessIdentity").mockImplementation((...args) => nativeCall(() => inspectIdentity(...args))),
         vi.spyOn(processIdentity, "signalOwnedRuntimeProcess").mockImplementation((...args) => nativeCall(() => signalRuntime(...args))),
+        vi.spyOn(brokerOwnerSecret, "readBrokerOwnerSecret").mockImplementation((...args) => nativeCall(() => readSecret(...args))),
     ];
     const restoreNativeIdentity = () => identitySpies.forEach(spy => spy.mockRestore());
 

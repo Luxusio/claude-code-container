@@ -8849,6 +8849,9 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
         return renderBrokerIosMacosLifecycle(result, publicContext, redactBrokerDeviceSecrets, ownerDeviceStateFailure, providerFailureDetail);
     }
     if (parsed.backend === "windows-sandbox" && ["device_start", "device_stop", "device_delete"].includes(parsed.command)) {
+        // Admit existing ownership before discovery, including prepared starts.
+        // The actual singleton claim still follows the runtime snapshot.
+        if (parsed.command === "device_start") readBrokerWindowsSandboxLock();
         const ports = brokerWindowsLifecyclePorts(normalized);
         const lifecycle = createBrokerWindowsSandboxLifecycle(ports);
         const command = payload.result?.providerCommand;
