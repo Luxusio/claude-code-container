@@ -2807,7 +2807,7 @@
       "id": "vm-instance-identity-compatibility",
       "taskId": "TASK__vm-unique-public-identity-20261014",
       "coveredOperationIds": [],
-      "status": "Main5b27e04d implementation checkpoint: independent Code found three fixes (uncertain creation replay, Mac broker workspace collision, real Mac fixture prefix); Security confirmed replay. Those corrections are frozen and current-source build/strict/MCP/lint checks pass. Controlled production HTTP red/green proves one submitted VM birth for all three families while discovery/noncreation fallback remains; Mac residue fixtures refuse before planning/provider effects. Fresh final reviews and Linux/native Windows QA remain pending. Zero operation or structural-group completion credit."
+      "status": "Main5b27e04d plus7266a1cf implementation checkpoints: original uncertain creation replay, Mac broker workspace collision and real Mac fixture prefix findings corrected. Final Code found the unmigrated QEMU smoke caller; it now captures the returned lab.id and threads it through the existing workflow. Existing whole smoke two tests pass after correction (both failed before it), with current workspace build/assembly and source syntax checks passing. Fresh final full Code review and Linux/native Windows QA remain pending. Prior Security7266 actual PASS is retained for unchanged authority/transport/generation boundaries; only the isolated fake-provider smoke consumer changed. Zero operation or structural-group completion credit."
     }
   ],
   "currentSourceQualificationAudit": {

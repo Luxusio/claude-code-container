@@ -135,16 +135,16 @@ export async function runLabMcpSmoke(options = {}) {
             sourcePath: "images/base.qcow2",
             copy: false,
         }, baseOptions)));
-        step("lab-create", () => assertOk("lab-create", createLab({
+        const created = step("lab-create", () => assertOk("lab-create", createLab({
             name: "Smoke VM",
-            labId: "smoke-vm",
             baseImageId: "smoke-base",
             guestSshHost: "127.0.0.1",
             guestSshPort: 2222,
             guestSshUser: "ccc",
             guestSshKeyPath: sshKeyPath,
         }, baseOptions)));
-        step("disk-materialize", () => assertOk("disk-materialize", materializeDisk({ labId: "smoke-vm" }, baseOptions)));
+        const labId = created.lab.id;
+        step("disk-materialize", () => assertOk("disk-materialize", materializeDisk({ labId }, baseOptions)));
         if (!options.commandRunner) {
             const ownedChild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
             child = ownedChild;
@@ -154,32 +154,32 @@ export async function runLabMcpSmoke(options = {}) {
         }
         step("lab-start", () => {
             if (childError) throw childError;
-            return assertOk("lab-start", startLab({ labId: "smoke-vm" }, baseOptions));
+            return assertOk("lab-start", startLab({ labId }, baseOptions));
         });
-        step("readiness-probe", () => assertOk("readiness-probe", probeReadiness({ labId: "smoke-vm" }, baseOptions)));
+        step("readiness-probe", () => assertOk("readiness-probe", probeReadiness({ labId }, baseOptions)));
         step("guest-push", () => assertOk("guest-push", guestPush({
-            labId: "smoke-vm",
+            labId,
             sourcePath: workspace,
             guestPath: "/workspace/smoke",
         }, baseOptions)));
         step("guest-pull", () => assertOk("guest-pull", guestPull({
-            labId: "smoke-vm",
+            labId,
             guestPath: "/artifacts/smoke",
             destinationPath: "smoke-pull",
         }, baseOptions)));
         step("guest-exec", () => assertOk("guest-exec", guestExec({
-            labId: "smoke-vm",
+            labId,
             command: "true",
         }, baseOptions)));
         step("lab-stop", () => assertOk("lab-stop", stopLab({
-            labId: "smoke-vm",
+            labId,
             force: true,
         }, baseOptions)));
         step("snapshot-create", () => assertOk("snapshot-create", snapshotLab("create", {
-            labId: "smoke-vm",
+            labId,
             snapshotName: "smoke",
         }, baseOptions)));
-        step("lab-delete", () => assertOk("lab-delete", deleteLab({ labId: "smoke-vm" }, baseOptions)));
+        step("lab-delete", () => assertOk("lab-delete", deleteLab({ labId }, baseOptions)));
 
         report = { ok: true, steps };
     } catch (error) {
