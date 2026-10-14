@@ -1095,48 +1095,131 @@ describe("device-lab MCP", () => {
         }
     });
 
-    it("does not replay a generated-ID Hyper-V create after an uncertain transport disconnect", async () => {
-        const ownerId = TEST_BROKER_OWNER_ID;
-        provisionTestOwnerSecret(ownerId);
-        let rpcRequests = 0;
+    async function startCandidateDisconnectFixture(disconnect: "rpc" | "owner-resolve") {
+        provisionTestOwnerSecret();
+        const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+        let ownerResolveRequests = 0;
         let providerCreates = 0;
-        let created = false;
         const server = createServer((req, res) => {
-            if (sendTestOwnerResolve(req, res)) return;
-            rpcRequests += 1;
-            if (rpcRequests === 1) {
-                if (!created) {
-                    providerCreates += 1;
-                    created = true;
+            const chunks: Buffer[] = [];
+            req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+            req.on("end", () => {
+                if (req.method === "POST" && req.url === "/v1/owner/resolve") {
+                    ownerResolveRequests += 1;
+                    if (disconnect === "owner-resolve" && ownerResolveRequests === 1) {
+                        req.socket.destroy();
+                        return;
+                    }
+                    sendTestOwnerResolve(req, res);
+                    return;
                 }
-                // The provider side effect completed, but its response was lost.
-                req.socket.destroy();
-                return;
-            }
-            res.setHeader("content-type", "application/json");
-            res.end(JSON.stringify({ ok: true, result: { idempotent: true, invoked: false, device: { id: "linux-retry" } } }));
+                if (req.method !== "POST" || req.url !== `/v1/owners/${TEST_BROKER_OWNER_ID}/rpc`) {
+                    res.statusCode = 404;
+                    res.end(JSON.stringify({ ok: false, error: "unexpected-fixture-request" }));
+                    return;
+                }
+                const request = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof requests[number];
+                requests.push(request);
+                if (request.method === "broker.command.invoke" && request.params.command === "device_create"
+                    && request.params.dryRun !== true) providerCreates += 1;
+                if (disconnect === "rpc" && requests.length === 1) {
+                    // The full POST was accepted and the birth completed before its response was lost.
+                    req.socket.destroy();
+                    return;
+                }
+                res.setHeader("content-type", "application/json");
+                res.end(JSON.stringify({ ok: true, result: { device: { id: `fixture-birth-${providerCreates}` }, completed: true } }));
+            });
         });
         await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
         const port = (server.address() as AddressInfo).port;
+        return {
+            requests,
+            counts: () => ({ ownerResolveRequests, providerCreates }),
+            // The production normalizer preserves both trusted candidate slots. Both reach this
+            // controlled endpoint; the second would return success if the controller replayed.
+            options: { hostCandidates: ["127.0.0.1", "127.0.0.1"], port, rpcTimeoutMs: 1000, timeoutMs: 1000, autolaunch: false },
+            close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+        };
+    }
 
+    it.each(["windows-vm", "linux-vm", "macos-vm"])("does not replay a generated-ID %s birth across broker candidates after an accepted POST disconnects", async (backend) => {
+        const fixture = await startCandidateDisconnectFixture("rpc");
         try {
             const result = await brokerCommand({
+                ...fixture.options,
+                action: "invoke",
+                backend,
+                command: "device_create",
+                name: "同じ VM display label",
+            });
+            expect(fixture.requests, JSON.stringify(result)).toHaveLength(1);
+            expect(fixture.counts().providerCreates, JSON.stringify(result)).toBe(1);
+            expect(fixture.requests[0]).toMatchObject({
+                method: "broker.command.invoke",
+                params: { backend, command: "device_create", name: "同じ VM display label" },
+            });
+            expect(fixture.requests[0].params).not.toHaveProperty("deviceId");
+            expect(result).toMatchObject({
+                ok: false,
+                error: "broker-rpc-unavailable",
+                attempts: [expect.objectContaining({
+                    host: "127.0.0.1",
+                    status: null,
+                    error: expect.stringMatching(/aborted|socket hang up/),
+                    transportCode: "connection-reset",
+                    transportRetryable: true,
+                })],
+            });
+            expect(result.attempts).toHaveLength(1);
+            expect(result).not.toHaveProperty("transportRecovery");
+        } finally {
+            await fixture.close();
+        }
+    });
+
+    it("allows broker candidate fallback before a VM birth POST is submitted", async () => {
+        const fixture = await startCandidateDisconnectFixture("owner-resolve");
+        try {
+            const result = await brokerCommand({
+                ...fixture.options,
                 action: "invoke",
                 backend: "linux-vm",
                 command: "device_create",
-                name: "Linux retry display label",
-                hostCandidates: ["127.0.0.1"],
-                port,
-                rpcTimeoutMs: 1000,
-                timeoutMs: 1000,
-                autolaunch: false,
+                name: "Linux discovery fallback",
             });
-            expect(rpcRequests).toBe(1);
-            expect(providerCreates).toBe(1);
-            expect(result).toMatchObject({ ok: false, error: "broker-rpc-unavailable", attempts: [expect.objectContaining({ status: null, transportRetryable: true })] });
-            expect(result).not.toHaveProperty("transportRecovery");
+            expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { completed: true } });
+            expect(fixture.counts()).toEqual({ ownerResolveRequests: 2, providerCreates: 1 });
+            expect(fixture.requests).toHaveLength(1);
+            expect(fixture.requests[0]).toMatchObject({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create" } });
+            expect(result.attempts).toEqual([expect.objectContaining({ host: "127.0.0.1", status: 200, ok: true })]);
         } finally {
-            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+            await fixture.close();
+        }
+    });
+
+    it.each([
+        { label: "VM status", options: { action: "invoke", backend: "windows-vm", command: "device_status", deviceId: "win-existing" } },
+        { label: "VM create dry run", options: { action: "invoke", backend: "linux-vm", command: "device_create", name: "Linux dry run", dryRun: true } },
+        { label: "VM create plan", options: { action: "plan", backend: "macos-vm", command: "device_create", name: "Mac plan" } },
+        { label: "non-VM creation", options: { action: "invoke", backend: "android-emulator", command: "device_create", deviceId: "android-existing-contract" } },
+        { label: "read-only inventory", options: { method: "broker.inventory", params: {} } },
+    ])("retains broker candidate fallback for $label after a disconnected RPC response", async ({ options }) => {
+        const fixture = await startCandidateDisconnectFixture("rpc");
+        try {
+            const result = "method" in options
+                ? await brokerRpc({ ...fixture.options, ...options })
+                : await brokerCommand({ ...fixture.options, ...options });
+            expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { completed: true } });
+            expect(fixture.requests).toHaveLength(2);
+            expect(fixture.requests[1]).toEqual(fixture.requests[0]);
+            expect(result.attempts).toEqual([
+                expect.objectContaining({ host: "127.0.0.1", status: null, transportRetryable: true }),
+                expect.objectContaining({ host: "127.0.0.1", status: 200, ok: true }),
+            ]);
+            expect(fixture.counts().providerCreates).toBe("backend" in options && options.backend === "android-emulator" ? 2 : 0);
+        } finally {
+            await fixture.close();
         }
     });
 

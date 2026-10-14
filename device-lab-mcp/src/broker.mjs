@@ -528,39 +528,6 @@ function brokerTransportFailure(error) {
     };
 }
 
-function hyperVCreateTransportRetryEligible(options, method, attempts) {
-    const params = options?.params;
-    const lastAttempt = attempts.at(-1);
-    return options?.__hyperVCreateTransportRetryAttempted !== true
-        && method === "broker.command.invoke"
-        && params && typeof params === "object"
-        && ["windows-vm", "linux-vm"].includes(params.backend)
-        && params.command === "device_create"
-        && typeof params.deviceId === "string"
-        && params.deviceId.length > 0
-        && lastAttempt?.status === null
-        && lastAttempt?.transportRetryable === true;
-}
-
-function brokerLogDiagnosticCodes(launch) {
-    const logPath = launch?.runtime?.logPath || launch?.logPath;
-    const log = brokerLogTail(logPath, BROKER_LOG_TAIL_READ_LIMIT_BYTES);
-    const matches = log.match(/\b(?:appium|broker|hyper-v|powershell|ssh)-[a-z0-9-]{2,128}\b/g) || [];
-    return [...new Set(matches)].slice(-8);
-}
-
-function summarizeBrokerTransportFailure(attempts, launch) {
-    const lastAttempt = attempts.at(-1);
-    return {
-        host: lastAttempt?.host,
-        port: lastAttempt?.port,
-        error: lastAttempt?.transportCode || "transport-error",
-        durationMs: lastAttempt?.durationMs,
-        brokerPid: Number.isSafeInteger(launch?.runtime?.pid) ? launch.runtime.pid : undefined,
-        brokerDiagnostics: brokerLogDiagnosticCodes(launch),
-    };
-}
-
 function boundedBrokerRawText(text) {
     const bytes = Buffer.from(text, "utf8");
     if (bytes.length <= BROKER_INVALID_RESPONSE_RAW_LIMIT_BYTES) return text;
@@ -1815,6 +1782,9 @@ async function brokerRpcRequestUncached(options = {}) {
     }
 
     const attempts = [];
+    const managedVmCreate = method === "broker.command.invoke" && options.params?.command === "device_create"
+        && ["windows-vm", "linux-vm", "macos-vm"].includes(options.params?.backend)
+        && options.params?.dryRun !== true;
     let observationRpcStarted = false;
     let candidateAttemptFailed = false;
     let observationBudgetExhausted = false;
@@ -1825,6 +1795,7 @@ async function brokerRpcRequestUncached(options = {}) {
             break;
         }
         let attemptTimeoutMs = rpcTimeoutMs;
+        let rpcAttemptStarted = false;
         const rpcPath = `/v1/owners/${encodeURIComponent(owner)}/rpc`;
         const endpoint = `http://${host}:${probeOptions.port}${rpcPath}`;
         const startedAt = Date.now();
@@ -1853,6 +1824,7 @@ async function brokerRpcRequestUncached(options = {}) {
                 } });
             }
             observationRpcStarted = true;
+            rpcAttemptStarted = true;
             const response = await brokerRpcHttpJsonRequest({
                 host,
                 port: probeOptions.port,
@@ -1941,30 +1913,10 @@ async function brokerRpcRequestUncached(options = {}) {
                 transportCode: failure.transportCode,
                 transportRetryable: failure.retryable,
             });
+            // A VM birth may have completed when its POST response is lost.
+            // Connection refusal confirms no submission; attestation failures occur before RPC.
+            if (managedVmCreate && rpcAttemptStarted && failure.transportCode !== "connection-refused") break;
         }
-    }
-    if (hyperVCreateTransportRetryEligible(options, method, attempts)) {
-        invalidateBrokerSetup();
-        const initial = summarizeBrokerTransportFailure(attempts, launch);
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        const retried = await brokerRpcRequest({
-            ...options,
-            hostCandidates: [initial.host],
-            port: initial.port,
-            __hyperVCreateTransportRetryAttempted: true,
-        });
-        return {
-            ...retried,
-            attempts: [...attempts, ...(Array.isArray(retried.attempts) ? retried.attempts : [])],
-            transportRecovery: {
-                attempted: true,
-                recovered: retried.ok === true,
-                initial,
-                ...(retried.ok === true
-                    ? {}
-                    : { retry: summarizeBrokerTransportFailure(retried.attempts || [], retried.launch) }),
-            },
-        };
     }
     const result = {
         ok: false,

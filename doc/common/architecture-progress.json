@@ -2807,7 +2807,7 @@
       "id": "vm-instance-identity-compatibility",
       "taskId": "TASK__vm-unique-public-identity-20261014",
       "coveredOperationIds": [],
-      "status": "Main implementation frozen: managed Windows/Linux/macOS VM births use one native-admitted UUID; public MCP/CLI/flow use deviceId alone with protocol5. Current source workspace/root/strict/QEMU contract/MCP build and source lint passed. Eight whole-file correction check had425 passes and one diagnostic-fixture mismatch; that fixture was corrected and passed in the exact selection. Independent final reviews and fresh Linux/native Windows QA remain pending. No new operation or structural-group completion credit."
+      "status": "Main5b27e04d implementation checkpoint: independent Code found three fixes (uncertain creation replay, Mac broker workspace collision, real Mac fixture prefix); Security confirmed replay. Those corrections are frozen and current-source build/strict/MCP/lint checks pass. Controlled production HTTP red/green proves one submitted VM birth for all three families while discovery/noncreation fallback remains; Mac residue fixtures refuse before planning/provider effects. Fresh final reviews and Linux/native Windows QA remain pending. Zero operation or structural-group completion credit."
     }
   ],
   "currentSourceQualificationAudit": {

@@ -1770,7 +1770,7 @@ describe("test level runner", () => {
         await expect(probeMissingMacosImage(async (tool) => {
             calls.push(tool);
             return { content: [{ type: "text", text: JSON.stringify(tool === "devices"
-                ? { devices: [] } : { device: { deviceId: "macos-vm-generated", status: "stopped" } }) }] };
+                ? { devices: [] } : { device: { deviceId: "macos-2468ace0-1357-4bdf-8ace-2468ace01357", status: "stopped" } }) }] };
         })).rejects.toThrow("missing image unexpectedly cloned during create");
         expect(calls).toEqual(["devices", "create_macos_vm"]);
     });
@@ -1780,7 +1780,7 @@ describe("test level runner", () => {
         await expect(probeMissingMacosImage(async (tool) => tool === "create_macos_vm"
             ? { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "macos-tart-clone-failed" }) }] }
             : { content: [{ type: "text", text: JSON.stringify({ devices: ++inventories === 1 ? [] : [
-                { deviceId: "macos-vm-new-generated", name: "Level 2 public missing base image", status: "stopped" },
+                { deviceId: "macos-abcdef12-3456-4789-8abc-def123456789", name: "Level 2 public missing base image", status: "stopped" },
             ] }) }] })).rejects.toThrow(/published|inventory|unpublished/);
         expect(inventories).toBe(2);
     });

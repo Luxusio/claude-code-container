@@ -38,7 +38,7 @@ describe.runIf(level >= 3)("level 3 destructive and physical-device integration"
             expect(result).toEqual(expect.objectContaining({
                 status: "PASS",
                 provider: "tart",
-                deviceId: expect.stringMatching(/^macos-vm-[a-f0-9-]+$/),
+                deviceId: expect.stringMatching(/^macos-[a-f0-9-]+$/),
                 snapshot: true,
             }));
         },

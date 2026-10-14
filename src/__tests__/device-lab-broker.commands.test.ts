@@ -34,6 +34,7 @@ import { releaseHyperVNetworkAllocationAndCleanupOutcome } from "@ccc/device-lab
 import { renderHyperVCreateStart } from "@ccc/device-lab/device-lab/broker/hyper-v/lifecycle-outcomes.js";
 import { rememberHyperVConsoleFrame, forgetHyperVConsoleFrame, hyperVConsoleFrameKey } from "@ccc/device-lab/device-lab/broker/hyper-v/console.js";
 import { hyperVVmName } from "@ccc/device-lab/host-control/hyper-v/index.js";
+import * as macosLifecycleApplication from "@ccc/device-lab/device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import { HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP } from "@ccc/hyper-v/low-level/powershell-transport.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRoot, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 import {
@@ -180,6 +181,46 @@ function isHyperVNetworkCleanupScript(script: string): boolean {
 }
 
 describe("device-lab host broker lifecycle commands", () => {
+    it.each([
+        { label: "definition-only", create: {} },
+        { label: "image-backed", create: { image: "ccc-macos-base" } },
+    ])("refuses an admitted macOS workspace collision before $label creation planning or effects", async ({ label, create }) => {
+        const cwd = `/project/broker-macos-${label}-workspace-collision`, ownerId = deviceLabOwnerId(cwd);
+        const uuid = "13579bdf-2468-4ace-8bdf-13579bdf2468", deviceId = `macos-${uuid}`;
+        const root = writeBrokerDevices(ownerId, "macos", []), stateFile = join(root, "devices.json");
+        const workspace = join(root, deviceId), artifact = join(workspace, "tools", "existing-resource.bin");
+        mkdirSync(dirname(artifact), { recursive: true, mode: 0o700 });
+        writeFileSync(artifact, Buffer.from("existing Mac 한글 resource\0opaque bytes"), { mode: 0o600 });
+        const stateBytes = readFileSync(stateFile), artifactBytes = readFileSync(artifact);
+        const stateIdentity = statSync(stateFile, { bigint: true }), workspaceIdentity = statSync(workspace, { bigint: true });
+        const planning = vi.spyOn(macosLifecycleApplication, "planBrokerMacosCreateCommand");
+        const commandRunner = vi.fn(command => ({ ...command, status: 0, stdout: "ok", stderr: "" }));
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0,
+            providerPaths: { tart: "/fake/tart" }, commandRunner });
+        const baseUrl = await listen(server);
+        try {
+            vmBirthEntropy.uuid = uuid;
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.command.invoke", params: {
+                    backend: "macos-vm", command: "device_create", name: "Same 한글 Mac", provider: "tart", force: true, ...create,
+                } }),
+            });
+            const body = await response.json();
+            expect(response.status, JSON.stringify(body)).toBe(409);
+            expect(body).toMatchObject({ ok: false, error: "owner-device-already-exists", ownerId, backend: "macos-vm", deviceId });
+            expect(body).not.toHaveProperty("plan");
+            expect(planning).not.toHaveBeenCalled();
+            expect(commandRunner).not.toHaveBeenCalled();
+            expect(readFileSync(stateFile)).toEqual(stateBytes);
+            expect(JSON.parse(readFileSync(stateFile, "utf8")).devices).toEqual([]);
+            expect(readFileSync(artifact)).toEqual(artifactBytes);
+            expect(readdirSync(workspace)).toEqual(["tools"]);
+            expect(statSync(stateFile, { bigint: true })).toMatchObject({ ino: stateIdentity.ino, mtimeNs: stateIdentity.mtimeNs });
+            expect(statSync(workspace, { bigint: true })).toMatchObject({ ino: workspaceIdentity.ino, mtimeNs: workspaceIdentity.mtimeNs });
+        } finally { vmBirthEntropy.uuid = null; await close(server); planning.mockRestore(); cleanupOwner(ownerId); }
+    });
+
     it.each(["windows-vm", "linux-vm"])("leaves missing %s targets effect-free without an accepted operation journal", async backend => {
         const cwd = `/project/broker-${backend}-missing-identity`;
         const ownerId = deviceLabOwnerId(cwd), deviceId = "deleted-legacy-id", incarnationId = "a".repeat(32);

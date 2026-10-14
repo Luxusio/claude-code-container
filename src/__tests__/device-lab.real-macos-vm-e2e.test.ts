@@ -210,7 +210,7 @@ describe.runIf(level >= 2)("level 2 real macOS VM Tart E2E", () => {
                 status: "PASS",
                 provider: "tart",
                 source: cap.source,
-                deviceId: expect.stringMatching(/^macos-vm-[a-f0-9-]+$/),
+                deviceId: expect.stringMatching(/^macos-[a-f0-9-]+$/),
                 providerInstance: expect.any(String),
                 boot: expect.objectContaining({
                     ready: expect.any(Boolean),
@@ -239,7 +239,7 @@ describe("macOS E2E returned fixture identity", () => {
         const calls: Array<{ tool: string; args: any }> = [];
         const devices = new Map<string, any>();
         const transfers = new Map<string, string>();
-        const ids = ["macos-vm-13579bdf-2468-4ace-8bdf-13579bdf2468", "macos-vm-2468ace0-1357-4bdf-8ace-2468ace01357", "macos-vm-abcdef12-3456-4789-8abc-def123456789"];
+        const ids = ["macos-13579bdf-2468-4ace-8bdf-13579bdf2468", "macos-2468ace0-1357-4bdf-8ace-2468ace01357", "macos-abcdef12-3456-4789-8abc-def123456789"];
         let createCount = 0;
         const reply = (value: any) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
         macosFixture.active = true;

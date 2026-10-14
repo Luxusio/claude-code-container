@@ -8843,6 +8843,10 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
     const parsed = validateCommandParams(params, admittedDeviceId);
     if (!parsed.ok)
         return commandParamError(parsed);
+    if (parsed.backend === "macos-vm" && parsed.command === "device_create"
+        && existsSync(join(dirname(ownerDevicesFile(ownerId, parsed.stateKey)), parsed.deviceId))) {
+        return { status: 409, payload: { ok: false, error: "owner-device-already-exists", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
+    }
     if (parsed.command === "device_status") return renderBrokerDeviceStatusWithDiagnostics(await brokerDeviceStatusApplication(normalized).execute(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt), params);
     if (isHyperVBackend(parsed.backend) && (parsed.command === "device_stop" || parsed.command === "device_delete")) {
         return renderHyperVStopDelete(await brokerHyperVStopDeleteApplication(normalized).invoke(ownerId, { ...parsed, command: parsed.command }, hyperVDeadlineAt, hyperVCleanupDeadlineAt));
