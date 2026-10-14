@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createBrokerAppiumApplication } from "../../../packages/device-lab/src/device-lab/application/broker-appium.js";
-import { validateAppiumRequestParams, type BrokerAppiumResponse } from "../../../packages/device-lab/src/device-lab/domain/broker-appium.js";
+import { validateAppiumRequestParams, type BrokerAppiumResponse, type BrokerAppiumExecution } from "../../../packages/device-lab/src/device-lab/domain/broker-appium.js";
 import type { BrokerAppiumPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-appium.js";
 
 function appiumCapabilityContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>): void {
@@ -26,7 +26,7 @@ function appiumCapabilityContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>): 
     // @ts-expect-error Manifest publication must settle before npm execution or runtime reuse.
     createBrokerAppiumApplication({ ...ports, writeManifest: async () => undefined });
     // @ts-expect-error Synchronous installation commands require a concrete completed execution.
-    createBrokerAppiumApplication({ ...ports, installRuntime: async () => ({ status: 0, receipt: {} }) });
+    createBrokerAppiumApplication({ ...ports, installRuntime: async () => ({ ok: true, receipt: {} }) });
     const { launchServer, ...withoutLaunch } = ports;
     // @ts-expect-error Server launch is a required finite native effect.
     createBrokerAppiumApplication(withoutLaunch);
@@ -60,7 +60,7 @@ function appiumCapabilityContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>): 
         }
     };
     // @ts-expect-error Instrumentation reset settles each effect before the next step.
-    createBrokerAppiumApplication({ ...ports, resetInstrumentation: async () => ({ status: 0, receipt: {} }) });
+    createBrokerAppiumApplication({ ...ports, resetInstrumentation: async () => ({ ok: true, receipt: {} }) });
     // @ts-expect-error The core cannot construct an arbitrary native process recipe.
     ports.execute({ executable: "appium", args: [] });
     // @ts-expect-error CCC HTTP payloads are rendered outside the application.
@@ -138,6 +138,32 @@ function appiumEffectContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>): void
     void [status, inspection, creation, deletion, command, postCommand];
 }
 void appiumEffectContracts;
+
+function appiumCommandContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>, runtime: Runtime): void {
+    const launch: Promise<BrokerAppiumExecution> = ports.launchServer(runtime, { backend: "android-emulator", port: 4723, timeoutMs: 1000 });
+    const installation: BrokerAppiumExecution = ports.installRuntime(runtime, 300000);
+    const reset: BrokerAppiumExecution = ports.resetInstrumentation("emulator-5580", "force-stop-server");
+    const semantic = { ok: true, pid: 12345, processIdentity: Symbol("process identity"), receipt: Symbol("native evidence") };
+    const semanticLaunch: BrokerAppiumPorts<Runtime>["launchServer"] = async () => semantic;
+    const semanticInstall: BrokerAppiumPorts<Runtime>["installRuntime"] = () => semantic;
+    const semanticReset: BrokerAppiumPorts<Runtime>["resetInstrumentation"] = () => ({ ok: false, receipt: Symbol("failed reset evidence") });
+    const legacyRaw = { status: 0, pid: 12345, receipt: {} };
+    // @ts-expect-error A predeclared native launch result lacks required semantic success.
+    const legacyLaunch: BrokerAppiumPorts<Runtime>["launchServer"] = async () => legacyRaw;
+    // @ts-expect-error A predeclared native install result lacks required semantic success.
+    const legacyInstall: BrokerAppiumPorts<Runtime>["installRuntime"] = () => legacyRaw;
+    // @ts-expect-error A predeclared native reset result lacks required semantic success.
+    const legacyReset: BrokerAppiumPorts<Runtime>["resetInstrumentation"] = () => legacyRaw;
+    // @ts-expect-error Application policy cannot read a native command exit status.
+    const nativeStatus = installation.status;
+    // @ts-expect-error Application policy cannot read a native command error.
+    const nativeError = reset.error;
+    // @ts-expect-error Command evidence remains opaque rather than exposing native result fields.
+    const decodedReceipt = async () => (await launch).receipt.status;
+    void [launch, installation, reset, semanticLaunch, semanticInstall, semanticReset,
+        legacyLaunch, legacyInstall, legacyReset, nativeStatus, nativeError, decodedReceipt];
+}
+void appiumCommandContracts;
 
 describe("Appium request contracts", () => {
     it("rejects upstream DELETE commands while session deletion remains a separate broker operation", () => {

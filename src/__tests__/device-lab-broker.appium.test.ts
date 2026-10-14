@@ -398,7 +398,10 @@ describe("device-lab host broker Appium session authority", () => {
         expect(managedAppiumCommandLine("node.exe unrelated-server.js", packageRoot, runtimeRoot, true)).toBe(false);
     });
 
-    it("starts and stops host-broker owned Appium server metadata without creating a WebDriver session", async () => {
+    it.each([
+        { name: "absent error", native: {} },
+        { name: "empty error", native: { error: "" } },
+    ])("starts and stops host-broker owned Appium server metadata without creating a WebDriver session ($name)", async ({ native }) => {
         const ownerId = deviceLabOwnerId("/project/broker-appium-process-test");
         const commandRunner = vi.fn((command) => ({
             mode: command.mode,
@@ -407,8 +410,9 @@ describe("device-lab host broker Appium session authority", () => {
             args: command.args,
             status: 0,
             pid: 45678,
-            stdout: "",
-            stderr: "",
+            stdout: "native launch output",
+            stderr: "native launch diagnostic",
+            ...native,
         }));
         const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
         const server = createDeviceBrokerServer({
@@ -435,7 +439,15 @@ describe("device-lab host broker Appium session authority", () => {
                 }),
             });
             expect(start.status).toBe(200);
-            expect(await start.json()).toEqual(expect.objectContaining({
+            const started = await start.json();
+            expect(started.result.execution).toEqual({
+                mode: "detached", provider: "appium", executable: "/fake/appium",
+                args: ["server", "--port", "8100", "--base-path", "/"], status: 0, pid: 45678,
+                stdout: "native launch output", stderr: "native launch diagnostic", ...native,
+            });
+            expect(started.result.execution).not.toHaveProperty("ok");
+            expect(started.result.execution).not.toHaveProperty("receipt");
+            expect(started).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     started: true,
@@ -503,7 +515,7 @@ describe("device-lab host broker Appium session authority", () => {
         }
     });
 
-    it("provisions an isolated broker Appium runtime and hides all Windows child processes", async () => {
+    it.each([undefined, "native install error"])("provisions an isolated broker Appium runtime and hides all Windows child processes (install error=%s)", async (installError) => {
         const packageRoot = mkdtempSync(join(tmpdir(), "ccc-device-broker-packaged-appium-"));
         const ownerId = deviceLabOwnerId(packageRoot);
         const originalJavaHome = process.env.JAVA_HOME;
@@ -552,8 +564,9 @@ describe("device-lab host broker Appium session authority", () => {
                 args: command.args,
                 status: 0,
                 pid: command.provider === "appium" ? 45679 : undefined,
-                stdout: "",
-                stderr: "",
+                stdout: "native installation output",
+                stderr: "native installation diagnostic",
+                ...(command.provider === "npm-appium-runtime" && installError ? { error: installError } : {}),
             };
         });
         const { createDeviceBrokerServer: createIsolatedBrokerServer } = await isolatedDeviceLabPackage(packageRoot);
@@ -580,7 +593,24 @@ describe("device-lab host broker Appium session authority", () => {
                     params: { backend: "android-emulator", deviceId: "pixel-packaged-appium" },
                 }),
             });
+            const payload = await response.json();
+            if (installError) {
+                expect(response.status).toBe(502);
+                expect(payload).toMatchObject({ ok: false, error: "appium-runtime-install-failed" });
+                expect(payload.runtime.execution).toEqual({
+                    mode: "exec", provider: "npm-appium-runtime", executable: commandRunner.mock.calls[0][0].executable,
+                    args: ["ci", "--prefix", join(homedir(), ".ccc", "devices", "broker", "appium-runtime"), "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+                    status: 0, stdout: "native installation output", stderr: "native installation diagnostic", error: installError,
+                });
+                expect(payload.runtime.execution).not.toHaveProperty("ok");
+                expect(payload.runtime.execution).not.toHaveProperty("receipt");
+                expect(commandRunner.mock.calls.map(([command]) => command.provider)).toEqual(["npm-appium-runtime"]);
+                expect(existsSync(appiumMarker)).toBe(false);
+                return;
+            }
             expect(response.status).toBe(200);
+            expect(payload.result.execution).toEqual(commandRunner.mock.results[1].value);
+            expect(payload.result.execution).not.toHaveProperty("ok");
             expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
                 mode: "exec",
                 provider: "npm-appium-runtime",
@@ -1007,17 +1037,21 @@ describe("device-lab host broker Appium session authority", () => {
         }
     });
 
-    it("reports Appium start failures and simulates injected-runner cleanup without signaling fake pids", async () => {
+    it.each([
+        { name: "nonzero status", native: { status: 1 } },
+        { name: "null status", native: { status: null, error: "missing executable" } },
+        { name: "missing status", native: {} },
+        { name: "zero status with error", native: { status: 0, error: "native launch error" } },
+    ])("reports Appium start failures and simulates injected-runner cleanup without signaling fake pids ($name)", async ({ native }) => {
         const ownerId = deviceLabOwnerId("/project/broker-appium-process-failure-test");
         const commandRunner = vi.fn((command) => ({
             mode: command.mode,
             provider: command.provider,
             executable: command.executable,
             args: command.args,
-            status: null,
-            error: "missing executable",
-            stdout: "",
-            stderr: "",
+            stdout: "native failed launch output",
+            stderr: "native failed launch diagnostic",
+            ...native,
         }));
         const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
             throw new Error("stale pid");
@@ -1035,6 +1069,7 @@ describe("device-lab host broker Appium session authority", () => {
         const root = writeBrokerDevices(ownerId, "android-device", [
             { id: "phone-owned", status: "attached", backend: "android-device", appium: { authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start", serverPid: 56789, serverUrl: "http://127.0.0.1:8200" } },
         ]);
+        const originalState = readFileSync(join(root, "devices.json"), "utf8");
 
         try {
             const start = await fetch(endpoint, {
@@ -1046,10 +1081,19 @@ describe("device-lab host broker Appium session authority", () => {
                 }),
             });
             expect(start.status).toBe(502);
-            expect(await start.json()).toEqual(expect.objectContaining({
+            const failed = await start.json();
+            expect(failed).toEqual(expect.objectContaining({
                 ok: false,
                 error: "appium-server-start-failed",
             }));
+            expect(failed.execution).toEqual({
+                mode: "detached", provider: "appium", executable: "/missing/appium",
+                args: ["server", "--port", "8200", "--base-path", "/", "--allow-insecure", "uiautomator2:adb_shell"],
+                stdout: "native failed launch output", stderr: "native failed launch diagnostic", ...native,
+            });
+            expect(failed.execution).not.toHaveProperty("ok");
+            expect(failed.execution).not.toHaveProperty("receipt");
+            expect(readFileSync(join(root, "devices.json"), "utf8")).toBe(originalState);
 
             const stop = await fetch(endpoint, {
                 method: "POST",
@@ -2093,9 +2137,19 @@ describe("device-lab host broker Appium session authority", () => {
         const trace: string[] = [];
         const upstream = await createFakeAppiumServer("RECOVERED", { sessionCreateFailures: failures, sessionFailureMessage: message,
             onSessionCreate: () => { trace.push("create-session"); } });
+        const recoveryResults = [
+            { status: 1, error: "native force-stop error" },
+            { status: null, error: "native cleanup unavailable" },
+            {},
+            { status: 0, error: "native uninstall error" },
+            { status: 0, error: "" },
+        ];
+        let recoveryIndex = 0;
         const commandRunner = vi.fn((command) => {
             trace.push(command.args.join(" "));
-            return { mode: command.mode, provider: command.provider, executable: command.executable, args: command.args, status: 0, stdout: "", stderr: "" };
+            const index = recoveryIndex++;
+            return { mode: command.mode, provider: command.provider, executable: command.executable, args: command.args,
+                stdout: `native recovery output ${index}`, stderr: `native recovery diagnostic ${index}`, ...recoveryResults[index] };
         });
         const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner,
             providerPaths: { adb: "/fake/adb" } });
@@ -2118,8 +2172,20 @@ describe("device-lab host broker Appium session authority", () => {
                 "-s emulator-5580 uninstall io.appium.settings",
                 "create-session",
             ] : ["create-session"]);
-            if (status === 502) expect(payload.response).toEqual({ ok: false, status: 500, body: { value: { error: "unknown error", message } } });
-            else expect(payload.result.appium).toMatchObject({ sessionId: "RECOVERED", instrumentationRecovery: { attempted: true, recovered: true } });
+            expect(commandRunner.mock.calls.map(([, options]) => options.timeoutMs)).toEqual(recovered ? [30000, 30000, 30000, 30000, 30000] : []);
+            if (status === 502) {
+                expect(payload.response).toEqual({ ok: false, status: 500, body: { value: { error: "unknown error", message } } });
+                if (recovered) {
+                    expect(payload.instrumentationRecovery.results).toEqual(recoveryResults.map((native, index) => ({
+                        mode: "exec", provider: "adb-appium-recovery", executable: "/fake/adb", args: trace[index + 1].split(" "),
+                        stdout: `native recovery output ${index}`, stderr: `native recovery diagnostic ${index}`, ...native,
+                    })));
+                    for (const execution of payload.instrumentationRecovery.results) {
+                        expect(execution).not.toHaveProperty("ok");
+                        expect(execution).not.toHaveProperty("receipt");
+                    }
+                }
+            } else expect(payload.result.appium).toMatchObject({ sessionId: "RECOVERED", instrumentationRecovery: { attempted: true, recovered: true } });
         } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
     });
 

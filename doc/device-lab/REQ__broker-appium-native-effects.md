@@ -16,6 +16,12 @@ The native port requires exactly five Appium protocol operations:
 Every observation carries semantic facts only. The application cannot read HTTP status, response bodies, or receipt contents.
 A missing session ID is represented by `null`; choosing an empty string still produces the existing missing-ID refusal.
 
+## Command observations
+
+The existing launchServer, synchronous installRuntime and synchronous resetInstrumentation ports return required semantic ok, optional pid and processIdentity, and an opaque receipt. The native composition derives command success from exit status zero with no truthy error; missing/null/nonzero status and a truthy error are unsuccessful. Empty error retains the existing success behavior. The application cannot read command status/error or receipt contents. Launch failure does not publish a server; install failure does not publish a marker or launch. Successful installation still validates the runtime directory, node_modules and entry before publishing its marker.
+
+Each fixed instrumentation cleanup step may return an unsuccessful observation without stopping the remaining five-step recovery or its existing single session-creation retry. A thrown effect retains existing propagation. Outward launch, failed-install and recovery executions retain the original native evidence; semantic ok is not inserted into native wire receipts.
+
 ## Native framing and interpretation
 
 The native adapter owns `/status`, `/session`, session-ID encoding, HTTP methods, and the W3C `capabilities.alwaysMatch` envelope.

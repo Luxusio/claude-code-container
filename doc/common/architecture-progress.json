@@ -2819,7 +2819,7 @@
       "id": "vm-instance-identity-compatibility",
       "taskId": "TASK__vm-unique-public-identity-20261014",
       "coveredOperationIds": [],
-      "status": "Current5a5c94de: actual independent full Code PASS; unchanged production-source Security9c19 PASS carried across the three-line test correction. Final independent QAcycle3 PASS: fresh whole Hyper-V launcher53/53 on Linux22.23.3 and defaultWindows22.16; qualified unchanged62 Vitest files and durability77 kept separate. Source/built public MCP and CLI PASS;36 checked journey responses include32 success and4 expected deleted-ID errors. Prior QA1/QA2 FAIL remain historical. No production/license-policy weakening, EBUSY cleanup retry or new abstraction. Formal automatic attestation still pending. Zero operation or structural-group completion credit.",
+      "status": "Current5a5c94de: actual independent full Code PASS; unchanged production-source Security9c19 PASS carried across the three-line test correction. Final independent QAcycle3 PASS: fresh whole Hyper-V launcher53/53 on Linux22.23.3 and defaultWindows22.16; qualified unchanged62 Vitest files and durability77 kept separate. Source/built public MCP and CLI PASS;36 checked journey responses include32 success and4 expected deleted-ID errors. Prior QA1/QA2 FAIL remain historical. No production/license-policy weakening, EBUSY cleanup retry or new abstraction. One actual final task_verify remained PENDING because no hook-owned receipts were recorded; formal task parked through actual task_blocked after substantive PASS. Zero operation or structural-group completion credit.",
       "currentQa": {
         "candidateCommit": "5a5c94de65103ee635bb5621afff4f06e2034aa0",
         "status": "actual-independent-cycle3-PASS-formal-attestation-pending",
@@ -2920,8 +2920,15 @@
           "publicMcpCliEachPlatform": "PASS",
           "nativeEvidence": "results/architecture-vm-identity-bootstrap-qa2-137f0-20261014/native-evidence.zip",
           "correction": "Only existing hyper-v.test.ts fixture; Linux53PASS, native precheck pending; no product source changes."
-        }
+        },
+        "formalDisposition": "One actual task_verify PENDING, empty automatic receipt stream; actual task_blocked fixed park after Code/Security/Docs/QA PASS; no formal close claimed."
       }
+    },
+    {
+      "id": "appium-command-semantic-observation",
+      "taskId": "TASK__appium-command-semantic-observation-20261014",
+      "coveredOperationIds": [],
+      "status": "Current R17 native command seam: actual independent14-dimension plan review; existing REQ/GUIDE updated before source. Three product paths and three existing test files assigned to two disjoint source/test pairs. Implementation and combined qualification pending; adjacent status/recording/owner-cleanup remain partial; zero group/operation credit."
     }
   ],
   "currentSourceQualificationAudit": {

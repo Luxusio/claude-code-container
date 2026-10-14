@@ -97,6 +97,173 @@ describe("broker Appium application policies", () => {
         expect(device.appium).toBeNull();
     });
 
+    it.each([true, false])("publishes a launched process only for semantic command success (ok=%s)", async (ok) => {
+        const { ports, device } = fixture();
+        const runtime = { token: "captured-runtime" };
+        const processIdentity = { token: "new-process-incarnation" };
+        const receipt = Symbol("opaque launch evidence");
+        const execution = { ok, pid: 23456, processIdentity, receipt };
+        ports.portSeed = () => 0;
+        ports.portListener = () => null;
+        ports.captureRuntime = () => ({ kind: "injected", handle: runtime });
+        ports.ensureRuntimeDirectory = (actual) => { expect(actual).toBe(runtime); return undefined; };
+        ports.terminatePortListener = (port) => {
+            expect(port).toBe(20000);
+            return { ok: true, receipt: Symbol("port cleanup") };
+        };
+        ports.launchServer = async (actual, request) => {
+            expect(actual).toBe(runtime);
+            expect(request).toEqual({ backend: target.backend, port: 20000, timeoutMs: 5000 });
+            return execution;
+        };
+        if (!ok) ports.publish = unexpected;
+        const outcome = await createBrokerAppiumApplication(ports).start(owner, target);
+        expect(outcome).toMatchObject(ok
+            ? { kind: "server-started", started: true, reused: false }
+            : { kind: "refused", reason: "provider-failed", error: "appium-server-start-failed" });
+        if (outcome.kind !== "server-started" && outcome.kind !== "refused") throw new Error("expected launch outcome");
+        expect(outcome.execution).toBe(execution);
+        expect(outcome.execution?.receipt).toBe(receipt);
+        if (outcome.kind === "server-started") {
+            expect(outcome.appium).toMatchObject({
+                serverPid: 23456, runtimeId: "runtime-new", launchPolicy: "node-direct-hidden-v1",
+                serverUrl: "http://127.0.0.1:20000", port: 20000,
+            });
+            expect(outcome.appium.processIdentity).toBe(processIdentity);
+            expect(device.appium).toBe(outcome.appium);
+        } else {
+            expect(device.appium).toBeNull();
+        }
+    });
+
+    it("compensates the exact newly launched process when a successor wins publication", async () => {
+        const { ports, device } = fixture();
+        const runtime = { token: "captured-runtime" };
+        const processIdentity = { token: "new-process-incarnation" };
+        const successor = { ...serverMetadata, runtimeId: "successor", serverPid: 45678 };
+        const rollback = { ok: true, receipt: Symbol("exact new process termination") };
+        let launched: Record<string, unknown> | null = null;
+        let compensations = 0;
+        ports.portSeed = () => 0;
+        ports.portListener = () => null;
+        ports.captureRuntime = () => ({ kind: "injected", handle: runtime });
+        ports.ensureRuntimeDirectory = () => undefined;
+        ports.terminatePortListener = () => ({ ok: true, receipt: Symbol("port cleanup") });
+        ports.launchServer = async (actual) => {
+            expect(actual).toBe(runtime);
+            return { ok: true, pid: 23456, processIdentity, receipt: Symbol("new process launch") };
+        };
+        ports.publish = (actualOwner, stateKey, deviceId, expected, replacement) => {
+            expect([actualOwner, stateKey, deviceId, expected]).toEqual([owner, "android", "pixel", null]);
+            expect(replacement).toMatchObject({ serverPid: 23456, runtimeId: "runtime-new" });
+            launched = replacement;
+            device.appium = successor;
+            return { found: true, matched: false, currentAppium: successor, device };
+        };
+        ports.terminateRuntime = async (actual) => {
+            expect(actual).toBe(launched);
+            expect(actual).toMatchObject({ serverPid: 23456, runtimeId: "runtime-new" });
+            expect((actual as Record<string, unknown>).processIdentity).toBe(processIdentity);
+            compensations += 1;
+            return rollback;
+        };
+        const outcome = await createBrokerAppiumApplication(ports).start(owner, target);
+        expect(outcome).toMatchObject({
+            kind: "refused", reason: "conflict", error: "appium-runtime-state-conflict", currentAppium: successor, rollback,
+        });
+        if (outcome.kind !== "refused") throw new Error("expected publication conflict");
+        expect(outcome.rollback).toBe(rollback);
+        expect(compensations).toBe(1);
+        expect(device.appium).toBe(successor);
+    });
+
+    it.each(["install-failed", "runtime-directory-invalid", "node-modules-invalid", "entry-invalid", "valid"] as const)(
+        "validates a managed installation before publishing its marker and launching (%s)", async (scenario) => {
+            const { ports, device } = fixture();
+            const runtime = { token: "managed-runtime" };
+            const receipt = Symbol("opaque install evidence");
+            const execution = { ok: scenario !== "install-failed", receipt };
+            const effects: string[] = [];
+            let installed = false;
+            let marker: unknown = null;
+            ports.portSeed = () => 0;
+            ports.portListener = () => null;
+            ports.captureRuntime = () => ({ kind: "managed", handle: runtime });
+            ports.runtimeReceipt = (actual) => { expect(actual).toBe(runtime); return Symbol("runtime evidence"); };
+            ports.readManifest = () => "{}";
+            ports.manifestDigest = () => "manifest-hash";
+            ports.ensureRuntimeDirectory = () => undefined;
+            ports.withInstallLock = (operation, options) => {
+                expect(options).toEqual({ waitMs: 315000, staleMs: 900000 });
+                return operation();
+            };
+            ports.inspectRuntimeDirectory = () => {
+                if (installed) effects.push("inspect-directory");
+                return !installed || scenario !== "runtime-directory-invalid";
+            };
+            ports.inspectNodeModules = () => {
+                if (installed) effects.push("inspect-node-modules");
+                return !installed || scenario !== "node-modules-invalid";
+            };
+            ports.entryIsValid = () => {
+                effects.push("validate-entry");
+                return scenario !== "entry-invalid";
+            };
+            ports.readMarker = () => null;
+            ports.installAvailable = () => true;
+            ports.writeManifest = () => undefined;
+            ports.removeMarker = () => undefined;
+            ports.installRuntime = (actual, timeoutMs) => {
+                expect([actual, timeoutMs]).toEqual([runtime, 300000]);
+                effects.push("install");
+                installed = true;
+                return execution;
+            };
+            ports.writeMarker = (actual, replacement) => {
+                expect(actual).toBe(runtime);
+                expect(effects).toEqual(["install", "inspect-directory", "inspect-node-modules", "validate-entry"]);
+                marker = replacement;
+                effects.push("marker");
+                return undefined;
+            };
+            ports.terminatePortListener = () => ({ ok: true, receipt: Symbol("port cleanup") });
+            ports.launchServer = async (actual, request) => {
+                expect(actual).toBe(runtime);
+                expect(request).toEqual({ backend: target.backend, port: 20000, timeoutMs: 5000 });
+                expect(marker).toEqual({ manifestHash: "manifest-hash", installedAt: "2026-10-10T00:00:00.000Z" });
+                effects.push("launch");
+                return { ok: true, pid: 23456, receipt: Symbol("launch after install") };
+            };
+            if (scenario !== "valid") {
+                ports.writeMarker = unexpected;
+                ports.terminatePortListener = unexpected;
+                ports.launchServer = unexpected;
+                ports.publish = unexpected;
+            }
+            const outcome = await createBrokerAppiumApplication(ports).start(owner, target);
+            if (scenario === "valid") {
+                expect(outcome).toMatchObject({ kind: "server-started", runtime: { provisioned: true, source: "broker-runtime" } });
+                expect(effects).toEqual([
+                    "install", "inspect-directory", "inspect-node-modules", "validate-entry", "marker",
+                    "inspect-directory", "validate-entry", "launch",
+                ]);
+                expect(device.appium).toMatchObject({ serverPid: 23456 });
+            } else {
+                expect(outcome).toMatchObject({
+                    kind: "refused", reason: "provider-failed", error: "appium-runtime-install-failed", runtime: { execution },
+                });
+                if (outcome.kind !== "refused") throw new Error("expected install refusal");
+                expect(outcome.runtime?.execution).toBe(execution);
+                expect(outcome.runtime?.execution?.receipt).toBe(receipt);
+                const validations = ["inspect-directory", "inspect-node-modules", "validate-entry"];
+                const completed = ["install-failed", "runtime-directory-invalid", "node-modules-invalid", "entry-invalid"].indexOf(scenario);
+                expect(effects).toEqual(["install", ...validations.slice(0, completed)]);
+                expect(marker).toBeNull();
+                expect(device.appium).toBeNull();
+            }
+        },
+    );
+
     it("aborts forced server replacement when the old owned process cannot be stopped", async () => {
         const { ports, device } = fixture();
         device.appium = serverMetadata;
@@ -460,10 +627,18 @@ describe("broker Appium application policies", () => {
             return attempts === 1 ? first : second;
         };
         ports.instrumentationAvailable = () => true;
+        const recoveryResults = [
+            { ok: false, receipt: Symbol("force-stop-server") },
+            { ok: true, receipt: Symbol("force-stop-test") },
+            { ok: false, receipt: Symbol("uninstall-server") },
+            { ok: true, receipt: Symbol("uninstall-test") },
+            { ok: false, receipt: Symbol("uninstall-settings") },
+        ];
+        let resetSteps = 0;
         ports.resetInstrumentation = (serial, step) => {
             expect(serial).toBe("emulator-5580");
             effects.push(step);
-            return { status: 0, receipt: Symbol(step) };
+            return recoveryResults[resetSteps++];
         };
         const recoveryReceipt = Symbol("instrumentation recovery");
         ports.instrumentationReceipt = (serial) => {
@@ -486,8 +661,37 @@ describe("broker Appium application policies", () => {
                 kind: "refused", error: "appium-session-create-failed",
                 instrumentationRecovery: { attempted: true, ok: true, receipt: recoveryReceipt },
             });
+            if (outcome.kind !== "refused") throw new Error("expected creation failure");
+            expect(outcome.instrumentationRecovery?.results).toEqual(recoveryResults);
+            outcome.instrumentationRecovery?.results.forEach((result, index) => {
+                expect(result).toBe(recoveryResults[index]);
+                expect(result.receipt).toBe(recoveryResults[index].receipt);
+            });
             expect(device.appium).toBe(serverMetadata);
         }
+    });
+
+    it("propagates a thrown instrumentation reset without retrying creation or publishing metadata", async () => {
+        const { ports, device } = fixture();
+        device.appium = serverMetadata;
+        ports.publish = unexpected;
+        ports.status = async () => ({ ok: true, ready: true, receipt: Symbol("ready") });
+        const failure = new Error("controlled reset failure");
+        const effects: string[] = [];
+        ports.createSession = async () => {
+            effects.push("create");
+            return { ok: false, sessionId: null, instrumentationInitializationFailed: true, receipt: Symbol("instrumentation failure") };
+        };
+        ports.instrumentationAvailable = () => true;
+        ports.resetInstrumentation = (serial, step) => {
+            expect(serial).toBe("emulator-5580");
+            effects.push(step);
+            if (step === "uninstall-server") throw failure;
+            return { ok: false, receipt: Symbol(step) };
+        };
+        await expect(createBrokerAppiumApplication(ports).ensureSession(owner, target)).rejects.toBe(failure);
+        expect(effects).toEqual(["create", "force-stop-server", "force-stop-test", "uninstall-server"]);
+        expect(device.appium).toBe(serverMetadata);
     });
 
     it.each([

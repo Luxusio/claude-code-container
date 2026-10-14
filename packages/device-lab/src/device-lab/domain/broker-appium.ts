@@ -1,4 +1,4 @@
-export type BrokerAppiumExecution = {status?: number | null; error?: string; pid?: number; processIdentity?: unknown; receipt: unknown};
+export type BrokerAppiumExecution = {ok: boolean; pid?: number; processIdentity?: unknown; receipt: unknown};
 /** Semantic effect facts; native protocol evidence remains opaque to policy. */
 export type AppiumEffectObservation = {ok: boolean; receipt: unknown};
 export type BrokerAppiumVerification = {ok: true; serverUrl: string; port?: number; receipt: unknown} | {ok: false; error: string; receipt: unknown};

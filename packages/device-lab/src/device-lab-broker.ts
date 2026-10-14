@@ -9553,7 +9553,7 @@ function nativeAppiumStateFailure(error: unknown, target: {
     return { kind: "refused", reason: "state-read-failed", error: code, ...target };
 }
 function brokerAppiumApplication(normalized: NormalizedBrokerOptions) {
-    const observation = (receipt: ProviderCommandResult) => ({ status: receipt.status, error: receipt.error, pid: receipt.pid, processIdentity: receipt.processIdentity, receipt: new NativeBrokerExecutionReceipt(receipt) });
+    const observation = (receipt: ProviderCommandResult) => ({ ok: commandSucceeded(receipt), pid: receipt.pid, processIdentity: receipt.processIdentity, receipt: new NativeBrokerExecutionReceipt(receipt) });
     return createBrokerAppiumApplication<NativeAppiumRuntime>({
         commandTimeoutMs: normalized.commandTimeoutMs, usesDefaultCommandRunner: normalized.usesDefaultCommandRunner,
         strictAppiumPortOwnership: normalized.strictAppiumPortOwnership,

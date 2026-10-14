@@ -20,7 +20,6 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
     const isDeviceOperationLockTimeout = ports.isLockTimeout, deviceOperationLockFailure = ports.lockFailure;
     const ensureBrokerAppiumRuntimeDirectory = ports.ensureRuntimeDirectory, inspectBrokerAppiumRuntimeDirectory = ports.inspectRuntimeDirectory, inspectBrokerAppiumNodeModulesDirectory = ports.inspectNodeModules, brokerAppiumRuntimeEntryIsValid = ports.entryIsValid;
     const DEVICE_BROKER_PHYSICAL_BACKENDS = new Set(["android-device", "ios-device"]);
-    function commandSucceeded(result: { status?: number | null; error?: string }) { return result.status === 0 && !result.error; }
     function liveBrokerOwnedAppiumRuntime(appium: unknown) { const runtime = brokerOwnedAppiumRuntime(appium); return Boolean(runtime && (!ports.usesDefaultCommandRunner || ports.isProcessIdentityCurrent(runtime.processIdentity, runtime.pid))); }
     function reusableBrokerOwnedAppium(appium: unknown) { return isPlainRecord(appium) && appium.launchPolicy === DEVICE_BROKER_APPIUM_LAUNCH_POLICY && liveBrokerOwnedAppiumRuntime(appium); }
     function defaultAppiumPort(ownerId: string, backend: string, deviceId: string) { return DEVICE_BROKER_APPIUM_AUTO_PORT_MIN + ports.portSeed(ownerId, backend, deviceId) % (DEVICE_BROKER_APPIUM_AUTO_PORT_MAX - DEVICE_BROKER_APPIUM_AUTO_PORT_MIN + 1); }
@@ -125,7 +124,7 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
             return {kind: "refused", reason: "conflict", error: portCleanup.error || "appium-port-cleanup-failed", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, portCleanup};
         }
         const execution = await ports.launchServer(runtime.handle, {backend: parsed.backend, port, timeoutMs: ports.commandTimeoutMs});
-        if (!commandSucceeded(execution)) {
+        if (!execution.ok) {
             return {kind: "refused", reason: "provider-failed", error: "appium-server-start-failed", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, execution};
         }
         const appium = {
@@ -525,7 +524,7 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
                     if (!ports.isMissingFile(error)) throw new Error("appium-runtime-marker-remove-failed");
                 }
                 const execution = ports.installRuntime(handle, DEVICE_BROKER_APPIUM_INSTALL_TIMEOUT_MS);
-                if (!commandSucceeded(execution) || !inspectBrokerAppiumRuntimeDirectory(handle)
+                if (!execution.ok || !inspectBrokerAppiumRuntimeDirectory(handle)
                     || !inspectBrokerAppiumNodeModulesDirectory(handle) || !brokerAppiumRuntimeEntryIsValid(handle)) {
                     return {ok: false as const, error: "appium-runtime-install-failed", receipt, execution};
                 }
