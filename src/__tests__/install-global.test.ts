@@ -199,7 +199,7 @@ function nativeWindowsInstallerFixture(pathFailure: "read" | "write" | null = nu
     writeFileSync(platform, 'Object.defineProperty(process,"platform",{value:"win32"});');
     writeFileSync(loader, `export function resolve(specifier,context,next){if(specifier==='child_process'&&context.parentURL?.endsWith('/scripts/install.js'))return {url:${JSON.stringify("data:text/javascript;base64," + Buffer.from(childModule).toString("base64"))},shortCircuit:true};return next(specifier,context);}`);
     const localAppData = join(f.root, "private-local-app-data"), installDirectory = join(localAppData, "Programs", "ccc");
-    const result = spawnSync(process.execPath, ["--experimental-loader", loader, "--import", pathToFileURL(platform).href, join(f.root, "scripts/install.js"), ...(imageMode ? [] : ["--skip-image"])], {
+    const result = spawnSync(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "--import", pathToFileURL(platform).href, join(f.root, "scripts/install.js"), ...(imageMode ? [] : ["--skip-image"])], {
         encoding: "utf8", timeout: 10000,
         env: { ...process.env, LOCALAPPDATA: localAppData, CCC_RUNTIME: imageMode ? "docker" : "", GITHUB_TOKEN: "", FIXTURE_CAPTURE: capture, FIXTURE_PATH_FAILURE: pathFailure || "", FIXTURE_IMAGE_MODE: imageMode || "" },
     });
@@ -296,7 +296,7 @@ function distributionCommandFixture() {
     const run = (args: string[], mode = "success", imported = false) => {
         rmSync(capture, { force: true });
         const invocation = imported ? ["--input-type=module", "-e", `import(${JSON.stringify(pathToFileURL(script).href)})`] : [script, ...args];
-        const result = spawnSync(process.execPath, ["--experimental-loader", loader, ...invocation], { encoding: "utf8", timeout: 5000, cwd: caller, env: { ...process.env, FIXTURE_CAPTURE: capture, FIXTURE_BUILD_MODE: mode } });
+        const result = spawnSync(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, ...invocation], { encoding: "utf8", timeout: 5000, cwd: caller, env: { ...process.env, FIXTURE_CAPTURE: capture, FIXTURE_BUILD_MODE: mode } });
         return { ...result, capture: existsSync(capture) ? JSON.parse(readFileSync(capture, "utf8")) : null };
     };
     return { run, payload };

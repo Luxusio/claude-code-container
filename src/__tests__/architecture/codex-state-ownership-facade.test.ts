@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dirname, sep } from "path";
+import { dirname } from "path";
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), stat: vi.fn(), realpath: vi.fn(), root: vi.fn(), runtime: vi.fn(), cli: vi.fn(), normalize: vi.fn() }));
 vi.mock("child_process", () => ({ spawnSync: mocks.spawn }));
 vi.mock("fs", () => ({ lstatSync: mocks.stat, realpathSync: mocks.realpath }));
@@ -43,7 +43,7 @@ describe("actual Codex retained-state native composition", () => {
             ["private-runtime", ["ps", "-q"], options],
             ["private-runtime", ["run", "--rm", "--network", "none", "--user", "root", "--mount", `type=bind,src=${root},dst=/state`, "--entrypoint", "python3", "new-normalized", "-c", native.codexStateMigrationScript, "/state", "1001", "1002", "1000", "1000", "8", "9"], options],
         ]);
-        expect(mocks.stat.mock.calls).toEqual([...Array(2)].flatMap(() => [root, dirname(root), dirname(dirname(root)), sep].map(path => [path, { bigint: true }])));
+        expect(mocks.stat.mock.calls).toEqual([...Array(2)].flatMap(() => [root, dirname(root), dirname(dirname(root)), "/"].map(path => [path, { bigint: true }])));
         expect(trace.at(-2)).toEqual(["normalize", "new"]);
     });
     it("keeps error-first native diagnostics, exit diagnostics and trim exceptions", () => {

@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({
@@ -260,8 +261,8 @@ describe("remote native observations and effects", () => {
         native.read.mockReturnValue(JSON.stringify(config));
         expect(reader.exists()).toBe(true);
         expect(reader.readConfig()).toEqual(config);
-        expect(native.exists).toHaveBeenCalledWith("/legacy/project-hash.json");
-        expect(native.read).toHaveBeenCalledWith("/legacy/project-hash.json", "utf-8");
+        expect(native.exists).toHaveBeenCalledWith(join("/legacy", "project-hash.json"));
+        expect(native.read).toHaveBeenCalledWith(join("/legacy", "project-hash.json"), "utf-8");
         native.read.mockReturnValue("not json");
         expect(() => reader.readConfig()).toThrow();
         native.read.mockImplementation(() => { throw Error("read denied"); });
