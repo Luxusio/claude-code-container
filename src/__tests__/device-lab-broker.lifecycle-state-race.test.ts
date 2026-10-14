@@ -4,12 +4,12 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
 type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean; detach?: boolean};
 type StateSnapshot = {bytes: string; dev: string; ino: string; mtime: string; mode: string; nlink: string};
-type Receipt = {outcome: {status: number; body: {ok: boolean; error?: string; found?: boolean; providerFailure?: string; result?: {device?: Record<string, unknown> | null; invoked?: boolean; execution?: {providerExecution?: string; command?: unknown}; auxiliaryCleanup?: {ok: boolean; changed: boolean; stateConflict?: boolean; minimizeWatchdog?: {cleared: boolean}}; boot?: unknown; leaseRollback?: {attempted: boolean; ok: boolean}}}}; denied: unknown[]; initial: Record<string, unknown>; expected: Record<string, unknown>[]; unrelated: Record<string, unknown>; after: StateSnapshot; protectedSnapshot: StateSnapshot; injected: boolean; calls: {provider: string; args: string[]; operation?: string}[]; ownerPublicationsAfterRace: number; temporaryOwnerWritesAfterRace: number; cancellationWrites: number; lease?: Record<string, unknown>; initialExpiry?: string; storageFaults: number; modules: string[]; reconciledRecordAtSsh?: Record<string, unknown>; fingerprint?: string; publicationBuilderClockReads: number};
+type Receipt = {outcome: {status: number; body: {ok: boolean; error?: string; found?: boolean; providerFailure?: string; result?: {device?: Record<string, unknown> | null; invoked?: boolean; execution?: {providerExecution?: string; command?: unknown}; auxiliaryCleanup?: {ok: boolean; changed: boolean; stateConflict?: boolean; minimizeWatchdog?: {cleared: boolean}}; boot?: unknown; leaseRollback?: {attempted: boolean; ok: boolean}}}}; denied: unknown[]; ownIdentityObservations: number; initial: Record<string, unknown>; expected: Record<string, unknown>[]; unrelated: Record<string, unknown>; after: StateSnapshot; protectedSnapshot: StateSnapshot; injected: boolean; calls: {provider: string; args: string[]; operation?: string}[]; ownerPublicationsAfterRace: number; temporaryOwnerWritesAfterRace: number; cancellationWrites: number; lease?: Record<string, unknown>; initialExpiry?: string; storageFaults: number; modules: string[]; reconciledRecordAtSsh?: Record<string, unknown>; fingerprint?: string; publicationBuilderClockReads: number};
 
 const project = fileURLToPath(new URL("../../", import.meta.url));
 const sourceFiles = new Map<string, string>();
@@ -88,6 +88,9 @@ const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),
 const {syncBuiltinESMExports}=require('node:module'),{pathToFileURL}=require('node:url');
 const settings=JSON.parse(fs.readFileSync(process.env.CCC_LIFECYCLE_FIXTURE_FILE,'utf8')),scenario=settings.scenario,home=settings.home;
 const raw=Object.fromEntries(Object.entries(fs).filter(([,value])=>typeof value==='function'));
+const rawSpawnSync=cp.spawnSync;
+let ownIdentityProbe=null,ownIdentityObservations=0;
+const ownIdentityOptions=Object.freeze({encoding:'utf8',timeout:5000,killSignal:'SIGKILL',windowsHide:true});
 const denied=[],calls=[],mutations=[],ownedDescriptors=new Map();let port,server,ownerFile,actor=0,rpcActive=false,ownerReads=0,afterCancellation=false,afterHostKeyWrite=false,afterPhysicalRelease=false,injected=false,protectedSnapshot,expected,initial,other,ownerPublicationsAfterRace=0,temporaryOwnerWritesAfterRace=0,cancellationWrites=0,storageFaults=0,reconciledRecordAtSsh;
 const homeIdentity=raw.lstatSync(home);
 let ownerMutationActive=false,publicationBuilderClockReads=0;
@@ -110,6 +113,16 @@ function race(){if(injected||!scenario.race)return;injected=true;let replacement
  publish(expected);protectedSnapshot=snapshot();ownerPublicationsAfterRace=0;temporaryOwnerWritesAfterRace=0;publicationBuilderClockReads=0;
 }
 for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork'])cp[name]=(...args)=>deny('child_process.'+name,args);
+// Only these exact self-only production observations can reach the original builtin.
+// Forward captured arguments, never caller arguments; cache each read for this process birth.
+cp.spawnSync=(executable,args,options)=>{
+ const probe=ownIdentityProbe;
+ const exactOptions=options&&Object.getPrototypeOf(options)===Object.prototype&&Object.getOwnPropertySymbols(options).length===0&&Object.getOwnPropertyNames(options).sort().join(',')==='encoding,killSignal,timeout,windowsHide'&&Object.entries(ownIdentityOptions).every(([key,value])=>options[key]===value);
+ const query=probe&&executable===probe.executable&&Array.isArray(args)&&exactOptions?probe.queries.find(query=>args.length===query.args.length&&query.args.every((value,index)=>args[index]===value)):null;
+ if(!query)return deny('child_process.spawnSync',[executable,args,options]);
+ if(!query.result){ownIdentityObservations++;query.result=rawSpawnSync(probe.executable,[...query.args],{...ownIdentityOptions});}
+ return{...query.result};
+};
 process.kill=(...args)=>deny('process.kill',args);
 for(const name of ['writeFileSync','appendFileSync','mkdirSync','rmSync','unlinkSync','rmdirSync','renameSync','chmodSync','chownSync','symlinkSync','linkSync','truncateSync','copyFileSync'])fs[name]=(...args)=>{
  stableHome();if(!privatePath(args[0])||(['renameSync','symlinkSync','linkSync','copyFileSync'].includes(name)&&!privatePath(args[1])))return deny('fs.'+name,args);
@@ -121,7 +134,7 @@ for(const name of ['writeFileSync','appendFileSync','mkdirSync','rmSync','unlink
  if(!actor&&rpcActive&&name==='writeFileSync'&&String(args[0]).endsWith('ccc-minimize-watchdog.cancel')){cancellationWrites++;afterCancellation=true;}
  if(!actor&&rpcActive&&name==='renameSync'&&String(args[1])===initial?.sshHostPublicKeyPath)afterHostKeyWrite=true;
  if(!actor&&rpcActive&&name==='renameSync'&&String(args[0]).endsWith('devices.mutation.lock'))ownerMutationActive=false;
- if(!actor&&rpcActive&&['renameSync','unlinkSync','rmSync'].includes(name)&&String(args[0]).endsWith('/physical-leases/android-device/locks/FIXTURE-USB.json'))afterPhysicalRelease=true;
+ if(!actor&&rpcActive&&['renameSync','unlinkSync','rmSync'].includes(name)&&String(args[0]).endsWith(path.sep+path.join('physical-leases','android-device','locks','FIXTURE-USB.json')))afterPhysicalRelease=true;
  return result;
 };
 fs.openSync=(...args)=>{stableHome();const flags=args[1],write=typeof flags==='string'?/[wa+]/.test(flags):Boolean(flags&(fs.constants.O_WRONLY|fs.constants.O_RDWR|fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_APPEND));if(write&&!privatePath(args[0]))return deny('fs.openSync.write',args);
@@ -147,6 +160,28 @@ function rpc(base,owner,token,params){return new Promise((resolve,reject)=>{cons
  // Every file token is checked before the first broker/provider import.
  for(const [file,digest] of [...settings.sourceFiles,...settings.emittedFiles])if(crypto.createHash('sha256').update(raw.readFileSync(file)).digest('hex')!==digest)throw Error('changed admitted production file '+file);
  const directory=path.join(settings.project,'packages/device-lab',settings.lens==='source'?'src':'dist');
+ if(process.platform==='win32'){
+  const extension=settings.lens==='source'?'ts':'js';
+  const system=await import(pathToFileURL(path.join(directory,'windows-system-powershell.'+extension)).href);
+  const processIdentity=await import(pathToFileURL(path.join(directory,'device-lab-process-identity.'+extension)).href);
+  const executable=system.canonicalWindowsPowerShellPath();
+  if(!executable)throw Error('fixture canonical self-identity executable unavailable');
+  const systemExecutable=path.join("\\\\?\\GLOBALROOT\\SystemRoot\\System32",'WindowsPowerShell','v1.0','powershell.exe');
+  const executableMetadata=raw.lstatSync(executable);
+  if(!executableMetadata.isFile()||executableMetadata.isSymbolicLink()||raw.realpathSync.native(executable)!==raw.realpathSync.native(systemExecutable))throw Error('unadmitted self-identity executable');
+  const pid=process.pid;
+  const scripts=[
+   "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = "+pid+"' -ErrorAction SilentlyContinue; $H = Get-Process -Id "+pid+" -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }",
+   "$P = Get-Process -Id "+pid+" -ErrorAction SilentlyContinue; if ($P) { [Console]::Out.Write($P.StartTime.ToUniversalTime().ToString('o')) }",
+  ];
+  if(processIdentity.windowsProcessIdentityScriptForTest(pid)!==scripts[0]||system.windowsStartTokenExpression('$P')!=="$P.StartTime.ToUniversalTime().ToString('o')")throw Error('unadmitted self-identity script');
+  ownIdentityProbe={executable,queries:scripts.map(script=>{
+   const args=Object.freeze(['-WindowStyle','Hidden','-NoProfile','-NonInteractive','-Command',script]);
+   const productionArgs=system.hiddenWindowsPowerShellArgs(['-NoProfile','-NonInteractive','-Command',script]);
+   if(productionArgs.length!==args.length||args.some((value,index)=>productionArgs[index]!==value))throw Error('unadmitted self-identity argv');
+   return{args,result:null};
+  })};
+ }
  const broker=await import(pathToFileURL(path.join(directory,'device-lab-broker.'+(settings.lens==='source'?'ts':'js'))).href);
  const ownership=await import(pathToFileURL(path.join(directory,'device-lab-owner.'+(settings.lens==='source'?'ts':'js'))).href);
  const hyperv=await import(pathToFileURL(path.join(directory,'host-control/hyper-v/index.'+(settings.lens==='source'?'ts':'js'))).href);
@@ -212,7 +247,7 @@ function rpc(base,owner,token,params){return new Promise((resolve,reject)=>{cons
  let outcome;try{outcome=await rpc('http://127.0.0.1:'+port,owner,scenario.auth==='missing'?undefined:scenario.auth==='wrong'?'not-the-owner-token':token,{backend:scenario.backend,command:scenario.command,deviceId:id,force:true,...(scenario.dryRun?{dryRun:true}:{}),...(hv?{bootTimeoutMs:1000}:physical?{}:{waitForBoot:false})});}finally{rpcActive=false;await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
  const after=snapshot(),lease=leaseFile&&raw.existsSync(leaseFile)?JSON.parse(raw.readFileSync(leaseFile,'utf8')):undefined;
  stableHome();if(ownedDescriptors.size)throw Error('fixture-owned file descriptors leaked');
- console.log(JSON.stringify({outcome,denied,initial,expected,unrelated:other,after,protectedSnapshot,injected,calls,ownerPublicationsAfterRace,temporaryOwnerWritesAfterRace,cancellationWrites,storageFaults,lease,initialExpiry,reconciledRecordAtSsh,fingerprint,publicationBuilderClockReads,modules:[directory]}));
+ console.log(JSON.stringify({outcome,denied,ownIdentityObservations,initial,expected,unrelated:other,after,protectedSnapshot,injected,calls,ownerPublicationsAfterRace,temporaryOwnerWritesAfterRace,cancellationWrites,storageFaults,lease,initialExpiry,reconciledRecordAtSsh,fingerprint,publicationBuilderClockReads,modules:[directory]}));
 })().catch(error=>{console.log(JSON.stringify({fatal:String(error),stack:error.stack,denied,calls,mutations}));process.exitCode=1;});
 `;
 
@@ -231,7 +266,7 @@ function executeCurrent(lens: "source" | "emitted", scenario: Scenario, expected
         else console.error(`[lifecycle fixture failure diagnostics] ${diagnostics}`);
     });
     try {
-        const output = spawnSync(process.execPath, [...(lens === "source" ? ["--experimental-loader", loader] : []), worker], {cwd: project, encoding: "utf8", timeout: 20000, maxBuffer: 2 * 1024 * 1024, env: {HOME: home, USERPROFILE: home, PATH: join(home, "fake"), CCC_LIFECYCLE_FIXTURE_FILE: settingsFile}});
+        const output = spawnSync(process.execPath, [...(lens === "source" ? ["--experimental-loader", pathToFileURL(loader).href] : []), worker], {cwd: project, encoding: "utf8", timeout: 20000, maxBuffer: 2 * 1024 * 1024, env: {HOME: home, USERPROFILE: home, PATH: join(home, "fake"), CCC_LIFECYCLE_FIXTURE_FILE: settingsFile}});
         writeFileSync(join(diagnostics, "stdout.json"), output.stdout ?? "", {mode: 0o600});
         writeFileSync(join(diagnostics, "stderr.log"), output.stderr ?? "", {mode: 0o600});
         writeFileSync(join(diagnostics, "metadata.json"), JSON.stringify({lens, scenario, exit: output.status, signal: output.signal, error: output.error ? String(output.error) : null, fixtureHome: home, workerSha: createHash("sha256").update(WORKER).digest("hex"), loaderSha: createHash("sha256").update(SOURCE_LOADER).digest("hex"), sourceFiles: [...sourceFiles], emittedFiles: [...emittedFiles]}, null, 2), {mode: 0o600});
@@ -241,6 +276,10 @@ function executeCurrent(lens: "source" | "emitted", scenario: Scenario, expected
         // calls and caught-denial counters. HOME's ordinary cleanup below remains unchanged.
         writeFileSync(join(diagnostics, "receipt.json"), JSON.stringify(observed, null, 2), {mode: 0o600});
         expect(observed.denied, "all denials count before potentially caught native errors").toHaveLength(expectedDenials);
+        if (process.platform === "win32") {
+            expect(observed.ownIdentityObservations).toBeGreaterThanOrEqual(1);
+            expect(observed.ownIdentityObservations).toBeLessThanOrEqual(2);
+        } else expect(observed.ownIdentityObservations).toBe(0);
         return observed;
     } finally { rmSync(root, {recursive: true, force: true}); }
 }

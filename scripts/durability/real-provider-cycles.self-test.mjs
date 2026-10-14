@@ -45,12 +45,18 @@ import {
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const hyperVFixtureDeviceIds = ["windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468", "linux-vm-2468ace0-1357-4bdf-8ace-2468ace01357", "windows-vm-abcdef12-3456-4789-8abc-def123456789", "windows-vm-11111111-2222-4333-8444-555555555555", "windows-vm-66666666-7777-4888-8999-aaaaaaaaaaaa"];
 
+const unrelatedHyperVNetworks = {
+    switches: [{ name: "User virtual switch", id: "ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee", type: "External", notes: "user-owned" }],
+    nats: [{ name: "UserNAT", prefix: "10.42.0.0/24", instanceId: "user-nat-instance" }],
+    addresses: [{ interfaceAlias: "vEthernet (User virtual switch)", address: "10.42.0.1", prefixLength: 24 }],
+};
+
 test("resolves Android AVD storage using Android SDK environment precedence", () => {
-    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_AVD_HOME: "/avds", ANDROID_USER_HOME: "/android-user" } }), "/avds");
-    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_USER_HOME: "/android-user" } }), "/android-user/avd");
-    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_EMULATOR_HOME: "/emulator" } }), "/emulator/avd");
-    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_SDK_HOME: "/legacy" } }), "/legacy/.android/avd");
-    assert.equal(androidAvdHome({ home: "/home/test", env: {} }), "/home/test/.android/avd");
+    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_AVD_HOME: "/avds", ANDROID_USER_HOME: "/android-user" } }), resolve("/avds"));
+    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_USER_HOME: "/android-user" } }), resolve("/android-user", "avd"));
+    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_EMULATOR_HOME: "/emulator" } }), resolve("/emulator", "avd"));
+    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_SDK_HOME: "/legacy" } }), resolve("/legacy", ".android", "avd"));
+    assert.equal(androidAvdHome({ home: "/home/test", env: {} }), resolve("/home/test", ".android", "avd"));
 });
 
 test("removes only exact owner-scoped Android AVD artifacts", () => {
@@ -837,6 +843,7 @@ test("detects test-owned Hyper-V VMs even when CCC owner state is absent", () =>
             fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
+            listHyperVNetworks: () => unrelatedHyperVNetworks,
             listHyperVVms: () => [
                 { name: vmName, notes: `ccc-device-lab:${owner}:windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468:${incarnationId}`, vmId: "id", diskPaths: ["C:\\ccc\\root.vhdx"], checkpoints: ["before-upgrade"] },
                 { name: "foreign-vm", notes: "", vmId: "foreign", diskPaths: [] },
@@ -977,6 +984,7 @@ test("preserves ambiguously identified Hyper-V VMs and does not attribute their 
             fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
+            listHyperVNetworks: () => unrelatedHyperVNetworks,
             listHyperVVms: () => [
                 { name: nameOnlyVmName, notes: "foreign", diskPaths: ["C:\\foreign.vhdx"], checkpoints: ["foreign-checkpoint"] },
                 { name: "foreign-name", notes: `ccc-device-lab:${owner}:windows-vm-66666666-7777-4888-8999-aaaaaaaaaaaa`, diskPaths: ["C:\\foreign-2.vhdx"], checkpoints: ["foreign-checkpoint-2"] },
@@ -1012,6 +1020,7 @@ test("detects test-owned Hyper-V VHDX and exact mutation and operation locks", (
             fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
+            listHyperVNetworks: () => unrelatedHyperVNetworks,
             listHyperVVms: () => [],
         }), [
             `device-state:${deviceId}`,
@@ -1038,6 +1047,7 @@ test("detects and removes only current-owner registered returned-ID Hyper-V priv
             fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("linux-vm-")),
             home,
             owner,
+            listHyperVNetworks: () => unrelatedHyperVNetworks,
             listHyperVVms: () => [],
         }), [`private-artifact:${testArtifact}`]);
         assert.deepEqual(recoverHyperVPrivateResidue("linux-vm", { home, owner, fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("linux-vm-")) }), { privateArtifacts: 1 });
@@ -1072,6 +1082,11 @@ test("detects current-owner registered returned-ID Hyper-V network allocations",
             fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
+            listHyperVNetworks: () => ({
+                switches: [{ name: "CCC Device Lab", id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", type: "Internal", notes: "ccc-device-lab:hyper-v-network:v1" }, ...unrelatedHyperVNetworks.switches],
+                nats: [{ name: "CCCDeviceLab", prefix: "172.29.0.0/24", instanceId: "shared-ccc-nat-instance" }, ...unrelatedHyperVNetworks.nats],
+                addresses: [{ interfaceAlias: "vEthernet (CCC Device Lab)", address: "172.29.0.1", prefixLength: 24 }, ...unrelatedHyperVNetworks.addresses],
+            }),
             listHyperVVms: () => [],
         }), [`network-allocation:${networkPath}:windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468`]);
     } finally {
@@ -1127,6 +1142,7 @@ test("does not infer Hyper-V cleanup ownership from labels or generic backend pr
         const incarnationId = "a".repeat(32);
         assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
             home, owner, fixtureDeviceIds: [],
+            listHyperVNetworks: () => unrelatedHyperVNetworks,
             listHyperVVms: () => ids.map(id => ({ name: `ccc-${owner}-${id.slice(0, 32)}-${incarnationId}`,
                 notes: `ccc-device-lab:${owner}:${id}:${incarnationId}`, diskPaths: [], checkpoints: [] })),
         }), []);

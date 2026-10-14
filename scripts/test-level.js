@@ -3,10 +3,11 @@ import { spawnSync } from "child_process";
 import { existsSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
-import { runSupervisedProcess } from "./real-tests/supervised-process.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceLoader = pathToFileURL(join(root, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
+await import(sourceLoader);
+const { runSupervisedProcess } = await import("./real-tests/supervised-process.ts");
 
 const LEVELS = {
     0: {
@@ -162,7 +163,7 @@ if (summarizeJsonIndex >= 0) {
         console.error(usage());
         process.exit(1);
     }
-    const result = spawnSync(process.execPath, [join(root, "scripts", "real-tests", "summarize-json.ts"), summarizeJsonFile], {
+    const result = spawnSync(process.execPath, ["--import", sourceLoader, join(root, "scripts", "real-tests", "summarize-json.ts"), summarizeJsonFile], {
         cwd: root,
         stdio: "inherit",
         windowsHide: true,
@@ -175,6 +176,8 @@ if (assertJsonIndex >= 0) {
         process.exit(1);
     }
     const result = spawnSync(process.execPath, [
+        "--import",
+        sourceLoader,
         join(root, "scripts", "real-tests", "assert-json.ts"),
         assertJsonFile,
         ...(args.includes("--quiet") ? ["--quiet"] : []),

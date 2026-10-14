@@ -35,8 +35,9 @@ export async function runSupervisedProcess(command: string, args: string[], opti
         detached: process.platform !== "win32",
     });
     const watchdogScript = resolve(dirname(fileURLToPath(import.meta.url)), "process-tree-watchdog.ts");
+    const sourceLoader = new URL("./typescript-source-loader.mjs", import.meta.url).href;
     const watchdog = Number.isInteger(child.pid)
-        ? spawn(process.execPath, [watchdogScript, String(child.pid), String(process.pid)], {
+        ? spawn(process.execPath, ["--import", sourceLoader, watchdogScript, String(child.pid), String(process.pid)], {
             cwd: options.cwd,
             env: options.env,
             stdio: ["pipe", "ignore", "ignore"],

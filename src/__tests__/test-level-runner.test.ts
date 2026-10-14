@@ -4,7 +4,7 @@ import { backendProviderEnumDiagnostics, missingWindowsImageProbe, probeMissingM
 import { spawn, spawnSync } from "child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, dirname, join } from "path";
 import { pathToFileURL } from "url";
 import { parse } from "acorn";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
@@ -25,6 +25,7 @@ import {
 import { repoRoot } from "./helpers/device-lab-mcp-fixture.js";
 
 const runner = join(repoRoot, "scripts", "test-level.js");
+const repoLoader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
 
 function parseModule(text: string) {
     const javascript = transpileModule(text, {
@@ -684,33 +685,33 @@ describe("test level runner", () => {
         expect(level2.mode).toBe("node-test");
         expect(level2.args.slice(0, 3)).toEqual([
             "--import",
-            pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href,
+            repoLoader,
             join(repoRoot, "scripts", "real-tests", "run.ts"),
         ]);
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/run.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level0-package-smoke.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-real-provider-readiness.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-dist-real-provider-readiness.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-display-e2e.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-host-integration-slots.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-broker-e2e.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-dist-broker-e2e.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-ios-e2e.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-android-emulator-e2e.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-android-device-e2e.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-macos-vm-e2e.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-windows-sandbox.ts");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-real-linux-vm.ts");
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "run.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level0-package-smoke.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level1-real-provider-readiness.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level1-dist-real-provider-readiness.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level1-display-e2e.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-host-integration-slots.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-broker-e2e.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-dist-broker-e2e.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-ios-e2e.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-android-emulator-e2e.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-android-device-e2e.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-macos-vm-e2e.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-windows-sandbox.ts"));
+        expect(level2.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-real-linux-vm.ts"));
 
         const level3 = dryRunNode("3");
         expect(level3.mode).toBe("node-test");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level0-package-smoke.ts");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level1-dist-real-provider-readiness.ts");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-broker-e2e.ts");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-dist-broker-e2e.ts");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-android-device-e2e.ts");
-        expect(level3.args.join("\n")).not.toContain("scripts/real-tests/level2-android-emulator-e2e.ts");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level3-real-destructive.ts");
+        expect(level3.args).toContain(join(repoRoot, "scripts", "real-tests", "level0-package-smoke.ts"));
+        expect(level3.args).toContain(join(repoRoot, "scripts", "real-tests", "level1-dist-real-provider-readiness.ts"));
+        expect(level3.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-broker-e2e.ts"));
+        expect(level3.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-dist-broker-e2e.ts"));
+        expect(level3.args).toContain(join(repoRoot, "scripts", "real-tests", "level2-android-device-e2e.ts"));
+        expect(level3.args).not.toContain(join(repoRoot, "scripts", "real-tests", "level2-android-emulator-e2e.ts"));
+        expect(level3.args).toContain(join(repoRoot, "scripts", "real-tests", "level3-real-destructive.ts"));
         expect(level3.args).toEqual(expect.arrayContaining(["--provider-concurrency", "2"]));
     });
 
@@ -811,6 +812,7 @@ describe("test level runner", () => {
 
     it("executes provider modules in isolated child processes and keeps summary order", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-workers-"));
+        writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
         const windowsFile = join(tempDir, "level2-android-device-e2e.ts");
         const linuxFile = join(tempDir, "level2-windows-sandbox.ts");
         const windowsStarted = join(tempDir, "windows.started");
@@ -834,6 +836,7 @@ describe("test level runner", () => {
         writeFileSync(linuxFile, moduleText("sandbox worker", linuxStarted, windowsStarted));
         try {
             const result = spawnSync(process.execPath, [
+                "--import", repoLoader,
                 join(repoRoot, "scripts", "real-tests", "run.ts"),
                 "--compact",
                 "--provider-concurrency",
@@ -864,6 +867,7 @@ describe("test level runner", () => {
 
     it("collects a provider worker exception as a failed real-test record", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-worker-failure-"));
+        writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
         const providerFile = join(tempDir, "level2-hyper-v-windows-vm.ts");
         const summaryFile = join(tempDir, "summary.json");
         writeFileSync(providerFile, `
@@ -874,6 +878,7 @@ describe("test level runner", () => {
         `);
         try {
             const result = spawnSync(process.execPath, [
+                "--import", repoLoader,
                 join(repoRoot, "scripts", "real-tests", "run.ts"),
                 "--compact",
                 "--provider-concurrency",
@@ -904,6 +909,7 @@ describe("test level runner", () => {
 
     it("terminates active provider workers when the collector is interrupted", async () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-worker-signal-"));
+        writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
         const providerFile = join(tempDir, "level2-windows-sandbox.ts");
         const workerPidFile = join(tempDir, "worker.pid");
         const grandchildPidFile = join(tempDir, "grandchild.pid");
@@ -923,6 +929,7 @@ describe("test level runner", () => {
             }
         `);
         const collector = spawn(process.execPath, [
+            "--import", repoLoader,
             join(repoRoot, "scripts", "real-tests", "run.ts"),
             "--compact",
             "--provider-concurrency",
@@ -1127,8 +1134,8 @@ describe("test level runner", () => {
         expect(plan.mode).toBe("node-test");
         expect(plan.args).toContain("--json-summary");
         expect(plan.args).toEqual(expect.arrayContaining(["--json-summary-file", "results/summary.json"]));
-        expect(plan.args.join("\n")).toContain("scripts/real-tests/run.ts");
-        expect(plan.args.join("\n")).toContain("scripts/real-tests/level1-display-e2e.ts");
+        expect(plan.args).toContain(join(repoRoot, "scripts", "real-tests", "run.ts"));
+        expect(plan.args).toContain(join(repoRoot, "scripts", "real-tests", "level1-display-e2e.ts"));
     });
 
     it("runs device-lab real E2E operations through the MCP server instead of backend handlers", () => {
@@ -1316,7 +1323,7 @@ describe("test level runner", () => {
 
     it("covers destructive Android emulator controls only through the explicit level 3 path", () => {
         const level3 = dryRunNode("3");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level3-real-destructive.ts");
+        expect(level3.args).toContain(join(repoRoot, "scripts", "real-tests", "level3-real-destructive.ts"));
         const destructiveText = readFileSync(join(repoRoot, "scripts", "real-tests", "level3-real-destructive.ts"), "utf-8");
         const androidText = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.ts"), "utf-8");
         expect(destructiveText).toContain("destructive: true");
@@ -1622,7 +1629,7 @@ describe("test level runner", () => {
 
     it("covers the current X11 display tools in a real MCP E2E", () => {
         const level1 = dryRunNode("1");
-        expect(level1.args.join("\n")).toContain("scripts/real-tests/level1-display-e2e.ts");
+        expect(level1.args).toContain(join(repoRoot, "scripts", "real-tests", "level1-display-e2e.ts"));
         const text = readFileSync(join(repoRoot, "scripts", "real-tests", "level1-display-e2e.ts"), "utf-8");
         for (const tool of [
             "status",
@@ -1957,8 +1964,8 @@ describe("test level runner", () => {
     it("keeps every real E2E MCP call reachable from the level 3 node runner", () => {
         const plan = dryRunNode("3");
         const entryFiles = plan.args
-            .filter((arg) => arg.includes("/scripts/real-tests/") && arg.endsWith(".ts"))
-            .map((arg) => arg.split("/scripts/real-tests/")[1])
+            .filter((arg) => dirname(arg) === join(repoRoot, "scripts", "real-tests") && arg.endsWith(".ts"))
+            .map((arg) => basename(arg))
             .filter((file) => file !== "run.ts");
         const reachable = reachableRealTestFilesFrom(entryFiles);
         const unreachableCallToolFiles = realTestFilesWithCallTool()
@@ -1988,7 +1995,7 @@ describe("test level runner", () => {
             writeFileSync(stepFailFile, "export const name='step-fail'; export async function run(){ return { status: 'FAIL', steps: [{ name: 'inner', status: 'FAIL', reason: 'boom', detail: 'device=abc' }] }; }\n");
             writeFileSync(multilineFailFile, "export const name='multiline-fail'; export async function run(){ throw new Error('Expected values to be strictly equal:\\n+ actual\\n- expected'); }\n");
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), passFile, stepFailFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), passFile, stepFailFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -1999,7 +2006,7 @@ describe("test level runner", () => {
             expect(result.stdout).toContain("SUMMARY real-tests total=2 pass=1 skip=0 fail=1 failOnSkip=false");
             expect(result.stdout).not.toContain("strictSkipFailures");
 
-            const compactResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", passFile, stepFailFile], {
+            const compactResult = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", passFile, stepFailFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2008,7 +2015,7 @@ describe("test level runner", () => {
             expect(compactResult.stdout).toContain("FAIL step-fail: inner - boom");
             expect(compactResult.stdout).toContain("SUMMARY real-tests total=2 pass=1 skip=0 fail=1 failOnSkip=false");
 
-            const multilineResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", multilineFailFile], {
+            const multilineResult = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", multilineFailFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2021,6 +2028,7 @@ describe("test level runner", () => {
 
     it("fails closed when real-test results omit or invent statuses", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-real-test-runner-"));
+        writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
         try {
             const missingResultStatus = join(tempDir, "missing-result-status.ts");
             const invalidStepStatus = join(tempDir, "invalid-step-status.mjs");
@@ -2034,6 +2042,7 @@ describe("test level runner", () => {
             writeFileSync(emptySteps, "export const name='empty-steps'; export async function run(){ return { status: 'PASS', steps: [] }; }\n");
 
             const result = spawnSync(process.execPath, [
+                "--import", repoLoader,
                 join(repoRoot, "scripts", "real-tests", "run.ts"),
                 "--compact",
                 missingResultStatus,
@@ -2063,7 +2072,7 @@ describe("test level runner", () => {
             writeFileSync(skipFile, "export const name='skip'; export async function run(){ return { status: 'SKIP', reason: 'missing provider' }; }\n");
             writeFileSync(stepSkipFile, "export const name='step-skip'; export async function run(){ return { status: 'SKIP', steps: [{ name: 'inner', status: 'SKIP', reason: 'missing device' }] }; }\n");
 
-            const defaultResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), skipFile, stepSkipFile], {
+            const defaultResult = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), skipFile, stepSkipFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2072,7 +2081,7 @@ describe("test level runner", () => {
             expect(defaultResult.stdout).not.toContain("strictSkipFailures");
             expect(defaultResult.stdout).not.toContain("strictCoverageFailures");
 
-            const strictResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", "--fail-on-skip", skipFile, stepSkipFile], {
+            const strictResult = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", "--fail-on-skip", skipFile, stepSkipFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2101,7 +2110,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, skippedFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, skippedFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2139,7 +2148,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const defaultResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), scriptedButUncalledFile], {
+            const defaultResult = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), scriptedButUncalledFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2147,7 +2156,7 @@ describe("test level runner", () => {
             expect(defaultResult.stdout).toContain("SUMMARY real-tests total=1 pass=1 skip=0 fail=0 failOnSkip=false");
             expect(defaultResult.stdout).not.toContain("strictCoverageFailures");
 
-            const strictResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", scriptedButUncalledFile], {
+            const strictResult = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", scriptedButUncalledFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2175,7 +2184,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, facetFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, facetFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2219,7 +2228,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, facetFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, facetFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2267,7 +2276,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, facetFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, facetFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2310,7 +2319,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", "--json-summary-file", summaryFile, facetFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", "--json-summary-file", summaryFile, facetFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2345,7 +2354,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", outcomeFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", outcomeFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2370,7 +2379,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", outcomeFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", outcomeFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2395,7 +2404,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", outcomeFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", outcomeFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2432,7 +2441,7 @@ describe("test level runner", () => {
             ].join("\n"));
             writeFileSync(stepSkipFile, "export const name='step-skip'; export async function run(){ return { status: 'SKIP', steps: [{ name: 'inner', status: 'SKIP', reason: 'missing adb', detail: 'backend=android-device' }] }; }\n");
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-skip", "--json-summary", "--json-summary-file", summaryFile, passFile, stepSkipFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-skip", "--json-summary", "--json-summary-file", summaryFile, passFile, stepSkipFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2593,6 +2602,7 @@ describe("test level runner", () => {
             ].join("\n"));
 
             const collected = spawnSync(process.execPath, [
+                "--import", repoLoader,
                 join(repoRoot, "scripts", "real-tests", "run.ts"),
                 "--json-summary-file",
                 summaryFile,
@@ -2685,6 +2695,7 @@ describe("test level runner", () => {
             ].join("\n"));
 
             const collected = spawnSync(process.execPath, [
+                "--import", repoLoader,
                 join(repoRoot, "scripts", "real-tests", "run.ts"),
                 "--json-summary-file",
                 summaryFile,
@@ -2701,7 +2712,7 @@ describe("test level runner", () => {
             writeFileSync(recordsFile, JSON.stringify({
                 records: reasons.map((reason) => ({ test: "level 1 Hyper-V readiness", status: "SKIP", reason })),
             }));
-            const summarized = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "summarize-json.ts"), recordsFile], {
+            const summarized = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "summarize-json.ts"), recordsFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2807,7 +2818,7 @@ describe("test level runner", () => {
                     { test: "broker", step: "rpc", status: "FAIL", reason: "owner rejected" },
                 ],
             }));
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "summarize-json.ts"), summaryFile], {
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts", "real-tests", "summarize-json.ts"), summaryFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -3523,7 +3534,7 @@ describe("canonical real-runner argument interpretation", () => {
                 { name: "create_android_emulator", arguments: {  name: "missing-image" } },
             );
             writeFileSync(fixture, `export const name='input-clarity'; export async function run(){globalThis[Symbol.for('ccc.deviceLabRealTests.toolCalls')]=${JSON.stringify([...valid, ...invalid].map(call => ({ ...call, outcome: "ok", isError: false })))};return {status:'PASS'};}`);
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts/real-tests/run.ts"), "--json-summary-file", summaryPath, fixture], { cwd: repoRoot, encoding: "utf8", timeout: 30000 });
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts/real-tests/run.ts"), "--json-summary-file", summaryPath, fixture], { cwd: repoRoot, encoding: "utf8", timeout: 30000 });
             expect(result.status, result.stderr).toBe(0);
             const coverage = JSON.parse(readFileSync(summaryPath, "utf8")).toolCoverage;
             expect(coverage.calls.slice(0, valid.length).map((call: any) => call.schemaValid)).toEqual(valid.map(() => true));
@@ -3558,7 +3569,7 @@ describe("canonical real-runner argument interpretation", () => {
                 { name: "run_flow", arguments: { deviceId: "vm-a", steps: [{ tool: "click", name: "click", arguments: { x: 1, y: 2 } }] } },
             ];
             writeFileSync(fixture, `export const name='canonical-arguments'; export async function run(){globalThis[Symbol.for('ccc.deviceLabRealTests.toolCalls')]=${JSON.stringify([...valid, ...invalid].map((call) => ({ ...call, outcome: "ok", isError: false })))}; return {status:'PASS'};}`);
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts/real-tests/run.ts"), "--json-summary-file", summaryPath, fixture], { cwd: repoRoot, encoding: "utf8", timeout: 30000 });
+            const result = spawnSync(process.execPath, ["--import", repoLoader, join(repoRoot, "scripts/real-tests/run.ts"), "--json-summary-file", summaryPath, fixture], { cwd: repoRoot, encoding: "utf8", timeout: 30000 });
             expect(result.status, result.stderr).toBe(0);
             const coverage = JSON.parse(readFileSync(summaryPath, "utf8")).toolCoverage;
             expect(coverage.unadvertisedTools).toEqual([...removed].sort());

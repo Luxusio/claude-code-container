@@ -12,8 +12,6 @@ import { ownerId as currentOwnerId } from "#device-lab/providers/context.mjs";
 import { listOwnedAndroidAvdArtifacts, ownedAndroidAvdName, removeOwnedAndroidAvdArtifacts } from "#device-lab/providers/state/android-avd-storage.mjs";
 import { hiddenWindowsPowerShellArgs } from "#device-lab/providers/state/windows-system-powershell.mjs";
 import { readPhysicalLeases, releaseOwnedPhysicalLeaseResidue } from "#device-lab/providers/state/physical-lease-store.mjs";
-import { listRunningWindowsSandboxSessions } from "../real-tests/windows-sandbox-e2e.ts";
-import { withExclusiveRealProviderRun } from "../real-tests/exclusive-real-provider-run.ts";
 import {
     describeProcessIdentities,
     identityForPid,
@@ -28,6 +26,11 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "../..");
 const realTestRunner = join(repoRoot, "scripts", "real-tests", "run.ts");
 const sourceLoader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
+await import(sourceLoader);
+const [{ listRunningWindowsSandboxSessions }, { withExclusiveRealProviderRun }] = await Promise.all([
+    import("../real-tests/windows-sandbox-e2e.ts"),
+    import("../real-tests/exclusive-real-provider-run.ts"),
+]);
 const OUTPUT_LIMIT_BYTES = 64 * 1024;
 const PROCESS_SAMPLE_INTERVAL_MS = 50;
 const RESIDUE_INLINE_LIMIT = 4;

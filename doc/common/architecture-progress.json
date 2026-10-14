@@ -1898,14 +1898,14 @@
     {
       "id": "broker-provider-lifecycle-results-structural",
       "coveredOperationIds": [],
-      "status": "Existing corrections reviewed; current7147 joint QA failed independently of remaining production framing debt. No completion credit; concrete remaining source work retained.",
+      "status": "Current source check confirms direct provider framing already integrated at a92fb3d0; remaining broker and Sandbox observations require implementation and qualification. Historical7147 joint FAIL is preserved, not treated as proof of current individual branches. No group completion credit.",
       "taskId": "TASK__architecture-provider-lifecycle-result-boundaries",
       "acceptedIntegrationCommit": "8060aa02e9746ba501b0f03a8bba56133015415a",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/provider-lifecycle-8060-e5t_1pbv/final-result.json",
       "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
       "title": "브로커 provider 수명주기 결과",
       "workStatus": "partial",
-      "remainingWork": "Android/iOS/macOS 직접 수명주기 framing과 Android 접근 명령을 어댑터로 분리하고 리뷰·QA·통합한다. 기존 deadline 수정·provider routing의 공동 QA·통합도 남음. R17/R19와 공유하는 브로커·codec 파일 연결은 순차 처리한다. Android 같은 backend 파일 변경은 순차 처리; iOS/macOS 독립 파일은 별도 처리 가능.",
+      "remainingWork": "Main a92fb3d0에 직접 Android/iOS/macOS lifecycle·Android access framing 분리가 이미 반영되어 있다. 남은 구현은 broker Android inventory/boot, iOS 생성 결과, macOS 주소·삭제 결과 및 Sandbox 직접/broker 수명주기의 의미 관측이다. 이 범위의 독립 리뷰·QA·로컬 통합이 남는다. R17/R19와 공유하는 broker·codec 조합 파일은 한 담당자가 순차 연결한다.",
       "completionCriteria": "Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects with outward native framing and response presentation. Actual independent Code/Security/Docs and QA425 across17 whole files with zero skips passed; genuine1330 build artifacts qualified from unchanged executable Source/output bytes, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed. Protected42 pins/97 user paths delivered; current f5a0 Source pins qualified. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -1913,10 +1913,11 @@
       "dependsOn": [],
       "sourceTrace": {
         "remainingPaths": [
-          "packages/device-lab/providers/application/lifecycle/android-emulator-lifecycle.mjs",
-          "packages/device-lab/providers/application/lifecycle/ios-simulator-lifecycle.mjs",
-          "packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs",
-          "packages/device-lab/providers/application/android-device-access.mjs"
+          "packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/windows-sandbox-lifecycle.ts",
+          "packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs"
         ],
         "nativeConsumers": [
           "packages/device-lab/providers/backends/android.mjs",
@@ -1931,7 +1932,13 @@
         "status": "partial-awaiting-current-qualification",
         "scope": "Android/iOS/macOS 직접 수명주기 framing과 Android 접근 명령을 어댑터로 분리하고 리뷰·QA·통합한다. 기존 deadline 수정·provider routing의 공동 QA·통합도 남음. R17/R19와 공유하는 브로커·codec 파일 연결은 순차 처리한다."
       },
-      "currentQualificationTask": "TASK__windows-native-termination-observation-budget"
+      "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
+      "currentSourceCheck": {
+        "sourceCommit": "b06319e4ae37206a7f55de9ea7152658d13bedc0",
+        "checkedAt": "2026-10-14",
+        "kind": "read-only-remaining-seam-reconciliation",
+        "completionCredit": false
+      }
     },
     {
       "id": "shared-android-contract-cleanup-accepted",
@@ -2146,7 +2153,7 @@
       "coveredOperationIds": [],
       "title": "Desktop 제어·파일 전송",
       "workStatus": "partial",
-      "remainingWork": "Hyper-V readiness·helper 응답 해석과 iOS 제어의 네이티브 명령·응답을 어댑터로 분리하고 리뷰·QA·통합한다. iOS transfer 경계 수정은 기존 Windows 검증에서 통과. 공유 브로커·codec 파일 연결은 R17/R18과 순차 처리한다.",
+      "remainingWork": "Main a92fb3d0에 desktop·iOS 제어/transfer의 네이티브 framing 분리가 이미 반영되어 있다. 남은 구현은 Hyper-V Windows readiness의 응답 재인코딩과 Linux SSH·GUI ready marker 해석을 기존 네이티브 어댑터의 의미 관측으로 옮기는 것이다. 기존 deadline·identity·polling·실패 정리 정책을 유지하고 독립 리뷰·QA·통합한다. 공유 broker·codec 연결은 R17/R18과 순차 처리한다.",
       "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다.",
       "confirmedAtCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
       "sourceTrace": {
@@ -2154,8 +2161,7 @@
           "packages/device-lab/providers/application/desktop-control-transfer.mjs"
         ],
         "remainingPaths": [
-          "packages/device-lab/src/device-lab/application/hyper-v-desktop-transfer.ts",
-          "packages/device-lab/providers/application/ios-control-transfer.mjs"
+          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts"
         ],
         "nativeConsumers": [
           "packages/device-lab/providers/backends/windows-vm.mjs",
@@ -2163,7 +2169,7 @@
           "packages/device-lab/providers/backends/ios-device.mjs"
         ]
       },
-      "status": "Existing corrections reviewed; current7147 joint QA failed independently of remaining production framing debt. No completion credit; concrete remaining source work retained.",
+      "status": "Current source check confirms named desktop/iOS framing already integrated at a92fb3d0; adjacent Hyper-V readiness interpretation remains inward and unqualified. Historical7147 joint FAIL and bounded earlier contributions are preserved. No group completion credit.",
       "taskId": "TASK__architecture-desktop-native-boundaries",
       "acceptedIntegrationCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/desktop-native-a71e-oxrqrcau/final-result.json",
@@ -2176,6 +2182,12 @@
         "taskId": "TASK__architecture-final-source-remediation",
         "status": "partial-awaiting-current-qualification",
         "scope": "Hyper-V readiness·helper 응답 해석과 iOS 제어의 네이티브 명령·응답을 어댑터로 분리하고 리뷰·QA·통합한다. iOS transfer 경계 수정은 기존 Windows 검증에서 통과. 공유 브로커·codec 파일 연결은 R17/R18과 순차 처리한다."
+      },
+      "currentSourceCheck": {
+        "sourceCommit": "b06319e4ae37206a7f55de9ea7152658d13bedc0",
+        "checkedAt": "2026-10-14",
+        "kind": "read-only-remaining-seam-reconciliation",
+        "completionCredit": false
       }
     },
     {
@@ -2807,7 +2819,32 @@
       "id": "vm-instance-identity-compatibility",
       "taskId": "TASK__vm-unique-public-identity-20261014",
       "coveredOperationIds": [],
-      "status": "Main5b27e04d plus7266a1cf implementation checkpoints: original uncertain creation replay, Mac broker workspace collision and real Mac fixture prefix findings corrected. Final Code found the unmigrated QEMU smoke caller; it now captures the returned lab.id and threads it through the existing workflow. Existing whole smoke two tests pass after correction (both failed before it), with current workspace build/assembly and source syntax checks passing. Fresh final full Code review and Linux/native Windows QA remain pending. Prior Security7266 actual PASS is retained for unchanged authority/transport/generation boundaries; only the isolated fake-provider smoke consumer changed. Zero operation or structural-group completion credit."
+      "status": "Main5b27e04d,7266a1cf,b06319e4 implementation checkpoints and actual final full Code PASS atb063 plus prior Security7266 PASS. Independent QA cycle1: Linux62wholefiles2062PASS/24existingSKIP; native Windows1845PASS/208FAIL/33SKIP, default durability could not load static TypeScript. Public source/built MCP and CLI controlled journeys passed on both hosts. The208failures are176 lifecycle-race cases (Windows loader URL/self-process observations) and32 test-level cases (TypeScript bootstrap); raw failure evidence is retained. Existing loader now initializes installed tsx/esm before TypeScript dependencies/watchdogs; native path assertions, exact finite self-process observations and required network fakes are corrected, including four temporary ESM fixture package contexts. Current combined Linux test-level94 and durability77 PASS; whole race and default Windows prechecks are in progress. Fresh current full Code/Security, independent QA cycle2 and final documentation disposition remain pending. Zero operation or structural-group completion credit.",
+      "currentQa": {
+        "candidateCommit": "b06319e4ae37206a7f55de9ea7152658d13bedc0",
+        "status": "cycle1-FAIL-current-source-correction-frozen-prechecks-in-progress",
+        "linux": {
+          "wholeFiles": 62,
+          "passed": 2062,
+          "failed": 0,
+          "skipped": 24
+        },
+        "windows": {
+          "wholeFiles": 62,
+          "passed": 1845,
+          "failed": 208,
+          "skipped": 33
+        },
+        "failureEvidence": "results/architecture-vm-identity-137f0-20261014/independent-native-evidence.zip",
+        "defaultDurability": "Windows cycle1 failed before collection; current Linux77 PASS; current native pending",
+        "currentLinuxPrechecks": {
+          "testLevelPassed": 94,
+          "durabilityPassed": 77,
+          "race": "in-progress"
+        },
+        "currentWindowsPrecheck": "in-progress-default-Node22.16-no-experimental-stripping",
+        "independentFinalQualification": "pending"
+      }
     }
   ],
   "currentSourceQualificationAudit": {

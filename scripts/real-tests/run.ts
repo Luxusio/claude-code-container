@@ -487,7 +487,7 @@ async function executeProviderModule(file: string) {
             });
             activeProviderChildren.add(child);
             const watchdog = Number.isInteger(child.pid)
-                ? spawn(process.execPath, [watchdogScript, String(child.pid), String(process.pid)], {
+                ? spawn(process.execPath, ["--import", sourceLoader, watchdogScript, String(child.pid), String(process.pid)], {
                     cwd: process.cwd(),
                     env: process.env,
                     stdio: ["pipe", "ignore", "ignore"],
