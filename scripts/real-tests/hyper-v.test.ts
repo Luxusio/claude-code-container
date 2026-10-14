@@ -126,6 +126,7 @@ describe("Hyper-V Level 3 launcher", () => {
 
     it("loads split TypeScript host-control modules in the standalone real-test runner", { timeout: 60000 }, () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-hyper-v-source-loader-"));
+        writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
         const fixture = join(tempDir, "level2-hyper-v-linux-vm.ts");
         const hostControlUrl = pathToFileURL(join(repoRoot, "packages", "device-lab", "src", "host-control", "hyper-v", "index.ts")).href;
         writeFileSync(fixture, [
@@ -218,6 +219,7 @@ describe("Hyper-V Level 3 launcher", () => {
         let runnerArgs: string[] = [];
         const warnSetupDiagnosticsPrivilegeImpl = vi.fn(() => false);
         const status = await runHyperVTests("windows", {
+            ensureWindowsEvaluationLicenseImpl: async () => ({ ok: true }),
             // This caller goes through the SEAM and asserts it below; the two further down use
             // `platform: "linux"`, which is read by exactly one collaborator —
             // warnIfSetupDiagnosticsWillLackPrivilege; the license gate takes its own `licenseDeps`
@@ -284,6 +286,7 @@ describe("Hyper-V Level 3 launcher", () => {
     it("does not run providers when broker attestation fails", async () => {
         const calls: string[] = [];
         const status = await runHyperVTests("windows", {
+            ensureWindowsEvaluationLicenseImpl: async () => ({ ok: true }),
             platform: "linux", // see above: keeps the production elevation probe out of a unit test
             buildLevel3ArtifactsImpl: () => {
                 calls.push("build");
