@@ -29,7 +29,7 @@ export interface QemuOwnedDataPorts {
     copyFiles(plan: QemuCopyPlan, destination: string, replace: boolean): { ok: true; destinationPath: string; files: number; bytes: number } | QemuOwnedDataFailure;
     diskPath(lab: QemuLab): { ok: true; diskPath: string } | QemuOwnedDataFailure;
     fileExists(path: string): boolean;
-    qemuImgPath(): string | null;
+    qemuImgAvailable(): boolean;
     commandTimeoutMs(): unknown;
-    executeQemuImg(command: string, args: string[], lab: QemuLab, timeoutMs: number): QemuExecution & { ok: boolean; then?: never };
+    executeSnapshot(action: string, name: string, diskPath: string, lab: QemuLab, timeoutMs: number): QemuExecution & { ok: boolean; then?: never };
 }

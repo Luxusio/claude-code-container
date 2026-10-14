@@ -7,7 +7,6 @@
 /** @typedef {{[key:string]:unknown,id:string,name:string,ownerId:string,provider?:string,runtimeState:string,createdAt?:unknown,updatedAt?:unknown,resources:{memoryMb:unknown,cpus:unknown},image:{[key:string]:unknown,baseImageId?:string|null,sourceImage?:string|null,diskImage:string,format?:string,disk?:{[key:string]:unknown,path?:string}},paths:{labDir:string,workspaceDir:string,snapshotsDir:string,artifactsDir:string,exportsDir:string},runtime?:QemuRuntime|null,guest?:QemuGuest,readiness?:{[key:string]:unknown,latest?:unknown}}} QemuLab */
 /** @typedef {{[key:string]:unknown,ok?:unknown,status?:unknown,stdout?:unknown,stderr?:unknown,args?:unknown,pid?:unknown,processIdentity?:unknown}} QemuExecution */
 /** @typedef {{[key:string]:unknown,ok:boolean,lab?:QemuLab,materialized?:boolean}} QemuMaterializedResult */
-const DEFAULT_SSH_CONNECT_TIMEOUT_SEC = 5;
 const MAX_GUEST_AGENT_HEALTH_COMMAND_LENGTH = 512;
 const MAX_GUEST_AGENT_PROVISION_COMMAND_LENGTH = 4096;
 /** @param {string} value @param {string} label @param {RegExp} pattern @param {number} maxLength @returns {{ok:true,value:string}|{ok:false,error:string}} */
@@ -72,23 +71,6 @@ export function validateGuestAgent(args = {}) {
             autoProvision: input.autoProvision === undefined ? Boolean(provisionCommand) : input.autoProvision === true,
         },
     };
-}
-
-/** @param {QemuSsh} ssh */
-export function sshBaseArgs(ssh) {
-    const args = [
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", `ConnectTimeout=${DEFAULT_SSH_CONNECT_TIMEOUT_SEC}`,
-        "-p", String(ssh.port || 22),
-    ];
-    if (ssh.keyPath) args.push("-i", ssh.keyPath);
-    return args;
-}
-
-/** @param {QemuSsh} ssh */
-export function sshDestination(ssh) {
-    return `${ssh.user}@${ssh.host}`;
 }
 
 /** @param {QemuRuntime|null|undefined} runtime */

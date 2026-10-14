@@ -13,7 +13,3 @@ export function snapshotName(value) {
     const name = qemuLifecycleSlug(value);
     return validQemuLabId(name) ? name : null;
 }
-/** @param {string} action */
-export function snapshotFlag(action) {
-    return action === "create" ? "-c" : action === "restore" ? "-a" : "-d";
-}

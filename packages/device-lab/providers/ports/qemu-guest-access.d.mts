@@ -16,8 +16,8 @@ export interface QemuGuestAccessPorts {
     writeLab(lab: QemuLab): undefined;
     clock(): string;
     processExists(pid: unknown, lab: QemuLab): boolean;
-    sshPath(): string | null;
-    executeSsh(command: string, args: (string | undefined)[], lab: QemuLab, timeoutMs: number): (QemuExecution & { then?: never }) | null | undefined;
+    sshAvailable(): boolean;
+    executeGuestCommand(lab: QemuLab, commandText: string | undefined, timeoutMs: number): { result: (QemuExecution & { then?: never }) | null | undefined; redactionPaths: string[]; then?: never };
     sshReadinessTimeoutMs(): number | undefined;
     guestAgentReadinessTimeoutMs(): number | undefined;
     hasReadinessObservation(): boolean;

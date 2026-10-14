@@ -7,7 +7,7 @@ function accessPorts(): { ports: QemuGuestAccessPorts; lab: QemuLab } {
     const lab: QemuLab = { id: "lab", name: "Guest", ownerId: "owner", runtimeState: "running", runtime: { pid: 21 }, resources: { memoryMb: 1024, cpus: 1 }, image: { diskImage: "/lab/disk" }, paths: { labDir: "/lab", workspaceDir: "/lab/workspace", artifactsDir: "/lab/artifacts", snapshotsDir: "/lab/snapshots", exportsDir: "/lab/exports" } };
     const ports: QemuGuestAccessPorts = {
         ownerId: () => "owner", readLab: () => ({ ok: true, lab }), writeLab: () => undefined, clock: () => "2026-10-11T00:00:00.000Z",
-        processExists: () => true, sshPath: () => null, executeSsh: () => { throw new Error("unexpected SSH execution"); },
+        processExists: () => true, sshAvailable: () => false, executeGuestCommand: () => { throw new Error("unexpected SSH execution"); },
         sshReadinessTimeoutMs: () => 1000, guestAgentReadinessTimeoutMs: () => 1000,
         hasReadinessObservation: () => false, observeReadiness: () => null,
     };
@@ -18,13 +18,14 @@ describe("QEMU guest access", () => {
     it("executes configured SSH with the default deadline without readiness probes or state publication", () => {
         const { ports, lab } = accessPorts();
         lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest" } };
-        ports.sshPath = () => "/usr/bin/ssh";
+        ports.sshAvailable = () => true;
         ports.observeReadiness = () => { throw new Error("guest exec must not probe readiness"); };
         ports.writeLab = () => { throw new Error("guest exec must not publish lab state"); };
-        ports.executeSsh = (_command, args, _lab, timeoutMs) => {
-            expect(args.at(-1)).toBe("id");
+        ports.executeGuestCommand = (requestedLab, commandText, timeoutMs) => {
+            expect(requestedLab).toBe(lab);
+            expect(commandText).toBe("id");
             expect(timeoutMs).toBe(30000);
-            return { ok: true, status: 0, stdout: "guest\n", stderr: "" };
+            return { result: { ok: true, status: 0, stdout: "guest\n", stderr: "" }, redactionPaths: ["/usr/bin/ssh"] };
         };
         expect(createQemuGuestAccessApplication(ports).guestExec({ labId: "lab", command: "id" })).toMatchObject({
             ok: true, ownerId: "owner", labId: "lab", timeoutMs: 30000,
@@ -35,17 +36,19 @@ describe("QEMU guest access", () => {
     it("checks guest-agent health without invoking its opted-in provision command", () => {
         const { ports, lab } = accessPorts();
         lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest" }, agent: { name: "agent", healthCommand: "health-only", provisionCommand: "install-agent", autoProvision: true } };
-        ports.sshPath = () => "/usr/bin/ssh";
-        ports.executeSsh = (_command, args) => {
-            expect(args.at(-1)).toBe("health-only");
-            return { ok: true, status: 0 };
+        ports.sshAvailable = () => true;
+        ports.executeGuestCommand = (requestedLab, commandText, timeoutMs) => {
+            expect(requestedLab).toBe(lab);
+            expect(commandText).toBe("health-only");
+            expect(timeoutMs).toBe(10000);
+            return { result: { ok: true, status: 0 }, redactionPaths: ["/usr/bin/ssh"] };
         };
         expect(createQemuGuestAccessApplication(ports).guestAgentStatus({ labId: "lab" })).toMatchObject({ ok: true, status: { state: "ready", ready: true } });
     });
     it("reports configured SSH as available but unverified without executing it", () => {
         const { ports, lab } = accessPorts();
         lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest", keyPath: "/secret/key" } };
-        ports.sshPath = () => "/usr/bin/ssh";
+        ports.sshAvailable = () => true;
         expect(createQemuGuestAccessApplication(ports).openSession({ labId: "lab", sessionType: "guest-ssh", sessionId: "session" })).toMatchObject({
             ok: true, session: { state: "open", attach: { available: true } },
         });
@@ -64,12 +67,83 @@ describe("QEMU guest access", () => {
     });
 
     it("records a failed process observation without probing the guest", () => {
-        const { ports } = accessPorts(); ports.processExists = () => false;
+        const { ports, lab } = accessPorts(); ports.processExists = () => false;
+        lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest" } };
+        ports.sshAvailable = () => true;
         ports.observeReadiness = () => { throw new Error("unexpected guest observation"); };
         const publish = vi.fn(ports.writeLab); ports.writeLab = publish;
         expect(createQemuGuestAccessApplication(ports).probeReadiness({ labId: "lab" })).toMatchObject({
             ok: false, readiness: { state: "failed", diagnostics: { kind: "runtime-process-not-found" } },
         });
         expect(publish).toHaveBeenCalledWith(expect.objectContaining({ readiness: expect.objectContaining({ latest: expect.objectContaining({ state: "failed" }) }) }));
+    });
+
+    it("refuses unavailable SSH without invoking an otherwise successful command", () => {
+        const { ports, lab } = accessPorts();
+        lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest" } };
+        const execute = vi.fn(() => ({ result: { ok: true, status: 0 }, redactionPaths: [] }));
+        const publish = vi.fn(ports.writeLab);
+        ports.executeGuestCommand = execute;
+        ports.writeLab = publish;
+        expect(createQemuGuestAccessApplication(ports).guestExec({ labId: "lab", command: "id" })).toEqual({
+            ok: false, error: "guest-ssh-command-unavailable", missing: ["ssh"], ownerId: "owner", labId: "lab",
+        });
+        expect(execute).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { name: "semantic refusal with exit zero", result: { ok: false, status: 0 } },
+        { name: "null result", result: null },
+        { name: "undefined result", result: undefined },
+    ])("does not publish guest-exec success for $name", ({ result }) => {
+        const { ports, lab } = accessPorts();
+        lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest" } };
+        ports.sshAvailable = () => true;
+        const execute = vi.fn(() => ({ result, redactionPaths: [] }));
+        const publish = vi.fn(ports.writeLab);
+        ports.executeGuestCommand = execute;
+        ports.writeLab = publish;
+        expect(createQemuGuestAccessApplication(ports).guestExec({ labId: "lab", command: "id", timeoutMs: 2500 })).toMatchObject({
+            ok: false, ownerId: "owner", labId: "lab", timeoutMs: 2500,
+        });
+        expect(execute).toHaveBeenCalledExactlyOnceWith(lab, "id", 2500);
+        expect(publish).not.toHaveBeenCalled();
+    });
+
+    it.each(["readiness", "agent"] as const)("records failed %s history after a semantic refusal with exit zero", (kind) => {
+        const { ports, lab } = accessPorts();
+        lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest", readinessCommand: "ready-only" }, agent: { name: "agent", healthCommand: "health-only" } };
+        ports.sshAvailable = () => true;
+        ports.executeGuestCommand = () => ({ result: { ok: false, status: 0 }, redactionPaths: [] });
+        const publish = vi.fn(ports.writeLab);
+        ports.writeLab = publish;
+        const application = createQemuGuestAccessApplication(ports);
+        const response = kind === "readiness" ? application.probeReadiness({ labId: "lab" }) : application.guestAgentStatus({ labId: "lab" });
+        expect(response).toMatchObject({ ok: false, [kind === "readiness" ? "readiness" : "status"]: { state: "failed" } });
+        expect(publish).toHaveBeenCalledTimes(1);
+        const written = publish.mock.calls[0][0];
+        const history = kind === "readiness" ? written.readiness?.history : written.guest?.agent?.statusHistory;
+        expect(history).toHaveLength(1);
+        expect(history?.[0]).toMatchObject({ state: "failed", checkedAt: "2026-10-11T00:00:00.000Z" });
+    });
+
+    it.each(["exec", "readiness", "agent"] as const)("propagates the identical native exception from %s without publishing", (kind) => {
+        const { ports, lab } = accessPorts();
+        lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest" }, agent: { name: "agent", healthCommand: "health-only" } };
+        ports.sshAvailable = () => true;
+        const failure = new Error("native SSH failed");
+        ports.executeGuestCommand = () => { throw failure; };
+        const publish = vi.fn(ports.writeLab);
+        ports.writeLab = publish;
+        const application = createQemuGuestAccessApplication(ports);
+        let caught: unknown;
+        try {
+            if (kind === "exec") application.guestExec({ labId: "lab", command: "id" });
+            else if (kind === "readiness") application.probeReadiness({ labId: "lab" });
+            else application.guestAgentStatus({ labId: "lab" });
+        } catch (error) { caught = error; }
+        expect(caught).toBe(failure);
+        expect(publish).not.toHaveBeenCalled();
     });
 });

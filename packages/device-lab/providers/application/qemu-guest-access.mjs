@@ -1,4 +1,4 @@
-import { publicLab, publicExecution, publicGuestExecResult, publicReadinessProbeResult, requireRunningLab, sshBaseArgs, sshDestination } from "../domain/qemu-lifecycle.mjs";
+import { publicLab, publicExecution, publicGuestExecResult, publicReadinessProbeResult, requireRunningLab } from "../domain/qemu-lifecycle.mjs";
 import { qemuCommandTimeout as boundedTimeout } from "../domain/qemu-image-disk-target.mjs";
 import { guestAccessTarget as targetForLab, sessionIdFor, sessionStateFor, publicSessionLab, publicSessionTarget, readinessStateFromProbe, combineReadinessProbes, validateGuestCommand } from "../domain/qemu-guest-access.mjs";
 /** @typedef {import('../domain/qemu-guest-access.mjs').QemuAccessLab} Lab */
@@ -11,8 +11,7 @@ export function createQemuGuestAccessApplication(ports) {
     function runSshReadinessProbe(lab) {
         const ssh = lab.guest?.ssh;
         if (!ssh) return null;
-        const sshPath = ports.sshPath();
-        if (!sshPath) {
+        if (!ports.sshAvailable()) {
             return {
                 ok: false,
                 ready: false,
@@ -20,8 +19,8 @@ export function createQemuGuestAccessApplication(ports) {
                 diagnostics: { kind: "ssh-guest-readiness", available: false },
             };
         }
-        const args = [...sshBaseArgs(ssh), sshDestination(ssh), ssh.readinessCommand || "true"];
-        const result = ports.executeSsh(sshPath, args, lab, ports.sshReadinessTimeoutMs() || 10000);
+        const execution = ports.executeGuestCommand(lab, ssh.readinessCommand || "true", ports.sshReadinessTimeoutMs() || 10000);
+        const result = execution.result;
         return {
             ok: result?.ok === true,
             ready: result?.ok === true,
@@ -43,8 +42,7 @@ export function createQemuGuestAccessApplication(ports) {
                 diagnostics: { kind: "guest-agent-readiness", available: false, agent: agent.name },
             };
         }
-        const sshPath = ports.sshPath();
-        if (!sshPath) {
+        if (!ports.sshAvailable()) {
             return {
                 ok: false,
                 ready: false,
@@ -52,13 +50,13 @@ export function createQemuGuestAccessApplication(ports) {
                 diagnostics: { kind: "guest-agent-readiness", available: false, agent: agent.name },
             };
         }
-        const args = [...sshBaseArgs(ssh), sshDestination(ssh), agent.healthCommand];
-        const result = ports.executeSsh(sshPath, args, lab, timeoutMs === undefined ? boundedTimeout(ports.guestAgentReadinessTimeoutMs() || ports.sshReadinessTimeoutMs() || 10000, 10000) : timeoutMs);
+        const execution = ports.executeGuestCommand(lab, agent.healthCommand, timeoutMs === undefined ? boundedTimeout(ports.guestAgentReadinessTimeoutMs() || ports.sshReadinessTimeoutMs() || 10000, 10000) : timeoutMs);
+        const result = execution.result;
         return {
             ok: result?.ok === true,
             ready: result?.ok === true,
             checks: [{ name: "guest-agent-readiness", status: result?.ok === true ? "pass" : "fail", agent: agent.name, exitStatus: result?.status ?? null }],
-            diagnostics: { kind: "guest-agent-readiness", available: true, agent: agent.name, result: publicGuestExecResult(result, lab, ssh, [sshPath, agent.healthCommand]) },
+            diagnostics: { kind: "guest-agent-readiness", available: true, agent: agent.name, result: publicGuestExecResult(result, lab, ssh, [...execution.redactionPaths, agent.healthCommand]) },
         };
     }
 
@@ -80,8 +78,7 @@ export function createQemuGuestAccessApplication(ports) {
         if (!ssh) {
             return { ...base, reason: "guest-ssh-not-configured" };
         }
-        const sshPath = ports.sshPath();
-        if (!sshPath) {
+        if (!ports.sshAvailable()) {
             return { ...base, reason: "guest-ssh-command-unavailable", missing: ["ssh"] };
         }
         return {
@@ -123,8 +120,7 @@ export function createQemuGuestAccessApplication(ports) {
         if (!ssh) {
             return { ...base, reason: "guest-ssh-not-configured" };
         }
-        const sshPath = ports.sshPath();
-        if (!sshPath) {
+        if (!ports.sshAvailable()) {
             return { ...base, reason: "guest-ssh-command-unavailable", missing: ["ssh"] };
         }
         return {
@@ -374,17 +370,16 @@ export function createQemuGuestAccessApplication(ports) {
         if (!command.ok) return command;
         const ssh = loaded.lab.guest?.ssh;
         if (!ssh) return { ok: false, error: "guest-exec-unavailable", reason: "guest-ssh-not-configured", ownerId: ports.ownerId(), labId: loaded.lab.id };
-        const sshPath = ports.sshPath();
-        if (!sshPath) return { ok: false, error: "guest-ssh-command-unavailable", missing: ["ssh"], ownerId: ports.ownerId(), labId: loaded.lab.id };
+        if (!ports.sshAvailable()) return { ok: false, error: "guest-ssh-command-unavailable", missing: ["ssh"], ownerId: ports.ownerId(), labId: loaded.lab.id };
         const timeoutMs = boundedTimeout(args.timeoutMs, 30000);
-        const sshArgs = [...sshBaseArgs(ssh), sshDestination(ssh), command.command];
-        const result = ports.executeSsh(sshPath, sshArgs, loaded.lab, timeoutMs);
+        const execution = ports.executeGuestCommand(loaded.lab, command.command, timeoutMs);
+        const result = execution.result;
         return {
             ok: result?.ok === true,
             ownerId: ports.ownerId(),
             labId: loaded.lab.id,
             timeoutMs,
-            result: publicGuestExecResult(result, loaded.lab, ssh, [sshPath, typeof result?.command === "string" ? result.command : undefined]),
+            result: publicGuestExecResult(result, loaded.lab, ssh, [...execution.redactionPaths, typeof result?.command === "string" ? result.command : undefined]),
         };
     }
     return { openSession, probeReadiness, inspectLab, guestAgentStatus, guestExec };

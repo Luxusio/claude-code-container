@@ -1,7 +1,7 @@
 import { qemuCommandTimeout } from "../domain/qemu-image-disk-target.mjs";
 import { publicLab } from "../domain/qemu-lifecycle.mjs";
 import { normalizeGuestTransferPolicy as normalizePolicy, withGuestTransferOperation } from "../domain/qemu-guest-transfer.mjs";
-import { ownedDataPath, snapshotName as parseSnapshotName, snapshotFlag } from "../domain/qemu-owned-data.mjs";
+import { ownedDataPath, snapshotName as parseSnapshotName } from "../domain/qemu-owned-data.mjs";
 /** @typedef {import('../ports/qemu-owned-data.mjs').QemuOwnedDataArguments} Args */
 /** @typedef {import('../domain/qemu-owned-data.mjs').QemuOwnedLab} Lab */
 /** @param {import('../ports/qemu-owned-data.mjs').QemuOwnedDataPorts} ports */
@@ -17,9 +17,8 @@ export function createQemuOwnedDataApplication(ports) {
         const disk = ports.diskPath(lab);
         if (!disk.ok) return disk;
         if (!ports.fileExists(disk.diskPath)) return { ok: true, diskSnapshot: false, reason: "disk-image-not-found" };
-        const command = ports.qemuImgPath();
-        if (!command) return { ok: true, diskSnapshot: false, reason: "qemu-img-unavailable" };
-        return ports.executeQemuImg(command, ["snapshot", snapshotFlag(action), name, disk.diskPath], lab, qemuCommandTimeout(ports.commandTimeoutMs(), 120000));
+        if (!ports.qemuImgAvailable()) return { ok: true, diskSnapshot: false, reason: "qemu-img-unavailable" };
+        return ports.executeSnapshot(action, name, disk.diskPath, lab, qemuCommandTimeout(ports.commandTimeoutMs(), 120000));
     }
     /** @param {Lab} lab @param {unknown} value @returns {{ok:true,sourcePath:string}|import('../ports/qemu-owned-data.mjs').QemuOwnedDataFailure} */
     function artifactSource(lab, value) {

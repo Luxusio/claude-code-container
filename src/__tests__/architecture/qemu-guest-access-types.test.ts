@@ -6,7 +6,7 @@ import type { QemuGuestAccessPorts } from "../../../packages/device-lab/provider
 export function requiredGuestAccessCapabilities(ports: QemuGuestAccessPorts): void {
     const application = createQemuGuestAccessApplication(ports);
     const execution = application.guestExec({ labId: "lab", command: "id", timeoutMs: 2500 });
-    const { executeSsh, ...missingSsh } = ports;
+    const { executeGuestCommand, ...missingSsh } = ports;
     // @ts-expect-error bounded SSH execution is required
     createQemuGuestAccessApplication(missingSsh);
     // @ts-expect-error synchronous readiness observations cannot return deferred results
@@ -14,8 +14,17 @@ export function requiredGuestAccessCapabilities(ports: QemuGuestAccessPorts): vo
     // @ts-expect-error guarded history publication must finish before returning
     createQemuGuestAccessApplication({ ...ports, writeLab: async () => undefined });
     // @ts-expect-error Guest commands require a settled synchronous SSH result.
-    createQemuGuestAccessApplication({ ...ports, executeSsh: async () => ({ ok: true, status: 0 }) });
-    void application; void executeSsh; void execution;
+    createQemuGuestAccessApplication({ ...ports, executeGuestCommand: async () => ({ result: { ok: true, status: 0 }, redactionPaths: [] }) });
+    // @ts-expect-error Native execution inside the settled envelope must also be synchronous.
+    createQemuGuestAccessApplication({ ...ports, executeGuestCommand: () => ({ result: Promise.resolve({ ok: true, status: 0 }), redactionPaths: [] }) });
+    // @ts-expect-error Availability is a semantic fact rather than a native executable path.
+    createQemuGuestAccessApplication({ ...ports, sshAvailable: () => "/usr/bin/ssh" });
+    const { sshAvailable, ...missingAvailability } = ports;
+    // @ts-expect-error Native SSH availability is a required bounded observation.
+    createQemuGuestAccessApplication(missingAvailability);
+    // @ts-expect-error Availability must settle before command admission and execution.
+    createQemuGuestAccessApplication({ ...ports, sshAvailable: async () => true });
+    void application; void executeGuestCommand; void execution; void sshAvailable;
 }
 
 describe("QEMU session ID admission", () => {

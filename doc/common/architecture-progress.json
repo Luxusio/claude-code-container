@@ -2991,6 +2991,22 @@
         "1c59917ba4a6589819882e4acf1bb5e13717bc48",
         "63663e2de10801746753d34d04d4a1a4b091dac4"
       ]
+    },
+    {
+      "id": "qemu-native-framing-recovery-current",
+      "taskId": "TASK__qemu-native-framing-recovery-20261014",
+      "coveredOperationIds": [],
+      "status": "CurrentMain3f90e3b2 compatible recovery implemented through seven existing products/five existing tests; generated-ID, private storage/runtime guards and core policy preserved. Current private build/eight stages and thirteen whole suites139PASS0FAIL1existingKVMskip; supported npm archive/Unix distribution smoke PASS. Independent Code/Security, current Windows/source+built route QA and local qualification pending; historical68cb112PASS retained separately. Zero new group/operation credit.",
+      "currentWork": {
+        "runId": "01a1396b-783c-7caf-a823-2982db9165dd",
+        "baseCommit": "3f90e3b237c8f7d6791a6f6c79175faaba39e899",
+        "stage": "implemented-coordinator-checked-awaiting-independent-review-and-native-qa",
+        "archivedCandidate": "68cb569db6be609c4fa79f2c4c438f91df9889d1",
+        "ownedProductFiles": 7,
+        "ownedTestFiles": 5,
+        "wholeQualificationFiles": 13,
+        "groupCompletionCredit": false
+      }
     }
   ],
   "currentSourceQualificationAudit": {

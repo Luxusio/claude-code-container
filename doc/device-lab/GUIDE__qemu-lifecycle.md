@@ -4,7 +4,7 @@ The [Linux VM facade](../../packages/device-lab/providers/backends/linux-vm.mjs)
 
 The [domain](../../packages/device-lab/providers/domain/qemu-lifecycle.mjs) owns validation, guest SSH/agent normalization and presentation. The application owns admission, metadata, launch/reuse, guest-agent preparation, stop classification and delete ordering. [Required ports](../../packages/device-lab/providers/ports/qemu-lifecycle.d.mts) expose finite observations/effects. Disk materialization remains a peer application service.
 
-Native adapters retain path/symlink/owner checks, atomic publication, process identity, guarded signals and SSH execution. A kill override is not identity or exit proof. Force-create must refuse a live or uncertain existing runtime. Stop must confirm exact process exit before clearing runtime metadata; delete must refuse uncertain settlement.
+Native adapters retain path/symlink/owner checks, atomic publication, process identity, guarded signals and SSH execution. A kill override is not identity or exit proof. Creation issues a fresh generated ID, rejects a caller-selected ID and refuses an assigned ID or lab/export residue collision regardless of `force`; a repeated display name creates a separate definition. It never replaces an existing runtime through force-create. Stop must confirm exact process exit before clearing runtime metadata; delete must refuse uncertain settlement.
 
 Launch can survive later publication/provisioning failure; provisioning failure can leave running state. Directory-removal failure can retain stopped metadata. Report those outcomes truthfully without stronger CAS/ABA claims. Guest-agent history retains its 50-entry bound.
 

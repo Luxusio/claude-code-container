@@ -4,7 +4,7 @@ import { createQemuOwnedDataApplication } from "../application/qemu-owned-data.m
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createQemuLifecycleApplication } from "../application/qemu-lifecycle.mjs";
-import { safeSshText as qemuLifecycleSafeSshText, guestSshInput as qemuLifecycleGuestSshInput, guestAgentInput as qemuLifecycleGuestAgentInput, validateGuestAgent as qemuLifecycleValidateGuestAgent, sshBaseArgs as qemuLifecycleSshBaseArgs, sshDestination as qemuLifecycleSshDestination, publicRuntime as qemuLifecyclePublicRuntime, publicGuest as qemuLifecyclePublicGuest, publicLab as qemuLifecyclePublicLab, publicMaterializedResult as qemuLifecyclePublicMaterializedResult, publicQemuArgs as qemuLifecyclePublicQemuArgs, publicExecution as qemuLifecyclePublicExecution, redactProviderString as qemuLifecycleRedactProviderString, publicReadinessProbeResult as qemuLifecyclePublicReadinessProbeResult, publicGuestExecResult } from "../domain/qemu-lifecycle.mjs";
+import { safeSshText as qemuLifecycleSafeSshText, guestSshInput as qemuLifecycleGuestSshInput, guestAgentInput as qemuLifecycleGuestAgentInput, validateGuestAgent as qemuLifecycleValidateGuestAgent, publicRuntime as qemuLifecyclePublicRuntime, publicGuest as qemuLifecyclePublicGuest, publicLab as qemuLifecyclePublicLab, publicMaterializedResult as qemuLifecyclePublicMaterializedResult, publicQemuArgs as qemuLifecyclePublicQemuArgs, publicExecution as qemuLifecyclePublicExecution, redactProviderString as qemuLifecycleRedactProviderString, publicReadinessProbeResult as qemuLifecyclePublicReadinessProbeResult, publicGuestExecResult } from "../domain/qemu-lifecycle.mjs";
 import { createQemuImageImportApplication } from "../application/qemu-image-import.mjs";
 import { createQemuImageDiskTargetApplication } from "../application/qemu-image-disk-target.mjs";
 import { inferQemuImageFormat, qemuCommandTimeout, qemuTargetForLab } from "../domain/qemu-image-disk-target.mjs";
@@ -460,14 +460,22 @@ function defaultSyncCommandRunner(command, args, runOptions = {}) {
 }
 
 function sshCommandPaths(env = process.env, options = {}) {
+    const sshPath = options.sshPath;
     return {
-        ssh: options.sshPath === null ? null : options.sshPath || commandPath("ssh", env),
+        ssh: sshPath === null ? null : sshPath || commandPath("ssh", env),
         scp: options.scpPath === null ? null : options.scpPath || commandPath("scp", env),
     };
 }
 
-function sshBaseArgs(ssh){
-    return qemuLifecycleSshBaseArgs(ssh);
+function sshBaseArgs(ssh) {
+    const args = [
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", `ConnectTimeout=${DEFAULT_SSH_CONNECT_TIMEOUT_SEC}`,
+        "-p", String(ssh.port || 22),
+    ];
+    if (ssh.keyPath) args.push("-i", ssh.keyPath);
+    return args;
 }
 
 function scpBaseArgs(ssh) {
@@ -481,8 +489,8 @@ function scpBaseArgs(ssh) {
     return args;
 }
 
-function sshDestination(ssh){
-    return qemuLifecycleSshDestination(ssh);
+function sshDestination(ssh) {
+    return `${ssh.user}@${ssh.host}`;
 }
 
 function sshSafeGuestPath(path) {
@@ -1130,13 +1138,13 @@ function qemuGuestTransferApplication(options = {}) {
     });
 }
 
-/** Bind native owner state, current process identity and bounded SSH effects.
+/** Bind native owner state, current process existence and bounded SSH effects.
  * @param {{
  *   env?:Record<string,string|undefined>, stateRoot?:string, ownerId?:string, now?:string,
  *   sshPath?:string|null, scpPath?:string|null, sshTimeoutMs?:number, guestAgentTimeoutMs?:number,
  *   processExists?:import('../ports/qemu-guest-access.mjs').QemuGuestAccessPorts['processExists'],
  *   readinessProbeRunner?:import('../ports/qemu-guest-access.mjs').QemuGuestAccessPorts['observeReadiness'],
- *   sshCommandRunner?:(command:string,args:(string|undefined)[],options:{cwd:string,env:Record<string,string|undefined>,timeoutMs:number})=>ReturnType<import('../ports/qemu-guest-access.mjs').QemuGuestAccessPorts['executeSsh']>
+ *   sshCommandRunner?:(command:string,args:(string|undefined)[],options:{cwd:string,env:Record<string,string|undefined>,timeoutMs:number})=>(import('../ports/qemu-lifecycle.mjs').QemuExecution & {then?:never}) | null | undefined
  * }} [options]
  */
 function qemuGuestAccessApplication(options = {}) {
@@ -1151,12 +1159,17 @@ function qemuGuestAccessApplication(options = {}) {
         writeLab: lab => { writeLab(ctx, lab); return undefined; },
         clock: () => nowIso(options),
         processExists: (pid, lab) => (options.processExists || defaultProcessExists)(pid, lab),
-        sshPath: () => sshCommandPaths(ctx.env, options).ssh,
-        executeSsh: (command, args, lab, timeoutMs) => sshRunner(options)(command, args, {
-            cwd: lab.paths.labDir,
-            env: ctx.env,
-            timeoutMs,
-        }),
+        sshAvailable: () => Boolean(sshCommandPaths(ctx.env, options).ssh),
+        executeGuestCommand: (lab, commandText, timeoutMs) => {
+            const command = sshCommandPaths(ctx.env, options).ssh;
+            const ssh = lab.guest?.ssh;
+            if (!command || !ssh) return { result: null, redactionPaths: [] };
+            const args = [...sshBaseArgs(ssh), sshDestination(ssh), commandText];
+            return {
+                result: sshRunner(options)(command, args, { cwd: lab.paths.labDir, env: ctx.env, timeoutMs }),
+                redactionPaths: [command],
+            };
+        },
         sshReadinessTimeoutMs: () => options.sshTimeoutMs,
         guestAgentReadinessTimeoutMs: () => options.guestAgentTimeoutMs,
         hasReadinessObservation: () => typeof options.readinessProbeRunner === "function",
@@ -1171,7 +1184,7 @@ function qemuGuestAccessApplication(options = {}) {
  *   env?:Record<string,string|undefined>, stateRoot?:string, ownerId?:string, now?:string,
  *   workspaceRoot?:string, allowedWorkspaceRoots?:string[], providerCommandTimeoutMs?:unknown,
  *   qemuPath?:string, qemuImgPath?:string, kvmPath?:string, kvmAvailable?:boolean,
- *   commandRunner?:(command:string,args:string[],options:{cwd:string,env:Record<string,string|undefined>,timeoutMs:number})=>ReturnType<import('../ports/qemu-owned-data.mjs').QemuOwnedDataPorts['executeQemuImg']>
+ *   commandRunner?:(command:string,args:string[],options:{cwd:string,env:Record<string,string|undefined>,timeoutMs:number})=>ReturnType<import('../ports/qemu-owned-data.mjs').QemuOwnedDataPorts['executeSnapshot']>
  * }} [options]
  */
 function qemuOwnedDataApplication(options = {}) {
@@ -1219,9 +1232,13 @@ function qemuOwnedDataApplication(options = {}) {
             return { ...result, ok: true };
         },
         fileExists: path => existsSync(path),
-        qemuImgPath: () => labProviderStatus(options).qemuImg,
+        qemuImgAvailable: () => Boolean(labProviderStatus(options).qemuImg),
         commandTimeoutMs: () => options.providerCommandTimeoutMs,
-        executeQemuImg: (command, args, lab, timeoutMs) => {
+        executeSnapshot: (action, name, diskPath, lab, timeoutMs) => {
+            const command = labProviderStatus(options).qemuImg;
+            if (!command) return { ok: false, status: null, stdout: "", stderr: "qemu-img-unavailable" };
+            const flag = action === "create" ? "-c" : action === "restore" ? "-a" : "-d";
+            const args = ["snapshot", flag, name, diskPath];
             /** @type {NonNullable<typeof options.commandRunner>} */
             const runner = options.commandRunner || ((command, args, runOptions) => {
                 const result = spawnSync(command, args, {

@@ -2400,6 +2400,64 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(readFileSync(join(createdLabDir, "lab.json"), "utf8")).toBe(beforeFailure);
     });
 
+    it.each([
+        { change: "replacement", nextSsh: "/fixture/ssh-current" },
+        { change: "disappearance", nextSsh: null },
+    ])("rediscovers SSH after availability observes a binary before $change", ({ nextSsh }) => {
+        const root = tempRoot();
+        const env = { CCC_PROFILE: "ssh-rediscovery", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready", PATH: "" };
+        const ownerRoot = join(root, "owners", ownerId(env));
+        mkdirSync(join(ownerRoot, "keys"), { recursive: true });
+        const keyPath = join(ownerRoot, "keys", "id_ed25519");
+        writeFileSync(keyPath, "private-key");
+        const created = createLab({
+            name: "SSH Rediscovery", guestSshHost: "127.0.0.1", guestSshPort: 2244,
+            guestSshUser: "ccc", guestSshKeyPath: keyPath,
+        }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        const lab = created.lab;
+        expect(startLab({ labId: lab.id }, {
+            env, stateRoot: root, qemuPath: "/fixture/qemu-system-x86_64", kvmAvailable: true,
+            commandRunner: () => ({ ok: true, pid: 6767 }),
+        }).ok).toBe(true);
+        const metadata = join(lab.paths.labDir, "lab.json");
+        const before = readFileSync(metadata);
+        const calls: Array<{ command: string; args: string[]; cwd: string; env: Record<string, string | undefined>; timeoutMs: number }> = [];
+        const options = {
+            env, stateRoot: root, scpPath: null,
+            sshCommandRunner: (command: string, args: string[], runOptions: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number }) => {
+                calls.push({ command, args, ...runOptions });
+                return { ok: true, status: 0, command, args,
+                    stdout: `used ${command} ${keyPath} ${lab.paths.labDir}`, stderr: `trace ${lab.paths.artifactsDir}` };
+            },
+        };
+        // Availability observes the old executable; execution must use the current configuration.
+        Object.defineProperty(options, "sshPath", { configurable: true, get() {
+            Object.defineProperty(options, "sshPath", { value: nextSsh });
+            return "/fixture/ssh-previous";
+        } });
+        const executed = guestExec({ labId: lab.id, command: "printf 'hello rediscovery'", timeoutMs: 4321 }, options);
+        expect(executed).toMatchObject({ ok: nextSsh !== null, labId: lab.id, timeoutMs: 4321 });
+        if (nextSsh === null) {
+            expect(calls).toEqual([]);
+        } else {
+            expect(calls).toEqual([{
+                command: nextSsh,
+                args: ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-p", "2244", "-i", keyPath, "ccc@127.0.0.1", "printf 'hello rediscovery'"],
+                cwd: lab.paths.labDir, env, timeoutMs: 4321,
+            }]);
+            assert.ok("result" in executed);
+            expect(executed.result).toEqual({ ok: true, status: 0,
+                stdout: "used <provider-internal> <provider-internal> <provider-internal>", stderr: "trace <provider-internal>" });
+            const publicResult = JSON.stringify(executed);
+            for (const privateValue of [nextSsh, keyPath, lab.paths.labDir, lab.paths.artifactsDir, "printf 'hello rediscovery'"]) {
+                expect(publicResult).not.toContain(privateValue);
+            }
+            expect(executed.result).not.toHaveProperty("args");
+        }
+        expect(readFileSync(metadata)).toEqual(before);
+    });
+
     it("rejects guest exec when lab state or SSH prerequisites are not available", () => {
         const root = tempRoot();
         const env = {
@@ -2942,6 +3000,47 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             ["snapshot", "-a", "clean-base"],
             ["snapshot", "-d", "clean-base"],
         ]);
+    });
+
+    it.each([
+        { change: "replacement", nextQemuImg: "/fixture/qemu-img-current" },
+        { change: "disappearance", nextQemuImg: null },
+    ])("rediscovers qemu-img after availability observes a binary before $change", ({ nextQemuImg }) => {
+        const root = tempRoot();
+        const env = { CCC_PROFILE: "snapshot-rediscovery", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready", PATH: "" };
+        const created = createLab({ name: "Snapshot Rediscovery" }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        const lab = created.lab;
+        writeFileSync(lab.image.diskImage, "disk");
+        const metadata = join(lab.paths.labDir, "lab.json");
+        const before = readFileSync(metadata);
+        const calls: Array<{ command: string; args: string[]; cwd: string; env: Record<string, string | undefined>; timeoutMs: number }> = [];
+        const options = {
+            env, stateRoot: root, qemuPath: "/fixture/qemu-system-x86_64", kvmAvailable: true,
+            providerCommandTimeoutMs: 7654,
+            commandRunner: (command: string, args: string[], runOptions: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number }) => {
+                calls.push({ command, args, ...runOptions });
+                return { ok: true, status: 0, command, args, stdout: "snapshot complete", stderr: "" };
+            },
+        };
+        // A null replacement falls back to discovery; the isolated PATH contains no candidate.
+        Object.defineProperty(options, "qemuImgPath", { configurable: true, get() {
+            Object.defineProperty(options, "qemuImgPath", { value: nextQemuImg });
+            return "/fixture/qemu-img-previous";
+        } });
+        const snapshot = snapshotLab("create", { labId: lab.id, snapshotName: "Current Binary" }, options);
+        if (nextQemuImg === null) {
+            expect(snapshot).toMatchObject({ ok: false, error: "qemu-img-snapshot-failed" });
+            expect(calls).toEqual([]);
+            expect(readFileSync(metadata)).toEqual(before);
+        } else {
+            const args = ["snapshot", "-c", "current-binary", lab.image.diskImage];
+            expect(calls).toEqual([{ command: nextQemuImg, args, cwd: lab.paths.labDir, env, timeoutMs: 7654 }]);
+            expect(snapshot).toMatchObject({ ok: true, snapshotName: "current-binary", action: "create",
+                lab: { snapshots: [{ name: "current-binary", diskSnapshot: true }] } });
+            assert.ok("disk" in snapshot);
+            expect(snapshot.disk).toEqual({ ok: true, status: 0, command: nextQemuImg, args, stdout: "snapshot complete", stderr: "" });
+        }
     });
 
     it("keeps snapshot metadata unchanged after a failed native snapshot command", () => {
