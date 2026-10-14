@@ -19,3 +19,7 @@ Existing-session reuse requires successful status and session inspection and rem
 Session deletion without a session is a no-op. Failed deletion preserves session metadata, and successful deletion retains managed server fields. Record and clear refuse replacement of a live managed runtime. HTTP requests retain their allowlist, body and response limits, redirect refusal, and deadline behavior.
 
 Verification uses ordinary application ports and the existing authenticated broker, HTTP, install, lease, and process fixtures. Controlled fixtures prove policy and native admission behavior; they do not certify a live Appium installation or a real connected device. Fresh strict compilation, affected tests, build, and package checks are coordinated separately before delivery.
+
+Instrumentation classification reads failed creation responses only. A successful response supplies its session ID before any outward serialization; publication or exact-session compensation retains cleanup authority when outward serialization fails.
+
+Verification distinguishes authenticated internal broker API creation/request/deletion from the advertised MCP mobile operations. The public ui fixture checks its detailed upstream request receipt over real MCP stdio; no Appium session-management tools are added to the catalog.

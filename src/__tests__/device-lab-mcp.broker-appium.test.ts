@@ -113,7 +113,7 @@ describe("device-lab MCP broker Appium routing", () => {
         await cleanupDeviceLabMcpTestContext(context);
     }, TIMEOUT);
 
-    it("routes Appium session record, status, list, and clear through an explicit host broker", { timeout: TIMEOUT }, async () => {
+    it("routes Appium session management through the authenticated internal broker API", { timeout: TIMEOUT }, async () => {
         const server = createDeviceBrokerServer({
             cwd: repoRoot,
             host: "127.0.0.1",
@@ -442,11 +442,11 @@ describe("device-lab MCP broker Appium routing", () => {
             };
             const dump = await client.callTool({
                 name: "ui",
-                arguments: baseArgs,
+                arguments: { ...baseArgs, detail: true },
             });
             expect(dump.isError).not.toBe(true);
             const dumpPayload = JSON.parse(((dump.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-                broker?: { selected?: { timeoutMs?: number } };
+                broker?: { selected?: { timeoutMs?: number }; result?: { response?: unknown } };
             };
             expect(dumpPayload).toEqual(expect.objectContaining({
                 provider: "broker-appium",
@@ -458,6 +458,9 @@ describe("device-lab MCP broker Appium routing", () => {
                 }),
             }));
             expect(dumpPayload.broker?.selected?.timeoutMs).toBe(750);
+            expect(dumpPayload.broker?.result?.response).toEqual({
+                ok: true, status: 200, body: { value: "<App><Text>Welcome</Text></App>" },
+            });
 
             const tap = await client.callTool({
                 name: "click",

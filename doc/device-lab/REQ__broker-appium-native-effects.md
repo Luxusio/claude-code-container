@@ -22,7 +22,7 @@ The native adapter owns `/status`, `/session`, session-ID encoding, HTTP methods
 It omits bodies on GET and uses the existing verified, bounded transport, including URL, redirect, stream, and response-body guards.
 It derives readiness by rejecting only an upstream literal `false`; absent or null readiness retains compatibility.
 A nested string `value.sessionId` takes precedence over a top-level string `sessionId`, including when the nested string is empty.
-Instrumentation-initialization errors are interpreted natively and exposed as the creation flag.
+Instrumentation-initialization errors are interpreted natively for failed creations and exposed as the creation flag. Successful creation returns a false flag without serializing its response body before session publication or compensation.
 Listener, provenance, process-generation, and endpoint verification remain prerequisites for dispatch.
 
 ## Application decisions
@@ -40,5 +40,5 @@ Request deadlines start after RPC queue admission and cover lock waiting, lease 
 Opaque native receipts preserve genuine upstream HTTP status and body for the broker converter.
 The converter independently unwraps response, readiness, rollback, status, session, deletion, and request evidence into existing wire envelopes.
 Termination evidence is decoded separately from HTTP evidence; the application never imports native receipt classes.
-Type checks prove the finite signatures and reject native evidence access; application, native, and authenticated MCP fixtures qualify behavior.
+Type checks prove the finite signatures and reject native evidence access. Authenticated broker HTTP/private-client fixtures pin creation, request, and deletion evidence. Existing public MCP mobile fixtures pin the detailed ui request receipt and source output across the actual stdio wire; session-management tools are not advertised.
 Fresh compilation and Linux/native Windows QA are coordinated on the combined current source; archived checks are not current qualification.

@@ -9553,7 +9553,7 @@ function brokerAppiumApplication(normalized: NormalizedBrokerOptions) {
             const body = response.body as {value?: {sessionId?: unknown}; sessionId?: unknown} | null;
             const sessionId = typeof body?.value?.sessionId === "string" ? body.value.sessionId
                 : typeof body?.sessionId === "string" ? body.sessionId : null;
-            const text = JSON.stringify(response.body || {}).toLowerCase();
+            const text = response.ok ? "" : JSON.stringify(response.body || {}).toLowerCase();
             return {ok: response.ok, sessionId, instrumentationInitializationFailed: text.includes("instrumentation process cannot be initialized")
                 || text.includes("uiautomator2 server cannot be started"), receipt: new NativeAppiumResponseReceipt(response)};
         },
