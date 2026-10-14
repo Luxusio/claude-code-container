@@ -1,14 +1,22 @@
 export type InstallerRuntime = "docker" | "podman";
-export interface InstallerBuildResult {
-    status: number | null;
-    signal?: string | null;
-    error?: Error;
-    then?: never;
-}
+export type InstallerBuildResult =
+    | { status: "ready"; then?: never }
+    | { status: "failed"; cause: unknown; then?: never };
+export type InstallerEvent =
+    | { kind: "building" | "runtime-unavailable" | "image-built" | "path-present" | "path-added" | "path-removed" | "cli-installed" | "image-ready" | "image-partial-success" | "not-installed" }
+    | { kind: "runtime-selected"; runtime: InstallerRuntime }
+    | { kind: "image-current"; hash: string }
+    | { kind: "image-rebuilding"; runtime: InstallerRuntime; previousHash: string | null; hash: string }
+    | { kind: "image-build-failed"; runtime: InstallerRuntime; cause: unknown }
+    | { kind: "path-directory-missing"; installDir: string }
+    | { kind: "path-read-failed" | "path-write-failed"; installDir: string; cause: unknown }
+    | { kind: "path-too-long"; installDir: string; length: number; limit: number }
+    | { kind: "installed" | "removed"; path: string }
+    | { kind: "permission-denied"; operation: "install" | "uninstall" }
+    | { kind: "image-skipped"; reason: string };
 export interface InstallerPorts {
     platform(): "windows" | "unix";
     sourceRoot(): string;
-    sourceEntry(): string;
     installDirectory(): string;
     runtimeOverride(): string | undefined;
     githubTokenConfigured(): boolean;
@@ -20,20 +28,18 @@ export interface InstallerPorts {
     resolvePath(path: string): string;
     joinPath(...parts: string[]): string;
     parentPath(path: string): string;
-    fileUrl(path: string): string;
     exists(path: string): boolean;
     isSymlink(path: string): boolean;
     removeFile(path: string): undefined;
     removeDirectory(path: string, force: boolean): undefined;
     ensureDirectory(path: string): undefined;
     copy(source: string, destination: string, recursive: boolean): undefined;
-    readPackage(path: string): { version?: unknown; imports?: unknown };
-    writeText(path: string, content: string): undefined;
-    setMode(path: string, mode: number): undefined;
+    writeUnixPackage(sourceRoot: string, targetDir: string): undefined;
+    unixWrapperContent(targetDir: string): string;
+    writeUnixLauncher(path: string, targetDir: string): undefined;
+    writeWindowsLauncher(path: string): undefined;
     readUserPath(): string;
     writeUserPath(value: string): undefined;
-    log(message: string): undefined;
-    warn(message: string, detail: unknown): undefined;
-    error(message: string, detail?: unknown): undefined;
+    present(event: InstallerEvent): undefined;
     terminate(code: number): never;
 }

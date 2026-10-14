@@ -144,6 +144,50 @@ describe("remote native observations and effects", () => {
         }
     });
 
+    it.each([0, -1, 0.999])("does not dispatch Mutagen when the remaining %s ms cannot fund a process", remainingMs => {
+        const ports = createNativeRemoteServicesPorts();
+        native.sync.mockReturnValue(execution(0, "Status: Watching\n"));
+        expect(ports.observeSync("ccc-sync", containerId, remainingMs)).toEqual({ kind: "unavailable" });
+        expect(native.sync).not.toHaveBeenCalled();
+    });
+
+    it("bounds the native query to usable whole milliseconds without changing its endpoint facts", () => {
+        const ports = createNativeRemoteServicesPorts();
+        native.sync.mockReturnValue(execution(0, `URL: docker://${containerId}/project/id\nStatus: Watching for changes\n`));
+        const observation = ports.observeSync("ccc-sync", containerId, 4321.9);
+        expect(observation).toMatchObject({ kind: "observed", endpointMatches: true, watching: true, failed: false });
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 4321 });
+        expect(ports.observeSync("ccc-sync", undefined, 1)).toMatchObject({ kind: "observed", endpointMatches: false, watching: true });
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 1 });
+        ports.observeSync("ccc-sync", containerId);
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8" });
+    });
+
+    it("retains unavailable and raw-fault outcomes from a bounded native query", () => {
+        const ports = createNativeRemoteServicesPorts();
+        for (const result of [execution(0, "Status: Watching\n", Error("timed out")), execution(7, "Status: Watching\n"), execution(null)]) {
+            native.sync.mockReturnValue(result);
+            expect(ports.observeSync("ccc-sync", containerId, 321)).toEqual({ kind: "unavailable" });
+            expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 321 });
+        }
+        const fault = Error("native query threw");
+        native.sync.mockImplementation(() => { throw fault; });
+        expect(() => ports.observeSync("ccc-sync", containerId, 321)).toThrow(fault);
+    });
+
+    it("reads its monotonic clock independently of changes to the calendar clock", () => {
+        let monotonic = 123.25; let calendar = 10_000;
+        vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+        vi.spyOn(Date, "now").mockImplementation(() => calendar);
+        const ports = createNativeRemoteServicesPorts();
+        expect(Date.now()).toBe(10_000);
+        expect(ports.now()).toBe(123.25);
+        monotonic = 124.5; calendar = -50_000;
+        expect(Date.now()).toBe(-50_000);
+        expect(ports.now()).toBe(124.5);
+        expect(native.sync).not.toHaveBeenCalled();
+    });
+
     it("creates the exact-ID sync by status while checking resume and stale termination errors", () => {
         const ports = createNativeRemoteServicesPorts();
         for (const result of [execution(0), execution(0, "", Error("returned")), execution(1), execution(null)]) {

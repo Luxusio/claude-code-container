@@ -34,15 +34,7 @@ export function splitUserPath(value) {
 export function isPackagedInstall(root, platform) {
     return root.includes(`node_modules${platform === "windows" ? "\\" : "/"}`);
 }
-/** @param {{version?:unknown,imports?:unknown}} source */
-export function unixPackageContent(source) {
-    return JSON.stringify({ type: "module", version: source.version, imports: source.imports }, null, 2);
-}
-/** @param {unknown} error @param {"message"|"code"} field */
-export function errorField(error, field) {
-    if (error && typeof error === "object") {
-        if (field === "message" && "message" in error) return error.message;
-        if (field === "code" && "code" in error) return error.code;
-    }
-    return undefined;
+/** @param {unknown} error */
+export function errorCode(error) {
+    return error && typeof error === "object" && "code" in error ? error.code : undefined;
 }

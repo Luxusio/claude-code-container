@@ -71,21 +71,26 @@ class NativeBootstrapPorts(CodexBootstrapPorts):
     def installation_workspace(self):
         return tempfile.TemporaryDirectory(prefix="ccc-codex-harness-")
 
-    @property
-    def run_command(self):
-        return run
+    def initialize_repository(self, temp):
+        run(["git", "init", "--quiet", temp], temp)
 
-    def installer_interpreter(self):
+    def fetch_pinned_revision(self, temp):
+        run(["git", "-c", "credential.helper=", "fetch", "--quiet", "--depth=1", SOURCE, REVISION], temp)
+
+    def fetched_revision(self, temp):
+        return run(["git", "rev-parse", "FETCH_HEAD"], temp)
+
+    def checkout_fetched_revision(self, temp):
+        run(["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"], temp)
+
+    def install_codex(self, temp):
         # The installer resolves this path into future hook/MCP registrations.
         # Use the image's Python rather than a replaceable Mise patch release.
-        return "/usr/bin/python3"
+        run(["/usr/bin/python3", str(Path(temp) / "install.py"), "--codex-only"], Path.home())
 
     def restore_interpreter(self, version):
         print(f"[ccc] Restoring Harness Python {version}...", flush=True)
         run([str(Path.home() / ".local/bin/mise"), "install", f"python@{version}"], Path.home())
-
-    def installer_path(self, temp):
-        return str(Path(temp) / "install.py")
 
     def installer_home(self):
         return Path.home()

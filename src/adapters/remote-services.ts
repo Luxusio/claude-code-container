@@ -219,8 +219,10 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
             const result = spawnSync("ssh", [`${request.config.user}@${request.config.host}`, command], { encoding: "utf-8" });
             return result.error || result.status !== 0 ? { ok: false, evidence: { execution: result } } : { ok: true };
         },
-        observeSync: (name, expectedContainerId) => {
-            const result = spawnSync("mutagen", ["sync", "list", name], { encoding: "utf-8" });
+        observeSync: (name, expectedContainerId, remainingMs) => {
+            const timeout = remainingMs === undefined ? undefined : Math.floor(remainingMs);
+            if (timeout !== undefined && !(timeout > 0)) return { kind: "unavailable" };
+            const result = spawnSync("mutagen", ["sync", "list", name], { encoding: "utf-8", ...(timeout === undefined ? {} : { timeout }) });
             if (result.error || result.status !== 0) return { kind: "unavailable" };
             const output = result.stdout ?? "";
             const syncStatus = parseMutagenSyncStatus(output);
@@ -291,6 +293,6 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
                 kill: signal => child.kill(signal),
             };
         },
-        now: () => Date.now(), sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+        now: () => performance.now(), sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
     };
 }

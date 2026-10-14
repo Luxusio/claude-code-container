@@ -2113,6 +2113,10 @@ describe("device-lab host broker physical attach and CLI", () => {
             host: "127.0.0.1",
             port: 17373,
         });
+        expect(parseBrokerServeArgs(["--host", "0.0.0.0", "--port", "19001", "--runtime-managed-by-parent"])).toEqual({
+            host: "0.0.0.0",
+            port: 19001,
+        });
 
         const listen = vi.fn((_port: number, _host: string, callback: () => void) => {
             callback();
@@ -2131,7 +2135,83 @@ describe("device-lab host broker physical attach and CLI", () => {
         }));
         expect(listen).toHaveBeenCalledWith(19001, "0.0.0.0", expect.any(Function));
         expect(log).toHaveBeenCalledWith("ccc-device-broker listening on http://0.0.0.0:19001");
+        expect(JSON.parse(readFileSync(join(homedir(), ".ccc", "devices", "broker", "runtime.json"), "utf8")))
+            .toEqual(expect.objectContaining({ managedBy: "ccc-host", pid: process.pid, host: "0.0.0.0", port: 19001 }));
     });
+
+    it.each((["source", "built"] as const).flatMap(entry =>
+        (["standalone", "absent", "parent", "successor"] as const).map(metadata => ({ entry, metadata })),
+    ))("actual $entry broker entry preserves $metadata runtime publication", async ({ entry, metadata }) => {
+        const port = await freePort();
+        const runtimeFile = join(homedir(), ".ccc", "devices", "broker", "runtime.json");
+        const parent = { name: "ccc-device-broker", managedBy: "device-lab-mcp", ownerId: "1111111111111111",
+            pid: process.pid, port, host: "127.0.0.1", processStartToken: "parent-generation", startedAt: "parent-start" };
+        const parentBytes = JSON.stringify(parent, null, 2) + "\n";
+        if (metadata === "parent" || metadata === "successor") {
+            mkdirSync(join(homedir(), ".ccc", "devices", "broker"), { recursive: true });
+            writeFileSync(runtimeFile, parentBytes, { mode: 0o600 });
+        }
+        // Gate only entry admission. The actual source/built serve implementation,
+        // listen callback, filesystem and runtime publisher remain unmodified.
+        const gate = join(fixtureHome!, "broker-entry-admission.mjs");
+        writeFileSync(gate, `await new Promise(resolve => {
+process.once('message', message => { if (message === 'continue-entry') resolve(); });
+process.send('entry-waiting');
+});`);
+        const brokerEntry = join(process.cwd(), "packages", "device-lab", entry === "source" ? "src" : "dist",
+            entry === "source" ? "broker-entry.ts" : "broker-entry.js");
+        const child = spawn(process.execPath, [
+            "--import", pathToFileURL(gate).href,
+            ...(entry === "source" ? ["--import", pathToFileURL(join(process.cwd(), "node_modules/tsx/dist/loader.mjs")).href] : []),
+            brokerEntry, "devices", "broker", "serve", "--host", "127.0.0.1", "--port", String(port),
+            ...(metadata === "standalone" ? [] : ["--runtime-managed-by-parent"]),
+        ], { cwd: fixtureHome, env: { ...process.env }, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+        let stderr = "";
+        let closed = false;
+        child.stderr?.on("data", chunk => { stderr = (stderr + chunk.toString()).slice(-8192); });
+        child.stdout?.resume();
+        const childClosed = new Promise<void>(resolve => child.once("close", () => { closed = true; resolve(); }));
+        const admitted = new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`Broker entry admission timed out: ${stderr}`)), 8000);
+            child.once("message", message => {
+                clearTimeout(timer);
+                if (message === "entry-waiting") resolve();
+                else reject(new Error(`Unexpected broker entry admission: ${String(message)}`));
+            });
+            child.once("error", error => { clearTimeout(timer); reject(error); });
+            child.once("close", code => { clearTimeout(timer); reject(new Error(`Broker entry closed before admission: ${code}; ${stderr}`)); });
+        });
+        let expectedBytes = parentBytes;
+        try {
+            await admitted;
+            if (metadata === "successor") {
+                expect(readFileSync(runtimeFile, "utf8")).toBe(parentBytes);
+                expectedBytes = JSON.stringify({ ...parent, pid: 42, processStartToken: "successor-generation", startedAt: "successor-start" }, null, 2) + "\n";
+                writeFileSync(runtimeFile, expectedBytes);
+            }
+            child.send("continue-entry");
+            expect(await waitForBrokerHealth(port, 8000, () => closed), stderr).toBe(true);
+            if (metadata === "standalone") {
+                expect(JSON.parse(readFileSync(runtimeFile, "utf8"))).toEqual(expect.objectContaining({
+                    managedBy: "ccc-host", pid: child.pid, host: "127.0.0.1", port,
+                }));
+            } else if (metadata === "absent") {
+                expect(existsSync(runtimeFile)).toBe(false);
+            } else {
+                expect(readFileSync(runtimeFile, "utf8")).toBe(expectedBytes);
+            }
+            expect(child.exitCode).toBeNull();
+        } finally {
+            if (!closed) child.kill("SIGTERM");
+            const forceTimer = setTimeout(() => { if (!closed) child.kill("SIGKILL"); }, 1000);
+            let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([childClosed, new Promise<never>((_resolve, reject) => {
+                    deadlineTimer = setTimeout(() => reject(new Error("Actual broker entry child did not close")), 3000);
+                })]);
+            } finally { clearTimeout(forceTimer); clearTimeout(deadlineTimer); }
+        }
+    }, 20000);
 
     it("keeps top-level ccc devices broker serve alive instead of exiting after dispatch", async () => {
         const port = await freePort();

@@ -3,7 +3,7 @@ import { posix, resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInstallerApplication } from "../../../scripts/install/application.mjs";
 import { unixWrapperContent } from "../../../scripts/install.js";
-import type { InstallerPorts } from "../../../scripts/install/ports.mjs";
+import type { InstallerEvent, InstallerPorts } from "../../../scripts/install/ports.mjs";
 
 function nativeLeaves(platform: "unix" | "windows" = "unix") {
     const paths = platform === "windows" ? win32 : posix;
@@ -14,33 +14,36 @@ function nativeLeaves(platform: "unix" | "windows" = "unix") {
         [paths.join(installDirectory, "ccc-dist", "previous"), "previous payload"],
     ] : []);
     const directories = new Set([sourceRoot, installDirectory]);
-    const output: string[] = [];
+    const events: InstallerEvent[] = [];
+    const mutations: string[] = [];
     let userPath = "C:\\Tools";
     const ports: InstallerPorts = {
         platform: () => platform, sourceRoot: () => sourceRoot,
-        sourceEntry: () => paths.join(sourceRoot, "dist", "index.js"), installDirectory: () => installDirectory,
+        installDirectory: () => installDirectory,
         runtimeOverride: () => undefined, githubTokenConfigured: () => false,
         sourceBuild: () => undefined, contentHash: () => "current-content",
         runtimeAvailable: () => false, imageLabel: () => null,
-        buildContainer: () => ({ status: 0 }),
+        buildContainer: () => ({ status: "ready" }),
         resolvePath: value => paths.resolve(value), joinPath: (...parts) => paths.join(...parts),
-        parentPath: value => paths.dirname(value), fileUrl: value => pathToFileURL(value).href,
+        parentPath: value => paths.dirname(value),
         exists: value => directories.has(value) || files.has(value), isSymlink: () => false,
-        removeFile: value => { files.delete(value); },
+        removeFile: value => { mutations.push(`remove-file:${value}`); files.delete(value); },
         removeDirectory: value => {
+            mutations.push(`remove-directory:${value}`);
             for (const file of files.keys()) if (file === value || file.startsWith(value + paths.sep)) files.delete(file);
             directories.delete(value);
         },
-        ensureDirectory: value => { directories.add(value); },
-        copy: (_source, destination) => { files.set(destination, "copied payload"); },
-        readPackage: () => ({ version: "1.0.0", imports: { "#fixture": "./dist/index.js" } }),
-        writeText: (value, content) => { files.set(value, content); }, setMode: () => undefined,
-        readUserPath: () => userPath, writeUserPath: value => { userPath = value; },
-        log: message => { output.push(message); }, warn: (message, detail) => { output.push(`${message} ${detail}`); },
-        error: (message, detail) => { output.push(`${message}${detail === undefined ? "" : " " + detail}`); },
+        ensureDirectory: value => { mutations.push(`ensure-directory:${value}`); directories.add(value); },
+        copy: (_source, destination) => { mutations.push(`copy:${destination}`); files.set(destination, "copied payload"); },
+        writeUnixPackage: (_source, target) => { mutations.push(`package:${target}`); files.set(paths.join(target, "package.json"), "native package bytes"); },
+        unixWrapperContent: () => "native Unix launcher bytes",
+        writeUnixLauncher: (value, target) => { mutations.push(`unix-launcher:${target}`); files.set(value, "native Unix launcher bytes"); },
+        writeWindowsLauncher: value => { mutations.push(`windows-launcher:${value}`); files.set(value, "native Windows launcher bytes"); },
+        readUserPath: () => userPath, writeUserPath: value => { mutations.push("write-user-path"); userPath = value; },
+        present: event => { events.push(event); },
         terminate: code => { throw new Error(`terminated ${code}`); },
     };
-    return { ports, files, output, paths, sourceRoot, installDirectory,
+    return { ports, files, events, mutations, paths, sourceRoot, installDirectory,
         userPath: () => userPath, setUserPath: (value: string) => { userPath = value; } };
 }
 
@@ -59,8 +62,8 @@ describe("installer application decisions", () => {
         expect(buildCalls).toBe(1);
         expect(f.files).toEqual(previousFiles);
         expect(f.userPath()).toBe(previousPath);
-        expect(f.output).not.toContain("\nCLI installed. Run 'ccc --help' to verify.");
-        expect(f.output.some(line => line.startsWith("Build skipped:"))).toBe(false);
+        expect(f.mutations).toEqual([]);
+        expect(f.events).toEqual([{ kind: "building" }]);
     });
 
     it.each(["unix", "windows"] as const)("skips the source build for packaged postinstall on %s", platform => {
@@ -72,7 +75,8 @@ describe("installer application decisions", () => {
         createInstallerApplication(f.ports).postinstall();
         expect(f.files).toEqual(previousFiles);
         expect(f.userPath()).toBe(previousPath);
-        expect(f.output).toEqual([]);
+        expect(f.events).toEqual([]);
+        expect(f.mutations).toEqual([]);
     });
 
     it("keeps the real native facade's Unix wrapper connected to the selected payload URL", () => {
@@ -86,8 +90,8 @@ describe("installer application decisions", () => {
         f.ports.writeUserPath = () => { throw new Error("existing User PATH must not be rewritten"); };
         createInstallerApplication(f.ports).install({ skipImage: true });
         expect(f.userPath()).toBe(" C:\\Tools ; c:\\ccc\\ ;D:\\Apps");
-        expect(f.output).toContain("Already on User PATH.");
-        expect(f.files.get("C:\\CCC\\ccc.cmd")).toBe('@echo off\r\nnode "C:\\source\\dist\\index.js" %*\r\n');
+        expect(f.events).toContainEqual({ kind: "path-present" });
+        expect(f.files.get("C:\\CCC\\ccc.cmd")).toBe("native Windows launcher bytes");
     });
 
     it("adds and removes only this install directory from User PATH", () => {
@@ -103,19 +107,21 @@ describe("installer application decisions", () => {
 
     it.each(["READ_ERROR", "WRITE_ERROR", "PATH_TOO_LONG"])("keeps the Windows CLI usable when User PATH update reports %s", reason => {
         const f = nativeLeaves("windows");
-        if (reason === "READ_ERROR") f.ports.readUserPath = () => { throw new Error("User PATH read denied"); };
-        if (reason === "WRITE_ERROR") f.ports.writeUserPath = () => { throw new Error("User PATH write denied"); };
+        const failure = new Error(reason === "READ_ERROR" ? "User PATH read denied" : "User PATH write denied");
+        if (reason === "READ_ERROR") f.ports.readUserPath = () => { throw failure; };
+        if (reason === "WRITE_ERROR") f.ports.writeUserPath = () => { throw failure; };
         if (reason === "PATH_TOO_LONG") f.setUserPath("x".repeat(32767 - 1 - f.installDirectory.length));
         const original = f.userPath();
         createInstallerApplication(f.ports).install({ skipImage: true });
         expect(f.files.has("C:\\CCC\\ccc.cmd")).toBe(true);
         expect(f.userPath()).toBe(original);
-        expect(f.output.some(line => line.startsWith(`PATH update skipped (${reason}):`))).toBe(true);
-        if (reason === "READ_ERROR") expect(f.output).toContain("PATH update skipped (READ_ERROR): User PATH read denied");
-        if (reason === "WRITE_ERROR") expect(f.output).toContain("PATH update skipped (WRITE_ERROR): User PATH write denied");
-        if (reason === "PATH_TOO_LONG") expect(f.output).toContain("PATH update skipped (PATH_TOO_LONG): 32767 >= 32767");
-        expect(f.output).toContain("Add it manually in PowerShell:");
-        expect(f.output).toContain("\nCLI installed. Run 'ccc --help' to verify.");
+        if (reason === "READ_ERROR" || reason === "WRITE_ERROR") {
+            const event = f.events.find(event => event.kind === (reason === "READ_ERROR" ? "path-read-failed" : "path-write-failed"));
+            expect(event).toEqual({ kind: reason === "READ_ERROR" ? "path-read-failed" : "path-write-failed", installDir: f.installDirectory, cause: failure });
+            expect(event && "cause" in event ? event.cause : undefined).toBe(failure);
+        }
+        if (reason === "PATH_TOO_LONG") expect(f.events).toContainEqual({ kind: "path-too-long", installDir: f.installDirectory, length: 32767, limit: 32767 });
+        expect(f.events).toContainEqual({ kind: "cli-installed" });
     });
 
     it("accepts the matching legacy image label without rebuilding", () => {
@@ -125,7 +131,7 @@ describe("installer application decisions", () => {
         f.ports.imageLabel = (_runtime, label) => label === "dockerfile.hash" ? "current-content" : null;
         f.ports.buildContainer = () => { throw new Error("matching cached image must not rebuild"); };
         expect(createInstallerApplication(f.ports).buildImage()).toEqual({ status: "ready" });
-        expect(f.output).toContain("Container image up to date (hash: current-content)");
+        expect(f.events).toContainEqual({ kind: "image-current", hash: "current-content" });
     });
 
     it("falls back from an invalid override and passes only the secret-presence decision to the build", () => {
@@ -134,7 +140,7 @@ describe("installer application decisions", () => {
         f.ports.runtimeAvailable = runtime => runtime === "docker";
         f.ports.githubTokenConfigured = () => true;
         let build: { runtime: string; hash: string; includeSecret: boolean } | undefined;
-        f.ports.buildContainer = (runtime, hash, includeSecret) => { build = { runtime, hash, includeSecret }; return { status: 0 }; };
+        f.ports.buildContainer = (runtime, hash, includeSecret) => { build = { runtime, hash, includeSecret }; return { status: "ready" }; };
         expect(createInstallerApplication(f.ports).buildImage()).toEqual({ status: "ready" });
         expect(build).toEqual({ runtime: "docker", hash: "current-content", includeSecret: true });
     });
@@ -144,6 +150,7 @@ describe("installer application decisions", () => {
         expect(() => app.materializeUnixInstallPayload(f.sourceRoot, "/")).toThrow("Refusing unsafe global install payload target");
         expect(() => app.materializeUnixInstallPayload(f.sourceRoot, f.sourceRoot)).toThrow("Refusing unsafe global install payload target");
         expect(f.files).toEqual(previous);
+        expect(f.mutations).toEqual([]);
     });
 
     it("reports an interrupted Unix copy without publishing a new wrapper or undoing completed effects", () => {
@@ -156,15 +163,58 @@ describe("installer application decisions", () => {
         expect(f.files.get(f.paths.join(f.installDirectory, "ccc"))).toBe("previous CLI");
         expect(f.files.has(f.paths.join(target, "previous"))).toBe(false);
         expect(f.files.get(f.paths.join(target, "dist"))).toBe("copied payload");
-        expect(f.output).not.toContain("\nCLI installed. Run 'ccc --help' to verify.");
+        expect(f.events).not.toContainEqual({ kind: "cli-installed" });
+        expect(f.mutations.some(mutation => mutation.startsWith("unix-launcher:"))).toBe(false);
     });
 
     it("returns the existing Unix permission remedy through exit status one", () => {
         const f = nativeLeaves();
         f.ports.copy = () => { throw Object.assign(new Error("copy denied"), { code: "EACCES" }); };
         expect(() => createInstallerApplication(f.ports).install({ skipImage: true })).toThrow("terminated 1");
-        expect(f.output).toContain("Permission denied. Run with sudo:");
-        expect(f.output).toContain("  sudo npm run install:global");
+        expect(f.events).toContainEqual({ kind: "permission-denied", operation: "install" });
         expect(f.files.get("/owned-bin/ccc")).toBe("previous CLI");
+    });
+
+    it.each(["unix", "windows"] as const)("fails a source install before any destination mutation on %s", platform => {
+        const f = nativeLeaves(platform), failure = Object.assign(new Error("source build failed"), { code: "fixture-source-failure" });
+        const previous = new Map(f.files), previousPath = f.userPath();
+        f.ports.sourceBuild = () => { throw failure; };
+        f.ports.runtimeAvailable = () => { throw new Error("a failed source build must not reach runtime discovery"); };
+        let caught: unknown;
+        try { createInstallerApplication(f.ports).install(); } catch (error) { caught = error; }
+        expect(caught).toBe(failure);
+        expect(f.files).toEqual(previous);
+        expect(f.userPath()).toBe(previousPath);
+        expect(f.mutations).toEqual([]);
+        expect(f.events).toEqual([{ kind: "building" }]);
+    });
+
+    it.each(["docker", "podman"] as const)("retains the original failed %s image cause while allowing truthful CLI installation", runtime => {
+        const f = nativeLeaves(), failure = Object.assign(new Error("native image failed"), { code: "ETIMEDOUT" });
+        f.ports.runtimeOverride = () => runtime;
+        f.ports.buildContainer = () => ({ status: "failed", cause: failure });
+        const app = createInstallerApplication(f.ports);
+        expect(app.buildImage()).toEqual({ status: "failed" });
+        const firstFailure = f.events.find(event => event.kind === "image-build-failed");
+        expect(firstFailure).toEqual({ kind: "image-build-failed", runtime, cause: failure });
+        expect(firstFailure && "cause" in firstFailure ? firstFailure.cause : undefined).toBe(failure);
+        expect(f.mutations).toEqual([]);
+        expect(f.events).not.toContainEqual({ kind: "image-built" });
+        f.events.length = 0;
+        app.install();
+        expect(f.files.get("/owned-bin/ccc")).toBe("native Unix launcher bytes");
+        const installedFailure = f.events.find(event => event.kind === "image-build-failed");
+        expect(installedFailure && "cause" in installedFailure ? installedFailure.cause : undefined).toBe(failure);
+        expect(f.events.slice(-2)).toEqual([{ kind: "cli-installed" }, { kind: "image-partial-success" }]);
+        expect(f.events).not.toContainEqual({ kind: "image-ready" });
+    });
+
+    it("publishes ready only from an immediate ready image observation", () => {
+        const f = nativeLeaves();
+        f.ports.runtimeOverride = () => "docker";
+        createInstallerApplication(f.ports).install();
+        expect(f.events).toContainEqual({ kind: "image-built" });
+        expect(f.events.slice(-2)).toEqual([{ kind: "cli-installed" }, { kind: "image-ready" }]);
+        expect(f.events).not.toContainEqual({ kind: "image-partial-success" });
     });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, copyFileSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, copyFileSync } from "fs";
 import { tmpdir } from "os";
 import { createHash } from "crypto";
 import { join } from "path";
@@ -21,6 +21,8 @@ function fixture(hookPrefix = "", managedVersion?: string) {
     temporary.push(home);
     mkdirSync(join(home, ".codex"));
     mkdirSync(join(home, "bin"));
+    const workspace = join(home, "tmp");
+    mkdirSync(workspace);
     const config = join(home, ".codex/config.toml");
     // Fake only the download transport; the actual orchestration executes a real
     // installer subprocess and probes the files/config it writes.
@@ -56,9 +58,9 @@ function fixture(hookPrefix = "", managedVersion?: string) {
     writeFileSync(join(home, ".local/bin/mise"), `#!/usr/bin/python3\nimport os, pathlib, shutil, sys\nhome=pathlib.Path.home()\n(home/'mise-calls').write_text(' '.join(sys.argv[1:]))\nassert sys.argv[1:] == ['install','python@3.12.14']\nif os.environ.get('FAIL_MISE'): sys.exit(2)\n${managedVersion ? `shutil.copyfile('/usr/bin/python3',${JSON.stringify(interpreter)}); os.chmod(${JSON.stringify(interpreter)},0o755)` : "raise RuntimeError('unexpected runtime installation')"}\n`, { mode: 0o755 });
     const run = (env: Record<string, string> = {}, script = CODEX_HARNESS_BOOTSTRAP) => realSpawn("python3", ["-"], {
         input: script, encoding: "utf-8", timeout: 10000,
-        env: { ...process.env, HOME: home, PATH: `${join(home, "bin")}:${process.env.PATH}`, ...env },
+        env: { ...process.env, HOME: home, TMPDIR: workspace, PATH: `${join(home, "bin")}:${process.env.PATH}`, ...env },
     });
-    return { home, config, cache, run, interpreter };
+    return { home, config, cache, run, interpreter, workspace };
 }
 
 beforeEach(() => {
@@ -111,12 +113,17 @@ describe("Harness bootstrap script", () => {
         const f = fixture("", "3.12.14");
         expect(f.run().status).toBe(0);
         const before = readFileSync(f.config, "utf8");
+        const beforeHooks = readFileSync(join(f.cache, "hooks.json"), "utf8");
+        const beforeGit = readFileSync(join(f.home, "git-calls"), "utf8");
         rmSync(f.interpreter);
         const result = f.run({ FAIL_MISE: "1", FAIL_FETCH: "1" });
         expect(result.status).toBe(1);
         expect(result.stderr).toContain("failed");
         expect(existsSync(f.interpreter)).toBe(false);
         expect(readFileSync(f.config, "utf8")).toBe(before);
+        expect(readFileSync(join(f.cache, "hooks.json"), "utf8")).toBe(beforeHooks);
+        expect(readFileSync(join(f.home, "git-calls"), "utf8")).toBe(beforeGit);
+        expect(readFileSync(join(f.home, "mise-calls"), "utf8")).toBe("install python@3.12.14");
     });
     it("preserves an installed payload when its registration is absent", () => {
         const f = fixture();
@@ -196,15 +203,54 @@ describe("Harness bootstrap script", () => {
         expect(f.run(env).status).toBe(1);
         expect(existsSync(f.config)).toBe(false);
     });
-    it("bounds an installer process group", () => {
+    it("bounds an installer process group and drains inherited pipes after stopping its children", async () => {
         const f = fixture();
-        writeFileSync(join(f.home, "installer.py"), 'import subprocess, time\nsubprocess.Popen(["sleep", "30"])\ntime.sleep(30)\n');
-        const result = f.run({}, CODEX_HARNESS_BOOTSTRAP.replace(
-            '                ports.run_command([ports.installer_interpreter(),',
-            '                globals()["deadline"] = time.monotonic() + 0.3\n                ports.run_command([ports.installer_interpreter(),',
-        ));
-        expect(result.status).toBe(1);
-        expect(result.stderr).toContain("stopped installer and children");
+        const pidsPath = join(f.home, "installer-pids");
+        const descendant = 'import sys,time\nprint("inherited stdout",flush=True)\nprint("inherited stderr",file=sys.stderr,flush=True)\ntime.sleep(30)\n';
+        writeFileSync(join(f.home, "installer.py"), `import os,pathlib,subprocess,sys,time\nchild=subprocess.Popen([sys.executable,"-c",${JSON.stringify(descendant)}])\npathlib.Path(${JSON.stringify(pidsPath)}).write_text(f"{os.getpid()}\\n{child.pid}\\n")\ntime.sleep(30)\n`);
+        const installationBoundary = "                ports.install_codex(temp)";
+        // Admission guard: a changed generated program must not silently omit
+        // the bounded fixture and leave a thirty-second child running.
+        expect(CODEX_HARNESS_BOOTSTRAP.split(installationBoundary)).toHaveLength(2);
+        const bounded = CODEX_HARNESS_BOOTSTRAP.replace(installationBoundary,
+            `                globals()["deadline"] = time.monotonic() + 0.3\n${installationBoundary}`);
+        const isRunning = (pid: number) => {
+            try { process.kill(pid, 0); }
+            catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+                throw error;
+            }
+            if (process.platform !== "linux") return true;
+            try {
+                const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+                return !["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[0]);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+                throw error;
+            }
+        };
+        let pids: number[] = [];
+        try {
+            const started = performance.now();
+            const result = f.run({}, bounded);
+            if (existsSync(pidsPath)) pids = readFileSync(pidsPath, "utf8").trim().split("\n").map(Number);
+            expect(result.error).toBeUndefined();
+            expect(result.signal).toBeNull();
+            expect(result.status).toBe(1);
+            expect(result.stderr).toContain("stopped installer and children");
+            expect(performance.now() - started).toBeLessThan(5000);
+            expect(pids).toHaveLength(2);
+            expect(pids.every(pid => Number.isSafeInteger(pid) && pid > 0)).toBe(true);
+            const stoppedDeadline = performance.now() + 1000;
+            while (pids.some(isRunning) && performance.now() < stoppedDeadline) {
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            expect(pids.filter(isRunning)).toEqual([]);
+            expect(existsSync(f.config)).toBe(false);
+            expect(readdirSync(f.workspace)).toEqual([]);
+        } finally {
+            for (const pid of pids) if (isRunning(pid)) process.kill(pid, "SIGKILL");
+        }
     });
 });
 

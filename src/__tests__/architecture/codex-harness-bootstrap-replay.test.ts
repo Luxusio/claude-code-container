@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { CODEX_HARNESS_BOOTSTRAP } from "../../codex-harness.js";
 
 const PIN = "90a7afe02a9377d9e20cedd62e2c0d88e426d814";
+const installationStages = ["init", "fetch", "rev-parse", "checkout", "installer"] as const;
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -17,7 +18,7 @@ type Options = {
     unregisteredPayload?: boolean;
     version?: string;
     revision?: string;
-    failure?: "fetch" | "installer";
+    failure?: typeof installationStages[number];
     installerReady?: boolean;
 };
 
@@ -66,12 +67,13 @@ function fixture(options: Options = {}) {
     else if (registration === "malformed") write(configPath, "bad = [");
     if (options.unregisteredPayload) mkdirSync(source, { recursive: true });
 
-    const installer = `import json,pathlib,sys\nassert sys.argv[1:] == ["--codex-only"]\nassert pathlib.Path.cwd() == pathlib.Path.home()\n${options.failure === "installer" ? 'raise RuntimeError("fixture installer failed")\n' : ""}files=json.loads(${JSON.stringify(JSON.stringify(options.installerReady === false ? {} : files))})\nfor name,contents in files.items():\n p=pathlib.Path(name)\n p.parent.mkdir(parents=True,exist_ok=True)\n p.write_text(contents)\n`;
+    const stagesPath = join(root, "installation-stages.jsonl");
+    const installer = `import json,pathlib,sys\nassert sys.argv[1:] == ["--codex-only"]\nassert pathlib.Path.cwd() == pathlib.Path.home()\nassert sys.executable == "/usr/bin/python3"\nwith pathlib.Path(${JSON.stringify(stagesPath)}).open("a") as log:log.write(json.dumps("installer")+"\\n")\n${options.failure === "installer" ? 'raise RuntimeError("fixture installer failed")\n' : ""}files=json.loads(${JSON.stringify(JSON.stringify(options.installerReady === false ? {} : files))})\nfor name,contents in files.items():\n p=pathlib.Path(name)\n p.parent.mkdir(parents=True,exist_ok=True)\n p.write_text(contents)\n`;
     const installerPath = join(root, "fixture-installer.py"); writeFileSync(installerPath, installer);
     const callsPath = join(root, "git-calls.jsonl");
-    const git = `#!/usr/bin/python3\nimport json,pathlib,sys\nargs=sys.argv[1:]\nwith pathlib.Path(${JSON.stringify(callsPath)}).open("a") as log:log.write(json.dumps(args)+"\\n")\nkind="fetch" if "fetch" in args else args[0]\nif kind == ${JSON.stringify(options.failure ?? "none")}:\n print("fixture fetch failed",file=sys.stderr)\n sys.exit(2)\nif kind == "rev-parse":print(${JSON.stringify(options.revision ?? PIN)})\nif kind == "checkout":pathlib.Path("install.py").write_text(pathlib.Path(${JSON.stringify(installerPath)}).read_text())\n`;
+    const git = `#!/usr/bin/python3\nimport json,pathlib,sys\nargs=sys.argv[1:]\nwith pathlib.Path(${JSON.stringify(callsPath)}).open("a") as log:log.write(json.dumps(args)+"\\n")\nkind="fetch" if "fetch" in args else args[0]\nwith pathlib.Path(${JSON.stringify(stagesPath)}).open("a") as log:log.write(json.dumps(kind)+"\\n")\nif kind == ${JSON.stringify(options.failure ?? "none")}:\n print(f"fixture {kind} failed",file=sys.stderr)\n sys.exit(2)\nif kind == "rev-parse":print(${JSON.stringify(options.revision ?? PIN)})\nif kind == "checkout":pathlib.Path("install.py").write_text(pathlib.Path(${JSON.stringify(installerPath)}).read_text())\n`;
     writeFileSync(join(bin, "git"), git, { mode: 0o700 });
-    return { root, home, temporary, bin, configPath, readyConfig, callsPath };
+    return { root, home, temporary, bin, configPath, readyConfig, callsPath, stagesPath };
 }
 
 function execute(options: Options = {}) {
@@ -83,8 +85,9 @@ function execute(options: Options = {}) {
     });
     expect(result.error).toBeUndefined(); expect(result.signal).toBeNull();
     const calls = existsSync(f.callsPath) ? readFileSync(f.callsPath, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]) : [];
+    const stages = existsSync(f.stagesPath) ? readFileSync(f.stagesPath, "utf8").trim().split("\n").map(line => JSON.parse(line) as string) : [];
     expect(readdirSync(f.temporary)).toEqual([]);
-    return { ...f, result, calls };
+    return { ...f, result, calls, stages };
 }
 
 describe("current Codex Harness Python bootstrap", () => {
@@ -123,6 +126,7 @@ describe("current Codex Harness Python bootstrap", () => {
             ["-c", "credential.helper=", "fetch", "--quiet", "--depth=1", "https://github.com/Luxusio/harness.git", PIN],
             ["rev-parse", "FETCH_HEAD"], ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
         ]);
+        expect(f.stages).toEqual(installationStages);
         expect(readFileSync(f.configPath, "utf8")).toBe(f.readyConfig);
         expect(existsSync(f.temporary)).toBe(true);
     });
@@ -130,15 +134,19 @@ describe("current Codex Harness Python bootstrap", () => {
         const f = execute({ registration: "absent", revision: "wrong" });
         expect(f.result.status).toBe(1); expect(f.result.stderr).toContain("does not match pinned revision");
         expect(f.calls).toHaveLength(3); expect(existsSync(f.configPath)).toBe(false);
+        expect(f.stages).toEqual(["init", "fetch", "rev-parse"]);
     });
-    it.each(["fetch", "installer"] as const)("reports %s failure without inventing a successful registration", failure => {
+    it.each(installationStages)("reports %s failure without inventing a successful registration or executing a later stage", failure => {
         const f = execute({ registration: "absent", failure });
         expect(f.result.status).toBe(1); expect(f.result.stderr).toContain(`fixture ${failure} failed`);
         expect(existsSync(f.configPath)).toBe(false);
+        expect(f.stages).toEqual(installationStages.slice(0, installationStages.indexOf(failure) + 1));
+        expect(f.calls).toHaveLength(Math.min(installationStages.indexOf(failure) + 1, 4));
     });
     it("refuses an installer that leaves registration absent", () => {
         const f = execute({ registration: "absent", installerReady: false });
         expect(f.result.status).toBe(1); expect(f.result.stderr).toContain("installer did not produce an enabled Harness registration");
         expect(existsSync(f.configPath)).toBe(false);
+        expect(f.stages).toEqual(installationStages);
     });
 });

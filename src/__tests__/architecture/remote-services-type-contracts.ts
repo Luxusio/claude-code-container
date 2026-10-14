@@ -1,5 +1,5 @@
 import type { RemoteServicesPorts } from "../../ports/remote-services.js";
-import type { RemoteHeartbeat, RemoteSshChannel } from "../../domain/remote-services.js";
+import type { RemoteHeartbeat, RemoteSshChannel, RemoteSyncObservation } from "../../domain/remote-services.js";
 import { remoteExec, remoteSetup, remoteCheck, remoteTerminate, remoteRefreshSessionShell } from "../../remote.js";
 
 export function remoteServiceContracts(ports: RemoteServicesPorts<symbol>): void {
@@ -20,11 +20,17 @@ export function remoteServiceContracts(ports: RemoteServicesPorts<symbol>): void
     // @ts-expect-error reservation lifetime requires its release capability
     const incomplete: RemoteServicesPorts<symbol> = missingRelease;
     const observation = ports.observeSync("session");
+    const boundedObservation: RemoteSyncObservation<symbol> = ports.observeSync("session", "a".repeat(64), 4321.9);
+    const observationWithoutEndpoint: RemoteSyncObservation<symbol> = ports.observeSync("session", undefined, 1);
+    // @ts-expect-error a remaining timeout is numeric, not native options owned by composition
+    ports.observeSync("session", undefined, { timeout: 1000 });
+    // @ts-expect-error observation remains synchronous so a deferred query cannot escape the wait budget
+    const asyncObservation: RemoteServicesPorts<symbol>["observeSync"] = async () => ({ kind: "unavailable" });
     if (observation.kind === "observed") {
         // @ts-expect-error application can forward opaque evidence but cannot read native result fields
         const status: number = observation.evidence.status;
         ports.report({ kind: "sync-existing", observation });
         void status;
     }
-    void [exec, setup, check, terminate, channel, heartbeat, body, asyncRemoval, pid, releaseReservation, incomplete];
+    void [exec, setup, check, terminate, channel, heartbeat, body, asyncRemoval, pid, releaseReservation, incomplete, boundedObservation, observationWithoutEndpoint, asyncObservation];
 }

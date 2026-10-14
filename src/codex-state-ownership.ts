@@ -4,6 +4,7 @@ import { dirname, isAbsolute, sep } from "path";
 import { getCodexDir } from "./utils.js";
 import { getRuntimeInfo, runtimeCli } from "./container-runtime.js";
 import { createCodexStateOwnershipMigration } from "./application/credentials/codex-state-ownership.js";
+import type { ActiveCodexStateContainer, CodexStateMount, PreviousCodexStateContainer } from "./domain/credentials/codex-state-ownership.js";
 import { normalizeImageId, type ContainerIdentity } from "./container-identity.js";
 
 interface Mount { Type?: string; Source?: string; Destination?: string }
@@ -109,6 +110,52 @@ finally:
         os.close(fd)
 `;
 
+function mountFacts(mount: Mount, destination = mount.Destination || ""): CodexStateMount {
+    return {
+        get kind() { return mount.Type === "bind" ? "bind" : "other"; },
+        destination,
+        get source() {
+            const source = mount.Source;
+            return typeof source === "string" ? source : "";
+        },
+    } as CodexStateMount;
+}
+
+function observePreviousContainer(previous: PreviousContainer): PreviousCodexStateContainer {
+    const mounts = previous.Mounts;
+    if (!Array.isArray(mounts)) throw new Error("Cannot inspect previous container mounts.");
+    return {
+        mounts: mounts.map(mount => {
+            if (!mount || typeof mount !== "object") throw new Error("Cannot inspect previous container mounts.");
+            const destination = mount.Destination;
+            // Nonmanaged mounts do not grant authority or require their other getters.
+            return destination === "/home/ccc/.codex" ? mountFacts(mount, destination)
+                : { kind: "other", destination: typeof destination === "string" ? destination : "" };
+        }),
+        // Preserve image getter admission after exact managed-source proof.
+        get image() { return previous.Image || ""; },
+    };
+}
+
+function observePreviousAccount(image: string) {
+    const account = checked(["run", "--rm", "--network", "none", "--user", "root", "--entrypoint", "/bin/sh", image,
+        "-c", 'set -eu; printf "%s:%s" "$(id -u ccc)" "$(id -g ccc)"']);
+    const match = /^(\d+):(\d+)$/.exec(account);
+    if (!match) throw new Error("Cannot establish previous ccc UID/GID for Codex state migration.");
+    return { uid: Number(match[1]), gid: Number(match[2]) };
+}
+
+function observeActiveContainers(): ActiveCodexStateContainer[] {
+    const ids = checked(["ps", "-q"]).split(/\s+/).filter(Boolean);
+    if (!ids.length) return [];
+    const inspected: Array<{ Id?: string; Mounts?: Mount[] }> = JSON.parse(checked(["inspect", ...ids]));
+    if (!Array.isArray(inspected) || inspected.length !== ids.length) throw new Error("Cannot inspect active Codex state users.");
+    return inspected.map(container => {
+        if (!Array.isArray(container.Mounts)) throw new Error("Cannot inspect active container mounts.");
+        return { id: container.Id || "unknown", mounts: container.Mounts.map(mount => mountFacts(mount)) };
+    });
+}
+
 const ownershipMigration = createCodexStateOwnershipMigration({
     managedRoot: getCodexDir,
     nestedContainerMarker: () => process.env.container,
@@ -117,12 +164,10 @@ const ownershipMigration = createCodexStateOwnershipMigration({
     effectiveUid: () => process.geteuid?.(),
     effectiveGid: () => process.getegid?.(),
     normalizeImage: normalizeImageId,
-    previousAccount: image => checked(["run", "--rm", "--network", "none", "--user", "root", "--entrypoint", "/bin/sh", image,
-        "-c", 'set -eu; printf "%s:%s" "$(id -u ccc)" "$(id -g ccc)"']),
+    previousAccount: observePreviousAccount,
     directory: path => lstatSync(path, { bigint: true }),
     parent: dirname,
-    activeIds: () => checked(["ps", "-q"]),
-    inspectActive: ids => checked(["inspect", ...ids]),
+    activeContainers: observeActiveContainers,
     isAbsolute,
     realpath: realpathSync,
     separator: sep,
@@ -136,7 +181,7 @@ const ownershipMigration = createCodexStateOwnershipMigration({
 
 /** Caller holds the global startup lock until the replacement container has started. */
 export function prepareCodexStateOwnership(previous: PreviousContainer, imageId: string, identity: ContainerIdentity, profile?: string, proveSource?: (source: string) => boolean): void {
-    ownershipMigration.run(previous, imageId, identity, profile, proveSource);
+    ownershipMigration.run(() => observePreviousContainer(previous), imageId, identity, profile, proveSource);
 }
 
 export const codexStateAccessScript = String.raw`

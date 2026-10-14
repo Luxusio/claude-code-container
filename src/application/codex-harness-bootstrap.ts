@@ -63,13 +63,13 @@ def run_bootstrap(ports):
         if state == "absent":
             ports.report_installing()
             with ports.installation_workspace() as temp:
-                ports.run_command(["git", "init", "--quiet", temp], temp)
-                ports.run_command(["git", "-c", "credential.helper=", "fetch", "--quiet", "--depth=1", SOURCE, REVISION], temp)
-                actual = ports.run_command(["git", "rev-parse", "FETCH_HEAD"], temp)
+                ports.initialize_repository(temp)
+                ports.fetch_pinned_revision(temp)
+                actual = ports.fetched_revision(temp)
                 if actual != REVISION:
                     raise RuntimeError("downloaded Harness revision does not match pinned revision")
-                ports.run_command(["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"], temp)
-                ports.run_command([ports.installer_interpreter(), ports.installer_path(temp), "--codex-only"], ports.installer_home())
+                ports.checkout_fetched_revision(temp)
+                ports.install_codex(temp)
             if probe(ports) != "ready":
                 raise RuntimeError("installer did not produce an enabled Harness registration")
     except Exception as error:

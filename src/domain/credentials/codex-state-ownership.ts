@@ -1,6 +1,10 @@
-/** Structural facts only; native references and their getters remain intact. */
-export interface CodexStateMount { Type?: string; Source?: string; Destination?: string }
-export interface PreviousCodexStateContainer { Image?: string; Mounts?: CodexStateMount[] }
+/** Native runtime observations decoded into ownership facts. */
+export type CodexStateMount =
+    | { kind: "bind"; source: string; destination: string }
+    | { kind: "other"; destination: string };
+export interface PreviousCodexStateContainer { image: string; mounts: CodexStateMount[] }
+export interface ActiveCodexStateContainer { id: string; mounts: CodexStateMount[] }
+export interface CodexStateAccount { uid: number; gid: number }
 export interface CodexStatePrincipal {
     uid: number;
     gid: number;

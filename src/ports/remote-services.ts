@@ -17,7 +17,7 @@ export interface RemoteServicesPorts<Evidence = unknown> {
     releaseReservation(request: { config: RemoteConfig; name: string; token: string }): void;
     stopReservedContainer(request: { config: RemoteConfig; name: string; containerId: string; token: string }): RemoteStopResult<Evidence>;
     prepareRemoteProject(request: { config: RemoteConfig; containerId: string; projectId: string }): RemoteOperationResult<Evidence>;
-    observeSync(name: string, expectedContainerId?: string): RemoteSyncObservation<Evidence>;
+    observeSync(name: string, expectedContainerId?: string, remainingMs?: number): RemoteSyncObservation<Evidence>;
     createSync(request: { name: string; localPath: string; config: RemoteConfig; containerId: string; projectId: string }): RemoteOperationResult<Evidence>;
     resumeSync(name: string): RemoteOperationResult<Evidence>;
     terminateStaleSync(name: string): RemoteOperationResult<Evidence>;

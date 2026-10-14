@@ -88,12 +88,68 @@ function writeUserPath(value) {
     });
 }
 
+/** @param {unknown} cause */
+function nativeFailureDetail(cause) {
+    return cause && typeof cause === "object" && "message" in cause ? cause.message : undefined;
+}
+
+/** @param {string} installDir */
+function manualPathHint(installDir) {
+    console.log("Add it manually in PowerShell:");
+    console.log(`  [Environment]::SetEnvironmentVariable("Path", ([Environment]::GetEnvironmentVariable("Path","User") + ";${installDir}"), "User")`);
+}
+
+/** @param {import("./install/ports.mjs").InstallerEvent} event */
+function present(event) {
+    switch (event.kind) {
+        case "building": console.log("Building..."); break;
+        case "runtime-unavailable":
+            console.log("No container runtime (podman or docker) detected. Skipping image build.");
+            console.log("Install podman or docker, then run 'ccc' to auto-pull/build."); break;
+        case "runtime-selected": console.log(`Using container runtime: ${event.runtime}`); break;
+        case "image-current": console.log(`Container image up to date (hash: ${event.hash})`); break;
+        case "image-rebuilding":
+            console.log(`Content changed (${event.previousHash || "none"} -> ${event.hash})`);
+            console.log(`Rebuilding container image with ${event.runtime}...`); break;
+        case "image-built": console.log("Container image built."); break;
+        case "image-build-failed": {
+            const detail = nativeFailureDetail(event.cause);
+            if (detail === undefined) console.error(`Failed to build image with ${event.runtime}:`);
+            else console.error(`Failed to build image with ${event.runtime}:`, detail);
+            break;
+        }
+        case "path-directory-missing": console.log(`PATH update skipped (DIR_NOT_FOUND): ${event.installDir}`); break;
+        case "path-read-failed":
+            console.log(`PATH update skipped (READ_ERROR): ${nativeFailureDetail(event.cause)}`);
+            manualPathHint(event.installDir); break;
+        case "path-write-failed":
+            console.log(`PATH update skipped (WRITE_ERROR): ${nativeFailureDetail(event.cause)}`);
+            manualPathHint(event.installDir); break;
+        case "path-too-long":
+            console.log(`PATH update skipped (PATH_TOO_LONG): ${event.length} >= ${event.limit}`);
+            manualPathHint(event.installDir); break;
+        case "path-present": console.log("Already on User PATH."); break;
+        case "path-added": console.log("Added to User PATH. Open a new terminal to pick it up."); break;
+        case "path-removed": console.log("Removed from User PATH."); break;
+        case "installed": console.log(`Installed: ${event.path}`); break;
+        case "removed": console.log(`Removed: ${event.path}`); break;
+        case "not-installed": console.log("Not installed."); break;
+        case "permission-denied":
+            console.error("Permission denied. Run with sudo:");
+            console.error(`  sudo npm run ${event.operation}:global`); break;
+        case "cli-installed": console.log("\nCLI installed. Run 'ccc --help' to verify."); break;
+        case "image-ready": console.log("Container image ready."); break;
+        case "image-partial-success": console.log("Container image build failed; CLI installation succeeded. Retry the image build when the container runtime is available."); break;
+        case "image-skipped": console.log(`Container image build skipped (${event.reason}).`); break;
+    }
+    return undefined;
+}
+
 /** Bind actual synchronous native effects; constructing the application performs none. */
 function installerApplication() {
     return createInstallerApplication({
         platform: () => isWindows ? "windows" : "unix",
         sourceRoot: () => projectRoot,
-        sourceEntry: () => distFile,
         installDirectory: getInstallDir,
         runtimeOverride: () => process.env.CCC_RUNTIME,
         githubTokenConfigured: () => Boolean(process.env.GITHUB_TOKEN),
@@ -113,12 +169,22 @@ function installerApplication() {
             const args = ["build", "-t", "ccc", "--label", `content.hash=${hash}`];
             if (includeGithubSecret) args.push("--secret", "id=github_token,env=GITHUB_TOKEN");
             args.push(".");
-            return spawnSync(runtime, args, { cwd: projectRoot, stdio: "inherit", timeout: imageBuildTimeout });
+            try {
+                const result = spawnSync(runtime, args, { cwd: projectRoot, stdio: "inherit", timeout: imageBuildTimeout });
+                if (result.error) return { status: "failed", cause: result.error };
+                if (result.signal) return { status: "failed", cause: new Error(`${runtime} build terminated by ${result.signal}`) };
+                if (result.status !== 0) return {
+                    status: "failed",
+                    cause: new Error(`${runtime} build ${result.status === null ? "ended without an exit code" : `exited with code ${result.status}`}`),
+                };
+                return { status: "ready" };
+            } catch (cause) {
+                return { status: "failed", cause };
+            }
         },
         resolvePath: path => resolve(path),
         joinPath: (...parts) => join(...parts),
         parentPath: path => dirname(path),
-        fileUrl: path => pathToFileURL(path).href,
         exists: path => existsSync(path),
         isSymlink: path => lstatSync(path).isSymbolicLink(),
         removeFile: path => { unlinkSync(path); },
@@ -131,17 +197,19 @@ function installerApplication() {
             if (recursive) cpSync(source, target, { recursive: true });
             else cpSync(source, target);
         },
-        readPackage: path => JSON.parse(readFileSync(path, "utf-8")),
-        writeText: (path, content) => { writeFileSync(path, content); },
-        setMode: (path, mode) => { chmodSync(path, mode); },
+        writeUnixPackage: (sourceRoot, targetDir) => {
+            const source = JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf-8"));
+            writeFileSync(join(targetDir, "package.json"), JSON.stringify({ type: "module", version: source.version, imports: source.imports }, null, 2));
+        },
+        unixWrapperContent,
+        writeUnixLauncher: (path, targetDir) => {
+            writeFileSync(path, unixWrapperContent(targetDir));
+            chmodSync(path, 0o755);
+        },
+        writeWindowsLauncher: path => { writeFileSync(path, `@echo off\r\nnode "${distFile}" %*\r\n`); },
         readUserPath,
         writeUserPath: value => { writeUserPath(value); },
-        log: message => { console.log(message); },
-        warn: (message, detail) => { console.warn(message, detail); },
-        error: (message, detail) => {
-            if (detail === undefined) console.error(message);
-            else console.error(message, detail);
-        },
+        present,
         terminate: code => process.exit(code),
     });
 }
@@ -153,7 +221,8 @@ export function materializeUnixInstallPayload(sourceRoot, targetDir) {
 
 /** @param {string} targetDir */
 export function unixWrapperContent(targetDir) {
-    return installerApplication().unixWrapperContent(targetDir);
+    const entryPoint = join(resolve(targetDir), "dist", "index.js");
+    return `#!/usr/bin/env node\nimport(${JSON.stringify(pathToFileURL(entryPoint).href)});\n`;
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;

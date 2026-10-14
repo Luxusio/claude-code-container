@@ -102,6 +102,32 @@ describe.skipIf(process.platform !== "linux")("proven retained Codex state migra
         expect(() => assertCodexStateAccessible("project" )).toThrow(/Project-folder chown does not repair this separate store/);
         expect(mocks.spawn.mock.calls[0][1]).toEqual(["exec", "project", "python3", "-c", codexStateAccessScript]);
     });
+    it.each([undefined, null, {}])("refuses incomplete previous Mounts %j before probing immutable account or the host store", Mounts => {
+        const prior = { Image: previousImage, Mounts } as unknown as Parameters<typeof prepareCodexStateOwnership>[0];
+        expect(() => prepareCodexStateOwnership(prior, currentImage, identity)).toThrow();
+        expect(mocks.spawn).not.toHaveBeenCalled();
+        expect(mocks.lstat).not.toHaveBeenCalled();
+    });
+    it.each([{ Mounts: [] }, { Mounts: [{ Destination: "/other" }] }])("does not read the old image for a valid nonmanaged mount list $Mounts", ({ Mounts }) => {
+        const prior = { get Image(): never { throw new Error("image read too early"); }, Mounts };
+        expect(prepareCodexStateOwnership(prior, currentImage, identity)).toBeUndefined();
+        expect(mocks.spawn).not.toHaveBeenCalled();
+        expect(mocks.lstat).not.toHaveBeenCalled();
+    });
+    it("keeps the caller's original previous metadata getter fault", () => {
+        const fault = { priorMounts: true };
+        const prior = { get Mounts(): never { throw fault; }, Image: previousImage };
+        try { prepareCodexStateOwnership(prior, currentImage, identity); throw new Error("missing exception"); }
+        catch (actual) { expect(actual).toBe(fault); }
+        expect(mocks.spawn).not.toHaveBeenCalled();
+        expect(mocks.lstat).not.toHaveBeenCalled();
+    });
+    it("refuses a changed effective host principal after both traversals and before the helper", () => {
+        vi.spyOn(process, "geteuid").mockReturnValueOnce(1000).mockReturnValue(77);
+        expect(() => prepareCodexStateOwnership(previous, currentImage, identity)).toThrow("Host principal changed before Codex state migration.");
+        expect(mocks.lstat).toHaveBeenCalledTimes(10);
+        expect(mocks.spawn.mock.calls.map(call => call[1][0])).toEqual(["run", "ps"]);
+    });
 });
 
 describe.skipIf(process.platform !== "linux" || realSpawn("python3", ["--version"]).status !== 0)("real nofollow Python preflight", () => {

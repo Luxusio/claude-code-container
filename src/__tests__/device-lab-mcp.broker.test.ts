@@ -22,7 +22,7 @@ import {
 } from "./helpers/device-lab-mcp-fixture.js";
 import { freePort, installFakeCccBroker, installIgnoringCccBroker, pidAlive, waitForHealthUnavailable } from "./helpers/fake-broker-mcp-fixture.js";
 import { removeBrokerRuntimeForTest, writeBrokerRuntimeForTest, BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, BROKER_RPC_SCREENSHOT_RESPONSE_LIMIT_BYTES, authenticatedBrokerHeadersForTest, brokerCommand, brokerDeviceTool, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, launchedBrokerProcessVerificationForTest, parseWindowsNetstatListenerForTest, reusableBrokerProcessVerificationForTest, terminateVerifiedBrokerRuntimeForTest, verifiedBrokerProcessForTest, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
-import { projectMountPath } from "@ccc/device-lab/providers/context.mjs";
+import { ownerId as deviceLabMcpOwnerId, projectMountPath } from "@ccc/device-lab/providers/context.mjs";
 
 const TEST_BROKER_OWNER_ID = "1111111111111111";
 const HOOK_TIMEOUT = Math.max(TIMEOUT, 60000);
@@ -411,6 +411,7 @@ describe("device-lab MCP", () => {
         expect(invocation.args).toEqual([
             join(repoRoot, "packages", "device-lab", "dist", "broker-entry.js"),
             "devices", "broker", "serve", "--host", "127.0.0.1", "--port", "17373",
+            "--runtime-managed-by-parent",
         ]);
     });
 
@@ -1627,6 +1628,70 @@ describe("device-lab MCP", () => {
         expect(readFileSync(external, "utf8")).toBe("external-secret-diagnostic");
     });
 
+    it.each(["source", "built"] as const)("%s MCP autolaunches and reuses the actual broker entry with parent-owned metadata", { timeout: TIMEOUT }, async entry => {
+        const port = await freePort();
+        const expectedOwner = deviceLabMcpOwnerId({}, repoRoot);
+        const isolated = await createDeviceLabMcpTestContext({
+            rawPublicCalls: true,
+            serverPath: entry === "source" ? join(repoRoot, "device-lab-mcp", "server.mjs") : join(repoRoot, "dist", "device-lab-mcp", "server.mjs"),
+            env: { CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER: "0" },
+            setupHome: home => {
+                // Route the public, argument-free discovery to this private port.
+                // A dead prior generation is replaced by the actual MCP launcher;
+                // this context has no fake ccc or substitute broker-entry file.
+                const root = join(home, ".ccc", "devices", "broker");
+                mkdirSync(root, { recursive: true });
+                writeFileSync(join(root, "runtime.json"), JSON.stringify({
+                    name: "ccc-device-broker", managedBy: "ccc-host", ownerId: expectedOwner,
+                    pid: 987654321, host: "127.0.0.1", port,
+                }), { mode: 0o600 });
+            },
+        });
+        const runtimeFile = join(isolated.homeDir, ".ccc", "devices", "broker", "runtime.json");
+        let brokerPid: number | undefined;
+        try {
+            const first = await isolated.client.callTool({ name: "devices", arguments: { view: "owned", detail: true } });
+            expect(first.isError, JSON.stringify(first.content)).not.toBe(true);
+            const value = JSON.parse((first.content as Array<{ text?: string }>)[0].text || "{}");
+            expect(value).toEqual(expect.objectContaining({ ownerId: expectedOwner, routedBy: "device-list-broker-implicit" }));
+            const runtime = JSON.parse(readFileSync(runtimeFile, "utf8"));
+            brokerPid = runtime.pid;
+            expect(runtime).toEqual(expect.objectContaining({
+                managedBy: "device-lab-mcp", ownerId: expectedOwner, port,
+                pid: expect.any(Number), processStartToken: expect.any(String),
+                args: [expect.stringContaining("broker-entry.js"), "devices", "broker", "serve", "--host", "127.0.0.1", "--port", String(port), "--runtime-managed-by-parent"],
+            }));
+            expect(runtime.pid).not.toBe(987654321);
+            expect(pidAlive(runtime.pid)).toBe(true);
+
+            const second = await isolated.client.callTool({ name: "devices", arguments: { view: "owned", detail: true } });
+            expect(second.isError, JSON.stringify(second.content)).not.toBe(true);
+            expect(JSON.parse(readFileSync(runtimeFile, "utf8"))).toEqual(expect.objectContaining({
+                managedBy: "device-lab-mcp", pid: brokerPid, processStartToken: runtime.processStartToken,
+            }));
+            const status = await callInternalBroker(isolated.client, { operation: "brokerStatus", arguments: {
+                hostCandidates: ["127.0.0.1"], port, timeoutMs: 1000,
+            } });
+            expect(JSON.parse((status.content as Array<{ text?: string }>)[0].text || "{}")).toEqual(expect.objectContaining({
+                rpcReady: true, launch: expect.objectContaining({ launched: false, reused: true }),
+                runtime: expect.objectContaining({ managedBy: "device-lab-mcp", pid: brokerPid }),
+            }));
+
+            const shutdown = await callInternalBroker(isolated.client, { operation: "brokerShutdown", arguments: {
+                confirmDestructive: true, stopDevices: false, detachPhysical: false,
+            } });
+            expect(JSON.parse((shutdown.content as Array<{ text?: string }>)[0].text || "{}")).toEqual(expect.objectContaining({
+                ok: true, stopped: true, runtime: expect.objectContaining({ managedBy: "device-lab-mcp", pid: brokerPid }),
+                cleanup: expect.objectContaining({ ok: true, method: "broker.cleanup.owner" }),
+            }));
+            expect(existsSync(runtimeFile)).toBe(false);
+            expect(pidAlive(brokerPid!)).toBe(false);
+        } finally {
+            await cleanupDeviceLabMcpTestContext(isolated);
+            if (brokerPid) expect(await waitForHealthUnavailable(port)).toBe(true);
+        }
+    });
+
     it("autolaunches, reuses, routes RPC/lease/command, and shuts down an MCP-owned broker", { timeout: TIMEOUT }, async () => {
         const port = await freePort();
         const logPath = join(homeDir, "fake-ccc-broker.log");
@@ -1657,7 +1722,7 @@ describe("device-lab MCP", () => {
             ownerId: expect.stringMatching(/^[a-f0-9]{16}$/),
             logPath: expect.stringContaining("broker-"),
             command: process.execPath,
-            args: [expect.stringContaining("broker-entry.js"), "devices", "broker", "serve", "--host", "127.0.0.1", "--port", String(port)],
+            args: [expect.stringContaining("broker-entry.js"), "devices", "broker", "serve", "--host", "127.0.0.1", "--port", String(port), "--runtime-managed-by-parent"],
         }));
 
         const status = await callInternalBroker(client, { operation: "brokerStatus",
@@ -2114,7 +2179,7 @@ setInterval(() => {}, 1000);
             expect(payload.launch.attempts).toEqual(expect.arrayContaining([
                 expect.objectContaining({ reason: "runtime-pid-not-alive" }),
             ]));
-            expect(readFileSync(logPath, "utf8")).toContain(`["devices","broker","serve","--host","127.0.0.1","--port","${port}"]`);
+            expect(readFileSync(logPath, "utf8")).toContain(`["devices","broker","serve","--host","127.0.0.1","--port","${port}","--runtime-managed-by-parent"]`);
         } finally {
             await callInternalBroker(client, { operation: "brokerShutdown", arguments: { force: true, cleanupTimeoutMs: 300, confirmDestructive: true } });
             rmSync(statusPayload.state.runtimeFile, { force: true });
@@ -3139,6 +3204,59 @@ describe("owned broker child supervision", () => {
             f.ports.removeBrokerRuntime = removeBrokerRuntimeForTest;
             expect(await f.supervision.shutdown()).toEqual(expect.objectContaining({ ok: true, stopped: true }));
             expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(successor);
+        });
+    });
+
+    it.each(["initial", "final"] as const)("preserves a successor when the %s parent launch publication loses its CAS", async stage => {
+        await withPrivateRuntime(async file => {
+            const f = fixture();
+            const successor = { ...f.runtime, pid: 42, processStartToken: "birth-42", startedAt: "successor-start" };
+            f.ports.currentOperation = () => undefined;
+            f.ports.setupCacheKey = () => "private-launch";
+            f.ports.invalidateBrokerSetup = () => undefined;
+            f.ports.normalizeLaunchOptions = () => ({
+                command: process.execPath, args: ["broker-entry.js", "devices", "broker", "serve", "--runtime-managed-by-parent"],
+                host: "127.0.0.1", hostCandidates: ["127.0.0.1"], port: 17373, timeoutMs: 1000, launchTimeoutMs: 3000,
+            });
+            f.ports.probeBrokerHealth = async () => ({ available: false, selected: null, attempts: [] });
+            f.ports.readBrokerRuntime = () => existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+            f.ports.executableExists = () => true;
+            f.ports.pendingLogPath = () => "private-launch.log";
+            f.ports.createBrokerLogFile = () => ({ path: "private-launch.log", descriptor: 7 });
+            f.ports.closeLog = vi.fn(() => undefined);
+            f.ports.timestamp = () => "parent-start";
+            f.ports.launchOwnedChild = async () => {
+                if (stage === "initial") expect(writeBrokerRuntimeForTest(successor, null)).toBe(true);
+                return { child: f.child, processStartToken: "birth-41" };
+            };
+            f.ports.writeBrokerRuntime = vi.fn(writeBrokerRuntimeForTest);
+            f.ports.waitForBrokerHealth = vi.fn(async () => {
+                const published = f.ports.readBrokerRuntime();
+                expect(published).toEqual(expect.objectContaining({ managedBy: "device-lab-mcp", pid: 41, startedAt: "parent-start" }));
+                expect(writeBrokerRuntimeForTest(successor, published)).toBe(true);
+                return { available: true as const, selected: { host: "127.0.0.1", port: 17373 }, attempts: [] };
+            });
+            f.ports.waitForBrokerOwnerResolve = async () => ({ ok: true, ownerId: "owner" });
+            f.ports.probeCccHostBrokerProtocol = async () => ({ ok: true });
+            f.ports.launchedBrokerProcessVerification = runtime => ({ verification: { ok: true }, runtime: { ...runtime, startedAt: "verified-start" } });
+            f.ports.withSetupEvidence = value => value;
+            f.ports.cleanupLaunchedBrokerRuntime = vi.fn(async (runtime, child, timeoutMs) => {
+                expect(child).toBe(f.child);
+                expect(timeoutMs).toBe(1500);
+                expect(runtime).toEqual(expect.objectContaining({ managedBy: "device-lab-mcp", pid: 41, processStartToken: "birth-41" }));
+                expect(removeBrokerRuntimeForTest(runtime)).toBe(false);
+                return { ok: true, pid: 41 };
+            });
+
+            expect(await f.supervision.ensure()).toEqual(expect.objectContaining({
+                ok: false, error: "broker-launch-failed", detail: "broker-runtime-generation-changed",
+                launchCleanup: { ok: true, pid: 41 },
+            }));
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(successor);
+            expect(f.ports.writeBrokerRuntime).toHaveBeenCalledTimes(stage === "initial" ? 1 : 2);
+            expect(f.ports.waitForBrokerHealth).toHaveBeenCalledTimes(stage === "initial" ? 0 : 1);
+            expect(f.ports.cleanupLaunchedBrokerRuntime).toHaveBeenCalledOnce();
+            expect(f.ports.closeLog).toHaveBeenCalledExactlyOnceWith(7);
         });
     });
 

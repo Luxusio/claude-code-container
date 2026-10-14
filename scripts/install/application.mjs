@@ -1,13 +1,13 @@
 import {
     runtimePreference, imageLabels, fingerprintFiles, fingerprintDirectories, unixPayloadCopies,
     PATH_LIMIT, selectedRuntimeOverride, normalizePathEntry, splitUserPath, isPackagedInstall,
-    unixPackageContent, errorField,
+    errorCode,
 } from "./domain.mjs";
 /** @typedef {{status:"ready"}|{status:"failed"}|{status:"skipped",reason:string}} ImageOutcome */
 /** @param {import('./ports.mjs').InstallerPorts} ports */
 export function createInstallerApplication(ports) {
     function build() {
-        ports.log("Building...");
+        ports.present({ kind: "building" });
         ports.sourceBuild();
     }
     function detectRuntime() {
@@ -34,73 +34,58 @@ export function createInstallerApplication(ports) {
     function buildImage() {
         const runtime = detectRuntime();
         if (!runtime) {
-            ports.log("No container runtime (podman or docker) detected. Skipping image build.");
-            ports.log("Install podman or docker, then run 'ccc' to auto-pull/build.");
+            ports.present({ kind: "runtime-unavailable" });
             return { status: "skipped", reason: "no runtime detected" };
         }
-        ports.log(`Using container runtime: ${runtime}`);
+        ports.present({ kind: "runtime-selected", runtime });
 
         const currentHash = ports.contentHash(fingerprintFiles, fingerprintDirectories);
         const imageHash = getImageHash(runtime);
         if (currentHash === imageHash) {
-            ports.log(`Container image up to date (hash: ${currentHash})`);
+            ports.present({ kind: "image-current", hash: currentHash });
             return { status: "ready" };
         }
-        ports.log(`Content changed (${imageHash || "none"} -> ${currentHash})`);
-        ports.log(`Rebuilding container image with ${runtime}...`);
+        ports.present({ kind: "image-rebuilding", runtime, previousHash: imageHash, hash: currentHash });
         try {
             const buildResult = ports.buildContainer(runtime, currentHash, ports.githubTokenConfigured());
-            if (buildResult.error) throw buildResult.error;
-            if (buildResult.signal) throw new Error(`${runtime} build terminated by ${buildResult.signal}`);
-            if (buildResult.status !== 0) {
-                throw new Error(`${runtime} build ${buildResult.status === null ? "ended without an exit code" : `exited with code ${buildResult.status}`}`);
-            }
-            ports.log("Container image built.");
+            if (buildResult.status === "failed") throw buildResult.cause;
+            ports.present({ kind: "image-built" });
             return { status: "ready" };
         } catch (e) {
-            ports.error(`Failed to build image with ${runtime}:`, errorField(e, "message"));
+            ports.present({ kind: "image-build-failed", runtime, cause: e });
             return { status: "failed" };
         }
     }
 
     /** @param {string} installDir */
-    function manualPathHint(installDir) {
-        ports.log("Add it manually in PowerShell:");
-        ports.log(`  [Environment]::SetEnvironmentVariable("Path", ([Environment]::GetEnvironmentVariable("Path","User") + ";${installDir}"), "User")`);
-    }
-
-    /** @param {string} installDir */
     function tryAddInstallDirToUserPath(installDir) {
         if (!ports.exists(installDir)) {
-            ports.log(`PATH update skipped (DIR_NOT_FOUND): ${installDir}`);
+            ports.present({ kind: "path-directory-missing", installDir });
             return;
         }
         let current;
         try {
             current = ports.readUserPath();
         } catch (e) {
-            ports.log(`PATH update skipped (READ_ERROR): ${errorField(e, "message")}`);
-            manualPathHint(installDir);
+            ports.present({ kind: "path-read-failed", installDir, cause: e });
             return;
         }
         const parts = splitUserPath(current);
         const target = normalizePathEntry(installDir);
         if (parts.some(p => normalizePathEntry(p) === target)) {
-            ports.log("Already on User PATH.");
+            ports.present({ kind: "path-present" });
             return;
         }
         const next = [...parts, installDir].join(";");
         if (next.length >= PATH_LIMIT) {
-            ports.log(`PATH update skipped (PATH_TOO_LONG): ${next.length} >= ${PATH_LIMIT}`);
-            manualPathHint(installDir);
+            ports.present({ kind: "path-too-long", installDir, length: next.length, limit: PATH_LIMIT });
             return;
         }
         try {
             ports.writeUserPath(next);
-            ports.log("Added to User PATH. Open a new terminal to pick it up.");
+            ports.present({ kind: "path-added" });
         } catch (e) {
-            ports.log(`PATH update skipped (WRITE_ERROR): ${errorField(e, "message")}`);
-            manualPathHint(installDir);
+            ports.present({ kind: "path-write-failed", installDir, cause: e });
         }
     }
 
@@ -118,7 +103,7 @@ export function createInstallerApplication(ports) {
         if (kept.length === parts.length) return;
         try {
             ports.writeUserPath(kept.join(";"));
-            ports.log("Removed from User PATH.");
+            ports.present({ kind: "path-removed" });
         } catch {
             // best-effort
         }
@@ -136,13 +121,11 @@ export function createInstallerApplication(ports) {
         for (const entry of unixPayloadCopies) {
             ports.copy(ports.joinPath(resolvedSourceRoot, entry.path), ports.joinPath(resolvedTargetDir, entry.path), entry.recursive);
         }
-        const sourcePackage = ports.readPackage(ports.joinPath(resolvedSourceRoot, "package.json"));
-        ports.writeText(ports.joinPath(resolvedTargetDir, "package.json"), unixPackageContent(sourcePackage));
+        ports.writeUnixPackage(resolvedSourceRoot, resolvedTargetDir);
     }
     /** @param {string} targetDir */
     function unixWrapperContent(targetDir) {
-        const entryPoint = ports.joinPath(ports.resolvePath(targetDir), "dist", "index.js");
-        return `#!/usr/bin/env node\nimport(${JSON.stringify(ports.fileUrl(entryPoint))});\n`;
+        return ports.unixWrapperContent(targetDir);
     }
 
     function linkBinary() {
@@ -151,9 +134,8 @@ export function createInstallerApplication(ports) {
         if (ports.platform() === "windows") {
             ports.ensureDirectory(installDir);
             const cmdPath = ports.joinPath(installDir, "ccc.cmd");
-            const cmdContent = `@echo off\r\nnode "${ports.sourceEntry()}" %*\r\n`;
-            ports.writeText(cmdPath, cmdContent);
-            ports.log(`Installed: ${cmdPath}`);
+            ports.writeWindowsLauncher(cmdPath);
+            ports.present({ kind: "installed", path: cmdPath });
 
             tryAddInstallDirToUserPath(installDir);
             return;
@@ -165,17 +147,15 @@ export function createInstallerApplication(ports) {
             try {
                 if (ports.isSymlink(targetBin)) ports.removeFile(targetBin);
             } catch (e) {
-                if (errorField(e, "code") !== "ENOENT") throw e;
+                if (errorCode(e) !== "ENOENT") throw e;
             }
 
             materializeUnixInstallPayload(ports.sourceRoot(), targetDir);
-            ports.writeText(targetBin, unixWrapperContent(targetDir));
-            ports.setMode(targetBin, 0o755);
-            ports.log(`Installed: ${targetBin}`);
+            ports.writeUnixLauncher(targetBin, targetDir);
+            ports.present({ kind: "installed", path: targetBin });
         } catch (e) {
-            if (errorField(e, "code") === "EACCES") {
-                ports.error("Permission denied. Run with sudo:");
-                ports.error("  sudo npm run install:global");
+            if (errorCode(e) === "EACCES") {
+                ports.present({ kind: "permission-denied", operation: "install" });
                 ports.terminate(1);
             }
             throw e;
@@ -188,13 +168,13 @@ export function createInstallerApplication(ports) {
         /** @type {ImageOutcome} */
         const image = skipImage ? { status: "skipped", reason: "--skip-image" } : buildImage();
         linkBinary();
-        ports.log("\nCLI installed. Run 'ccc --help' to verify.");
+        ports.present({ kind: "cli-installed" });
         if (image.status === "ready") {
-            ports.log("Container image ready.");
+            ports.present({ kind: "image-ready" });
         } else if (image.status === "failed") {
-            ports.log("Container image build failed; CLI installation succeeded. Retry the image build when the container runtime is available.");
+            ports.present({ kind: "image-partial-success" });
         } else {
-            ports.log(`Container image build skipped (${image.reason}).`);
+            ports.present({ kind: "image-skipped", reason: image.reason });
         }
     }
 
@@ -215,9 +195,9 @@ export function createInstallerApplication(ports) {
             const cmdPath = ports.joinPath(installDir, "ccc.cmd");
             if (ports.exists(cmdPath)) {
                 ports.removeFile(cmdPath);
-                ports.log(`Removed: ${cmdPath}`);
+                ports.present({ kind: "removed", path: cmdPath });
             } else {
-                ports.log("Not installed.");
+                ports.present({ kind: "not-installed" });
             }
             tryRemoveInstallDirFromUserPath(installDir);
             return;
@@ -229,19 +209,18 @@ export function createInstallerApplication(ports) {
             let removed = false;
             if (ports.exists(targetBin)) {
                 ports.removeFile(targetBin);
-                ports.log(`Removed: ${targetBin}`);
+                ports.present({ kind: "removed", path: targetBin });
                 removed = true;
             }
             if (ports.exists(targetDir)) {
                 ports.removeDirectory(targetDir, false);
-                ports.log(`Removed: ${targetDir}`);
+                ports.present({ kind: "removed", path: targetDir });
                 removed = true;
             }
-            if (!removed) ports.log("Not installed.");
+            if (!removed) ports.present({ kind: "not-installed" });
         } catch (e) {
-            if (errorField(e, "code") === "EACCES") {
-                ports.error("Permission denied. Run with sudo:");
-                ports.error("  sudo npm run uninstall:global");
+            if (errorCode(e) === "EACCES") {
+                ports.present({ kind: "permission-denied", operation: "uninstall" });
                 ports.terminate(1);
             }
             throw e;

@@ -10067,21 +10067,23 @@ export function startDeviceBrokerServe(
     const server = factory({ cwd, profile, host, port, startedAt, cliPath });
     deviceBrokerOwnerToken(ownerId);
     server.listen(port, host, () => {
-        writeHostBrokerRuntime({
-            name: DEVICE_BROKER_NAME,
-            managedBy: "ccc-host",
-            ownerId,
-            pid: process.pid,
-            host,
-            probeHost: DEVICE_BROKER_DEFAULT_HOST,
-            hostCandidates: hostBrokerProbeCandidates(host, DEVICE_BROKER_DEFAULT_HOST),
-            port,
-            command: process.execPath,
-            args: [cliPath, "devices", "broker", "serve", "--host", host, "--port", String(port)],
-            cwd,
-            profile: profile || null,
-            startedAt,
-        });
+        if (!args.includes("--runtime-managed-by-parent")) {
+            writeHostBrokerRuntime({
+                name: DEVICE_BROKER_NAME,
+                managedBy: "ccc-host",
+                ownerId,
+                pid: process.pid,
+                host,
+                probeHost: DEVICE_BROKER_DEFAULT_HOST,
+                hostCandidates: hostBrokerProbeCandidates(host, DEVICE_BROKER_DEFAULT_HOST),
+                port,
+                command: process.execPath,
+                args: [cliPath, "devices", "broker", "serve", "--host", host, "--port", String(port)],
+                cwd,
+                profile: profile || null,
+                startedAt,
+            });
+        }
         console.log(`ccc-device-broker listening on http://${host}:${port}`);
     });
     return 0;

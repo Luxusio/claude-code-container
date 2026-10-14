@@ -432,7 +432,7 @@ function executableExists(executable) {
 
 export function brokerLaunchInvocation(host, port, options = {}) {
     const brokerEntry = fileURLToPath(import.meta.resolve("@ccc/device-lab/broker-entry.js"));
-    const brokerArgs = ["devices", "broker", "serve", "--host", host, "--port", String(port)];
+    const brokerArgs = ["devices", "broker", "serve", "--host", host, "--port", String(port), "--runtime-managed-by-parent"];
     return { command: options.execPath || process.execPath, args: [brokerEntry, ...brokerArgs] };
 }
 

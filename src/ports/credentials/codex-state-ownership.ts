@@ -1,4 +1,4 @@
-import type { CodexStateDirectory, CodexStateRuntime, CodexStateRootReceipt } from "../../domain/credentials/codex-state-ownership.js";
+import type { ActiveCodexStateContainer, CodexStateAccount, CodexStateDirectory, CodexStateRuntime, CodexStateRootReceipt } from "../../domain/credentials/codex-state-ownership.js";
 
 /** Synchronous semantic observations and one fixed native ownership effect. */
 export interface CodexStateOwnershipPorts {
@@ -9,11 +9,10 @@ export interface CodexStateOwnershipPorts {
     effectiveUid(): number | undefined;
     effectiveGid(): number | undefined;
     normalizeImage(image: string): string;
-    previousAccount(image: string): string;
+    previousAccount(image: string): CodexStateAccount;
     directory(path: string): CodexStateDirectory;
     parent(path: string): string;
-    activeIds(): string;
-    inspectActive(ids: string[]): string;
+    activeContainers(): ActiveCodexStateContainer[];
     isAbsolute(path: string): boolean;
     realpath(path: string): string;
     readonly separator: string;

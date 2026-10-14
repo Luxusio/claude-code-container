@@ -1080,6 +1080,47 @@ describe('remoteExec', () => {
     expect((remoteExecCall?.[1] as string[])[2]).not.toContain('docker exec  -it ccc-')
   })
 
+  it('refuses a late watching result before interactive SSH and releases the existing session claim', async () => {
+    let clock = 123
+    vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    const success = { status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null }
+    mockSpawnSync.mockReset().mockReturnValue(success)
+      .mockReturnValueOnce({ ...success, stdout: 'mutagen version 0.17.0\n' })
+      .mockReturnValueOnce({ ...success, stdout: 'sha256abc\n' })
+      .mockReturnValueOnce({ ...success, stdout: 'ccc-container-id=abcdef1234567890\n' })
+      .mockReturnValueOnce(success)
+      .mockReturnValueOnce(success)
+      .mockReturnValueOnce({ ...success, stdout: 'URL: user@host:docker://abcdef1234567890/project/project\nStatus: Watching for changes\n' })
+      .mockImplementationOnce(() => {
+        clock += 120_001
+        return { ...success, stdout: 'Status: Watching for changes\n' }
+      })
+    mockExistsSync.mockReturnValue(true)
+    mockReadFileSync.mockReturnValue(JSON.stringify({ host: 'saved-host', user: 'saveduser', remotePath: '' }) as any)
+    mockSpawn.mockReturnValue(makeSpawnMock(0) as any)
+    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:1') })
+
+    await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:1')
+
+    expect(mockSpawn).not.toHaveBeenCalled()
+    expect(mockPrompt).not.toHaveBeenCalled()
+    expect(console.error).toHaveBeenCalledWith('Error: Sync timeout - initial sync did not complete')
+    expect(console.log).not.toHaveBeenCalledWith(' done')
+    const queries = mockSpawnSync.mock.calls.filter(call => call[0] === 'mutagen' && (call[1] as string[])[1] === 'list')
+    expect(queries).toHaveLength(2)
+    expect(queries[0][2]).toEqual({ encoding: 'utf-8' })
+    expect(queries[1][2]).toEqual({ encoding: 'utf-8', timeout: 120000 })
+    const release = mockSpawnSync.mock.calls.at(-1)!
+    expect(release[0]).toBe('ssh')
+    expect((release[1] as string[])[0]).toBe('saveduser@saved-host')
+    expect((release[1] as string[])[1]).toContain('rm -f "$_ccc_sessions/')
+    expect(release[2]).toEqual({ encoding: 'utf-8', timeout: 10000 })
+    expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledTimes(1)
+    expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledWith('/locks/remote.lock')
+    expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(exitMock.mock.invocationCallOrder[0])
+    expect(exitMock).toHaveBeenCalledWith(1)
+  })
+
   it('saves new config when host is provided and host is reachable', async () => {
     setupSuccessfulSpawnSyncs()
     // existsSync: no config file saved yet

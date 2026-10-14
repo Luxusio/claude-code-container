@@ -11,10 +11,12 @@ class CodexBootstrapPorts:
     required_payload_available: object
     read_installed_hooks: object
     installation_workspace: object
-    run_command: object
-    installer_interpreter: object
+    initialize_repository: object
+    fetch_pinned_revision: object
+    fetched_revision: object
+    checkout_fetched_revision: object
+    install_codex: object
     restore_interpreter: object
-    installer_path: object
     installer_home: object
     report_installing: object
     report_failure: object

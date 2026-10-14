@@ -35,16 +35,19 @@ export function createRemoteSync<Evidence>(ports: RemoteSyncPorts<Evidence>) {
     }
 
     async function waitForSync(sessionName: string, timeoutMs: number = 120000): Promise<void> {
-        const startTime = ports.now();
+        const deadline = ports.now() + timeoutMs;
         const checkInterval = 1000;
 
         ports.report({ kind: "sync-waiting" });
 
-        while (ports.now() - startTime < timeoutMs) {
-            const observation = ports.observeSync(sessionName);
+        while (true) {
+            const remainingMs = deadline - ports.now();
+            if (!(remainingMs >= 1)) break;
+            const observation = ports.observeSync(sessionName, undefined, remainingMs);
             if (observation.kind === "unavailable") ports.fail("sync-missing");
 
-            if (observation.watching) {
+            const remainingAfterObservation = deadline - ports.now();
+            if (observation.watching && remainingAfterObservation > 0) {
                 ports.report({ kind: "sync-completed" });
                 return;
             }
@@ -53,9 +56,12 @@ export function createRemoteSync<Evidence>(ports: RemoteSyncPorts<Evidence>) {
                 ports.report({ kind: "sync-failed", observation });
                 ports.fail("sync-failed", observation.evidence);
             }
+            if (!(remainingAfterObservation > 0)) break;
 
             ports.report({ kind: "sync-poll" });
-            await ports.sleep(checkInterval);
+            const sleepMs = Math.min(checkInterval, deadline - ports.now());
+            if (!(sleepMs > 0)) break;
+            await ports.sleep(sleepMs);
         }
 
         ports.report({ kind: "sync-timeout" });
