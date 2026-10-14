@@ -37,7 +37,8 @@ const nativeLockChild = String.raw`
     import fs from "node:fs";
     import { syncBuiltinESMExports } from "node:module";
     import { join } from "node:path";
-    const [file, moduleUrl, root, role, mode, scenario] = process.argv.slice(1);
+    const [file, moduleUrl, root, role, mode, scenario, ownerDeathArchiveJson] = process.argv.slice(1);
+    const ownerDeathArchive = ownerDeathArchiveJson ? JSON.parse(ownerDeathArchiveJson) : undefined;
     const native = { openSync: fs.openSync, writeFileSync: fs.writeFileSync, closeSync: fs.closeSync,
         renameSync: fs.renameSync, rmSync: fs.rmSync, readFileSync: fs.readFileSync };
     const marker = (event, text = "") => {
@@ -57,7 +58,7 @@ const nativeLockChild = String.raw`
         fs.appendFileSync(join(root, "callbacks.jsonl"), JSON.stringify({ role, event, pid: process.pid }) + "\n");
         marker(event, ownToken);
     };
-    let descriptor, ownToken = "", pausedOpen = false, pausedMove = false, pausedRelease = false;
+    let descriptor, ownToken = "", pausedOpen = false, pausedMove = false, pausedRelease = false, pausedOwnerDeath = false;
     fs.openSync = function(path, flags, ...args) {
         if (path === file && flags === "wx") marker("attempted");
         const fd = native.openSync(path, flags, ...args);
@@ -89,6 +90,16 @@ const nativeLockChild = String.raw`
         native.renameSync(source, destination);
     };
     fs.rmSync = function(path, ...args) {
+        if (role === "C" && ownerDeathArchive && !pausedOwnerDeath && path === ownerDeathArchive.path) {
+            let record;
+            try { record = JSON.parse(native.readFileSync(path, "utf8")); } catch {}
+            if (record?.token === ownerDeathArchive.token && record?.pid === ownerDeathArchive.pid) {
+                // Production has qualified this archive dead; let the controller join and journal B first.
+                pausedOwnerDeath = true;
+                marker("dead-archive-paused", JSON.stringify({ path, token: record.token, pid: record.pid }));
+                gate("dead-archive-remove");
+            }
+        }
         if (role === "B" && !pausedRelease && String(path).startsWith(file + ".")) {
             let record;
             try { record = JSON.parse(native.readFileSync(path, "utf8")); } catch {}
@@ -118,11 +129,11 @@ const nativeLockChild = String.raw`
     }
 `;
 
-function startNativeLockChild(file: string, modulePath: string, root: string, role: "A" | "B" | "C", mode: "sync" | "async", scenario: NativeLockScenario) {
+function startNativeLockChild(file: string, modulePath: string, root: string, role: "A" | "B" | "C", mode: "sync" | "async", scenario: NativeLockScenario, ownerDeathArchive?: { path: string; token: string; pid: number }) {
     let terminal = false;
     let child!: ReturnType<typeof execFile>;
     const done = new Promise<{ error: Error | null; stdout: string; stderr: string }>(resolve => {
-        child = execFile(process.execPath, ["--input-type=module", "-e", nativeLockChild, file, new URL(modulePath, import.meta.url).href, root, role, mode, scenario], {
+        child = execFile(process.execPath, ["--input-type=module", "-e", nativeLockChild, file, new URL(modulePath, import.meta.url).href, root, role, mode, scenario, ...(ownerDeathArchive ? [JSON.stringify(ownerDeathArchive)] : [])], {
             cwd: fileURLToPath(new URL("../../", import.meta.url)), timeout: 30_000, windowsHide: true,
         }, (error, stdout, stderr) => { terminal = true; resolve({ error, stdout: String(stdout), stderr: String(stderr) }); });
     });
@@ -177,7 +188,7 @@ describe("device-lab shared mutation lock", () => {
         utimesSync(file, old, old);
         const signal = (event: string) => writeFileSync(join(root, event), "");
         const wait = (event: string) => awaitNativeMarker(root, event, children.filter(child => !expectedTerminated.has(child)));
-        const start = (role: "A" | "B" | "C") => { const child = startNativeLockChild(file, modulePath, root, role, mode, scenario); children.push(child); return child; };
+        const start = (role: "A" | "B" | "C", ownerDeathArchive?: { path: string; token: string; pid: number }) => { const child = startNativeLockChild(file, modulePath, root, role, mode, scenario, ownerDeathArchive); children.push(child); return child; };
         try {
             const a = start("A");
             await wait("A-observed");
@@ -187,12 +198,24 @@ describe("device-lab shared mutation lock", () => {
             expect(JSON.parse(readFileSync(file, "utf8")).token).toBe(ownerToken);
             signal("A-before-move");
             await wait("A-moved");
-            const moved = JSON.parse(readFileSync(join(root, "A-moved"), "utf8")) as { path: string; record: { token: string } };
+            const moved = JSON.parse(readFileSync(join(root, "A-moved"), "utf8")) as { path: string; record: { token: string; pid: number } };
             expect(moved.record.token).toBe(ownerToken);
             expect(JSON.parse(readFileSync(moved.path, "utf8")).token).toBe(ownerToken);
             expect(existsSync(file)).toBe(false);
             if (death === "reclaimer") { expectedTerminated.add(a); a.child.kill("SIGKILL"); expect((await a.done).error).not.toBeNull(); }
-            const c = start("C");
+            let ownerDeathArchive: { path: string; token: string; pid: number } | undefined;
+            let ownerArchiveBytes: string | undefined;
+            if (death === "owner") {
+                const ownerEntries = readFileSync(join(root, "callbacks.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as { role: string; event: string; pid: number }).filter(event => event.role === "B" && event.event === "enter");
+                expect(ownerEntries).toHaveLength(1);
+                expect(b.child.pid).toBeGreaterThan(0);
+                expect(ownerEntries[0].pid).toBe(b.child.pid);
+                expect(moved.record.pid).toBe(b.child.pid);
+                ownerDeathArchive = { path: moved.path, token: ownerToken, pid: ownerEntries[0].pid };
+                ownerArchiveBytes = readFileSync(moved.path, "utf8");
+                expect(JSON.parse(ownerArchiveBytes)).toMatchObject({ token: ownerToken, pid: b.child.pid });
+            }
+            const c = start("C", ownerDeathArchive);
             await wait("C-published");
             const candidateToken = readFileSync(join(root, "C-published"), "utf8");
             expect(candidateToken).not.toBe(ownerToken);
@@ -201,11 +224,17 @@ describe("device-lab shared mutation lock", () => {
             expect(existsSync(join(root, "C-enter")), "a real published candidate must wait while B operates from its displaced record").toBe(false);
             expect(existsSync(join(root, "A-enter"))).toBe(false);
             if (death === "owner") {
+                expect(existsSync(join(root, "C-dead-archive-paused"))).toBe(false);
+                expect(readFileSync(moved.path, "utf8")).toBe(ownerArchiveBytes);
                 expectedTerminated.add(b);
                 b.child.kill("SIGKILL");
                 expect((await b.done).error).not.toBeNull();
                 appendFileSync(join(root, "callbacks.jsonl"), `${JSON.stringify({ role: "B", event: "terminated" })}\n`);
                 expect(b.terminal()).toBe(true);
+                await wait("C-dead-archive-paused");
+                expect(JSON.parse(readFileSync(join(root, "C-dead-archive-paused"), "utf8"))).toEqual(ownerDeathArchive);
+                expect(readFileSync(moved.path, "utf8")).toBe(ownerArchiveBytes);
+                signal("C-dead-archive-remove");
                 signal("A-after-move");
             } else {
                 if (death !== "reclaimer") signal("A-after-move");
@@ -234,7 +263,7 @@ describe("device-lab shared mutation lock", () => {
             expect(readdirSync(root).filter(name => name.startsWith("state.mutation.lock"))).toEqual([]);
             expect(c.terminal()).toBe(true);
         } finally {
-            for (const event of ["A-before-move", "A-after-move", "A-write", "B-leave", "B-release", "C-leave"]) signal(event);
+            for (const event of ["A-before-move", "A-after-move", "A-write", "B-leave", "B-release", "C-leave", "C-dead-archive-remove"]) signal(event);
             for (const child of children) if (!child.terminal()) child.child.kill("SIGKILL");
             await Promise.all(children.map(child => child.done));
         }
