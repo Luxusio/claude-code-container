@@ -66,6 +66,44 @@ describe("QEMU guest access", () => {
         expect(createQemuGuestAccessApplication(ports).probeReadiness({ labId: "lab" })).toMatchObject({ ok: true, readiness: { state: "process-running" } });
     });
 
+    it.each([
+        { name: "successful", ok: true, status: 0, state: "ready", check: "pass" },
+        { name: "failed", ok: false, status: 7, state: "failed", check: "fail" },
+    ])("redacts Windows native paths from $name default SSH readiness and published history", ({ ok, status, state, check }) => {
+        const { ports, lab } = accessPorts();
+        const executable = "C:\\native\\OpenSSH\\ssh.exe", keyPath = "C:\\private\\keys\\id_ed25519";
+        lab.paths = { labDir: "C:\\private\\labs\\lab", workspaceDir: "C:\\private\\labs\\lab\\workspace", artifactsDir: "C:\\private\\labs\\lab\\artifacts", snapshotsDir: "C:\\private\\labs\\lab\\snapshots", exportsDir: "C:\\private\\labs\\lab\\exports" };
+        lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest", keyPath, readinessCommand: "ready-only" } };
+        ports.sshAvailable = () => true;
+        const execute = vi.fn(() => ({ result: { ok, status, command: executable, args: ["-i", keyPath, "ready-only"],
+            stdout: `native ${executable}; key ${keyPath}; lab ${lab.paths.labDir}; artifacts ${lab.paths.artifactsDir}`,
+            stderr: `trace ${executable}; key ${keyPath}` }, redactionPaths: [executable] }));
+        const publish = vi.fn(ports.writeLab);
+        ports.executeGuestCommand = execute;
+        ports.writeLab = publish;
+        const response = createQemuGuestAccessApplication(ports).probeReadiness({ labId: "lab" });
+        expect(response).toMatchObject({ ok, readiness: { state, checks: expect.arrayContaining([
+            expect.objectContaining({ name: "runtime-process", status: "pass" }),
+            expect.objectContaining({ name: "guest-ssh-readiness", status: check, exitStatus: status }),
+        ]) } });
+        expect(execute).toHaveBeenCalledExactlyOnceWith(lab, "ready-only", 1000);
+        expect(publish).toHaveBeenCalledTimes(1);
+        const returned = JSON.parse(JSON.stringify(response));
+        const written = JSON.parse(JSON.stringify(publish.mock.calls[0][0].readiness));
+        expect(written.latest).toEqual(returned.readiness);
+        expect(written.history).toEqual([returned.readiness]);
+        for (const readiness of [returned.readiness, written.latest, written.history[0]]) {
+            const result = readiness.diagnostics.probes[0].result;
+            expect(result).toEqual({ ok, status,
+                stdout: "native <provider-internal>; key <provider-internal>; lab <provider-internal>; artifacts <provider-internal>",
+                stderr: "trace <provider-internal>; key <provider-internal>" });
+            for (const privatePath of [executable, keyPath, lab.paths.labDir, lab.paths.artifactsDir]) {
+                expect(result.stdout).not.toContain(privatePath);
+                expect(result.stderr).not.toContain(privatePath);
+            }
+        }
+    });
+
     it("records a failed process observation without probing the guest", () => {
         const { ports, lab } = accessPorts(); ports.processExists = () => false;
         lab.guest = { ssh: { host: "127.0.0.1", port: 2222, user: "guest" } };

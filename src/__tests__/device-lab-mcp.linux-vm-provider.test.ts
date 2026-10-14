@@ -1055,7 +1055,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             { command: "/usr/bin/qemu-img", args: ["create", "-f", "qcow2", "-F", "qcow2", "-b", join(root, "images", "base.qcow2"), createdLab.image.diskImage], timeoutMs: 600000 },
         ]);
         expect(readFileSync(outsideDisk, "utf8")).toBe("outside");
-        expect(JSON.stringify(materialized)).not.toContain(outsideLabDir);
+        expect(JSON.stringify(materialized)).not.toContain(JSON.stringify(outsideLabDir).slice(1, -1));
 
         const snapshotCommands: Array<{ command: string; args: string[]; timeoutMs?: number }> = [];
         expect(snapshotLab("create", { labId: createdLab.id, snapshotName: "unsafe" }, {
@@ -1389,8 +1389,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(recordedLab.sessions).toEqual([
             expect.objectContaining({ id: "guest-ssh-session", sessionType: "guest-ssh", state: "open" }),
         ]);
-        expect(JSON.stringify(session)).not.toContain(keyPath);
-        expect(JSON.stringify(session)).not.toContain(createdLab.paths.labDir);
+        expect(JSON.stringify(session)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
+        expect(JSON.stringify(session)).not.toContain(JSON.stringify(createdLab.paths.labDir).slice(1, -1));
         expect(JSON.stringify(session)).not.toContain("/usr/bin/ssh");
         expect(JSON.stringify(session)).not.toContain("qemu-monitor.sock");
         expect(JSON.stringify(session)).not.toContain("secret");
@@ -1510,11 +1510,11 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         }));
 
         expect(calls).toEqual([]);
-        expect(JSON.stringify(stopped)).not.toContain(keyPath);
-        expect(JSON.stringify(noSsh)).not.toContain(keyPath);
-        expect(JSON.stringify(missingTool)).not.toContain(keyPath);
+        expect(JSON.stringify(stopped)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
+        expect(JSON.stringify(noSsh)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
+        expect(JSON.stringify(missingTool)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(JSON.stringify(missingTool)).not.toContain("/usr/bin/ssh");
-        expect(JSON.stringify(tamperedSession)).not.toContain(otherKeyPath);
+        expect(JSON.stringify(tamperedSession)).not.toContain(JSON.stringify(otherKeyPath).slice(1, -1));
     });
 
     it("records bounded guest-agent status, readiness, and sessions without raw shell authority", () => {
@@ -1595,7 +1595,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             command: "/usr/bin/ssh",
             args: expect.arrayContaining([healthCommand]),
         }));
-        expect(JSON.stringify(status)).not.toContain(keyPath);
+        expect(JSON.stringify(status)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(JSON.stringify(status)).not.toContain(healthCommand);
 
         const readiness = probeReadiness({ labId: createdLab.id }, options);
@@ -1641,8 +1641,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 }),
             }),
         }));
-        expect(JSON.stringify(session)).not.toContain(keyPath);
-        expect(JSON.stringify(session)).not.toContain(createdLab.paths.labDir);
+        expect(JSON.stringify(session)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
+        expect(JSON.stringify(session)).not.toContain(JSON.stringify(createdLab.paths.labDir).slice(1, -1));
         expect(JSON.stringify(session)).not.toContain(healthCommand);
         expect(JSON.stringify(session)).not.toContain("/usr/bin/ssh");
         expect(JSON.stringify(session)).not.toContain("args");
@@ -1750,7 +1750,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             command: "/usr/bin/ssh",
             args: expect.arrayContaining([provisionCommand]),
         }));
-        expect(JSON.stringify(provisioned)).not.toContain(keyPath);
+        expect(JSON.stringify(provisioned)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(JSON.stringify(provisioned)).not.toContain(provisionCommand);
         expect(JSON.stringify(provisioned)).not.toContain("/usr/bin/ssh");
         expect(JSON.stringify(provisioned)).not.toContain("args");
@@ -1835,7 +1835,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(JSON.parse(readFileSync(join(failedStartLab.paths.labDir, "lab.json"), "utf8"))).toEqual(
             expect.objectContaining({ runtimeState: "running", runtime: expect.objectContaining({ pid: 7982 }) }),
         );
-        expect(JSON.stringify(started)).not.toContain(keyPath);
+        expect(JSON.stringify(started)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(JSON.stringify(started)).not.toContain(provisionCommand);
         expect(JSON.stringify(started)).not.toContain("/usr/bin/ssh");
         expect(JSON.stringify(started)).not.toContain("args");
@@ -2033,26 +2033,26 @@ describe("device-lab Linux VM container-QEMU provider", () => {
 
         assert.ok(listed.labs[0].guest?.agent);
         const listedStatusJson = JSON.stringify(listed.labs[0].guest.agent.lastStatus);
-        expect(listedStatusJson).not.toContain(keyPath);
+        expect(listedStatusJson).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(listedStatusJson).not.toContain(healthCommand);
-        expect(listedStatusJson).not.toContain(createdLab.paths.labDir);
-        expect(listedStatusJson).not.toContain(createdLab.paths.artifactsDir);
-        expect(listedStatusJson).not.toContain(createdLab.paths.workspaceDir);
+        expect(listedStatusJson).not.toContain(JSON.stringify(createdLab.paths.labDir).slice(1, -1));
+        expect(listedStatusJson).not.toContain(JSON.stringify(createdLab.paths.artifactsDir).slice(1, -1));
+        expect(listedStatusJson).not.toContain(JSON.stringify(createdLab.paths.workspaceDir).slice(1, -1));
         expect(listedStatusJson).not.toContain("args");
         const listedProvisionJson = JSON.stringify(listed.labs[0].guest.agent.lastProvision);
-        expect(listedProvisionJson).not.toContain(keyPath);
+        expect(listedProvisionJson).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(listedProvisionJson).not.toContain(provisionCommand);
-        expect(listedProvisionJson).not.toContain(createdLab.paths.labDir);
-        expect(listedProvisionJson).not.toContain(createdLab.paths.workspaceDir);
+        expect(listedProvisionJson).not.toContain(JSON.stringify(createdLab.paths.labDir).slice(1, -1));
+        expect(listedProvisionJson).not.toContain(JSON.stringify(createdLab.paths.workspaceDir).slice(1, -1));
         expect(listedProvisionJson).not.toContain("args");
 
         const sessionJson = JSON.stringify(session);
-        expect(sessionJson).not.toContain(keyPath);
+        expect(sessionJson).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(sessionJson).not.toContain(healthCommand);
         expect(sessionJson).not.toContain(provisionCommand);
-        expect(sessionJson).not.toContain(createdLab.paths.labDir);
-        expect(sessionJson).not.toContain(createdLab.paths.artifactsDir);
-        expect(sessionJson).not.toContain(createdLab.paths.workspaceDir);
+        expect(sessionJson).not.toContain(JSON.stringify(createdLab.paths.labDir).slice(1, -1));
+        expect(sessionJson).not.toContain(JSON.stringify(createdLab.paths.artifactsDir).slice(1, -1));
+        expect(sessionJson).not.toContain(JSON.stringify(createdLab.paths.workspaceDir).slice(1, -1));
         expect(sessionJson).not.toContain("args");
         assert.ok("agent" in session.session.attach && session.session.attach.agent);
         expect(session.session.attach.agent.lastStatus).toEqual(expect.objectContaining({
@@ -2161,6 +2161,51 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(JSON.stringify(ready)).not.toContain("/host/other.qcow2");
     });
 
+    it.each([
+        { name: "successful", ok: true, status: 0, state: "ready", check: "pass" },
+        { name: "failed", ok: false, status: 7, state: "failed", check: "fail" },
+    ])("redacts native paths from $name default SSH readiness and persisted history", ({ ok, status, state, check }) => {
+        const root = tempRoot();
+        const env = { CCC_PROFILE: "ssh-readiness-redaction", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const ownerRoot = join(root, "owners", ownerId(env));
+        mkdirSync(join(ownerRoot, "keys"), { recursive: true });
+        const keyPath = join(ownerRoot, "keys", "id_ed25519");
+        writeFileSync(keyPath, "private-key");
+        const created = createLab({ name: "SSH Readiness Redaction", guestSshHost: "127.0.0.1", guestSshPort: 2222,
+            guestSshUser: "ccc", guestSshKeyPath: keyPath, guestReadinessCommand: "test -f /tmp/ready" }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        const lab = created.lab;
+        expect(startLab({ labId: lab.id }, { env, stateRoot: root, qemuPath: "/fixture/qemu-system-x86_64", kvmAvailable: true,
+            commandRunner: () => ({ ok: true, pid: 6161 }) }).ok).toBe(true);
+        const executable = "C:\\native\\OpenSSH\\ssh.exe";
+        const execute = vi.fn((command: string, args: (string | undefined)[]) => ({ ok, status, command, args,
+            stdout: `native ${command}; key ${keyPath}; lab ${lab.paths.labDir}; artifacts ${lab.paths.artifactsDir}`,
+            stderr: `trace ${command}; key ${keyPath}` }));
+        const response = probeReadiness({ labId: lab.id }, { env, stateRoot: root, processExists: () => true,
+            sshPath: executable, sshCommandRunner: execute, sshTimeoutMs: 4321, now: "2026-10-14T00:00:00.000Z" });
+        expect(response).toMatchObject({ ok, readiness: { state, checks: expect.arrayContaining([
+            expect.objectContaining({ name: "runtime-process", status: "pass" }),
+            expect.objectContaining({ name: "guest-ssh-readiness", status: check, exitStatus: status }),
+        ]) }, target: { readiness: state, attachable: ok } });
+        expect(execute).toHaveBeenCalledExactlyOnceWith(executable,
+            ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-p", "2222", "-i", keyPath, "ccc@127.0.0.1", "test -f /tmp/ready"],
+            { cwd: lab.paths.labDir, env, timeoutMs: 4321 });
+        const returned = JSON.parse(JSON.stringify(response));
+        const persisted = JSON.parse(readFileSync(join(lab.paths.labDir, "lab.json"), "utf8")).readiness;
+        expect(persisted.latest).toEqual(returned.readiness);
+        expect(persisted.history).toEqual([returned.readiness]);
+        for (const readiness of [returned.readiness, persisted.latest, persisted.history[0]]) {
+            const result = readiness.diagnostics.probes[0].result;
+            expect(result).toEqual({ ok, status,
+                stdout: "native <provider-internal>; key <provider-internal>; lab <provider-internal>; artifacts <provider-internal>",
+                stderr: "trace <provider-internal>; key <provider-internal>" });
+            for (const privatePath of [executable, keyPath, lab.paths.labDir, lab.paths.artifactsDir]) {
+                expect(result.stdout).not.toContain(privatePath);
+                expect(result.stderr).not.toContain(privatePath);
+            }
+        }
+    });
+
     it("uses bounded SSH metadata for default guest readiness and transport without exposing key paths", () => {
         const root = tempRoot();
         const workspace = tempRoot();
@@ -2206,7 +2251,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 },
             }),
         }));
-        expect(JSON.stringify(created)).not.toContain(keyPath);
+        expect(JSON.stringify(created)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
 
         const started = startLab({ labId: createdLab.id }, {
             env,
@@ -2236,7 +2281,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             command: "/usr/bin/ssh",
             args: expect.arrayContaining(["-p", "2222", "-i", keyPath, "ccc@127.0.0.1", "test -f /tmp/ready"]),
         }));
-        expect(JSON.stringify(readiness)).not.toContain(keyPath);
+        expect(JSON.stringify(readiness)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(JSON.stringify(readiness)).not.toContain("private-key");
         expect(JSON.stringify(readiness)).not.toContain("test -f /tmp/ready");
 
@@ -2274,7 +2319,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             expect.objectContaining({ command: "/usr/bin/ssh", args: expect.arrayContaining(["ccc@127.0.0.1", "mkdir -p /workspace/app"]) }),
             expect.objectContaining({ command: "/usr/bin/scp", args: expect.arrayContaining(["-P", "2222", "-i", keyPath, "ccc@127.0.0.1:/workspace/app/"]) }),
         ]));
-        expect(JSON.stringify(pushed)).not.toContain(keyPath);
+        expect(JSON.stringify(pushed)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(JSON.stringify(pushed)).not.toContain("/usr/bin/scp");
 
         const preflightPullDir = join(createdLab.paths.artifactsDir, "preflight-pull");
@@ -2308,7 +2353,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(calls).toEqual(expect.arrayContaining([
             expect.objectContaining({ command: "/usr/bin/scp", args: expect.arrayContaining(["ccc@127.0.0.1:/artifacts/run/.", expect.stringContaining("ssh-pull/")]) }),
         ]));
-        expect(JSON.stringify(pulled)).not.toContain(keyPath);
+        expect(JSON.stringify(pulled)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
     });
 
     it("runs bounded guest commands over configured SSH without exposing provider internals", () => {
@@ -2382,8 +2427,8 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             timeoutMs: 600000,
             cwd: createdLabDir,
         })]);
-        expect(JSON.stringify(executed)).not.toContain(keyPath);
-        expect(JSON.stringify(executed)).not.toContain(createdLabDir);
+        expect(JSON.stringify(executed)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
+        expect(JSON.stringify(executed)).not.toContain(JSON.stringify(createdLabDir).slice(1, -1));
         expect(JSON.stringify(executed)).not.toContain("/usr/bin/ssh");
         expect(JSON.stringify(executed)).not.toContain("uname -a");
         expect(JSON.stringify(executed)).not.toContain("args");
@@ -2397,7 +2442,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             ok: false, labId: createdLab.id, timeoutMs: 2500,
             result: { ok: false, status: 7, stdout: "partial <provider-internal>", stderr: "failed <provider-internal>" },
         });
-        expect(JSON.stringify(failed)).not.toContain(keyPath);
+        expect(JSON.stringify(failed)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
         expect(JSON.stringify(failed)).not.toContain("/usr/bin/ssh");
         expect(readFileSync(join(createdLabDir, "lab.json"), "utf8")).toBe(beforeFailure);
     });
@@ -2453,7 +2498,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
                 stdout: "used <provider-internal> <provider-internal> <provider-internal>", stderr: "trace <provider-internal>" });
             const publicResult = JSON.stringify(executed);
             for (const privateValue of [nextSsh, keyPath, lab.paths.labDir, lab.paths.artifactsDir, "printf 'hello rediscovery'"]) {
-                expect(publicResult).not.toContain(privateValue);
+                expect(publicResult).not.toContain(JSON.stringify(privateValue).slice(1, -1));
             }
             expect(executed.result).not.toHaveProperty("args");
         }
@@ -2590,7 +2635,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             reason: "guest-ssh-not-configured",
         }));
         expect(calls).toEqual([]);
-        expect(JSON.stringify(tampered)).not.toContain(otherKeyPath);
+        expect(JSON.stringify(tampered)).not.toContain(JSON.stringify(otherKeyPath).slice(1, -1));
     });
 
     it("rejects a linked guest SSH key", (context) => {
@@ -2653,7 +2698,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         });
         const missing = createLab({ name: "Missing Key", guestSshHost: "127.0.0.1", guestSshUser: "ccc", guestSshKeyPath: join(ownerRoot, "keys", "missing") }, { env, stateRoot: root });
         expect(missing).toEqual({ ok: false, error: "guest-ssh-key-not-found" });
-        expect(JSON.stringify(missing)).not.toContain(ownerRoot);
+        expect(JSON.stringify(missing)).not.toContain(JSON.stringify(ownerRoot).slice(1, -1));
 
         const tampered = createLab({
             name: "Tampered SSH",
@@ -2696,7 +2741,7 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             }),
         }));
         expect(calls).toEqual([]);
-        expect(JSON.stringify(tamperedReadiness)).not.toContain(otherKeyPath);
+        expect(JSON.stringify(tamperedReadiness)).not.toContain(JSON.stringify(otherKeyPath).slice(1, -1));
     });
 
     it("records failed readiness when a running lab runtime process is gone", () => {

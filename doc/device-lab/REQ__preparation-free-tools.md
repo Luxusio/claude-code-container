@@ -39,6 +39,11 @@ match literally within the selected owned VM, and execution uses the matched
 record's name. An unknown ID refuses before provider execution or snapshot
 metadata changes. Name-based operations retain their existing admission.
 
+QEMU SSH readiness diagnostics mask native executable, SSH key and lab paths
+before returning or storing them in latest/history, including Windows-style
+paths. Successful and failed probes retain their readiness outcome; failed
+observations still publish failure history.
+
 `list_images` and `import_image` manage container QEMU image records.
 `create_macos_vm` creates from an image, or clones an owned `sourceDeviceId`.
 Source cloning retains owner/lifecycle checks and inherits provider, CPU and

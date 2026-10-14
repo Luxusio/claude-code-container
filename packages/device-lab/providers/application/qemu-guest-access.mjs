@@ -1,4 +1,4 @@
-import { publicLab, publicExecution, publicGuestExecResult, publicReadinessProbeResult, requireRunningLab } from "../domain/qemu-lifecycle.mjs";
+import { publicLab, publicGuestExecResult, publicReadinessProbeResult, requireRunningLab } from "../domain/qemu-lifecycle.mjs";
 import { qemuCommandTimeout as boundedTimeout } from "../domain/qemu-image-disk-target.mjs";
 import { guestAccessTarget as targetForLab, sessionIdFor, sessionStateFor, publicSessionLab, publicSessionTarget, readinessStateFromProbe, combineReadinessProbes, validateGuestCommand } from "../domain/qemu-guest-access.mjs";
 /** @typedef {import('../domain/qemu-guest-access.mjs').QemuAccessLab} Lab */
@@ -25,7 +25,7 @@ export function createQemuGuestAccessApplication(ports) {
             ok: result?.ok === true,
             ready: result?.ok === true,
             checks: [{ name: "guest-ssh-readiness", status: result?.ok === true ? "pass" : "fail", exitStatus: result?.status ?? null }],
-            diagnostics: { kind: "ssh-guest-readiness", available: true, result: publicExecution(result) },
+            diagnostics: { kind: "ssh-guest-readiness", available: true, result: publicGuestExecResult(result, lab, ssh, execution.redactionPaths) },
         };
     }
 
