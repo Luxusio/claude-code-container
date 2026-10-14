@@ -101,8 +101,9 @@ provider routing and failure handling. Abrupt process/guest termination can bypa
 ordinary finally cleanup; no guarantee of release or temporary-task cleanup is
 made for forced termination.
 
-The shared broker protocol advances to 4 for these desktop controls, so an older
-daemon is replaced through the existing verified upgrade path before use.
+The current shared broker protocol is 5 for VM identity and these desktop
+controls; an older daemon is replaced through the existing verified upgrade
+path before use.
 
 macOS screenshots capture only the main display and normalize PNG dimensions to
 its `CGDisplayBounds` coordinate dimensions. This makes returned screenshot
