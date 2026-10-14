@@ -1968,6 +1968,7 @@ function hostBrokerRuntimeFromPortProcess(
     persistedRuntime: Record<string, unknown> | null,
     statusRuntime: Record<string, unknown> | null,
     expectedCliPath?: string | readonly string[],
+    allowParentManagedRuntime = false,
 ): Record<string, unknown> | null {
     const record = compatibilityBrokerRecord(compatibility);
     const process = portProcessResolver(port, platform);
@@ -1985,7 +1986,8 @@ function hostBrokerRuntimeFromPortProcess(
         ? statusRuntime.processStartToken
         : null;
     const persistedMetadataMatches = persistedRuntime?.name === DEVICE_BROKER_NAME
-        && (persistedRuntime?.managedBy === "ccc-host" || persistedRuntime?.managedBy === "device-lab-mcp")
+        && (persistedRuntime?.managedBy === "ccc-host"
+            || (allowParentManagedRuntime && persistedRuntime?.managedBy === "device-lab-mcp"))
         && Number(persistedRuntime?.pid) === process.pid
         && Number(persistedRuntime?.port) === port;
     const persistedContinuity = !persistedRuntime
@@ -2368,6 +2370,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                 runtime,
                 statusRuntime,
                 normalized.trustedCliPaths,
+                true,
             )
             : null;
         const verifiedIdentity = verifiedHostBrokerIdentity(compatibility);

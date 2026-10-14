@@ -55,13 +55,27 @@ describe("host CLI protocol reuse", () => {
             "1111111111111111", port, {}, "linux", () => listener,
             { name: "ccc-device-broker", managedBy: "device-lab-mcp", pid: identity.pid, port, processStartToken: identity.startToken },
             { name: "ccc-device-broker", managedBy: "ccc-host-status", pid: identity.pid, port, processStartToken: identity.startToken },
-            cliPath,
+            cliPath, true,
         )).toEqual(expect.objectContaining({ pid: identity.pid, port, processIdentity: identity }));
+    });
+
+    it.each([17373, 47685])("does not grant automatic replacement authority over a matching MCP runtime at port %s", port => {
+        const cliPath = "/opt/ccc/packages/device-lab/dist/broker-entry.js";
+        const commandLine = `node ${cliPath} devices broker serve --port ${port} --runtime-managed-by-parent`;
+        const identity = { pid: 5212, startToken: "linux:broker-generation", commandHash: createHash("sha256").update(commandLine).digest("hex") };
+        expect(hostBrokerRuntimeFromPortProcessForTest(
+            "1111111111111111", port, {}, "linux",
+            () => ({ pid: identity.pid, commandLine, processIdentity: identity, processStartToken: identity.startToken }),
+            { name: "ccc-device-broker", managedBy: "device-lab-mcp", pid: identity.pid, port, processStartToken: identity.startToken },
+            { name: "ccc-device-broker", managedBy: "ccc-host-status", pid: identity.pid, port, processStartToken: identity.startToken },
+            cliPath,
+        )).toBeNull();
     });
 
     async function withMcpManagedBroker(
         fault: "none" | "entry" | "missing-entry" | "listener-pid" | "birth" | "saved-pid" | "saved-port" | "manager",
         test: (fixture: { port: number; runtimeFile: string; runtimeBytes: string; options: HostDeviceBrokerOptions;
+            server: ReturnType<typeof createDeviceBrokerServer>; status: { broker: { startedAt: string; process: { pid: number; startToken: string } } };
             spawnImpl: ReturnType<typeof vi.fn>; terminateProcess: ReturnType<typeof vi.fn> }) => Promise<void>,
     ) {
         const cwd = join(fixtureHome!, "host-project");
@@ -107,7 +121,7 @@ describe("host CLI protocol reuse", () => {
                 },
                 spawnImpl: spawnImpl as any, terminateProcess,
             };
-            await test({ port, runtimeFile, runtimeBytes, options, spawnImpl, terminateProcess });
+            await test({ port, runtimeFile, runtimeBytes, options, server, status, spawnImpl, terminateProcess });
         } finally { await close(server); }
     }
 
@@ -139,6 +153,43 @@ describe("host CLI protocol reuse", () => {
                 ok: false, error: "host-broker-incompatible", launched: false, reused: false,
             }));
             expect(readFileSync(runtimeFile, "utf8")).toBe(runtimeBytes);
+            expect(spawnImpl).not.toHaveBeenCalled();
+            expect(terminateProcess).not.toHaveBeenCalled();
+        });
+    });
+
+    it.each((["protocol", "bind"] as const).flatMap(mismatch =>
+        (["parent", "successor"] as const).map(record => ({ mismatch, record })),
+    ))("MCP $mismatch mismatch preserves $record authority without automatic repair", async ({ mismatch, record }) => {
+        await withMcpManagedBroker("none", async ({ runtimeFile, runtimeBytes, options, server, status, spawnImpl, terminateProcess }) => {
+            const parent = JSON.parse(runtimeBytes);
+            const successorBytes = JSON.stringify({ ...parent, pid: process.pid + 100000,
+                processStartToken: "successor-birth-generation", startedAt: "successor-start",
+                retainedParentEvidence: { label: "successor-owned", generation: "new" } }, null, 2) + "\n";
+            const originalRequest = server.listeners("request")[0];
+            server.removeListener("request", originalRequest);
+            let observedStatus = false;
+            server.on("request", (req, res) => {
+                if (req.url === "/status") {
+                    observedStatus = true;
+                    if (record === "successor") writeFileSync(runtimeFile, successorBytes);
+                    if (mismatch === "protocol") {
+                        // The mismatch travels over the actual private HTTP wire;
+                        // retain the real server's PID/birth and owner-resolve route.
+                        res.setHeader("Content-Type", "application/json");
+                        res.end(JSON.stringify({ ...status, broker: { ...status.broker,
+                            protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION - 1 } }));
+                        return;
+                    }
+                }
+                originalRequest.call(server, req, res);
+            });
+            const requested = mismatch === "bind" ? { ...options, bindHost: "0.0.0.0" } : options;
+            expect(await ensureHostDeviceBroker(requested)).toEqual(expect.objectContaining({
+                ok: false, error: "host-broker-incompatible", launched: false, reused: false,
+            }));
+            expect(observedStatus).toBe(true);
+            expect(readFileSync(runtimeFile, "utf8")).toBe(record === "successor" ? successorBytes : runtimeBytes);
             expect(spawnImpl).not.toHaveBeenCalled();
             expect(terminateProcess).not.toHaveBeenCalled();
         });

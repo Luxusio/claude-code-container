@@ -112,6 +112,35 @@ describe("actual Codex retained-state native composition", () => {
         expect(mocks.normalize).not.toHaveBeenCalled();
         noHelper();
     });
+    it.each([
+        { name: "sparse-only", length: 1, managedIndex: undefined },
+        { name: "hole before a managed bind", length: 2, managedIndex: 1 },
+        { name: "hole after a managed bind", length: 2, managedIndex: 0 },
+    ])("refuses $name before source proof or ownership effects", ({ length, managedIndex }) => {
+        const Mounts = new Array<(typeof previous.Mounts)[number]>(length);
+        if (managedIndex !== undefined) Mounts[managedIndex] = { ...previous.Mounts[0], Source: "runtime-alias" };
+        const proof = vi.fn((_source: string) => true);
+        expect(() => native.prepareCodexStateOwnership({ Image: "old", Mounts }, "new", principal, "chosen", proof))
+            .toThrow(/^Cannot inspect previous container mounts\.$/);
+        expect(proof).not.toHaveBeenCalled();
+        expect(mocks.spawn).not.toHaveBeenCalled();
+        expect(mocks.stat).not.toHaveBeenCalled();
+        expect(mocks.normalize).not.toHaveBeenCalled();
+        noHelper();
+    });
+    it("preserves ascending prior slot getter order and its original fault before ownership effects", () => {
+        const reads: number[] = []; const fault = { slot: 1 }; const Mounts = new Array<unknown>(3);
+        Object.defineProperty(Mounts, 0, { get() { reads.push(0); return { Destination: "/unrelated" }; } });
+        Object.defineProperty(Mounts, 1, { get() { reads.push(1); throw fault; } });
+        Object.defineProperty(Mounts, 2, { get() { throw new Error("later slot observed too early"); } });
+        try { invokePrevious({ Image: "old", Mounts }); throw new Error("missing exception"); }
+        catch (actual) { expect(actual).toBe(fault); }
+        expect(reads).toEqual([0, 1]);
+        expect(mocks.spawn).not.toHaveBeenCalled();
+        expect(mocks.stat).not.toHaveBeenCalled();
+        expect(mocks.normalize).not.toHaveBeenCalled();
+        noHelper();
+    });
     it("preserves a raw Destination getter fault after a qualified managed bind without ownership effects", () => {
         const fault = { destination: true };
         const Mounts = [previous.Mounts[0], { get Destination(): never { throw fault; } }];

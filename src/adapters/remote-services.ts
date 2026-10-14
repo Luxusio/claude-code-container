@@ -222,7 +222,7 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
         observeSync: (name, expectedContainerId, remainingMs) => {
             const timeout = remainingMs === undefined ? undefined : Math.floor(remainingMs);
             if (timeout !== undefined && !(timeout > 0)) return { kind: "unavailable" };
-            const result = spawnSync("mutagen", ["sync", "list", name], { encoding: "utf-8", ...(timeout === undefined ? {} : { timeout }) });
+            const result = spawnSync("mutagen", ["sync", "list", name], { encoding: "utf-8", ...(timeout === undefined ? {} : { timeout, killSignal: "SIGKILL" }) });
             if (result.error || result.status !== 0) return { kind: "unavailable" };
             const output = result.stdout ?? "";
             const syncStatus = parseMutagenSyncStatus(output);

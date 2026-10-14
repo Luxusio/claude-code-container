@@ -1109,7 +1109,7 @@ describe('remoteExec', () => {
     const queries = mockSpawnSync.mock.calls.filter(call => call[0] === 'mutagen' && (call[1] as string[])[1] === 'list')
     expect(queries).toHaveLength(2)
     expect(queries[0][2]).toEqual({ encoding: 'utf-8' })
-    expect(queries[1][2]).toEqual({ encoding: 'utf-8', timeout: 120000 })
+    expect(queries[1][2]).toEqual({ encoding: 'utf-8', timeout: 120000, killSignal: 'SIGKILL' })
     const release = mockSpawnSync.mock.calls.at(-1)!
     expect(release[0]).toBe('ssh')
     expect((release[1] as string[])[0]).toBe('saveduser@saved-host')

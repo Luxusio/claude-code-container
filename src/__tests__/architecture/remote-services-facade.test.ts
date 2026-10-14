@@ -156,9 +156,9 @@ describe("remote native observations and effects", () => {
         native.sync.mockReturnValue(execution(0, `URL: docker://${containerId}/project/id\nStatus: Watching for changes\n`));
         const observation = ports.observeSync("ccc-sync", containerId, 4321.9);
         expect(observation).toMatchObject({ kind: "observed", endpointMatches: true, watching: true, failed: false });
-        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 4321 });
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 4321, killSignal: "SIGKILL" });
         expect(ports.observeSync("ccc-sync", undefined, 1)).toMatchObject({ kind: "observed", endpointMatches: false, watching: true });
-        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 1 });
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 1, killSignal: "SIGKILL" });
         ports.observeSync("ccc-sync", containerId);
         expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8" });
     });
@@ -168,11 +168,46 @@ describe("remote native observations and effects", () => {
         for (const result of [execution(0, "Status: Watching\n", Error("timed out")), execution(7, "Status: Watching\n"), execution(null)]) {
             native.sync.mockReturnValue(result);
             expect(ports.observeSync("ccc-sync", containerId, 321)).toEqual({ kind: "unavailable" });
-            expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 321 });
+            expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 321, killSignal: "SIGKILL" });
         }
         const fault = Error("native query threw");
         native.sync.mockImplementation(() => { throw fault; });
         expect(() => ports.observeSync("ccc-sync", containerId, 321)).toThrow(fault);
+    });
+
+    it("forcibly terminates a SIGTERM-handling native query within its remaining budget", async () => {
+        const { spawnSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+        const budgetMs = 1500;
+        const allowanceMs = 1000;
+        const naturalExitMs = 5000;
+        const queryLeaf = [
+            'process.on("SIGTERM", () => {});',
+            'process.stdout.write("query ready\\n");',
+            `setTimeout(() => { process.stdout.write("natural exit\\n"); }, ${naturalExitMs});`,
+        ].join("\n");
+        const joined: Array<import("node:child_process").SpawnSyncReturns<string>> = [];
+        native.sync.mockImplementation((command: string, args: string[], options: import("node:child_process").SpawnSyncOptionsWithStringEncoding) => {
+            expect(command).toBe("mutagen");
+            expect(args).toEqual(["sync", "list", "ccc-sync"]);
+            // Redirect only the query executable and argv. The adapter's timeout
+            // and termination options reach the actual joined native process.
+            const result = spawnSync(process.execPath, ["-e", queryLeaf], options);
+            joined.push(result);
+            return result;
+        });
+        const ports = createNativeRemoteServicesPorts();
+        const started = performance.now();
+        const observation = ports.observeSync("ccc-sync", containerId, budgetMs);
+        const elapsedMs = performance.now() - started;
+
+        expect(observation).toEqual({ kind: "unavailable" });
+        expect(native.sync).toHaveBeenCalledOnce();
+        expect(joined).toHaveLength(1);
+        expect(joined[0]?.pid).toBeGreaterThan(0);
+        expect(joined[0]?.stdout).toContain("query ready\n");
+        expect(elapsedMs).toBeLessThan(budgetMs + allowanceMs);
+        expect(joined[0]?.error).toMatchObject({ code: "ETIMEDOUT" });
+        expect(joined[0]?.stdout).not.toContain("natural exit\n");
     });
 
     it("reads its monotonic clock independently of changes to the calendar clock", () => {

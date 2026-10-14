@@ -124,15 +124,19 @@ function mountFacts(mount: Mount, destination = mount.Destination || ""): CodexS
 function observePreviousContainer(previous: PreviousContainer): PreviousCodexStateContainer {
     const mounts = previous.Mounts;
     if (!Array.isArray(mounts)) throw new Error("Cannot inspect previous container mounts.");
+    const decodedMounts: CodexStateMount[] = [];
+    const length = mounts.length;
+    for (let index = 0; index < length; index++) {
+        const mount = mounts[index];
+        if (!mount || typeof mount !== "object") throw new Error("Cannot inspect previous container mounts.");
+        const destination = mount.Destination;
+        if (typeof destination !== "string" || !destination) throw new Error("Cannot inspect previous container mounts.");
+        // Nonmanaged mounts do not grant authority or require their other getters.
+        decodedMounts.push(destination === "/home/ccc/.codex" ? mountFacts(mount, destination)
+            : { kind: "other", destination });
+    }
     return {
-        mounts: mounts.map(mount => {
-            if (!mount || typeof mount !== "object") throw new Error("Cannot inspect previous container mounts.");
-            const destination = mount.Destination;
-            if (typeof destination !== "string" || !destination) throw new Error("Cannot inspect previous container mounts.");
-            // Nonmanaged mounts do not grant authority or require their other getters.
-            return destination === "/home/ccc/.codex" ? mountFacts(mount, destination)
-                : { kind: "other", destination };
-        }),
+        mounts: decodedMounts,
         // Preserve image getter admission after exact managed-source proof.
         get image() { return previous.Image || ""; },
     };
