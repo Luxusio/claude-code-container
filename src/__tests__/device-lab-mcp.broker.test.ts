@@ -1,4 +1,5 @@
 import { createBrokerSupervision } from "../../device-lab-mcp/src/application/broker-supervision.mjs";
+import { build as bundleBrokerApi } from "esbuild-wasm";
 import type { BrokerSupervisionPorts } from "../../device-lab-mcp/src/ports/broker-supervision.mjs";
 import { pathToFileURL } from "node:url";
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
@@ -1631,9 +1632,25 @@ describe("device-lab MCP", () => {
     it.each(["source", "built"] as const)("%s MCP autolaunches and reuses the actual broker entry with parent-owned metadata", { timeout: TIMEOUT }, async entry => {
         const port = await freePort();
         const expectedOwner = deviceLabMcpOwnerId({}, repoRoot);
+        let internalBrokerModuleUrl: string | undefined;
+        if (entry === "built") {
+            const apiRoot = join(homeDir, `built-owner-lifecycle-${port}`);
+            const apiFile = join(apiRoot, "broker-api.mjs");
+            mkdirSync(apiRoot, { recursive: true });
+            // Preserve native import.meta.resolve dependencies of the bundled
+            // owner lifecycle; only generated fixture output goes in this home.
+            symlinkSync(join(repoRoot, "node_modules"), join(apiRoot, "node_modules"), "junction");
+            await bundleBrokerApi({
+                absWorkingDir: join(repoRoot, "device-lab-mcp"), entryPoints: ["src/broker.mjs"],
+                outfile: apiFile, bundle: true, platform: "node", format: "esm",
+                banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
+            });
+            internalBrokerModuleUrl = pathToFileURL(apiFile).href;
+        }
         const isolated = await createDeviceLabMcpTestContext({
             rawPublicCalls: true,
             serverPath: entry === "source" ? join(repoRoot, "device-lab-mcp", "server.mjs") : join(repoRoot, "dist", "device-lab-mcp", "server.mjs"),
+            internalBrokerModuleUrl,
             env: { CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER: "0" },
             setupHome: home => {
                 // Route the public, argument-free discovery to this private port.
@@ -1677,6 +1694,7 @@ describe("device-lab MCP", () => {
                 runtime: expect.objectContaining({ managedBy: "device-lab-mcp", pid: brokerPid }),
             }));
 
+            expect(pidAlive(brokerPid!)).toBe(true);
             const shutdown = await callInternalBroker(isolated.client, { operation: "brokerShutdown", arguments: {
                 confirmDestructive: true, stopDevices: false, detachPhysical: false,
             } });

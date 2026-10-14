@@ -128,9 +128,10 @@ function observePreviousContainer(previous: PreviousContainer): PreviousCodexSta
         mounts: mounts.map(mount => {
             if (!mount || typeof mount !== "object") throw new Error("Cannot inspect previous container mounts.");
             const destination = mount.Destination;
+            if (typeof destination !== "string" || !destination) throw new Error("Cannot inspect previous container mounts.");
             // Nonmanaged mounts do not grant authority or require their other getters.
             return destination === "/home/ccc/.codex" ? mountFacts(mount, destination)
-                : { kind: "other", destination: typeof destination === "string" ? destination : "" };
+                : { kind: "other", destination };
         }),
         // Preserve image getter admission after exact managed-source proof.
         get image() { return previous.Image || ""; },

@@ -46,6 +46,8 @@ export interface DeviceLabMcpTestContextOptions {
     rawPublicCalls?: boolean;
     isolatedLauncher?: boolean;
     serverPath?: string;
+    /** Bind the internal lifecycle worker to its produced API, independently of the public server entry. */
+    internalBrokerModuleUrl?: string;
 }
 
 export function installDefaultImplicitBroker(client: Client, value: boolean) {
@@ -126,7 +128,8 @@ if(existsSync(fake)){eval(readFileSync(fake,'utf8').replace(/^#![^\\n]*\\n/,''))
         rmSync(homeDir, { recursive: true, force: true });
         throw error;
     }
-    if (brokerModuleUrl) clientBrokerModules.set(client, brokerModuleUrl);
+    const internalBrokerModuleUrl = options.internalBrokerModuleUrl || brokerModuleUrl;
+    if (internalBrokerModuleUrl) clientBrokerModules.set(client, internalBrokerModuleUrl);
     clientEnvironments.set(client, {
         ...deviceLabTestHomeEnvironment(homeDir), PATH: pathDir, NODE_ENV: "test",
         NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,

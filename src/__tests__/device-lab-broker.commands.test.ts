@@ -19,7 +19,7 @@ import { createFakeIosMcpContext, cleanupFakeIosMcpContext } from "./helpers/fak
 import { createFakeMacosMcpContext, cleanupFakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
 import { installNodeProviderFixtureRouting, nodeProviderFixturePreloadSource } from "./helpers/node-provider-fixture.js";
 import { spawn } from "child_process";
-import { createHash } from "crypto";
+import { createHash, createHmac } from "crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { createServer, request } from "http";
 import { hostname, tmpdir, uptime } from "os";
@@ -5978,6 +5978,101 @@ fs.copyFileSync(upload ? stage : ${JSON.stringify(guestFile)}, upload ? ${JSON.s
             await close(server);
             cleanupOwner(ownerId);
             rmSync(fakeRoot, { recursive: true, force: true });
+        }
+    });
+
+    it.each([
+        { label: "registered profile B", profile: "request-profile-b" },
+        { label: "registered unprofiled owner", profile: undefined },
+    ])("executes $label control through the authenticated real backend child without inheriting daemon profile A", { timeout: process.platform === "win32" ? 120000 : 30000 }, async ({ profile }) => {
+        const project = join(fixtureHome!, "profile-project"), binDir = join(fixtureHome!, "profile-bin");
+        const logPath = join(fixtureHome!, "profile-adb.jsonl");
+        for (const directory of [project, binDir]) mkdirSync(directory);
+        writeFileSync(logPath, "");
+        const daemonProfile = "daemon-profile-a", deviceId = "same-profile-device";
+        const ownerA = deviceLabOwnerId(project, daemonProfile), requestedOwner = deviceLabOwnerId(project, profile);
+        const stateA = join(writeBrokerDevices(ownerA, "android", [{
+            id: deviceId, backend: "android-emulator", status: "running", port: 5580, avdName: `ccc-${ownerA}-profile-a`,
+        }]), "devices.json");
+        const requestedState = join(writeBrokerDevices(requestedOwner, "android", [{
+            id: deviceId, backend: "android-emulator", status: "running", port: 5582, avdName: `ccc-${requestedOwner}-requested`,
+        }]), "devices.json");
+        const originalStateA = readFileSync(stateA), originalRequestedState = readFileSync(requestedState);
+        const originalIdentityA = statSync(stateA, { bigint: true });
+        const adb = join(binDir, "adb");
+        writeFileSync(adb, `#!${process.execPath}
+const fs = require('node:fs'), args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, profile: process.env.CCC_PROFILE ?? null, cwd: process.cwd()}) + '\\n');
+if (JSON.stringify(args) === '["devices","-l"]') {
+    console.log('List of devices attached\\nemulator-5580 device product:sdk_gphone\\nemulator-5582 device product:sdk_gphone');
+} else if (args[0] === '-s' && ['emulator-5580', 'emulator-5582'].includes(args[1]) && args.length === 3 && args[2] === 'get-state') {
+    console.log('device');
+} else if (args[0] === '-s' && ['emulator-5580', 'emulator-5582'].includes(args[1]) && JSON.stringify(args.slice(2)) === '["shell","input","keyevent","3"]') {
+    console.log('ok');
+} else throw new Error('Unexpected profile fixture ADB command: ' + JSON.stringify(args));
+`);
+        chmodSync(adb, 0o755);
+        const preload = join(fixtureHome!, "profile-node-routing.cjs");
+        writeFileSync(preload, nodeProviderFixturePreloadSource(binDir));
+        const environmentKeys = ["PATH", "NODE_OPTIONS", "CCC_PROFILE"] as const;
+        const originalEnvironment = environmentKeys.map(key => process.env[key]);
+        let restoreRouting: (() => void) | undefined, server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        try {
+            process.env.PATH = `${binDir}${delimiter}${originalEnvironment[0] || ""}`;
+            process.env.NODE_OPTIONS = `--require=${JSON.stringify(preload)}`;
+            process.env.CCC_PROFILE = daemonProfile;
+            restoreRouting = installNodeProviderFixtureRouting(binDir);
+            registerDeviceBrokerOwner(project, profile, requestedOwner);
+            // The broker, signature reader and current native backend child are all real.
+            server = createRawDeviceBrokerServer({ cwd: project, profile: daemonProfile, host: "127.0.0.1", port: 0 });
+            const baseUrl = await listen(server);
+            const status = await (await fetch(`${baseUrl}/status`)).json() as {
+                broker: { startedAt: string; process: { startToken: string } };
+            };
+            const body = JSON.stringify({ method: "broker.device.tool.invoke", params: {
+                tool: "mobile_home", backend: "android-emulator", deviceId,
+            } });
+            const timestamp = String(Date.now());
+            const nonce = createHash("sha256").update(`${requestedOwner}:${timestamp}:profile-control`).digest("hex").slice(0, 32);
+            const signature = createHmac("sha256", ownerRpcHeaders(requestedOwner)["x-ccc-device-token"]).update([
+                "v1", requestedOwner, timestamp, nonce, status.broker.startedAt, status.broker.process.startToken,
+                createHash("sha256").update(body).digest("hex"),
+            ].join("\n")).digest("hex");
+            const response = await fetch(ownerRpcEndpoint(baseUrl, requestedOwner), {
+                method: "POST", body, headers: {
+                    "content-type": "application/json", "x-ccc-device-auth": signature,
+                    "x-ccc-device-auth-timestamp": timestamp, "x-ccc-device-auth-nonce": nonce,
+                    "x-ccc-device-broker-started-at": status.broker.startedAt,
+                    "x-ccc-device-broker-start-token": status.broker.process.startToken,
+                },
+            });
+            const result = await response.json() as { ok: boolean; result: {
+                deviceId: string; backend: string; provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> };
+            } };
+            expect(response.status, JSON.stringify(result)).toBe(200);
+            expect(result).toMatchObject({ ok: true, result: { deviceId, backend: "android-emulator", provider: "device-lab-backend-child" } });
+            expect(result.result.mcpResult.isError).not.toBe(true);
+            expect(JSON.parse(result.result.mcpResult.content[0].text)).toMatchObject({ home: true, provider: "adb", status: 0 });
+            const calls = readFileSync(logPath, "utf8").trim().split("\n").map(line => JSON.parse(line) as { args: string[]; profile: string | null; cwd: string });
+            expect(calls.filter(call => call.args[2] === "shell")).toEqual([{
+                args: ["-s", "emulator-5582", "shell", "input", "keyevent", "3"], profile: profile || "", cwd: project,
+            }]);
+            expect(calls.some(call => call.args[0] === "-s" && call.args[1] === "emulator-5580")).toBe(false);
+            expect(readFileSync(stateA)).toEqual(originalStateA);
+            expect(statSync(stateA, { bigint: true })).toMatchObject({ ino: originalIdentityA.ino, mtimeNs: originalIdentityA.mtimeNs });
+            expect(readFileSync(requestedState)).toEqual(originalRequestedState);
+            expect(process.env.CCC_PROFILE).toBe(daemonProfile);
+        } finally {
+            try { if (server) await close(server); }
+            finally {
+                restoreRouting?.();
+                environmentKeys.forEach((key, index) => {
+                    if (originalEnvironment[index] === undefined) delete process.env[key];
+                    else process.env[key] = originalEnvironment[index];
+                });
+                cleanupOwner(ownerA);
+                cleanupOwner(requestedOwner);
+            }
         }
     });
 

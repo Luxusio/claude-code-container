@@ -3005,8 +3005,7 @@ try {
             const status = await (await fetch(`${baseUrl}/status`)).json() as {
                 broker: { startedAt: string; process: { startToken: string } };
             };
-            const signedHeaders = (body: unknown, startToken = status.broker.process.startToken) => {
-                const timestamp = String(Date.now());
+            const signedHeaders = (body: unknown, startToken = status.broker.process.startToken, timestamp = String(Date.now())) => {
                 const nonce = createHash("sha256").update(`${timestamp}:${startToken}`).digest("hex").slice(0, 32);
                 const bodyHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
                 const payload = [
@@ -3063,6 +3062,30 @@ try {
             });
             expect(replay.status).toBe(409);
             expect(await replay.json()).toEqual(expect.objectContaining({ ok: false, error: "broker-auth-replay" }));
+
+            const acceptedAt = Date.now();
+            const futureTimestamp = acceptedAt + 30_000;
+            const futureBody = { method: "broker.echo", params: { futureSigned: true } };
+            const futureHeaders = signedHeaders(futureBody, status.broker.process.startToken, String(futureTimestamp));
+            const futureRequestAt = async (now: number) => {
+                const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+                try {
+                    const response = await fetch(endpoint, {
+                        method: "POST", headers: futureHeaders, body: JSON.stringify(futureBody),
+                    });
+                    return { status: response.status, body: await response.json() };
+                } finally { clock.mockRestore(); }
+            };
+            expect(await futureRequestAt(acceptedAt)).toEqual({
+                status: 200, body: { ok: true, result: { ownerId, params: { futureSigned: true } } },
+            });
+            // Acceptance+60s still lies inside the future signed timestamp's validity window.
+            expect(await futureRequestAt(acceptedAt + 60_001)).toEqual({
+                status: 409, body: expect.objectContaining({ ok: false, error: "broker-auth-replay" }),
+            });
+            expect(await futureRequestAt(futureTimestamp + 60_001)).toEqual({
+                status: 401, body: expect.objectContaining({ ok: false, error: "invalid-owner-token" }),
+            });
 
             const staleGeneration = await fetch(endpoint, {
                 method: "POST",

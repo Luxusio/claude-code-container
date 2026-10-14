@@ -1985,7 +1985,7 @@ function hostBrokerRuntimeFromPortProcess(
         ? statusRuntime.processStartToken
         : null;
     const persistedMetadataMatches = persistedRuntime?.name === DEVICE_BROKER_NAME
-        && persistedRuntime?.managedBy === "ccc-host"
+        && (persistedRuntime?.managedBy === "ccc-host" || persistedRuntime?.managedBy === "device-lab-mcp")
         && Number(persistedRuntime?.pid) === process.pid
         && Number(persistedRuntime?.port) === port;
     const persistedContinuity = !persistedRuntime
@@ -1993,6 +1993,7 @@ function hostBrokerRuntimeFromPortProcess(
             && observedStartToken !== null
             && (observedStartToken === persistedStartToken
                 || (!persistedStartToken
+                    && persistedRuntime.managedBy === "ccc-host"
                     && typeof persistedRuntime.startedAt === "string"
                     && persistedRuntime.startedAt === statusRuntime?.startedAt)));
     const statusMetadataMatches = statusRuntime?.name === DEVICE_BROKER_NAME
@@ -2004,7 +2005,8 @@ function hostBrokerRuntimeFromPortProcess(
         && observedStartToken === statusStartToken;
     const legacyStatusWithoutToken = (!statusRuntime || statusMetadataMatches)
         && !statusStartToken;
-    const legacyPersistedCommandContinuity = !persistedRuntime || persistedMetadataMatches;
+    const legacyPersistedCommandContinuity = !persistedRuntime
+        || (persistedRuntime.managedBy === "ccc-host" && persistedMetadataMatches);
     // A second broker can leave the shared runtime file pointing at another port.
     // That record is neither evidence for nor a veto on this listener. Recovery
     // still requires the trusted command and matching OS/status generation;
@@ -2020,7 +2022,7 @@ function hostBrokerRuntimeFromPortProcess(
         && (persistedContinuity || (persistedOtherPort && statusIdentityVerified))
         && (statusIdentityVerified || (legacyPersistedCommandContinuity && legacyStatusWithoutToken));
     const metadataVerified = commandLine.length === 0
-        && Boolean(persistedRuntime)
+        && persistedRuntime?.managedBy === "ccc-host"
         && persistedContinuity
         && statusIdentityVerified;
     if (!commandLineTrusted && !metadataVerified) return null;
@@ -2329,7 +2331,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
     const initial = normalizeBrokerOptions({ ...options, host: bindHost });
     const ownerId = options.ownerId || deviceBrokerOwnerId(initial.cwd, options.profile);
     const runtime = readHostBrokerRuntime();
-    const runtimePort = runtime?.managedBy === "ccc-host"
+    const runtimePort = (runtime?.managedBy === "ccc-host" || runtime?.managedBy === "device-lab-mcp")
         && Number.isInteger(runtime.port)
         ? Number(runtime.port)
         : null;
@@ -2374,7 +2376,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             || hostBrokerStatusMatchesRequiredBindHost(compatibility, port, bindHost))
             && verifiedRuntime
             && verifiedIdentity?.pid === Number(verifiedRuntime.pid)) {
-            writeHostBrokerRuntime({
+            if (runtime?.managedBy !== "device-lab-mcp") writeHostBrokerRuntime({
                 ...(runtime || {}),
                 ...(statusRuntime || {}),
                 ...verifiedRuntime,
@@ -7319,6 +7321,7 @@ export function runBrokerBackendChild(
     input: string,
     options: {
         cwd: string;
+        env?: NodeJS.ProcessEnv;
         timeoutMs: number;
         outputLimit: number;
         cleanupGraceMs?: number;
@@ -7328,6 +7331,7 @@ export function runBrokerBackendChild(
     return new Promise((resolveResult) => {
         const child = spawn(process.execPath, ["--input-type=module", "-e", script], hiddenChildProcessOptions({
             cwd: options.cwd,
+            ...(options.env ? { env: options.env } : {}),
             detached: process.platform !== "win32",
         }));
         const spawnedProcessIdentity = readDeviceRuntimeProcessIdentity(child.pid);
@@ -7553,6 +7557,7 @@ async function defaultBrokerDeviceToolRunner(ownerId: string, parsed: DeviceTool
     const timeoutMs = deviceBrokerBackendToolTimeoutMs(parsed.tool, parsed.params, normalized.commandTimeoutMs);
     const result = await runBrokerBackendChild(script, JSON.stringify(invocationPayload), {
         cwd: normalized.cwd,
+        env: { ...process.env, CCC_PROFILE: normalized.profile || "" },
         timeoutMs,
         outputLimit,
     });
@@ -9762,10 +9767,11 @@ function authorizeBrokerRpc(
     const claimedStartToken = req.headers["x-ccc-device-broker-start-token"];
     const processStartToken = readDeviceRuntimeProcessStartToken(process.pid);
     const timestampMs = typeof timestamp === "string" ? Number(timestamp) : Number.NaN;
+    const now = Date.now();
     if (typeof signature !== "string"
         || !/^[a-f0-9]{64}$/.test(signature)
         || !Number.isFinite(timestampMs)
-        || Math.abs(Date.now() - timestampMs) > 60_000
+        || Math.abs(now - timestampMs) > 60_000
         || typeof nonce !== "string"
         || !/^[a-f0-9]{32}$/.test(nonce)
         || claimedStartedAt !== startedAt
@@ -9782,13 +9788,12 @@ function authorizeBrokerRpc(
     if (actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes)) {
         return { ok: false, status: 401, error: "invalid-owner-token" };
     }
-    const now = Date.now();
-    for (const [key, acceptedAt] of brokerAuthNonces) {
-        if (now - acceptedAt > 60_000) brokerAuthNonces.delete(key);
+    for (const [key, expiresAt] of brokerAuthNonces) {
+        if (now > expiresAt) brokerAuthNonces.delete(key);
     }
     const nonceKey = `${ownerId}:${nonce}`;
     if (brokerAuthNonces.has(nonceKey)) return { ok: false, status: 409, error: "broker-auth-replay" };
-    brokerAuthNonces.set(nonceKey, now);
+    brokerAuthNonces.set(nonceKey, timestampMs + 60_000);
     return { ok: true };
 }
 

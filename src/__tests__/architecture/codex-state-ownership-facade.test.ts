@@ -98,6 +98,30 @@ describe("actual Codex retained-state native composition", () => {
         expect(mocks.stat).not.toHaveBeenCalled();
         expect(mocks.normalize).not.toHaveBeenCalled();
     });
+    it.each([
+        { name: "missing Destination", mount: {} },
+        { name: "non-string Destination", mount: { Destination: 17 } },
+        { name: "empty Destination", mount: { Destination: "" } },
+    ].flatMap(({ name, mount }) => [
+        { name: name + " alone", Mounts: [mount] },
+        { name: name + " after a managed bind", Mounts: [previous.Mounts[0], mount] },
+    ]))("refuses $name before account or ownership effects", ({ Mounts }) => {
+        expect(() => invokePrevious({ Image: "old", Mounts })).toThrow(/^Cannot inspect previous container mounts\.$/);
+        expect(mocks.spawn).not.toHaveBeenCalled();
+        expect(mocks.stat).not.toHaveBeenCalled();
+        expect(mocks.normalize).not.toHaveBeenCalled();
+        noHelper();
+    });
+    it("preserves a raw Destination getter fault after a qualified managed bind without ownership effects", () => {
+        const fault = { destination: true };
+        const Mounts = [previous.Mounts[0], { get Destination(): never { throw fault; } }];
+        try { invokePrevious({ Image: "old", Mounts }); throw new Error("missing exception"); }
+        catch (actual) { expect(actual).toBe(fault); }
+        expect(mocks.spawn).not.toHaveBeenCalled();
+        expect(mocks.stat).not.toHaveBeenCalled();
+        expect(mocks.normalize).not.toHaveBeenCalled();
+        noHelper();
+    });
     it.each([{ name: "empty", Mounts: [] }, { name: "nonmanaged", Mounts: [{ Destination: "/unrelated", get Type(): never { throw new Error("type observed too early"); }, get Source(): never { throw new Error("source observed too early"); } }] }])("keeps a qualified $name mount list a no-op without reading old image", ({ Mounts }) => {
         expect(invokePrevious({ get Image(): never { throw new Error("image observed too early"); }, Mounts })).toBeUndefined();
         expect(mocks.spawn).not.toHaveBeenCalled();
