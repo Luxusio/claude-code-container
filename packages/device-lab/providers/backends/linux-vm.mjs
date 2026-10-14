@@ -516,13 +516,13 @@ function defaultSshGuestTransportRunner(transport, contextArg = {}, options = {}
     const destination = sshDestination(ssh);
     if (transport.action === "push") {
         const mkdirResult = runner(paths.ssh, [...sshBaseArgs(ssh), destination, `mkdir -p ${transport.guestPath}`], { cwd: lab.paths.labDir, env: contextArg.env || process.env, timeoutMs: options.sshTimeoutMs || 10000 });
-        if (mkdirResult?.ok !== true) return { ok: false, action: "push", step: "mkdir", result: mkdirResult };
+        if (mkdirResult?.ok !== true) return { ok: false, action: "push", step: "mkdir", result: publicGuestExecResult(mkdirResult, lab, ssh, [paths.ssh, paths.scp]) };
         const copyResult = runner(paths.scp, [...scpBaseArgs(ssh), "-r", `${transport.stagedPath}/.`, `${destination}:${transport.guestPath}/`], { cwd: lab.paths.labDir, env: contextArg.env || process.env, timeoutMs: options.sshTimeoutMs || 10000 });
-        return { ok: copyResult?.ok === true, action: "push", kind: "ssh-guest-transport", result: copyResult };
+        return { ok: copyResult?.ok === true, action: "push", kind: "ssh-guest-transport", result: publicGuestExecResult(copyResult, lab, ssh, [paths.ssh, paths.scp]) };
     }
     if (transport.action === "pull") {
         const copyResult = runner(paths.scp, [...scpBaseArgs(ssh), "-r", `${destination}:${transport.guestPath}/.`, `${transport.destinationPath}/`], { cwd: lab.paths.labDir, env: contextArg.env || process.env, timeoutMs: options.sshTimeoutMs || 10000 });
-        return { ok: copyResult?.ok === true, action: "pull", kind: "ssh-guest-transport", result: copyResult };
+        return { ok: copyResult?.ok === true, action: "pull", kind: "ssh-guest-transport", result: publicGuestExecResult(copyResult, lab, ssh, [paths.ssh, paths.scp]) };
     }
     return { ok: false, error: "unsupported-guest-ssh-transport-action", action: transport.action };
 }

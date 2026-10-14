@@ -2356,6 +2356,100 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         expect(JSON.stringify(pulled)).not.toContain(JSON.stringify(keyPath).slice(1, -1));
     });
 
+    it.each([
+        { name: "mkdir failure", action: "push", step: "mkdir", ok: false, status: 0 },
+        { name: "push copy success", action: "push", step: "copy", ok: true, status: 0 },
+        { name: "push copy failure", action: "push", step: "copy", ok: false, status: 7 },
+        { name: "pull success", action: "pull", step: "copy", ok: true, status: 0 },
+        { name: "pull failure", action: "pull", step: "copy", ok: false, status: 0 },
+    ] as const)("masks native default transport diagnostics and records $name truthfully", ({ action, step, ok, status }) => {
+        const root = tempRoot(), workspace = tempRoot();
+        const restoreEnvironment = isolateDeviceLabTestEnvironment(root);
+        try {
+            writeFileSync(join(workspace, "README.md"), "hello");
+            const env = { CCC_PROFILE: "native-transfer-projection", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready", PATH: "" };
+            const ownerRoot = join(root, "owners", ownerId(env));
+            mkdirSync(join(ownerRoot, "keys"), { recursive: true });
+            const keyPath = join(ownerRoot, "keys", "id_ed25519");
+            writeFileSync(keyPath, "fixture-key");
+            const created = createLab({ name: "Native Transfer Projection", guestSshHost: "127.0.0.1", guestSshPort: 2222,
+                guestSshUser: "ccc", guestSshKeyPath: keyPath }, { env, stateRoot: root });
+            assert.ok(created.lab);
+            const lab = created.lab;
+            expect(startLab({ labId: lab.id }, { env, stateRoot: root, qemuPath: "/fixture/qemu-system-x86_64", kvmAvailable: true,
+                commandRunner: () => ({ ok: true, pid: 6161 }) }).ok).toBe(true);
+            const destination = join(lab.paths.artifactsDir, "native-transfer");
+            if (action === "pull") {
+                mkdirSync(destination, { recursive: true });
+                writeFileSync(join(destination, "old.txt"), "old");
+            }
+            // Neutral Windows names expose the old nested result on Linux too:
+            // neither executable nor its diagnostic triggers generic word/path masking.
+            const sender = "C:\\tools\\sender.exe", receiver = "C:\\tools\\receiver.exe";
+            const execute = vi.fn((command: string, args: string[], runOptions: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number }) => {
+                const selected = step === "mkdir" || command === receiver;
+                if (action === "pull") {
+                    expect(existsSync(join(destination, "old.txt"))).toBe(false);
+                    writeFileSync(join(destination, ok ? "complete.txt" : "partial.txt"), ok ? "hello" : "partial");
+                }
+                return { ok: selected ? ok : true, status: selected ? status : 0, command, args,
+                    stdout: `native ${sender}; secondary ${receiver}`,
+                    stderr: `credential ${keyPath}; working ${runOptions.cwd}` };
+            });
+            const now = "2026-10-14T01:00:00.000Z";
+            const options = { env, stateRoot: root, allowedWorkspaceRoots: [workspace], sshPath: sender, scpPath: receiver,
+                sshCommandRunner: execute, sshTimeoutMs: 4321, now };
+            const guestPath = action === "push" ? "/workspace/app" : "/artifacts/run";
+            const response = action === "push"
+                ? guestPush({ labId: lab.id, sourcePath: workspace, guestPath }, options)
+                : guestPull({ labId: lab.id, guestPath, destinationPath: "native-transfer" }, options);
+            const parsed = JSON.parse(JSON.stringify(response));
+            const projected = { ok, status, stdout: "native <provider-internal>; secondary <provider-internal>",
+                stderr: "credential <provider-internal>; working <provider-internal>" };
+            expect(parsed.ok).toBe(ok);
+            expect(parsed.result).toEqual(step === "mkdir"
+                ? { ok: false, action: "push", step: "mkdir", result: projected }
+                : { ok, action, kind: "<provider-internal>", result: projected });
+            for (const providerPath of [sender, receiver, keyPath, lab.paths.labDir]) {
+                expect(parsed.result.result.stdout).not.toContain(providerPath);
+                expect(parsed.result.result.stderr).not.toContain(providerPath);
+            }
+            const runOptions = { cwd: lab.paths.labDir, env, timeoutMs: 4321 };
+            const mkdirCall = [sender,
+                ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-p", "2222", "-i", keyPath,
+                    "ccc@127.0.0.1", "mkdir -p /workspace/app"], runOptions];
+            const copyCall = [receiver,
+                ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-P", "2222", "-i", keyPath, "-r",
+                    ...(action === "push" ? [`${lab.paths.workspaceDir}/.`, "ccc@127.0.0.1:/workspace/app/"]
+                        : ["ccc@127.0.0.1:/artifacts/run/.", `${destination}/`])], runOptions];
+            expect(execute.mock.calls).toEqual(action === "pull" ? [copyCall] : step === "mkdir" ? [mkdirCall] : [mkdirCall, copyCall]);
+            expect(readFileSync(keyPath, "utf8")).toBe("fixture-key");
+            if (ok) {
+                expect(parsed).not.toHaveProperty("error");
+                expect(parsed.transport).toMatchObject({ action, guestPath, files: 1, bytes: 5 });
+                expect(parsed).not.toHaveProperty("cleanedStagedPath");
+                expect(parsed).not.toHaveProperty("cleanedDestination");
+                expect(readFileSync(action === "push" ? join(lab.paths.workspaceDir, "README.md") : join(destination, "complete.txt"), "utf8")).toBe("hello");
+            } else {
+                expect(parsed.error).toBe(`guest-${action}-failed`);
+                expect(parsed[action === "push" ? "cleanedStagedPath" : "cleanedDestination"]).toBe(true);
+                expect(existsSync(action === "push" ? lab.paths.workspaceDir : destination)).toBe(false);
+            }
+            const operation = {
+                type: `guest_${action}${ok ? "" : "_failed"}`,
+                ...(action === "push" ? { sourcePath: workspace, stagedPath: lab.paths.workspaceDir, files: 1, bytes: 5 }
+                    : { destinationPath: destination, ...(ok ? { files: 1, bytes: 5 } : {}) }),
+                guestPath, completedAt: now, ...(!ok ? { error: `guest-${action}-failed` } : {}),
+            };
+            const persisted = JSON.parse(readFileSync(join(lab.paths.labDir, "lab.json"), "utf8"));
+            expect(parsed.lab.fileOperations).toEqual([operation]);
+            expect(persisted.fileOperations).toEqual([operation]);
+            expect(persisted.runtimeState).toBe("running");
+        } finally {
+            restoreEnvironment();
+        }
+    });
+
     it("runs bounded guest commands over configured SSH without exposing provider internals", () => {
         const root = tempRoot();
         const env = {

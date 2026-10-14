@@ -44,6 +44,11 @@ before returning or storing them in latest/history, including Windows-style
 paths. Successful and failed probes retain their readiness outcome; failed
 observations still publish failure history.
 
+Default QEMU SSH upload/download diagnostics also mask exact key, executable
+and lab paths before returning transport results, including Windows paths.
+Both successful and failed transfers retain their actual outcome and existing
+cleanup/history behavior.
+
 `list_images` and `import_image` manage container QEMU image records.
 `create_macos_vm` creates from an image, or clones an owned `sourceDeviceId`.
 Source cloning retains owner/lifecycle checks and inherits provider, CPU and

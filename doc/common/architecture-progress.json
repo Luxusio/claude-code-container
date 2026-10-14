@@ -2431,7 +2431,7 @@
       "coveredOperationIds": [],
       "title": "QEMU 이미지·수명주기",
       "workStatus": "partial",
-      "remainingWork": "현재 브랜치 f9661224에 guest/snapshot 네이티브 명령 분리를 복구하고 cfee8318에서 공개 snapshotId 누락을 수정했다. 독립 리뷰에서 찾은 기본 SSH readiness 경로 노출도 기존 projection으로 수정했다. 현재 Linux 영향범위3파일102PASS; 앞선 snapshot3파일104PASS는 별도 유지한다. 최종 독립 리뷰·Windows 및 소스/빌드 MCP 실행 QA·로컬 통합 확인이 남는다. 과거68cb12파일112PASS와 원래 임시 후보/raw 부재는 과거 기록으로 유지; formal 자동 기록 조건은 별도다.",
+      "remainingWork": "현재 framing·snapshot ID·readiness 수정은 통합되어 있다. 실제 Windows QA1의 전송 진단 경로 노출1건을 기존 native projection 세 호출로 수정하고 성공/실패5회귀를 추가했다. 현재 coordinator 빌드·타입·shipping 및 provider89PASS; 최종 독립 리뷰와 Windows/소스·빌드 MCP 전송 QA2·로컬 qualification이 남는다. 기존 QA1 FAIL과 과거 후보 기록, formal 자동 기록 조건은 별도로 유지한다.",
       "completionCriteria": "코어는 경로·materialize/reuse·runtime 동일성·snapshot 게시·공개 정책을 유지하고, 어댑터가 overlay·launch·provisioning·guest SSH·snapshot 명령 구성을 처리한다. 독립 리뷰·QA·로컬 통합으로 확인한다.",
       "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
@@ -2996,16 +2996,27 @@
       "id": "qemu-native-framing-recovery-current",
       "taskId": "TASK__qemu-native-framing-recovery-20261014",
       "coveredOperationIds": [],
-      "status": "Framing committed f9661224 and exact snapshotId/canonical-name correction cfee8318. Actual full Code cycle2 found pre-existing default SSH readiness path disclosure; existing guest projection now masks native executable/key/lab paths before readiness latest/history. Current eight build/type stages and affected guest/provider three whole files102PASS0FAIL0SKIP; prior snapshot three104PASS and original whole13 139PASS/1KVMskip retained separately. Four ready/failed redaction regressions and corrected34escaped-path comparisons are current. Final independent Code/Security, Windows/source+built public route QA and local qualification remain pending; zero group/operation completion credit.",
+      "status": "Framing f9661224, literal snapshot selector cfee8318 and readiness masking47cf01df are committed. Actual full final Code/Security PASS then independent QA1 ran currentWindows8stages/shipping and42source+built MCPcalls PASS, but whole13 had154PASS1FAIL2existingSKIP: default SSH transfer nested output disclosed a Windows key path. This original FAIL is retained. Three existing native result returns now reuse guest projection; five neutral Windows-path success/failure provider regressions added. Current coordinator eight stages and whole provider89PASS0FAIL0SKIP, npm shipping PASS. Fresh final complete Code/Security and affected native/source+built transfer QA2 remain pending; zero group/operation credit.",
       "currentWork": {
         "runId": "01a1396b-783c-7caf-a823-2982db9165dd",
         "baseCommit": "3f90e3b237c8f7d6791a6f6c79175faaba39e899",
-        "stage": "readiness-redaction-correction-tested-awaiting-final-review-and-native-qa",
+        "stage": "transfer-redaction-corrected-coordinator-pass-awaiting-final-review-and-qa2",
         "archivedCandidate": "68cb569db6be609c4fa79f2c4c438f91df9889d1",
         "ownedProductFiles": 7,
         "ownedTestFiles": 5,
         "wholeQualificationFiles": 13,
-        "groupCompletionCredit": false
+        "groupCompletionCredit": false,
+        "nativeQa1": {
+          "status": "actual-independent-FAIL",
+          "head": "47cf01dfd0133c0e6350a2fc24055974ed9b8283",
+          "wholeFiles": 13,
+          "passed": 154,
+          "failed": 1,
+          "existingSkipped": 2,
+          "publicMcpCallsPassed": 42,
+          "evidence": "/tmp/qa-qemu-independent-1396b/aggregate-qa1-summary.json",
+          "reason": "Default SSH transfer nested Windows key path remains visible; readiness projection is correct."
+        }
       }
     }
   ],
