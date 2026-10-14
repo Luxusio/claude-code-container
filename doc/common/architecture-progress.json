@@ -1561,7 +1561,7 @@
       "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json",
       "title": "브로커 상태·녹화·Appium 결과",
       "workStatus": "partial",
-      "remainingWork": "Appium HTTP5개 의미 포트·native framing·외부 receipt 변환은 현재 Main0ab2d1de에서 독립 리뷰와 Linux169/Windows168PASS로 통합했다(Windows 기존1개 platform skip). 기존 recording 공동7개 전체 파일과 선택 recording 회귀도 확인했다. Appium 설치·실행 관측의 native exit status 해석과 인접 status/recording/owner-cleanup 잔여 범위 확인은 남으며, R17 전체 완료 credit과 formal close는 부여하지 않는다.",
+      "remainingWork": "Appium HTTP5개 의미 포트·native framing·외부 receipt 변환은 Main0ab2d1de에 통합했다. 설치·실행·reset의 의미 관측도1c59917b/63663e2d에서 독립 리뷰와 Linux·Windows QA로 확인했다: 새 whole2파일은 각44PASS, 변경 없는 whole4파일은 Linux125/Windows124PASS와 Windows기존1SKIP을 일치 확인 후 유지했다. 기존 recording 검증은 유지하며 인접 status/recording/owner-cleanup 잔여 경계 확인·구현·검증이 남는다. R17 전체 완료 credit과 formal close는 부여하지 않는다.",
       "completionCriteria": "상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at0cebcfe0: semantic owner resolution/device status, broker recording and Appium outcomes with finite native effects and outward HTTP presentation. Actual independent Code DEEP/Security/Docs and QA484 across13 whole files, genuine build1330, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Prior compiler/runtime failures corrected and retained. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -2928,29 +2928,69 @@
       "id": "appium-command-semantic-observation",
       "taskId": "TASK__appium-command-semantic-observation-20261014",
       "coveredOperationIds": [],
-      "status": "Current1c59917b: all source/test pairs authored; actual independent DEEPCode/SecurityPASS. IndependentQAcycle1 FAIL from unchanged canonical iOS/Android wait fixture cadence at final2/8ms submittedRPC, not command contract. Core39+type2 passed bothhosts; nativebroker83Linux/82Windows+1existingplatformSKIP; source/built direct12launchvariants+2recoveries+6ui checks eachhostPASS. Existinglate/failedRPC policy remains authoritative. Two negative fixture polling intervals will be50→500 with500ms totalbudget/allassertions unchanged; no Source or deadline weakening. Fresh currentCode/QA pending; zero group/operation credit.",
+      "status": "Current63663e2d: semantic Appium command contribution at1c59917b and exact two negative fixture interval50→500 correction independently CodePASS; unchanged production SecurityPASS. Actual QAcycle2PASS: fresh two whole files44/44 eachLinux/defaultWindows, qualified unchanged fourwholefiles125Linux/124WindowsPASS+1existingplatformSKIP. Source/built native receipts and publicMCP witnesses carried after exact source/config/dependency/emits qualification. OriginalQA1FAIL retained, no started-RPC timeout-policy weakening. Local source integrated; formal close is not claimed. Zero structural-group/operation completion credit; broaderR17 partial.",
       "currentQa": {
-        "candidateCommit": "1c59917ba4a6589819882e4acf1bb5e13717bc48",
-        "status": "actual-independent-cycle1-FAIL",
-        "linuxWhole5": {
-          "passed": 132,
-          "failed": 1,
+        "candidateCommit": "63663e2de10801746753d34d04d4a1a4b091dac4",
+        "status": "actual-independent-cycle2-PASS",
+        "freshLinuxWhole2": {
+          "passed": 44,
+          "failed": 0,
           "skipped": 0
         },
-        "windowsWhole5": {
-          "passed": 131,
-          "failed": 1,
-          "skipped": 1
+        "freshWindowsWhole2": {
+          "passed": 44,
+          "failed": 0,
+          "skipped": 0
         },
-        "failure": "ExistingMCP canonicalwait fixtures, iOSline737/Android1014: finalstartedRPC2/8ms timeout; existingREQ requires late/failedstarted errors remain errors. Stable absence-fixture cadence correction planned, no product provenance change.",
-        "linuxEvidence": "/tmp/ccc-independent-appium-command-qa-13906-rx46g5es/raw-linux-qa-summary.json",
-        "nativeEvidence": "results/native-appium-command-13906-20261014/native-final-evidence.zip",
-        "nativeSha256": "e1ac4b440bcfae4a1c4cd3d0dd456f31de14526c3406358ad14592990ea42cff",
-        "directWitnesses": "Source+built perhost12launchvariants,2mixed5steprecoveries30000ms+1retry,6stdioUIcalls=2success4expectedrefusals;59tools. Separate PASS does not override combined FAIL.",
-        "configuredRealTests": "strict:false/skipLibCheck:true; explicit --skipLibCheckfalse passed bothhosts after adequate earlyassembly.",
-        "scopeAuthentication": "1723source/1351emits matched;Root10scoped1711protected matched,indexempty; ownedjobs/stdiochildren terminal.",
-        "initialSetupFailures": "Linux unrelated .hygiene-session-count read PermissionError beforetests; native real-test41missingdeclaredalias errors beforeearlyassembly, correctedonlyrequiredorder/failedcheck; raw retained."
-      }
+        "freshFiles": [
+          "src/__tests__/device-lab-mcp.broker-appium.test.ts",
+          "src/__tests__/architecture/device-request.test.ts"
+        ],
+        "qualifiedUnchangedWhole4": {
+          "linuxPassed": 125,
+          "windowsPassed": 124,
+          "windowsExistingPlatformSkipped": 1
+        },
+        "carryRule": "ChangedMCP wholefile excluded fromcarry; old source/config/dependency/emits match. Passingbuild/types/directwitnesses retained, notrerun.",
+        "directWitnessCarry": "Perhost source+built12launchvariants,2mixed5steprecoveries30000ms+1retry,6stdioUIcalls=2success4expectedrefusals;59tools, originalnative receipts unchanged.",
+        "configuredRealTests": "strict:false/skipLibCheck:true; retained prior explicit --skipLibCheckfalse PASS after adequate earlyassembly; no strict claim.",
+        "linuxEvidence": "/tmp/ccc-independent-appium-correction-qa-13906-9hfgxnjq/raw-aggregate-qa2-summary.json",
+        "nativeEvidence": "results/native-appium-command-correction-13906-20261014/native-correction-evidence.zip",
+        "nativeEvidenceBytes": 591488,
+        "nativeSha256": "534e1219bce206449e5f71f468b451b657e0ed8f063642b13fae8dc76cd09a17",
+        "scopeAuthentication": "Before/afterQA:Root11scoped1710protected,indexempty;1723Source1351emits eachhost,7238Linux/7543Windowsdependencyfiles+238nativephysicaltargets,zero mismatches.",
+        "cleanup": "Allownedjobs terminal; LinuxPID629908gone/no privateNode residue; nativePIDs1192,1540,5328gone/direct-child and owned-path scans empty. Complete transientnative descendantledger notcaptured.",
+        "retainedFailures": "OriginalQA1Linux132/1/0 andWindows131/1/1, initialsetupfailures and cycle2native mistypedexpectedoverlayhash beforetests preserved; exactrunner correction afterterminal only. Root initialartifact-directoryPermissionError beforeprivileged staging also retained as setup, notproduct failure.",
+        "qualificationCeiling": "Controlledfinitecommand/HTTP/nativefile/process fixtures; no liveAppium/device/hardware, fullR17/Goal, exhaustive-source or formal certification."
+      },
+      "qualificationHistory": [
+        {
+          "candidateCommit": "1c59917ba4a6589819882e4acf1bb5e13717bc48",
+          "status": "actual-independent-cycle1-FAIL",
+          "linuxWhole5": {
+            "passed": 132,
+            "failed": 1,
+            "skipped": 0
+          },
+          "windowsWhole5": {
+            "passed": 131,
+            "failed": 1,
+            "skipped": 1
+          },
+          "failure": "ExistingMCP canonicalwait fixtures, iOSline737/Android1014: finalstartedRPC2/8ms timeout; existingREQ requires late/failedstarted errors remain errors. Stable absence-fixture cadence correction planned, no product provenance change.",
+          "linuxEvidence": "/tmp/ccc-independent-appium-command-qa-13906-rx46g5es/raw-linux-qa-summary.json",
+          "nativeEvidence": "results/native-appium-command-13906-20261014/native-final-evidence.zip",
+          "nativeSha256": "e1ac4b440bcfae4a1c4cd3d0dd456f31de14526c3406358ad14592990ea42cff",
+          "directWitnesses": "Source+built perhost12launchvariants,2mixed5steprecoveries30000ms+1retry,6stdioUIcalls=2success4expectedrefusals;59tools. Separate PASS does not override combined FAIL.",
+          "configuredRealTests": "strict:false/skipLibCheck:true; explicit --skipLibCheckfalse passed bothhosts after adequate earlyassembly.",
+          "scopeAuthentication": "1723source/1351emits matched;Root10scoped1711protected matched,indexempty; ownedjobs/stdiochildren terminal.",
+          "initialSetupFailures": "Linux unrelated .hygiene-session-count read PermissionError beforetests; native real-test41missingdeclaredalias errors beforeearlyassembly, correctedonlyrequiredorder/failedcheck; raw retained."
+        }
+      ],
+      "sourceCommits": [
+        "1c59917ba4a6589819882e4acf1bb5e13717bc48",
+        "63663e2de10801746753d34d04d4a1a4b091dac4"
+      ]
     }
   ],
   "currentSourceQualificationAudit": {
