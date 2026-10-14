@@ -732,7 +732,7 @@ describe("device-lab MCP broker Appium routing", () => {
                 expect(payload.broker).toMatchObject({ ok: true, selected: { host: "127.0.0.1", port: address.port } });
             }
             fakeAppium.setActiveAppBody({ value: { bundleId: "other", bundleID: "com.example.Test" } });
-            const unmatched = await client.callTool({ name: "wait_for_app", arguments: { ...baseArgs, appId: "com.example.Test", timeoutMs: 500, intervalMs: 50 } });
+            const unmatched = await client.callTool({ name: "wait_for_app", arguments: { ...baseArgs, appId: "com.example.Test", timeoutMs: 500, intervalMs: 500 } });
             const unmatchedPayload = JSON.parse(((unmatched.content as Array<{ text?: string }>)[0].text ?? "{}"));
             expect(unmatchedPayload).toMatchObject({ found: false, appState: { bundleId: "other", bundleID: "com.example.Test" }, provider: "broker-appium", backend: "ios-simulator", timeoutMs: 500 });
             expect(unmatchedPayload.activeApp).toBeUndefined();
@@ -1010,7 +1010,7 @@ describe("device-lab MCP broker Appium routing", () => {
                 expect(JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ found: true, appState: state, provider: "broker-appium", backend: "android-emulator", broker: { ok: true, selected: { host: "127.0.0.1", port: address.port } } });
             }
             fakeAppium.setAppStateBody({ value: "2" });
-            const background = await client.callTool({ name: "wait_for_app", arguments: { ...baseArgs, appId: "com.example.android", timeoutMs: 500, intervalMs: 50 } });
+            const background = await client.callTool({ name: "wait_for_app", arguments: { ...baseArgs, appId: "com.example.android", timeoutMs: 500, intervalMs: 500 } });
             expect(JSON.parse(((background.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ found: false, appState: "2", timeoutMs: 500, provider: "broker-appium", backend: "android-emulator" });
 
             expect(fakeAppium.requests.map((entry) => `${entry.method} ${entry.url}`)).toEqual(expect.arrayContaining([

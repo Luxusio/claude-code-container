@@ -2928,7 +2928,29 @@
       "id": "appium-command-semantic-observation",
       "taskId": "TASK__appium-command-semantic-observation-20261014",
       "coveredOperationIds": [],
-      "status": "Current R17 native command seam: actual independent14-dimension plan review; existing REQ/GUIDE updated before source. Three product paths and three existing test files assigned to two disjoint source/test pairs. Implementation and combined qualification pending; adjacent status/recording/owner-cleanup remain partial; zero group/operation credit."
+      "status": "Current1c59917b: all source/test pairs authored; actual independent DEEPCode/SecurityPASS. IndependentQAcycle1 FAIL from unchanged canonical iOS/Android wait fixture cadence at final2/8ms submittedRPC, not command contract. Core39+type2 passed bothhosts; nativebroker83Linux/82Windows+1existingplatformSKIP; source/built direct12launchvariants+2recoveries+6ui checks eachhostPASS. Existinglate/failedRPC policy remains authoritative. Two negative fixture polling intervals will be50→500 with500ms totalbudget/allassertions unchanged; no Source or deadline weakening. Fresh currentCode/QA pending; zero group/operation credit.",
+      "currentQa": {
+        "candidateCommit": "1c59917ba4a6589819882e4acf1bb5e13717bc48",
+        "status": "actual-independent-cycle1-FAIL",
+        "linuxWhole5": {
+          "passed": 132,
+          "failed": 1,
+          "skipped": 0
+        },
+        "windowsWhole5": {
+          "passed": 131,
+          "failed": 1,
+          "skipped": 1
+        },
+        "failure": "ExistingMCP canonicalwait fixtures, iOSline737/Android1014: finalstartedRPC2/8ms timeout; existingREQ requires late/failedstarted errors remain errors. Stable absence-fixture cadence correction planned, no product provenance change.",
+        "linuxEvidence": "/tmp/ccc-independent-appium-command-qa-13906-rx46g5es/raw-linux-qa-summary.json",
+        "nativeEvidence": "results/native-appium-command-13906-20261014/native-final-evidence.zip",
+        "nativeSha256": "e1ac4b440bcfae4a1c4cd3d0dd456f31de14526c3406358ad14592990ea42cff",
+        "directWitnesses": "Source+built perhost12launchvariants,2mixed5steprecoveries30000ms+1retry,6stdioUIcalls=2success4expectedrefusals;59tools. Separate PASS does not override combined FAIL.",
+        "configuredRealTests": "strict:false/skipLibCheck:true; explicit --skipLibCheckfalse passed bothhosts after adequate earlyassembly.",
+        "scopeAuthentication": "1723source/1351emits matched;Root10scoped1711protected matched,indexempty; ownedjobs/stdiochildren terminal.",
+        "initialSetupFailures": "Linux unrelated .hygiene-session-count read PermissionError beforetests; native real-test41missingdeclaredalias errors beforeearlyassembly, correctedonlyrequiredorder/failedcheck; raw retained."
+      }
     }
   ],
   "currentSourceQualificationAudit": {
