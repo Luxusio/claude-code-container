@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-13",
+  "updatedAt": "2026-10-14",
   "inventoryPath": "doc/common/architecture-operation-inventory.json",
   "baselineCommit": "c284ead3a637d4d31ca93661920ee0f0200b9077",
   "scope": "Current Codex/Claude architecture migration; existing shared behavior retained.",
@@ -1554,14 +1554,14 @@
     {
       "id": "broker-remaining-semantic-results-structural",
       "coveredOperationIds": [],
-      "status": "797f5613 implemented/reviewed; genuine Linux QA PASS; native interrupted before build/tests; joint integration pending. No completion credit.",
+      "status": "Current Main Appium HTTP semantic effects qualified and locally integrated at0ab2d1de after independent Code/Security and Linux/native Windows QA. Broader R17 remains partial; no whole-group completion credit or formal close claim.",
       "taskId": "TASK__architecture-broker-remaining-result-boundaries",
       "acceptedIntegrationCommit": "0cebcfe028aa6a6a15f8afa020e436daef83616a",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-remaining-0ceb-3hu7nfyo/final-result.json",
       "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json",
       "title": "브로커 상태·녹화·Appium 결과",
       "workStatus": "partial",
-      "remainingWork": "Main의 recording 복구·captured-target CAS·physical cleanup 보존과 Windows fixture를4개 선형 커밋으로 통합했다. 독립 코드·보안 리뷰와 Linux 코어183/선택26PASS, Windows 코어177/선택23PASS 및 strict 타입 검사 통과(Windows 기존9개 platform skip; 양쪽130개 이름 필터는 비검증). 자동 attestation에 따른 formal close는 별도. 기존797f5613 Appium native/공동 통합 중단과 semantic-result 잔여 범위는 유지하며 R17 완료 credit은 부여하지 않는다.",
+      "remainingWork": "Appium HTTP5개 의미 포트·native framing·외부 receipt 변환은 현재 Main0ab2d1de에서 독립 리뷰와 Linux169/Windows168PASS로 통합했다(Windows 기존1개 platform skip). 기존 recording 공동7개 전체 파일과 선택 recording 회귀도 확인했다. Appium 설치·실행 관측의 native exit status 해석과 인접 status/recording/owner-cleanup 잔여 범위 확인은 남으며, R17 전체 완료 credit과 formal close는 부여하지 않는다.",
       "completionCriteria": "상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at0cebcfe0: semantic owner resolution/device status, broker recording and Appium outcomes with finite native effects and outward HTTP presentation. Actual independent Code DEEP/Security/Docs and QA484 across13 whole files, genuine build1330, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Prior compiler/runtime failures corrected and retained. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -1579,60 +1579,67 @@
         ]
       },
       "currentSourceAudit": {
-        "sourceCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
-        "taskId": "TASK__architecture-final-source-remediation",
-        "status": "partial-awaiting-current-qualification",
-        "scope": "797f5613의 Appium HTTP5개 의미 포트 분리(제품5·테스트4·문서3)는 실제 Code/Security/Docs 리뷰와 Linux 빌드·strict(skipLibCheck=false)·lint·CLI·shipping·MCP59 및7개 전체 파일120PASS0FAIL0SKIP 통과. Native QA는 CRLF 인증 불일치 후 빌드·테스트 전 중단; 실제 native QA와 기존 recording 후보의 공동 qualification·로컬 통합이 남음."
+        "sourceCommit": "0ab2d1deecb96d14d84df114022bed06b305dc34",
+        "taskId": "TASK__appium-boundary-recovery-20261014",
+        "status": "bounded-current-source-qualified-group-partial",
+        "scope": "Fresh combined current Main qualification of five Appium HTTP effects and native receipt presentation, plus existing recording/owner-repository safety suites. Actual Linux/native Windows private builds, strict types, assembly and source/built authenticated MCP passed. Broader R17/source-universe/reliability/attestation remain separate."
       },
-      "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
+      "currentQualificationTask": "TASK__appium-boundary-recovery-20261014",
       "currentWork": {
-        "taskId": "TASK__architecture-appium-native-framing",
-        "runId": "01a13049-1d67-71a6-8b03-a522d0b6eaae",
-        "workspace": "/tmp/ccc-architecture-appium-native-framing-20261012",
-        "baseCommit": "1fb8b82514ca67a26c64633d0586e6cce57ac9c1",
-        "stage": "committed-reviewed-linux-pass-native-interrupted-integration-pending",
-        "sourceChanged": true,
-        "planReview": "Independent plan review completed; mechanical concerns incorporated into canonical PLAN. This is not product review PASS.",
-        "productionFiles": 5,
-        "testFiles": 4,
-        "productionAuthorReleased": true,
-        "codeReview": "actual PASS",
-        "securityReview": "actual PASS",
-        "qa": "Linux PASS; native interrupted before build/tests",
-        "integration": "pending",
-        "testAuthorReleased": true,
-        "testsAuthored": true,
-        "testsExecuted": true,
-        "commit": "797f561303f6d2b217af5a2ed4b3cf9291dfc6a5",
-        "branch": "refactor/architecture-appium-native-framing-20261012",
-        "documentationReview": "actual PASS",
-        "documentationFiles": 3,
+        "taskId": "TASK__appium-boundary-recovery-20261014",
+        "runId": "01a135dd-2341-72fc-a7aa-68f09a5fcf54",
+        "workspace": "/project/claude-code-container-e60025dac1cf",
+        "baseCommit": "e36bf1e683e9afc0325f5e66c3a682f5dbcf7e55",
+        "sourceCommit": "0ab2d1deecb96d14d84df114022bed06b305dc34",
+        "sourceCommits": [
+          "65652e7dc1edd12c562e8fe26dc9069c2f44bfde",
+          "0ab2d1deecb96d14d84df114022bed06b305dc34"
+        ],
+        "stage": "locally-integrated-actual-reviews-and-current-linux-native-qa-PASS",
+        "codeReview": "actual final PASS after two verified findings corrected; DEEP/both; final discovery cycle exhausted",
+        "securityReview": "actual final PASS on final source",
+        "qa": "actual independent qa-cli PASS after final Code/Security PASS",
+        "documentationReview": "actual final PASS on four durable docs after active structural-scope/date/pointer corrections; frozen product/tests unchanged",
+        "formalClose": "not claimed; one task_verify after final Docs required",
         "linuxQa": {
           "wholeFiles": 7,
-          "passed": 120,
+          "passed": 169,
           "failed": 0,
           "skipped": 0,
-          "buildStrictLintCliShippingMcp": "PASS; skipLibCheck=false; MCP59"
+          "recordingSelectedPassed": 26,
+          "recordingNameFiltered": 130,
+          "strictFlags": "strict/allowJs/checkJs/noEmit true; skipLibCheck false",
+          "buildAssemblySourceAndBuiltMcp": "actual exit0"
         },
         "nativeQa": {
-          "status": "interrupted-not-running-not-PASS",
-          "buildExecuted": false,
-          "testsExecuted": false,
-          "reason": "12 patched files had CRLF authentication mismatch; controller ended before build/tests; private-copy correction interrupted by container recreation."
+          "status": "actual independent PASS",
+          "deviceId": "windows-vm-ccc-architecture-qa-20261012-ec46602c",
+          "incarnationId": "28509f2c1ae0973163bd177fcce54057",
+          "sourceDirectory": "C:\\ccc-qa\\architecture-appium-135dd-20261014\\source",
+          "wholeFiles": 7,
+          "passed": 168,
+          "failed": 0,
+          "platformSkipped": 1,
+          "recordingSelectedPassed": 23,
+          "recordingPlatformSkipped": 3,
+          "recordingNameFiltered": 130,
+          "strictFlags": "strict/allowJs/checkJs/noEmit true; skipLibCheck false",
+          "buildAssemblySourceAndBuiltMcp": "actual exit0",
+          "jobPid": 4252,
+          "transportTimeout": "same owned job polled to terminal; no duplicate launch"
         },
-        "evidenceAvailability": {
-          "checkedAt": "2026-10-13",
-          "workspace": {
-            "path": "/tmp/ccc-architecture-appium-native-framing-20261012",
-            "exists": false
-          },
-          "linuxEvidence": {
-            "path": "/tmp/ccc-appium-qa-evidence-797f-20261012",
-            "exists": false
-          },
-          "committedCandidate": "recoverable Git object; raw evidence availability separate",
-          "nativeGuestEvidence": "not checked; no VM inspection or native acceptance credit"
-        }
+        "evidence": "results/architecture-appium-135dd-20261014/evidence-summary.json",
+        "sourceArchiveSha256": "d37f0169a960cd7dc838a6a6c651014efcae17eda25698f2e431a64f15de04ab",
+        "nativeArchiveSha256": "1fecd1eba6b71cada1fea1b643343666550bf22409152eb7f2abd0288ad8111f",
+        "sourceProtection": {
+          "frozenPaths": 11,
+          "protectedPaths": 111,
+          "versionFiles": 5,
+          "beforeAfterSnapshotPaths": 1711,
+          "mismatches": 0
+        },
+        "verificationDepth": "executed-command",
+        "limits": "Controlled loopback Appium/provider fixtures and native Windows Node/CIM/file/subprocess bindings; no live Appium installation or connected physical device acceptance; not whole R17 or whole Goal certification."
       },
       "latestContribution": {
         "taskId": "TASK__linear-native-guard-integration-20261013",
@@ -1790,6 +1797,61 @@
           "nestedDownload": "existing destination fence already handled by precreating only the owned artifact destination; no product change",
           "lateWorkerPreload": "confirmed and captured by committed native .cmd fixture in d39517ed; no production Worker change"
         }
+      },
+      "historicalAppiumWorkBeforeMainRecovery": {
+        "taskId": "TASK__architecture-appium-native-framing",
+        "runId": "01a13049-1d67-71a6-8b03-a522d0b6eaae",
+        "workspace": "/tmp/ccc-architecture-appium-native-framing-20261012",
+        "baseCommit": "1fb8b82514ca67a26c64633d0586e6cce57ac9c1",
+        "stage": "committed-reviewed-linux-pass-native-interrupted-integration-pending",
+        "sourceChanged": true,
+        "planReview": "Independent plan review completed; mechanical concerns incorporated into canonical PLAN. This is not product review PASS.",
+        "productionFiles": 5,
+        "testFiles": 4,
+        "productionAuthorReleased": true,
+        "codeReview": "actual PASS",
+        "securityReview": "actual PASS",
+        "qa": "Linux PASS; native interrupted before build/tests",
+        "integration": "pending",
+        "testAuthorReleased": true,
+        "testsAuthored": true,
+        "testsExecuted": true,
+        "commit": "797f561303f6d2b217af5a2ed4b3cf9291dfc6a5",
+        "branch": "refactor/architecture-appium-native-framing-20261012",
+        "documentationReview": "actual PASS",
+        "documentationFiles": 3,
+        "linuxQa": {
+          "wholeFiles": 7,
+          "passed": 120,
+          "failed": 0,
+          "skipped": 0,
+          "buildStrictLintCliShippingMcp": "PASS; skipLibCheck=false; MCP59"
+        },
+        "nativeQa": {
+          "status": "interrupted-not-running-not-PASS",
+          "buildExecuted": false,
+          "testsExecuted": false,
+          "reason": "12 patched files had CRLF authentication mismatch; controller ended before build/tests; private-copy correction interrupted by container recreation."
+        },
+        "evidenceAvailability": {
+          "checkedAt": "2026-10-13",
+          "workspace": {
+            "path": "/tmp/ccc-architecture-appium-native-framing-20261012",
+            "exists": false
+          },
+          "linuxEvidence": {
+            "path": "/tmp/ccc-appium-qa-evidence-797f-20261012",
+            "exists": false
+          },
+          "committedCandidate": "recoverable Git object; raw evidence availability separate",
+          "nativeGuestEvidence": "not checked; no VM inspection or native acceptance credit"
+        }
+      },
+      "historicalAppiumSourceAuditBeforeMainRecovery": {
+        "sourceCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
+        "taskId": "TASK__architecture-final-source-remediation",
+        "status": "partial-awaiting-current-qualification",
+        "scope": "797f5613의 Appium HTTP5개 의미 포트 분리(제품5·테스트4·문서3)는 실제 Code/Security/Docs 리뷰와 Linux 빌드·strict(skipLibCheck=false)·lint·CLI·shipping·MCP59 및7개 전체 파일120PASS0FAIL0SKIP 통과. Native QA는 CRLF 인증 불일치 후 빌드·테스트 전 중단; 실제 native QA와 기존 recording 후보의 공동 qualification·로컬 통합이 남음."
       }
     },
     {
@@ -2882,8 +2944,8 @@
     "pendingGroups": 0,
     "remainingGroups": 9,
     "sourceUniverseCertified": false,
-    "scope": "완료14/23(60.9%)·잔여9개(부분6·진행3). R15 현재 Main의 버전 동기화는 독립 Code/Security 및 현재 소스 실행 QA·실제 package shipping·로컬 통합으로 완료. R08/R11/R12/R13/R14/R16 후보의 공동 qualification·통합, R17 Appium 현재 native/공동 qualification·통합과 R18/R19 framing이 남음. 아래 원래71473106 joint FAIL과 과거 측정은 보존하며 R15 개별 PASS로 해당 공동 FAIL을 덮어쓰지 않는다. Native 전체·reliability·전수 범위·formal 조건 미검증.",
-    "currentQualificationTask": "TASK__release-sync-recovery-20261013",
+    "scope": "완료14/23(60.9%)·잔여9개(부분6·진행3). R15 현재 Main의 버전 동기화는 독립 Code/Security 및 현재 소스 실행 QA·실제 package shipping·로컬 통합으로 완료. R08/R11/R12/R13/R14/R16 후보의 공동 qualification·통합, R17 Appium HTTP/session 경계는 현재 Main 0ab2d1de에서 독립 Code/Security 및 Linux/Windows 실행 QA로 개별 검증·통합됨. R17의 native command-status/recording/owner-cleanup 잔여 경계와 R18/R19 framing이 남음. 아래 원래71473106 joint FAIL과 과거 측정은 보존하며 R15 개별 PASS로 해당 공동 FAIL을 덮어쓰지 않는다. Native 전체·reliability·전수 범위·formal 조건 미검증.",
+    "currentQualificationTask": "TASK__appium-boundary-recovery-20261014",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",
       "independentReviews": "Smoke route correction2fca1f74: actual independent Code/Security PASS; committed WBS71473106 documentation PASS. Final QA remains FAIL; no integration or completion credit.",
@@ -3329,7 +3391,7 @@
       "remainingGroups": 10,
       "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음."
     },
-    "currentQualificationScope": "Top-level structural accounting includes qualified R15 Main recovery. The existing currentQualification object below retains historical71473106 joint failure and follow-ups; it is not the current R15 verdict. Current R15 evidence is in planningLanes/release-workspace-version-synchronization-structural."
+    "currentQualificationScope": "Top-level structural accounting includes qualified R15 Main recovery and the bounded R17 Appium HTTP/session contribution at0ab2d1de. The retained currentQualification object is historical71473106 joint failure and follow-ups, not the current R15 or bounded R17 verdict. R17 broader native command-status/recording/owner-cleanup seams remain partial. Current Appium evidence is in planningLanes/broker-remaining-semantic-results-structural/currentWork."
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
     "sourceCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",

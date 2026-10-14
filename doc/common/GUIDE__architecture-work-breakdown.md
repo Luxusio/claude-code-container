@@ -1,6 +1,6 @@
 # Architecture work breakdown and progress
 
-Updated: 2026\-10\-13. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Updated: 2026\-10\-14. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
@@ -21,7 +21,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | R13 | Top\-level installer presentation and materialization | 진행 중 | 없음 | Installer 네이티브 표현·파일 생성 분리 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. 별도70b1b4de postinstall 수정은 Main 전달·빌드 및8개 파일528PASS; native npm\-stub subprocess3건은 full Windows build나 timeout 원인 검증이 아님\. 구조 완료 credit 없음\. |
 | R14 | Shared mutation\-lock ownership policy | 진행 중 | 없음 | Main의 publicationTimes 의미 포트·native codec과 legacy PID\-reuse 회귀를c8ab5df4에 통합했다\. 결합 변경의 독립 코드·보안 리뷰와 Linux 코어5개 파일183PASS/Windows177PASS\(6개 platform skip\), strict 타입 검사 통과; native host/provider cold\-sync·async·warm identity 경로도 통과\. 자동 attestation에 따른 formal close 및 기존7147 인증·브로커 E2E 공동 FAIL은 별도로 남으며 R14 완료 credit은 부여하지 않는다\. |
 | R16 | Remote 연결·전송 경계 | 부분 완료 | 없음 | 원격 probe의 시간·응답 경계 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. |
-| R17 | 브로커 상태·녹화·Appium 결과 | 부분 완료 | 없음 | Main의 recording 복구·captured\-target CAS·physical cleanup 보존과 Windows fixture를4개 선형 커밋으로 통합했다\. 독립 코드·보안 리뷰와 Linux 코어183/선택26PASS, Windows 코어177/선택23PASS 및 strict 타입 검사 통과\(Windows 기존9개 platform skip; 양쪽130개 이름 필터는 비검증\)\. 자동 attestation에 따른 formal close는 별도\. 기존797f5613 Appium native/공동 통합 중단과 semantic\-result 잔여 범위는 유지하며 R17 완료 credit은 부여하지 않는다\. |
+| R17 | 브로커 상태·녹화·Appium 결과 | 부분 완료 | 없음 | Appium HTTP5개 의미 포트·native framing·외부 receipt 변환은 현재 Main0ab2d1de에서 독립 리뷰와 Linux169/Windows168PASS로 통합했다\(Windows 기존1개 platform skip\)\. 기존 recording 공동7개 전체 파일과 선택 recording 회귀도 확인했다\. Appium 설치·실행 관측의 native exit status 해석과 인접 status/recording/owner\-cleanup 잔여 범위 확인은 남으며, R17 전체 완료 credit과 formal close는 부여하지 않는다\. |
 | R18 | 브로커 provider 수명주기 결과 | 부분 완료 | 없음 | Android/iOS/macOS 직접 수명주기 framing과 Android 접근 명령을 어댑터로 분리하고 리뷰·QA·통합한다\. 기존 deadline 수정·provider routing의 공동 QA·통합도 남음\. R17/R19와 공유하는 브로커·codec 파일 연결은 순차 처리한다\. Android 같은 backend 파일 변경은 순차 처리; iOS/macOS 독립 파일은 별도 처리 가능\. |
 | R19 | Desktop 제어·파일 전송 | 부분 완료 | 없음 | Hyper\-V readiness·helper 응답 해석과 iOS 제어의 네이티브 명령·응답을 어댑터로 분리하고 리뷰·QA·통합한다\. iOS transfer 경계 수정은 기존 Windows 검증에서 통과\. 공유 브로커·codec 파일 연결은 R17/R18과 순차 처리한다\. |
 
