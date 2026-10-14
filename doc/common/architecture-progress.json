@@ -2431,7 +2431,7 @@
       "coveredOperationIds": [],
       "title": "QEMU 이미지·수명주기",
       "workStatus": "partial",
-      "remainingWork": "Guest 접근·snapshot 명령 분리 구현과 독립 Code/Security 리뷰·Linux QA 12개 파일112건 통과. Guest transfer의 기존 네이티브 분리는 유지됨. 공동 후보 검증·로컬 통합이 남음; 자동 리뷰·QA 기록 누락으로 formal close는 보류. 현재 정확한 /tmp 후보·raw QA 경로는 없음; Git commit은 복구 가능하고 기존 PASS 측정은 보존한다.",
+      "remainingWork": "현재 브랜치 f9661224에 guest/snapshot 네이티브 명령 분리를 복구했다. 공개 snapshotId 누락도 수정했고 Linux 영향범위3개 파일104PASS를 확인했다. 수정 후 독립 리뷰·Windows 및 소스/빌드 MCP 실행 QA·최종 로컬 통합 확인이 남는다. 과거68cb 후보12파일112PASS는 과거 측정으로 유지하며, 원래 임시 후보·raw QA는 없었다. formal close의 자동 기록 조건은 별도다.",
       "completionCriteria": "코어는 경로·materialize/reuse·runtime 동일성·snapshot 게시·공개 정책을 유지하고, 어댑터가 overlay·launch·provisioning·guest SSH·snapshot 명령 구성을 처리한다. 독립 리뷰·QA·로컬 통합으로 확인한다.",
       "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
@@ -2996,11 +2996,11 @@
       "id": "qemu-native-framing-recovery-current",
       "taskId": "TASK__qemu-native-framing-recovery-20261014",
       "coveredOperationIds": [],
-      "status": "CurrentMain3f90e3b2 compatible recovery implemented through seven existing products/five existing tests; generated-ID, private storage/runtime guards and core policy preserved. Current private build/eight stages and thirteen whole suites139PASS0FAIL1existingKVMskip; supported npm archive/Unix distribution smoke PASS. Independent Code/Security, current Windows/source+built route QA and local qualification pending; historical68cb112PASS retained separately. Zero new group/operation credit.",
+      "status": "Framing recovered and committed at f9661224; full independent Code review found one pre-existing advertised snapshotId bug. Exact owner-lab ID lookup/canonical-name admission correction now implemented and coordinator-checked: eight current build/type stages and affected three whole files104PASS0FAIL0SKIP. Prior139PASS/1existingKVMskip and package smoke retained separately; unchanged ten suites await independent current-input qualification. Corrected Code/Security, Windows/source+built public route QA and final local qualification remain pending; zero group/operation completion credit.",
       "currentWork": {
         "runId": "01a1396b-783c-7caf-a823-2982db9165dd",
         "baseCommit": "3f90e3b237c8f7d6791a6f6c79175faaba39e899",
-        "stage": "implemented-coordinator-checked-awaiting-independent-review-and-native-qa",
+        "stage": "snapshot-selector-correction-tested-awaiting-independent-review-and-native-qa",
         "archivedCandidate": "68cb569db6be609c4fa79f2c4c438f91df9889d1",
         "ownedProductFiles": 7,
         "ownedTestFiles": 5,

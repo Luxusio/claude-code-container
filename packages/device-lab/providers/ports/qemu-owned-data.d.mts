@@ -6,6 +6,7 @@ export interface QemuOwnedDataArguments {
     sourcePath?: unknown;
     destinationPath?: unknown;
     snapshotName?: unknown;
+    snapshotId?: unknown;
     replace?: unknown;
     maxFiles?: unknown;
     maxFileBytes?: unknown;

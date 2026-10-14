@@ -114,6 +114,78 @@ describe("QEMU owned data", () => {
         }));
     });
 
+    it.each(["restore", "delete"])("accepts a listed snapshot ID for %s", (action) => {
+        const { ports, lab } = dataPorts(); lab.activeSnapshot = "previous";
+        lab.snapshots = [{ id: "baseline", name: "baseline", createdAt: "before", diskSnapshot: true }];
+        const execute = vi.fn(ports.executeSnapshot); ports.executeSnapshot = execute;
+        const publish = vi.fn(ports.writeLab); ports.writeLab = publish;
+        const application = createQemuOwnedDataApplication(ports);
+        const listing = application.snapshotLab("list", { labId: "lab" });
+        expect(listing).toMatchObject({ ok: true, snapshots: lab.snapshots });
+        const snapshotId = (listing as { snapshots: Array<{ id: string }> }).snapshots[0].id;
+        expect(snapshotId).toBe("baseline");
+        expect(application.snapshotLab(action, { labId: "lab", snapshotId })).toMatchObject({ ok: true, action, snapshotName: "baseline" });
+        expect(execute).toHaveBeenCalledExactlyOnceWith(action, "baseline", "/lab/disk", lab, 1000);
+        expect(publish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+            activeSnapshot: action === "restore" ? "baseline" : "previous",
+            snapshots: action === "delete" ? [] : lab.snapshots,
+        }));
+    });
+
+    it.each(["restore", "delete"])("uses the stored snapshot name when an admitted ID differs on %s", (action) => {
+        const { ports, lab } = dataPorts(); lab.activeSnapshot = "previous";
+        lab.snapshots = [{ id: "record-42", name: "baseline", createdAt: "before", diskSnapshot: true }];
+        const execute = vi.fn(ports.executeSnapshot); ports.executeSnapshot = execute;
+        const publish = vi.fn(ports.writeLab); ports.writeLab = publish;
+        expect(createQemuOwnedDataApplication(ports).snapshotLab(action, { labId: "lab", snapshotId: "record-42" })).toMatchObject({ ok: true, action, snapshotName: "baseline" });
+        expect(execute).toHaveBeenCalledExactlyOnceWith(action, "baseline", "/lab/disk", lab, 1000);
+        expect(publish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+            activeSnapshot: action === "restore" ? "baseline" : "previous",
+            snapshots: action === "delete" ? [] : [{ id: "record-42", name: "baseline", createdAt: "before", diskSnapshot: true }],
+        }));
+    });
+
+    it.each(["restore", "delete"])("refuses unknown snapshot IDs without normalizing them into names on %s", (action) => {
+        const { ports, lab } = dataPorts(); lab.activeSnapshot = "previous";
+        lab.snapshots = [{ id: "clean-base", name: "clean-base", createdAt: "before", diskSnapshot: true }];
+        const before = JSON.stringify(lab);
+        const disk = vi.fn(ports.diskPath); ports.diskPath = disk;
+        const available = vi.fn(ports.qemuImgAvailable); ports.qemuImgAvailable = available;
+        const execute = vi.fn(ports.executeSnapshot); ports.executeSnapshot = execute;
+        const publish = vi.fn(ports.writeLab); ports.writeLab = publish;
+        const application = createQemuOwnedDataApplication(ports);
+        for (const snapshotId of ["missing", "Clean Base"]) {
+            expect(application.snapshotLab(action, { labId: "lab", snapshotId })).toMatchObject({ ok: false, error: "snapshot-not-found" });
+            expect(JSON.stringify(lab)).toBe(before);
+        }
+        expect(disk).not.toHaveBeenCalled();
+        expect(available).not.toHaveBeenCalled();
+        expect(execute).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
+    });
+
+    it.each(["restore", "delete"])("refuses a matched ID with an invalid or noncanonical stored name on %s", (action) => {
+        const { ports, lab } = dataPorts(); lab.activeSnapshot = "previous";
+        const disk = vi.fn(ports.diskPath); ports.diskPath = disk;
+        const available = vi.fn(ports.qemuImgAvailable); ports.qemuImgAvailable = available;
+        const execute = vi.fn(ports.executeSnapshot); ports.executeSnapshot = execute;
+        const publish = vi.fn(ports.writeLab); ports.writeLab = publish;
+        const application = createQemuOwnedDataApplication(ports);
+        for (const name of ["..", "Baseline"]) {
+            lab.snapshots = [
+                { id: "invalid-record", name, createdAt: "before", diskSnapshot: true },
+                { id: "baseline", name: "baseline", createdAt: "before", diskSnapshot: true },
+            ];
+            const before = JSON.stringify(lab);
+            expect(application.snapshotLab(action, { labId: "lab", snapshotId: "invalid-record" })).toMatchObject({ ok: false, error: "invalid-snapshot-name" });
+            expect(JSON.stringify(lab)).toBe(before);
+        }
+        expect(disk).not.toHaveBeenCalled();
+        expect(available).not.toHaveBeenCalled();
+        expect(execute).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
+    });
+
     it("retains the completed native effect when snapshot publication throws", () => {
         const { ports, lab } = dataPorts();
         const fault = new Error("snapshot publication failed"), effects: string[] = [];

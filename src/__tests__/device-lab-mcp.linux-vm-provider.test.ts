@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
+import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import * as nativeFs from "fs";
 import * as runtimeIdentity from "../../packages/device-lab/providers/state/process-identity.mjs";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createLab,
     exportArtifacts,
     guestAgentProvision,
     guestAgentStatus,
     guestExec,
+    handleLinuxVmTool,
     guestPull,
     guestPush,
     importImage,
@@ -3000,6 +3002,95 @@ describe("device-lab Linux VM container-QEMU provider", () => {
             ["snapshot", "-a", "clean-base"],
             ["snapshot", "-d", "clean-base"],
         ]);
+    });
+
+    describe("snapshot selectors through the public Linux VM route", () => {
+        let restoreEnvironment: (() => void) | undefined;
+        beforeEach(() => { restoreEnvironment = isolateDeviceLabTestEnvironment(tempRoot()); });
+        afterEach(() => { restoreEnvironment?.(); restoreEnvironment = undefined; });
+
+        function snapshotFixture() {
+            const root = tempRoot(), env = { CCC_PROFILE: "snapshot-selectors", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+            const created = createLab({ name: "Public Snapshot VM" }, { env, stateRoot: root });
+            const lab = created.lab;
+            assert.ok(lab);
+            expect(created.ok).toBe(true);
+            writeFileSync(lab.image.diskImage, "");
+            const run = vi.fn((command: string, args: string[]) => ({ ok: true, status: 0, command, args }));
+            const options = { env, stateRoot: root, qemuImgPath: "/usr/bin/qemu-img", commandRunner: run };
+            return { lab, options, run };
+        }
+
+        it("restores and deletes the snapshot ID returned by public listing", async () => {
+            const { lab, options, run } = snapshotFixture();
+            const created = await handleLinuxVmTool("device_snapshot_create", { deviceId: lab.id, snapshotName: "Clean Base" }, options);
+            assert.ok(created);
+            expect(created.isError).toBe(false);
+            const listing = await handleLinuxVmTool("device_snapshot_list", { deviceId: lab.id }, options);
+            assert.ok(listing);
+            expect(listing.isError).toBe(false);
+            const listed = JSON.parse(listing.content[0].text);
+            expect(listed).toMatchObject({ ok: true, labId: lab.id, snapshots: [{ id: "clean-base", name: "clean-base" }] });
+            const snapshotId = listed.snapshots[0].id;
+            expect(run).toHaveBeenCalledTimes(1);
+
+            const restored = await handleLinuxVmTool("device_snapshot_restore", { deviceId: lab.id, snapshotId, confirmDestructive: true }, options);
+            assert.ok(restored);
+            expect(restored.isError).toBe(false);
+            expect(JSON.parse(restored.content[0].text)).toMatchObject({ ok: true, action: "restore", snapshotName: "clean-base", lab: { activeSnapshot: "clean-base" }, device: { deviceId: lab.id } });
+            const deleted = await handleLinuxVmTool("device_snapshot_delete", { deviceId: lab.id, snapshotId, confirmDestructive: true }, options);
+            assert.ok(deleted);
+            expect(deleted.isError).toBe(false);
+            expect(JSON.parse(deleted.content[0].text)).toMatchObject({ ok: true, action: "delete", snapshotName: "clean-base", lab: { snapshots: [] }, device: { deviceId: lab.id } });
+            expect(run.mock.calls.map(([command, args]) => [command, args])).toEqual([
+                ["/usr/bin/qemu-img", ["snapshot", "-c", "clean-base", lab.image.diskImage]],
+                ["/usr/bin/qemu-img", ["snapshot", "-a", "clean-base", lab.image.diskImage]],
+                ["/usr/bin/qemu-img", ["snapshot", "-d", "clean-base", lab.image.diskImage]],
+            ]);
+        });
+
+        it.each(["restore", "delete"])("uses the stored canonical name for a different listed ID on public %s", async (action) => {
+            const { lab, options, run } = snapshotFixture();
+            expect(snapshotLab("create", { labId: lab.id, snapshotName: "Clean Base" }, options).ok).toBe(true);
+            const metadataFile = join(lab.paths.labDir, "lab.json"), metadata = JSON.parse(readFileSync(metadataFile, "utf8"));
+            metadata.snapshots[0].id = "record-42";
+            metadata.activeSnapshot = "previous";
+            writeFileSync(metadataFile, `${JSON.stringify(metadata, null, 2)}\n`);
+            run.mockClear();
+            const listing = await handleLinuxVmTool("device_snapshot_list", { deviceId: lab.id }, options);
+            assert.ok(listing);
+            expect(listing.isError).toBe(false);
+            const listed = JSON.parse(listing.content[0].text);
+            expect(listed.snapshots).toEqual([expect.objectContaining({ id: "record-42", name: "clean-base" })]);
+            const result = await handleLinuxVmTool(`device_snapshot_${action}`, { deviceId: lab.id, snapshotId: listed.snapshots[0].id, confirmDestructive: true }, options);
+            assert.ok(result);
+            expect(result.isError).toBe(false);
+            expect(JSON.parse(result.content[0].text)).toMatchObject({
+                ok: true, action, snapshotName: "clean-base", lab: {
+                    activeSnapshot: action === "restore" ? "clean-base" : "previous",
+                    snapshots: action === "delete" ? [] : [expect.objectContaining({ id: "record-42", name: "clean-base" })],
+                },
+            });
+            expect(run).toHaveBeenCalledTimes(1);
+            expect(run.mock.calls[0].slice(0, 2)).toEqual(["/usr/bin/qemu-img", ["snapshot", action === "restore" ? "-a" : "-d", "clean-base", lab.image.diskImage]]);
+        });
+
+        it.each(["restore", "delete"])("refuses unknown or normalized-name IDs without public %s effects", async (action) => {
+            const { lab, options, run } = snapshotFixture();
+            expect(snapshotLab("create", { labId: lab.id, snapshotName: "Clean Base" }, options).ok).toBe(true);
+            const metadataFile = join(lab.paths.labDir, "lab.json"), before = readFileSync(metadataFile, "utf8");
+            run.mockClear();
+            const writes = vi.spyOn(nativeFs, "writeFileSync");
+            for (const snapshotId of ["missing", "Clean Base"]) {
+                const refused = await handleLinuxVmTool(`device_snapshot_${action}`, { deviceId: lab.id, snapshotId, confirmDestructive: true }, options);
+                assert.ok(refused);
+                expect(refused.isError).toBe(true);
+                expect(JSON.parse(refused.content[0].text)).toMatchObject({ ok: false, error: "snapshot-not-found" });
+                expect(readFileSync(metadataFile, "utf8")).toBe(before);
+            }
+            expect(run).not.toHaveBeenCalled();
+            expect(writes.mock.calls.filter(([path]) => typeof path === "string" && dirname(path) === lab.paths.labDir)).toEqual([]);
+        });
     });
 
     it.each([

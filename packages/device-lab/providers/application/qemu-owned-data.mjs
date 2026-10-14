@@ -54,9 +54,12 @@ export function createQemuOwnedDataApplication(ports) {
             return { ok: true, ownerId: ports.ownerId(), labId: loaded.lab.id, snapshots, activeSnapshot: loaded.lab.activeSnapshot || null };
         }
         if (loaded.lab.runtimeState === "running") return { ok: false, error: "lab-running", labId: loaded.lab.id };
-        const snapshotName = parseSnapshotName(args.snapshotName);
-        if (!snapshotName) return { ok: false, error: "invalid-snapshot-name" };
         const snapshots = Array.isArray(loaded.lab.snapshots) ? loaded.lab.snapshots : [];
+        const selectedById = (action === "restore" || action === "delete") && args.snapshotId !== undefined;
+        const selected = selectedById ? snapshots.find((snapshot) => snapshot.id === args.snapshotId) : undefined;
+        if (selectedById && !selected) return { ok: false, error: "snapshot-not-found", snapshotId: args.snapshotId };
+        const snapshotName = selected ? selected.name : parseSnapshotName(args.snapshotName);
+        if (!snapshotName || (selected && parseSnapshotName(snapshotName) !== snapshotName)) return { ok: false, error: "invalid-snapshot-name" };
         const existingIndex = snapshots.findIndex((snapshot) => snapshot.name === snapshotName);
         if (action === "create" && existingIndex >= 0) return { ok: false, error: "snapshot-already-exists", snapshotName };
         if (action !== "create" && existingIndex < 0) return { ok: false, error: "snapshot-not-found", snapshotName };

@@ -32,6 +32,13 @@ either appId or Android component, never both. `permission` uses one permission
 identifier for Android permissions or iOS privacy services. Removed packageName,
 bundleId and service inputs fail before execution, including within run_flow.
 
+`snapshot` on container QEMU returns records whose `id` can be used directly
+for restore/delete through `snapshotId`. Creation uses `snapshotName`;
+restore/delete accepts exactly one of `snapshotName` or `snapshotId`. IDs
+match literally within the selected owned VM, and execution uses the matched
+record's name. An unknown ID refuses before provider execution or snapshot
+metadata changes. Name-based operations retain their existing admission.
+
 `list_images` and `import_image` manage container QEMU image records.
 `create_macos_vm` creates from an image, or clones an owned `sourceDeviceId`.
 Source cloning retains owner/lifecycle checks and inherits provider, CPU and
