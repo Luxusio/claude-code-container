@@ -1,4 +1,4 @@
-import { existsSync, linkSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, linkSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { hostname, tmpdir } from "os";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -27,6 +27,134 @@ function testToken(): string {
     return tokenCounter.toString(16).padStart(32, "0");
 }
 
+const nativeLockModules = [
+    ["host", "../../packages/device-lab/dist/device-lab-shared-state.js"],
+    ["direct", "../../packages/device-lab/providers/state/shared-mutation-lock.mjs"],
+] as const;
+
+type NativeLockScenario = "stale" | "malformed" | "publication";
+const nativeLockChild = String.raw`
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    import { join } from "node:path";
+    const [file, moduleUrl, root, role, mode, scenario] = process.argv.slice(1);
+    const native = { openSync: fs.openSync, writeFileSync: fs.writeFileSync, closeSync: fs.closeSync,
+        renameSync: fs.renameSync, rmSync: fs.rmSync, readFileSync: fs.readFileSync };
+    const marker = (event, text = "") => {
+        const path = join(root, role + "-" + event);
+        native.writeFileSync(path + ".writing", text);
+        native.renameSync(path + ".writing", path);
+    };
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    function gate(event) {
+        const until = Date.now() + 25000;
+        while (!fs.existsSync(join(root, role + "-" + event))) {
+            if (Date.now() >= until) throw new Error(role + " gate timeout: " + event);
+            Atomics.wait(pause, 0, 0, 5);
+        }
+    }
+    const callbackEvent = event => {
+        fs.appendFileSync(join(root, "callbacks.jsonl"), JSON.stringify({ role, event, pid: process.pid }) + "\n");
+        marker(event, ownToken);
+    };
+    let descriptor, ownToken = "", pausedOpen = false, pausedMove = false, pausedRelease = false;
+    fs.openSync = function(path, flags, ...args) {
+        if (path === file && flags === "wx") marker("attempted");
+        const fd = native.openSync(path, flags, ...args);
+        if (path === file && flags === "wx") {
+            descriptor = fd;
+            if (role === "A" && scenario === "publication" && !pausedOpen) {
+                pausedOpen = true; marker("opened"); gate("write");
+            }
+        }
+        return fd;
+    };
+    fs.writeFileSync = function(path, text, ...args) {
+        native.writeFileSync(path, text, ...args);
+        if (path === descriptor) ownToken = JSON.parse(String(text)).token;
+    };
+    fs.closeSync = function(fd) {
+        native.closeSync(fd);
+        if (fd === descriptor) { descriptor = undefined; marker("published", ownToken); }
+    };
+    fs.renameSync = function(source, destination) {
+        const suffix = scenario === "malformed" ? ".malformed" : ".stale";
+        if (role === "A" && scenario !== "publication" && !pausedMove && source === file && String(destination).endsWith(suffix)) {
+            pausedMove = true; marker("observed"); gate("before-move");
+            native.renameSync(source, destination);
+            marker("moved", JSON.stringify({ path: destination, record: JSON.parse(native.readFileSync(destination, "utf8")) }));
+            gate("after-move");
+            return;
+        }
+        native.renameSync(source, destination);
+    };
+    fs.rmSync = function(path, ...args) {
+        if (role === "B" && !pausedRelease && String(path).startsWith(file + ".")) {
+            let record;
+            try { record = JSON.parse(native.readFileSync(path, "utf8")); } catch {}
+            if (record?.token === ownToken) {
+                pausedRelease = true; marker("release-paused", String(path)); gate("release");
+            }
+        }
+        native.rmSync(path, ...args);
+    };
+    syncBuiltinESMExports();
+    const api = await import(moduleUrl);
+    const operation = () => {
+        callbackEvent("enter");
+        if (role === "B" || role === "C") gate("leave");
+        callbackEvent("exit");
+        return role;
+    };
+    const options = { waitMs: 20000, staleMs: 1 };
+    try {
+        const result = mode === "sync" ? api.withSharedMutationLock(file, operation, options)
+            : await api.withSharedMutationLockAsync(file, operation, options);
+        if (result !== role) throw new Error("wrong native callback result");
+        marker("done");
+    } catch (error) {
+        marker("failed", String(error?.stack || error));
+        throw error;
+    }
+`;
+
+function startNativeLockChild(file: string, modulePath: string, root: string, role: "A" | "B" | "C", mode: "sync" | "async", scenario: NativeLockScenario) {
+    let terminal = false;
+    let child!: ReturnType<typeof execFile>;
+    const done = new Promise<{ error: Error | null; stdout: string; stderr: string }>(resolve => {
+        child = execFile(process.execPath, ["--input-type=module", "-e", nativeLockChild, file, new URL(modulePath, import.meta.url).href, root, role, mode, scenario], {
+            cwd: fileURLToPath(new URL("../../", import.meta.url)), timeout: 30_000, windowsHide: true,
+        }, (error, stdout, stderr) => { terminal = true; resolve({ error, stdout: String(stdout), stderr: String(stderr) }); });
+    });
+    return { child, done, terminal: () => terminal };
+}
+
+async function awaitNativeMarker(root: string, event: string, children: ReturnType<typeof startNativeLockChild>[]) {
+    const until = performance.now() + 15_000;
+    while (!existsSync(join(root, event))) {
+        for (const child of children) {
+            if (child.terminal()) {
+                const outcome = await child.done;
+                if (outcome.error) throw new Error(`Native lock child failed awaiting ${event}: ${outcome.stderr || outcome.stdout || outcome.error.message}`, { cause: outcome.error });
+            }
+        }
+        if (performance.now() >= until) throw new Error(`Native lock schedule timed out awaiting ${event}`);
+        await new Promise(resolve => setTimeout(resolve, 5));
+    }
+}
+
+function expectNativeCallbacksSerialized(root: string, expected: string[]) {
+    const events = readFileSync(join(root, "callbacks.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as { role: string; event: string });
+    let active: string | undefined;
+    const entered: string[] = [];
+    for (const event of events) {
+        if (event.event === "enter") { expect(active, `${event.role} entered while ${active} remained active`).toBeUndefined(); active = event.role; entered.push(event.role); }
+        else { expect(active).toBe(event.role); active = undefined; }
+    }
+    expect(active).toBeUndefined();
+    expect(entered.sort()).toEqual([...expected].sort());
+}
+
 describe("device-lab shared mutation lock", () => {
     const roots: string[] = [];
 
@@ -38,6 +166,148 @@ describe("device-lab shared mutation lock", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-shared-mutation-lock-"));
         roots.push(root);
         return join(root, "state.mutation.lock");
+    }
+
+    async function runNativeDisplacement(modulePath: string, mode: "sync" | "async", scenario: "stale" | "malformed", death?: "reclaimer" | "owner") {
+        const file = lockPath(), root = dirname(file);
+        const children: ReturnType<typeof startNativeLockChild>[] = [];
+        const expectedTerminated = new Set<ReturnType<typeof startNativeLockChild>>();
+        const old = new Date(Date.now() - 5000);
+        writeFileSync(file, scenario === "malformed" ? "" : JSON.stringify({ token: testToken(), pid: 2147483647, host: hostname(), createdAt: old.toISOString() }));
+        utimesSync(file, old, old);
+        const signal = (event: string) => writeFileSync(join(root, event), "");
+        const wait = (event: string) => awaitNativeMarker(root, event, children.filter(child => !expectedTerminated.has(child)));
+        const start = (role: "A" | "B" | "C") => { const child = startNativeLockChild(file, modulePath, root, role, mode, scenario); children.push(child); return child; };
+        try {
+            const a = start("A");
+            await wait("A-observed");
+            const b = start("B");
+            await wait("B-enter");
+            const ownerToken = readFileSync(join(root, "B-enter"), "utf8");
+            expect(JSON.parse(readFileSync(file, "utf8")).token).toBe(ownerToken);
+            signal("A-before-move");
+            await wait("A-moved");
+            const moved = JSON.parse(readFileSync(join(root, "A-moved"), "utf8")) as { path: string; record: { token: string } };
+            expect(moved.record.token).toBe(ownerToken);
+            expect(JSON.parse(readFileSync(moved.path, "utf8")).token).toBe(ownerToken);
+            expect(existsSync(file)).toBe(false);
+            if (death === "reclaimer") { expectedTerminated.add(a); a.child.kill("SIGKILL"); expect((await a.done).error).not.toBeNull(); }
+            const c = start("C");
+            await wait("C-published");
+            const candidateToken = readFileSync(join(root, "C-published"), "utf8");
+            expect(candidateToken).not.toBe(ownerToken);
+            expect(JSON.parse(readFileSync(file, "utf8")).token).toBe(candidateToken);
+            await new Promise(resolve => setTimeout(resolve, 150));
+            expect(existsSync(join(root, "C-enter")), "a real published candidate must wait while B operates from its displaced record").toBe(false);
+            expect(existsSync(join(root, "A-enter"))).toBe(false);
+            if (death === "owner") {
+                expectedTerminated.add(b);
+                b.child.kill("SIGKILL");
+                expect((await b.done).error).not.toBeNull();
+                appendFileSync(join(root, "callbacks.jsonl"), `${JSON.stringify({ role: "B", event: "terminated" })}\n`);
+                expect(b.terminal()).toBe(true);
+                signal("A-after-move");
+            } else {
+                if (death !== "reclaimer") signal("A-after-move");
+                signal("B-leave");
+                await wait("B-release-paused");
+                expect(existsSync(join(root, "B-exit"))).toBe(true);
+                expect(JSON.parse(readFileSync(moved.path, "utf8")).token).toBe(ownerToken);
+                await new Promise(resolve => setTimeout(resolve, 50));
+                expect(existsSync(join(root, "C-enter")), "B's callback exit alone cannot erase surviving owned release evidence").toBe(false);
+                expect(JSON.parse(readFileSync(file, "utf8")).token).toBe(candidateToken);
+                signal("B-release");
+                const result = await b.done;
+                expect(result.error, result.stderr || result.stdout).toBeNull();
+                expect(existsSync(moved.path)).toBe(false);
+            }
+            await wait("C-enter");
+            expect(JSON.parse(readFileSync(file, "utf8")).token).toBe(candidateToken);
+            signal("C-leave");
+            for (const child of children) {
+                const outcome = await child.done;
+                if ((child === a && death === "reclaimer") || (child === b && death === "owner")) continue;
+                expect(outcome.error, outcome.stderr || outcome.stdout).toBeNull();
+            }
+            expect(children.every(child => child.terminal())).toBe(true);
+            expectNativeCallbacksSerialized(root, death === "reclaimer" ? ["B", "C"] : ["A", "B", "C"]);
+            expect(readdirSync(root).filter(name => name.startsWith("state.mutation.lock"))).toEqual([]);
+            expect(c.terminal()).toBe(true);
+        } finally {
+            for (const event of ["A-before-move", "A-after-move", "A-write", "B-leave", "B-release", "C-leave"]) signal(event);
+            for (const child of children) if (!child.terminal()) child.child.kill("SIGKILL");
+            await Promise.all(children.map(child => child.done));
+        }
+    }
+
+    for (const [label, modulePath] of nativeLockModules) {
+        for (const mode of ["sync", "async"] as const) {
+            it(`${label} ${mode} serializes three actual native contenders when a delayed stale reclaimer moves a live owner`, async () => {
+                await runNativeDisplacement(modulePath, mode, "stale");
+            }, 60_000);
+
+            it(`${label} ${mode} requalifies a real claim displaced before descriptor publication finishes`, async () => {
+                const file = lockPath(), root = dirname(file);
+                const children: ReturnType<typeof startNativeLockChild>[] = [];
+                const signal = (event: string) => writeFileSync(join(root, event), "");
+                const wait = (event: string) => awaitNativeMarker(root, event, children);
+                const start = (role: "A" | "B" | "C") => { const child = startNativeLockChild(file, modulePath, root, role, mode, "publication"); children.push(child); return child; };
+                try {
+                    start("A");
+                    await wait("A-opened");
+                    expect(readFileSync(file, "utf8")).toBe("");
+                    const old = new Date(Date.now() - 5000);
+                    utimesSync(file, old, old);
+                    const b = start("B");
+                    await wait("B-enter");
+                    const ownerToken = readFileSync(join(root, "B-enter"), "utf8");
+                    const c = start("C");
+                    await wait("C-attempted");
+                    signal("A-write");
+                    await wait("A-published");
+                    await new Promise(resolve => setTimeout(resolve, 150));
+                    expect(existsSync(join(root, "A-enter")), "writing a displaced native descriptor cannot authorize callback entry").toBe(false);
+                    expect(existsSync(join(root, "C-enter"))).toBe(false);
+                    expect(JSON.parse(readFileSync(file, "utf8")).token).toBe(ownerToken);
+                    signal("B-leave");
+                    await wait("B-release-paused");
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                    expect(existsSync(join(root, "A-enter"))).toBe(false);
+                    expect(existsSync(join(root, "C-enter"))).toBe(false);
+                    signal("B-release");
+                    expect((await b.done).error).toBeNull();
+                    await wait("C-enter");
+                    signal("C-leave");
+                    for (const child of children) {
+                        const outcome = await child.done;
+                        expect(outcome.error, outcome.stderr || outcome.stdout).toBeNull();
+                    }
+                    expect(c.terminal()).toBe(true);
+                    expect(children.every(child => child.terminal())).toBe(true);
+                    expectNativeCallbacksSerialized(root, ["A", "B", "C"]);
+                    expect(readdirSync(root).filter(name => name.startsWith("state.mutation.lock"))).toEqual([]);
+                } finally {
+                    for (const event of ["A-write", "B-leave", "B-release", "C-leave"]) signal(event);
+                    for (const child of children) if (!child.terminal()) child.child.kill("SIGKILL");
+                    await Promise.all(children.map(child => child.done));
+                }
+            }, 60_000);
+        }
+    }
+
+    for (const [label, modulePath, mode] of [
+        ["host", nativeLockModules[0][1], "sync"],
+        ["direct", nativeLockModules[1][1], "async"],
+    ] as const) {
+        it(`${label} ${mode} protects a complete owner captured by a delayed malformed reclaimer`, async () => {
+            await runNativeDisplacement(modulePath, mode, "malformed");
+        }, 60_000);
+        it(`${label} ${mode} retains the displaced owner's barrier after the reclaimer dies`, async () => {
+            await runNativeDisplacement(modulePath, mode, "stale", "reclaimer");
+        }, 60_000);
+        it(`${label} ${mode} recovers the archived owner only after its real child has exited`, async () => {
+            await runNativeDisplacement(modulePath, mode, "stale", "owner");
+        }, 60_000);
     }
 
     function linkedBackendPath() {
@@ -82,6 +352,121 @@ describe("device-lab shared mutation lock", () => {
             expect(callback).not.toHaveBeenCalled();
         });
     }
+
+    for (const [label, sync, asyncLock] of [
+        ["host", withHostSharedMutationLock, withHostSharedMutationLockAsync],
+        ["direct", withNestedSharedMutationLock, withSharedMutationLockAsync],
+    ] as const) {
+        it(`${label} retains established live and foreign archive names for the full sync and async budget`, async () => {
+            for (const mode of ["sync", "async"] as const) {
+                for (const [nonce, suffix, foreign] of [
+                    ["0123456789abcdef", "stale", false],
+                    ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "release", true],
+                    ["a".repeat(32), "malformed", false],
+                    ["11111111-2222-3333-4444-555555555555", "malformed", true],
+                ] as const) {
+                    const file = lockPath();
+                    const archived = `${process.platform === "win32" ? file.replace("state.mutation.lock", "STATE.MUTATION.LOCK") : file}.${nonce}.${suffix}`;
+                    const contents = JSON.stringify({ token: testToken(), pid: foreign ? 2147483647 : process.pid, host: foreign ? `${hostname()}-foreign` : hostname() });
+                    writeFileSync(archived, contents);
+                    const old = new Date(Date.now() - 5000);
+                    utimesSync(archived, old, old);
+                    const started = performance.now(), deadline = started + 47;
+                    const operation = vi.fn();
+                    const options = { waitMs: 1000, staleMs: 1, waitBudget: { remaining: () => Math.max(0, deadline - performance.now()) } };
+                    if (mode === "sync") expect(() => sync(file, operation, options)).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+                    else await expect(asyncLock(file, operation, options)).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                    expect(performance.now() - started).toBeGreaterThanOrEqual(42);
+                    expect(performance.now() - started).toBeLessThan(1000);
+                    expect(operation).not.toHaveBeenCalled();
+                    expect(readFileSync(archived, "utf8")).toBe(contents);
+                    expect(existsSync(file)).toBe(false);
+                }
+            }
+        });
+
+        it(`${label} excludes temporary files and another lock's archives from its admission evidence`, async () => {
+            for (const mode of ["sync", "async"] as const) {
+                const file = lockPath();
+                const unrelated = [ `${file}.${process.pid}.0123456789abcdef.tmp`, `${file}-other.0123456789abcdef.stale`, `${file}.not-a-native-nonce.stale` ];
+                const contents = JSON.stringify({ token: testToken(), pid: process.pid, host: hostname() });
+                for (const path of unrelated) writeFileSync(path, contents);
+                const options = { waitBudget: { remaining: () => 1000 } };
+                expect(mode === "sync" ? sync(file, () => "entered", options) : await asyncLock(file, () => "entered", options)).toBe("entered");
+                expect(existsSync(file)).toBe(false);
+                for (const path of unrelated) expect(readFileSync(path, "utf8")).toBe(contents);
+            }
+        });
+
+        it(`${label} retains multiply linked archived bytes as uncertain native evidence`, async () => {
+            for (const mode of ["sync", "async"] as const) {
+                const file = lockPath(), archived = `${file}.0123456789abcdef.stale`, external = `${file}.external`;
+                const contents = JSON.stringify({ token: testToken(), pid: 2147483647, host: hostname() });
+                writeFileSync(external, contents);
+                linkSync(external, archived);
+                const old = new Date(Date.now() - 5000);
+                utimesSync(archived, old, old);
+                const deadline = performance.now() + 47;
+                const operation = vi.fn();
+                const options = { staleMs: 1, waitBudget: { remaining: () => Math.max(0, deadline - performance.now()) } };
+                if (mode === "sync") expect(() => sync(file, operation, options)).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+                else await expect(asyncLock(file, operation, options)).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                expect(operation).not.toHaveBeenCalled();
+                expect(readFileSync(archived, "utf8")).toBe(contents);
+                expect(readFileSync(external, "utf8")).toBe(contents);
+                expect(existsSync(file)).toBe(false);
+            }
+        });
+    }
+
+    it("both native facades preserve primary failure and report surviving own archive cleanup failure", async () => {
+        for (const implementation of ["host", "provider"] as const) {
+            for (const asynchronous of [false, true]) {
+                for (const fails of [false, true]) {
+                    const file = lockPath(), archived = `${file}.0123456789abcdef.stale`;
+                    const primary = Object.assign(new Error("operation failed after displacement"), { code: "primary-operation" });
+                    const nativeFailure = Object.assign(new Error("owned archive removal denied"), { code: "EIO" });
+                    let ownToken = "";
+                    vi.resetModules();
+                    vi.doMock("fs", async importOriginal => {
+                        const actual = await importOriginal<typeof import("fs")>();
+                        return { ...actual, rmSync(path: import("fs").PathLike, options?: import("fs").RmOptions) {
+                            if (path === archived) throw nativeFailure;
+                            actual.rmSync(path, options);
+                        } };
+                    });
+                    try {
+                        const api = implementation === "host"
+                            ? await import("@ccc/device-lab/device-lab-shared-state.js?owned-archive-failure")
+                            : await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?owned-archive-failure");
+                        const operation = () => {
+                            ownToken = JSON.parse(readFileSync(file, "utf8")).token;
+                            renameSync(file, archived);
+                            if (fails) throw primary;
+                            return "complete";
+                        };
+                        let observed: unknown;
+                        try {
+                            if (asynchronous) await api.withSharedMutationLockAsync(file, operation, { waitBudget: { remaining: () => 1000 } });
+                            else api.withSharedMutationLock(file, operation, { waitBudget: { remaining: () => 1000 } });
+                        } catch (error) { observed = error; }
+                        const release = fails ? (observed as AggregateError).errors?.[1] : observed;
+                        expect(release).toMatchObject({ code: "shared-mutation-lock-release-failed" });
+                        expect((release as Error).cause).toBe(nativeFailure);
+                        if (fails) {
+                            expect(observed).toBeInstanceOf(AggregateError);
+                            expect((observed as AggregateError).cause).toBe(primary);
+                            expect((observed as AggregateError).errors[0]).toBe(primary);
+                            expect((observed as AggregateError).errors).toHaveLength(2);
+                            expect(observed).toMatchObject({ code: primary.code });
+                        }
+                        expect(existsSync(file)).toBe(false);
+                        expect(JSON.parse(readFileSync(archived, "utf8")).token).toBe(ownToken);
+                    } finally { vi.doUnmock("fs"); vi.resetModules(); }
+                }
+            }
+        }
+    });
 
     it("preserves stale and malformed host locks when automatic reclamation is disabled", () => {
         for (const contents of ["", JSON.stringify({ token: testToken(), pid: 2147483647, host: hostname() })]) {

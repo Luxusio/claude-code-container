@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { createSharedMutationLock } from "../../../packages/device-lab/providers/application/shared-mutation-lock.mjs";
 import { readLockPublicationTimes } from "../../../packages/device-lab/providers/adapters/lock-publication-times.mjs";
-import type { LockProcessIdentity, LockPublicationTimes, SharedMutationLockPorts } from "../../../packages/device-lab/providers/ports/shared-mutation-lock.mjs";
+import type { LockProcessIdentity, LockPublicationTimes, LockReadObservation, SharedMutationLockPorts } from "../../../packages/device-lab/providers/ports/shared-mutation-lock.mjs";
 
 const identity: LockProcessIdentity = { pid: 123, startToken: "native-birth", commandHash: "a".repeat(64) };
 let fixtureNumber = 0;
 
 function fixture(variant: "typescript" | "provider") {
     let now = 100_000;
-    let claim: Record<string, unknown> | undefined;
+    const records = new Map<string, LockReadObservation>();
+    const descriptors = new Map<number, string>();
+    let descriptor = 0;
+    let activeFile = "";
+    let archiveNumber = 0;
     let token = 0;
     const file = `/identity-${++fixtureNumber}.lock`;
     const ports: SharedMutationLockPorts<[]> = {
@@ -18,19 +22,25 @@ function fixture(variant: "typescript" | "provider") {
         host: () => "test-host", boot: () => "test-boot", platform: () => "win32", timestamp: () => new Date(now).toISOString(),
         now: () => now, monotonic: () => now,
         pauseSync: ms => { now += ms; }, pause: async ms => { now += ms; return undefined; },
-        openClaim: () => { if (claim) throw Object.assign(new Error("occupied"), { code: "EEXIST" }); return 1; },
-        writeClaim: (_fd, text) => { claim = JSON.parse(text); }, closeClaim: () => undefined,
-        readRaw: () => claim ? { kind: "value", value: claim } : { kind: "missing" },
+        openClaim: path => { if (records.has(path)) throw Object.assign(new Error("occupied"), { code: "EEXIST" }); records.set(path, { kind: "malformed" }); descriptors.set(++descriptor, path); return descriptor; },
+        writeClaim: (fd, text) => { activeFile = descriptors.get(fd)!; records.set(activeFile, { kind: "value", value: JSON.parse(text) }); }, closeClaim: () => undefined,
+        readRaw: path => records.get(path) ?? { kind: "missing" },
         mtime: () => now - 5000, alive: () => true,
         identitySync: vi.fn(() => identity), identityAsync: vi.fn(async () => identity),
         publicationTimes: vi.fn(readLockPublicationTimes),
         observe: vi.fn(() => "unavailable" as const), matches: (expected, current) => expected.startToken === current.startToken,
-        moveQualified: (_file, expected) => { if (claim?.token !== expected) return false; claim = undefined; return true; },
+        moveQualified: (path, expected) => { const raw = records.get(path); if (raw?.kind !== "value" || (raw.value as Record<string, unknown>).token !== expected) return false; records.delete(path); return true; },
         moveMalformed: () => false,
+        archives: path => [...records.keys()].filter(candidate => candidate.startsWith(`${path}.`)),
+        removeArchive: (_file, path, expected) => { const raw = records.get(path); if (!raw) return false; if (expected === null ? raw.kind !== "malformed" : raw.kind !== "value" || (raw.value as Record<string, unknown>).token !== expected) return false; records.delete(path); return true; },
         errorCode: error => (error as { code?: string }).code,
         timeout: () => Object.assign(new Error("timeout"), { code: "shared-mutation-lock-timeout" }),
     };
-    return { ports, app: createSharedMutationLock(ports), file, record: () => ({ ...claim }), advance: (ms: number) => { now += ms; }, seed: (value: Record<string, unknown>) => { claim = value; } };
+    function archive(raw: LockReadObservation) { const path = `${file}.${(++archiveNumber).toString(16).padStart(16, "0")}.stale`; records.set(path, raw); return path; }
+    function displace() { const raw = records.get(file); if (!raw) throw new Error("no candidate to displace"); records.delete(file); return archive(raw); }
+    return { ports, app: createSharedMutationLock(ports), file, records, archive, displace,
+        record: () => { const raw = records.get(activeFile || file); return raw?.kind === "value" ? { ...(raw.value as Record<string, unknown>) } : {}; },
+        advance: (ms: number) => { now += ms; }, seed: (value: Record<string, unknown>) => { activeFile = file; records.set(file, { kind: "value", value }); } };
 }
 
 describe.each(["typescript", "provider"] as const)("%s Windows own guard identity", variant => {
@@ -257,6 +267,208 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
         expect(f.ports.identitySync).toHaveBeenCalledTimes(1);
         expect(f.ports.identityAsync).toHaveBeenCalledTimes(1);
     });
+});
+
+describe.each(["typescript", "provider"] as const)("%s archived claim admission", variant => {
+    it.each(["value", "missing", "malformed", "invalid-record", "unavailable", "native-fault"] as const)("keeps %s archive observation distinct from malformed recovery permission", state => {
+        const f = fixture(variant);
+        const admitted = { token: "f".repeat(32), pid: 456, host: "test-host" };
+        const raw: LockReadObservation = state === "value" ? { kind: "value", value: admitted }
+            : state === "invalid-record" ? { kind: "value", value: { ...admitted, pid: "not-a-pid" } }
+            : state === "native-fault" ? { kind: "unavailable" } : { kind: state };
+        const archived = f.archive(raw);
+        if (state === "native-fault") f.ports.readRaw = () => { throw Object.assign(new Error("native archive read failed"), { code: "EIO" }); };
+        expect(f.app.readObservation(archived)).toEqual(state === "invalid-record" ? { kind: "malformed" } : state === "native-fault" ? { kind: "unavailable" } : raw);
+        expect(f.app.readLock(archived)).toEqual(state === "value" ? admitted : null);
+    });
+
+    it("retains every active local token while an owner is archived and an independent candidate waits", async () => {
+        const f = fixture(variant);
+        let releaseOwner!: () => void, releasePause!: () => void, ownerEntered!: () => void, candidatePaused!: () => void;
+        const ownerGate = new Promise<void>(resolve => { releaseOwner = resolve; });
+        const ownerReady = new Promise<void>(resolve => { ownerEntered = resolve; });
+        const pauseGate = new Promise<void>(resolve => { releasePause = resolve; });
+        const paused = new Promise<void>(resolve => { candidatePaused = resolve; });
+        f.ports.pause = async ms => { f.advance(ms); candidatePaused(); await pauseGate; return undefined; };
+        const owner = f.app.withLockAsync(f.file, async () => { f.displace(); ownerEntered(); await ownerGate; return "owner"; });
+        await ownerReady;
+        const contender = f.app.withLockAsync(f.file, () => "candidate", { waitMs: 100 });
+        await paused;
+        try {
+            expect(() => f.app.withLock(f.file, () => "unexpected")).toThrow(expect.objectContaining({ code: "shared-mutation-lock-self-contention" }));
+            releaseOwner();
+            expect(await owner).toBe("owner");
+            expect(() => f.app.withLock(f.file, () => "unexpected")).toThrow(expect.objectContaining({ code: "shared-mutation-lock-self-contention" }));
+        } finally { releaseOwner(); releasePause(); }
+        expect(await contender).toBe("candidate");
+        expect(f.records.size).toBe(0);
+        expect(f.app.withLock(f.file, () => "released")).toBe("released");
+    });
+
+    it.each([
+        ["original archived process", 50_000, false],
+        ["replacement within tolerance", 51_000, false],
+        ["replacement strictly after tolerance", 51_001, true],
+        ["unknown publication facts", null, false],
+    ] as const)("qualifies a Windows legacy %s using the existing publication policy", async (_label, processStartedAtMs, recovered) => {
+        const f = fixture(variant);
+        const owner = { token: "f".repeat(32), pid: 456, host: "test-host", createdAt: "opaque-native-publication", processIdentityStatus: "unavailable" };
+        const archived = f.archive({ kind: "value", value: owner });
+        vi.mocked(f.ports.identityAsync).mockImplementation(async pid => ({ ...identity, pid }));
+        vi.mocked(f.ports.publicationTimes).mockReturnValue(processStartedAtMs === null ? { kind: "unavailable" } : { kind: "known", processStartedAtMs, claimCreatedAtMs: 50_000 });
+        const operation = vi.fn(() => "recovered");
+        const result = f.app.withLockAsync(f.file, operation, { waitMs: 30, staleMs: 1 });
+        if (recovered) {
+            await expect(result).resolves.toBe("recovered");
+            expect(f.records.has(archived)).toBe(false);
+        } else {
+            await expect(result).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(operation).not.toHaveBeenCalled();
+            expect(f.records.get(archived)).toEqual({ kind: "value", value: owner });
+        }
+        expect(f.ports.publicationTimes).toHaveBeenCalledWith({ ...identity, pid: owner.pid }, owner.createdAt);
+    });
+
+    for (const mode of ["sync", "async"] as const) {
+        async function acquire(f: ReturnType<typeof fixture>, operation: () => unknown, options: { waitMs?: number; staleMs?: number; waitBudget?: { remaining(): number } } = {}) {
+            if (mode === "sync") return f.app.withLock(f.file, operation, options);
+            return f.app.withLockAsync(f.file, operation, options);
+        }
+
+        it.each(["live", "foreign", "unavailable-read", "read-fault", "unavailable-identity"] as const)(`${mode} retains a %s archive through the complete caller budget`, async state => {
+            const f = fixture(variant);
+            const owner = { token: "f".repeat(32), pid: 456, host: state === "foreign" ? "foreign-host" : "test-host",
+                processIdentity: { ...identity, pid: 456 }, processIdentityStatus: "recorded" };
+            const archived = f.archive(state === "unavailable-read" || state === "read-fault" ? { kind: "unavailable" } : { kind: "value", value: owner });
+            const read = f.ports.readRaw;
+            if (state === "read-fault") f.ports.readRaw = path => { if (path === archived) throw Object.assign(new Error("native read denied"), { code: "EACCES" }); return read(path); };
+            if (state === "foreign") f.ports.alive = () => false;
+            vi.mocked(f.ports.identityAsync).mockImplementation(async pid => pid === owner.pid && state === "unavailable-identity" ? null : { ...identity, pid });
+            f.ports.removeArchive = vi.fn(f.ports.removeArchive);
+            f.ports.openClaim = vi.fn(f.ports.openClaim);
+            const started = f.ports.now();
+            const operation = vi.fn();
+            await expect(acquire(f, operation, { waitMs: 1000, staleMs: 1, waitBudget: { remaining: () => 47 - (f.ports.now() - started) } }))
+                .rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(f.ports.now() - started).toBe(47);
+            expect(operation).not.toHaveBeenCalled();
+            expect(f.ports.openClaim).toHaveBeenCalledOnce();
+            expect(f.records.has(archived)).toBe(true);
+            expect(f.records.has(f.file)).toBe(false);
+            expect(f.ports.removeArchive).not.toHaveBeenCalled();
+        });
+
+        it.each(["exited", "recorded-mismatch", "authoritative-reboot", "malformed", "missing"] as const)(`${mode} recovers only qualified %s archive evidence`, async state => {
+            const f = fixture(variant);
+            f.ports.platform = () => "linux";
+            const owner = { token: "f".repeat(32), pid: 456, host: "test-host", bootId: state === "authoritative-reboot" ? "11111111-1111-1111-1111-111111111111" : "test-boot",
+                processIdentity: { ...identity, pid: 456, startToken: state === "recorded-mismatch" ? "old-generation" : identity.startToken } };
+            if (state === "authoritative-reboot") f.ports.boot = () => "22222222-2222-2222-2222-222222222222";
+            if (state === "exited") f.ports.alive = pid => pid !== owner.pid;
+            if (state === "recorded-mismatch") {
+                vi.mocked(f.ports.observe).mockReturnValue("mismatch");
+                vi.mocked(f.ports.identityAsync).mockImplementation(async pid => ({ ...identity, pid }));
+            }
+            const archived = f.archive(state === "malformed" ? { kind: "malformed" } : state === "missing" ? { kind: "missing" } : { kind: "value", value: owner });
+            f.ports.removeArchive = vi.fn(f.ports.removeArchive);
+            expect(await acquire(f, () => "entered", { waitMs: 100, staleMs: 1 })).toBe("entered");
+            expect(f.records.has(f.file)).toBe(false);
+            if (state === "missing") expect(f.ports.removeArchive).not.toHaveBeenCalled();
+            else {
+                expect(f.records.has(archived)).toBe(false);
+                expect(f.ports.removeArchive).toHaveBeenCalledWith(f.file, archived, state === "malformed" ? null : owner.token, []);
+            }
+        });
+
+        it(`${mode} preserves the 100ms malformed floor before archived recovery`, async () => {
+            const f = fixture(variant);
+            const archived = f.archive({ kind: "malformed" });
+            const born = f.ports.now() - 70;
+            f.ports.mtime = path => path === archived ? born : f.ports.now() - 5000;
+            const operation = vi.fn();
+            await expect(acquire(f, operation, { waitMs: 20, staleMs: 1, waitBudget: { remaining: () => born + 90 - f.ports.now() } }))
+                .rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(operation).not.toHaveBeenCalled();
+            expect(f.records.has(archived)).toBe(true);
+            f.advance(30);
+            expect(await acquire(f, () => "aged", { staleMs: 1 })).toBe("aged");
+            expect(f.records.has(archived)).toBe(false);
+        });
+
+        it(`${mode} cleans a displaced candidate and retries within its original budget`, async () => {
+            const f = fixture(variant);
+            const successor = { token: "e".repeat(32), pid: 456, host: "foreign-host" };
+            let displaced: string | undefined;
+            f.ports.closeClaim = () => { if (!displaced) { displaced = f.displace(); f.seed(successor); } };
+            const originalPause = f.ports.pauseSync;
+            const started = f.ports.now();
+            if (mode === "sync") f.ports.pauseSync = ms => { originalPause(ms); if (f.ports.now() - started >= 30) f.records.delete(f.file); };
+            else f.ports.pause = async ms => { await f.ports.pauseSync(ms); if (f.ports.now() - started >= 30) f.records.delete(f.file); return undefined; };
+            f.ports.openClaim = vi.fn(f.ports.openClaim);
+            const operation = vi.fn(() => f.record());
+            const admitted = await acquire(f, operation, { waitMs: 1000, waitBudget: { remaining: () => 47 - (f.ports.now() - started) } });
+            expect(admitted).toMatchObject({ pid: identity.pid, host: "test-host" });
+            expect(operation).toHaveBeenCalledOnce();
+            expect(vi.mocked(f.ports.openClaim).mock.calls.length).toBeGreaterThan(1);
+            expect(f.ports.now() - started).toBe(30);
+            expect(f.records.size).toBe(0);
+            expect(displaced).toBeDefined();
+        });
+
+        it(`${mode} never admits a displaced publication or renews its deadline behind a successor`, async () => {
+            const f = fixture(variant);
+            const successor = { token: "e".repeat(32), pid: 456, host: "foreign-host" };
+            let displaced: string | undefined;
+            f.ports.closeClaim = () => { displaced = f.displace(); f.seed(successor); };
+            const started = f.ports.now();
+            const operation = vi.fn();
+            await expect(acquire(f, operation, { waitMs: 47, waitBudget: { remaining: () => 47 - (f.ports.now() - started) } }))
+                .rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(operation).not.toHaveBeenCalled();
+            expect(f.ports.now() - started).toBe(47);
+            expect(f.records.get(f.file)).toEqual({ kind: "value", value: successor });
+            expect(f.records.has(displaced!)).toBe(false);
+        });
+
+        it(`${mode} releases main first and then exact own archives without restoring or removing successors`, async () => {
+            const f = fixture(variant);
+            const events: string[] = [];
+            const move = f.ports.moveQualified, remove = f.ports.removeArchive;
+            f.ports.moveQualified = (...args) => { events.push("main"); return move(...args); };
+            f.ports.removeArchive = (...args) => { events.push("archive"); return remove(...args); };
+            const successor = { token: "e".repeat(32), pid: 456, host: "foreign-host" };
+            let owned = "", foreign = "";
+            expect(await acquire(f, () => {
+                owned = f.displace();
+                f.seed(successor);
+                foreign = f.archive({ kind: "value", value: successor });
+                return "complete";
+            })).toBe("complete");
+            expect(events).toEqual(["main", "archive"]);
+            expect(f.records.has(owned)).toBe(false);
+            expect(f.records.get(f.file)).toEqual({ kind: "value", value: successor });
+            expect(f.records.get(foreign)).toEqual({ kind: "value", value: successor });
+        });
+
+        it.each([false, true])(`${mode} reports failed exact own archive cleanup (primary failure: %s)`, async fails => {
+            const f = fixture(variant);
+            const primary = Object.assign(new Error("operation failed"), { code: "operation-primary" });
+            let owned = "";
+            f.ports.removeArchive = () => false;
+            let observed: unknown;
+            try { await acquire(f, () => { owned = f.displace(); if (fails) throw primary; return "success"; }); }
+            catch (error) { observed = error; }
+            expect(f.records.has(owned)).toBe(true);
+            expect(f.records.has(f.file)).toBe(false);
+            if (fails) {
+                expect(observed).toBeInstanceOf(AggregateError);
+                expect((observed as AggregateError).cause).toBe(primary);
+                expect((observed as AggregateError).errors[0]).toBe(primary);
+                expect((observed as AggregateError).errors[1]).toMatchObject({ code: "shared-mutation-lock-release-failed" });
+                expect(observed).toMatchObject({ code: primary.code });
+            } else expect(observed).toMatchObject({ code: "shared-mutation-lock-release-failed" });
+        });
+    }
 });
 
 describe("native lock publication timestamp observations", () => {

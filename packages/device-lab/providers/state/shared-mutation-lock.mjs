@@ -3,11 +3,11 @@ import { randomUUID } from "crypto";
 import { createStateFilePublication } from "../application/state-file-publication.mjs";
 import { createSharedMutationLock } from "../application/shared-mutation-lock.mjs";
 import { readLockPublicationTimes } from "../adapters/lock-publication-times.mjs";
-import { chmodSync, closeSync, constants as fsConstants, copyFileSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { chmodSync, closeSync, constants as fsConstants, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { hostname, uptime } from "os";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "path";
 import { inspectProcessIdentity, processIdentityMatches, readProcessIdentity, readProcessIdentityAsync } from "./process-identity.mjs";
-import { DeviceLabStateFileError, readDeviceLabStateFile, withDeviceLabReadableFile } from "./state-file.mjs";
+import { DeviceLabStateFileError, readDeviceLabBinaryFile, withDeviceLabReadableFile } from "./state-file.mjs";
 
 const SHARED_MUTATION_LOCK_FILE_LIMIT_BYTES = 16 * 1024;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
@@ -125,14 +125,6 @@ export function copyFileAtomically(source, destination, options) {
     return publication.copy(source, destination, options);
 }
 
-/** @param {string} file @returns {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} */
-function readLock(file) {
-    return locks.readLock(file);
-}
-
-
-
-
 /** @param {number} pid @returns {boolean} */
 function processIsAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -176,56 +168,81 @@ function currentBootId() {
 
 
 
-/** @param {string} moved @param {string} file @returns {undefined} */
-function restoreMovedLockIfPathEmpty(moved, file) {
+/** @param {string} file @returns {import('../ports/shared-mutation-lock.mjs').LockReadObservation} */
+function readRawLock(file) {
+    let stats;
+    try { stats = lstatSync(file); }
+    catch (error) { return { kind: nativeErrorCode(error) === "ENOENT" ? "missing" : "unavailable" }; }
+    if (stats.isSymbolicLink()) return { kind: "malformed" };
+    if (!stats.isFile() || stats.nlink !== 1) return { kind: "unavailable" };
     try {
-        linkSync(moved, file);
-        rmSync(moved, { force: true });
-        return;
+        const bytes = readDeviceLabBinaryFile(file, "shared-mutation-lock", SHARED_MUTATION_LOCK_FILE_LIMIT_BYTES);
+        if (bytes === null) return { kind: "missing" };
+        try { return { kind: "value", value: JSON.parse(bytes.toString("utf8")) }; }
+        catch (error) { return { kind: error instanceof SyntaxError ? "malformed" : "unavailable" }; }
     } catch (error) {
-        if (nativeErrorCode(error) === "EEXIST") return;
+        if (error instanceof DeviceLabStateFileError && error.code === "shared-mutation-lock-file-too-large") return { kind: "malformed" };
+        return { kind: "unavailable" };
     }
-    try {
-        copyFileSync(moved, file, fsConstants.COPYFILE_EXCL);
-        rmSync(moved, { force: true });
-    } catch {
-        // A current lock won the path, or restoration is unsupported. Preserve the moved record for diagnostics.
-    }
+}
+
+/** @param {string} file @param {string} entry @returns {boolean} */
+function archiveNameMatches(file, entry) {
+    const prefix = `${basename(file)}.`;
+    const normalized = process.platform === "win32" ? entry.toLowerCase() : entry;
+    const normalizedPrefix = process.platform === "win32" ? prefix.toLowerCase() : prefix;
+    if (!normalized.startsWith(normalizedPrefix)) return false;
+    const tail = normalized.slice(normalizedPrefix.length);
+    return /^(?:[a-f0-9]{16}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.(?:stale|release)$/i.test(tail)
+        || /^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.malformed$/i.test(tail);
+}
+
+/** @param {string} file @param {()=>undefined} validateDirectories @returns {string[]} */
+function lockArchives(file, validateDirectories) {
+    validateDirectories();
+    const entries = readdirSync(dirname(file));
+    validateDirectories();
+    return entries.filter(entry => archiveNameMatches(file, entry)).map(entry => resolve(dirname(file), entry));
+}
+
+/** @param {string} file @param {string} archive @param {string|null} token @param {()=>undefined} validateDirectories @returns {boolean} */
+function removeLockArchive(file, archive, token, validateDirectories) {
+    const parent = resolve(dirname(file));
+    const archiveParent = resolve(dirname(archive));
+    if ((process.platform === "win32" ? parent.toLowerCase() !== archiveParent.toLowerCase() : parent !== archiveParent)
+        || !archiveNameMatches(file, basename(archive))) return false;
+    validateDirectories();
+    const observed = locks.readObservation(archive);
+    if (observed.kind === "missing") return true;
+    if (token === null ? observed.kind !== "malformed" : observed.kind !== "value" || observed.value.token !== token) return false;
+    validateDirectories();
+    rmSync(archive, { force: true });
+    validateDirectories();
+    return true;
 }
 
 /** @param {string} file @param {string} expectedToken @param {'stale'|'release'} suffix @param {()=>undefined} [validateDirectories] @returns {boolean} */
 function moveIfTokenMatches(file, expectedToken, suffix, validateDirectories = () => {}) {
+    validateDirectories();
+    // This precheck only avoids ordinary mismatches; displaced records protect admission after a raced rename.
+    const observed = locks.readObservation(file);
+    if (observed.kind !== "value" || observed.value.token !== expectedToken) return false;
     const moved = `${file}.${randomUUID()}.${suffix}`;
-    try {
-        renameReplacingFileSync(file, moved, validateDirectories);
-    } catch {
-        return false;
-    }
-    const movedLock = readLock(moved);
-    if (movedLock?.token === expectedToken) {
-        rmSync(moved, { force: true });
-        return true;
-    }
-    restoreMovedLockIfPathEmpty(moved, file);
-    return false;
+    try { renameReplacingFileSync(file, moved, validateDirectories); }
+    catch { return false; }
+    return removeLockArchive(file, moved, expectedToken, validateDirectories);
 }
 
-/** @param {string} file @param {string} token @param {()=>undefined} [validateDirectories] @returns {boolean} */
-function moveMalformedLock(file, token, validateDirectories = () => {}) {
-    const moved = `${file}.${token}.malformed`;
-    try {
-        renameReplacingFileSync(file, moved, validateDirectories);
-    } catch {
-        return false;
-    }
-    if (!readLock(moved)) {
-        rmSync(moved, { force: true });
-        return true;
-    }
-    restoreMovedLockIfPathEmpty(moved, file);
-    return false;
+/** @param {string} file @param {string} _token @param {()=>undefined} [validateDirectories] @returns {boolean} */
+function moveMalformedLock(file, _token, validateDirectories = () => {}) {
+    validateDirectories();
+    if (locks.readObservation(file).kind !== "malformed") return false;
+    // A fresh compatible nonce prevents retries from overwriting a displaced live claim.
+    const moved = `${file}.${randomUUID()}.malformed`;
+    try { renameReplacingFileSync(file, moved, validateDirectories); }
+    catch { return false; }
+    return removeLockArchive(file, moved, null, validateDirectories);
 }
-
 
 /** @typedef {{path:string,output:number|null}} AtomicStage */
 /** @param {unknown} error @returns {string|undefined} */
@@ -292,7 +309,7 @@ const lockPorts = {
     openClaim: file => openSync(file, "wx", 0o600),
     writeClaim: (descriptor, text) => { writeFileSync(descriptor, text); return undefined; },
     closeClaim: descriptor => { closeSync(descriptor); return undefined; },
-    readRaw: file => ({ kind: "value", value: readDeviceLabStateFile(file, value => value, "shared-mutation-lock", SHARED_MUTATION_LOCK_FILE_LIMIT_BYTES) }),
+    readRaw: readRawLock,
     mtime: file => { try { return lstatSync(file).mtimeMs; } catch { return null; } },
     alive: processIsAlive,
     identitySync: readProcessIdentity,
@@ -302,6 +319,8 @@ const lockPorts = {
     matches: processIdentityMatches,
     moveQualified: (file, token, suffix, fence) => moveIfTokenMatches(file, token, suffix, () => assertStateDirectoriesUnchanged(fence)),
     moveMalformed: (file, token, fence) => moveMalformedLock(file, token, () => assertStateDirectoriesUnchanged(fence)),
+    archives: (file, fence) => lockArchives(file, () => assertStateDirectoriesUnchanged(fence)),
+    removeArchive: (file, archive, token, fence) => removeLockArchive(file, archive, token, () => assertStateDirectoriesUnchanged(fence)),
     errorCode: nativeErrorCode,
     timeout: file => Object.assign(new Error(`Timed out acquiring shared mutation lock: ${file}`), { code: "shared-mutation-lock-timeout" }),
 };

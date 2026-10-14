@@ -1,7 +1,7 @@
 import { createStateFilePublication } from "../../../packages/device-lab/providers/application/state-file-publication.mjs";
 import { createSharedMutationLock } from "../../../packages/device-lab/providers/application/shared-mutation-lock.mjs";
 import type { CopyResources, CopyStream, PublicationDirectory, PublicationStage, StateFilePublicationPorts } from "../../../packages/device-lab/providers/ports/state-file-publication.d.mts";
-import type { MutationLockRecord, SharedMutationLockPorts } from "../../../packages/device-lab/providers/ports/shared-mutation-lock.d.mts";
+import type { LockReadObservation, MutationLockRecord, SharedMutationLockPorts } from "../../../packages/device-lab/providers/ports/shared-mutation-lock.d.mts";
 
 type Fence = readonly PublicationDirectory[];
 type Ports = StateFilePublicationPorts<Fence, PublicationStage>;
@@ -43,6 +43,10 @@ void publicationCapabilities;
 function lockCapabilities(ports: SharedMutationLockPorts<Fence>): void {
     const application = createSharedMutationLock(ports);
     const record: MutationLockRecord | null = application.readLock("/owned/state.lock");
+    const raw: LockReadObservation = ports.readRaw("/owned/state.lock");
+    const observed: { kind: "value"; value: MutationLockRecord } | { kind: "missing" | "malformed" | "unavailable" } = application.readObservation("/owned/state.lock");
+    const archives: string[] = ports.archives("/owned/state.lock", []);
+    const removed: boolean = ports.removeArchive("/owned/state.lock", "/owned/state.lock.0123456789abcdef.stale", "a".repeat(32), []);
     const synchronous: string = application.withLock("/owned/state.lock", () => "settled", { reclaimStale: false });
     const asynchronous: Promise<number> = application.withLockAsync("/owned/state.lock", async () => 7, { waitBudget: { remaining: () => 100 } });
     const { readRaw, ...withoutRecord } = ports;
@@ -54,6 +58,12 @@ function lockCapabilities(ports: SharedMutationLockPorts<Fence>): void {
     const { moveQualified, ...withoutRelease } = ports;
     // @ts-expect-error Lock release and stale reclaim require token-qualified namespace mutation.
     createSharedMutationLock(withoutRelease);
+    const { archives: enumerateArchives, ...withoutArchives } = ports;
+    // @ts-expect-error Admission must observe displaced ownership evidence.
+    createSharedMutationLock(withoutArchives);
+    const { removeArchive, ...withoutArchiveRelease } = ports;
+    // @ts-expect-error Exact owned archive release is a required native capability.
+    createSharedMutationLock(withoutArchiveRelease);
     const { identityAsync, ...withoutAsyncIdentity } = ports;
     // @ts-expect-error Asynchronous live-owner observation is a required capability.
     createSharedMutationLock(withoutAsyncIdentity);
@@ -61,10 +71,16 @@ function lockCapabilities(ports: SharedMutationLockPorts<Fence>): void {
     createSharedMutationLock({ ...ports, openClaim: async () => 1 });
     // @ts-expect-error Token-qualified release cannot remain pending after the operation settles.
     createSharedMutationLock({ ...ports, moveQualified: async () => true });
+    // @ts-expect-error Archive enumeration must settle before synchronous admission.
+    createSharedMutationLock({ ...ports, archives: async () => [] });
+    // @ts-expect-error Archive removal must settle inside the owned release lifetime.
+    createSharedMutationLock({ ...ports, removeArchive: async () => true });
+    // @ts-expect-error Native raw observations must be available synchronously.
+    createSharedMutationLock({ ...ports, readRaw: async () => ({ kind: "unavailable" as const }) });
     // @ts-expect-error The synchronous owner observation route cannot yield a Promise.
     createSharedMutationLock({ ...ports, identitySync: async () => null });
     // @ts-expect-error Synchronous contention pause cannot defer lock acquisition.
     createSharedMutationLock({ ...ports, pauseSync: async () => undefined });
-    void [record, synchronous, asynchronous, readRaw, openClaim, moveQualified, identityAsync];
+    void [record, raw, observed, archives, removed, synchronous, asynchronous, readRaw, openClaim, moveQualified, enumerateArchives, removeArchive, identityAsync];
 }
 void lockCapabilities;

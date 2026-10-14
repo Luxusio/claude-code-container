@@ -1,6 +1,6 @@
 import { admitMutationLock, mutationBootProvesReboot } from '../domain/shared-mutation-lock.mjs';
 /** Local ownership diagnoses blocking waits; it never authorizes file removal.
- * @type {Map<string,string>} */
+ * @type {Map<string,Set<string>>} */
 const ownedClaims = new Map();
 
 /** @template {readonly import('../ports/state-file-publication.mjs').PublicationDirectory[]} Fence
@@ -46,10 +46,31 @@ export function createSharedMutationLock(ports) {
     }
     /** @param {string} token @param {import('../ports/shared-mutation-lock.mjs').LockProcessIdentity|null} identity */
     function record(token,identity) { return {token,pid:ports.pid(),host:ports.host(),bootId:ports.boot(),createdAt:ports.timestamp(),processIdentityStatus:identity ? 'recorded' : 'unavailable',...(identity ? {processIdentity:identity} : {})}; }
+    /** @param {string} file
+     * @returns {{kind:'value',value:import('../ports/shared-mutation-lock.mjs').MutationLockRecord}|{kind:'missing'}|{kind:'malformed'}|{kind:'unavailable'}} */
+    function readObservation(file) {
+        try {
+            const raw = ports.readRaw(file);
+            if (raw.kind !== 'value') return raw;
+            const lock = admitMutationLock(raw.value);
+            return lock ? {kind:'value',value:lock} : {kind:'malformed'};
+        } catch { return {kind:'unavailable'}; }
+    }
     /** @param {string} file */
     function readLock(file) {
-        try { const raw = ports.readRaw(file); return raw.kind === 'value' ? admitMutationLock(raw.value) : null; }
-        catch { return null; }
+        const observed = readObservation(file);
+        return observed.kind === 'value' ? observed.value : null;
+    }
+    /** @param {string} key @param {string} token */
+    function own(key,token) {
+        let tokens = ownedClaims.get(key);
+        if (!tokens) { tokens = new Set(); ownedClaims.set(key,tokens); }
+        tokens.add(token);
+    }
+    /** @param {string} key @param {string} token */
+    function disown(key,token) {
+        const tokens = ownedClaims.get(key);
+        if (tokens) { tokens.delete(token); if (!tokens.size) ownedClaims.delete(key); }
     }
     /** @param {string} key @param {import('../ports/shared-mutation-lock.mjs').LockObservationStatus} status */
     function cacheStatus(key,status) {
@@ -127,24 +148,73 @@ export function createSharedMutationLock(ports) {
         function check() { if (options.waitBudget && remaining() <= 0) throw ports.timeout(file); }
         return {remaining,check,expired:() => clock() >= deadline};
     }
-    /** @param {unknown[]} failures */
-    function throwFailures(failures) {
+    /** @param {unknown[]} failures @param {string} [codeOverride] */
+    function throwFailures(failures,codeOverride) {
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) {
             const combined = new AggregateError(failures, 'Shared mutation lock operation and cleanup failed', {cause:failures[0]});
-            const code = ports.errorCode(failures[0]);
+            const code = codeOverride ?? ports.errorCode(failures[0]);
             if (code) Object.assign(combined, {code});
             throw combined;
         }
     }
+    /** @param {string} file @param {string} token @param {Fence} fence @param {unknown} [cause] */
+    function releaseFailure(file,token,fence,cause) {
+        ports.check(fence);
+        if (readLock(file)?.token === token) {
+            throw Object.assign(new Error(`Failed to release shared mutation lock: ${file}`, cause === undefined ? undefined : {cause}), {code:'shared-mutation-lock-release-failed'});
+        }
+    }
+    /** @param {string} file @param {string} token @param {Fence} fence */
+    function releaseArchives(file,token,fence) {
+        /** @type {unknown[]} */
+        const failures = [];
+        for (const archive of ports.archives(file,fence)) {
+            try {
+                ports.check(fence);
+                if (readLock(archive)?.token !== token) continue;
+                try { ports.removeArchive(file,archive,token,fence); }
+                catch (error) { releaseFailure(archive,token,fence,error); throw error; }
+                releaseFailure(archive,token,fence);
+            } catch (error) { failures.push(error); }
+        }
+        throwFailures(failures);
+    }
     /** @param {string} file @param {string} token @param {Fence} fence */
     function release(file,token,fence) {
-        ports.check(fence);
-        const released = ports.moveQualified(file,token,'release',fence);
-        ports.check(fence);
-        if (!released && readLock(file)?.token === token) {
-            throw Object.assign(new Error(`Failed to release shared mutation lock: ${file}`), {code:'shared-mutation-lock-release-failed'});
+        /** @type {unknown[]} */
+        const failures = [];
+        try { ports.check(fence); ports.moveQualified(file,token,'release',fence); }
+        catch (error) { failures.push(error); }
+        try { releaseArchives(file,token,fence); } catch (error) { failures.push(error); }
+        try { releaseFailure(file,token,fence); } catch (error) { failures.push(error); }
+        throwFailures(failures,failures.some(error => ports.errorCode(error) === 'shared-mutation-lock-release-failed') ? 'shared-mutation-lock-release-failed' : undefined);
+    }
+    /** @param {string} file @param {string} token @param {number} staleMs @param {boolean} reclaim @param {Fence} fence */
+    function admitArchives(file,token,staleMs,reclaim,fence) {
+        for (const archive of ports.archives(file,fence)) {
+            const observed = readObservation(archive);
+            if (observed.kind === 'missing' || observed.kind === 'value' && observed.value.token === token) continue;
+            if (observed.kind === 'unavailable' || !reclaim) return false;
+            const lock = observed.kind === 'value' ? observed.value : null;
+            if (!stale(archive,lock,staleMs)) return false;
+            if (!ports.removeArchive(file,archive,lock?.token ?? null,fence) && readObservation(archive).kind !== 'missing') return false;
         }
+        ports.check(fence);
+        return true;
+    }
+    /** @param {string} file @param {string} token @param {number} staleMs @param {boolean} budgeted @param {Fence} fence */
+    async function admitArchivesAsync(file,token,staleMs,budgeted,fence) {
+        for (const archive of ports.archives(file,fence)) {
+            const observed = readObservation(archive);
+            if (observed.kind === 'missing' || observed.kind === 'value' && observed.value.token === token) continue;
+            if (observed.kind === 'unavailable') return false;
+            const lock = observed.kind === 'value' ? observed.value : null;
+            if (!(budgeted ? stale(archive,lock,staleMs) : await staleAsync(archive,lock,staleMs))) return false;
+            if (!ports.removeArchive(file,archive,lock?.token ?? null,fence) && readObservation(archive).kind !== 'missing') return false;
+        }
+        ports.check(fence);
+        return true;
     }
     /** @param {number} descriptor @param {()=>string} value @param {unknown[]} failures */
     function publish(descriptor,value,failures) {
@@ -172,21 +242,36 @@ export function createSharedMutationLock(ports) {
             const value = record(token,currentIdentity(!options.waitBudget));
             while (true) {
                 wait.check();
-                try {
+                if (!claimed) try {
                     check(); const fd = ports.openClaim(file);
-                    claimed = true; ownedClaims.set(key,token);
+                    claimed = true; own(key,token);
                     publish(fd,() => JSON.stringify(value),failures);
-                    check(); break;
+                    check();
                 } catch (error) {
                     if (claimed || ports.errorCode(error) !== 'EEXIST') throw error;
                     if (ports.variant === 'typescript') wait.check();
-                    const existing = readLock(file);
+                    const observed = readObservation(file);
+                    const existing = observed.kind === 'value' ? observed.value : null;
                     const reclaim = ports.variant !== 'typescript' || options.reclaimStale !== false;
                     if (reclaim && existing && stale(file,existing,options.staleMs ?? 30000) && ports.moveQualified(file,existing.token,'stale',fence)) continue;
-                    if (reclaim && !existing && stale(file,existing,options.staleMs ?? 30000) && ports.moveMalformed(file,token,fence)) continue;
+                    if (reclaim && observed.kind === 'malformed' && stale(file,null,options.staleMs ?? 30000) && ports.moveMalformed(file,token,fence)) continue;
                     if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
                     wait.check(); ports.pauseSync(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
+                    continue;
                 }
+                check();
+                const admitted = admitArchives(file,token,options.staleMs ?? 30000,ports.variant !== 'typescript' || options.reclaimStale !== false,fence);
+                const current = readObservation(file);
+                check();
+                if (current.kind === 'value' && current.value.token === token && admitted) break;
+                if (current.kind !== 'unavailable' && !(current.kind === 'value' && current.value.token === token)) {
+                    releaseArchives(file,token,fence);
+                    disown(key,token); claimed = false;
+                    if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
+                    continue;
+                }
+                if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
+                wait.check(); ports.pauseSync(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
             }
             check(); wait.check(); result = ports.runOwnerContext(key,token,operation);
         } catch (error) {
@@ -194,7 +279,7 @@ export function createSharedMutationLock(ports) {
         } finally {
             if (claimed) {
                 try { release(file,token,fence); } catch (error) { failures.push(error); }
-                finally { if (ownedClaims.get(key) === token) ownedClaims.delete(key); }
+                finally { disown(key,token); }
             }
         }
         throwFailures(failures);
@@ -206,7 +291,7 @@ export function createSharedMutationLock(ports) {
         wait.check();
         const token = ports.token(), fence = ports.capture(file);
         const key = ports.key(file);
-        if (ports.ownerContext().some(owner => owner.key === key && ownedClaims.get(key) === owner.token)) {
+        if (ports.ownerContext().some(owner => owner.key === key && ownedClaims.get(key)?.has(owner.token))) {
             throw Object.assign(new Error(`Asynchronous wait on ancestor-owned shared mutation lock: ${file}`), {code:'shared-mutation-lock-self-contention'});
         }
         const check = () => ports.check(fence);
@@ -219,20 +304,35 @@ export function createSharedMutationLock(ports) {
         try {
             while (true) {
                 wait.check();
-                try {
+                if (!claimed) try {
                     check(); const fd = ports.openClaim(file);
-                    claimed = true; ownedClaims.set(key,token);
+                    claimed = true; own(key,token);
                     publish(fd,() => JSON.stringify(value),failures);
-                    check(); break;
+                    check();
                 } catch (error) {
                     if (claimed || ports.errorCode(error) !== 'EEXIST') throw error;
                     if (ports.variant === 'typescript') wait.check();
-                    const existing = readLock(file), staleMs = options.staleMs ?? 30000;
+                    const observed = readObservation(file), staleMs = options.staleMs ?? 30000;
+                    const existing = observed.kind === 'value' ? observed.value : null;
                     if (existing && (options.waitBudget ? stale(file,existing,staleMs) : await staleAsync(file,existing,staleMs)) && ports.moveQualified(file,existing.token,'stale',fence)) continue;
-                    if (!existing && (options.waitBudget ? stale(file,existing,staleMs) : await staleAsync(file,existing,staleMs)) && ports.moveMalformed(file,token,fence)) continue;
+                    if (observed.kind === 'malformed' && (options.waitBudget ? stale(file,null,staleMs) : await staleAsync(file,null,staleMs)) && ports.moveMalformed(file,token,fence)) continue;
                     if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
                     wait.check(); await ports.pause(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
+                    continue;
                 }
+                check();
+                const admitted = await admitArchivesAsync(file,token,options.staleMs ?? 30000,!!options.waitBudget,fence);
+                const current = readObservation(file);
+                check();
+                if (current.kind === 'value' && current.value.token === token && admitted) break;
+                if (current.kind !== 'unavailable' && !(current.kind === 'value' && current.value.token === token)) {
+                    releaseArchives(file,token,fence);
+                    disown(key,token); claimed = false;
+                    if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
+                    continue;
+                }
+                if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
+                wait.check(); await ports.pause(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
             }
             check(); wait.check(); result = await ports.runOwnerContext(key,token,operation);
         } catch (error) {
@@ -240,11 +340,11 @@ export function createSharedMutationLock(ports) {
         } finally {
             if (claimed) {
                 try { release(file,token,fence); } catch (error) { failures.push(error); }
-                finally { if (ownedClaims.get(key) === token) ownedClaims.delete(key); }
+                finally { disown(key,token); }
             }
         }
         throwFailures(failures);
         return /** @type {T} */ (result);
     }
-    return {readLock,withLock,withLockAsync};
+    return {readObservation,readLock,withLock,withLockAsync};
 }
