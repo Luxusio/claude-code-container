@@ -2430,15 +2430,12 @@
       "dependsOn": [],
       "coveredOperationIds": [],
       "title": "QEMU 이미지·수명주기",
-      "workStatus": "partial",
-      "remainingWork": "현재 framing·snapshot ID·readiness 수정은 통합되어 있다. 실제 Windows QA1의 전송 진단 경로 노출1건을 기존 native projection 세 호출로 수정하고 성공/실패5회귀를 추가했다. 현재 coordinator 빌드·타입·shipping 및 provider89PASS; 최종 독립 리뷰와 Windows/소스·빌드 MCP 전송 QA2·로컬 qualification이 남는다. 기존 QA1 FAIL과 과거 후보 기록, formal 자동 기록 조건은 별도로 유지한다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 구현·독립 리뷰·대상 QA·로컬 통합 완료. 자동 기록에 따른 formal 마감과 실기기·전체 범위·reliability 조건은 별도 집계한다.",
       "completionCriteria": "코어는 경로·materialize/reuse·runtime 동일성·snapshot 게시·공개 정책을 유지하고, 어댑터가 overlay·launch·provisioning·guest SSH·snapshot 명령 구성을 처리한다. 독립 리뷰·QA·로컬 통합으로 확인한다.",
       "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
-        "remainingPaths": [
-          "packages/device-lab/providers/application/qemu-guest-access.mjs",
-          "packages/device-lab/providers/application/qemu-owned-data.mjs"
-        ],
+        "remainingPaths": [],
         "nativeConsumers": [
           "packages/device-lab/providers/backends/linux-vm.mjs"
         ],
@@ -2446,9 +2443,13 @@
           "packages/device-lab/providers/domain/qemu-image-disk-target.mjs",
           "packages/device-lab/providers/application/qemu-image-disk-target.mjs",
           "packages/device-lab/providers/application/qemu-lifecycle.mjs"
+        ],
+        "completedPaths": [
+          "packages/device-lab/providers/application/qemu-guest-access.mjs",
+          "packages/device-lab/providers/application/qemu-owned-data.mjs"
         ]
       },
-      "status": "Separate68cb569d candidate actual independent Code/Security and QA PASS:12 whole files112PASS0FAIL0SKIP, genuine build/strict/lint, shipping, extracted QEMU lifecycle and public MCP59. No native Windows acceptance claim; qualified joint integration pending. One task_verify found no automatic receipts and exact task_blocked park recorded; no formal close or new completion credit.",
+      "status": "Current Main QEMU group qualified at7b0fb1d0: five native framing families plus transfer; actual complete independent Code/Security then Linux/Windows QA2 PASS; source locally committed. Prior QA1 Windows transfer leak and historical candidate evidence remain separate. Zero additional operation credit; formal close and hardware/source-universe/reliability acceptance unclaimed.",
       "qualifiedContributions": [
         {
           "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
@@ -2457,18 +2458,25 @@
           "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
           "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
           "contribution": "QEMU overlay, launch and guest-provisioning native effects"
+        },
+        {
+          "acceptedIntegrationCommit": "7b0fb1d0c24dc75623bd35264f99d38c59334a96",
+          "taskId": "TASK__qemu-native-framing-recovery-20261014",
+          "qaEvidence": "/tmp/qa-qemu-transfer-independent-7b0fb1d0/aggregate-qa2-summary.json",
+          "contribution": "Complete remaining guest/readiness/snapshot framing and current retained native lifecycle/transfer qualification",
+          "status": "Actual independent full Code/Security and QA2 PASS; bounded Linux/Windows/source+built public/native-leaf acceptance. Existing QA1 FAIL retained; zero new operation credit and no hardware/whole-Goal/formal claim."
         }
       ],
-      "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
-      "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
-      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
-      "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
+      "acceptedIntegrationCommit": "7b0fb1d0c24dc75623bd35264f99d38c59334a96",
+      "taskId": "TASK__qemu-native-framing-recovery-20261014",
+      "qaEvidence": "/tmp/qa-qemu-transfer-independent-7b0fb1d0/aggregate-qa2-summary.json",
+      "deliveryEvidence": "Current feature/device-mcp-squashed contains the four listed source commits; empty index, protected bytes and both PR merge ancestors authenticated before final Docs.",
       "historicalStatusBeforeFreshSourceAudit": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
       "currentSourceAudit": {
-        "sourceCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
-        "taskId": "TASK__architecture-final-source-remediation",
-        "status": "partial-awaiting-current-qualification",
-        "scope": "Guest SSH and snapshot framing candidate implemented and actually Code/Security reviewed and portable-QA qualified at68cb569d; guest transfer already native-separated. Qualified joint integration remains pending; empty automatic receipt park retained."
+        "sourceCommit": "7b0fb1d0c24dc75623bd35264f99d38c59334a96",
+        "taskId": "TASK__qemu-native-framing-recovery-20261014",
+        "status": "qualified-local-source-completed",
+        "scope": "Current guest SSH/readiness and snapshot native boundaries plus literal snapshot-ID selectors and default transfer diagnostic projection; existing overlay/launch/provisioning guards retained."
       },
       "currentImplementationCandidate": {
         "workspace": "/tmp/ccc-architecture-qemu-debt-20261012",
@@ -2493,6 +2501,84 @@
           "qaEvidenceExists": false,
           "shippingEvidenceExists": false,
           "committedCandidate": "recoverable Git object; original recorded PASS retained, local raw /tmp artifacts missing"
+        },
+        "recordRole": "Historical archived candidate only; current accepted Main qualification is currentQemuQualification below. Original missing raw evidence disposition remains unchanged."
+      },
+      "historicalStatusBeforeCurrentQemuRecovery": "Separate68cb569d candidate actual independent Code/Security and QA PASS:12 whole files112PASS0FAIL0SKIP, genuine build/strict/lint, shipping, extracted QEMU lifecycle and public MCP59. No native Windows acceptance claim; qualified joint integration pending. One task_verify found no automatic receipts and exact task_blocked park recorded; no formal close or new completion credit.",
+      "historicalSourceAuditBeforeCurrentQemuRecovery": {
+        "sourceCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
+        "taskId": "TASK__architecture-final-source-remediation",
+        "status": "partial-awaiting-current-qualification",
+        "scope": "Guest SSH and snapshot framing candidate implemented and actually Code/Security reviewed and portable-QA qualified at68cb569d; guest transfer already native-separated. Qualified joint integration remains pending; empty automatic receipt park retained."
+      },
+      "currentQemuQualification": {
+        "taskId": "TASK__qemu-native-framing-recovery-20261014",
+        "runId": "01a1396b-783c-7caf-a823-2982db9165dd",
+        "sourceCommit": "7b0fb1d0c24dc75623bd35264f99d38c59334a96",
+        "sourceCommits": [
+          "f9661224265f8222eec33ddd7efc4816d0a62bb1",
+          "cfee8318aaf59cb18a73773c36df2652abf0b60d",
+          "47cf01dfd0133c0e6350a2fc24055974ed9b8283",
+          "7b0fb1d0c24dc75623bd35264f99d38c59334a96"
+        ],
+        "independentReviews": "Actual complete Code and Security PASS preceded actual independent QA2 PASS; final independent documentation-review PASS. Results substantive and NON-ATTESTING; formal disposition below.",
+        "verificationDepth": "executed-command",
+        "qualifiedLinux": {
+          "wholeFiles": 13,
+          "passed": 161,
+          "failed": 0,
+          "existingSkipped": 1,
+          "freshWholeFiles": 2,
+          "freshPassed": 7,
+          "provenance": "Qualified mixed fresh/carry scope, not a fresh simultaneous thirteen-file run."
+        },
+        "qualifiedWindows": {
+          "wholeFiles": 13,
+          "passed": 160,
+          "failed": 0,
+          "existingSkipped": 2,
+          "freshWholeFiles": 1,
+          "freshPassed": 88,
+          "freshSkipped": 1,
+          "unchangedWholeFiles": 12,
+          "carriedPassed": 72,
+          "carriedSkipped": 1,
+          "provenance": "Fresh whole provider suite plus authenticated unchanged twelve files; not a fresh simultaneous thirteen-file run."
+        },
+        "publicMcp": {
+          "freshSourceAndBuiltCalls": 14,
+          "freshNativeHandlerCalls": 4,
+          "authenticatedPriorCalls": 42,
+          "scope": "Finite controlled native Node leaves through actual source/built stdio and handleLinuxVmTool; no real QEMU/KVM/SSH network or GUI."
+        },
+        "producerAndShipping": "Eight Linux coordinator stages and whole provider89PASS0FAIL0SKIP; actual npm shipping PASS. Six fresh Windows assembly/build/provider/shipping/public-runtime commands passed; unchanged type producer inputs authenticated.",
+        "authentication": {
+          "ownedPaths": 19,
+          "protectedPaths": 1702,
+          "sourceInputs": 1724,
+          "nativeDependencyFiles": 7543,
+          "nativePhysicalDependencyTargets": 238,
+          "linuxDependencyFiles": 7549,
+          "linuxPhysicalDependencyTargets": 240,
+          "emittedFiles": 1351,
+          "index": "empty before final Docs changes",
+          "prMergeAncestorsPreserved": true
+        },
+        "processDisposition": "All27 recorded native job/command/stdio/provider-effect PIDs absent; raw delegate and Linux exec sessions terminal. Reserved VM Running/bootReady. Synchronous discovery leaves settled; their transient PIDs were not retained, so no complete descendant-ledger claim.",
+        "qaEvidence": "/tmp/qa-qemu-transfer-independent-7b0fb1d0/aggregate-qa2-summary.json",
+        "nativeEvidence": {
+          "path": "results/native-qemu-transfer-7b0fb1d0-20261014/native-evidence.zip",
+          "bytes": 425940,
+          "sha256": "8a8975200ed201fe025f0dde2c0e4ac910fa806fb239872143dec8df5e77896f"
+        },
+        "knownCeilings": "Controlled fixtures do not certify real QEMU boot, KVM, SSH networking, GUI or native macOS. Configured real-tests strict:false and explicit skipLibCheck:false do not certify the whole legacy native facade. Broad architecture/source-universe/reliability and formal close remain separate.",
+        "groupCompletionCredit": true,
+        "additionalOperationCredit": 0,
+        "formalDisposition": "Actual independent Code/Security, QA2 and final documentation-review PASS are NON-ATTESTING because the automatic receipt stream is empty. One actual task_verify returned PENDING; exact response-owned empty-stream task_blocked pair recorded. No formal close, receipt fabrication or receipt-only rerun.",
+        "documentationReview": "Actual documentation_review_qemu_final_7b0fb1d0 FINAL PASS; all seven docs, seven product files, five tests, links and QA1/QA2 provenance checked.",
+        "formalEvidence": {
+          "verify": "/tmp/ccc-qemu-final-task-verify-7b0fb1d0.json",
+          "park": "/tmp/ccc-qemu-actual-park-7b0fb1d0.json"
         }
       }
     },
@@ -2996,16 +3082,16 @@
       "id": "qemu-native-framing-recovery-current",
       "taskId": "TASK__qemu-native-framing-recovery-20261014",
       "coveredOperationIds": [],
-      "status": "Framing f9661224, literal snapshot selector cfee8318 and readiness masking47cf01df are committed. Actual full final Code/Security PASS then independent QA1 ran currentWindows8stages/shipping and42source+built MCPcalls PASS, but whole13 had154PASS1FAIL2existingSKIP: default SSH transfer nested output disclosed a Windows key path. This original FAIL is retained. Three existing native result returns now reuse guest projection; five neutral Windows-path success/failure provider regressions added. Current coordinator eight stages and whole provider89PASS0FAIL0SKIP, npm shipping PASS. Fresh final complete Code/Security and affected native/source+built transfer QA2 remain pending; zero group/operation credit.",
+      "status": "Current QEMU R11 completed at7b0fb1d0 after actual independent full Code/Security and QA2 PASS. Qualified thirteen-file scope: Linux161PASS1existingSKIP, Windows160PASS2existingSKIP with explicit fresh/carry provenance. Fourteen fresh source+built public MCP calls and four native handler calls passed;42 prior public calls authenticated unchanged. Original QA1 FAIL retained. Fifteen of23 structural groups complete; no additional operation credit, formal close or real-guest/native-macOS claim.",
       "currentWork": {
         "runId": "01a1396b-783c-7caf-a823-2982db9165dd",
         "baseCommit": "3f90e3b237c8f7d6791a6f6c79175faaba39e899",
-        "stage": "transfer-redaction-corrected-coordinator-pass-awaiting-final-review-and-qa2",
+        "stage": "source-integrated-independent-code-security-qa2-docs-pass-formal-empty-receipt-park",
         "archivedCandidate": "68cb569db6be609c4fa79f2c4c438f91df9889d1",
         "ownedProductFiles": 7,
         "ownedTestFiles": 5,
         "wholeQualificationFiles": 13,
-        "groupCompletionCredit": false,
+        "groupCompletionCredit": true,
         "nativeQa1": {
           "status": "actual-independent-FAIL",
           "head": "47cf01dfd0133c0e6350a2fc24055974ed9b8283",
@@ -3016,7 +3102,79 @@
           "publicMcpCallsPassed": 42,
           "evidence": "/tmp/qa-qemu-independent-1396b/aggregate-qa1-summary.json",
           "reason": "Default SSH transfer nested Windows key path remains visible; readiness projection is correct."
-        }
+        },
+        "currentQualification": {
+          "taskId": "TASK__qemu-native-framing-recovery-20261014",
+          "runId": "01a1396b-783c-7caf-a823-2982db9165dd",
+          "sourceCommit": "7b0fb1d0c24dc75623bd35264f99d38c59334a96",
+          "sourceCommits": [
+            "f9661224265f8222eec33ddd7efc4816d0a62bb1",
+            "cfee8318aaf59cb18a73773c36df2652abf0b60d",
+            "47cf01dfd0133c0e6350a2fc24055974ed9b8283",
+            "7b0fb1d0c24dc75623bd35264f99d38c59334a96"
+          ],
+          "independentReviews": "Actual complete Code and Security PASS preceded actual independent QA2 PASS; final independent documentation-review PASS. Results substantive and NON-ATTESTING; formal disposition below.",
+          "verificationDepth": "executed-command",
+          "qualifiedLinux": {
+            "wholeFiles": 13,
+            "passed": 161,
+            "failed": 0,
+            "existingSkipped": 1,
+            "freshWholeFiles": 2,
+            "freshPassed": 7,
+            "provenance": "Qualified mixed fresh/carry scope, not a fresh simultaneous thirteen-file run."
+          },
+          "qualifiedWindows": {
+            "wholeFiles": 13,
+            "passed": 160,
+            "failed": 0,
+            "existingSkipped": 2,
+            "freshWholeFiles": 1,
+            "freshPassed": 88,
+            "freshSkipped": 1,
+            "unchangedWholeFiles": 12,
+            "carriedPassed": 72,
+            "carriedSkipped": 1,
+            "provenance": "Fresh whole provider suite plus authenticated unchanged twelve files; not a fresh simultaneous thirteen-file run."
+          },
+          "publicMcp": {
+            "freshSourceAndBuiltCalls": 14,
+            "freshNativeHandlerCalls": 4,
+            "authenticatedPriorCalls": 42,
+            "scope": "Finite controlled native Node leaves through actual source/built stdio and handleLinuxVmTool; no real QEMU/KVM/SSH network or GUI."
+          },
+          "producerAndShipping": "Eight Linux coordinator stages and whole provider89PASS0FAIL0SKIP; actual npm shipping PASS. Six fresh Windows assembly/build/provider/shipping/public-runtime commands passed; unchanged type producer inputs authenticated.",
+          "authentication": {
+            "ownedPaths": 19,
+            "protectedPaths": 1702,
+            "sourceInputs": 1724,
+            "nativeDependencyFiles": 7543,
+            "nativePhysicalDependencyTargets": 238,
+            "linuxDependencyFiles": 7549,
+            "linuxPhysicalDependencyTargets": 240,
+            "emittedFiles": 1351,
+            "index": "empty before final Docs changes",
+            "prMergeAncestorsPreserved": true
+          },
+          "processDisposition": "All27 recorded native job/command/stdio/provider-effect PIDs absent; raw delegate and Linux exec sessions terminal. Reserved VM Running/bootReady. Synchronous discovery leaves settled; their transient PIDs were not retained, so no complete descendant-ledger claim.",
+          "qaEvidence": "/tmp/qa-qemu-transfer-independent-7b0fb1d0/aggregate-qa2-summary.json",
+          "nativeEvidence": {
+            "path": "results/native-qemu-transfer-7b0fb1d0-20261014/native-evidence.zip",
+            "bytes": 425940,
+            "sha256": "8a8975200ed201fe025f0dde2c0e4ac910fa806fb239872143dec8df5e77896f"
+          },
+          "knownCeilings": "Controlled fixtures do not certify real QEMU boot, KVM, SSH networking, GUI or native macOS. Configured real-tests strict:false and explicit skipLibCheck:false do not certify the whole legacy native facade. Broad architecture/source-universe/reliability and formal close remain separate.",
+          "groupCompletionCredit": true,
+          "additionalOperationCredit": 0,
+          "formalDisposition": "Actual independent Code/Security, QA2 and final documentation-review PASS are NON-ATTESTING because the automatic receipt stream is empty. One actual task_verify returned PENDING; exact response-owned empty-stream task_blocked pair recorded. No formal close, receipt fabrication or receipt-only rerun.",
+          "documentationReview": "Actual documentation_review_qemu_final_7b0fb1d0 FINAL PASS; all seven docs, seven product files, five tests, links and QA1/QA2 provenance checked.",
+          "formalEvidence": {
+            "verify": "/tmp/ccc-qemu-final-task-verify-7b0fb1d0.json",
+            "park": "/tmp/ccc-qemu-actual-park-7b0fb1d0.json"
+          }
+        },
+        "finalSourceCommit": "7b0fb1d0c24dc75623bd35264f99d38c59334a96",
+        "formalDisposition": "Actual independent Code/Security, QA2 and final documentation-review PASS are NON-ATTESTING because the automatic receipt stream is empty. One actual task_verify returned PENDING; exact response-owned empty-stream task_blocked pair recorded. No formal close, receipt fabrication or receipt-only rerun."
       }
     }
   ],
@@ -3150,18 +3308,18 @@
     "scope": "Nine existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery, including direct physical attach/detach at b14321e7. Only known recording start/finalize/status operations remain partial. Historical twelve-operation retraction and prior seven-credit qualification retained; no exhaustive/native/formal certification."
   },
   "confirmedStructuralScopeAudit": {
-    "sourceCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
+    "sourceCommit": "7b0fb1d0c24dc75623bd35264f99d38c59334a96",
     "previousCompleted": 19,
     "previousGroups": 19,
     "confirmedGroups": 23,
-    "completedGroups": 14,
-    "partialGroups": 6,
+    "completedGroups": 15,
+    "partialGroups": 5,
     "inProgressGroups": 3,
     "pendingGroups": 0,
-    "remainingGroups": 9,
+    "remainingGroups": 8,
     "sourceUniverseCertified": false,
-    "scope": "완료14/23(60.9%)·잔여9개(부분6·진행3). R15 현재 Main의 버전 동기화는 독립 Code/Security 및 현재 소스 실행 QA·실제 package shipping·로컬 통합으로 완료. R08/R11/R12/R13/R14/R16 후보의 공동 qualification·통합, R17 Appium HTTP/session 경계는 현재 Main 0ab2d1de에서 독립 Code/Security 및 Linux/Windows 실행 QA로 개별 검증·통합됨. R17의 native command-status/recording/owner-cleanup 잔여 경계와 R18/R19 framing이 남음. 아래 원래71473106 joint FAIL과 과거 측정은 보존하며 R15 개별 PASS로 해당 공동 FAIL을 덮어쓰지 않는다. Native 전체·reliability·전수 범위·formal 조건 미검증.",
-    "currentQualificationTask": "TASK__vm-unique-public-identity-20261014",
+    "scope": "완료15/23(65.2%)·잔여8개(부분5·진행3). 현재 Main R11은 QEMU native framing·snapshot ID·readiness/transfer projection 수정의 독립 Code/Security와 Linux/Windows QA2 및 로컬 통합으로 완료했다. R08/R12/R13/R14/R16의 현재 경계 전환·공동 qualification과 R17/R18/R19 잔여 framing이 남는다. 기존 R15 완료와 R17의 검증된 부분 기여를 유지하고 원래71473106 공동 FAIL 및 QEMU QA1 FAIL을 덮어쓰지 않는다. 실기기·native 전체·reliability·전수 범위·formal 조건은 별도 미검증이다.",
+    "currentQualificationTask": "TASK__qemu-native-framing-recovery-20261014",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",
       "independentReviews": "Smoke route correction2fca1f74: actual independent Code/Security PASS; committed WBS71473106 documentation PASS. Final QA remains FAIL; no integration or completion credit.",
@@ -3607,7 +3765,17 @@
       "remainingGroups": 10,
       "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음."
     },
-    "currentQualificationScope": "Top-level structural accounting includes qualified R15 Main recovery and the bounded R17 Appium HTTP/session contribution at0ab2d1de. The retained currentQualification object is historical71473106 joint failure and follow-ups, not the current R15 or bounded R17 verdict. R17 broader native command-status/recording/owner-cleanup seams remain partial. Current Appium evidence is in planningLanes/broker-remaining-semantic-results-structural/currentWork. Active VM identity compatibility work is tracked in planningLanes/vm-instance-identity-compatibility; it does not alter the structural completion count or replace prior Appium evidence."
+    "currentQualificationScope": "Top-level structural accounting now includes completed R11 current Main recovery at7b0fb1d0 as well as R15. R17 remains partial despite qualified HTTP/session and native Appium contributions. Historical currentQualification71473106 remains original joint FAIL, not the current R11 verdict. R11 actual QA2 and fresh/carry provenance are in planningLanes/qemu-image-lifecycle-native-boundaries-structural/currentQemuQualification; its prior QA1 FAIL is retained in qemu-native-framing-recovery-current/currentWork/nativeQa1. VM identity work changes no group count; native hardware, formal receipts, reliability and source-universe acceptance remain separate.",
+    "historicalStructuralAccountingBeforeQemuRecovery": {
+      "sourceCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
+      "completedGroups": 14,
+      "partialGroups": 6,
+      "inProgressGroups": 3,
+      "remainingGroups": 9,
+      "scope": "완료14/23(60.9%)·잔여9개(부분6·진행3). R15 현재 Main의 버전 동기화는 독립 Code/Security 및 현재 소스 실행 QA·실제 package shipping·로컬 통합으로 완료. R08/R11/R12/R13/R14/R16 후보의 공동 qualification·통합, R17 Appium HTTP/session 경계는 현재 Main 0ab2d1de에서 독립 Code/Security 및 Linux/Windows 실행 QA로 개별 검증·통합됨. R17의 native command-status/recording/owner-cleanup 잔여 경계와 R18/R19 framing이 남음. 아래 원래71473106 joint FAIL과 과거 측정은 보존하며 R15 개별 PASS로 해당 공동 FAIL을 덮어쓰지 않는다. Native 전체·reliability·전수 범위·formal 조건 미검증.",
+      "currentQualificationTask": "TASK__vm-unique-public-identity-20261014",
+      "currentQualificationScope": "Top-level structural accounting includes qualified R15 Main recovery and the bounded R17 Appium HTTP/session contribution at0ab2d1de. The retained currentQualification object is historical71473106 joint failure and follow-ups, not the current R15 or bounded R17 verdict. R17 broader native command-status/recording/owner-cleanup seams remain partial. Current Appium evidence is in planningLanes/broker-remaining-semantic-results-structural/currentWork. Active VM identity compatibility work is tracked in planningLanes/vm-instance-identity-compatibility; it does not alter the structural completion count or replace prior Appium evidence."
+    }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
     "sourceCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",

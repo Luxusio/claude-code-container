@@ -4,8 +4,8 @@ Updated: 2026\-10\-14. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
-확인된 구조 정리 그룹: **14/23 완료 (60.9%)**, **9개 남음**.
-부분 완료: **6**; 진행 중: **3**; 미착수: **0**.
+확인된 구조 정리 그룹: **15/23 완료 (65.2%)**, **8개 남음**.
+부분 완료: **5**; 진행 중: **3**; 미착수: **0**.
 
 이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
 
@@ -16,7 +16,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | WBS | 그룹 | 상태 | 선행 작업 | 남은 구현 |
 | --- | --- | --- | --- | --- |
 | R08 | Codex·Claude 설정 포트 단순화 | 부분 완료 | 없음 | Python bootstrap framing 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. |
-| R11 | QEMU 이미지·수명주기 | 부분 완료 | 없음 | 현재 framing·snapshot ID·readiness 수정은 통합되어 있다\. 실제 Windows QA1의 전송 진단 경로 노출1건을 기존 native projection 세 호출로 수정하고 성공/실패5회귀를 추가했다\. 현재 coordinator 빌드·타입·shipping 및 provider89PASS; 최종 독립 리뷰와 Windows/소스·빌드 MCP 전송 QA2·로컬 qualification이 남는다\. 기존 QA1 FAIL과 과거 후보 기록, formal 자동 기록 조건은 별도로 유지한다\. |
 | R12 | Codex credential runtime observations | 진행 중 | 없음 | Credential runtime 의미 관측 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. Runtime publication 수정은 계획 리뷰 후 uncommitted 작성했으나 /tmp 후보가 사라져 복구/재작성·제품 리뷰·QA 필요\. managedBy 충돌·inode fixture 약점은 확인; 개별7147 실패 원인은 미입증\. |
 | R13 | Top\-level installer presentation and materialization | 진행 중 | 없음 | Installer 네이티브 표현·파일 생성 분리 구현·독립 리뷰 완료\. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과\. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음\. 별도70b1b4de postinstall 수정은 Main 전달·빌드 및8개 파일528PASS; native npm\-stub subprocess3건은 full Windows build나 timeout 원인 검증이 아님\. 구조 완료 credit 없음\. |
 | R14 | Shared mutation\-lock ownership policy | 진행 중 | 없음 | Main의 publicationTimes 의미 포트·native codec과 legacy PID\-reuse 회귀를c8ab5df4에 통합했다\. 결합 변경의 독립 코드·보안 리뷰와 Linux 코어5개 파일183PASS/Windows177PASS\(6개 platform skip\), strict 타입 검사 통과; native host/provider cold\-sync·async·warm identity 경로도 통과\. 자동 attestation에 따른 formal close 및 기존7147 인증·브로커 E2E 공동 FAIL은 별도로 남으며 R14 완료 credit은 부여하지 않는다\. |
@@ -36,12 +35,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 완료 조건: 코어가 host MCP 필터링·forwarding·설정 lock·공개 정책을 유지하고, 어댑터가 managed 네이티브 서버 구성을 제공한다\. 기존 일반 포트 단순화 기여를 유지한다\.
 
 확인한 소스: [src/application/codex\-harness\-bootstrap\.ts](../../src/application/codex-harness-bootstrap.ts), [src/ports/codex\-harness\-bootstrap\.ts](../../src/ports/codex-harness-bootstrap.ts)
-
-### R11. QEMU 이미지·수명주기
-
-완료 조건: 코어는 경로·materialize/reuse·runtime 동일성·snapshot 게시·공개 정책을 유지하고, 어댑터가 overlay·launch·provisioning·guest SSH·snapshot 명령 구성을 처리한다\. 독립 리뷰·QA·로컬 통합으로 확인한다\.
-
-확인한 소스: [packages/device\-lab/providers/application/qemu\-guest\-access\.mjs](../../packages/device-lab/providers/application/qemu-guest-access.mjs), [packages/device\-lab/providers/application/qemu\-owned\-data\.mjs](../../packages/device-lab/providers/application/qemu-owned-data.mjs)
 
 ### R12. Codex credential runtime observations
 
@@ -102,6 +95,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | 기완료 | 컨테이너 identity digest | `6d1e2a15` | labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다\. |
 | R09 | iOS 앱 관리 | `6ea57ca5` | 코어는 앱 작업 선택·physical 제한·대상 소유권·컨테이너 fence·reset 공개를 유지하고, 어댑터가 설치·실행·종료·삭제·권한의 네이티브 효과와 응답을 처리한다\. |
 | R10 | iOS 관측·접근 | `6ea57ca5` | 코어는 session 수명주기·동일성·예산·fallback 순서·staging·recording 거절을 유지하고, 어댑터가 유한한 관측·접근 효과와 응답을 제공한다\. |
+| R11 | QEMU 이미지·수명주기 | `7b0fb1d0` | 코어는 경로·materialize/reuse·runtime 동일성·snapshot 게시·공개 정책을 유지하고, 어댑터가 overlay·launch·provisioning·guest SSH·snapshot 명령 구성을 처리한다\. 독립 리뷰·QA·로컬 통합으로 확인한다\. |
 | R15 | Release workspace version synchronization | `1b699b6d` | Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI\. |
 
 각 그룹의 stable ID, 과거 기여, 실제 QA·통합 근거는 progress overlay의 해당 planningLanes 항목에 유지한다. 새 잔여 작업이 확인되면 기존 그룹을 부분 완료로 되돌리고 조건을 갱신한다. helper·포트·테스트 파일을 별도 작업으로 세지 않는다.
@@ -223,7 +217,7 @@ Current whole-source/exports/caller closure, final type/composition integration,
 | shared\-android\-contract\-cleanup\-accepted |  | Accepted187743c2 zero\-operation contributions: shared result27, Android native14 plus layout and contract cleanup22; actual current QA323 and protected63\-pin/97\-user\-file delivery accepted\. These bounded changes do not resolve the separate MCP/broker/Hyper\-V/provider\-lifecycle structural gaps or certify exhaustive/native/reliability/formal completion\. |
 | vm\-instance\-identity\-compatibility |  | Current5a5c94de: actual independent full Code PASS; unchanged production\-source Security9c19 PASS carried across the three\-line test correction\. Final independent QAcycle3 PASS: fresh whole Hyper\-V launcher53/53 on Linux22\.23\.3 and defaultWindows22\.16; qualified unchanged62 Vitest files and durability77 kept separate\. Source/built public MCP and CLI PASS;36 checked journey responses include32 success and4 expected deleted\-ID errors\. Prior QA1/QA2 FAIL remain historical\. No production/license\-policy weakening, EBUSY cleanup retry or new abstraction\. One actual final task\_verify remained PENDING because no hook\-owned receipts were recorded; formal task parked through actual task\_blocked after substantive PASS\. Zero operation or structural\-group completion credit\. |
 | appium\-command\-semantic\-observation |  | Current63663e2d: semantic Appium command contribution at1c59917b and exact two negative fixture interval50→500 correction independently CodePASS; unchanged production SecurityPASS\. Actual QAcycle2PASS: fresh two whole files44/44 eachLinux/defaultWindows, qualified unchanged fourwholefiles125Linux/124WindowsPASS\+1existingplatformSKIP\. Source/built native receipts and publicMCP witnesses carried after exact source/config/dependency/emits qualification\. OriginalQA1FAIL retained, no started\-RPC timeout\-policy weakening\. Local source integrated; formal close is not claimed\. Zero structural\-group/operation completion credit; broaderR17 partial\. |
-| qemu\-native\-framing\-recovery\-current |  | Framing f9661224, literal snapshot selector cfee8318 and readiness masking47cf01df are committed\. Actual full final Code/Security PASS then independent QA1 ran currentWindows8stages/shipping and42source\+built MCPcalls PASS, but whole13 had154PASS1FAIL2existingSKIP: default SSH transfer nested output disclosed a Windows key path\. This original FAIL is retained\. Three existing native result returns now reuse guest projection; five neutral Windows\-path success/failure provider regressions added\. Current coordinator eight stages and whole provider89PASS0FAIL0SKIP, npm shipping PASS\. Fresh final complete Code/Security and affected native/source\+built transfer QA2 remain pending; zero group/operation credit\. |
+| qemu\-native\-framing\-recovery\-current |  | Current QEMU R11 completed at7b0fb1d0 after actual independent full Code/Security and QA2 PASS\. Qualified thirteen\-file scope: Linux161PASS1existingSKIP, Windows160PASS2existingSKIP with explicit fresh/carry provenance\. Fourteen fresh source\+built public MCP calls and four native handler calls passed;42 prior public calls authenticated unchanged\. Original QA1 FAIL retained\. Fifteen of23 structural groups complete; no additional operation credit, formal close or real\-guest/native\-macOS claim\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 

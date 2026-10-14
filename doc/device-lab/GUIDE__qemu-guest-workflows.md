@@ -9,3 +9,7 @@
 Publication remains the current raw `writeLab` operation under the existing public operation lock. No compare-and-swap, stronger atomicity, or rollback is introduced. A copy followed by a publication exception can leave copied files; that partial outcome is preserved. The export default name keeps its native clock behavior. Native file identity, ownership and secret protections remain authoritative.
 
 Ordinary core and consumed type tests exercise these decisions with finite ports; existing provider and MCP tests exercise native files, failure outcomes and the public routes. Strict compilation, genuine packaging and runtime acceptance are performed by the task's independent QA actor. Source inspection alone does not certify a live QEMU guest, SSH endpoint or guest agent.
+
+## Known ceiling
+
+The current boundary qualification uses finite native Node subprocess leaves through actual source and built MCP routes. It does not certify real QEMU boot, KVM, SSH networking, GUI operation or native macOS. Linux and Windows qualification combines freshly executed affected suites with authenticated unchanged results; it is not a fresh simultaneous run of all thirteen files. Whole legacy native JavaScript strictness, broad architecture acceptance and formal receipt closure remain separate.
