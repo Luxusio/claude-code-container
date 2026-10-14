@@ -7,6 +7,7 @@ import { nestedDiagnostic, saveNestedFailure, nestedExecOutput, nestedFailureMes
 import { nestedSourceAllowed, snapshotNestedSource } from "../../scripts/real-tests/nested-hyper-v-source.ts";
 import { withExclusiveRealProviderRun, realProviderRunLockPath } from "../../scripts/real-tests/exclusive-real-provider-run.ts";
 
+const returnedDeviceId = "windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468";
 const reply = (value: unknown) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
 describe("nested run-lock diagnostics", () => {
     it("preserves the exclusive-run conflict through saving and CLI output without deleting the lock", async () => {
@@ -42,7 +43,7 @@ function scenario({ reboot = false, failed = false, pending = false, nested = tr
             expect(existsSync(args.localPath)).toBe(true);
             expect(readFileSync(args.localPath, "utf8")).toBe("");
         }
-        if (name === "create_windows_vm") return reply({ device: { deviceId: args.deviceId, nestedVirtualization: nested, incarnationId: "a".repeat(32) } });
+        if (name === "create_windows_vm") return reply({ device: { deviceId: returnedDeviceId, name: "Nested Hyper-V development", nestedVirtualization: nested } });
         if (name === "exec") {
             if (args.command.includes("Register-ScheduledTask")) runId = /-RunId ([a-f0-9]{32})/.exec(args.command)![1];
             const output = args.command.includes("Get-Content -Raw") ? pending ? "pending" : JSON.stringify({ runId, status: failed ? "FAIL" : "PASS", stage: failed ? "build" : "complete", sourceSha256: "b".repeat(64) })
@@ -67,19 +68,21 @@ describe("persistent nested Hyper-V development workflow", () => {
     it.each([false, true])("builds a fresh source snapshot and handles feature reboot=%s", async reboot => {
         const { calls, result } = await withRun({ reboot });
         expect(result.status).toBe("PASS");
+        expect(result.deviceId).toBe(returnedDeviceId);
+        expect(calls[0].args).not.toHaveProperty("deviceId");
+        expect(calls[0].args).not.toHaveProperty("incarnationId");
+        expect(calls.slice(1).every(c => c.args.deviceId === returnedDeviceId && !("incarnationId" in c.args))).toBe(true);
         expect(calls.filter(c => c.name === "reboot")).toHaveLength(reboot ? 1 : 0);
         expect(calls[0]).toMatchObject({ name: "create_windows_vm", args: { profile: "windows-server", nestedVirtualization: true, memoryMb: 16384 } });
         if (reboot) expect(calls.find(c => c.name === "reboot")?.args).toEqual({
-            deviceId: "windows-nested-development", incarnationId: "a".repeat(32),
+            deviceId: returnedDeviceId,
             force: true, waitForBoot: true, bootTimeoutMs: 1200000,
         });
         expect(calls.filter(c => c.name === "upload")).toHaveLength(2);
-        expect(calls.some(c => c.name === "delete")).toBe(false);
-        expect(calls.at(-2)!.args.command).toContain("-Operation 'complete'");
-        expect(calls.at(-1)).toEqual({ name: "stop", args: {
-            deviceId: "windows-nested-development", incarnationId: "a".repeat(32),
-        } });
-        expect(calls.findIndex(c => c.name === "download")).toBeLessThan(calls.length - 2);
+        expect(calls.at(-3)!.args.command).toContain("-Operation 'complete'");
+        expect(calls.at(-2)).toEqual({ name: "stop", args: { deviceId: returnedDeviceId } });
+        expect(calls.at(-1)).toMatchObject({ name: "delete", args: { deviceId: returnedDeviceId, force: true, confirmDestructive: true, preserveNetwork: true } });
+        expect(calls.findIndex(c => c.name === "download")).toBeLessThan(calls.length - 3);
     });
     it("refuses an outer broker that silently drops nested virtualization", async () => {
         await expect(withRun({ nested: false })).rejects.toThrow("outer-broker-nesting-not-confirmed");
@@ -87,7 +90,8 @@ describe("persistent nested Hyper-V development workflow", () => {
     it("propagates guest build failure instead of reporting a readiness pass", async () => {
         const failure = await withRun({ failed: true }).catch(error => error);
         expect(failure.message).toContain("nested-development-failed: build");
-        expect(failure.calls.at(-1)).toMatchObject({ name: "stop", args: { incarnationId: "a".repeat(32) } });
+        expect(failure.calls.at(-2)).toMatchObject({ name: "stop", args: { deviceId: returnedDeviceId } });
+        expect(failure.calls.at(-1)).toMatchObject({ name: "delete", args: { deviceId: returnedDeviceId } });
     });
     it("keeps an indeterminate scheduled job claimed after the bounded wait", async () => {
         try { await withRun({ pending: true }); throw new Error("expected timeout"); }
@@ -111,7 +115,7 @@ describe("persistent nested Hyper-V development workflow", () => {
             if (status === "FAIL") expect(failure.stage).toBe("validate-guest-result");
         } finally { rmSync(outputRoot, { recursive: true, force: true }); }
     });
-    it.each(["claim", "launch", "hash", "status", "runId"])("does not stop an uncertain or unowned run: %s", async fault => {
+    it.each(["launch", "hash", "status", "runId"])("does not stop an uncertain or unowned guest run: %s", async fault => {
         const outputRoot = mkdtempSync(join(tmpdir(), "ccc-nested-uncertain-"));
         const normal = scenario();
         const calls: string[] = [];
@@ -142,8 +146,20 @@ describe("persistent nested Hyper-V development workflow", () => {
                 if ((fault === "prepare" && args.command?.includes("Install-WindowsFeature")) || (fault === "download" && name === "download")) throw new Error("test-operation-failed");
                 return normal.call(name, args);
             }, { outputRoot, jobPath: "unused", snapshot: () => ({ archive: "source", sha256: "b".repeat(64) }) })).rejects.toThrow("test-operation-failed");
-            expect(normal.calls.at(-1)).toMatchObject({ name: "stop", args: { incarnationId: "a".repeat(32) } });
-            expect(normal.calls.at(-2)?.args.command).toContain("-Operation 'complete'");
+            expect(normal.calls.at(-2)).toMatchObject({ name: "stop", args: { deviceId: returnedDeviceId } });
+            expect(normal.calls.at(-1)).toMatchObject({ name: "delete", args: { deviceId: returnedDeviceId } });
+            expect(normal.calls.at(-3)?.args.command).toContain("-Operation 'complete'");
+        } finally { rmSync(outputRoot, { recursive: true, force: true }); }
+    });
+    it("cleans the exact returned outer fixture when guest claim fails before launch", async () => {
+        const outputRoot = mkdtempSync(join(tmpdir(), "ccc-nested-claim-cleanup-"));
+        const normal = scenario();
+        try {
+            await expect(runNestedDevelopment(async (name, args) => {
+                if (args.command?.includes("-Operation 'acquire'")) throw new Error("fixture-claim-conflict");
+                return normal.call(name, args);
+            }, { outputRoot, jobPath: "unused", snapshot: () => { throw new Error("must not snapshot"); } })).rejects.toThrow("fixture-claim-conflict");
+            expect(normal.calls.slice(-2).map(call => [call.name, call.args.deviceId])).toEqual([["stop", returnedDeviceId], ["delete", returnedDeviceId]]);
         } finally { rmSync(outputRoot, { recursive: true, force: true }); }
     });
     it("rejects failed guest commands and command injection before launch", () => {
@@ -204,7 +220,8 @@ describe("nested run failure artifacts", () => {
         try {
             const failure = await runNestedDevelopment(call, { outputRoot, jobPath: "unused", snapshot: () => { throw new Error("must not snapshot"); } })
                 .then(() => { throw new Error("unexpected success"); }, error => error);
-            expect(call).toHaveBeenCalledTimes(failedTool === "start" ? 2 : 1);
+            expect(call).toHaveBeenCalledTimes(failedTool === "start" ? 4 : 1);
+            if (failedTool === "start") expect(call.mock.calls.slice(-2).map(([tool, args]) => [tool, args.deviceId])).toEqual([["stop", returnedDeviceId], ["delete", returnedDeviceId]]);
             const diagnosticPath = join(outputRoot, "failure.json");
             const artifact = JSON.parse(readFileSync(diagnosticPath, "utf8"));
             expect(artifact).toMatchObject({ stage, tool: failedTool, code: "provider-command-failed" });

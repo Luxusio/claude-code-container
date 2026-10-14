@@ -15,6 +15,20 @@ describe("canonical public input schemas", () => {
             expect(TOOLS.find(tool => tool.name === name)?.inputSchema.required).toContain("deviceId");
         }
     });
+    it.each(["create_windows_vm", "create_linux_vm", "create_macos_vm"])("%s issues identity at creation instead of advertising a chosen ID", name => {
+        const schema = TOOLS.find(tool => tool.name === name)!.inputSchema;
+        expect(schema.properties).not.toHaveProperty("deviceId");
+        expect(schema.required).toEqual(["name"]);
+    });
+    it("keeps explicit IDs for non-VM creation and removes public generation selectors", () => {
+        for (const name of ["create_android_emulator", "create_ios_simulator", "create_windows_sandbox"]) {
+            expect(TOOLS.find(tool => tool.name === name)!.inputSchema.properties).toHaveProperty("deviceId");
+        }
+        for (const tool of TOOLS) {
+            expect(tool.inputSchema.properties, tool.name).not.toHaveProperty("incarnationId");
+            expect(tool.description, tool.name).not.toContain("incarnationId");
+        }
+    });
 });
 
 describe("device-lab public output contracts", () => {

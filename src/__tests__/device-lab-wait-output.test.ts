@@ -18,7 +18,7 @@ describe("wait continuation presentation contracts", () => {
         const target = { id: "vm", incarnationId: "incarnation", recording };
         const output = project(name, name === "device_list" ? { devices: [target] } : { device: target });
         expect((output.devices?.[0] || output.device).recording).toEqual(publicRecording);
-        expect((output.devices?.[0] || output.device).incarnationId).toBe("incarnation");
+        expect((output.devices?.[0] || output.device)).not.toHaveProperty("incarnationId");
     });
     it("retains failed recording/helper cleanup and opaque exec data", () => {
         const failed = { ...recording, error: "finalization failed", scrubContainmentFailed: true };

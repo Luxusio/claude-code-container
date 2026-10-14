@@ -7,7 +7,7 @@ export interface MacosImageSnapshotsPorts<Result> {
     claim(device: MacosVmDevice): MacosVmClaimResult;
     transition(deviceId: string | undefined, expected: MacosVmDevice, replacement: MacosVmDevice): MacosVmTransition;
     owner(): string;
-    deviceId(name: string | undefined): string;
+    deviceId(): string;
     snapshotId(name: string): string;
     timestamp(): string;
     runtimeId(): string;

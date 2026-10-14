@@ -56,6 +56,43 @@ function imagePorts(f:ReturnType<typeof nativeLeaves>,command:ReturnType<typeof 
         presentRestoreFailure:(evidence,error,candidate)=>({ok:false,value:{evidence,error,candidate}})};
 }
 describe("macOS independent inward policy controls",()=>{
+    it("issues one fresh native identity for every same-name normal and image creation",()=>{
+        const f=nativeLeaves();
+        const records=new Map<string,MacosVmDevice>();
+        let sequence=0;
+        f.ports.deviceId=()=>`macos-birth-${++sequence}`;
+        f.ports.read=()=>[...records.values()];
+        f.ports.find=id=>records.get(id||"")||null;
+        f.ports.claim=device=>{records.set(device.id,device);return {ok:true};};
+        f.ports.providerPlan=device=>({available:true,missing:[],selectedProvider:"tart",providerInstance:`ccc-owner-${device.id}`,stopAvailable:true,evidence:{...f.plan,providerInstance:`ccc-owner-${device.id}`}});
+        f.ports.tartPlan=device=>({plan:f.ports.providerPlan(device)});
+        const app=createMacosVmLifecycleApplication(f.ports);
+        for (const create of [app.create,app.createImage]) {
+            expect(create({backend:"macos-vm",name:"Same 名称",sourceImage:"base"})?.kind).toBe("completed");
+            expect(create({backend:"macos-vm",name:"Same 名称",sourceImage:"base"})?.kind).toBe("completed");
+        }
+        expect([...records.keys()]).toEqual(["macos-birth-1","macos-birth-2","macos-birth-3","macos-birth-4"]);
+        expect([...records.values()].map(device=>device.name)).toEqual(Array(4).fill("Same 名称"));
+        expect(new Set([...records.values()].map(device=>device.providerInstance)).size).toBe(4);
+        expect(sequence).toBe(4);
+    });
+    it.each(["create","createImage"] as const)("rejects caller deviceId in %s before entropy, storage or native calls",operation=>{
+        const f=nativeLeaves();
+        f.ports.deviceId=()=>{throw Error("caller IDs must be rejected before admission");};
+        const result=createMacosVmLifecycleApplication(f.ports)[operation]({backend:"macos-vm",name:"Chosen",deviceId:"unit",sourceImage:"base",force:true});
+        expect(result?.kind).toBe("refused");
+        expect(f.trace).toEqual([]);
+        expect(f.read()).toBeUndefined();
+    });
+    it("refuses an entropy collision without recovering or deleting the historical definition",()=>{
+        const historical:MacosVmDevice={id:"unit",name:"Historical",status:"starting",provider:"tart",providerInstance:"ccc-owner-unit",lifecycle:{runtimeId:"old",operation:"start",claimedAt:"2020-01-01T00:00:00.000Z"}};
+        const f=nativeLeaves(historical);
+        const result=createMacosVmLifecycleApplication(f.ports).create({backend:"macos-vm",name:"Replacement",sourceImage:"base",force:true});
+        expect(result?.kind).not.toBe("completed");
+        expect(f.read()).toBe(historical);
+        expect(f.trace).toEqual(["read"]);
+    });
+
     it("retains clone and failed owned cleanup evidence without claiming the destination",()=>{
         const f=nativeLeaves();
         const primary=f.observe({status:null,stdout:"",stderr:"clone timed out",signal:"SIGTERM"});
@@ -195,6 +232,36 @@ describe("macOS independent inward policy controls",()=>{
 });
 
 describe("macOS image and snapshot publication",()=>{
+    it("issues fresh identities for same-name clones without changing the historical source",async()=>{
+        const source:MacosVmDevice={id:"legacy-source",name:"Historical",status:"stopped",provider:"tart",providerInstance:"legacy-native"};
+        const f=nativeLeaves(source),records=new Map<string,MacosVmDevice>([[source.id,source]]);
+        let sequence=0;
+        const ports=imagePorts(f,f.command);
+        ports.deviceId=()=>`macos-clone-${++sequence}`;
+        ports.read=()=>[...records.values()];
+        ports.find=id=>records.get(id||"")||null;
+        ports.claim=device=>{records.set(device.id,device);return {ok:true};};
+        ports.transition=(id,expected,replacement)=>{const current=records.get(id||"");if(current!==expected)return {matched:false,found:Boolean(current),device:current};if(replacement)records.set(id!,replacement);else records.delete(id!);return {matched:true,found:true,device:replacement};};
+        ports.providerPlan=device=>({...f.plan,providerInstance:device.providerInstance||`ccc-owner-${device.id}`});
+        const lifecycle=imageLifecycle({...f,ports:{...f.ports,read:ports.read,find:id=>ports.find(id)||null,claim:ports.claim,transition:ports.transition}});
+        const app=createMacosImageSnapshots(ports,lifecycle);
+        expect((await app.clone({name:"Same 名称",sourceDeviceId:source.id}))?.ok).toBe(true);
+        expect((await app.clone({name:"Same 名称",sourceDeviceId:source.id}))?.ok).toBe(true);
+        expect([...records.keys()]).toEqual(["legacy-source","macos-clone-1","macos-clone-2"]);
+        expect(records.get("legacy-source")).toMatchObject({id:"legacy-source",providerInstance:"legacy-native",status:"stopped"});
+        expect(records.get("macos-clone-1")?.providerInstance).not.toBe(records.get("macos-clone-2")?.providerInstance);
+        expect(sequence).toBe(2);
+    });
+    it("refuses caller clone identity before source recovery or native mutation",async()=>{
+        const source:MacosVmDevice={id:"legacy-source",status:"starting",provider:"tart",providerInstance:"legacy-native",lifecycle:{runtimeId:"old",operation:"start",claimedAt:"2020-01-01T00:00:00.000Z"}};
+        const f=nativeLeaves(source),ports=imagePorts(f,f.command);
+        ports.deviceId=()=>{throw Error("caller IDs must be rejected before admission");};
+        const result=await createMacosImageSnapshots(ports,imageLifecycle(f)).clone({name:"Chosen",deviceId:"old-id",sourceDeviceId:source.id,force:true});
+        expect(result?.ok).toBe(false);
+        expect(f.trace).toEqual([]);
+        expect(f.read()).toBe(source);
+    });
+
     it("releases the source before destination publication and compensates a publication exception",async()=>{
         const source:MacosVmDevice={id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit"};
         const f=nativeLeaves(source);
@@ -214,9 +281,10 @@ describe("macOS image and snapshot publication",()=>{
             throw f.fault;
         };
         const ports=imagePorts(f,command);
+        ports.deviceId=()=>"copy";
         ports.providerPlan=device=>({...f.plan,providerInstance:device.providerInstance||`ccc-owner-${device.id}`});
         const app=createMacosImageSnapshots(ports,imageLifecycle(f));
-        await expect(app.clone({name:"Copy",deviceId:"copy",sourceDeviceId:"unit"})).rejects.toBe(f.fault);
+        await expect(app.clone({name:"Copy",sourceDeviceId:"unit"})).rejects.toBe(f.fault);
         expect(resources).toEqual(new Set(["ccc-owner-unit"]));
         expect(f.read()).not.toHaveProperty("lifecycle");
     });

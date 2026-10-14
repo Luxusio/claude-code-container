@@ -5,7 +5,7 @@ const publicNames = new Set(TOOLS.map(({ name }) => name));
 
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const evidenceKeys = ["error", "code", "cause", "detail", "reason", "policy", "remedy", "remedies", "recovery", "warning", "warnings", "cleanup", "containment", "scrubContainmentFailed", "diagnosticTruncated", "applied"];
-const failureContextKeys = ["deviceId", "incarnationId", "backend", "tool", "matches", "requestedBackend", "actualBackend", "retryable", "diagnosticCode", "timedOut"];
+const failureContextKeys = ["deviceId", "backend", "tool", "matches", "requestedBackend", "actualBackend", "retryable", "diagnosticCode", "timedOut"];
 const envelopes = ["result", "response", "body", "value", "broker"];
 
 function macosKeyEcho(value, operation) {
@@ -80,9 +80,10 @@ function actionEvidence(value, operation, forcedFailure = false) {
     return { failed, evidence };
 }
 
-function publicIdentities(value, deviceRecord = false) {
+function publicIdentities(value, deviceRecord = false, detail = false) {
     if (!object(value)) return value;
     const result = { ...value };
+    if (!detail) delete result.incarnationId;
     if (deviceRecord && typeof result.id === "string") {
         result.deviceId = result.id;
         delete result.id;
@@ -98,8 +99,8 @@ function publicIdentities(value, deviceRecord = false) {
         if (result.capabilities.includes("cursor_position")
             && (result.backend === "x11" || result.name === "x11-current-display" || result.kind === "display" || ["windows-sandbox", "macos-vm"].includes(result.backend || result.name) || (["windows-vm", "linux-vm"].includes(result.backend || result.name) && result.provider === "hyper-v"))) result.capabilities.push("move");
     }
-    for (const key of ["device", "target", "lab", "backend", "result", "response", "body", "materialized"]) if (object(result[key])) result[key] = publicIdentities(result[key], ["device", "target", "lab"].includes(key));
-    for (const key of ["devices", "backends", "localBackends", "targets", "labs"]) if (Array.isArray(result[key])) result[key] = result[key].map(entry => publicIdentities(entry, ["devices", "targets", "labs"].includes(key)));
+    for (const key of ["device", "target", "lab", "backend", "result", "response", "body", "materialized"]) if (object(result[key])) result[key] = publicIdentities(result[key], ["device", "target", "lab"].includes(key), detail);
+    for (const key of ["devices", "backends", "localBackends", "targets", "labs"]) if (Array.isArray(result[key])) result[key] = result[key].map(entry => publicIdentities(entry, ["devices", "targets", "labs"].includes(key), detail));
     return result;
 }
 
@@ -150,14 +151,17 @@ function publicOperationValue(name, value, compact = false) {
 
 function queryValue(name, value, operation) {
     if (!object(value)) return value;
-    const result = ["exec", "ui"].includes(name) ? value : publicIdentities(value, name === "status" && typeof value.id === "string");
+    const result = ["exec", "ui"].includes(name) ? { ...value } : publicIdentities(value, name === "status" && typeof value.id === "string");
+    // Only the exec envelope owns identity metadata; command output stays opaque.
+    if (name === "exec" && typeof value.deviceId === "string"
+        && (typeof value.stdout === "string" || typeof value.status === "number")) delete result.incarnationId;
     if (value.ok === false || value.error) return result;
     delete result.ok;
     if (name === "devices" && operation === "device_list" && Array.isArray(result.devices)) {
         return result.devices.map((device) => {
             if (!object(device)) return device;
             const entry = {};
-            for (const key of ["deviceId", "name", "backend", "provider", "platform", "state", "available", "incarnationId", "capabilities", "supportedActions", "error", "warnings"]) {
+            for (const key of ["deviceId", "name", "backend", "provider", "platform", "state", "available", "capabilities", "supportedActions", "error", "warnings"]) {
                 if (device[key] !== undefined) entry[key] = device[key];
             }
             entry.state ??= device.runtimeState ?? device.status ?? device.targetStatus?.runtimeState ?? "unknown";
@@ -192,7 +196,7 @@ export function actionResult(name, operation, raw, { detail = false } = {}) {
             if (item.type !== "text") return item;
             try {
                 const value = JSON.parse(item.text);
-                const visible = publicOperationValue(name, ["exec", "ui"].includes(name) ? value : publicIdentities(value, name === "status" && typeof value.id === "string"));
+                const visible = publicOperationValue(name, ["exec", "ui"].includes(name) ? value : publicIdentities(value, name === "status" && typeof value.id === "string", true));
                 return JSON.stringify(value) === JSON.stringify(visible) ? item : { ...item, text: JSON.stringify(visible) };
             } catch { return item; }
         });

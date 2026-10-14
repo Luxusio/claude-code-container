@@ -56,7 +56,7 @@ describe('semantic ordered flow', () => {
         expect(f.dispatched).toEqual(['start-before', 'status-after']);
     });
     it('inherits only eligible target fields and respects an explicit target change', () => {
-        expect(sharedFlowTarget({ deviceId: 'a', incarnationId: 'generation' }, {}, { deviceId: {}, incarnationId: {} })).toEqual({ deviceId: 'a', incarnationId: 'generation' });
+        expect(sharedFlowTarget({ deviceId: 'a', incarnationId: 'generation' }, {}, { deviceId: {}, incarnationId: {} })).toEqual({ deviceId: 'a' });
         expect(sharedFlowTarget({ deviceId: 'a', incarnationId: 'generation' }, { deviceId: 'b' }, { deviceId: {}, incarnationId: {} })).toEqual({});
     });
 });

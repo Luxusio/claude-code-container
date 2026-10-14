@@ -188,7 +188,7 @@ export async function runInstalledMcpSmoke(options: any = {}) {
                 { implicitBroker: false, backend: "android-emulator", name: "Dist Android smoke", deviceId: "dist-android-smoke" },
                 { implicitBroker: false, backend: "ios-simulator", name: "Dist iOS smoke", deviceId: "dist-ios-smoke" },
                 { implicitBroker: false, backend: "windows-sandbox", name: "Dist Windows smoke", deviceId: "dist-windows-smoke" },
-                { implicitBroker: false, backend: "macos-vm", name: "Dist macOS smoke", deviceId: "dist-macos-smoke", image: "missing-image" },
+                { implicitBroker: false, backend: "macos-vm", name: "Dist macOS smoke", image: "missing-image" },
             ]) {
                 const { backend, ...input } = args;
                 const response = backend === "macos-vm"
@@ -198,6 +198,16 @@ export async function runInstalledMcpSmoke(options: any = {}) {
                     const expected = toolInputError(createToolName(backend), input);
                     assert.strictEqual(typeof expected, "string");
                     markExpectedInputError(response, expected);
+                } else if (backend === "macos-vm") {
+                    assert.strictEqual(response?.isError, true, "missing macOS image unexpectedly created a device");
+                    const diagnostic = contentText(response);
+                    let code = "";
+                    try { code = JSON.parse(diagnostic).error || ""; } catch { /* Native provider refusals can be plain text. */ }
+                    assert.ok(code === "macos-tart-clone-failed"
+                        || /^macOS VM backend missing prerequisites: .+/.test(diagnostic)
+                        || /(?:missing-image.*(?:does not exist|not found|no such)|(?:does not exist|not found|no such).*missing-image)/i.test(diagnostic),
+                    "macOS smoke must report the missing image or prerequisites rejection");
+                    markExpectedToolError(response);
                 } else markExpectedToolError(response);
             }
 

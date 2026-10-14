@@ -1,6 +1,6 @@
 export interface LifecyclePreviewRequest {
     backend: string; stateKey: string; command: string; deviceId: string;
-    expectedIncarnationId?: string; force: boolean; dryRun: boolean; create?: Record<string, unknown>;
+    force: boolean; dryRun: boolean; create?: Record<string, unknown>;
 }
 
 export function hyperVPreviewConflicts(device: Record<string, unknown>, parsed: LifecyclePreviewRequest, secureBoot: () => Record<string, unknown>): string[] {

@@ -20,6 +20,12 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
         if (currentDevice && ports.incarnation(currentDevice) !== journal.incarnationId) {
             return { ok: false, reason:'conflict',journalDisposition:'retain', error: "hyper-v-operation-incarnation-conflict" };
         }
+        if (currentDevice && ((hyperVField(currentDevice, "vmId") || "").toLowerCase() !== journal.vmId.toLowerCase()
+            || hyperVField(currentDevice, "vmName") !== journal.vmName
+            || !ports.samePath(hyperVField(currentDevice, "diskPath") || "", journal.diskPath))) {
+            return { ok: false, reason:'conflict',journalDisposition:'retain', error: "hyper-v-operation-identity-conflict" };
+        }
+        const expectedDevice = ports.clone(currentDevice);
         const powershell = ports.connection('powershell');
         if (!powershell)
             return { ok: false, reason:'provider-unavailable',journalDisposition:'retain', error: "missing-provider-command", detail: "powershell" };
@@ -78,7 +84,9 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
                     detail: [artifacts.ok ? null : `artifacts:${artifacts.error}`, allocation.ok ? null : `allocation:${allocation.error}`].filter(Boolean).join("; "),
                 };
             }
-            ports.replayPublish(ownerId, backend, deviceId, null);
+            const publication = ports.publish(ownerId, backend, deviceId, expectedDevice, () => null);
+            if (publication.found && !publication.matched) return { ok: false, reason:'conflict',journalDisposition:'retain', error: "owner-device-state-conflict" };
+            ports.clearJournal(ownerId, backend, deviceId);
             return {
                 ok: true,
                 reconciled: true,
@@ -118,9 +126,10 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
         }
         const observation = outcome.virtualMachine;
         const state = observation.state.toLowerCase();
-        ports.replayPublish(ownerId, backend, deviceId, {
-            status: state === "running" ? "running" : "stopped", runtimeState: observation.state, hyperVStatus: observation.status, updatedAt: ports.timestamp()
-        });
+        const publication = ports.publish(ownerId, backend, deviceId, expectedDevice, current => ({
+            ...current, status: state === "running" ? "running" : "stopped", runtimeState: observation.state, hyperVStatus: observation.status, updatedAt: ports.timestamp()
+        }));
+        if (publication.found && !publication.matched) return { ok: false, reason:'conflict',journalDisposition:'retain', error: "owner-device-state-conflict" };
         ports.clearJournal(ownerId, backend, deviceId);
         return { ok: true, reconciled: true };
     }
@@ -129,29 +138,6 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
             return execute(ownerId, parsed, deadlineAt, cleanupDeadlineAt);
         ports.assertDeadline(deadlineAt);
         const { backend, stateKey, deviceId } = parsed;
-        if (!parsed.dryRun) {
-            let expectedIncarnation: string | null;
-            try {
-                const current = hyperVSelectedDevice(ports.read(ownerId, stateKey), deviceId);
-                expectedIncarnation = current ? ports.incarnation(current) : null;
-                if (!expectedIncarnation)
-                    expectedIncarnation = ports.readJournal(ownerId, backend, deviceId)?.incarnationId || null;
-            }
-            catch (error) {
-                if (ports.stateErrorCode(error))
-                    return {kind:'refused',journalDisposition:'retain',...ports.stateFailure(error,parsed)};
-                return {
-                    kind:'refused',reason:'conflict',journalDisposition:'clear',error: "hyper-v-operation-journal-invalid", ownerId, backend, deviceId, detail: ports.errorCode(error, "hyper-v-operation-journal-invalid")};
-            }
-            if (expectedIncarnation) {
-                if (!ports.validIncarnation(parsed.expectedIncarnationId))
-                    return {
-                        kind:'refused',reason:'conflict',journalDisposition:'clear',error: "hyper-v-incarnation-required", ownerId, backend, deviceId};
-                if (parsed.expectedIncarnationId !== expectedIncarnation)
-                    return {
-                        kind:'refused',reason:'conflict',journalDisposition:'clear',error: "hyper-v-incarnation-conflict", ownerId, backend, deviceId};
-            }
-        }
         const replay = await reconcile(ownerId, backend, deviceId, deadlineAt, parsed.command === "device_delete" ? parsed.preserveNetwork === true : true);
         if (!replay.ok)
             return {
@@ -204,8 +190,7 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
             return {kind:'already-missing',journalDisposition:'clear',...base,device:null,idempotent:true,alreadyMissing:true,invoked:false,dryRun:parsed.dryRun};
         }
         const incarnation=ports.incarnation(device);
-        if(!ports.validIncarnation(parsed.expectedIncarnationId)) return {kind:'refused',reason:'conflict',journalDisposition:'clear',error:'hyper-v-incarnation-required',ownerId,backend,deviceId};
-        if(incarnation!==parsed.expectedIncarnationId) return {kind:'refused',reason:'conflict',journalDisposition:'clear',error:'hyper-v-incarnation-conflict',ownerId,backend,deviceId};
+        if(!ports.validIncarnation(incarnation)) return {kind:'refused',reason:'conflict',journalDisposition:'clear',error:'missing-provider-metadata',missing:['incarnationId'],ownerId,backend,deviceId};
         const preparation=ports.prepareStopDelete(ownerId,parsed,device);
         if(parsed.dryRun) return {kind:'preview',journalDisposition:'clear',...base,device,preparation,force:parsed.force,invoked:false,dryRun:true};
         if(staged) return perform(ownerId,parsed,preparation,device,expected,deadlineAt,cleanupDeadlineAt);

@@ -81,6 +81,8 @@ describe("device-lab broker device tool param coverage", () => {
         expect(new Set(BROKER_DEVICE_TOOL_PARAM_KEYS).size).toBe(BROKER_DEVICE_TOOL_PARAM_KEYS.length);
 
         const forwarded = new Set(BROKER_DEVICE_TOOL_PARAM_KEYS);
+        expect(forwarded).not.toContain("incarnationId");
+        expect(forwarded).toContain("deviceId");
         const missingByTool = TOOLS
             .filter((tool) => BROKER_DEVICE_TOOL_ROUTABLE_TOOLS.has(tool.name))
             .map((tool) => {

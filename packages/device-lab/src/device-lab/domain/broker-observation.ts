@@ -147,7 +147,6 @@ export interface DeviceStatusRequest {
     deviceId: string;
     command: "device_status";
     dryRun: boolean;
-    expectedIncarnationId?: string;
 }
 /** Native execution receipts are carried outward without interpreting their process recipe. */
 export type DeviceStatusExecution<Receipt> = {

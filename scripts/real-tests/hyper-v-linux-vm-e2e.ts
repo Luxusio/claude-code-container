@@ -9,11 +9,11 @@ import { inspectHyperVUbuntuImageCache } from "#device-lab/device-lab/broker/hyp
 import { hyperVLinuxImageBlockers, hyperVLinuxImageSkipReason } from "#device-lab/device-lab/hyper-v-linux-image-readiness.js";
 import { hyperVReadinessCommand, parseHyperVReadiness } from "#device-lab/host-control/hyper-v/index.js";
 import { hiddenSpawnSync, repoRoot } from "./helpers.ts";
-import { brokerToolFailureEvidence, formatBrokerToolFailure, lifecycleDevice, parseToolPayload, parseToolResult, withDeviceLabMcp } from "./device-lab-mcp-client.ts";
+import { brokerToolFailureEvidence, formatBrokerToolFailure, lifecycleDevice, markExpectedToolError, parseToolPayload, parseToolResult, withDeviceLabMcp } from "./device-lab-mcp-client.ts";
 import { providerMcpSessionOptions } from "./provider-mcp-matrix.ts";
 import { runHyperVGuiE2E } from "./hyper-v-gui-e2e.ts";
 
-const DEVICE_PREFIX = "linux-hyper-v-real-e2e-";
+import { readHyperVFixtureDeviceIds, recordHyperVFixtureDeviceId } from "../durability/real-provider-cycles.mjs";
 const CAPABILITIES = [
     "devices", "create_linux_vm", "delete", "start", "stop", "reboot", "status",
     "exec", "upload", "download",
@@ -193,12 +193,23 @@ export function hyperVLinuxVmE2ECapability(options: any = {}) {
     return { available: true, powershell, ssh, scp, sourceImage };
 }
 
-async function cleanupPrevious(callTool: (tool: string, args: any) => Promise<any>) {
+async function cleanupPrevious(callTool: (tool: string, args: any) => Promise<any>, ownedDeviceIds: Iterable<string>) {
     const inventory = resultValue(hyperVLinuxToolPayload(await callTool("devices", { view: "available", detail: true, backend: "linux-vm" })));
-    const devices = Array.isArray(inventory?.devices) ? inventory.devices : [];
-    for (const device of devices.filter((candidate: any) => String(candidate?.deviceId || "").startsWith(DEVICE_PREFIX))) {
-        try { await callTool("stop", { detail: true, deviceId: device.deviceId, incarnationId: device.incarnationId, force: true }); } catch { /* delete is still attempted */ }
-        hyperVLinuxToolPayload(await callTool("delete", { detail: true, deviceId: device.deviceId, incarnationId: device.incarnationId, ...HYPER_V_LINUX_E2E_DELETE_OPTIONS }));
+    assert.ok(Array.isArray(inventory?.devices), "cleanup inventory must contain devices");
+    for (const deviceId of new Set(ownedDeviceIds)) {
+        try {
+            const stopped = await callTool("stop", { detail: true, deviceId, force: true });
+            const missing = parseToolPayload({ ...stopped, isError: false });
+            if (missing?.ok === false && missing.error === "device-not-found" && missing.deviceId === deviceId) markExpectedToolError(stopped);
+        } catch { /* delete is still attempted */ }
+        const deleted = await callTool("delete", { detail: true, deviceId, ...HYPER_V_LINUX_E2E_DELETE_OPTIONS });
+        const observed = parseToolPayload({ ...deleted, isError: false });
+        if (observed?.ok === false && observed.error === "device-not-found" && observed.deviceId === deviceId) {
+            const fresh = resultValue(hyperVLinuxToolPayload(await callTool("devices", { view: "available", detail: true, backend: "linux-vm" })));
+            assert.ok(Array.isArray(fresh?.devices) && fresh.devices.every(device => typeof device?.deviceId === "string" && device.deviceId), "cleanup inventory must identify every device");
+            assert.ok(!fresh.devices.some(device => device.deviceId === deviceId), "deleted VM remains in inventory");
+            markExpectedToolError(deleted);
+        } else hyperVLinuxToolPayload(deleted);
     }
 }
 
@@ -208,7 +219,7 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
         : hyperVLinuxVmE2ECapability(options);
     if (!capability.available) return { status: "SKIP", reason: "reason" in capability ? capability.reason : "Hyper-V Linux VM unavailable", capability };
 
-    const deviceId = `${DEVICE_PREFIX}${Date.now()}`;
+    let deviceId = "";
     const calledCapabilities = new Set<string>();
     const tempParent = join(repoRoot, "results");
     mkdirSync(tempParent, { recursive: true });
@@ -221,23 +232,24 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             if (CAPABILITIES.includes(tool)) calledCapabilities.add(tool);
             return rawCallTool(tool, hyperVLinuxBrokerArgs(tool, args));
         };
-        const direct: Record<string, unknown> = { deviceId };
+        const direct: Record<string, unknown> = {};
         try {
             currentStep = "recover previous owner-scoped VM residue";
-            await cleanupPrevious(callTool);
+            await cleanupPrevious(callTool, readHyperVFixtureDeviceIds("linux-vm"));
 
             currentStep = "create VM and cloud-init seed";
             const createdDevice = lifecycleDevice(hyperVLinuxToolPayload(await callTool("create_linux_vm", { detail: true,
 
-                ...direct,
                 name: "Real Hyper-V Ubuntu VM Test",
                 profile: "ubuntu-lts",
                 memoryMb: 2048,
                 cpus: 2,
                 ...(capability.sourceImage ? { sourceImage: capability.sourceImage } : {}),
             })), "create");
-            direct.incarnationId = createdDevice.incarnationId;
+            deviceId = createdDevice.deviceId;
+            direct.deviceId = deviceId;
             created = true;
+            recordHyperVFixtureDeviceId("linux-vm", deviceId);
             assertHyperVLinuxCreateContract(createdDevice, deviceId);
             const networkAddress = String(createdDevice.networkAddress || "");
 

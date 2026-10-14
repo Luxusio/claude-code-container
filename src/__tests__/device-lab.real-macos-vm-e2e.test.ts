@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { toolInputError } from "../../device-lab-mcp/src/tool-arguments.mjs";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -11,6 +12,30 @@ import {
     sshConfig,
     sourceImage,
 } from "../../scripts/real-tests/macos-vm-e2e.ts";
+
+const macosFixture = vi.hoisted(() => ({ active: false, callTool: null as any, instances: new Map<string, string>(), stateWrites: [] as any[] }));
+vi.mock("child_process", async (original) => {
+    const actual = await original<typeof import("child_process")>();
+    return { ...actual, spawnSync: (...args: any[]) => macosFixture.active
+        ? { status: 0, stdout: "/fixture/tart\n", stderr: "" } : actual.spawnSync.apply(null, args as any) };
+});
+vi.mock("../../scripts/real-tests/device-lab-mcp-client.ts", async (original) => {
+    const actual = await original<typeof import("../../scripts/real-tests/device-lab-mcp-client.ts")>();
+    return { ...actual, withDeviceLabMcp: (operation: any, options: any) => macosFixture.active
+        ? operation({ callTool: macosFixture.callTool }) : actual.withDeviceLabMcp(operation, options) };
+});
+vi.mock("../../scripts/real-tests/providers/tart.ts", async (original) => {
+    const actual = await original<typeof import("../../scripts/real-tests/providers/tart.ts")>();
+    return { ...actual, inspectTartInstance: (tart: any, instance: string) => macosFixture.active
+        ? { found: macosFixture.instances.has(instance), image: { state: macosFixture.instances.get(instance) } }
+        : actual.inspectTartInstance(tart, instance) };
+});
+vi.mock("#device-lab/providers/state/macos-state.mjs", async (original) => {
+    const actual = await original<any>();
+    return { ...actual, readMacosDevices: () => macosFixture.active ? [] : actual.readMacosDevices(),
+        writeMacosDevices: (devices: any) => macosFixture.active ? macosFixture.stateWrites.push(devices) : actual.writeMacosDevices(devices) };
+});
+afterEach(() => { macosFixture.active = false; macosFixture.callTool = null; macosFixture.instances.clear(); macosFixture.stateWrites.length = 0; });
 
 const level = Number(process.env.CCC_TEST_LEVEL || "0");
 const cap = macosVmE2ECapability(level);
@@ -185,8 +210,8 @@ describe.runIf(level >= 2)("level 2 real macOS VM Tart E2E", () => {
                 status: "PASS",
                 provider: "tart",
                 source: cap.source,
-                deviceId: expect.stringContaining("macos-level"),
-                providerInstance: expect.stringContaining("macos-level"),
+                deviceId: expect.stringMatching(/^macos-vm-[a-f0-9-]+$/),
+                providerInstance: expect.any(String),
                 boot: expect.objectContaining({
                     ready: expect.any(Boolean),
                 }),
@@ -203,4 +228,92 @@ describe.runIf(level >= 2)("level 2 real macOS VM Tart E2E", () => {
         },
         1200000,
     );
+});
+
+
+describe("macOS E2E returned fixture identity", () => {
+    async function fixtureRun(failClone = false) {
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        const envKeys = ["CCC_REAL_MACOS_VM_SOURCE_IMAGE", "CCC_REAL_MACOS_VM_SSH_USER", "CCC_REAL_MACOS_VM_SSH_HOST", "CCC_REAL_MACOS_VM_SSH_KEY_PATH"] as const;
+        const previous = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+        const calls: Array<{ tool: string; args: any }> = [];
+        const devices = new Map<string, any>();
+        const transfers = new Map<string, string>();
+        const ids = ["macos-vm-13579bdf-2468-4ace-8bdf-13579bdf2468", "macos-vm-2468ace0-1357-4bdf-8ace-2468ace01357", "macos-vm-abcdef12-3456-4789-8abc-def123456789"];
+        let createCount = 0;
+        const reply = (value: any) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+        macosFixture.active = true;
+        macosFixture.callTool = async (tool: string, args: any) => {
+            calls.push({ tool, args });
+            expect(toolInputError(tool, args), `${tool} input`).toBeNull();
+            expect(args).not.toHaveProperty("incarnationId");
+            if (tool === "create_macos_vm") {
+                expect(args).not.toHaveProperty("deviceId");
+                const id = ids[createCount++];
+                if (failClone && args.sourceDeviceId) throw new Error("fixture-clone-failed");
+                const device = { deviceId: id, name: args.name, status: "stopped", provider: "tart", providerInstance: `native-${id}`, helper: { ssh: { host: "fixture-host", user: "fixture-user" } } };
+                devices.set(id, device); macosFixture.instances.set(device.providerInstance, "stopped");
+                return reply({ ok: true, operation: args.sourceDeviceId ? "base-image-clone" : "create", device });
+            }
+            if (tool === "devices") return reply({ devices: [...devices.values()] });
+            expect(devices.has(args.deviceId), `${tool} targets a returned ID`).toBe(true);
+            const device = devices.get(args.deviceId);
+            if (tool === "start") {
+                device.status = "running"; macosFixture.instances.set(device.providerInstance, "running");
+                return reply({ device, boot: { ready: true, ip: "fixture-host" }, helper: { status: "provisioned" } });
+            }
+            if (tool === "status") return reply({ device });
+            if (tool === "stop") { device.status = "stopped"; macosFixture.instances.set(device.providerInstance, "stopped"); return reply({ device }); }
+            if (tool === "delete") { devices.delete(args.deviceId); macosFixture.instances.delete(device.providerInstance); return reply({ deleted: args.deviceId, providerDeleted: [device.providerInstance] }); }
+            if (tool === "exec") return reply({ stdout: "ccc-macos-vm-e2e-ok" });
+            if (tool === "upload") { transfers.set(args.remotePath, readFileSync(args.localPath, "utf8")); return reply({ provider: "scp", uploaded: { localPath: args.localPath, remotePath: args.remotePath } }); }
+            if (tool === "list_files") return reply({ entries: [...transfers.keys()].map(path => ({ name: path.split("/").at(-1), type: "file" })) });
+            if (tool === "download") { writeFileSync(args.localPath, transfers.get(args.remotePath)!); return reply({ provider: "scp", downloaded: { localPath: args.localPath, remotePath: args.remotePath } }); }
+            if (tool === "screenshot") return { content: [{ type: "image", mimeType: "image/png", data: "a".repeat(80) }] };
+            if (tool === "click") return reply({ provider: "ssh-macos-helper", [args.count === 2 ? "doubleClicked" : "clicked"]: { x: args.x, y: args.y, button: args.button } });
+            if (tool === "key") return reply({ provider: "ssh-macos-helper", key: { key: args.key, keyCode: 53, modifiers: [] } });
+            if (tool === "type") return reply({ provider: "ssh-macos-helper", typed: { text: args.text } });
+            if (tool === "scroll") return reply({ provider: "ssh-macos-helper", scrolled: { direction: args.direction, amount: args.amount } });
+            if (tool === "window_list") return reply({ windows: [] });
+            if (tool === "cursor_position") return reply({ provider: "ssh-macos-helper", cursor: null });
+            if (tool === "ui") return reply({ provider: "macos-system-events", accessibility: null });
+            if (tool === "record_video") return reply({ provider: "ssh-screencapture-video", deviceId: args.deviceId });
+            if (tool === "snapshot") {
+                if (args.action === "create") return reply({ snapshot: { id: "private-snapshot", name: args.snapshotName, providerInstance: "native-snapshot" } });
+                if (args.action === "restore") return reply({ device: { ...device, restoredFrom: { id: "private-snapshot", name: args.snapshotName } } });
+                return reply({ deleted: "private-snapshot" });
+            }
+            throw new Error(`unexpected fixture tool ${tool}`);
+        };
+        try {
+            Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+            process.env.CCC_REAL_MACOS_VM_SOURCE_IMAGE = "registry/base";
+            process.env.CCC_REAL_MACOS_VM_SSH_USER = "fixture-user";
+            process.env.CCC_REAL_MACOS_VM_SSH_HOST = "fixture-host";
+            process.env.CCC_REAL_MACOS_VM_SSH_KEY_PATH = "/fixture/id_ed25519";
+            const result = await runMacosVmE2E({ level: 2, imageTools: true, snapshot: true });
+            return { result, calls, devices, ids };
+        } catch (error) { Object.assign(error as object, { calls, devices, ids }); throw error; }
+        finally {
+            Object.defineProperty(process, "platform", platform);
+            for (const key of envKeys) if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+            macosFixture.active = false;
+        }
+    }
+    it("uses returned IDs for guest controls, snapshots, image create, clone and deletion", async () => {
+        const { result, calls, devices, ids } = await fixtureRun();
+        expect(result.deviceId).toBe(ids[0]);
+        expect(devices.size).toBe(0);
+        const creates = calls.filter(call => call.tool === "create_macos_vm");
+        expect(creates).toHaveLength(3);
+        expect(creates[2].args.sourceDeviceId).toBe(ids[0]);
+        expect(calls.filter(call => call.tool === "delete").map(call => call.args.deviceId).sort()).toEqual([...ids].sort());
+        expect(calls.filter(call => ["exec", "upload", "download", "click", "type", "snapshot"].includes(call.tool)).every(call => call.args.deviceId === ids[0])).toBe(true);
+    });
+    it("cleans every successfully returned fixture ID when a later clone fails", async () => {
+        const error = await fixtureRun(true).catch(error => error);
+        expect(error.message).toContain("fixture-clone-failed");
+        expect(error.devices.size).toBe(0);
+        expect(error.calls.filter((call: any) => call.tool === "delete").map((call: any) => call.args.deviceId).sort()).toEqual(error.ids.slice(0, 2).sort());
+    });
 });

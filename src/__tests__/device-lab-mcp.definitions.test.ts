@@ -360,6 +360,8 @@ describe("device-lab MCP backend definitions", () => {
     });
 
     it("rejects macOS provisioning without prerequisites and does not publish a device", { timeout: TIMEOUT }, async () => {
+        const before = await client.callTool({ name: "devices", arguments: {} });
+        const previous = JSON.parse((before.content[0] as { text: string }).text).devices;
         const create = await client.callTool({ name: "create_macos_vm", arguments: {
             name: "Mac Test", provider: "auto", image: "macos-restore-image", memoryMb: 8192, cpus: 4,
         } });
@@ -368,7 +370,7 @@ describe("device-lab MCP backend definitions", () => {
 
         const list = await client.callTool({ name: "devices", arguments: {} });
         const listed = JSON.parse(((list.content as Array<{ text?: string }>)[0].text ?? "{}"));
-        expect(listed.devices.some((device: { deviceId: string }) => device.deviceId === "macos-mac-test")).toBe(false);
+        expect(listed.devices).toEqual(previous);
 
         const inventory = await client.callTool({ name: "devices", arguments: { view: "available", backend: "macos-vm" } });
         expect(inventory.isError).not.toBe(true);
@@ -377,7 +379,7 @@ describe("device-lab MCP backend definitions", () => {
         expect(available.hostVms).toMatchObject({ lazy: true, missing: ["macos-host"] });
         expect(available.devices).toEqual([]);
 
-        const start = await client.callTool({ name: "start", arguments: { deviceId: "macos-mac-test" } });
+        const start = await client.callTool({ name: "start", arguments: { deviceId: "macos-vm-missing-fixture" } });
         expect(start.isError).toBe(true);
         expect((start.content as Array<{ text?: string }>)[0].text).toMatch(/not.found|Unknown device/i);
     });

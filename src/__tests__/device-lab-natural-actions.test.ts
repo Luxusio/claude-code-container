@@ -74,13 +74,15 @@ describe("natural action variants", () => {
         const created = await call("create_macos_vm", { name: "new", image: "image", detail: true });
         expect(created.isError).not.toBe(true);
         expect(fixture.calls.at(-1)).toMatchObject({ name: "device_create", args: { backend: "macos-vm", image: "image" } });
-        const cloned = await call("create_macos_vm", { name: "clone", deviceId: "new-id", sourceDeviceId: "owned", force: true, ssh: { user: "me", password: "secret" }, detail: true });
+        const cloned = await call("create_macos_vm", { name: "clone", sourceDeviceId: "owned", force: true, ssh: { user: "me", password: "secret" }, detail: true });
         expect(cloned.isError).not.toBe(true);
-        expect(fixture.calls.at(-1)).toMatchObject({ name: "device_base_image_clone", args: { backend: "macos-vm", sourceDeviceId: "owned", deviceId: "new-id", force: true, sshUser: "me", sshPassword: "secret" } });
+        expect(fixture.calls.at(-1)).toMatchObject({ name: "device_base_image_clone", args: { backend: "macos-vm", sourceDeviceId: "owned", force: true, sshUser: "me", sshPassword: "secret" } });
         expect(fixture.calls.at(-1).args).not.toHaveProperty("ssh");
+        expect(fixture.calls.at(-1).args).not.toHaveProperty("deviceId");
         expect(validateDeviceLabToolOutput("create_macos_vm", parse(cloned), { sourceDeviceId: "owned" })).toEqual(parse(cloned));
     });
     it.each([
+        { deviceId: "chosen-id", image: "image" }, { deviceId: "chosen-id", sourceDeviceId: "source", force: true },
         { sourceDeviceId: "source", image: "image" }, { sourceDeviceId: "source", provider: "tart" },
         { sourceDeviceId: "source", memoryMb: 4096 }, { sourceDeviceId: "source", cpus: 2 },
         { sourceDeviceId: "source", headless: false }, { force: false }, { sourceDeviceId: "../other" },

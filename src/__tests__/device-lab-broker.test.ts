@@ -1732,7 +1732,7 @@ try {
         }
     });
 
-    it.each([undefined, 0, 1])("replaces an identity-verified broker with stale protocol %s", async (staleProtocol) => {
+    it.each([undefined, 0, 1, 4])("replaces an identity-verified broker with stale protocol %s", async (staleProtocol) => {
         const ownerId = "2222222222222222";
         const currentProtocol = DEVICE_BROKER_PROTOCOL_VERSION;
         const stalePid = 43210;

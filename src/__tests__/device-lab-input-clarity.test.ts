@@ -96,6 +96,8 @@ describe("bounded single-backend argument contract", () => {
 describe("single-backend QEMU owner isolation through MCP", () => {
     let context: Awaited<ReturnType<typeof createDeviceLabMcpTestContext>>;
     let root: string;
+    let ownedId: string;
+    let foreignId: string;
     let ownedMetadata: string;
     let foreignMetadata: string;
     beforeAll(async () => {
@@ -105,11 +107,13 @@ describe("single-backend QEMU owner isolation through MCP", () => {
         // Read the authoritative root from the real provider instead of assuming its storage layout.
         const inventory = parse(await context.client.callTool({ name: "devices", arguments: { view: "available", backend: "linux-vm", detail: true } }));
         root = inventory.discovery.stateRoot;
-        ownedMetadata = join(root, "owners", result.device.ownerId, "labs", "owned-target", "lab.json");
+        ownedId = result.device.deviceId;
+        ownedMetadata = join(root, "owners", result.device.ownerId, "labs", ownedId, "lab.json");
         const foreignEnv = { CCC_PROFILE: "input-clarity-foreign", CCC_DEVICE_LAB_OWNER_BASIS: "foreign-owner" };
         const foreign = createLab({ name: "Foreign Target" }, { env: foreignEnv, stateRoot: root });
         expect(foreign.ok).toBe(true);
-        foreignMetadata = join(root, "owners", ownerId(foreignEnv), "labs", "foreign-target", "lab.json");
+        foreignId = foreign.lab.id;
+        foreignMetadata = join(root, "owners", ownerId(foreignEnv), "labs", foreignId, "lab.json");
     });
     afterAll(async () => { await cleanupDeviceLabMcpTestContext(context); });
     it("creates from flat inputs and imports an image without backend", async () => {
@@ -117,7 +121,7 @@ describe("single-backend QEMU owner isolation through MCP", () => {
              name: "Flat Inputs", cpus: 3, memoryMb: 1024,
         } }));
         expect(created.ok).toBe(true);
-        const metadata = JSON.parse(readFileSync(join(root, "owners", created.device.ownerId, "labs", "flat-inputs", "lab.json"), "utf8"));
+        const metadata = JSON.parse(readFileSync(join(root, "owners", created.device.ownerId, "labs", created.device.deviceId, "lab.json"), "utf8"));
         expect(metadata.resources).toMatchObject({ cpus: 3, memoryMb: 1024 });
         mkdirSync(join(root, "incoming"), { recursive: true });
         writeFileSync(join(root, "incoming", "base.qcow2"), "fixture-image");
@@ -130,7 +134,7 @@ describe("single-backend QEMU owner isolation through MCP", () => {
         const before = readFileSync(ownedMetadata, "utf8");
         for (const [name, args] of [
             ["device_broker_rpc", { method: "owner.cleanup" }],
-            ["mobile_install_app", { deviceId: "owned-target", path: "/app.apk" }],
+            ["mobile_install_app", { deviceId: ownedId, path: "/app.apk" }],
             ["create_linux_vm", { options: { name: "Must Not Exist" } }],
         ] as const) {
             const result = await context.client.callTool({ name, arguments: args });
@@ -143,7 +147,7 @@ describe("single-backend QEMU owner isolation through MCP", () => {
     it.each(ownedActions)("%s rejects wrong selectors without changing owned QEMU metadata", async (name) => {
         const before = readFileSync(ownedMetadata, "utf8");
         for (const backend of ["linux-vm", "macos-vm", null, ""]) {
-            const result = await context.client.callTool({ name, arguments: { deviceId: "owned-target", backend } });
+            const result = await context.client.callTool({ name, arguments: { deviceId: ownedId, backend } });
             expect(result.isError).toBe(true);
             expect(result.content[0].text).toContain("Unknown tool");
             expect(readFileSync(ownedMetadata, "utf8")).toBe(before);
@@ -151,7 +155,7 @@ describe("single-backend QEMU owner isolation through MCP", () => {
     });
     it.each(ownedActions)("%s does not find another owner's or missing target when backend is omitted", async (name) => {
         const before = readFileSync(foreignMetadata, "utf8");
-        for (const deviceId of ["foreign-target", "missing-target"]) {
+        for (const deviceId of [foreignId, "missing-target"]) {
             const result = await context.client.callTool({ name, arguments: { deviceId } });
             expect(result.isError).toBe(true);
             expect(parse(result)).toMatchObject({ ok: false, error: `Unknown tool: ${name}` });
@@ -165,7 +169,7 @@ describe("single-backend QEMU owner isolation through MCP", () => {
             res.setHeader("content-type", "application/json");
             res.end(JSON.stringify({ ok: true, result: { devices: [
                 { id: "host-only", backend: "linux-vm", provider: "hyper-v" },
-                { id: "owned-target", backend: "linux-vm", provider: "hyper-v" },
+                { id: ownedId, backend: "linux-vm", provider: "hyper-v" },
             ] } }));
         });
         await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -179,7 +183,7 @@ describe("single-backend QEMU owner isolation through MCP", () => {
                 expect(parse(result)).toMatchObject({ error: `Unknown tool: ${name}` });
             }
             const duplicate = await context.client.callTool({ name: "artifacts_export", arguments: {
-                deviceId: "owned-target", broker: true, hostCandidates: ["127.0.0.1"], port,
+                deviceId: ownedId, broker: true, hostCandidates: ["127.0.0.1"], port,
             } });
             expect(JSON.stringify(duplicate)).not.toContain("host-only");
             expect(requests).toEqual([]);

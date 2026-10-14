@@ -23,14 +23,17 @@ describe("public MCP user journeys", () => {
     const files = new Map<string, Map<string, Buffer>>();
     const requests: Rpc[] = [];
     let failNext = "";
+    let birth = 0;
     let catalog: Awaited<ReturnType<DeviceLabMcpTestContext["client"]["listTools"]>>["tools"];
 
     function invoke({ method, params: p }: Rpc): unknown {
         requests.push({ method, params: p });
         if (method === "broker.inventory") return { backends: Object.entries(stateKeys).map(([backend, stateKey]) => ({ stateKey, devices: [...devices.values()].filter(d => d.backend === backend) })) };
+        if (method === "broker.backends") return { backends: [{ name: "linux-vm", provider: "hyper-v", available: true }] };
         if (method === "broker.command.invoke") {
             if (p.command === "device_create") {
-                const id = `journey-${devices.size + 1}`;
+                const id = `${p.backend === "windows-vm" ? "win" : p.backend === "linux-vm" ? "linux" : "macos"}-${String(++birth).padStart(8, "0")}-1111-4111-8111-111111111111`;
+                if (["windows-vm", "linux-vm", "macos-vm"].includes(p.backend) && Object.hasOwn(p, "deviceId")) throw new Error("fixture-caller-chosen-id");
                 const device = { id, name: p.name, backend: p.backend, status: "stopped", incarnationId: id.endsWith("1") ? "a".repeat(32) : "b".repeat(32) };
                 devices.set(id, device);
                 files.set(id, new Map());
@@ -38,7 +41,7 @@ describe("public MCP user journeys", () => {
             }
             const device = devices.get(p.deviceId);
             if (!device || p.backend !== device.backend) throw new Error("fixture-wrong-device-route");
-            if (device.backend === "windows-vm" && p.command !== "device_status" && p.incarnationId !== device.incarnationId) throw new Error("hyper-v-incarnation-conflict");
+            if (Object.hasOwn(p, "incarnationId")) throw new Error("fixture-public-generation-forwarded");
             if (p.command === "device_delete") { devices.delete(device.id); files.delete(device.id); forgetHyperVConsoleFrame(device.id); return { deleted: device.id }; }
             if (p.command === "device_start") device.status = "running";
             else if (p.command === "device_stop") device.status = "stopped";
@@ -49,10 +52,7 @@ describe("public MCP user journeys", () => {
         const device = devices.get(p.deviceId);
         if (!device || p.backend !== device.backend) throw new Error("fixture-wrong-device-route");
         const result = (value: unknown, failed = false) => ({ mcpResult: textResult(value, failed) });
-        if (device.backend === "windows-vm" && p.tool !== "device_screenshot") {
-            if (!p.incarnationId) return result({ ok: false, error: "hyper-v-incarnation-required" }, true);
-            if (p.incarnationId !== device.incarnationId) return result({ ok: false, error: "hyper-v-incarnation-conflict" }, true);
-        }
+        if (Object.hasOwn(p, "incarnationId")) throw new Error("fixture-public-generation-forwarded");
         if (p.tool === failNext) { failNext = ""; return result({ ok: false, error: "fixture-provider-busy", remedy: "Retry this operation." }, true); }
         if (device.status !== "running") return result({ ok: false, error: "device-not-running", remedy: "Start the device." }, true);
         switch (p.tool) {
@@ -79,6 +79,7 @@ describe("public MCP user journeys", () => {
                 return result({ ok: true });
             }
             case "device_exec": {
+                if (p.command === "printf guest-identity") return result({ status: 0, stdout: JSON.stringify({ incarnationId: "guest-data", nested: { incarnationId: "guest-child" } }), stderr: "" });
                 if (!p.command?.includes("[IO.Directory]::EnumerateFileSystemEntries")) throw new Error("fixture-unexpected-exec");
                 const entries = [...files.get(device.id)!].map(([path, bytes]) => ({ name: basename(path), type: "file", size: bytes.length }));
                 return result({ status: 0, stdout: JSON.stringify({ entries }), stderr: "" });
@@ -89,7 +90,7 @@ describe("public MCP user journeys", () => {
 
     beforeEach(async () => {
         for (const id of devices.keys()) forgetHyperVConsoleFrame(id);
-        devices.clear(); files.clear(); requests.length = 0; failNext = "";
+        devices.clear(); files.clear(); requests.length = 0; failNext = ""; birth = 0;
         const owner = "1111111111111111";
         server = createServer((req, res) => {
             const send = (value: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(value)); };
@@ -139,18 +140,59 @@ describe("public MCP user journeys", () => {
     }
     async function create(backend = "windows-vm", extra: Record<string, unknown> = {}) {
         const created = await value(createToolName(backend), { name: "Journey", ...extra });
-        expect(created.device.deviceId).toEqual(expect.any(String));
-        expect(created.device.incarnationId).toMatch(/^[a-f0-9]{32}$/);
-        return { deviceId: created.device.deviceId as string, incarnationId: created.device.incarnationId as string };
+        // Explicit Hyper-V creation retains the existing broker result envelope.
+        const device = backend === "linux-vm" && extra.provider === "hyper-v" ? created.result.device : created.device;
+        expect(device.deviceId).toEqual(expect.any(String));
+        expect(device).not.toHaveProperty("incarnationId");
+        return { deviceId: device.deviceId as string };
     }
     async function screenshotTarget(target: { deviceId: string }) {
         const result = await call("screenshot", target);
         expect(result.content).toContainEqual({ type: "image", mimeType: "image/png", data: png });
         const metadata = JSON.parse(result.content.find(c => c.type === "text")!.text!);
         expect(metadata).toMatchObject({ deviceId: target.deviceId, width: 1, height: 1 });
-        expect(metadata.incarnationId).toMatch(/^[a-f0-9]{32}$/);
-        return { deviceId: metadata.deviceId as string, incarnationId: metadata.incarnationId as string };
+        expect(metadata).not.toHaveProperty("incarnationId");
+        return { deviceId: metadata.deviceId as string };
     }
+
+    it.each(["windows-vm", "linux-vm", "macos-vm"])("refuses caller-selected %s identity before any broker or provider request", async backend => {
+        const tool = createToolName(backend);
+        expect(catalog.find(entry => entry.name === tool)!.inputSchema.properties).not.toHaveProperty("deviceId");
+        const result = await context.client.callTool({ name: tool, arguments: {
+            name: "Chosen identity", deviceId: "chosen-vm-id", ...(backend === "macos-vm" ? { image: "fixture-image" } : {}),
+        } });
+        expect(result.isError).toBe(true);
+        expect(JSON.parse((result.content[0] as { text: string }).text).error).toContain("deviceId");
+        expect(requests).toEqual([]);
+        expect(devices.size).toBe(0);
+    });
+
+    it.each(["windows-vm", "linux-vm"])("uses fresh returned %s IDs through the MCP create/list/status/exec chain", async backend => {
+        const name = "重复 Virtual Machine name";
+        const extra = backend === "linux-vm" ? { name, provider: "hyper-v" } : { name };
+        const first = await create(backend, extra), second = await create(backend, extra);
+        expect(first.deviceId).not.toBe(second.deviceId);
+        expect(devices.get(first.deviceId)!.name).toBe(name);
+        expect(devices.get(second.deviceId)!.name).toBe(name);
+        expect(await value("devices")).toEqual(expect.arrayContaining([expect.objectContaining(first), expect.objectContaining(second)]));
+        await call("start", first);
+        expect((await value("status", first)).device.deviceId).toBe(first.deviceId);
+        const executed = await value("exec", { ...first, command: "printf guest-identity" });
+        expect(JSON.parse(executed.stdout)).toEqual({ incarnationId: "guest-data", nested: { incarnationId: "guest-child" } });
+        const creates = requests.filter(r => r.params.command === "device_create");
+        expect(creates).toHaveLength(2);
+        for (const request of creates) expect(request.params).not.toHaveProperty("deviceId");
+        for (const request of requests) expect(request.params).not.toHaveProperty("incarnationId");
+        expect(requests.find(r => r.params.tool === "device_exec")!.params.deviceId).toBe(first.deviceId);
+        await call("delete", { ...first, confirmDestructive: true });
+        const replacement = await create(backend, extra);
+        expect(replacement.deviceId).not.toBe(first.deviceId);
+        const before = requests.length;
+        expect(await value("exec", { ...first, command: "printf guest-identity" }, true)).toMatchObject({ error: "device-not-found" });
+        expect(requests.filter(r => r.params.tool === "device_exec")).toHaveLength(1);
+        expect(requests.slice(before).every(request => request.method === "broker.inventory")).toBe(true);
+        expect(devices.has(replacement.deviceId)).toBe(true);
+    });
 
     it("uses returned IDs through create, start, screenshot, input, transfer and deletion", async () => {
         let target = await create("windows-vm", { nestedVirtualization: true });
@@ -167,7 +209,7 @@ describe("public MCP user journeys", () => {
         writeFileSync(localPath, bytes);
         const remotePath = "C:/Temp/payload.bin";
         await call("upload", { ...target, localPath, remotePath });
-        expect(await value("list_files", { ...target, path: "C:/Temp" })).toEqual({ entries: [{ name: "payload.bin", type: "file", size: bytes.length }], incarnationId: target.incarnationId });
+        expect(await value("list_files", { ...target, path: "C:/Temp" })).toEqual({ entries: [{ name: "payload.bin", type: "file", size: bytes.length }] });
         await call("download", { ...target, remotePath, localPath: outputPath });
         expect(readFileSync(outputPath)).toEqual(bytes);
         await call("stop", target);
@@ -235,18 +277,20 @@ describe("public MCP user journeys", () => {
         expect(await value("type", { ...second, text: "still usable" })).toBe("ok");
     });
 
-    it("rejects missing/stale screenshot identity and recovers using fresh screenshot metadata", async () => {
+    it("rejects missing and privately stale console frames while public actions use only deviceId", async () => {
         const target = await create();
         await call("start", target);
         const coordinates = { x: 0, y: 0 };
         expect(await value("click", { ...target, ...coordinates }, true)).toMatchObject({ error: "hyper-v-console-screenshot-required" });
         const captured = await screenshotTarget(target);
-        expect(await value("click", { deviceId: captured.deviceId, ...coordinates }, true)).toMatchObject({ error: "hyper-v-incarnation-required" });
-        // A host-side replacement invalidates the earlier screenshot and target generation.
+        expect(await value("click", { deviceId: captured.deviceId, ...coordinates })).toBe("ok");
+        // Private native generation still invalidates a frame captured earlier.
+        const previousGeneration = devices.get(target.deviceId)!.incarnationId;
         devices.get(target.deviceId)!.incarnationId = "c".repeat(32);
-        expect(await value("click", { ...captured, ...coordinates }, true)).toMatchObject({ error: "hyper-v-incarnation-conflict" });
+        expect(currentHyperVConsoleFrame(target.deviceId, previousGeneration)).not.toBeNull();
+        expect(await value("click", { ...captured, ...coordinates }, true)).toMatchObject({ error: "hyper-v-console-screenshot-required" });
         const fresh = await screenshotTarget(target);
-        expect(fresh.incarnationId).not.toBe(captured.incarnationId);
+        expect(fresh).toEqual(captured);
         expect(await value("click", { ...fresh, x: 1, y: 0 }, true)).toMatchObject({ error: "hyper-v-console-pixel-invalid" });
         expect(await value("click", { ...fresh, ...coordinates })).toBe("ok");
     });

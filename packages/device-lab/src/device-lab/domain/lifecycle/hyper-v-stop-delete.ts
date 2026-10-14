@@ -4,7 +4,6 @@ export interface HyperVStopDeleteRequest {
     stateKey: string;
     command: "device_stop" | "device_delete";
     deviceId: string;
-    expectedIncarnationId?: string;
     force: boolean;
     dryRun: boolean;
     preserveNetwork?: boolean;

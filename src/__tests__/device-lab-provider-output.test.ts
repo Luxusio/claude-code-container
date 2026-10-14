@@ -153,7 +153,7 @@ describe("known VM provider output", () => {
             return JSON.parse((result.content as Array<{ text: string }>)[0].text);
         };
         try {
-            const created = await call("create_linux_vm", {  deviceId: "compact-lab", name: "Compact lab", sourceImage: "incoming/base.qcow2", detail: true });
+            const created = await call("create_linux_vm", { name: "Compact lab", sourceImage: "incoming/base.qcow2", detail: true });
             const detailed = await call("status", { deviceId: created.device.deviceId, detail: true });
             const compact = await call("status", { deviceId: created.device.deviceId, detail: false });
             const { ok: _statusOk, ...expectedStatus } = compactToolValue("device_status", structuredClone(detailed));

@@ -65,6 +65,15 @@ function lifecycleCapabilities(ports: WorkflowPorts, request: HyperVLifecycleReq
     const { creationEffects, ...withoutNativeCreation } = ports;
     // @ts-expect-error Typed VM creation leaves are required by the actual workflow factory.
     createHyperVCreateStartApplication(withoutNativeCreation);
+    const reparsed = ports.parse({}, request.deviceId);
+    if (reparsed.ok) {
+        const typedRequest: HyperVLifecycleRequest = reparsed.request;
+        void typedRequest;
+    }
+    const { hasNetworkAllocation, ...withoutNetworkResidue } = ports;
+    // @ts-expect-error Creation collision admission requires existing private network residue observation.
+    createHyperVCreateStartApplication(withoutNetworkResidue);
+    void [reparsed, hasNetworkAllocation];
     const { incarnationRecord, ...withoutIncarnation } = ports;
     // @ts-expect-error Guarded recovery requires current incarnation observation.
     createHyperVCreateStartApplication(withoutIncarnation);

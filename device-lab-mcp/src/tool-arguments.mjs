@@ -183,7 +183,7 @@ export function normalizePublicToolArgs(name, args = {}) {
 
 export function normalizeToolArgs(args = {}, toolName) {
     if (!args || typeof args !== "object" || Array.isArray(args)) args = {};
-    const { detail: _detail, ...normalized } = args;
+    const { detail: _detail, incarnationId: _incarnationId, ...normalized } = args;
     if (Object.values(GROUP_OPERATIONS).some((group) => Object.values(group).includes(toolName))) delete normalized.action;
     if (normalized.backend === undefined && Object.hasOwn(OPERATION_DEFAULTS, toolName)) {
         normalized.backend = OPERATION_DEFAULTS[toolName];

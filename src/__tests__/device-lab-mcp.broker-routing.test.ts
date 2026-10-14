@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEVICE_BROKER_PROTOCOL_VERSION } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
 import { createDeviceBrokerServer, deviceBrokerOwnerToken } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
+import { readDeviceRuntimeProcessIdentity } from "@ccc/device-lab/device-lab-process-identity.js";
 import { cleanupOwner, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 import {
     cleanupDeviceLabMcpTestContext,
@@ -83,6 +84,7 @@ describe("device-lab MCP broker routing", () => {
 
     it("preserves public Hyper-V create options across broker routing", { timeout: TIMEOUT }, async () => {
         let receivedParams: Record<string, unknown> = {};
+        const returnedId = "win-12345678-1234-4123-8123-123456789abc";
         const authRoot = join(homeDir, ".ccc", "devices", "broker", "auth");
         const authFile = join(authRoot, `${brokerOwnerId()}.json`);
         mkdirSync(authRoot, { recursive: true });
@@ -112,7 +114,7 @@ describe("device-lab MCP broker routing", () => {
                 receivedParams = parsed.params || {};
                 res.setHeader("content-type", "application/json");
                 if (parsed.method === "broker.inventory") {
-                    res.end(JSON.stringify({ ok: true, result: { backends: [{ stateKey: activeGuiBackend, backend: activeGuiBackend, devices: [{ id: "hyper-v-create-routing", backend: activeGuiBackend }] }] } }));
+                    res.end(JSON.stringify({ ok: true, result: { backends: [{ stateKey: activeGuiBackend, backend: activeGuiBackend, devices: [{ id: returnedId, backend: activeGuiBackend }] }] } }));
                     return;
                 }
                 if (parsed.method === "broker.backends") {
@@ -124,6 +126,10 @@ describe("device-lab MCP broker routing", () => {
                         { type: "text", text: JSON.stringify({ width: 1, height: 1, incarnationId: "4".repeat(32) }) },
                         { type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/RuoAAAAASUVORK5CYII=" },
                     ] } } }));
+                    return;
+                }
+                if (parsed.params?.command === "device_create") {
+                    res.end(JSON.stringify({ ok: true, result: { device: { id: returnedId, name: parsed.params.name, backend: "windows-vm", status: "stopped" } } }));
                     return;
                 }
                 if (parsed.params?.command === "device_start") {
@@ -143,7 +149,6 @@ describe("device-lab MCP broker routing", () => {
                 name: "create_windows_vm",
                 arguments: {
 
-                    deviceId: "hyper-v-create-routing",
                     name: "Hyper-V create routing",
                     profile: "windows-11",
                     sourceImage: "C:\\images\\windows-11.vhdx",
@@ -156,10 +161,12 @@ describe("device-lab MCP broker routing", () => {
             });
             expect(result.isError).not.toBe(true);
             const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text || "{}"));
+            expect(payload.result.device.deviceId).toBe(returnedId);
+            const deviceId = payload.result.device.deviceId;
+            expect(receivedParams).not.toHaveProperty("deviceId");
             expect(receivedParams, JSON.stringify(payload)).toEqual(expect.objectContaining({
                 backend: "windows-vm",
                 command: "device_create",
-                deviceId: "hyper-v-create-routing",
                 profile: "windows-11",
                 sourceImage: "C:\\images\\windows-11.vhdx",
                 switchName: "CCC Device Lab",
@@ -169,8 +176,7 @@ describe("device-lab MCP broker routing", () => {
             const reboot = await client.callTool({
                 name: "reboot",
                 arguments: {
-                    deviceId: "hyper-v-create-routing",
-                    incarnationId: "11111111111111111111111111111111",
+                    deviceId,
                     startIfStopped: true,
                     waitForBoot: false,
                     viaBroker: true,
@@ -179,11 +185,11 @@ describe("device-lab MCP broker routing", () => {
                 },
             });
             expect(reboot.isError).not.toBe(true);
+            expect(receivedParams).not.toHaveProperty("incarnationId");
             expect(receivedParams).toEqual(expect.objectContaining({
                 backend: "windows-vm",
                 command: "device_reboot",
-                deviceId: "hyper-v-create-routing",
-                incarnationId: "11111111111111111111111111111111",
+                deviceId,
                 startIfStopped: true,
                 waitForBoot: false,
             }));
@@ -191,8 +197,7 @@ describe("device-lab MCP broker routing", () => {
             const status = await client.callTool({
                 name: "status",
                 arguments: {
-                    deviceId: "hyper-v-create-routing",
-                    incarnationId: "22222222222222222222222222222222",
+                    deviceId,
                     viaBroker: true,
                     implicitBroker: false,
                     hostCandidates: ["127.0.0.1"],
@@ -200,18 +205,17 @@ describe("device-lab MCP broker routing", () => {
                 },
             });
             expect(status.isError).not.toBe(true);
+            expect(receivedParams).not.toHaveProperty("incarnationId");
             expect(receivedParams).toEqual(expect.objectContaining({
                 backend: "windows-vm",
                 command: "device_status",
-                deviceId: "hyper-v-create-routing",
-                incarnationId: "22222222222222222222222222222222",
+                deviceId,
             }));
 
             const started = await client.callTool({
                 name: "start",
                 arguments: {
-                    deviceId: "hyper-v-create-routing",
-                    incarnationId: "22222222222222222222222222222222",
+                    deviceId,
                     viaBroker: true,
                     waitForBoot: true,
                     hostCandidates: ["127.0.0.1"],
@@ -219,9 +223,10 @@ describe("device-lab MCP broker routing", () => {
                 },
             });
             expect(started.isError).toBe(true);
+            expect(receivedParams).not.toHaveProperty("incarnationId");
             expect(JSON.parse((started.content as Array<{ text: string }>)[0].text)).toMatchObject({
                 error: "device-start-not-ready",
-                deviceId: "hyper-v-create-routing",
+                deviceId,
                 detail: "boot-readiness-failed",
             });
             expect(receivedParams).toMatchObject({ command: "device_start", waitForBoot: true });
@@ -229,8 +234,7 @@ describe("device-lab MCP broker routing", () => {
             const snapshots = await client.callTool({
                 name: "snapshot",
                 arguments: { action: "list",
-                    deviceId: "hyper-v-create-routing",
-                    incarnationId: "33333333333333333333333333333333",
+                    deviceId,
                     viaBroker: true,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
@@ -240,9 +244,10 @@ describe("device-lab MCP broker routing", () => {
             expect(receivedParams).toEqual(expect.objectContaining({
                 backend: "windows-vm",
                 tool: "device_snapshot_list",
-                deviceId: "hyper-v-create-routing",
-                incarnationId: "33333333333333333333333333333333",
+                deviceId,
             }));
+
+            expect(receivedParams).not.toHaveProperty("incarnationId");
 
             const guiCases = [
                 ["screenshot", {}],
@@ -260,8 +265,7 @@ describe("device-lab MCP broker routing", () => {
                     const guiResult = await client.callTool({
                         name,
                         arguments: {
-                            deviceId: "hyper-v-create-routing",
-                            incarnationId: "4".repeat(32),
+                            deviceId,
                             viaBroker: true,
                             hostCandidates: ["127.0.0.1"],
                             port: address.port,
@@ -270,8 +274,9 @@ describe("device-lab MCP broker routing", () => {
                     });
                     expect(guiResult.isError, `${backend} ${name}: ${JSON.stringify(guiResult.content)}`).not.toBe(true);
                     expect(receivedParams).toEqual(expect.objectContaining({
-                        backend, tool: toolOperation(name, extra), deviceId: "hyper-v-create-routing", incarnationId: "4".repeat(32), ...Object.fromEntries(Object.entries(extra).filter(([key]) => key !== "count")),
+                        backend, tool: toolOperation(name, extra), deviceId, ...Object.fromEntries(Object.entries(extra).filter(([key]) => key !== "count")),
                     }));
+                    expect(receivedParams).not.toHaveProperty("incarnationId");
                     if (name === "screenshot") {
                         expect(guiResult.content).toEqual(expect.arrayContaining([
                             expect.objectContaining({ type: "image", mimeType: "image/png" }),
@@ -282,8 +287,7 @@ describe("device-lab MCP broker routing", () => {
             const implicitLinux = await client.callTool({
                 name: "key",
                 arguments: {
-                    deviceId: "hyper-v-create-routing",
-                    incarnationId: "4".repeat(32),
+                    deviceId,
                     key: "Enter",
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
@@ -291,7 +295,7 @@ describe("device-lab MCP broker routing", () => {
             });
             expect(implicitLinux.isError, JSON.stringify(implicitLinux.content)).not.toBe(true);
             expect(receivedParams).toEqual(expect.objectContaining({
-                backend: "linux-vm", tool: "device_key", deviceId: "hyper-v-create-routing", key: "Enter",
+                backend: "linux-vm", tool: "device_key", deviceId, key: "Enter",
             }));
             for (const invalid of [
                 { backend: "linux-vm", x: 0 },
@@ -300,7 +304,7 @@ describe("device-lab MCP broker routing", () => {
             ]) {
                 const rejected = await client.callTool({
                     name: "cursor_position",
-                    arguments: { deviceId: "hyper-v-create-routing", incarnationId: "4".repeat(32), ...invalid },
+                    arguments: { deviceId, ...invalid },
                 });
                 expect(JSON.parse(((rejected.content as Array<{ text?: string }>)[0].text || "{}"))).toEqual(expect.objectContaining({ ok: false }));
             }
@@ -355,7 +359,7 @@ describe("device-lab MCP broker routing", () => {
         const address = server.address() as AddressInfo;
         try {
             const route = { deviceId, confirmDestructive: true, hostCandidates: ["127.0.0.1"], port: address.port, timeoutMs: 500 };
-            const explicit = await client.callTool({ name: "delete", arguments: { ...route, broker: true, incarnationId: "5".repeat(32) } });
+            const explicit = await client.callTool({ name: "delete", arguments: { ...route, broker: true } });
             expect(explicit.isError, JSON.stringify(explicit.content)).not.toBe(true);
             expect(invocations).toEqual([expect.objectContaining({ command: "device_delete", backend: "windows-vm", deviceId })]);
             expect(JSON.parse(readFileSync(labFile, "utf8"))).toEqual(localLab);
@@ -449,7 +453,7 @@ describe("device-lab MCP broker routing", () => {
                     return;
                 }
                 if (parsed.method === "broker.command.invoke"
-                    && parsed.params?.deviceId === "hyper-v-network-diagnostic-failure") {
+                    && parsed.params?.name === "Hyper-V Linux diagnostic failure") {
                     res.statusCode = 502;
                     res.end(JSON.stringify({
                         ok: false,
@@ -477,7 +481,6 @@ describe("device-lab MCP broker routing", () => {
                 name: "create_linux_vm",
                 arguments: {
 
-                    deviceId: device.id,
                     name: "Hyper-V Linux create response",
                     provider: "hyper-v",
                     broker: true,
@@ -497,7 +500,6 @@ describe("device-lab MCP broker routing", () => {
                 name: "create_linux_vm",
                 arguments: {
 
-                    deviceId: "hyper-v-network-diagnostic-failure",
                     name: "Hyper-V Linux diagnostic failure",
                     viaBroker: true,
                     hostCandidates: ["127.0.0.1"],
@@ -728,7 +730,6 @@ describe("device-lab MCP broker routing", () => {
                 name: "exec",
                 arguments: {
                     deviceId: "hyper-v-linux-route",
-                    incarnationId,
                     command: "uname -s",
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
@@ -745,7 +746,6 @@ describe("device-lab MCP broker routing", () => {
                 name: "reboot",
                 arguments: {
                     deviceId: "hyper-v-linux-route",
-                    incarnationId,
                     waitForBoot: false,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
@@ -765,7 +765,7 @@ describe("device-lab MCP broker routing", () => {
             writeBrokerDevices(owner, "linux-vm", [{ ...routeDevice, sshHostKeyFingerprint: `SHA256:${"A".repeat(43)}` }]);
             const rejected = await client.callTool({
                 name: "exec",
-                arguments: { deviceId: "hyper-v-linux-route", incarnationId, command: "uname -s", hostCandidates: ["127.0.0.1"], port: address.port },
+                arguments: { deviceId: "hyper-v-linux-route", command: "uname -s", hostCandidates: ["127.0.0.1"], port: address.port },
             });
             expect(JSON.parse(((rejected.content as Array<{ text?: string }>)[0].text || "{}"))).toEqual(expect.objectContaining({ ok: false, error: "hyper-v-linux-ssh-host-identity-invalid" }));
         } finally {
@@ -921,13 +921,16 @@ require('module').syncBuiltinESMExports();
             backend: "android-emulator",
             port: 5572,
         }]);
+        const processIdentity = readDeviceRuntimeProcessIdentity(process.pid);
+        if (!processIdentity) throw new Error("current process identity unavailable");
         const commandRunner = vi.fn((command) => ({
             mode: command.mode,
             provider: command.provider,
             executable: command.executable,
             args: command.args,
             status: 0,
-            pid: command.mode === "detached" ? 13579 : undefined,
+            pid: command.mode === "detached" ? process.pid : undefined,
+            processIdentity: command.mode === "detached" ? processIdentity : undefined,
             stdout: "ok",
             stderr: "",
         }));
@@ -955,7 +958,7 @@ require('module').syncBuiltinESMExports();
                     timeoutMs: 500,
                 },
             });
-            expect(start.isError).not.toBe(true);
+            expect(start.isError, JSON.stringify(start.content)).not.toBe(true);
             expect(JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
                 routedBy: "device-mutating-broker-implicit",
                     tool: "device_record_video_start",
@@ -980,7 +983,7 @@ require('module').syncBuiltinESMExports();
                     timeoutMs: 500,
                 },
             });
-            expect(stop.isError).not.toBe(true);
+            expect(stop.isError, JSON.stringify(stop.content)).not.toBe(true);
             expect(JSON.parse(((stop.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
                 routedBy: "device-mutating-broker-implicit",
                     tool: "device_record_video_stop",
@@ -1591,8 +1594,7 @@ require('module').syncBuiltinESMExports();
             return JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}"));
         };
         try {
-            const incarnationId = "1".repeat(32);
-            const moved = await call({ deviceId: "hv-cursor", incarnationId, x: 10, y: 20 });
+            const moved = await call({ deviceId: "hv-cursor", x: 10, y: 20 });
             expect(moved, JSON.stringify(moved)).toEqual(expect.objectContaining({ routedBy: "device-mutating-broker-implicit" }));
             expect(invoked, JSON.stringify(moved)).toEqual([expect.objectContaining({ tool: "device_cursor_position", backend: "windows-vm", deviceId: "hv-cursor", x: 10, y: 20 })]);
 
@@ -1602,7 +1604,7 @@ require('module').syncBuiltinESMExports();
             for (const args of [
                 { x: 10, y: 20 },
                 { deviceId: "sandbox-cursor", x: 10, y: 20, broker: false },
-                { deviceId: "hv-cursor", incarnationId, x: 10, y: 20, implicitBroker: false },
+                { deviceId: "hv-cursor", x: 10, y: 20, implicitBroker: false },
             ]) {
                 expect(await call(args)).toEqual(expect.objectContaining({ ok: false, error: expect.any(String) }));
             }
@@ -2964,7 +2966,6 @@ require('module').syncBuiltinESMExports();
                 arguments: {
 
                     provider: "hyper-v",
-                    deviceId: "hyper-v-linux-no-direct-fallback",
                     name: "Hyper-V Linux no direct fallback",
                     viaBroker: true,
                     autolaunch: false,
@@ -3088,7 +3089,6 @@ require('module').syncBuiltinESMExports();
                 name: "delete",
                 arguments: {
                     deviceId: "windows-vm-real-e2e-stale",
-                    incarnationId: "1".repeat(32),
                     force: true,
                     preserveNetwork: true,
                     confirmDestructive: true,
@@ -3105,7 +3105,6 @@ require('module').syncBuiltinESMExports();
                 name: "delete",
                 arguments: {
                     deviceId: "windows-vm-real-e2e-stale",
-                    incarnationId: "1".repeat(32),
                     force: true,
                     preserveNetwork: true,
                     confirmDestructive: true,

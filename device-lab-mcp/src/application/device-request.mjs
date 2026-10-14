@@ -362,7 +362,7 @@ export function createDeviceRequest(ports) {
         if (name !== "device_create" && !args?.backend) {
             return /** @type {Result} */ (await maybeHandleImplicitBrokerLifecycleTool(name, { ...args, implicitBroker: true, broker: true, viaBroker: true }));
         }
-        const deviceId = typeof args?.deviceId === "string" ? args.deviceId : "";
+        const deviceId = typeof args?.deviceId === "string" ? args.deviceId : undefined;
         /** @type {string|import("../ports/device-request.mjs").BackendInference} */
         const backend = typeof args?.backend === "string" && args.backend ? args.backend : name === "device_create" ? { ok: false, error: "missing-backend", matches: [] } : inferLifecycleBackend(deviceId);
         if (typeof backend !== "string" && backend?.ok === false) {
@@ -375,7 +375,13 @@ export function createDeviceRequest(ports) {
             });
         }
         const routeArgs = brokerRouteOptions(args);
-        const brokerArgs = name === "device_create" ? { ...routeArgs, devicePort: args?.port, port: args?.brokerPort } : routeArgs;
+        let brokerArgs = name === "device_create" ? { ...routeArgs, devicePort: args?.port, port: args?.brokerPort } : routeArgs;
+        if (name === "device_create" && ["windows-vm", "linux-vm", "macos-vm"].includes(args.backend || "")) {
+            // A selected VM port is HTTP transport, never the Android console port.
+            const probe = ports.implicitBrokerProbeOptions({ ...routeArgs, port: args.port ?? args.brokerPort });
+            if (!probe) return implicitBrokerUnavailableResult("device-lifecycle-broker");
+            brokerArgs = { ...routeArgs, ...probe, devicePort: args.devicePort };
+        }
         const result = await ports.invokeBrokerLifecycle({
             ...brokerArgs,
             ...brokerLifecycleExecutionTimeout({ ...args, backend: typeof backend === "string" ? backend : backend.backend, command: name }),
@@ -383,7 +389,6 @@ export function createDeviceRequest(ports) {
             backend: typeof backend === "string" ? backend : backend.backend,
             command: name,
             deviceId,
-            incarnationId: args?.incarnationId,
             preserveNetwork: args?.preserveNetwork,
             dryRun: args?.dryRun === true,
         });
@@ -1002,7 +1007,7 @@ export function createDeviceRequest(ports) {
     /** @param {string} name @param {Args} rawArgs @param {Options} [options] @returns {Promise<Result>} */
     async function dispatchDeviceTool(name, rawArgs, options = {}) {
         const { detail = false } = options;
-        const args = ports.normalizeToolArgs(rawArgs, name);
+        const args = { ...ports.normalizeToolArgs(rawArgs, name), ...(name === "device_status" && detail ? { detail: true } : {}) };
         if (name === "device_list") return handleDeviceList(args);
         if (name === "device_inventory" && args.backend === undefined) {
             return ports.availableDevices(backend => dispatchDeviceTool(name, { ...args, backend }, { detail }), { detail });

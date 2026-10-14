@@ -688,7 +688,8 @@ function qemuLifecycleApplication(options = {}) {
         runnerUnavailable: (ctx) => labStateUnavailable(ctx),
         readLab: (ctx, id) => readLab(ctx, id),
         writeLab: (ctx, lab) => writeLab(ctx, lab),
-        metadataExists: (ctx, id) => existsSync(metadataPath(ctx, id)),
+        metadataExists: (ctx, id) => existsSync(ownerLabDir(ctx, id)) || existsSync(join(ctx.ownerRoot, "exports", id)),
+        labId: () => qemuCreationId(options),
         labDirectory: (ctx, id) => ownerLabDir(ctx, id),
         allocatedPath: (...segments) => join(...segments),
         ensureDirectory: (directory) => { mkdirSync(directory, { recursive: true }); },
@@ -739,6 +740,10 @@ function qemuLifecycleApplication(options = {}) {
             };
         },
     });
+}
+
+function qemuCreationId(options = {}) {
+    return options.labId?.() ?? `linux-vm-${randomUUID()}`;
 }
 
 export function createLab(args = {}, options = {}) {
@@ -975,12 +980,12 @@ export function linuxVmBackend(options = {}) { return linuxDeviceObservation(opt
 
 export function listLinuxVmDevices(options = {}) { return linuxDeviceObservation(options).owned({strictState:options.strictState}); }
 
-function handleLinuxVmToolUnlocked(name, args = {}, options = {}) {
+function handleLinuxVmToolUnlocked(name, args = {}, options = {}, admittedLabId) {
     const linuxArgs = linuxVmArgs(args);
     if (name === "device_inventory") {const value=linuxDeviceObservation(options).inventory(args);return value===undefined?undefined:textResult(true,JSON.stringify(value,null,2));}
     if (name === "device_create") {
         if (args.backend !== LINUX_VM_BACKEND) return undefined;
-        return linuxVmMcpResult(createLab({ ...linuxArgs, labId: args.deviceId }, options));
+        return linuxVmMcpResult(qemuLifecycleApplication(options).create(linuxArgs, admittedLabId));
     }
     if (!ownsLinuxVm(args, options)) return undefined;
 
@@ -1012,19 +1017,18 @@ function handleLinuxVmToolUnlocked(name, args = {}, options = {}) {
     return linuxVmMcpResult(result);
 }
 
-const LINUX_VM_READ_ONLY_TOOLS = new Set(["device_inventory", "device_target_list"]);
+const LINUX_VM_READ_ONLY_TOOLS = new Set(["device_inventory"]);
 
 export async function handleLinuxVmTool(name, args = {}, options = {}) {
     if (LINUX_VM_READ_ONLY_TOOLS.has(name)) return handleLinuxVmToolUnlocked(name, args, options);
-    const deviceId = typeof args.deviceId === "string"
-        ? args.deviceId
-        : name === "device_create" && typeof args.name === "string"
-            ? slug(args.name)
-            : null;
-    if (!deviceId || (args.backend !== LINUX_VM_BACKEND && !ownsLinuxVm(args, options))) {
-        return handleLinuxVmToolUnlocked(name, args, options);
+    const createsDevice = name === "device_create" && args.backend === LINUX_VM_BACKEND;
+    if (createsDevice && (Object.hasOwn(args, "deviceId") || Object.hasOwn(args, "labId"))) {
+        return linuxVmMcpResult({ ok: false, error: "vm-creation-id-not-supported" });
     }
-    return withOwnerDeviceOperation("linux", deviceId, () => handleLinuxVmToolUnlocked(name, args, options));
+    const admittedLabId = createsDevice ? qemuCreationId(options) : undefined;
+    const deviceId = admittedLabId ?? (typeof args.deviceId === "string" ? args.deviceId : null);
+    if (!deviceId) return handleLinuxVmToolUnlocked(name, args, options);
+    return withOwnerDeviceOperation("linux", deviceId, () => handleLinuxVmToolUnlocked(name, args, options, admittedLabId));
 }
 
 export async function handleLinuxVmManagementTool(name, args = {}, options = {}) {

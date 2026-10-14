@@ -45,7 +45,7 @@ describe("device-lab destructive action policy", () => {
                 const tool = TOOLS.find((candidate) => candidate.name === name);
                 expect(tool?.inputSchema?.properties).not.toHaveProperty("backend");
                 expect(tool?.inputSchema?.required).toContain("deviceId");
-                expect(tool?.inputSchema?.properties?.incarnationId).toEqual(expect.objectContaining({ type: "string" }));
+                expect(tool?.inputSchema?.properties).not.toHaveProperty("incarnationId");
                 expect(ownerOperations).toContain(toolOperation(name));
             }
         }

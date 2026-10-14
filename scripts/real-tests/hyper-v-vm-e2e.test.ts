@@ -1,10 +1,10 @@
 import { hyperVMemoryFailureReason } from "./hyper-v-memory-diagnostic.ts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { assertHyperVLinuxCreateContract, HYPER_V_LINUX_E2E_DELETE_OPTIONS, HYPER_V_LINUX_PRE_REBOOT_COMMAND, hyperVLinuxBrokerArgs, hyperVLinuxToolPayload, hyperVLinuxVmE2ECapability, prepareHyperVLinuxDownloadDestination, writeHyperVLinuxFailureDiagnostic } from "./hyper-v-linux-vm-e2e.ts";
+import { assertHyperVLinuxCreateContract, runHyperVLinuxVmE2E, HYPER_V_LINUX_E2E_DELETE_OPTIONS, HYPER_V_LINUX_PRE_REBOOT_COMMAND, hyperVLinuxBrokerArgs, hyperVLinuxToolPayload, hyperVLinuxVmE2ECapability, prepareHyperVLinuxDownloadDestination, writeHyperVLinuxFailureDiagnostic } from "./hyper-v-linux-vm-e2e.ts";
 import {
     assertHyperVWindowsDeleted,
     assertHyperVWindowsNetwork,
@@ -18,6 +18,7 @@ import {
     hyperVWindowsToolPayload,
     hyperVWindowsVmE2ECapability,
     resolveNpmCliPath,
+    runHyperVWindowsVmE2E,
     scheduleHyperVWindowsConsoleTimeline,
     selectHyperVWindowsProfile,
 } from "./hyper-v-windows-vm-e2e.ts";
@@ -31,6 +32,21 @@ import {
     HYPER_V_WINDOWS_SOURCE_TRUST_ID,
     HYPER_V_WINDOWS_SOURCE_URL,
 } from "#device-lab/device-lab/hyper-v-image-contracts.js";
+
+const hyperVFixture = vi.hoisted(() => ({ active: false, callTool: null as any, recorded: new Set<string>() }));
+vi.mock("./device-lab-mcp-client.ts", async (original) => {
+    const actual = await original<typeof import("./device-lab-mcp-client.ts")>();
+    return { ...actual, withDeviceLabMcp: (operation: any, options: any) => hyperVFixture.active
+        ? operation({ callTool: hyperVFixture.callTool }) : actual.withDeviceLabMcp(operation, options) };
+});
+vi.mock("../durability/real-provider-cycles.mjs", async (original) => {
+    const actual = await original<any>();
+    return { ...actual,
+        readHyperVFixtureDeviceIds: (target: any, options: any) => hyperVFixture.active ? [...hyperVFixture.recorded] : actual.readHyperVFixtureDeviceIds(target, options),
+        recordHyperVFixtureDeviceId: (target: any, id: string, options: any) => hyperVFixture.active ? hyperVFixture.recorded.add(id) : actual.recordHyperVFixtureDeviceId(target, id, options),
+        forgetHyperVFixtureDeviceId: (target: any, id: string, options: any) => hyperVFixture.active ? hyperVFixture.recorded.delete(id) : actual.forgetHyperVFixtureDeviceId(target, id, options),
+    };
+});
 
 const readiness = JSON.stringify({
     available: true,
@@ -74,6 +90,7 @@ function hyperVCreateFailureWithRollback(): any {
 }
 
 afterEach(() => {
+    hyperVFixture.active = false; hyperVFixture.callTool = null; hyperVFixture.recorded.clear();
     delete process.env.CCC_REAL_HYPER_V_WINDOWS_SOURCE_IMAGE;
     delete process.env.CCC_REAL_HYPER_V_LINUX_SOURCE_IMAGE;
 });
@@ -1966,47 +1983,123 @@ describe("Windows E2E configured Hyper-V subnet", () => {
 });
 
 
-describe("previous Windows E2E residue cleanup", () => {
-    const device = { deviceId: "windows-vm-real-e2e-previous", incarnationId: "a".repeat(32) };
+describe("Hyper-V E2E returned fixture IDs", () => {
+    async function fixtureRun(guest: "windows" | "linux", failDuplicateDelete = false) {
+        const prefix = guest === "windows" ? "windows-vm" : "linux-vm";
+        const ids = [`${prefix}-13579bdf-2468-4ace-8bdf-13579bdf2468`, `${prefix}-2468ace0-1357-4bdf-8ace-2468ace01357`];
+        const devices = new Map<string, any>();
+        const calls: Array<{ tool: string; args: any }> = [];
+        const response = (value: any) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+        let creates = 0, duplicateDeletes = 0;
+        hyperVFixture.active = true;
+        hyperVFixture.callTool = async (tool: string, args: any) => {
+            calls.push({ tool, args });
+            expect(args).not.toHaveProperty("incarnationId");
+            if (tool === `create_${guest}_vm`) {
+                expect(args).not.toHaveProperty("deviceId");
+                const device = { deviceId: ids[creates++], name: args.name, status: "stopped", guestProvisioned: true,
+                    guestTransport: "ssh", switchName: "CCC Device Lab", networkPrefix: "172.29.0.0/24", networkGateway: "172.29.0.1", networkAddress: "172.29.0.10" };
+                devices.set(device.deviceId, device);
+                return response({ device });
+            }
+            if (tool === "devices") return response({ devices: [...devices.values()] });
+            expect(ids).toContain(args.deviceId);
+            if (tool === "status") return response({ device: devices.get(args.deviceId) });
+            if (tool === "start") throw new Error("hyper-v-fixture-start-failed");
+            if (tool === "delete") {
+                if (failDuplicateDelete && args.deviceId === ids[1] && duplicateDeletes++ === 0) throw new Error("hyper-v-fixture-duplicate-delete-failed");
+                devices.delete(args.deviceId); return response({ deleted: args.deviceId });
+            }
+            return response({ ok: true });
+        };
+        try {
+            const helper = guest === "windows" ? runHyperVWindowsVmE2E : runHyperVLinuxVmE2E;
+            const result = await helper({ brokerOnly: true, platform: "linux", verifyPackagedCandidate: false,
+                existsSyncImpl: () => false, allowSetupDiagnosticsElevation: false,
+                captureSetupDiagnosticsImpl: async () => ({ available: false }) });
+            return { result, calls, devices, ids, creates };
+        } finally { hyperVFixture.active = false; }
+    }
+    it("cleans both generated same-name Windows births after the main VM fails to start", async () => {
+        const { result, calls, devices, ids, creates } = await fixtureRun("windows");
+        expect(result.status).toBe("FAIL");
+        expect(result.reason).toContain("hyper-v-fixture-start-failed");
+        expect(creates).toBe(2);
+        expect(calls.filter(call => call.tool === "create_windows_vm").map(call => call.args.name)).toEqual(Array(2).fill("Real Hyper-V Windows VM Test"));
+        expect(new Set(calls.filter(call => call.tool === "delete").map(call => call.args.deviceId))).toEqual(new Set(ids));
+        expect(devices.size).toBe(0);
+    });
+    it("retains the second returned Windows fixture for final cleanup when its early deletion fails", async () => {
+        const { result, calls, devices, ids } = await fixtureRun("windows", true);
+        expect(result.status).toBe("FAIL");
+        expect(result.reason).toContain("hyper-v-fixture-duplicate-delete-failed");
+        expect(calls.filter(call => call.tool === "delete" && call.args.deviceId === ids[1])).toHaveLength(2);
+        expect(devices.size).toBe(0);
+    });
+    it("uses the exact returned Hyper-V Linux ID for start failure cleanup", async () => {
+        const { result, calls, devices, ids } = await fixtureRun("linux");
+        expect(result.status).toBe("FAIL");
+        expect(result.reason).toContain("hyper-v-fixture-start-failed");
+        expect(calls.filter(call => ["start", "stop", "delete"].includes(call.tool)).every(call => call.args.deviceId === ids[0])).toBe(true);
+        expect(devices.size).toBe(0);
+    });
+});
+
+describe("exact Windows E2E fixture cleanup", () => {
+    const device = { deviceId: "windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468", name: "Windows E2E display name" };
     const reply = (value: unknown, isError = false) => ({ isError, content: [{ type: "text", text: JSON.stringify(value) }] });
     const missing = { ok: false, error: "device-not-found", deviceId: device.deviceId };
-    it("accepts a disappeared VM only after fresh inventory confirms absence", async () => {
+    it("accepts a disappeared exact fixture only after fresh inventory confirms absence", async () => {
         const calls: Array<{ tool: string; args: any }> = [];
         let inventoryCalls = 0;
         await cleanupPrevious(async (tool, args) => {
             calls.push({ tool, args });
-            if (tool === "devices") return reply({ devices: ++inventoryCalls === 1 ? [device, { deviceId: "unrelated" }] : [] });
+            if (tool === "devices") return reply({ devices: ++inventoryCalls === 1 ? [device, { deviceId: "windows-vm-unrelated", name: device.name }] : [] });
             if (tool === "stop") throw new Error("already disappeared");
             return reply(missing, true);
-        });
+        }, [device.deviceId]);
         expect(calls.map(call => call.tool)).toEqual(["devices", "stop", "delete", "devices"]);
         for (const call of calls.filter(call => call.tool !== "devices")) {
             expect(call.args.deviceId).toBe(device.deviceId);
-            expect(call.args.incarnationId).toBe(device.incarnationId);
+            expect(call.args).not.toHaveProperty("incarnationId");
         }
     });
-    it("fails if the device remains, reappears, or inventory cannot confirm absence", async () => {
+    it("fails if the exact fixture remains or inventory cannot confirm absence", async () => {
         for (const fresh of [{ devices: [device] }, { devices: [{ ...device, incarnationId: "b".repeat(32) }] }, {}, { ok: false, error: "host-broker-unavailable" }]) {
             let n = 0;
             await expect(cleanupPrevious(async tool => {
                 if (tool === "devices") return reply(++n === 1 ? { devices: [device] } : fresh);
                 return reply(tool === "delete" ? missing : { ok: true }, tool === "delete");
-            })).rejects.toThrow();
+            }, [device.deviceId])).rejects.toThrow();
         }
     });
     it("rejects other deletion failures, wrong missing IDs, and malformed initial inventory", async () => {
         for (const deletion of [{ ok: false, error: "provider-command-failed" }, { ...missing, deviceId: "other" }]) {
-            await expect(cleanupPrevious(async tool => reply(tool === "devices" ? { devices: [device] } : tool === "delete" ? deletion : { ok: true }))).rejects.toThrow();
+            await expect(cleanupPrevious(async tool => reply(tool === "devices" ? { devices: [device] } : tool === "delete" ? deletion : { ok: true }), [device.deviceId])).rejects.toThrow();
         }
-        await expect(cleanupPrevious(async () => reply({}))).rejects.toThrow("cleanup inventory");
+        await expect(cleanupPrevious(async () => reply({}), [device.deviceId])).rejects.toThrow("cleanup inventory");
     });
-    it("retains the normal successful cleanup path", async () => {
-        const calls: string[] = [];
+    it("cleans only tracked returned IDs when labels and backend prefixes also match", async () => {
+        const calls: Array<{ tool: string; args: any }> = [];
+        const unrelated = [
+            { deviceId: "windows-vm-2468ace0-1357-4bdf-8ace-2468ace01357", name: device.name },
+            { deviceId: "windows-vm-real-e2e-user", name: "Windows E2E display name" },
+            { deviceId: device.name, name: "unrelated" },
+        ];
+        await cleanupPrevious(async (tool, args) => {
+            calls.push({ tool, args });
+            return reply(tool === "devices" ? { devices: [device, ...unrelated] } : { ok: true });
+        }, [device.deviceId]);
+        expect(calls.map(call => call.tool)).toEqual(["devices", "stop", "delete"]);
+        expect(calls.filter(call => call.tool !== "devices").every(call => call.args.deviceId === device.deviceId)).toBe(true);
+    });
+    it("does not infer ownership from inventory without a returned fixture ID", async () => {
+        const effects: string[] = [];
         await cleanupPrevious(async tool => {
-            calls.push(tool);
-            return reply(tool === "devices" ? { devices: [device] } : { ok: true });
+            if (tool !== "devices") effects.push(tool);
+            return reply({ devices: [{ deviceId: "windows-vm-real-e2e-user", name: device.name }, device] });
         });
-        expect(calls).toEqual(["devices", "stop", "delete"]);
+        expect(effects).toEqual([]);
     });
 });
 

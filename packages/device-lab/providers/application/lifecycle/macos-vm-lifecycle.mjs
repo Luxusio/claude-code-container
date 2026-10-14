@@ -237,16 +237,17 @@ export function createMacosVmLifecycleApplication(ports) {
         });
     }
 
-    /** @param {MacosVmLifecycleInput} args */
-    function createImage(args) {
+    /** @param {MacosVmLifecycleInput} args @param {string} [admittedDeviceId] */
+    function createImage(args, admittedDeviceId) {
         const name = "device_base_image_create";
-        const { backend = "macos-vm", name: deviceName, deviceId, sourceImage, provider = "auto", memoryMb = 4096, cpus = 4, headless = false, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword } = args;
+        const { backend = "macos-vm", name: deviceName, sourceImage, provider = "auto", memoryMb = 4096, cpus = 4, headless = false, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword } = args;
         if (backend !== "macos-vm") return undefined;
+        if (Object.hasOwn(args, "deviceId")) return refused("macOS VM creation does not accept deviceId");
         if (!sourceImage) return refused(`${name} requires sourceImage`);
 
-        const id = deviceId || (0, ports.deviceId)(deviceName);
+        const id = admittedDeviceId ?? (0, ports.deviceId)();
         const devices = (0, ports.read)();
-        if (devices.some((device) => device.id === id)) {
+        if (devices.some((device) => device.id === id || macosProviderInstanceReferenced(device, `ccc-${(0, ports.owner)()}-${id}`))) {
             return refused( `Device already exists for this owner: ${id}`);
         }
         const sshKeyPolicy = (0, ports.validateSshKey)(sshKeyPath);
@@ -307,24 +308,17 @@ export function createMacosVmLifecycleApplication(ports) {
         });
     }
 
-    /** @param {MacosVmLifecycleInput} args */
-    function create(args) {
-        if (args.backend === "macos-vm" && (args.sourceImage || args.image)) {
-            const imageArgs = { ...args, sourceImage: args.sourceImage || args.image };
-            // Preserve the recursive original entry prelude before image provisioning.
-            for (const candidate of [imageArgs?.deviceId, imageArgs?.sourceDeviceId]) {
-                if (typeof candidate !== "string") continue;
-                const recovery = recoverStaleMacosLifecycle(candidate);
-                if (recovery.error) return recovery.error;
-            }
-            return createImage(imageArgs);
+    /** @param {MacosVmLifecycleInput} args @param {string} [admittedDeviceId] */
+    function create(args, admittedDeviceId) {
+        if (args.backend !== "macos-vm") return undefined;
+        if (Object.hasOwn(args, "deviceId")) return refused("macOS VM creation does not accept deviceId");
+        const id = admittedDeviceId ?? (0, ports.deviceId)();
+        if (args.sourceImage || args.image) {
+            return createImage({ ...args, sourceImage: args.sourceImage || args.image }, id);
         }
-        const { backend, name: deviceName, deviceId, provider = "auto", image = null, memoryMb = 4096, cpus = 4, headless = false, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword } = args;
-        if (backend !== "macos-vm") return undefined;
-
-        const id = deviceId || (0, ports.deviceId)(deviceName);
+        const { backend, name: deviceName, provider = "auto", image = null, memoryMb = 4096, cpus = 4, headless = false, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword } = args;
         const devices = (0, ports.read)();
-        if (devices.some((device) => device.id === id)) {
+        if (devices.some((device) => device.id === id || macosProviderInstanceReferenced(device, `ccc-${(0, ports.owner)()}-${id}`))) {
             return refused( `Device already exists for this owner: ${id}`);
         }
         const sshKeyPolicy = (0, ports.validateSshKey)(sshKeyPath);

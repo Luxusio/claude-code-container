@@ -1095,7 +1095,7 @@ describe("device-lab MCP", () => {
         }
     });
 
-    it("retries one journaled Hyper-V create after a transport disconnect", async () => {
+    it("does not replay a generated-ID Hyper-V create after an uncertain transport disconnect", async () => {
         const ownerId = TEST_BROKER_OWNER_ID;
         provisionTestOwnerSecret(ownerId);
         let rpcRequests = 0;
@@ -1124,28 +1124,17 @@ describe("device-lab MCP", () => {
                 action: "invoke",
                 backend: "linux-vm",
                 command: "device_create",
-                deviceId: "linux-retry",
+                name: "Linux retry display label",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 rpcTimeoutMs: 1000,
                 timeoutMs: 1000,
                 autolaunch: false,
             });
-            expect(rpcRequests).toBe(2);
+            expect(rpcRequests).toBe(1);
             expect(providerCreates).toBe(1);
-            expect(result).toEqual(expect.objectContaining({
-                ok: true,
-                result: { idempotent: true, invoked: false, device: { id: "linux-retry" } },
-                attempts: [
-                    expect.objectContaining({ status: null, transportRetryable: true }),
-                    expect.objectContaining({ status: 200, ok: true }),
-                ],
-                transportRecovery: expect.objectContaining({
-                    attempted: true,
-                    recovered: true,
-                    initial: expect.objectContaining({ error: "connection-reset" }),
-                }),
-            }));
+            expect(result).toMatchObject({ ok: false, error: "broker-rpc-unavailable", attempts: [expect.objectContaining({ status: null, transportRetryable: true })] });
+            expect(result).not.toHaveProperty("transportRecovery");
         } finally {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         }
@@ -1186,7 +1175,7 @@ describe("device-lab MCP", () => {
         }
     });
 
-    it("bounds a disconnected Hyper-V create to one transport retry", async () => {
+    it("reports disconnected generated-ID Windows creation without a blind second birth", async () => {
         const ownerId = TEST_BROKER_OWNER_ID;
         provisionTestOwnerSecret(ownerId);
         let rpcRequests = 0;
@@ -1203,25 +1192,17 @@ describe("device-lab MCP", () => {
                 action: "invoke",
                 backend: "windows-vm",
                 command: "device_create",
-                deviceId: "windows-retry",
+                name: "Windows retry display label",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 rpcTimeoutMs: 1000,
                 timeoutMs: 1000,
                 autolaunch: false,
             });
-            expect(rpcRequests).toBe(2);
-            expect(result).toEqual(expect.objectContaining({
-                ok: false,
-                error: "broker-rpc-unavailable",
-                transportRecovery: {
-                    attempted: true,
-                    recovered: false,
-                    initial: expect.objectContaining({ error: "connection-reset" }),
-                    retry: expect.objectContaining({ error: "connection-reset" }),
-                },
-            }));
-            expect(result.attempts).toHaveLength(2);
+            expect(rpcRequests).toBe(1);
+            expect(result).toMatchObject({ ok: false, error: "broker-rpc-unavailable" });
+            expect(result).not.toHaveProperty("transportRecovery");
+            expect(result.attempts).toHaveLength(1);
         } finally {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         }
@@ -1286,7 +1267,7 @@ describe("device-lab MCP", () => {
         }
     });
 
-    it("reuses a host broker with the same protocol regardless of package version", { timeout: TIMEOUT }, async () => {
+    it("reuses a version5 host broker regardless of package version", { timeout: TIMEOUT }, async () => {
         const initial = await callInternalBroker(client, { operation: "brokerStatus", arguments: { probe: false, autolaunch: false } });
         const initialPayload = JSON.parse(((initial.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             state: { runtimeFile: string };
@@ -1298,7 +1279,7 @@ describe("device-lab MCP", () => {
                 return;
             }
             if (req.url === "/status") {
-                res.end(JSON.stringify({ ok: true, broker: { protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION, version: "999.0.0" } }));
+                res.end(JSON.stringify({ ok: true, broker: { protocolVersion: 5, version: "999.0.0" } }));
                 return;
             }
             if (sendTestOwnerResolve(req, res)) return;
@@ -1329,6 +1310,7 @@ describe("device-lab MCP", () => {
             };
             expect(payload).toEqual(expect.objectContaining({ mode: "host-broker-detected", rpcReady: true }));
             expect(payload.launch).toEqual(expect.objectContaining({ ok: true, reused: true, port: address.port }));
+            expect(DEVICE_BROKER_PROTOCOL_VERSION).toBe(5);
             expect(payload.warnings.join(" ")).not.toContain("missing required capabilities");
         } finally {
             rmSync(initialPayload.state.runtimeFile, { force: true });
@@ -1336,7 +1318,7 @@ describe("device-lab MCP", () => {
         }
     });
 
-    it("rejects a legacy ccc-host runtime without protocol metadata", { timeout: TIMEOUT }, async () => {
+    it.each([undefined, 4])("rejects an older ccc-host runtime with protocol %s through actual compatibility verification", { timeout: TIMEOUT }, async protocolVersion => {
         const initial = await callInternalBroker(client, { operation: "brokerStatus", arguments: { probe: false, autolaunch: false } });
         const initialPayload = JSON.parse(((initial.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             state: { runtimeFile: string };
@@ -1348,7 +1330,7 @@ describe("device-lab MCP", () => {
                 return;
             }
             if (req.url === "/status") {
-                res.end(JSON.stringify({ ok: true, broker: { implemented: [] } }));
+                res.end(JSON.stringify({ ok: true, broker: { protocolVersion, implemented: [] } }));
                 return;
             }
             if (sendTestOwnerResolve(req, res)) return;
@@ -1385,7 +1367,7 @@ describe("device-lab MCP", () => {
                     ok: false,
                     error: "host-broker-incompatible",
                     compatibility: expect.objectContaining({
-                        protocolVersion: null, expectedProtocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
+                        protocolVersion: protocolVersion ?? null, expectedProtocolVersion: 5,
                     }),
                 }),
             }));

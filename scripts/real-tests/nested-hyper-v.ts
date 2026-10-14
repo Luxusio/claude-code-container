@@ -121,7 +121,7 @@ Write-Output 'started'`;
 }
 
 export async function runNestedDevelopment(call: Call, options: {
-    deviceId?: string; target?: string; sourceImage?: string; outputRoot: string; licenseReceiptPath?: string;
+    target?: string; sourceImage?: string; outputRoot: string; licenseReceiptPath?: string;
     snapshot: () => { archive: string; sha256: string }; jobPath: string;
     sleep?: (ms: number) => Promise<unknown>; pollLimit?: number; progress?: NestedProgressSink;
 }) {
@@ -131,6 +131,10 @@ export async function runNestedDevelopment(call: Call, options: {
     setStage(stage);
     let tool: string | undefined;
     let payload: unknown;
+    let identity: { deviceId: string } | undefined;
+    let primaryFailure: unknown;
+    let preserveVm = false;
+    let cleanupAttempted = false;
     const rawCall = call;
     call = async (name, args) => {
         tool = name;
@@ -140,7 +144,15 @@ export async function runNestedDevelopment(call: Call, options: {
         if ((payload as any)?.ok === false) throw new Error(JSON.stringify(payload));
         return result;
     };
+    const cleanup = async (identity: { deviceId: string }) => {
+        cleanupAttempted = true;
+        setStage("stop-outer-vm");
+        parseToolPayload(await call("stop", identity));
+        setStage("delete-outer-vm");
+        parseToolPayload(await call("delete", { ...identity, force: true, confirmDestructive: true, preserveNetwork: true }));
+    };
     try {
+      try {
         const target = options.target || "windows";
         if (!["linux", "windows"].includes(target)) throw new Error("nested-target-invalid");
         let licenseReceipt: unknown;
@@ -148,17 +160,19 @@ export async function runNestedDevelopment(call: Call, options: {
             licenseReceipt = JSON.parse(readFileSync(options.licenseReceiptPath, "utf8"));
             if (!isHyperVWindowsEvaluationReceipt(licenseReceipt)) throw new Error("nested-license-receipt-invalid");
         }
-        const deviceId = options.deviceId || "windows-nested-development";
         setStage("create-outer-vm");
         const created = lifecycleDevice(parseToolPayload(await call("create_windows_vm", {
-            name: "Nested Hyper-V development", deviceId, profile: "windows-server", memoryMb: 16384, cpus: 4,
+            name: "Nested Hyper-V development", profile: "windows-server", memoryMb: 16384, cpus: 4,
             nestedVirtualization: true, ...(options.sourceImage ? { sourceImage: options.sourceImage } : {}), detail: true,
         })), "nested-create");
-        if (created.nestedVirtualization !== true || typeof created.incarnationId !== "string") throw new Error("outer-broker-nesting-not-confirmed: update the physical host CCC once");
-        const identity = { deviceId, incarnationId: created.incarnationId };
-        const command = async (command: string) => nestedExecOutput(parseToolPayload(await call("exec", { ...identity, command, timeoutMs: 300000, detail: true })));
+        const deviceId = created.deviceId;
+        if (typeof deviceId !== "string" || !deviceId) throw new Error("nested-create-device-id-missing");
+        identity = { deviceId };
+        if (created.nestedVirtualization !== true) throw new Error("outer-broker-nesting-not-confirmed: update the physical host CCC once");
+        const selected = identity;
+        const command = async (command: string) => nestedExecOutput(parseToolPayload(await call("exec", { ...selected, command, timeoutMs: 300000, detail: true })));
         setStage("start-outer-vm");
-        parseToolPayload(await call("start", { ...identity, waitForBoot: true, bootTimeoutMs: 1200000 }));
+        parseToolPayload(await call("start", { ...selected, waitForBoot: true, bootTimeoutMs: 1200000 }));
         const runId = randomBytes(16).toString("hex");
         const remote = `${ROOT}\\${runId}`;
         // An atomic guest directory claim prevents two hosts racing the same scheduled task.
@@ -166,7 +180,6 @@ export async function runNestedDevelopment(call: Call, options: {
         await command(nestedClaimCommand(runId));
         let launched = false;
         let completed = false;
-        let primaryFailure: unknown;
         try {
             setStage("prepare-nested-hyper-v");
             const prepared = JSON.parse(await command(NESTED_PREPARE_COMMAND));
@@ -174,7 +187,7 @@ export async function runNestedDevelopment(call: Call, options: {
                 setStage("reboot-outer-vm");
                 // This dedicated development VM permits Restart-VM's hard reset. Force suppresses
                 // its additional confirmation prompt for the unattended feature-install reboot.
-                parseToolPayload(await call("reboot", { ...identity, force: true, waitForBoot: true, bootTimeoutMs: 1200000 }));
+                parseToolPayload(await call("reboot", { ...selected, force: true, waitForBoot: true, bootTimeoutMs: 1200000 }));
             }
             setStage("create-guest-run-directory");
             await command(`$ErrorActionPreference='Stop'; New-Item -ItemType Directory -Path ${quote(remote)} | Out-Null; Write-Output 'created'`);
@@ -182,16 +195,17 @@ export async function runNestedDevelopment(call: Call, options: {
             const snapshot = options.snapshot();
             for (const [localPath, remoteName] of [[snapshot.archive, "source.tar.gz"], [options.jobPath, "job.ps1"]]) {
                 setStage(`upload-${remoteName}`);
-                parseToolPayload(await call("upload", { ...identity, localPath, remotePath: `${remote}\\${remoteName}`, maxFileBytes: 134217728, timeoutMs: 300000 }));
+                parseToolPayload(await call("upload", { ...selected, localPath, remotePath: `${remote}\\${remoteName}`, maxFileBytes: 134217728, timeoutMs: 300000 }));
             }
             if (licenseReceipt) {
                 setStage("upload-license-receipt");
                 const localPath = join(options.outputRoot, "license.json");
                 writeFileSync(localPath, JSON.stringify(licenseReceipt));
-                parseToolPayload(await call("upload", { ...identity, localPath, remotePath: `${remote}\\license.json` }));
+                parseToolPayload(await call("upload", { ...selected, localPath, remotePath: `${remote}\\license.json` }));
             }
             setStage("launch-guest-job");
             launched = true;
+            preserveVm = true;
             await command(nestedLaunchCommand(runId, snapshot.sha256, process.versions.node, target));
             const deadline = Date.now() + 4 * 60 * 60 * 1000;
             for (let attempt = 0; attempt < (options.pollLimit ?? 960) && Date.now() < deadline; attempt++) {
@@ -208,11 +222,12 @@ export async function runNestedDevelopment(call: Call, options: {
                     if (result.runId !== runId || result.sourceSha256 !== snapshot.sha256) throw new Error("nested-result-identity-mismatch");
                     if (result.status !== "PASS" && result.status !== "FAIL") throw new Error("nested-result-status-invalid");
                     completed = true;
+                    preserveVm = false;
                     mkdirSync(options.outputRoot, { recursive: true });
                     writeFileSync(join(options.outputRoot, "result.json"), JSON.stringify(result, null, 2));
                     setStage("download-guest-log");
                     ensureHyperVWindowsDownloadDestination(options.outputRoot, join(options.outputRoot, "job.log"));
-                    parseToolPayload(await call("download", { ...identity, remotePath: `${remote}\\job.log`, localPath: join(options.outputRoot, "job.log"), maxFileBytes: 16777216, timeoutMs: 300000 }));
+                    parseToolPayload(await call("download", { ...selected, remotePath: `${remote}\\job.log`, localPath: join(options.outputRoot, "job.log"), maxFileBytes: 16777216, timeoutMs: 300000 }));
                     setStage("validate-guest-result"); tool = undefined; payload = result;
                     if (result.status !== "PASS") throw new Error(`nested-development-failed: ${result.stage}: ${result.error || result.status}`);
                     return { ...result, deviceId, guestRunPath: remote };
@@ -231,8 +246,7 @@ export async function runNestedDevelopment(call: Call, options: {
                 setStage("complete-guest-claim");
                 try {
                     await command(nestedCompleteClaimCommand(runId));
-                    setStage("stop-outer-vm");
-                    parseToolPayload(await call("stop", identity));
+                    await cleanup(selected);
                 }
                 catch (error) {
                     if (!primaryFailure) throw error;
@@ -242,6 +256,21 @@ export async function runNestedDevelopment(call: Call, options: {
                 }
             }
         }
+      } catch (error) {
+        primaryFailure = error instanceof Error ? error : new Error(String(error));
+        throw primaryFailure;
+      } finally {
+        if (identity && !preserveVm && !cleanupAttempted) {
+            const primaryContext = { stage, tool, payload };
+            try { await cleanup(identity); }
+            catch (error) {
+                if (!primaryFailure) throw error;
+                Object.assign(primaryFailure, { cleanupFailure: { stage, tool, ...nestedDiagnostic(error, payload) } });
+            } finally {
+                if (primaryFailure) ({ stage, tool, payload } = primaryContext);
+            }
+        }
+      }
     } catch (error) {
         throw saveNestedFailure(error, options.outputRoot, stage, tool, (error as any)?.diagnosticPayload ?? payload);
     } finally { progress.close(); }

@@ -21,6 +21,7 @@ export interface QemuLifecyclePorts {
     readLab(scope:QemuScope,labId:string): {ok:true;lab:QemuLab}|QemuFailure;
     writeLab(scope:QemuScope,lab:QemuLab): undefined;
     metadataExists(scope:QemuScope,labId:string): boolean;
+    labId(): string;
     labDirectory(scope:QemuScope,labId:string): string;
     allocatedPath(directory:string,...segments:string[]): string;
     ensureDirectory(directory:string): undefined;

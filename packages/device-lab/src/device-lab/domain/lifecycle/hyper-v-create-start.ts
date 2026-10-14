@@ -61,7 +61,7 @@ export interface VmDiskObservation {vmId:string;path:string|null}
 export interface VmAdapterObservation {vmId:string|null;name:string;macAddress:string|null;switchId:string|null;switchName:string|null}
 
 export type HyperVCreateParameters={name?:unknown;profile?:unknown;sourceImage?:unknown;image?:unknown;baseImageSha256?:unknown;baseImageGeneration?:unknown;memoryMb?:unknown;cpus?:unknown;diskMaxBytes?:unknown;incarnationId?:unknown;networking?:unknown;switchName?:unknown;macAddress?:unknown;networkAddress?:unknown;networkGateway?:unknown;networkPrefix?:unknown;outboundPolicy?:unknown;nestedVirtualization?:unknown;vmId?:unknown;guestUsername?:unknown;guestProvisioned?:unknown;sshHostKeyFingerprint?:unknown;guestUnattendPath?:unknown};
-export type HyperVLifecycleRequest={ok:true;backend:string;stateKey:string;command:string;deviceId:string;expectedIncarnationId?:string;force:boolean;startIfStopped?:boolean;dryRun:boolean;headless?:boolean;minimized?:boolean;waitForBoot?:boolean;bootTimeoutMs?:number;deleteAvd?:boolean;deleteSimulator?:boolean;preserveNetwork?:boolean;create?:HyperVCreateParameters};
+export type HyperVLifecycleRequest={ok:true;backend:string;stateKey:string;command:string;deviceId:string;force:boolean;startIfStopped?:boolean;dryRun:boolean;headless?:boolean;minimized?:boolean;waitForBoot?:boolean;bootTimeoutMs?:number;deleteAvd?:boolean;deleteSimulator?:boolean;preserveNetwork?:boolean;create?:HyperVCreateParameters};
 export type HyperVNativeExecution<Receipt>={mode:string;provider:string;receipt?:Receipt;status?:number|null;signal?:string|null;stdout?:string;stderr?:string;error?:string;timedOut?:boolean;outputLimitExceeded?:boolean;typedCreateInvalidResult?:boolean;typedCreateOperation?:HyperVWindowsOperation;typedCreateNativeDiagnostics?:{nativeHResult?:number;nativeErrorCategory?:number}};
 export type HyperVLifecycleFailureReason='invalid'|'forbidden'|'missing'|'conflict'|'provider-unavailable'|'state-write-failed'|'provider-failed'|'deadline'|'image-refused'|'network-refused'|'unsupported';
 export type HyperVCreateRecovery={ok:true;recoveredVm:boolean;removedDisk:boolean;releasedAddress:boolean}|{ok:false;reason:HyperVLifecycleFailureReason;error:string;detail?:string;stage?:'network-release'};
@@ -85,7 +85,7 @@ export type HyperVLifecycleOutcome<Connection,Receipt> = HyperVLifecycleFacts<Co
  {kind:'preview';plan:HyperVPlannedFacts<Connection>;invoked:false;dryRun:true;journalDisposition:'clear';recoveryDisposition:'already-handled'} |
  {kind:'idempotent';plan:HyperVPlannedFacts<Connection>;device:unknown;invoked:false;dryRun:false;journalDisposition:'clear';recoveryDisposition:'already-handled'} |
  {kind:'created'|'started'|'rebooted';plan:HyperVPlannedFacts<Connection>;device:unknown;invoked:true;dryRun:false;execution:HyperVLifecycleExecution<Receipt>;journalDisposition:'clear';recoveryDisposition:'already-handled'} |
- {kind:'admission-refused';error:string;reason:'invalid'|'forbidden'|'missing'|'conflict'|'provider-unavailable'|'unsupported';journalDisposition:'clear';recoveryDisposition:'required'} |
+ {kind:'admission-refused';error:string;reason:'invalid'|'forbidden'|'missing'|'conflict'|'provider-unavailable'|'unsupported';journalDisposition:'clear';recoveryDisposition:'already-handled'|'required'} |
  {kind:'operation-failed'|'uncertain';error:string;reason:HyperVLifecycleFailureReason;journalDisposition:'clear'|'retain';recoveryDisposition:'already-handled'|'required'});
 export interface HyperVLinuxSeedObservation {
     ok: boolean;
@@ -390,7 +390,7 @@ export type HyperVPowerTarget={ownerId:string;deviceId:string;incarnationId:stri
 export type HyperVBootstrapTarget={ownerId:string;deviceId:string;incarnationId:string;vmName:string;vmId:string|null;deadlineAt:number};
 export function hyperVCreateNumber(record:unknown,key:string):number|null{if(!hyperVCreateRecord(record))return null;const value=record[key];return typeof value==='number'&&Number.isFinite(value)?value:null;}
 
-export function hyperVDeviceDefinition(ownerId:string,parsed:HyperVLifecycleRequest,facts:{name:string;timestamp:string;vmName:string;deviceRoot:string;privateRoot:string;validIncarnation:boolean}):Record<string,unknown>{const create=parsed.create||{};const linuxGuest=parsed.backend==='linux-vm';const {name,vmName,deviceRoot,privateRoot,validIncarnation}=facts;const now=facts.timestamp;
+export function hyperVDeviceDefinition(ownerId:string,parsed:HyperVLifecycleRequest,facts:{name:string;timestamp:string;vmName:string|null;deviceRoot:string;privateRoot:string;validIncarnation:boolean}):Record<string,unknown>{const create=parsed.create||{};const linuxGuest=parsed.backend==='linux-vm';const {name,vmName,deviceRoot,privateRoot,validIncarnation}=facts;const now=facts.timestamp;
         const diskPath = join(deviceRoot, "disks", "root.vhdx");
         const profile = typeof create.profile === "string" ? create.profile : linuxGuest ? "ubuntu-lts" : "windows-11";
         const secureBoot=hyperVSecureBootConfiguration(parsed.backend);
@@ -403,7 +403,7 @@ export function hyperVDeviceDefinition(ownerId:string,parsed:HyperVLifecycleRequ
             ownerId,
             provider: "hyper-v",
             ...(validIncarnation ? { incarnationId: create.incarnationId } : {}),
-            vmName,
+            ...(vmName ? {vmName} : {}),
             ...(typeof create.vmId === "string" ? { vmId: create.vmId.toLowerCase() } : {}),
             profile,
             baseImagePath: typeof create.image === "string" ? create.image : create.sourceImage,

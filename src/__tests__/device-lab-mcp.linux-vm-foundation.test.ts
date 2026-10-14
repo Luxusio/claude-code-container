@@ -122,12 +122,14 @@ describe("device-lab Linux VM foundation", () => {
 
         const created = await client.callTool({ name: "create_linux_vm", arguments: { detail: true, name: "MCP Lab", implicitBroker: false } });
         const createPayload = JSON.parse(((created.content as Array<{ text?: string }>)[0].text ?? "{}"));
+        const deviceId = createPayload.device.deviceId as string;
+        expect(deviceId).toMatch(/^linux-vm-[0-9a-f-]{36}$/);
         expect(createPayload).toEqual(expect.objectContaining({
             ok: true,
-            device: expect.objectContaining({ deviceId: "mcp-lab", backend: "linux-vm", runtimeState: "stopped" }),
+            device: expect.objectContaining({ deviceId, backend: "linux-vm", runtimeState: "stopped" }),
         }));
 
-        const start = await client.callTool({ name: "start", arguments: { detail: true, deviceId: "mcp-lab", implicitBroker: false } });
+        const start = await client.callTool({ name: "start", arguments: { detail: true, deviceId, implicitBroker: false } });
         expect(start.isError).toBe(true);
         const startPayload = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(startPayload).toEqual(expect.objectContaining({
@@ -135,7 +137,7 @@ describe("device-lab Linux VM foundation", () => {
             error: "lab-provider-unsupported",
         }));
 
-        const guestPush = await client.callTool({ name: "upload", arguments: { detail: true, deviceId: "mcp-lab", localPath: stateRoot, remotePath: "/workspace", implicitBroker: false } });
+        const guestPush = await client.callTool({ name: "upload", arguments: { detail: true, deviceId, localPath: stateRoot, remotePath: "/workspace", implicitBroker: false } });
         expect(guestPush.isError).toBe(true);
         const guestPushPayload = JSON.parse(((guestPush.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(guestPushPayload).toEqual(expect.objectContaining({
@@ -143,46 +145,46 @@ describe("device-lab Linux VM foundation", () => {
             error: "lab-not-running",
         }));
         const execution = await client.callTool({ name: "exec", arguments: {
-            deviceId: "mcp-lab", command: "id", detail: true, implicitBroker: false,
+            deviceId, command: "id", detail: true, implicitBroker: false,
         } });
         expect(execution.isError).toBe(true);
         expect(JSON.parse(((execution.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({
-            ok: false, error: "lab-not-running", labId: "mcp-lab",
+            ok: false, error: "lab-not-running", labId: deviceId,
         });
 
-        const observed = await client.callTool({ name: "status", arguments: { detail: true, deviceId: "mcp-lab", implicitBroker: false } });
+        const observed = await client.callTool({ name: "status", arguments: { detail: true, deviceId, implicitBroker: false } });
         expect(observed.isError).not.toBe(true);
         const observedPayload = JSON.parse(((observed.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(observedPayload).toEqual(expect.objectContaining({
             ok: true,
-            device: expect.objectContaining({ deviceId: "mcp-lab", runtimeState: "stopped" }),
+            device: expect.objectContaining({ deviceId, runtimeState: "stopped" }),
             readiness: expect.objectContaining({ state: "stopped" }),
         }));
         const snapshot = await client.callTool({ name: "snapshot", arguments: {
-            action: "create", deviceId: "mcp-lab", snapshotName: "baseline", detail: true, implicitBroker: false,
+            action: "create", deviceId, snapshotName: "baseline", detail: true, implicitBroker: false,
         } });
         expect(snapshot.isError, JSON.stringify(snapshot.content)).not.toBe(true);
         expect(JSON.parse(((snapshot.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({
             ok: true, action: "create", snapshotName: "baseline", disk: { diskSnapshot: false },
         });
-        const snapshots = await client.callTool({ name: "snapshot", arguments: { action: "list", deviceId: "mcp-lab", detail: true, implicitBroker: false } });
+        const snapshots = await client.callTool({ name: "snapshot", arguments: { action: "list", deviceId, detail: true, implicitBroker: false } });
         expect(snapshots.isError).not.toBe(true);
         expect(JSON.parse(((snapshots.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ ok: true, snapshots: [{ name: "baseline" }] });
-        const restored = await client.callTool({ name: "snapshot", arguments: { action: "restore", deviceId: "mcp-lab", snapshotName: "baseline", confirmDestructive: true, detail: true, implicitBroker: false } });
+        const restored = await client.callTool({ name: "snapshot", arguments: { action: "restore", deviceId, snapshotName: "baseline", confirmDestructive: true, detail: true, implicitBroker: false } });
         expect(restored.isError).not.toBe(true);
         expect(JSON.parse(((restored.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ ok: true, device: { activeSnapshot: "baseline" } });
-        const removedSnapshot = await client.callTool({ name: "snapshot", arguments: { action: "delete", deviceId: "mcp-lab", snapshotName: "baseline", confirmDestructive: true, detail: true, implicitBroker: false } });
+        const removedSnapshot = await client.callTool({ name: "snapshot", arguments: { action: "delete", deviceId, snapshotName: "baseline", confirmDestructive: true, detail: true, implicitBroker: false } });
         expect(removedSnapshot.isError).not.toBe(true);
         expect(JSON.parse(((removedSnapshot.content as Array<{ text?: string }>)[0].text ?? "{}"))).toMatchObject({ ok: true, device: { snapshots: [] } });
-        const stopped = await client.callTool({ name: "stop", arguments: { detail: true, deviceId: "mcp-lab", implicitBroker: false } });
+        const stopped = await client.callTool({ name: "stop", arguments: { detail: true, deviceId, implicitBroker: false } });
         expect(stopped.isError).not.toBe(true);
         expect(JSON.parse(((stopped.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
             expect.objectContaining({ ok: true, stopped: false, device: expect.objectContaining({ runtimeState: "stopped" }) }),
         );
-        const deleted = await client.callTool({ name: "delete", arguments: { detail: true, deviceId: "mcp-lab", confirmDestructive: true, implicitBroker: false } });
+        const deleted = await client.callTool({ name: "delete", arguments: { detail: true, deviceId, confirmDestructive: true, implicitBroker: false } });
         expect(deleted.isError, JSON.stringify(deleted.content)).not.toBe(true);
         expect(JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(
-            expect.objectContaining({ ok: true, deleted: true, labId: "mcp-lab" }),
+            expect.objectContaining({ ok: true, deleted: true, labId: deviceId }),
         );
     });
 
@@ -233,7 +235,7 @@ describe("device-lab Linux VM foundation", () => {
         expect(createdPayload).toEqual(expect.objectContaining({
             ok: true,
             device: expect.objectContaining({
-                deviceId: "mcp-image-lab",
+                deviceId: expect.stringMatching(/^linux-vm-[0-9a-f-]{36}$/),
                 image: expect.objectContaining({ baseImageId: "mcp-base" }),
             }),
         }));

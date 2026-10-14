@@ -1,4 +1,4 @@
-import { macosSshConfig } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
+import { macosProviderInstanceReferenced, macosSshConfig } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { macosImageProviderRefusal, macosCloneSourceRefusal, selectMacosSnapshot, macosRestoreCandidate, defineMacosImageDevice } from "../domain/macos-image-snapshots.mjs";
 /** @template Result
  * @param {import("../ports/macos-image-snapshots.mjs").MacosImageSnapshotsPorts<Result>} ports
@@ -35,12 +35,20 @@ export function createMacosImageSnapshots(ports, lifecycle) {
     function deleteInstance(plan, instance) {
         return ports.providerCommand(plan.providerCommand, ["delete", instance], "delete");
     }
-    /** @param {import("../ports/macos-image-snapshots.mjs").MacosImageInput} args */
-    async function clone(args) {
+    /** @param {import("../ports/macos-image-snapshots.mjs").MacosImageInput} args @param {string} [admittedDeviceId] */
+    async function clone(args, admittedDeviceId) {
         const name = "device_base_image_clone";
-        const { backend = "macos-vm", name: deviceName, deviceId, sourceDeviceId, sourceImage, provider = "auto", memoryMb = 4096, cpus = 4, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword, force = false } = args;
+        const { backend = "macos-vm", name: deviceName, sourceDeviceId, sourceImage, provider = "auto", memoryMb = 4096, cpus = 4, sshHost, sshPort = 22, sshUser, sshKeyPath, sshPassword, force = false } = args;
         if (backend !== "macos-vm") {
             return undefined;
+        }
+        if (Object.hasOwn(args, "deviceId")) {
+            return ports.textResult(false, "macOS VM creation does not accept deviceId");
+        }
+        const id = admittedDeviceId ?? ports.deviceId();
+        const devices = ports.read();
+        if (devices.some((device) => device.id === id || macosProviderInstanceReferenced(device, `ccc-${ports.owner()}-${id}`))) {
+            return ports.textResult(false, `Device already exists for this owner: ${id}`);
         }
         if (!sourceDeviceId && !sourceImage) {
             return ports.textResult(false, `${name} requires sourceDeviceId or sourceImage`);
@@ -55,11 +63,6 @@ export function createMacosImageSnapshots(ports, lifecycle) {
         }
         const sourceProvider = sourceDevice?.provider || provider;
         const sourceRef = sourceDevice?.providerInstance || sourceImage;
-        const id = deviceId || ports.deviceId(deviceName);
-        const devices = ports.read();
-        if (devices.some((device) => device.id === id)) {
-            return ports.textResult(false, `Device already exists for this owner: ${id}`);
-        }
         const sshKeyPolicy = ports.validateSshKey(sshKeyPath);
         if (!sshKeyPolicy.ok) {
             return ports.textResult(false, sshKeyPolicy.message);

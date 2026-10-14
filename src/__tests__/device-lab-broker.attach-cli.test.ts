@@ -1620,6 +1620,8 @@ describe("device-lab host broker physical attach and CLI", () => {
     it("forwards typed Hyper-V Windows VM create options through the public CLI", async () => {
         const cwd = "/project/devices-hyper-v-create-cli-test";
         const ownerId = deviceLabOwnerId(cwd);
+        const returnedId = "win-12345678-1234-4123-8123-123456789abc";
+        const displayName = "Windows 开发 VM";
         const stateDir = join(homedir(), ".ccc/devices/owners", ownerId, "windows-vm");
         mkdirSync(stateDir, { recursive: true });
         writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ devices: [{ id: "win11-dev", backend: "windows-vm", status: "stopped" }] }));
@@ -1632,14 +1634,14 @@ describe("device-lab host broker physical attach and CLI", () => {
             body: {
                 ok: true,
                 result: {
-                    device: { id: params.deviceId, backend: params.backend, provider: "hyper-v", status: "stopped" },
+                    device: { id: returnedId, backend: params.backend, provider: "hyper-v", status: "stopped" },
                 },
             },
         }));
-        vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
         const exitCode = await devicesCliAsync([
-            "create", "windows-vm", "win11-dev",
+            "create", "windows-vm", displayName,
             "--provider", "hyper-v",
             "--image", "/images/windows-11.vhdx",
             "--vm-profile", "windows-11",
@@ -1650,11 +1652,12 @@ describe("device-lab host broker physical attach and CLI", () => {
         ], cwd, undefined, { invokeOwnerRpc });
 
         expect(exitCode).toBe(0);
+        expect(invokeOwnerRpc.mock.calls[0][1]).not.toHaveProperty("deviceId");
+        expect(log).toHaveBeenCalledWith(expect.stringContaining(`id: ${returnedId}`));
         expect(invokeOwnerRpc).toHaveBeenCalledWith("broker.command.invoke", expect.objectContaining({
             backend: "windows-vm",
             command: "device_create",
-            deviceId: "win11-dev",
-            name: "win11-dev",
+            name: displayName,
             provider: "hyper-v",
             image: "/images/windows-11.vhdx",
             profile: "windows-11",
@@ -1663,6 +1666,58 @@ describe("device-lab host broker physical attach and CLI", () => {
             switchName: "Default Switch",
             secureBootTemplate: "MicrosoftWindows",
         }), expect.objectContaining({ cwd, rpcTimeoutMs: 21615000 }));
+    });
+
+    it.each(["windows-vm", "linux-vm", "macos-vm"])("creates %s from a Unicode display name and prints its actual returned identity", async backend => {
+        const cwd = "/project/devices-vm-generated-id-cli-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const name = "测试 VM with spaces";
+        const returnedId = `${backend === "windows-vm" ? "win" : backend === "linux-vm" ? "linux" : "macos"}-12345678-1234-4123-8123-123456789abc`;
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const invokeOwnerRpc = vi.fn(async (_method, params) => ({
+            ok: true, status: 200, ownerId, host: "127.0.0.1", port: 17373,
+            body: { ok: true, result: { device: { id: returnedId, name: params.name, backend, status: "stopped" } } },
+        }));
+        expect(await devicesCliAsync(["create", backend, name], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenCalledTimes(1);
+        expect(invokeOwnerRpc.mock.calls[0][1]).toMatchObject({ command: "device_create", backend, name });
+        expect(invokeOwnerRpc.mock.calls[0][1]).not.toHaveProperty("deviceId");
+        expect(log).toHaveBeenCalledWith(expect.stringContaining(`id: ${returnedId}`));
+    });
+
+    it.each([undefined, null, "", ".", "..", "../escape", "unsafe id", "x".repeat(129)])("refuses a VM create reply with invalid returned ID %j", async id => {
+        const cwd = "/project/devices-vm-invalid-returned-id-cli-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const invokeOwnerRpc = vi.fn(async () => ({
+            ok: true, status: 200, ownerId, host: "127.0.0.1", port: 17373,
+            body: { ok: true, result: { device: { id, backend: "windows-vm", status: "stopped" } } },
+        }));
+        expect(await devicesCliAsync(["create", "windows-vm", "Requested-label"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        expect(JSON.stringify(error.mock.calls)).toContain("invalid-broker-response");
+        expect(log).not.toHaveBeenCalled();
+    });
+
+    it("selects historical VM IDs exactly without injecting private generation", async () => {
+        const cwd = "/project/devices-vm-legacy-id-cli-test", ownerId = deviceLabOwnerId(cwd);
+        const stateDir = join(homedir(), ".ccc/devices/owners", ownerId, "windows-vm");
+        mkdirSync(stateDir, { recursive: true });
+        writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ devices: [
+            { id: "win-original", name: "shared-label", backend: "windows-vm", status: "stopped", incarnationId: "a".repeat(32) },
+            { id: "win-second", name: "shared-label", backend: "windows-vm", status: "stopped", incarnationId: "b".repeat(32) },
+        ] }));
+        vi.spyOn(console, "log").mockImplementation(() => undefined);
+        vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const invokeOwnerRpc = vi.fn(async (_method, params) => ({
+            ok: true, status: 200, ownerId, host: "127.0.0.1", port: 17373,
+            body: { ok: true, result: { device: { id: params.deviceId, backend: "windows-vm", status: "stopped" } } },
+        }));
+        expect(await devicesCliAsync(["status", "shared-label"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        expect(invokeOwnerRpc).not.toHaveBeenCalled();
+        expect(await devicesCliAsync(["status", "win-original"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc.mock.calls[0][1]).toMatchObject({ command: "device_status", deviceId: "win-original" });
+        expect(invokeOwnerRpc.mock.calls[0][1]).not.toHaveProperty("incarnationId");
     });
 
     it("does not follow redirects from authenticated owner RPC", async () => {
@@ -1845,7 +1900,6 @@ describe("device-lab host broker physical attach and CLI", () => {
             backend: "windows-vm",
             deviceId: "hyperv-dev",
             snapshotName: "before-install",
-            incarnationId,
         }), expect.objectContaining({ rpcTimeoutMs: 150000 }));
         expect(log).toHaveBeenLastCalledWith(expect.stringContaining(`id: ${snapshotId}`));
 
@@ -1853,7 +1907,6 @@ describe("device-lab host broker physical attach and CLI", () => {
         expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.device.tool.invoke", expect.objectContaining({
             tool: "device_snapshot_restore",
             snapshotId,
-            incarnationId,
             confirmDestructive: true,
             force: true,
         }), expect.any(Object));
@@ -1862,9 +1915,9 @@ describe("device-lab host broker physical attach and CLI", () => {
         expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.device.tool.invoke", expect.objectContaining({
             tool: "device_snapshot_delete",
             snapshotName: "before-install",
-            incarnationId,
             confirmDestructive: true,
         }), expect.any(Object));
+        for (const [, params] of invokeOwnerRpc.mock.calls) expect(params).not.toHaveProperty("incarnationId");
     });
 
     it("rejects malformed Hyper-V snapshot list arguments", async () => {
@@ -1910,7 +1963,6 @@ describe("device-lab host broker physical attach and CLI", () => {
             startIfStopped: true,
             waitForBoot: true,
             bootTimeoutMs: 1200000,
-            incarnationId,
         }), expect.objectContaining({
             // Includes the containment reserve, matching what the broker actually waits. Without
             // it the CLI abandoned the call while containment was still running and lost the reply
@@ -1923,7 +1975,6 @@ describe("device-lab host broker physical attach and CLI", () => {
             backend: "linux-vm",
             command: "device_stop",
             deviceId: "linux-dev",
-            incarnationId,
         }), expect.any(Object));
 
         writeFileSync(statePath, JSON.stringify({ devices: [{ id: "linux-dev", backend: "linux-vm", status: "stopped", incarnationId }] }));
@@ -1932,7 +1983,6 @@ describe("device-lab host broker physical attach and CLI", () => {
             backend: "linux-vm",
             command: "device_start",
             deviceId: "linux-dev",
-            incarnationId,
         }), expect.any(Object));
 
         expect(await devicesCliAsync(["delete", "linux-dev"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
@@ -1940,8 +1990,8 @@ describe("device-lab host broker physical attach and CLI", () => {
             backend: "linux-vm",
             command: "device_delete",
             deviceId: "linux-dev",
-            incarnationId,
         }), expect.any(Object));
+        for (const [, params] of invokeOwnerRpc.mock.calls) expect(params).not.toHaveProperty("incarnationId");
     });
 
     it("rejects unsafe or unsupported public snapshot commands before broker invocation", async () => {

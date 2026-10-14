@@ -18,7 +18,7 @@ import { captureHyperVWindowsSetupDiagnostics, publishHyperVWindowsSetupDiagnost
 import { requestElevatedSetupDiagnostics, type ElevatedSetupDiagnosticsOutcome } from "./hyper-v-windows-setup-diagnostics-elevation.ts";
 import { runHyperVGuiE2E } from "./hyper-v-gui-e2e.ts";
 
-const DEVICE_PREFIX = "windows-vm-real-e2e-";
+import { readHyperVFixtureDeviceIds, recordHyperVFixtureDeviceId } from "../durability/real-provider-cycles.mjs";
 export const HYPER_V_WINDOWS_CONSOLE_TIMELINE_DELAYS_MS = [120000, 300000, 600000, 900000] as const;
 export const HYPER_V_WINDOWS_E2E_REBOOT_OPTIONS = Object.freeze({
     force: true,
@@ -393,25 +393,25 @@ export function hyperVWindowsVmE2ECapability(options: any = {}) {
     return { available: true, powershell, sourceImage, profile };
 }
 
-export async function cleanupPrevious(callTool: (tool: string, args: any) => Promise<any>) {
+export async function cleanupPrevious(callTool: (tool: string, args: any) => Promise<any>, ownedDeviceIds: Iterable<string> = []) {
     const inventory = resultValue(payload(await callTool("devices", { view: "available", detail: true, backend: "windows-vm" })));
     assert.ok(Array.isArray(inventory?.devices), "cleanup inventory must contain devices");
-    const devices = inventory.devices;
-    for (const device of devices.filter((candidate: any) => String(candidate?.deviceId || "").startsWith(DEVICE_PREFIX))) {
+    for (const deviceId of new Set(ownedDeviceIds)) {
         try {
-            await callTool("stop", { detail: true, deviceId: device.deviceId, incarnationId: device.incarnationId, force: true });
+            const stopped = await callTool("stop", { detail: true, deviceId, force: true });
+            const missing = parseToolPayload({ ...stopped, isError: false });
+            if (missing?.ok === false && missing.error === "device-not-found" && missing.deviceId === deviceId) markExpectedToolError(stopped);
         } catch {
             // Deletion is still attempted against the exact owner-scoped VM identity.
         }
         const deleted = await callTool("delete", { detail: true,
-            deviceId: device.deviceId,
-            incarnationId: device.incarnationId,
+            deviceId,
             ...HYPER_V_WINDOWS_E2E_DELETE_OPTIONS,
         });
         const observed = parseToolPayload({ ...deleted, isError: false });
-        if (observed?.ok === false && observed.error === "device-not-found" && observed.deviceId === device.deviceId) {
+        if (observed?.ok === false && observed.error === "device-not-found" && observed.deviceId === deviceId) {
             const freshInventory = await callTool("devices", { view: "available", detail: true, backend: "windows-vm" });
-            assertHyperVWindowsDeleted(freshInventory, deleted, device.deviceId);
+            assertHyperVWindowsDeleted(freshInventory, deleted, deviceId);
         } else {
             payload(deleted);
         }
@@ -428,7 +428,9 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
         : hyperVWindowsVmE2ECapability(options);
     if (!capability.available) return { status: "SKIP", reason: "reason" in capability ? capability.reason : "Hyper-V Windows VM unavailable", capability };
 
-    const deviceId = `${DEVICE_PREFIX}${Date.now()}`;
+    let deviceId = "";
+    const fixtureDeviceIds = new Set<string>();
+    let diagnosticIncarnationId: string | undefined;
     const advertisedCapabilities = [...new Set<string>(windowsVmBackend().capabilities.map(name => publicToolName(name, "windows-vm")))].filter(name => TOOLS.some(tool => tool.name === name));
     const calledCapabilities = new Set<string>();
     const tempParent = join(repoRoot, "results");
@@ -445,18 +447,17 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
             if (advertisedCapabilities.includes(tool)) calledCapabilities.add(tool);
             return rawCallTool(tool, args);
         };
-        const direct: Record<string, unknown> = { deviceId };
+        const direct: Record<string, unknown> = {};
         try {
             if (verifyPackagedCandidate) {
                 currentStep = "pack current CCC candidate";
                 packagedCandidate = createPackagedCccCandidate(tempDir, options);
             }
             currentStep = "recover previous owner-scoped VM residue";
-            await cleanupPrevious(callTool);
+            await cleanupPrevious(callTool, readHyperVFixtureDeviceIds("windows-vm"));
 
             currentStep = "create VM";
             const createArgs = {
-                ...direct,
                 name: "Real Hyper-V Windows VM Test",
                 profile: capability.profile,
                 memoryMb: 4096,
@@ -464,35 +465,45 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
                 ...(capability.sourceImage ? { sourceImage: capability.sourceImage } : {}),
             };
             const createdDevice = lifecycleDevice(payload(await callTool("create_windows_vm", { detail: true, ...createArgs })), "create");
-            direct.incarnationId = createdDevice.incarnationId;
-            createdVmId = String(createdDevice.vmId || "");
+            deviceId = createdDevice.deviceId;
+            direct.deviceId = deviceId;
+            fixtureDeviceIds.add(deviceId);
             created = true;
-            assert.strictEqual(createdDevice.deviceId, deviceId);
+            recordHyperVFixtureDeviceId("windows-vm", deviceId);
+            assert.ok(typeof deviceId === "string" && deviceId, "create must return the generated VM ID");
             assert.strictEqual(createdDevice.guestProvisioned, true);
             assert.strictEqual(createdDevice.switchName, "CCC Device Lab");
             const networkAddress = assertHyperVWindowsNetwork(createdDevice);
-            const duplicateCreate = resultValue(payload(await callTool("create_windows_vm", { detail: true, ...createArgs })));
-            assert.strictEqual(duplicateCreate.idempotent, true);
-            assert.strictEqual(duplicateCreate.invoked, false);
-            assert.strictEqual(duplicateCreate.device?.incarnationId, createdDevice.incarnationId);
+            const duplicateDevice = lifecycleDevice(payload(await callTool("create_windows_vm", { detail: true, ...createArgs })), "same-name create");
+            fixtureDeviceIds.add(duplicateDevice.deviceId);
+            recordHyperVFixtureDeviceId("windows-vm", duplicateDevice.deviceId);
+            assert.notStrictEqual(duplicateDevice.deviceId, deviceId, "same-name creation must return a new VM ID");
+            assert.strictEqual(duplicateDevice.name, createdDevice.name);
+            await cleanupPrevious(callTool, [duplicateDevice.deviceId]);
+            fixtureDeviceIds.delete(duplicateDevice.deviceId);
+
+            // Native console/setup diagnostics are opt-in and retain their private generation fence.
+            const diagnosticDevice = lifecycleDevice(payload(await callTool("status", { detail: true, deviceId })), "diagnostic status");
+            diagnosticIncarnationId = typeof diagnosticDevice.incarnationId === "string" ? diagnosticDevice.incarnationId : undefined;
+            createdVmId = String(diagnosticDevice.vmId || "");
 
             currentStep = "inventory VM";
             const inventory = resultValue(payload(await callTool("devices", { view: "available", detail: true, backend: "windows-vm" })));
             assert.ok(Array.isArray(inventory.devices) && inventory.devices.some((device: any) => device.deviceId === deviceId));
 
             currentStep = "start and wait for PowerShell Direct";
-            const stopConsoleTimeline = scheduleHyperVWindowsConsoleTimeline({
+            const stopConsoleTimeline = diagnosticIncarnationId ? scheduleHyperVWindowsConsoleTimeline({
                 captureInput: {
                     ownerId: ownerId(process.env, repoRoot),
                     deviceId,
-                    incarnationId: String(direct.incarnationId),
+                    incarnationId: diagnosticIncarnationId,
                     powershell: (capability as any).powershell,
                     platform: options.platform || process.platform,
                 },
                 captureImpl: options.captureConsoleImpl,
                 setTimeoutImpl: options.consoleTimelineSetTimeoutImpl,
                 clearTimeoutImpl: options.consoleTimelineClearTimeoutImpl,
-            });
+            }) : () => {};
             let startResult: any;
             try {
                 startResult = await callTool("start", { detail: true, ...direct, waitForBoot: true, bootTimeoutMs: 1200000 });
@@ -612,6 +623,7 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
             currentStep = "delete VM";
             payload(await callTool("delete", { detail: true, ...direct, ...HYPER_V_WINDOWS_E2E_DELETE_OPTIONS }));
             created = false;
+            fixtureDeviceIds.delete(deviceId);
             currentStep = "verify deleted VM is absent";
             const deletedInventory = await callTool("devices", { view: "available", detail: true, backend: "windows-vm" });
             const duplicateDelete = await callTool("delete", { detail: true,
@@ -633,7 +645,7 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
                     error,
                     created,
                     deviceId,
-                    incarnationId: typeof direct.incarnationId === "string" ? direct.incarnationId : undefined,
+                    incarnationId: diagnosticIncarnationId,
                     vmId: createdVmId || undefined,
                     powershell: (capability as any).powershell,
                     platform: options.platform || process.platform,
@@ -647,11 +659,11 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
                 }),
             };
         } finally {
-            if (created) {
-                try { await callTool("stop", { detail: true, ...direct, force: true }); } catch { /* best effort */ }
+            for (const fixtureDeviceId of fixtureDeviceIds) {
+                try { await callTool("stop", { detail: true, deviceId: fixtureDeviceId, force: true }); } catch { /* best effort */ }
                 try {
-                    await callTool("delete", { detail: true, ...direct, ...HYPER_V_WINDOWS_E2E_DELETE_OPTIONS });
-                } catch { /* evidence remains for the next verified recovery */ }
+                    await callTool("delete", { detail: true, deviceId: fixtureDeviceId, ...HYPER_V_WINDOWS_E2E_DELETE_OPTIONS });
+                } catch { /* exact fixture ID remains recorded for verified recovery */ }
             }
             rmSync(tempDir, { recursive: true, force: true });
         }

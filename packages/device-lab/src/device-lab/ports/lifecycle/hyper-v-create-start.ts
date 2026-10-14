@@ -94,6 +94,7 @@ import type {HyperVReplayResult} from '../../domain/lifecycle/hyper-v-stop-delet
 import type {HyperVLifecycleOutcome,HyperVQuota,HyperVLifecyclePlan} from '../../domain/lifecycle/hyper-v-create-start.js';
 export interface HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedia> extends HyperVCreateNativePorts<Session,Connection,Receipt> {
  read(owner:string,state:string):unknown[];
+ hasNetworkAllocation(owner:string,id:string):boolean;
  incarnation(device:Record<string,unknown>):string|null;
  stateErrorCode:HyperVStopDeletePorts<Connection,Receipt>['stateErrorCode'];
  stateFailure:HyperVStopDeletePorts<Connection,Receipt>['stateFailure'];
@@ -106,8 +107,8 @@ export interface HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedi
  snapshotJournalPath(owner:string,backend:string,id:string):string;
  forgetConsole(owner:string,backend:string,id:string):undefined;
  reconcileOperation(owner:string,backend:string,id:string,deadline:number,preserveNetwork:boolean):Promise<HyperVReplayResult>;
- planning(owner:string,params:unknown,expected?:{device?:unknown}):HyperVLifecyclePlan<Connection,Receipt>;
- parse(params:unknown):{ok:true;request:HyperVCreateStartRequest}|{ok:false;failure:HyperVLifecycleOutcome<Connection,Receipt>};
+ planning(owner:string,params:unknown,expected?:{device?:unknown},admittedDeviceId?:string):HyperVLifecyclePlan<Connection,Receipt>;
+ parse(params:unknown,admittedDeviceId?:string):{ok:true;request:HyperVCreateStartRequest}|{ok:false;failure:HyperVLifecycleOutcome<Connection,Receipt>};
  resolveImage(owner:string,request:HyperVLifecycleRequest,params:unknown,deadline:number):Promise<HyperVImageResolution>;
  allocateNetwork(owner:string,id:string,incarnation:string,deadline:number):Promise<import('../../domain/hyper-v-network-trust.js').HyperVNetworkAllocationResult>;
  writeIncarnation(owner:string,backend:string,id:string,incarnation:string):undefined;

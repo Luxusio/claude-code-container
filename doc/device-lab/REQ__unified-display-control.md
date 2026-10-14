@@ -68,7 +68,7 @@ worker, but temporary files/task registration may need removal in that guest.
   macOS support is limited to unique accessibility identifiers as described below.
 - `screenshot` accepts optional `region:{x,y,width,height}` in the full returned
   screenshot's pixel coordinates. Crops are not resized or clamped. Responses
-  retain incarnation metadata and state region origin/full image dimensions;
+  identify the public deviceId and state region origin/full image dimensions;
   subsequent pointer coordinates still refer to the full image. Invalid regions
   or unsupported/oversized image encodings fail without returning a misleading image.
 - Use `run_flow` to compose actions and an explicit final `screenshot`. No automatic
@@ -89,9 +89,9 @@ unsupported encodings return an error. Full-image capture remains unchanged.
 ]}
 ```
 
-Replace the example handle with `window_list` output. Hyper-V flows also supply
-`incarnationId` from a preceding screenshot. Flow screenshots do not implicitly
-feed identifiers to subsequent steps. Focus depends on the desktop accepting
+Replace the example handle with `window_list` output. Hyper-V flows select the
+exact owned deviceId alone. The provider retains private generation and frame
+fences; public screenshots do not introduce a second target selector. Focus depends on the desktop accepting
 foreground activation; denial is an error, not a successful acknowledgment.
 X11 focus requires a window manager implementing window activation.
 

@@ -5,6 +5,11 @@ vi.mock("os", async (importOriginal) => ({
     totalmem: () => 64 * 1024 ** 3,
     freemem: () => 48 * 1024 ** 3,
 }));
+const vmBirthEntropy = vi.hoisted(() => ({ uuid: null as string | null }));
+vi.mock("crypto", async original => {
+    const actual = await original<typeof import("crypto")>();
+    return { ...actual, randomUUID: () => vmBirthEntropy.uuid ?? actual.randomUUID() };
+});
 import * as fixtureFs from "fs";
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
@@ -157,11 +162,133 @@ function hyperVNetworkObservation(command: { args: string[]; input?: string }) {
     };
 }
 
+// A failed creation has no successful public response. Its already-issued private record
+// is fixture evidence of the admission ID, so assertions still follow the actual birth.
+function issuedHyperVFixtureDeviceId(ownerId: string, backend: string, previous: ReadonlySet<string> = new Set()): string | undefined {
+    const root = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, backend);
+    if (!existsSync(root)) return undefined;
+    const candidates = readdirSync(root).filter(id => !previous.has(id) && existsSync(join(root, id, "incarnation.json")));
+    if (!candidates.length) return undefined;
+    expect(candidates).toHaveLength(1);
+    const record = JSON.parse(readFileSync(join(root, candidates[0], "incarnation.json"), "utf8"));
+    expect(record).toMatchObject({ ownerId, backend, deviceId: candidates[0] });
+    return record.deviceId as string;
+}
+
 function isHyperVNetworkCleanupScript(script: string): boolean {
     return script.includes("$RemoveNat =") && script.includes("Remove-NetNat -InputObject");
 }
 
 describe("device-lab host broker lifecycle commands", () => {
+    it.each(["windows-vm", "linux-vm"])("leaves missing %s targets effect-free without an accepted operation journal", async backend => {
+        const cwd = `/project/broker-${backend}-missing-identity`;
+        const ownerId = deviceLabOwnerId(cwd), deviceId = "deleted-legacy-id", incarnationId = "a".repeat(32);
+        const stateRoot = writeBrokerDevices(ownerId, backend, []), stateFile = join(stateRoot, "devices.json");
+        const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, backend, deviceId);
+        mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
+        const privateRecord = join(privateRoot, "incarnation.json"), artifact = join(privateRoot, "captured-resource.txt");
+        writeFileSync(privateRecord, JSON.stringify({ version: 1, ownerId, backend, deviceId, incarnationId, createdAt: "2026-10-14T00:00:00.000Z" }), { mode: 0o600 });
+        writeFileSync(artifact, "unaccepted-private-residue", { mode: 0o600 });
+        const protectedFiles = [stateFile, privateRecord, artifact], original = protectedFiles.map(file => readFileSync(file));
+        const commandRunner = vi.fn();
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
+        const baseUrl = await listen(server);
+        const invoke = (method: string, params: Record<string, unknown>) => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+            method: "POST", headers: ownerRpcHeaders(ownerId), body: JSON.stringify({ method, params: { backend, deviceId, ...params } }),
+        });
+        try {
+            for (const command of ["device_start", "device_stop", "device_reboot", "device_status"]) {
+                const response = await invoke("broker.command.invoke", { command });
+                expect(response.status, JSON.stringify(await response.clone().json())).toBe(404);
+            }
+            for (const params of [{ tool: "device_exec", command: "echo guest" }, { tool: "device_click", x: 1, y: 1 }, { tool: "device_snapshot_list" }]) {
+                const response = await invoke("broker.device.tool.invoke", params);
+                expect(response.status, JSON.stringify(await response.clone().json())).toBe(404);
+            }
+            const deleted = await invoke("broker.command.invoke", { command: "device_delete" });
+            expect(deleted.status).toBe(200);
+            expect(await deleted.json()).toMatchObject({ result: { idempotent: true, alreadyMissing: true, invoked: false } });
+            expect(commandRunner).not.toHaveBeenCalled();
+            protectedFiles.forEach((file, index) => expect(readFileSync(file)).toEqual(original[index]));
+        } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
+    it.each(["record", "private-root", "network-allocation"] as const)("refuses generated Hyper-V identity collisions with %s before recovery or image preparation", async residue => {
+        const cwd = `/project/broker-generated-${residue}-collision`;
+        const ownerId = deviceLabOwnerId(cwd), uuid = "11111111-2222-4333-8444-555555555555";
+        const deviceId = `windows-vm-${uuid}`, incarnationId = "a".repeat(32);
+        const stateRoot = writeBrokerDevices(ownerId, "windows-vm", residue === "record" ? [{
+            id: deviceId, name: "Same 한글 VM", backend: "windows-vm", ownerId, incarnationId, status: "stopped",
+        }] : []);
+        const protectedFiles = [join(stateRoot, "devices.json")];
+        if (residue === "private-root") {
+            const root = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+            mkdirSync(root, { recursive: true });
+            const record = join(root, "incarnation.json"), artifact = join(root, "existing-owned-artifact.txt");
+            writeFileSync(record, JSON.stringify({ version: 1, ownerId, backend: "windows-vm", deviceId, incarnationId, createdAt: "2026-10-14T00:00:00.000Z" }), { mode: 0o600 });
+            writeFileSync(artifact, "original-private-resource", { mode: 0o600 });
+            protectedFiles.push(record, artifact);
+        }
+        if (residue === "network-allocation") {
+            const file = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
+            mkdirSync(dirname(file), { recursive: true });
+            writeFileSync(file, JSON.stringify({ version: 1, switchName: "CCC Device Lab",
+                switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", marker: "ccc-device-lab:hyper-v-network:v1",
+                natName: "CCCDeviceLab", natInstanceId: "ccc-nat-instance-1", prefix: "172.29.0.0/24", gateway: "172.29.0.1",
+                outboundPolicy: "nat", managedSwitch: true, managedGateway: true, managedNat: true,
+                allocations: [{ ownerId, deviceId, incarnationId, address: "172.29.0.20", macAddress: "02:11:22:33:44:55", allocatedAt: "original" }],
+            }));
+            protectedFiles.push(file);
+        }
+        const original = protectedFiles.map(file => readFileSync(file));
+        const commandRunner = vi.fn();
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", commandRunner });
+        const baseUrl = await listen(server);
+        try {
+            vmBirthEntropy.uuid = uuid;
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.command.invoke", params: {
+                    backend: "windows-vm", command: "device_create", name: "Same 한글 VM", profile: "windows-11", force: true,
+                } }),
+            });
+            const body = await response.json();
+            expect(response.status, JSON.stringify(body)).toBe(409);
+            expect(body.ok).toBe(false);
+            expect(body.deviceId).toBe(deviceId);
+            expect(commandRunner).not.toHaveBeenCalled();
+            protectedFiles.forEach((file, index) => expect(readFileSync(file)).toEqual(original[index]));
+            expect(existsSync(join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "images", "hyper-v"))).toBe(false);
+        } finally { vmBirthEntropy.uuid = null; await close(server); cleanupOwner(ownerId); }
+    });
+
+    it.each(["windows-vm", "linux-vm", "macos-vm"])("rejects caller-selected %s creation IDs and force before provider or owner effects", async backend => {
+        const cwd = `/project/broker-${backend}-chosen-id-test`;
+        const ownerId = deviceLabOwnerId(cwd), stateKey = backend === "macos-vm" ? "macos" : backend;
+        const root = writeBrokerDevices(ownerId, stateKey, [{ id: "legacy-vm", name: "Same 한글 VM", backend, ownerId, status: "stopped" }]);
+        const stateFile = join(root, "devices.json"), original = readFileSync(stateFile);
+        const commandRunner = vi.fn();
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", commandRunner });
+        const baseUrl = await listen(server);
+        try {
+            for (const method of ["broker.command.plan", "broker.command.invoke"]) {
+                for (const deviceId of ["legacy-vm", "chosen-new-vm"]) {
+                    const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                        method: "POST", headers: ownerRpcHeaders(ownerId),
+                        body: JSON.stringify({ method, params: { backend, command: "device_create", deviceId, name: "Same 한글 VM", force: true } }),
+                    });
+                    const body = await response.json();
+                    expect(response.status, JSON.stringify(body)).toBe(400);
+                    expect(body).toMatchObject({ ok: false, error: "vm-create-device-id-not-supported" });
+                }
+            }
+            expect(commandRunner).not.toHaveBeenCalled();
+            expect(readFileSync(stateFile)).toEqual(original);
+            expect(existsSync(join(root, "operations"))).toBe(false);
+            expect(existsSync(join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, backend))).toBe(false);
+        } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
     it("preserves allowlisted Hyper-V provisioning stages while redacting command input and output", () => {
         const diagnosticCodes = [
             "hyper-v-guest-provision-credential-command-failed",
@@ -471,7 +598,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     headers,
                     body: JSON.stringify({
                         method: "broker.command.invoke",
-                        params: { backend, command: "device_create", deviceId: `dry-${backend}`, name: `Dry ${backend}`, profile, dryRun: true },
+                        params: { backend, command: "device_create", name: `Dry ${backend}`, profile, dryRun: true },
                     }),
                 });
                 expect(response.status).toBe(409);
@@ -497,7 +624,7 @@ describe("device-lab host broker lifecycle commands", () => {
         { profile: "windows-11", input: { profile: "windows-11" }, conflicts: [] },
         { profile: "windows-server", input: { baseImageSha256: "b".repeat(64) }, conflicts: ["baseImageSha256"] },
         { profile: "windows-server", input: { sourceImage: "different.vhdx" }, conflicts: ["sourceImage"] },
-    ])("checks repeated Hyper-V create against automatic profile defaults: %j", async ({ profile, input, conflicts }) => {
+    ])("rejects chosen Hyper-V IDs before repeated-create profile comparisons: %j", async ({ profile, input, conflicts }) => {
         const cwd = "/project/broker-hyper-v-default-profile-retry";
         const ownerId = deviceLabOwnerId(cwd);
         const deviceId = "nested-development-vm";
@@ -524,12 +651,8 @@ describe("device-lab host broker lifecycle commands", () => {
                     } }),
                 });
                 const payload = await response.json();
-                expect(response.status, JSON.stringify(payload)).toBe(conflicts.length ? 409 : 200);
-                if (conflicts.length) {
-                    expect(payload).toMatchObject({ ok: false, error: "hyper-v-create-configuration-conflict", conflicts });
-                } else {
-                    expect(payload).toMatchObject({ ok: true, result: { idempotent: true, device: { id: deviceId, profile, incarnationId } } });
-                }
+                expect(response.status, JSON.stringify(payload)).toBe(400);
+                expect(payload).toMatchObject({ ok: false, error: "vm-create-device-id-not-supported" });
             }
             expect(commandRunner).not.toHaveBeenCalled();
             expect(readFileSync(stateFile, "utf8")).toBe(originalState);
@@ -875,7 +998,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 headers: ownerRpcHeaders(ownerId),
                 body: JSON.stringify({
                     method: "broker.device.tool.invoke",
-                    params: { tool: "device_snapshot_create", backend: "windows-vm", deviceId, incarnationId, snapshotName: "rollback" },
+                    params: { tool: "device_snapshot_create", backend: "windows-vm", deviceId, snapshotName: "rollback" },
                 }),
             });
             expect(response.status).toBe(409);
@@ -900,26 +1023,27 @@ describe("device-lab host broker lifecycle commands", () => {
         const cwd = join(process.env.HOME!, "broker-hyper-v-lifecycle-test");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
-        const deviceId = "windows-vm-e2e";
+        let deviceId = "windows-vm-e2e";
         const vmId = "12345678-1234-1234-1234-123456789abc";
         const snapshotId = "87654321-4321-4321-4321-cba987654321";
         let vmName = "";
-        const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
-        const deviceRoot = join(privateRoot, "artifacts");
-        const diskPath = join(deviceRoot, "disks", "root.vhdx");
+        let privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+        let deviceRoot = join(privateRoot, "artifacts");
+        let diskPath = join(deviceRoot, "disks", "root.vhdx");
         const imageRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "images", "hyper-v");
         const imageProfileRoot = join(imageRoot, "windows-11");
         const imagePath = join(imageProfileRoot, "base.vhdx");
         const sourceImagePath = join(cwd, "windows-11-generalized.vhdx");
-        const credentialPath = join(privateRoot, "secrets", "guest.credential.xml");
-        const provisioningMediaPath = join(deviceRoot, "disks", "autounattend.iso");
+        let credentialPath = join(privateRoot, "secrets", "guest.credential.xml");
+        let provisioningMediaPath = join(deviceRoot, "disks", "autounattend.iso");
         const uploadPath = join(cwd, "upload.txt");
         const downloadPath = join(cwd, "download.txt");
+        const legacyPrivateRoot = privateRoot;
         const staleMarkerPath = join(dirname(diskPath), "stale-operation.txt");
         const staleIncarnationId = "0".repeat(32);
         writeFileSync(sourceImagePath, "fake-vhdx");
         const imageSha256 = createHash("sha256").update("fake-vhdx").digest("hex");
-        const expectedNetworkAddress = `172.29.0.${10 + (createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest().readUInt32BE(0) % 241)}`;
+        let expectedNetworkAddress = `172.29.0.${10 + (createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest().readUInt32BE(0) % 241)}`;
         writeFileSync(uploadPath, "upload");
         mkdirSync(dirname(staleMarkerPath), { recursive: true });
         writeFileSync(staleMarkerPath, "interrupted-create");
@@ -936,6 +1060,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let createdVmNotes = "";
         let typedVmCreateCalls = 0;
         const typedVhdPaths: string[] = [];
+        const imagePreparationLocks: string[][] = [];
         let sameNameReplacementVmId: string | null = null;
         let observedNativeDiskPath: string | null = diskPath;
         let observedPassThroughDiskNumber: number | null = null;
@@ -1394,8 +1519,21 @@ describe("device-lab host broker lifecycle commands", () => {
                 return null;
             },
             onOperation(request) {
+                if (request.operation === "New-VM" && request.vhdPath) {
+                    diskPath = request.vhdPath;
+                    observedNativeDiskPath = diskPath;
+                    deviceRoot = dirname(dirname(diskPath));
+                    privateRoot = dirname(deviceRoot);
+                    deviceId = privateRoot.split(/[/\\]/).at(-1)!;
+                    credentialPath = join(privateRoot, "secrets", "guest.credential.xml");
+                    provisioningMediaPath = join(deviceRoot, "disks", "autounattend.iso");
+                    expectedNetworkAddress = `172.29.0.${10 + (createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest().readUInt32BE(0) % 241)}`;
+                }
                 if (request.operation === "Get-VHD" && request.path) typedVhdPaths.push(request.path);
-                if (request.operation === "Mount-VHD" && request.path) preparedSourcePath = request.path;
+                if (request.operation === "Mount-VHD" && request.path) {
+                    preparedSourcePath = request.path;
+                    imagePreparationLocks.push(readdirSync(join(backendRoot(ownerId, "windows-vm"), "operations")).filter(name => name.endsWith(".lock")));
+                }
                 if (request.operation === "Set-VM" && request.notes) createdVmNotes = request.notes;
                 if (request.operation === "New-VM") {
                     typedVmCreateCalls += 1;
@@ -1425,13 +1563,19 @@ describe("device-lab host broker lifecycle commands", () => {
         const invokeTool = (tool: string, params: Record<string, unknown>) => fetch(endpoint, {
             method: "POST",
             headers,
-            body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "windows-vm", deviceId, ...(activeIncarnationId ? { incarnationId: activeIncarnationId } : {}), ...params } }),
+            body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "windows-vm", deviceId, ...params } }),
         });
         try {
-            const created = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", sourceImage: sourceImagePath, memoryMb: 4096, cpus: 2 });
+            const created = await invoke({ backend: "windows-vm", command: "device_create", name: "Windows 한글 VM", profile: "windows-11", sourceImage: sourceImagePath, memoryMb: 4096, cpus: 2 });
             const createdBody = await created.json();
             expect(created.status, JSON.stringify(createdBody)).toBe(200);
-            expect(existsSync(staleMarkerPath)).toBe(false);
+            expect(existsSync(staleMarkerPath)).toBe(true);
+            expect(privateRoot).not.toBe(legacyPrivateRoot);
+            const admittedDeviceId = deviceId;
+            deviceId = createdBody.result.device.id;
+            expect(deviceId).toBe(admittedDeviceId);
+            expect(deviceId).toMatch(/^windows-vm-[a-f0-9-]{36}$/);
+            expect(imagePreparationLocks).toEqual([[`${createHash("sha256").update(deviceId).digest("hex").slice(0, 32)}.lock`]]);
             expect(createdBody).toEqual(expect.objectContaining({
                 result: expect.objectContaining({
                     device: expect.objectContaining({ id: deviceId, backend: "windows-vm", provider: "hyper-v", vmId, vmName, status: "stopped", guestProvisioned: true, guestUsername: `ccc${ownerId.slice(0, 8)}`, switchName: "CCC Device Lab", networkAddress: expect.stringMatching(/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/), macAddress: expect.stringMatching(/^02(?::[a-f0-9]{2}){5}$/), outboundPolicy: "nat" }),
@@ -1440,7 +1584,8 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(createdBody.result.device).not.toHaveProperty("diskPath");
             expect(createdBody.result.device).not.toHaveProperty("deviceRoot");
             expect(JSON.stringify(createdBody)).not.toContain("Ccc!7");
-            const incarnationId = createdBody.result.device.incarnationId as string;
+            expect(createdBody.result.device).not.toHaveProperty("incarnationId");
+            const incarnationId = JSON.parse(readFileSync(join(privateRoot, "incarnation.json"), "utf8")).incarnationId as string;
             activeIncarnationId = incarnationId;
             expect(incarnationId).toMatch(/^[a-f0-9]{32}$/);
             expect(JSON.parse(readFileSync(join(imageProfileRoot, "manifest.json"), "utf8"))).toEqual(expect.objectContaining({
@@ -1464,24 +1609,16 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner.mock.calls.some(([command]) => providerScript(command).includes("New-VM @VmArgs"))).toBe(false);
             expect(commandRunner.mock.calls.some(([command]) => providerScript(command).includes("$Vhd = Get-VHD -Path $VhdPath"))).toBe(false);
             const callsAfterCreate = commandRunner.mock.calls.length;
-            const duplicateCreate = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", memoryMb: 4096, cpus: 2 });
-            expect(duplicateCreate.status, JSON.stringify(await duplicateCreate.clone().json())).toBe(200);
-            expect(await duplicateCreate.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ idempotent: true, invoked: false, device: expect.objectContaining({ id: deviceId, incarnationId }) }) }));
+            const duplicateCreate = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows 한글 VM", profile: "windows-11", memoryMb: 4096, cpus: 2 });
+            expect(duplicateCreate.status, JSON.stringify(await duplicateCreate.clone().json())).toBe(400);
+            expect(await duplicateCreate.json()).toMatchObject({ error: "vm-create-device-id-not-supported" });
             expect(commandRunner).toHaveBeenCalledTimes(callsAfterCreate);
-            const conflictingCreate = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", memoryMb: 8192, cpus: 2 });
-            expect(conflictingCreate.status).toBe(409);
-            expect(await conflictingCreate.json()).toEqual(expect.objectContaining({ error: "hyper-v-create-configuration-conflict", conflicts: ["memoryMb"] }));
-            expect(commandRunner).toHaveBeenCalledTimes(callsAfterCreate);
-
-            const missingIncarnation = await invoke({ backend: "windows-vm", command: "device_start", deviceId });
-            expect(missingIncarnation.status).toBe(409);
-            expect(await missingIncarnation.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-required" }));
-            const staleIncarnation = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId: "f".repeat(32) });
-            expect(staleIncarnation.status).toBe(409);
-            expect(await staleIncarnation.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-conflict" }));
+            const conflictingCreate = await invoke({ backend: "windows-vm", command: "device_create", deviceId, force: true, name: "Windows 한글 VM", profile: "windows-11", memoryMb: 8192, cpus: 2 });
+            expect(conflictingCreate.status).toBe(400);
+            expect(await conflictingCreate.json()).toMatchObject({ error: "vm-create-device-id-not-supported" });
             expect(commandRunner).toHaveBeenCalledTimes(callsAfterCreate);
 
-            const started = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
+            const started = await invoke({ backend: "windows-vm", command: "device_start", deviceId });
             expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);
             expect(await started.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", runtimeState: "Running", bootReady: true }), boot: expect.objectContaining({ ready: true, provider: "hyper-v-powershell-direct" }) }) }));
 
@@ -1494,7 +1631,7 @@ describe("device-lab host broker lifecycle commands", () => {
             // the local Administrator password as PlainText — with no failure and nothing reporting
             // it. Rejected now, and no provider call may be made before the rejection.
             const callsBeforeUnsafeWindowsStart = commandRunner.mock.calls.length;
-            const unsafeWindowsStart = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, waitForBoot: false });
+            const unsafeWindowsStart = await invoke({ backend: "windows-vm", command: "device_start", deviceId, waitForBoot: false });
             expect(unsafeWindowsStart.status).toBe(400);
             expect(await unsafeWindowsStart.json()).toEqual(expect.objectContaining({
                 error: "windows-vm-bootstrap-requires-boot-wait",
@@ -1502,7 +1639,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 // about what to do instead.
                 detail: expect.stringContaining("bootTimeoutMs"),
             }));
-            const unsafeWindowsReboot = await invoke({ backend: "windows-vm", command: "device_reboot", deviceId, incarnationId, waitForBoot: false });
+            const unsafeWindowsReboot = await invoke({ backend: "windows-vm", command: "device_reboot", deviceId, waitForBoot: false });
             expect(unsafeWindowsReboot.status).toBe(400);
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeUnsafeWindowsStart);
 
@@ -1518,7 +1655,7 @@ describe("device-lab host broker lifecycle commands", () => {
             for (const scrubReason of ["hyper-v-guest-first-logon-incomplete", "hyper-v-guest-provisioning-not-scrubbed"] as const) {
                 guestReadyScrubFailure = scrubReason;
                 const stopsBefore = containmentStops().length;
-                const refused = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+                const refused = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
                 const refusedBody = await refused.json();
                 expect(JSON.stringify(refusedBody)).toContain(scrubReason);
                 expect(vmState, `expected containment to power off the guest for ${scrubReason}`).toBe("Off");
@@ -1550,7 +1687,7 @@ describe("device-lab host broker lifecycle commands", () => {
             writeFileSync(provisioningMediaPath, "unattend-iso-bytes");
             guestReadyScrubFailure = "powershell-direct-attempt-timeout";
             const firstBootStops = containmentStops().length;
-            const neverProbed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            const neverProbed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
             const neverProbedBody = await neverProbed.json() as Record<string, any>;
             expect(JSON.stringify(neverProbedBody)).toContain("powershell-direct-attempt-timeout");
             expect(containmentStops().length, "media still on disk means never scrubbed: contain").toBeGreaterThan(firstBootStops);
@@ -1573,7 +1710,7 @@ describe("device-lab host broker lifecycle commands", () => {
             // Count the stable non-probe provider work here. Deadline scheduling can permit
             // one more read-only guest probe without changing containment behavior.
             const timedOutRetainedCalls = commandRunner.mock.calls.length;
-            const timedOutRetained = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            const timedOutRetained = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
             const timedOutRetainedBody = await timedOutRetained.json() as Record<string, any>;
             expect(JSON.stringify(timedOutRetainedBody)).toContain("powershell-direct-timeout");
             expect(containmentStops().length, "a timed-out probe with media retained must be contained").toBeGreaterThan(timedOutRetainedStops);
@@ -1595,7 +1732,7 @@ describe("device-lab host broker lifecycle commands", () => {
             guestReadyScrubFailureDetached = true;
             const scrubbedRetainedStops = containmentStops().length;
             const scrubbedRetainedDetachCalls = commandRunner.mock.calls.filter(([command]) => nativeLibraryRequest(command)?.operation === "Remove-VMDvdDrive").length;
-            const mediaCleanupFailed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 18000 });
+            const mediaCleanupFailed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 18000 });
             const mediaCleanupBody = await mediaCleanupFailed.json() as { detail?: string };
             expect(["hyper-v-guest-provisioning-media-delete-failed", "hyper-v-guest-ready-deadline-exceeded"]).toContain(mediaCleanupBody.detail);
             expect(commandRunner.mock.calls.filter(([command]) => nativeLibraryRequest(command)?.operation === "Remove-VMDvdDrive").length)
@@ -1613,7 +1750,7 @@ describe("device-lab host broker lifecycle commands", () => {
             // stood containment down here, which is why the veto needs both flags.
             guestReadyScrubFailureDetached = false;
             const mountedIsoStops = containmentStops().length;
-            const stillMounted = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 18000 });
+            const stillMounted = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 18000 });
             expect(JSON.stringify(await stillMounted.json())).toContain("hyper-v-guest-provisioning-media-detach-failed");
             expect(containmentStops().length, "a mounted answer-file ISO must still be contained").toBeGreaterThan(mountedIsoStops);
             expect(vmState).toBe("Off");
@@ -1630,7 +1767,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 diagnosticStateOverride = liveState;
                 guestReadyScrubFailure = "hyper-v-guest-provisioning-not-scrubbed";
                 const liveStops = containmentStops().length;
-                await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+                await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
                 expect(containmentStops().length, `${liveState} is not Off and must still be contained`).toBeGreaterThan(liveStops);
             }
             // And a genuinely powered-off guest is not "contained" by a stop that does nothing.
@@ -1639,12 +1776,12 @@ describe("device-lab host broker lifecycle commands", () => {
                 diagnosticStateOverride = offState;
                 guestReadyScrubFailure = "hyper-v-guest-provisioning-not-scrubbed";
                 const offStops = containmentStops().length;
-                await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+                await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
                 expect(containmentStops().length, `${offState} means there is nothing to contain`).toBe(offStops);
             }
             diagnosticStateOverride = "";
             guestReadyScrubFailure = false;
-            await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
+            await invoke({ backend: "windows-vm", command: "device_start", deviceId });
 
             // Readiness never runs: the identity gate rejects the start observation, one of the two
             // exits between Start-VM and readiness. The guest is Running with the media still on
@@ -1659,7 +1796,7 @@ describe("device-lab host broker lifecycle commands", () => {
             startObservationMismatch = true;
             startObservationGetVmCount = 0;
             containmentStopFailure = true;
-            const silentPath = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            const silentPath = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
             const silentBody = JSON.stringify(await silentPath.json());
             expect(silentBody, "a failed containment must never be silent").toContain("scrubContainmentFailed");
             // Asserted on the PERSISTED record too, not just the reply. `toContain` over the whole
@@ -1681,7 +1818,7 @@ describe("device-lab host broker lifecycle commands", () => {
             rmSync(provisioningMediaPath, { force: true });
             containmentStopFailure = false;
             startObservationMismatch = false;
-            await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
+            await invoke({ backend: "windows-vm", command: "device_start", deviceId });
 
             rmSync(provisioningMediaPath, { force: true });
 
@@ -1701,7 +1838,7 @@ describe("device-lab host broker lifecycle commands", () => {
             ] as const) {
                 guestReadyScrubFailure = unknownReason;
                 const stopsBeforeTimeout = containmentStops().length;
-                const timedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+                const timedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
                 expect(JSON.stringify(await timedOut.json())).toContain(unknownReason);
                 expect(vmState, `${unknownReason} must stay debuggable, not be powered off`).toBe("Running");
                 expect(containmentStops().length, `no containment stop for ${unknownReason}`).toBe(stopsBeforeTimeout);
@@ -1716,7 +1853,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const stopsBeforeCommandTimeout = containmentStops().length;
             // The uncontained half omits the containment transaction.
             const commandTimedOutCalls = commandRunner.mock.calls.length;
-            const commandTimedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            const commandTimedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
             expect(JSON.stringify(await commandTimedOut.json())).toContain("powershell-direct-timeout");
             expect(vmState, "powershell-direct-timeout must stay debuggable, not be powered off").toBe("Running");
             expect(containmentStops().length, "no containment stop for powershell-direct-timeout").toBe(stopsBeforeCommandTimeout);
@@ -1730,7 +1867,7 @@ describe("device-lab host broker lifecycle commands", () => {
             // the containment path in the first place.
             guestReadyScrubFailure = "hyper-v-guest-provisioning-not-scrubbed";
             containmentStopFailure = true;
-            const containmentFailed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            const containmentFailed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
             const containmentFailedBody = await containmentFailed.json();
             // Asserted on the two writers SEPARATELY. A `toContain("scrubContainmentFailed")` over
             // the whole stringified response is satisfied by errorDetail alone, so deleting the
@@ -1754,7 +1891,7 @@ describe("device-lab host broker lifecycle commands", () => {
 
             // And it is absent, not `false`, when containment worked — its presence always means
             // something needs attention.
-            const containmentOk = await (await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 })).json();
+            const containmentOk = await (await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 })).json();
             expect(JSON.stringify(containmentOk)).not.toContain("scrubContainmentFailed");
             const persistedOk = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as {
                 devices: Array<{ id?: string; lastBootCheck?: { scrubContainmentFailed?: boolean } }>;
@@ -1763,7 +1900,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(vmState).toBe("Off");
 
             guestReadyScrubFailure = false;
-            await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
+            await invoke({ backend: "windows-vm", command: "device_start", deviceId });
 
             const operationPath = join(deviceRoot, "operation.json");
             mkdirSync(dirname(diskPath), { recursive: true });
@@ -1778,7 +1915,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const previewDiskBytes = readFileSync(diskPath);
             const previewVmState = vmState;
             expect(vmExists).toBe(true);
-            const pendingDeletePreview = await invoke({ backend: "windows-vm", command: "device_stop", deviceId, incarnationId, dryRun: true });
+            const pendingDeletePreview = await invoke({ backend: "windows-vm", command: "device_stop", deviceId, dryRun: true });
             expect(pendingDeletePreview.status, JSON.stringify(await pendingDeletePreview.clone().json())).toBe(200);
             expect(await pendingDeletePreview.json()).toMatchObject({ ok: true, result: { invoked: false, dryRun: true, execution: { mode: "dry-run", mutatesHost: false } } });
             expect(vmExists).toBe(true);
@@ -1789,12 +1926,15 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(readFileSync(operationPath)).toEqual(previewJournalBytes);
             expect(readFileSync(previewOwnerPath)).toEqual(previewOwnerBytes);
             writeFileSync(operationPath, JSON.stringify({ version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId, command: "device_stop", vmId, vmName, diskPath, startedAt: new Date().toISOString() }));
+            const validOperationBytes = readFileSync(operationPath, "utf8");
+            writeFileSync(operationPath, JSON.stringify({ ...JSON.parse(validOperationBytes), incarnationId: "f".repeat(32), vmName: hyperVVmName(ownerId, deviceId, "f".repeat(32)) }));
             const callsBeforeStaleLifecycle = commandRunner.mock.calls.length;
-            const staleLifecycleWithJournal = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId: "f".repeat(32) });
+            const staleLifecycleWithJournal = await invoke({ backend: "windows-vm", command: "device_start", deviceId });
             expect(staleLifecycleWithJournal.status).toBe(409);
-            expect(await staleLifecycleWithJournal.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-conflict" }));
+            expect(await staleLifecycleWithJournal.json()).toEqual(expect.objectContaining({ error: "hyper-v-operation-incarnation-conflict" }));
             expect(existsSync(operationPath)).toBe(true);
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeStaleLifecycle);
+            writeFileSync(operationPath, validOperationBytes);
             const status = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
             expect(status.status, JSON.stringify(await status.clone().json())).toBe(200);
             expect(await status.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ vmId, runtimeState: "Off" }) }) }));
@@ -1872,16 +2012,15 @@ describe("device-lab host broker lifecycle commands", () => {
             expect((await invokeTool("device_drag", {x1:0,y1:0,x2:10,y2:10,durationMs:0})).status).toBe(400);
             expect((await invokeTool("device_focus_window", {handle:"42;id"})).status).toBe(400);
             expect(commandRunner.mock.calls).toHaveLength(beforeInvalidGesture);
-            const staleDrag = await invokeTool("device_drag", {x1:0,y1:0,x2:10,y2:10,incarnationId:"f".repeat(32)});
-            expect(staleDrag.status).toBe(409);
-            expect(await staleDrag.json()).toMatchObject({error:"hyper-v-incarnation-conflict"});
-            const staleFocus = await invokeTool("device_focus_window", {handle:"42",incarnationId:"f".repeat(32)});
-            expect(staleFocus.status).toBe(409);
-            expect(await staleFocus.json()).toMatchObject({error:"hyper-v-incarnation-conflict"});
             const noFrameDrag = await invokeTool("device_drag", {x1:0,y1:0,x2:10,y2:10});
             expect(noFrameDrag.status).toBe(409);
             expect(await noFrameDrag.json()).toMatchObject({error:"hyper-v-console-screenshot-required"});
             const dragFrameKey = hyperVConsoleFrameKey(ownerId, "windows-vm", deviceId);
+            rememberHyperVConsoleFrame(dragFrameKey, {incarnationId:"f".repeat(32),width:640,height:480,nativeWidth:1280,nativeHeight:960,capturedAt:new Date().toISOString()});
+            const staleDrag = await invokeTool("device_drag", {x1:0,y1:0,x2:10,y2:10});
+            expect(staleDrag.status).toBe(409);
+            expect(await staleDrag.json()).toMatchObject({error:"hyper-v-console-screenshot-required"});
+            expect(commandRunner.mock.calls).toHaveLength(beforeInvalidGesture);
             rememberHyperVConsoleFrame(dragFrameKey, {incarnationId:activeIncarnationId!,width:640,height:480,nativeWidth:1280,nativeHeight:960,capturedAt:new Date().toISOString()});
             try {
                 const beforeOffscreen = commandRunner.mock.calls.length;
@@ -1970,7 +2109,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner.mock.calls.slice(callsBeforeLostDownload).map(([command]) => nativeLibraryRequest(command)?.action)).toEqual(["download"]);
             guestDownloadLostResponse = false;
 
-            const stopped = await invoke({ backend: "windows-vm", command: "device_stop", deviceId, incarnationId });
+            const stopped = await invoke({ backend: "windows-vm", command: "device_stop", deviceId });
             expect(stopped.status).toBe(200);
             expect(await stopped.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "stopped", runtimeState: "Off" }) }) }));
 
@@ -2061,28 +2200,31 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(existsSync(snapshotOperationPath)).toBe(false);
             writeFileSync(snapshotOperationPath, JSON.stringify({ version: 1, operationId: vmId, ownerId, deviceId, incarnationId, tool: "device_snapshot_create", snapshotName: "before-install", providerName: `ccc-${ownerId}-before-install`, startedAt: new Date().toISOString() }));
             const callsBeforeDryRunCreate = commandRunner.mock.calls.length;
-            const dryRunCreateWithJournal = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", memoryMb: 4096, cpus: 2, dryRun: true });
-            expect(dryRunCreateWithJournal.status).toBe(200);
+            const dryRunCreateWithJournal = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows 한글 VM", profile: "windows-11", memoryMb: 4096, cpus: 2, dryRun: true });
+            expect(dryRunCreateWithJournal.status).toBe(400);
             expect(existsSync(snapshotOperationPath)).toBe(true);
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeDryRunCreate);
+            const validSnapshotBytes = readFileSync(snapshotOperationPath, "utf8");
+            writeFileSync(snapshotOperationPath, JSON.stringify({ ...JSON.parse(validSnapshotBytes), incarnationId: "f".repeat(32) }));
             const callsBeforeStaleSnapshot = commandRunner.mock.calls.length;
             const staleSnapshotWithJournal = await fetch(endpoint, {
                 method: "POST",
                 headers,
-                body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: "device_snapshot_restore", backend: "windows-vm", deviceId, incarnationId: "f".repeat(32), snapshotId, confirmDestructive: true } }),
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: "device_snapshot_restore", backend: "windows-vm", deviceId, snapshotId, confirmDestructive: true } }),
             });
             expect(staleSnapshotWithJournal.status).toBe(409);
-            expect(await staleSnapshotWithJournal.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-conflict" }));
+            expect(await staleSnapshotWithJournal.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-reconciliation-metadata-invalid" }));
             expect(existsSync(snapshotOperationPath)).toBe(true);
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeStaleSnapshot);
-            const createAfterInterruptedSnapshot = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", memoryMb: 4096, cpus: 2 });
+            writeFileSync(snapshotOperationPath, validSnapshotBytes);
+            const createAfterInterruptedSnapshot = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
             expect(createAfterInterruptedSnapshot.status).toBe(200);
             expect(existsSync(snapshotOperationPath)).toBe(false);
             writeFileSync(snapshotOperationPath, JSON.stringify({ version: 1, operationId: vmId, ownerId, deviceId, incarnationId, tool: "device_snapshot_create", snapshotName: "before-install", providerName: `ccc-${ownerId}-before-install`, startedAt: new Date().toISOString() }));
             for (const failure of ["invalid", "timeout"] as const) {
                 snapshotRepairResult = failure;
                 const repairsBefore = commandRunner.mock.calls.filter(([command]) => nativeLibraryRequest(command)?.operation === "Repair-VMSnapshotState").length;
-                const refusedStatus = await invoke({ backend: "windows-vm", command: "device_status", deviceId, incarnationId });
+                const refusedStatus = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
                 expect(refusedStatus.status).toBe(502);
                 expect(await refusedStatus.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-reconciliation-failed" }));
                 expect(existsSync(snapshotOperationPath)).toBe(true);
@@ -2090,18 +2232,18 @@ describe("device-lab host broker lifecycle commands", () => {
             }
             snapshotRepairResult = "normal";
             snapshotRepairResult = "count-mismatch";
-            const contradictoryStatus = await invoke({ backend: "windows-vm", command: "device_status", deviceId, incarnationId });
+            const contradictoryStatus = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
             expect(contradictoryStatus.status).toBe(502);
             expect(await contradictoryStatus.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-reconciliation-invalid-result" }));
             expect(existsSync(snapshotOperationPath)).toBe(true);
             snapshotRepairResult = "normal";
             observedSnapshotName = `CCC-${ownerId}-BEFORE-INSTALL`;
-            const differentlyCasedSnapshot = await invoke({ backend: "windows-vm", command: "device_status", deviceId, incarnationId });
+            const differentlyCasedSnapshot = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
             expect(differentlyCasedSnapshot.status).toBe(409);
             expect(await differentlyCasedSnapshot.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-reconciliation-metadata-invalid" }));
             expect(existsSync(snapshotOperationPath)).toBe(true);
             observedSnapshotName = null;
-            const statusAfterInterruptedSnapshot = await invoke({ backend: "windows-vm", command: "device_status", deviceId, incarnationId });
+            const statusAfterInterruptedSnapshot = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
             expect(statusAfterInterruptedSnapshot.status).toBe(200);
             expect(existsSync(snapshotOperationPath)).toBe(false);
             const unconfirmedRestore = await invokeTool("device_snapshot_restore", { snapshotId });
@@ -2123,7 +2265,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ snapshots: unknown[] }> }).devices[0].snapshots).toHaveLength(1);
             snapshotDeleteConfirmationFailure = false;
             observedSnapshotId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-            const replacementSnapshotStatus = await invoke({ backend: "windows-vm", command: "device_status", deviceId, incarnationId });
+            const replacementSnapshotStatus = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
             expect(replacementSnapshotStatus.status).toBe(409);
             expect(await replacementSnapshotStatus.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-reconciliation-metadata-invalid" }));
             expect(existsSync(snapshotOperationPath)).toBe(true);
@@ -2163,14 +2305,14 @@ describe("device-lab host broker lifecycle commands", () => {
             const validNetworkState = readFileSync(networkStatePath);
             writeFileSync(operationPath, JSON.stringify({ version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId, command: "device_delete", vmId, vmName, diskPath, startedAt: new Date().toISOString() }));
             deleteConfirmationFailure = true;
-            const unconfirmedReconciliation = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
+            const unconfirmedReconciliation = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
             expect(unconfirmedReconciliation.status).toBe(502);
             expect(await unconfirmedReconciliation.json()).toEqual(expect.objectContaining({ error: "hyper-v-delete-reconciliation-invalid-result" }));
             expect(existsSync(operationPath)).toBe(true);
             expect(existsSync(privateRoot)).toBe(true);
             deleteConfirmationFailure = false;
             writeFileSync(networkStatePath, "{malformed");
-            const cleanupFailed = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
+            const cleanupFailed = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
             expect(cleanupFailed.status).toBe(502);
             expect(await cleanupFailed.json()).toEqual(expect.objectContaining({ error: "hyper-v-delete-reconciliation-cleanup-failed" }));
             expect(existsSync(privateRoot)).toBe(true);
@@ -2180,7 +2322,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const cleanupCallsBeforeIdentityConflict = commandRunner.mock.calls.filter(
                 ([command]) => isHyperVNetworkCleanupScript(providerScript(command)),
             ).length;
-            const sameNameIdentityConflict = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
+            const sameNameIdentityConflict = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
             expect(sameNameIdentityConflict.status).toBe(502);
             expect(await sameNameIdentityConflict.json()).toEqual(expect.objectContaining({ error: "hyper-v-delete-reconciliation-invalid-result" }));
             expect(existsSync(operationPath)).toBe(true);
@@ -2194,7 +2336,7 @@ describe("device-lab host broker lifecycle commands", () => {
 
             writeFileSync(networkStatePath, validNetworkState);
             networkCleanupFailure = "nonzero";
-            const providerCleanupFailed = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
+            const providerCleanupFailed = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
             expect(providerCleanupFailed.status).toBe(502);
             const providerCleanupFailureBody = await providerCleanupFailed.json();
             expect(providerCleanupFailureBody).toEqual(expect.objectContaining({
@@ -2213,7 +2355,6 @@ describe("device-lab host broker lifecycle commands", () => {
                 backend: "windows-vm",
                 command: "device_delete",
                 deviceId,
-                incarnationId,
             });
             expect(invalidProviderCleanup.status).toBe(502);
             const invalidProviderCleanupBody = await invalidProviderCleanup.json();
@@ -2236,7 +2377,6 @@ describe("device-lab host broker lifecycle commands", () => {
                 backend: "windows-vm",
                 command: "device_delete",
                 deviceId,
-                incarnationId,
                 preserveNetwork: true,
             });
             expect(deleted.status).toBe(200);
@@ -2266,27 +2406,39 @@ describe("device-lab host broker lifecycle commands", () => {
             });
 
             networkCleanupFailure = false;
-            const recreated = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E cached", profile: "windows-11", memoryMb: 4096, cpus: 2 });
+            const deletedDeviceId = deviceId;
+            const deletedPrivateRoot = privateRoot;
+            const recreated = await invoke({ backend: "windows-vm", command: "device_create", name: "Windows 한글 VM", profile: "windows-11", memoryMb: 4096, cpus: 2 });
             expect(recreated.status).toBe(200);
-            const recreatedIncarnationId = (await recreated.clone().json()).result.device.incarnationId as string;
+            const recreatedBody = await recreated.clone().json();
+            deviceId = recreatedBody.result.device.id;
+            expect(deviceId).not.toBe(deletedDeviceId);
+            expect(privateRoot).not.toBe(deletedPrivateRoot);
+            expect(recreatedBody.result.device.name).toBe("Windows 한글 VM");
+            const callsBeforeDeletedId = commandRunner.mock.calls.length;
+            const oldTarget = await invoke({ backend: "windows-vm", command: "device_start", deviceId: deletedDeviceId });
+            expect(oldTarget.status).toBe(404);
+            expect(commandRunner).toHaveBeenCalledTimes(callsBeforeDeletedId);
+            const recreatedIncarnationId = JSON.parse(readFileSync(join(privateRoot, "incarnation.json"), "utf8")).incarnationId as string;
             activeIncarnationId = recreatedIncarnationId;
             const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
             const canonicalState = JSON.parse(readFileSync(stateFile, "utf8"));
             writeFileSync(stateFile, JSON.stringify({ devices: canonicalState.devices.map((device) => ({ ...device, diskPath: join(cwd, "foreign.vhdx") })) }));
-            const refusedTamperedDelete = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId: recreatedIncarnationId });
+            const refusedTamperedDelete = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
             expect(refusedTamperedDelete.status).toBe(400);
             expect(await refusedTamperedDelete.json()).toEqual(expect.objectContaining({ error: "invalid-provider-metadata" }));
             writeFileSync(stateFile, JSON.stringify(canonicalState));
             deleteConfirmationFailure = true;
-            const providerUnconfirmedDelete = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId: recreatedIncarnationId });
+            const providerUnconfirmedDelete = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
             expect(providerUnconfirmedDelete.status).toBe(502);
             expect(existsSync(privateRoot)).toBe(true);
             expect((JSON.parse(readFileSync(stateFile, "utf8")) as { devices: Array<{ id: string }> }).devices).toEqual(expect.arrayContaining([expect.objectContaining({ id: deviceId })]));
             deleteConfirmationFailure = false;
-            const redeleted = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId: recreatedIncarnationId });
+            const redeleted = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
             expect(redeleted.status).toBe(200);
             expect(existsSync(deviceRoot)).toBe(false);
             expect(existsSync(privateRoot)).toBe(false);
+            expect(existsSync(staleMarkerPath)).toBe(true);
             const callsAfterDelete = commandRunner.mock.calls.length;
             const duplicateDelete = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
             expect(duplicateDelete.status).toBe(200);
@@ -2383,6 +2535,8 @@ describe("device-lab host broker lifecycle commands", () => {
         const provisioningSecretEcho = "hyper-v-secret-provider-echo";
         const rollbackSecretEcho = "hyper-v-rollback-provider-echo";
         const createdVmNames = new Map<string, string>();
+        const birthIds = new Map<string, string>();
+        let currentDeviceId: string | undefined;
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
             if (isHyperVNetworkCleanupScript(script)) {
@@ -2397,7 +2551,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     || activeVariant === "typed-boot-failure" || activeVariant === "typed-integration-failure"
                     || activeVariant === "typed-media-ambiguous" || activeVariant === "missing-credential"
                     || activeVariant === "state-claim-conflict")) {
-                const deviceId = `invalid-create-${activeVariant}`;
+                const deviceId = birthIds.get(activeVariant)!;
                 const vmName = createdVmNames.get(deviceId) || "";
                 const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
                 const deviceRoot = join(privateRoot, "artifacts");
@@ -2432,7 +2586,7 @@ describe("device-lab host broker lifecycle commands", () => {
             if (script.includes("New-VM @VmArgs")) {
                 const variant = variants[createIndex++];
                 activeVariant = variant;
-                const deviceId = `invalid-create-${variant}`;
+                const deviceId = birthIds.get(variant)!;
                 const vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
                 createdVmNames.set(deviceId, vmName);
                 const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
@@ -2471,6 +2625,10 @@ describe("device-lab host broker lifecycle commands", () => {
         configureTypedHyperVNetworkOperations(commandRunner, {
             simulateVmCreate: true,
             beforeOperation(request) {
+                if (!currentDeviceId) {
+                    currentDeviceId = issuedHyperVFixtureDeviceId(ownerId, "windows-vm", new Set(birthIds.values()));
+                    if (currentDeviceId && currentRequestVariant) birthIds.set(currentRequestVariant, currentDeviceId);
+                }
                 if (request.operation === "Remove-HostFiles") {
                     if (currentRequestVariant && !recoveredVariants.has(currentRequestVariant)) {
                         recoveredVariants.add(currentRequestVariant);
@@ -2530,7 +2688,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 if (request.operation === "Get-VMHardDiskDrive" && activeVariant === "wrong-disk") {
                     return { status: 0, stdout: JSON.stringify({ schemaVersion: 1, operation: "Get-VMHardDiskDrive", ok: true, items: [{
                         vmId: "12345678-1234-1234-1234-123456789abc",
-                        vmName: createdVmNames.get("invalid-create-wrong-disk"),
+                        vmName: createdVmNames.get(birthIds.get("wrong-disk")!),
                         path: join(cwd, "foreign.vhdx"),
                         controllerType: "SCSI", controllerNumber: 0, controllerLocation: 0, diskNumber: null,
                     }] }), stderr: "" };
@@ -2540,7 +2698,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 const variant = variants[createIndex++];
                 activeVariant = variant;
                 const vmName = request.name || "";
-                const deviceId = `invalid-create-${variant}`;
+                const deviceId = birthIds.get(variant)!;
                 createdVmNames.set(deviceId, vmName);
                 const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
                 if (variant === "artifact-cleanup-failure") {
@@ -2588,23 +2746,26 @@ describe("device-lab host broker lifecycle commands", () => {
             for (const variant of variants) {
                 currentRequestVariant = variant;
                 activeVariant = null;
+                currentDeviceId = undefined;
                 const removeCallsBefore = commandRunner.mock.calls.filter(([issued]) => nativeLibraryRequest(issued)?.operation === "Remove-VM").length;
                 const response = await fetch(endpoint, {
                     method: "POST",
                     headers,
-                    body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", deviceId: `invalid-create-${variant}`, name: "Invalid VM", profile: "windows-11" } }),
+                    body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", name: "Invalid VM", profile: "windows-11" } }),
                 });
                 const body = await response.json();
                 expect(JSON.stringify(body)).not.toContain(rollbackSecretEcho);
                 expect(response.status, `${variant}: ${JSON.stringify(body)}`).toBe(variant === "state-claim-conflict" ? 409 : 502);
-                const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", `invalid-create-${variant}`);
+                const deviceId = birthIds.get(variant)!;
+                expect(deviceId).toMatch(/^windows-vm-[a-f0-9-]{36}$/);
+                const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
                 const networkStatePath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
                 if (variant === "artifact-cleanup-failure") {
                     expect(body).toEqual(expect.objectContaining({ error: "hyper-v-create-invalid-result", rollback: expect.objectContaining({ ok: false, error: "hyper-v-recovery-cleanup-failed", detail: "hyper-v-artifact-cleanup-failed" }) }));
                     expect(body.rollback).not.toHaveProperty("stage");
                     expect(lstatSync(privateRoot).isSymbolicLink()).toBe(true);
                     const allocations = existsSync(networkStatePath) ? JSON.parse(readFileSync(networkStatePath, "utf8")).allocations : [];
-                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId: `invalid-create-${variant}` })]));
+                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId })]));
                     rmSync(privateRoot, { force: true });
                 } else if (variant === "allocation-cleanup-failure" || variant === "allocation-elevation-cancelled") {
                     // The release failed, so the artifacts were never touched: the rollback names the
@@ -2663,10 +2824,10 @@ describe("device-lab host broker lifecycle commands", () => {
                     } else {
                         expect(body).not.toHaveProperty("operation");
                     }
-                    expect(createdVmNames.has(`invalid-create-${variant}`)).toBe(false);
+                    expect(createdVmNames.has(deviceId)).toBe(false);
                     expect(existsSync(privateRoot)).toBe(false);
                     const allocations = existsSync(networkStatePath) ? JSON.parse(readFileSync(networkStatePath, "utf8")).allocations : [];
-                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId: `invalid-create-${variant}` })]));
+                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId })]));
                 } else if (variant === "provision-failure" || variant === "provision-ownership-failure" || variant === "provision-untagged-failure"
                     || variant === "typed-boot-failure" || variant === "typed-integration-failure" || variant === "typed-media-ambiguous"
                     || variant === "missing-credential" || variant === "state-claim-conflict") {
@@ -2702,7 +2863,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     }
                     expect(existsSync(privateRoot)).toBe(false);
                     const allocations = existsSync(networkStatePath) ? JSON.parse(readFileSync(networkStatePath, "utf8")).allocations : [];
-                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId: `invalid-create-${variant}` })]));
+                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId })]));
                 } else {
                     expect(body).toEqual(expect.objectContaining({
                         error: ["nonzero", "timeout", "overflow"].includes(variant) ? "provider-command-failed" : "hyper-v-create-invalid-result",
@@ -2716,7 +2877,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     }
                     expect(existsSync(privateRoot)).toBe(false);
                     const allocations = existsSync(networkStatePath) ? JSON.parse(readFileSync(networkStatePath, "utf8")).allocations : [];
-                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId: `invalid-create-${variant}` })]));
+                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId })]));
                 }
             }
             expect(createIndex).toBe(variants.length);
@@ -2761,6 +2922,8 @@ describe("device-lab host broker lifecycle commands", () => {
         }));
         const networkStatePath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
         const fabricMutations: string[] = [];
+        const birthIds = new Set<string>();
+        let deviceId: string | undefined;
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
             if (failure === "provision" && script.includes("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND'")) {
@@ -2771,6 +2934,7 @@ describe("device-lab host broker lifecycle commands", () => {
         configureTypedHyperVNetworkOperations(commandRunner, {
             simulateVmCreate: true,
             onOperation(request) {
+                if (!deviceId) { deviceId = issuedHyperVFixtureDeviceId(ownerId, "windows-vm", birthIds); if (deviceId) birthIds.add(deviceId); }
                 if (["New-VMSwitch", "New-NetIPAddress", "New-NetNat", "Remove-NetNat", "Remove-NetIPAddress", "Remove-VMSwitch"].includes(request.operation)) {
                     fabricMutations.push(request.operation);
                 }
@@ -2797,14 +2961,15 @@ describe("device-lab host broker lifecycle commands", () => {
             commandRunner,
         });
         const baseUrl = await listen(server);
-        const create = (deviceId: string) => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+        const create = () => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
             method: "POST",
             headers: ownerRpcHeaders(ownerId),
-            body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", deviceId, name: "Compensated VM", profile: "windows-11" } }),
+            body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", name: "Compensated VM", profile: "windows-11" } }),
         });
         try {
-            for (const deviceId of ["compensated-first", "compensated-second"]) {
-                const response = await create(deviceId);
+            for (let birth = 0; birth < 2; birth += 1) {
+                deviceId = undefined;
+                const response = await create();
                 const body = await response.json();
                 expect(response.status, JSON.stringify(body)).toBe(502);
                 expect(body).toEqual(expect.objectContaining({ error, rollback: expect.objectContaining({ ok: true }) }));
@@ -2817,8 +2982,10 @@ describe("device-lab host broker lifecycle commands", () => {
                     managedNat: true,
                     allocations: [],
                 });
-                expect(existsSync(join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId))).toBe(false);
+                expect(deviceId).toMatch(/^windows-vm-[a-f0-9-]{36}$/);
+                expect(existsSync(join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId!))).toBe(false);
             }
+            expect(birthIds.size).toBe(2);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -2856,8 +3023,7 @@ describe("device-lab host broker lifecycle commands", () => {
             vhdType: "Dynamic",
             preparedAt: new Date().toISOString(),
         }));
-        const deviceId = `rollback-cause-${failure}`;
-        const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+        let privateRoot = "";
         let provisioningFailed = false;
         const commandRunner = vi.fn((command) => {
             if (providerScript(command).includes("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND'")) {
@@ -2879,6 +3045,7 @@ describe("device-lab host broker lifecycle commands", () => {
         configureTypedHyperVNetworkOperations(commandRunner, {
             simulateVmCreate: true,
             beforeOperation(request) {
+                if (!privateRoot) { const id = issuedHyperVFixtureDeviceId(ownerId, "windows-vm"); if (id) privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", id); }
                 if (request.operation === "Remove-HostFiles") {
                     if (failure === "remove-host-files" && provisioningFailed) {
                         return { status: 1, stdout: JSON.stringify({ schemaVersion: 1, operation: request.operation, ok: false,
@@ -2906,7 +3073,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", deviceId, name: "Rollback cause VM", profile: "windows-11" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", name: "Rollback cause VM", profile: "windows-11" } }),
             });
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(502);
@@ -2968,8 +3135,7 @@ describe("device-lab host broker lifecycle commands", () => {
             vhdType: "Dynamic",
             preparedAt: new Date().toISOString(),
         }));
-        const deviceId = "wrapper-compensation";
-        const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+        let privateRoot = "";
         const movedRoot = join(cwd, "moved-private-root");
         let swapped = false;
         const commandRunner = vi.fn(() => {
@@ -2981,6 +3147,9 @@ describe("device-lab host broker lifecycle commands", () => {
                 // Once the incarnation is on record and the allocation is being made, the private
                 // root turns into a symlink, so the create fails its own root check with no rollback.
                 if (!swapped && request.operation === "New-VMSwitch") {
+                    const deviceId = issuedHyperVFixtureDeviceId(ownerId, "windows-vm")!;
+                    expect(deviceId).toMatch(/^windows-vm-[a-f0-9-]{36}$/);
+                    privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
                     swapped = true;
                     rmSync(movedRoot, { recursive: true, force: true });
                     renameSync(privateRoot, movedRoot);
@@ -3015,7 +3184,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", deviceId, name: "Wrapper compensation", profile: "windows-11" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", name: "Wrapper compensation", profile: "windows-11" } }),
             });
             const body = await response.json();
             expect(swapped).toBe(true);
@@ -3122,7 +3291,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", deviceId: "typed-create-code", name: "Typed create code", profile: "windows-11" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", name: "Typed create code", profile: "windows-11" } }),
             });
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(502);
@@ -3141,14 +3310,13 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     }, 60000);
 
-    // Only an explicit device_delete may tear the shared fabric down. The stop and create cases
-    // replay the same journal as compensation and then fail on their own terms: the replay removed
-    // the device the stop was for, and this fixture prepares no image for the create.
+    // An accepted orphan journal may finish its captured cleanup before stop/delete.
+    // Chosen-ID creation is refused before it can authorize that recovery.
     it.each([
         { command: "device_stop", keepsFabric: true, status: 404, error: "owner-device-not-found" },
-        { command: "device_create", keepsFabric: true, status: 409, error: "hyper-v-base-image-not-prepared" },
+        { command: "device_create", keepsFabric: true, status: 400, error: "vm-create-device-id-not-supported" },
         { command: "device_delete", keepsFabric: false, status: 200, error: null },
-    ] as const)("replays a pending Hyper-V delete journal ahead of $command with the matching fabric policy", async ({ command, keepsFabric, status, error }) => {
+    ] as const)("honors accepted orphan journal authority and chosen-ID refusal ahead of $command", async ({ command, keepsFabric, status, error }) => {
         const cwd = join(process.env.HOME!, "broker-hyper-v-journal-fabric-test");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
@@ -3229,11 +3397,21 @@ describe("device-lab host broker lifecycle commands", () => {
                     method: "broker.command.invoke",
                     params: command === "device_create"
                         ? { backend: "windows-vm", command, deviceId, name: "Journal fabric", profile: "windows-11" }
-                        : { backend: "windows-vm", command, deviceId, incarnationId },
+                        : { backend: "windows-vm", command, deviceId },
                 }),
             });
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(status);
+            if (command === "device_create") {
+                expect(body).toMatchObject({ error });
+                expect(existsSync(privateRoot)).toBe(true);
+                expect(fabricTeardowns).toEqual([]);
+                expect(commandRunner).not.toHaveBeenCalled();
+                expect(JSON.parse(readFileSync(networkStatePath, "utf8")).allocations).toEqual([
+                    expect.objectContaining({ ownerId, deviceId, incarnationId }),
+                ]);
+                return;
+            }
             expect(existsSync(privateRoot)).toBe(false);
             if (keepsFabric) {
                 expect(body).toEqual(expect.objectContaining({ error }));
@@ -3717,7 +3895,7 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
-    it("creates broker-routed macOS VM definitions with owner-scoped provider metadata", async () => {
+    it("creates same-name Unicode macOS definitions with distinct returned IDs and owner-scoped provider roots", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-macos-create-test");
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-macos-create-test",
@@ -3746,8 +3924,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     params: {
                         backend: "macos-vm",
                         command: "device_create",
-                        name: "Broker Mac",
-                        deviceId: "macos-broker-mac",
+                        name: "Broker 한글 Mac",
                         provider: "tart",
                         image: "ccc-macos-base",
                         headless: true,
@@ -3756,10 +3933,13 @@ describe("device-lab host broker lifecycle commands", () => {
             });
             expect(created.status).toBe(200);
             const body = await created.json() as { result: { device: { id: string; provider: string; providerInstance: string; image: string; status: string; ssh?: { user?: string; password?: string; passwordConfigured?: boolean } }; execution: { providerExecution: string; command?: { provider: string; args: string[] } } } };
+            const deviceId = body.result.device.id;
+            expect(deviceId).toMatch(/^macos-[a-f0-9-]{36}$/);
             expect(body.result.device).toEqual(expect.objectContaining({
-                id: "macos-broker-mac",
+                id: deviceId,
+                name: "Broker 한글 Mac",
                 provider: "tart",
-                providerInstance: `ccc-${ownerId}-macos-broker-mac`,
+                providerInstance: `ccc-${ownerId}-${deviceId}`,
                 image: "ccc-macos-base",
                 status: "stopped",
                 headless: true,
@@ -3774,15 +3954,32 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(body.result.execution.providerExecution).toBe("executed");
             expect(body.result.execution.command).toEqual(expect.objectContaining({
                 provider: "tart",
-                args: ["clone", "ccc-macos-base", `ccc-${ownerId}-macos-broker-mac`],
+                args: ["clone", "ccc-macos-base", `ccc-${ownerId}-${deviceId}`],
             }));
+
+            const sameNameBirth = await fetch(endpoint, {
+                method: "POST", headers,
+                body: JSON.stringify({ method: "broker.command.invoke", params: {
+                    backend: "macos-vm", command: "device_create", name: "Broker 한글 Mac",
+                    provider: "tart", image: "ccc-macos-base", headless: true,
+                } }),
+            });
+            expect(sameNameBirth.status).toBe(200);
+            const secondBody = await sameNameBirth.json();
+            expect(secondBody.result.device.id).toMatch(/^macos-[a-f0-9-]{36}$/);
+            expect(secondBody.result.device.id).not.toBe(deviceId);
+            expect(secondBody.result.device.name).toBe("Broker 한글 Mac");
+            expect(secondBody.result.device.providerInstance).not.toBe(body.result.device.providerInstance);
+            const storedBirths = JSON.parse(readFileSync(join(backendRoot(ownerId, "macos"), "devices.json"), "utf8")).devices;
+            expect(storedBirths).toHaveLength(2);
+            expect(storedBirths.map((device: { id: string }) => device.id)).toEqual([deviceId, secondBody.result.device.id]);
 
             const startPlan = await fetch(endpoint, {
                 method: "POST",
                 headers,
                 body: JSON.stringify({
                     method: "broker.command.plan",
-                    params: { backend: "macos-vm", command: "device_start", deviceId: "macos-broker-mac" },
+                    params: { backend: "macos-vm", command: "device_start", deviceId },
                 }),
             });
             expect(startPlan.status).toBe(200);
@@ -3790,7 +3987,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(plan.result.providerCommand).toEqual(expect.objectContaining({
                 provider: "tart",
                 executable: "/fake/tart",
-                args: ["run", "--no-graphics", `ccc-${ownerId}-macos-broker-mac`],
+                args: ["run", "--no-graphics", `ccc-${ownerId}-${deviceId}`],
             }));
         } finally {
             await close(server);
@@ -3828,16 +4025,18 @@ describe("device-lab host broker lifecycle commands", () => {
                         backend: "macos-vm",
                         command: "device_create",
                         name: "Auto Mac",
-                        deviceId: "macos-auto-provider",
                         provider: "auto",
                         image: "ccc-macos-base",
                     },
                 }),
             });
             expect(response.status).toBe(200);
-            expect(await response.json()).toEqual(expect.objectContaining({
+            const body = await response.json();
+            const deviceId = body.result.device.id;
+            expect(deviceId).toMatch(/^macos-[a-f0-9-]{36}$/);
+            expect(body).toEqual(expect.objectContaining({
                 result: expect.objectContaining({
-                    device: expect.objectContaining({ provider: "tart", providerInstance: `ccc-${ownerId}-macos-auto-provider` }),
+                    device: expect.objectContaining({ provider: "tart", providerInstance: `ccc-${ownerId}-${deviceId}` }),
                 }),
             }));
             const state = JSON.parse(readFileSync(join(backendRoot(ownerId, "macos"), "devices.json"), "utf8")) as { devices: Array<{ provider: string }> };
@@ -4237,7 +4436,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(await response.json()).toMatchObject({
                 ok: false,
                 error: "missing-provider-metadata",
-                missing: ["vmId", "vmName", "diskPath", "incarnationId"],
+                missing: ["incarnationId"],
                 backend: "linux-vm",
                 deviceId,
             });

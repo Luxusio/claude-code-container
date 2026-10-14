@@ -28,9 +28,11 @@ describe("provider discovery is shared only inside one inventory operation", () 
         const context = createFakeMacosMcpContext();
         const commandPath = vi.spyOn(commands, "commandPath");
         try {
+            const deviceIds: string[] = [];
             for (let index = 0; index < 3; index++) {
-                const result = await handleMacosTool("device_create", { backend: "macos-vm", name: `Audit ${index}`, deviceId: `macos-audit-${index}`, provider: "tart" });
+                const result = await handleMacosTool("device_create", { backend: "macos-vm", name: `Audit ${index}`, provider: "tart" });
                 expect(result?.isError).not.toBe(true);
+                deviceIds.push(json(result).device.id);
             }
             commandPath.mockClear();
             expect(listMacosDevices()).toHaveLength(3);
@@ -39,8 +41,8 @@ describe("provider discovery is shared only inside one inventory operation", () 
             expect(listMacosDevices()).toHaveLength(3);
             expect(commandPath.mock.calls.map(([name]) => name)).toEqual(["tart", "vz", "utmctl"]);
             commandPath.mockClear();
-            const status = await handleMacosTool("device_status", { deviceId: "macos-audit-0" });
-            expect(json(status).device.id).toBe("macos-audit-0");
+            const status = await handleMacosTool("device_status", { deviceId: deviceIds[0] });
+            expect(json(status).device.id).toBe(deviceIds[0]);
             expect(commandPath.mock.calls.map(([name]) => name)).toEqual(["tart", "vz", "utmctl"]);
         } finally {
             commandPath.mockRestore();

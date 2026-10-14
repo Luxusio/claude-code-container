@@ -22,7 +22,7 @@ function fixture(backend: "windows-vm" | "linux-vm" = "windows-vm") {
         stateErrorCode: () => null, providerError: () => null, boundedErrorCode: (_error, fallback) => fallback, redactExecution: value => value,
     } satisfies HyperVDesktopTransferPorts<object, typeof stage, Buffer, object>;
     const app = createHyperVDesktopTransferApplication(ports);
-    const invoke = (tool = "device_download", params: Record<string, unknown> = {}) => app.invoke("owner", { deviceId: "device", tool, params: { incarnationId: "incarnation", ...params }, localPath: "/destination", remotePath: "/guest" }, { backend, stateKey: backend, device });
+    const invoke = (tool = "device_download", params: Record<string, unknown> = {}) => app.invoke("owner", { deviceId: "device", tool, params, localPath: "/destination", remotePath: "/guest" }, { backend, stateKey: backend, device });
     return { ports, execution, stage, invoke };
 }
 
@@ -116,9 +116,10 @@ describe("Hyper-V owned transfer stage lifetime", () => {
         expect(await f.invoke()).toMatchObject({ kind: "failure", facts: { detail: { publicationCompleted: true, primary: { ok: true, result: { localPath: "/destination", bytes: 3 } } } } });
         expect(f.ports.writeDestination).toHaveBeenCalledExactlyOnceWith("/destination", Buffer.from("abc"), "hyper-v-guest-download");
     });
-    it("refuses changed incarnation before native execution or allocation", async () => {
+    it("refuses invalid stored private incarnation before native execution or allocation", async () => {
         const f = fixture();
-        expect(await f.invoke("device_download", { incarnationId: "successor" })).toMatchObject({ kind: "failure", category: "conflict" });
+        f.ports.incarnation = () => "invalid-private-generation";
+        expect(await f.invoke("device_download")).toMatchObject({ kind: "failure", category: "conflict" });
         expect(f.ports.allocateStage).not.toHaveBeenCalled();
         expect(f.ports.direct).not.toHaveBeenCalled();
     });
@@ -135,7 +136,7 @@ describe("Hyper-V owned transfer stage lifetime", () => {
         expect(f.ports.input).not.toHaveBeenCalled();
         expect(f.ports.direct).not.toHaveBeenCalled();
     });
-    it("passes exact repaired VM and incarnation authority to native download", async () => {
+    it("uses deviceId alone and passes exact repaired VM and private incarnation authority to native download", async () => {
         const f = fixture();
         expect(await f.invoke()).toMatchObject({ kind: "success" });
         expect(f.ports.direct).toHaveBeenCalledWith("powershell", 30000, {

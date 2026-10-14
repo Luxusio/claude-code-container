@@ -230,6 +230,8 @@ describe("Hyper-V public response projection", () => {
     it("uses an allowlist for persisted device records", () => {
         const result = redactHyperVDeviceSecrets({
             id: "windows-vm-1",
+            name: "Windows 한글 VM",
+            incarnationId: "private-generation",
             backend: "windows-vm",
             provider: "hyper-v",
             vmName: "ccc-owner-windows-vm-1",
@@ -249,6 +251,7 @@ describe("Hyper-V public response projection", () => {
 
         expect(result).toEqual({
             id: "windows-vm-1",
+            name: "Windows 한글 VM",
             backend: "windows-vm",
             provider: "hyper-v",
             vmName: "ccc-owner-windows-vm-1",

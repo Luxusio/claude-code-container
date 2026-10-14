@@ -209,6 +209,7 @@ function findOwnerDevices(ownerId: string, deviceId: string): OwnerDeviceMatch[]
 }
 
 const CREATABLE_DEVICE_BACKENDS = new Set(["android-emulator", "ios-simulator", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"]);
+const VM_DEVICE_BACKENDS = new Set(["windows-vm", "macos-vm", "linux-vm"]);
 const LIFECYCLE_STRING_OPTIONS = new Map([
     ["--name", "name"],
     ["--avd-name", "avdName"],
@@ -266,7 +267,7 @@ const START_OPTIONS_BY_BACKEND = new Map<string, ReadonlySet<string>>([
 const REBOOT_OPTIONS = new Set(["force", "startIfStopped", "waitForBoot", "bootTimeoutMs"]);
 
 function lifecycleUsage(action?: DeviceLifecycleAction): string {
-    if (action === "create") return "Usage: ccc devices create <backend> <device-id> [--name <name>] [provider options]";
+    if (action === "create") return "Usage: ccc devices create <backend> <name-for-VM-or-device-id> [--name <name>] [provider options]";
     if (action === "start") return "Usage: ccc devices start <device-id> [--minimized|--no-minimized] [provider options]";
     if (action === "stop") return "Usage: ccc devices stop <device-id>";
     if (action === "reboot") return "Usage: ccc devices reboot <device-id> [--force] [--start-if-stopped] [--wait-for-boot|--no-wait-for-boot] [--boot-timeout-ms <ms>]";
@@ -318,14 +319,17 @@ function parseDeviceLifecycleArgs(args: string[], cwd: string, profile?: string)
     const action = args[0] === "device-status" ? "status" : args[0] as DeviceLifecycleAction;
     if (action === "create") {
         const backend = args[1] || "";
-        const deviceId = args[2] || "";
-        if (!CREATABLE_DEVICE_BACKENDS.has(backend) || !deviceId) return { ok: false, message: lifecycleUsage(action) };
-        if (deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId)) return { ok: false, message: `Invalid device id: ${deviceId}` };
+        const nameOrId = args[2] || "";
+        if (!CREATABLE_DEVICE_BACKENDS.has(backend) || !nameOrId) return { ok: false, message: lifecycleUsage(action) };
+        const vm = VM_DEVICE_BACKENDS.has(backend);
+        if (vm && (!nameOrId.trim() || nameOrId.includes("\0"))) return { ok: false, message: "VM display name must be nonempty and contain no NUL" };
+        if (!vm && (nameOrId.length > 128 || /[^a-zA-Z0-9._:-]/.test(nameOrId))) return { ok: false, message: `Invalid device id: ${nameOrId}` };
+        const deviceId = vm ? "" : nameOrId;
         const options = parseLifecycleOptions(args.slice(3));
         if (!options.ok) return options;
         const validated = validateLifecycleOptions(action, backend, options.params);
         if (!validated.ok) return validated;
-        const existing = findOwnerDevices(deviceLabOwnerId(cwd, profile), deviceId);
+        const existing = vm ? [] : findOwnerDevices(deviceLabOwnerId(cwd, profile), deviceId);
         if (existing.length > 1 || existing.some((match) => match.backend.name !== backend)) {
             return { ok: false, message: `Device id already exists for current owner: ${deviceId}` };
         }
@@ -336,7 +340,7 @@ function parseDeviceLifecycleArgs(args: string[], cwd: string, profile?: string)
             deviceId,
             params: {
                 ...options.params,
-                name: typeof options.params.name === "string" ? options.params.name : deviceId,
+                name: typeof options.params.name === "string" ? options.params.name : nameOrId,
                 ...(backend === "windows-sandbox" && typeof options.params.minimized !== "boolean" ? { minimized: true } : {}),
             },
         };
@@ -377,11 +381,6 @@ function parseDeviceLifecycleArgs(args: string[], cwd: string, profile?: string)
             deviceId,
             params: {
                 ...options.params,
-                ...((match.backend.name === "windows-vm" || match.backend.name === "linux-vm")
-                    && action !== "status"
-                    && typeof match.device.incarnationId === "string"
-                    ? { incarnationId: match.device.incarnationId }
-                    : {}),
                 ...(action === "start" && match.backend.name === "windows-sandbox" && typeof options.params.minimized !== "boolean"
                     ? { minimized: true }
                     : {}),
@@ -456,7 +455,6 @@ function parseDeviceSnapshotArgs(args: string[], cwd: string, profile?: string):
         deviceId,
         params: {
             ...(snapshotId ? { snapshotId: target.toLowerCase() } : { snapshotName: target }),
-            ...(typeof match.device.incarnationId === "string" ? { incarnationId: match.device.incarnationId } : {}),
             ...(flags.has("--force") ? { force: true } : {}),
             ...(flags.has("--confirm-destructive") ? { confirmDestructive: true } : {}),
         },
@@ -1483,7 +1481,7 @@ export async function devicesCliAsync(
         const result = await invoke("broker.command.invoke", {
             backend: parsed.backend,
             command: parsed.action === "status" ? "device_status" : `device_${parsed.action}`,
-            deviceId: parsed.deviceId,
+            ...(parsed.deviceId ? { deviceId: parsed.deviceId } : {}),
             dryRun: false,
             ...parsed.params,
         }, {
@@ -1509,7 +1507,10 @@ export async function devicesCliAsync(
             console.error(formatLifecycleError(parsed.action, result));
             return 1;
         }
-        if (parsed.action !== "delete" && !brokerRpcDevice(result)) {
+        const returnedDevice = brokerRpcDevice(result);
+        const invalidCreateId = parsed.action === "create" && VM_DEVICE_BACKENDS.has(parsed.backend)
+            && (typeof returnedDevice?.id !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._-]{1,128}$/.test(returnedDevice.id));
+        if (invalidCreateId || (parsed.action !== "delete" && !returnedDevice)) {
             console.error(`CCC device ${parsed.action} failed: invalid-broker-response`);
             return 1;
         }

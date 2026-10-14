@@ -6,6 +6,7 @@ import { cleanupFakeMacosMcpContext, createFakeMacosMcpContext, type FakeMacosMc
 
 const persistenceFailure = vi.hoisted(() => ({
     armed: false,
+    deviceId: "",
     successor: null as Record<string, unknown> | null,
 }));
 
@@ -38,7 +39,7 @@ vi.mock("fs", async (importOriginal) => {
             if (persistenceFailure.armed && destination.replaceAll("\\", "/").endsWith("/macos/devices.json")) {
                 persistenceFailure.armed = false;
                 const state = JSON.parse(actual.readFileSync(source, "utf8")) as { devices: Array<Record<string, unknown>> };
-                const devices = state.devices.map((device) => device.id === "macos-rollback-recorder"
+                const devices = state.devices.map((device) => device.id === persistenceFailure.deviceId
                     ? { ...device, recording: persistenceFailure.successor }
                     : device);
                 actual.writeFileSync(destination, JSON.stringify({ devices }, null, 2));
@@ -79,7 +80,8 @@ describe("macOS VM recorder start rollback", () => {
             sshUser: "ccc",
         });
         expect(created?.isError).not.toBe(true);
-        const started = await handleMacosTool("device_start", { deviceId: "macos-rollback-recorder" });
+        persistenceFailure.deviceId = JSON.parse((created?.content as Array<{ text: string }>)[0].text).device.id;
+        const started = await handleMacosTool("device_start", { deviceId: persistenceFailure.deviceId });
         expect(started?.isError).not.toBe(true);
 
         recorderProcess.executable = join(context.binDir, "ssh");
@@ -114,7 +116,7 @@ if (command.includes("screencapture") && command.includes("-v")) {
         persistenceFailure.armed = true;
 
         const result = await handleMacosTool("device_record_video_start", {
-            deviceId: "macos-rollback-recorder",
+            deviceId: persistenceFailure.deviceId,
             remotePath: "/tmp/rollback.mov",
             localPath: join(context.homeDir, "rollback.mov"),
         });
@@ -129,6 +131,6 @@ if (command.includes("screencapture") && command.includes("-v")) {
         const ownersRoot = join(context.homeDir, ".ccc", "devices", "owners");
         const statePath = join(ownersRoot, readdirSync(ownersRoot)[0], "macos", "devices.json");
         const state = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<{ id: string; recording?: unknown }> };
-        expect(state.devices.find((device) => device.id === "macos-rollback-recorder")?.recording).toEqual(successor);
+        expect(state.devices.find((device) => device.id === persistenceFailure.deviceId)?.recording).toEqual(successor);
     });
 });

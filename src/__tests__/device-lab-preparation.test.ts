@@ -26,7 +26,6 @@ function fixture(extra: Record<string, unknown> = {}) {
     mkdirSync(keys, { recursive: true });
     const key = join(keys, "id_ed25519");
     writeFileSync(key, "test-key");
-    const labId = basename(root);
     const provision = vi.fn(() => ({ ok: true, status: 0, stdout: "", stderr: "" }));
     const spawn = vi.fn(() => ({ ok: true, pid: 12345 }));
     const options = {
@@ -35,10 +34,11 @@ function fixture(extra: Record<string, unknown> = {}) {
         processExists: () => true,
     };
     const created = createLab({
-        name: "Preparation", labId, guestSshHost: "127.0.0.1", guestSshUser: "ccc", guestSshKeyPath: key,
+        name: "Preparation", guestSshHost: "127.0.0.1", guestSshUser: "ccc", guestSshKeyPath: key,
         guestAgentHealthCommand: "test-agent-health", guestAgentProvisionCommand: "test-agent-setup", ...extra,
     }, options);
     expect(created.ok).toBe(true);
+    const labId = created.lab.id;
     return { labId, options, provision, spawn };
 }
 

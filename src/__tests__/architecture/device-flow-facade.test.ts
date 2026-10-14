@@ -125,7 +125,7 @@ function reset(failure = false) {
     fixture.scope = 0; fixture.nextScope = 0; fixture.failure = failure;
 }
 beforeEach(() => reset());
-const shared = { deviceId: "target-a", incarnationId: "a".repeat(32) };
+const shared = { deviceId: "target-a" };
 const step = (args: Record<string, unknown> = {}, tool = "click") => ({ tool, arguments: { implicitBroker: false, ...(tool === "click" ? { x: 1, y: 2 } : {}), ...args } });
 async function observeFlow(make: () => Record<string, unknown>) {
     const failure = fixture.failure; reset(failure);
@@ -190,9 +190,10 @@ describe("current public flow behavior", () => {
         expect(observed.calls).toHaveLength(1);
     });
     it("uses required-deviceId schema eligibility before property sharing", () => {
-        const flow = { ...shared, confirmDestructive: true, backend: "android" };
+        const flow = { ...shared, incarnationId: "a".repeat(32), confirmDestructive: true, backend: "android" };
         for (const tool of TOOLS) {
             const stepArgs = {};
+            expect(flowStepArguments(tool.name, flow, stepArgs)).not.toHaveProperty("incarnationId");
             if (!tool.inputSchema.required?.includes("deviceId")) {
                 expect(flowStepArguments(tool.name, flow, stepArgs)).not.toHaveProperty("deviceId");
                 expect(flowStepArguments(tool.name, flow, stepArgs)).not.toHaveProperty("incarnationId");

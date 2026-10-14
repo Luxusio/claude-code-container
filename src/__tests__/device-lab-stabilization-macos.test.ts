@@ -50,7 +50,7 @@ import { normalizePublicToolArgs } from "../../device-lab-mcp/src/tool-arguments
 import { readMacosDevices } from "@ccc/device-lab/providers/state/macos-state.mjs";
 
 const call = (name: string, args: Record<string, unknown>) => fixture.handlers[1]({ params: { name, arguments: { implicitBroker: false, ...args } } });
-const create = (extra: Record<string, unknown> = {}) => call("create_macos_vm", { name: "Managed Mac", deviceId: "managed-mac", image: "custom-base", ...extra });
+const create = (extra: Record<string, unknown> = {}) => call("create_macos_vm", { name: "Managed Mac", image: "custom-base", ...extra });
 const mutations = () => fixture.calls.filter(call => ["clone", "delete", "run"].includes(call.args[0]) && call.args[1] !== "--help");
 let home: string;
 beforeAll(async () => { await startServer(); });
@@ -68,12 +68,15 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(home, { recur
 
 describe("public managed macOS creation", () => {
     it.each([true, false])("clones before start and preserves headless:%s", async headless => {
-        expect((await create({ headless })).isError).not.toBe(true);
+        const result = await create({ headless });
+        expect(result.isError).not.toBe(true);
+        const deviceId = JSON.parse(result.content[0].text).device.deviceId;
         const [device] = readMacosDevices();
-        expect(device).toMatchObject({ id: "managed-mac", image: "custom-base", status: "stopped", providerResourceManaged: true, headless });
+        expect(deviceId).toMatch(/^macos-[0-9a-f-]{36}$/);
+        expect(device).toMatchObject({ id: deviceId, image: "custom-base", status: "stopped", providerResourceManaged: true, headless });
         expect(mutations().map(call => call.args)).toEqual([["clone", "custom-base", device.providerInstance]]);
         // This fixture proves lifecycle arguments; its fake SSH response has no readiness probe.
-        expect((await call("start", { deviceId: device.id, waitForBoot: false })).isError).not.toBe(true);
+        expect((await call("start", { deviceId, waitForBoot: false })).isError).not.toBe(true);
         expect(mutations().map(call => call.args[0])).toEqual(["clone", "run"]);
         expect(mutations()[1].args.includes("--no-graphics")).toBe(headless);
     });
@@ -88,8 +91,10 @@ describe("public managed macOS creation", () => {
     it("retains the owned source clone path", async () => {
         expect((await create()).isError).not.toBe(true);
         const source = readMacosDevices()[0];
-        expect((await call("create_macos_vm", { name: "Copy", deviceId: "copy", sourceDeviceId: source.id })).isError).not.toBe(true);
-        const copy = readMacosDevices().find((device: any) => device.id === "copy");
+        const result = await call("create_macos_vm", { name: "Copy", sourceDeviceId: source.id });
+        expect(result.isError).not.toBe(true);
+        const deviceId = JSON.parse(result.content[0].text).device.deviceId;
+        const copy = readMacosDevices().find((device: any) => device.id === deviceId);
         expect(copy).toMatchObject({ providerResourceManaged: true, clonedFrom: { deviceId: source.id, providerInstance: source.providerInstance } });
         expect(mutations().at(-1)?.args).toEqual(["clone", source.providerInstance, copy.providerInstance]);
     });
@@ -120,9 +125,11 @@ describe("public managed macOS creation", () => {
     });
 
     it("passes the maximum public exec timeout through to SSH", async () => {
-        expect((await create({ ssh: { host: "guest", user: "test" } })).isError).not.toBe(true);
+        const created = await create({ ssh: { host: "guest", user: "test" } });
+        expect(created.isError).not.toBe(true);
+        const deviceId = JSON.parse(created.content[0].text).device.deviceId;
         fixture.calls.length = 0;
-        expect((await call("exec", { deviceId: "managed-mac", command: "echo ready", timeoutMs: 600000 })).isError).not.toBe(true);
+        expect((await call("exec", { deviceId, command: "echo ready", timeoutMs: 600000 })).isError).not.toBe(true);
         expect(fixture.calls).toContainEqual(expect.objectContaining({ command: "/fixture/ssh", timeout: 600000, args: expect.arrayContaining(["echo ready"]) }));
     });
 });

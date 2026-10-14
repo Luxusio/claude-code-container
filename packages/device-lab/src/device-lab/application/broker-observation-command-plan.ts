@@ -30,22 +30,8 @@ export function createLifecyclePreview<Parsed extends LifecyclePreviewRequest, C
         try { devices = ports.read(ownerId, parsed); }
         catch (error) { return { kind: "state-failed" as const, error }; }
         const device = devices.find(candidate => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId);
-        if (device && ports.hyperV(parsed) && parsed.command !== "device_create" && parsed.command !== "device_status") {
-            if (!ports.validIncarnation(parsed)) return { kind: "incarnation-required" as const };
-            const currentIncarnationId = device && typeof device === "object" && !Array.isArray(device) ? ports.incarnation(device as Record<string, unknown>) : null;
-            if (currentIncarnationId !== parsed.expectedIncarnationId) return { kind: "incarnation-conflict" as const };
-        }
         if (parsed.command === "device_create") {
             if (device) {
-                if (ports.hyperV(parsed)) {
-                    const record = device as Record<string, unknown>;
-                    const conflicts = ports.conflicts(record, parsed);
-                    if (conflicts.length === 0) return { kind: "equivalent-create" as const, value: {
-                        ownerId, backend: parsed.backend, stateKey: parsed.stateKey, command: parsed.command, deviceId: parsed.deviceId,
-                        device: record,
-                    } };
-                    return { kind: "configuration-conflict" as const, conflicts };
-                }
                 return { kind: "already-exists" as const };
             }
             let effectiveParsed = parsed;

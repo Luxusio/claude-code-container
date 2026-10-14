@@ -713,7 +713,6 @@ export function redactHyperVDeviceSecrets(device: unknown): unknown {
         "platform",
         "ownerId",
         "provider",
-        "incarnationId",
         "vmName",
         "vmId",
         "profile",

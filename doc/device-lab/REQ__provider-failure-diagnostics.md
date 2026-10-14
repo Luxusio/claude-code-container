@@ -25,8 +25,11 @@ The short real-test failure line also includes hexadecimal HRESULT/category or
 readiness evidence when available, within its existing 511-character limit.
 
 Public GUI journey fixtures must apply the real public input validator before
-returning simulated provider responses. `window_list` accepts the optional
-validated `incarnationId`, matching the generation used for subsequent controls.
+returning simulated provider responses. `window_list` and subsequent controls
+select the exact owned deviceId without a public incarnationId. Private frame,
+GUID, ownership Notes and generation checks remain inside the provider. Native
+console/setup diagnostic helpers obtain private metadata through opt-in detailed
+status evidence and retain their exact generation fences.
 Known unsupported-argument errors retain only catalog-approved tool and field
 identifiers under a fixed validation classification; arbitrary error prose and
 request arguments remain excluded from saved diagnostics.

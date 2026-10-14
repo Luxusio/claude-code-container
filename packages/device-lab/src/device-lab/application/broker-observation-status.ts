@@ -101,22 +101,6 @@ export function createBrokerDeviceStatus<Connection, Receipt>(ports: BrokerDevic
     }
     async function recover(ownerId: string, request: DeviceStatusRequest, deadline: number): Promise<DeviceStatusRefusal<Connection> | null> {
         ports.assertDeadline(deadline);
-        // Snapshot recovery requires incarnation admission. Operation-only compensation retains its accepted admission.
-        if (ports.snapshotPending(ownerId, request.backend, request.deviceId)) {
-            let expected: string | null;
-            try {
-                const current = ports.readDevices(ownerId, request.stateKey).find(candidate => deviceStatusRecord(candidate) && candidate.id === request.deviceId);
-                expected = deviceStatusRecord(current) ? ports.incarnation(current) : null;
-                if (!expected) expected = ports.readOperationJournal(ownerId, request.backend, request.deviceId)?.incarnationId || null;
-            } catch (error) {
-                if (ports.stateErrorCode(error)) return {kind: "refused", ...ports.stateFailure(error, request)};
-                return failure(ownerId, request, "conflict", "hyper-v-operation-journal-invalid", ports.errorCode(error, "hyper-v-operation-journal-invalid"));
-            }
-            if (expected) {
-                if (!ports.validIncarnation(request.expectedIncarnationId)) return failure(ownerId, request, "conflict", "hyper-v-incarnation-required");
-                if (request.expectedIncarnationId !== expected) return failure(ownerId, request, "conflict", "hyper-v-incarnation-conflict");
-            }
-        }
         const operation = await ports.reconcileOperation(ownerId, request.backend, request.deviceId, deadline, true);
         if (!operation.ok) return failure(ownerId, request, operation.reason, operation.error, operation.detail);
         let snapshot: {operationId: string} | null;

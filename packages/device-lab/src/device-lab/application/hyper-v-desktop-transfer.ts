@@ -1,4 +1,4 @@
-import { desktopField, desktopRecord, desktopSucceeded, desktopReadOnly, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, validateWindowHandle, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopOutcome, type DesktopFailureCategory, type DesktopPreparedEffect, type DesktopDirectAction, type DesktopGuestIntent } from '../domain/hyper-v-desktop-transfer.js';
+import { desktopField, desktopRecord, desktopSucceeded, desktopInputFailure, DESKTOP_CONSOLE_TOOLS, hyperVConsoleKeyTokens, hyperVConsoleText, hyperVConsolePixel, validateWindowHandle, type DesktopRecord, type DesktopRequest, type DesktopTarget, type DesktopOutcome, type DesktopFailureCategory, type DesktopPreparedEffect, type DesktopDirectAction, type DesktopGuestIntent } from '../domain/hyper-v-desktop-transfer.js';
 import type { HyperVDesktopTransferPorts } from '../ports/hyper-v-desktop-transfer.js';
 export function createHyperVDesktopTransferApplication<Console, Stage, Bytes extends {
     readonly length: number;
@@ -25,26 +25,12 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     ok: false, error: "missing-provider-command", missing: ["powershell"], backend: match.backend, deviceId
                 }
             };
-        const initialIncarnationId = ports.incarnation(device);
-        const pendingSnapshotJournal = ports.pendingJournal(ownerId, match.stateKey, deviceId);
+        if (!ports.validIncarnation(ports.incarnation(device))) return {
+            kind: 'failure', category: 'conflict', facts: {
+                ok: false, error: "missing-provider-metadata", missing: ["incarnationId"], ownerId, backend: match.backend, deviceId,
+            },
+        };
         const cursorMove = parsed.tool === "device_cursor_position" && (parsed.params.x !== undefined || parsed.params.y !== undefined);
-        if (!desktopReadOnly(parsed.tool) || cursorMove || pendingSnapshotJournal) {
-            const expectedIncarnationId = parsed.params.incarnationId;
-            if (!ports.validIncarnation(expectedIncarnationId)) {
-                return {
-                    kind: 'failure', category: 'conflict', facts: {
-                        ok: false, error: "hyper-v-incarnation-required", ownerId, backend: match.backend, deviceId, tool: parsed.tool
-                    }
-                };
-            }
-            if (!initialIncarnationId || expectedIncarnationId !== initialIncarnationId) {
-                return {
-                    kind: 'failure', category: 'conflict', facts: {
-                        ok: false, error: "hyper-v-incarnation-conflict", ownerId, backend: match.backend, deviceId, tool: parsed.tool
-                    }
-                };
-            }
-        }
         const reconciliation = await ports.repair(ownerId, match.stateKey, deviceId, device, powershell);
         if (!reconciliation.ok)
             return {
@@ -59,7 +45,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
         const vmName = typeof device.vmName === "string" ? device.vmName : null;
         const diskPath = typeof device.diskPath === "string" ? device.diskPath : null;
         const incarnationId = ports.incarnation(device);
-        if (!vmId || !vmName || !diskPath || !incarnationId) {
+        if (!vmId || !vmName || !diskPath || !ports.validIncarnation(incarnationId)) {
             return {
                 kind: 'failure', category: 'conflict', facts: {
                     ok: false, error: "missing-provider-metadata", missing: ["vmId", "vmName", "diskPath", "incarnationId"], backend: match.backend, deviceId
@@ -125,7 +111,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     ok: false, error, ownerId, backend: match.backend, deviceId, tool: parsed.tool,
                     ...(["hyper-v-console-screenshot-required", "hyper-v-console-geometry-changed"].includes(error)
                         ? {
-                            remedy: "Call device_screenshot again, then use its current incarnationId and image coordinates."
+                            remedy: "Call device_screenshot again, then use its image coordinates."
                         } : error === "hyper-v-display-unavailable"
                         ? {
                             remedy: "Start the VM and wait for its desktop, then call device_screenshot."
@@ -149,7 +135,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                             kind: 'success', capture, facts: {
                                 ok: true, result: {
                                     ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: "hyper-v-console",
-                                    width: capture.width, height: capture.height, incarnationId, capturedAt,
+                                    width: capture.width, height: capture.height, capturedAt,
                                 }
                             }
                         };
@@ -159,7 +145,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                         return {
                             kind: 'success', facts: {
                                 ok: true, result: {
-                                    ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: "hyper-v-console", ...cursor, incarnationId
+                                    ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: "hyper-v-console", ...cursor
                                 }
                             }
                         };
@@ -275,7 +261,7 @@ export function createHyperVDesktopTransferApplication<Console, Stage, Bytes ext
                     return {
                         kind: 'success', facts: {
                             ok: true, result: {
-                                ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: inputProvider, incarnationId, applied: true
+                                ownerId, backend: match.backend, deviceId, tool: parsed.tool, provider: inputProvider, applied: true
                             }
                         }
                     };

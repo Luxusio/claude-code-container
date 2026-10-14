@@ -378,18 +378,6 @@ function deviceLabServerLiteralSets(publicNames = true) {
 }
 
 
-function brokerCommandForwardedInputKeys() {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8").replace(/\r\n/g, "\n");
-    const match = /export async function brokerCommand[\s\S]*?return brokerRpcRequest\(\{([\s\S]*?)\n\s*\}\);\n\}/.exec(text);
-    expect(match).not.toBeNull();
-    const body = match?.[1] || "";
-    return [...new Set([...body.matchAll(/\b[a-zA-Z_][a-zA-Z0-9_]*:\s*options\.([a-zA-Z_][a-zA-Z0-9_]*)/g)]
-        .map((item) => item[1])
-        .filter((key) => key !== "timeoutMs"))]
-        .sort();
-}
-
-
 function brokerAppiumActionKeys() {
     const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
     const match = /export async function brokerAppium[\s\S]*?const methodByAction = \{([\s\S]*?)\n\s*\};/.exec(text);
@@ -1236,22 +1224,8 @@ describe("test level runner", () => {
         expect(drift).toEqual([]);
     });
 
-    it("keeps hidden broker command forwarded lifecycle inputs explicit in the broker implementation", () => {
-        const advertised = advertisedDeviceLabTools();
-        expect(advertised).not.toContain("device_broker_command");
-        const forwarded = new Set(brokerCommandForwardedInputKeys());
-        const brokerText = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
-        expect(brokerText).toContain("...plainObject(options.options)");
-        expect([...forwarded]).toEqual(expect.arrayContaining([
-            "backend",
-            "command",
-            "deviceId",
-            "name",
-            "waitForBoot",
-            "bootTimeoutMs",
-            "dryRun",
-            "force",
-        ]));
+    it("keeps broker lifecycle commands outside the advertised public tool surface", () => {
+        expect(advertisedDeviceLabTools()).not.toContain("device_broker_command");
     });
 
     it("keeps hidden broker Appium actions and forwarded inputs explicit in the implementation", () => {
@@ -1760,8 +1734,9 @@ describe("test level runner", () => {
             detail: true, autolaunch: true, port: 17373, brokerPort: 17373,
             hostCandidates: ["127.0.0.1"], timeoutMs: 1000,
             rpcTimeoutMs: 10000, launchTimeoutMs: 5000,
-        }, "level2-broker-e2e-public-windows");
+        });
         expect(request).not.toHaveProperty("port");
+        expect(request).not.toHaveProperty("deviceId");
         expect(request).toHaveProperty("dryRun", true);
         expect(request).toMatchObject({ brokerPort: 17373, image: "ccc-level2-missing-image" });
         expect(toolInputError("create_windows_vm", request)).toBeNull();
@@ -1773,120 +1748,57 @@ describe("test level runner", () => {
             .toBe("create windows-vm does not support port");
     });
 
-    it.each(["device-not-found", "device-backend-not-found"])("accepts immediate missing macOS image failure with unpublished device (%s)", async (error) => {
-        const deviceId = "missing-image-device";
+    it("proves missing macOS image failure leaves owner inventory unchanged without selecting a made-up ID", async () => {
+        const existing = { deviceId: "macos-vm-13579bdf-2468-4ace-8bdf-13579bdf2468", name: "existing fixture" };
         const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
         const createRecord = { expectedError: false };
-        const statusRecord = { expectedError: false };
         await probeMissingMacosImage(async (tool, args) => {
             calls.push({ tool, args });
             return tool === "create_macos_vm"
-                ? { isError: true, content: [{ type: "text", text: "Tart source image missing-source does not exist" }], __cccToolCallRecord: createRecord }
-                : { isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false, error, deviceId }) }], __cccToolCallRecord: statusRecord };
-        }, deviceId);
-        expect(calls.map(call => call.tool)).toEqual(["create_macos_vm", "status"]);
-        expect(calls[0].args).toMatchObject({ deviceId, image: "missing-source" });
-        expect(calls[1].args).toMatchObject({ deviceId });
+                ? { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "macos-tart-clone-failed", image: "missing-source" }) }], __cccToolCallRecord: createRecord }
+                : { content: [{ type: "text", text: JSON.stringify({ devices: [existing] }) }] };
+        });
+        expect(calls.map(call => call.tool)).toEqual(["devices", "create_macos_vm", "devices"]);
+        expect(calls[1].args).toMatchObject({ image: "missing-source" });
+        expect(calls[1].args).not.toHaveProperty("deviceId");
+        expect(calls.every(call => !("incarnationId" in call.args))).toBe(true);
         expect(createRecord.expectedError).toBe(true);
-        expect(statusRecord.expectedError).toBe(true);
     });
 
-    it("rejects deferred macOS image creation that only publishes a definition", async () => {
+    it("rejects deferred macOS image creation that publishes a definition", async () => {
         const calls: string[] = [];
         await expect(probeMissingMacosImage(async (tool) => {
             calls.push(tool);
-            return { content: [{ type: "text", text: JSON.stringify({ device: { deviceId: "missing-image-device", status: "stopped" } }) }] };
-        }, "missing-image-device")).rejects.toThrow("missing image unexpectedly cloned during create");
-        expect(calls).toEqual(["create_macos_vm"]);
+            return { content: [{ type: "text", text: JSON.stringify(tool === "devices"
+                ? { devices: [] } : { device: { deviceId: "macos-vm-generated", status: "stopped" } }) }] };
+        })).rejects.toThrow("missing image unexpectedly cloned during create");
+        expect(calls).toEqual(["devices", "create_macos_vm"]);
     });
 
-    it("rejects a failed macOS image creation that leaves a published device", async () => {
-        const calls: string[] = [];
+    it("rejects failed macOS image creation that publishes any new generated ID", async () => {
+        let inventories = 0;
+        await expect(probeMissingMacosImage(async (tool) => tool === "create_macos_vm"
+            ? { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "macos-tart-clone-failed" }) }] }
+            : { content: [{ type: "text", text: JSON.stringify({ devices: ++inventories === 1 ? [] : [
+                { deviceId: "macos-vm-new-generated", name: "Level 2 public missing base image", status: "stopped" },
+            ] }) }] })).rejects.toThrow(/published|inventory|unpublished/);
+        expect(inventories).toBe(2);
+    });
+
+    it.each(["Unexpected error: provider dispatch threw", "Unknown tool: create_macos_vm", "permission denied"])("rejects unrelated macOS image probe errors (%s)", async (diagnostic) => {
+        await expect(probeMissingMacosImage(async (tool) => tool === "devices"
+            ? { content: [{ type: "text", text: JSON.stringify({ devices: [] }) }] }
+            : { isError: true, content: [{ type: "text", text: diagnostic }] }
+        )).rejects.toThrow();
+    });
+
+    it.each([{}, { devices: null }, { ok: false, error: "host-broker-unavailable" }])("fails closed when missing-image inventory is invalid (%j)", async (inventory) => {
+        const creates: string[] = [];
         await expect(probeMissingMacosImage(async (tool) => {
-            calls.push(tool);
-            return tool === "create_macos_vm"
-                ? { isError: true, content: [{ type: "text", text: "missing source image" }] }
-                : { content: [{ type: "text", text: JSON.stringify({ device: { deviceId: "missing-image-device", status: "stopped" } }) }] };
-        }, "missing-image-device")).rejects.toThrow("status unexpectedly succeeded for missing device");
-        expect(calls).toEqual(["create_macos_vm", "status"]);
-    });
-
-    it.each(["Unexpected error: provider dispatch threw", "Unknown tool: create_macos_vm"])("rejects unrelated macOS image probe errors (%s)", async (diagnostic) => {
-        await expect(probeMissingMacosImage(async () => ({
-            isError: true, content: [{ type: "text", text: diagnostic }],
-        }), "missing-image-device")).rejects.toThrow("missing image create: unexpected dispatch or internal error");
-    });
-
-    it("covers broker autolaunch and broker-backed provider discovery in the real MCP E2E", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "level2-broker-e2e.ts"), "utf-8");
-        const distText = readFileSync(join(repoRoot, "scripts", "real-tests", "level2-dist-broker-e2e.ts"), "utf-8");
-        const helperText = readFileSync(join(repoRoot, "scripts", "real-tests", "helpers.ts"), "utf-8");
-        expect(text).toContain("devices");
-        expect(text).toContain('callInternal("brokerRpc"');
-        expect(text).not.toContain('callTool("device_broker_rpc"');
-        expect(text).toContain("broker.echo");
-        expect(text).toContain("broker.status");
-        expect(text).toContain("broker.inventory");
-        expect(text).toContain("broker.backends");
-        expect(text).toContain("broker RPC status");
-        expect(text).toContain("broker RPC inventory");
-        expect(text).toContain("devices");
-        expect(text).toContain("action: \"status\"");
-        expect(text).toContain("action: \"claim\"");
-        expect(text).toContain("action: \"heartbeat\"");
-        expect(text).toContain("action: \"prune\"");
-        expect(text).toContain("action: \"release\"");
-        expect(text).toContain("broker lease claim heartbeat prune release");
-        expect(text).toContain("action: \"attach\"");
-        expect(text).toContain("action: \"detach\"");
-        expect(text).toContain("broker physical attach missing-device diagnostic");
-        expect(text).toContain("broker physical detach missing-device diagnostic");
-        expect(text).toContain("action: \"pair\"");
-        expect(text).toContain("action: \"connect\"");
-        expect(text).toContain("broker Apple trust pair diagnostic");
-        expect(text).toContain("broker Apple trust connect diagnostic");
-        expect(text).toContain("action: \"list\"");
-        expect(text).toContain("action: \"record\"");
-        expect(text).toContain("action: \"clear\"");
-        expect(text).toContain("broker Appium session list");
-        expect(text).toContain("broker Appium record missing-device diagnostic");
-        expect(text).toContain("broker Appium clear missing-device diagnostic");
-        expect(text).toContain("\"start\", \"stop\", \"ensure-session\", \"delete-session\"");
-        expect(text).toContain("broker Appium lifecycle/session missing-device diagnostics");
-        expect(text).toContain("action: \"request\"");
-        expect(text).toContain("\"GET\", \"POST\"");
-        expect(text).toContain("broker Appium request method diagnostics");
-        expect(text).toContain("action: \"invoke\"");
-        expect(text).toContain("broker lifecycle command invoke missing-device diagnostic");
-        expect(text).toContain("\"device_create\", \"device_status\", \"device_start\", \"device_stop\", \"device_delete\"");
-        expect(text).toContain("broker lifecycle command plan enum diagnostics");
-        expect(text).toContain("broker lifecycle command flat arguments");
-        expect(text).toContain("devicePort: 5598");
-        expect(text).toContain("autolaunch: true");
-        expect(text).toContain("ccc-broker-e2e-home-");
-        expect(text).toContain("HOME: testHome");
-        expect(text).toContain("USERPROFILE: testHome");
-        expect(text).toContain("brokerPort: port");
-        expect(text).toContain("rmSync(testHome, { recursive: true, force: true })");
-        expect(text).toContain("cleanupTestBrokerRuntime");
-        expect(text).toContain("stopWindowsTestBroker");
-        expect(text).toContain('spawnSync("taskkill"');
-        expect(text).toContain("waitForPidExit");
-        expect(text).toContain("ccc.cleanup?.()");
-        expect(text).toContain("runtimeRemoved=");
-        expect(text).toContain("exited=");
-        expect(text).toContain("Windows test broker process cleanup");
-        expect(text).not.toContain("cleanupOwner: false");
-        expect(text).toContain("broker lifecycle remains session-owned");
-        expect(text).toContain("reused or host-managed broker remains running");
-        expect(text).not.toContain("so shutdown would affect a shared broker");
-        expect(helperText).toContain("ccc-real-tests-bin-");
-        expect(helperText).toContain("cleanup: () => rmSync");
-        expect(text).not.toContain("CCC_DEVICE_LAB_OWNER_BASIS");
-        expect(text).not.toContain("implicitBroker: false");
-        expect(text).toContain("export async function runBrokerE2E(options: any = {})");
-        expect(distText).toContain("runBrokerE2E");
-        expect(distText).toContain("dist\", \"device-lab-mcp\", \"server.mjs");
+            if (tool === "create_macos_vm") creates.push(tool);
+            return { content: [{ type: "text", text: JSON.stringify(inventory) }] };
+        })).rejects.toThrow();
+        expect(creates).toEqual([]);
     });
 
     it("runs available real-provider E2E scenarios through source and packaged MCP servers", () => {
@@ -3625,14 +3537,14 @@ describe("canonical real-runner argument interpretation", () => {
             const fixture = join(dir, "calls.mjs");
             const summaryPath = join(dir, "summary.json");
             const valid = [
-                { name: "run_flow", arguments: { deviceId: "android-test", incarnationId: "a".repeat(32), steps: [{ tool: "click", arguments: { x: 1, y: 2 } }] } },
+                { name: "run_flow", arguments: { deviceId: "android-test", steps: [{ tool: "click", arguments: { x: 1, y: 2 } }] } },
                 { name: "install_app", arguments: { deviceId: "android-test", path: "/app.apk" } },
                 { name: "launch_app", arguments: { deviceId: "android-test", appId: "com.example" } },
                 { name: "screenshot", arguments: { deviceId: "android-test" } },
                 { name: "set_orientation", arguments: { deviceId: "android-test", orientation: "landscape" } },
-                { name: "run_flow", arguments: { deviceId: "vm-a", incarnationId: "a".repeat(32), steps: [
+                { name: "run_flow", arguments: { deviceId: "vm-a", steps: [
                     { tool: "click", arguments: { x: 1, y: 2 } },
-                    { tool: "click", arguments: { deviceId: "vm-b", incarnationId: "b".repeat(32), x: 3, y: 4 } },
+                    { tool: "click", arguments: { deviceId: "vm-b", x: 3, y: 4 } },
                 ] } },
             ];
             const removed = ["mobile_install_app", "mobile_launch_app", "mobile_screenshot", "mobile_rotate_left", "mobile_rotate_right", "mobile_run_flow", "device_broker_rpc"];

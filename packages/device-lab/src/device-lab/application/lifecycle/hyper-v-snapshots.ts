@@ -153,17 +153,9 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
                     deviceId,
                     tool: parsed.tool,};
         }
-        const initialIncarnationId = ports.incarnation(device);
-        const pendingSnapshotJournal = ports.journalExists(ownerId, match.stateKey, deviceId);
-        if (parsed.tool !== "device_snapshot_list" || pendingSnapshotJournal) {
-            const expectedIncarnationId = parsed.params.incarnationId;
-            if (!ports.validIncarnation(expectedIncarnationId)) {
-                return { kind:'refused',reason:'conflict',journalDisposition:'retain',error: "hyper-v-incarnation-required", ownerId, backend: match.backend, deviceId, tool: parsed.tool};
-            }
-            if (!initialIncarnationId || expectedIncarnationId !== initialIncarnationId) {
-                return { kind:'refused',reason:'conflict',journalDisposition:'retain',error: "hyper-v-incarnation-conflict", ownerId, backend: match.backend, deviceId, tool: parsed.tool};
-            }
-        }
+        if (!ports.validIncarnation(ports.incarnation(device))) return {
+            kind:'refused',reason:'conflict',journalDisposition:'retain',error: "missing-provider-metadata", missing: ["incarnationId"], ownerId, backend: match.backend, deviceId,
+        };
         const reconciliation = await reconcileSnapshotJournal(
             ownerId,
             match.stateKey,
@@ -180,7 +172,7 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
         const vmName = typeof device.vmName === "string" ? device.vmName : null;
         const diskPath = typeof device.diskPath === "string" ? device.diskPath : null;
         const incarnationId = ports.incarnation(device);
-        if (!vmId || !vmName || !diskPath || !incarnationId) {
+        if (!vmId || !vmName || !diskPath || !ports.validIncarnation(incarnationId)) {
             return { kind:'refused',reason:'conflict',journalDisposition:'retain',error: "missing-provider-metadata", missing: ["vmId", "vmName", "diskPath", "incarnationId"], backend: match.backend, deviceId};
         }
         if (parsed.tool === "device_snapshot_restore") {

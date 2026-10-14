@@ -8,10 +8,10 @@ type Fixture = { input: Data; keep: Data; absent?: string[] };
 const id = "audit-device";
 const incarnationId = "1234567890abcdef1234567890abcdef";
 const device = { id, backend: "macos-vm", status: "stopped", incarnationId, ownerId: "private-owner", createdAt: "2026-01-01", helper: { status: "ready", hostHelperScript: "/private/helper" } };
-const identity = { id, incarnationId, status: "stopped" };
+const identity = { id, status: "stopped" };
 const success = { status: 0, stdout: "", stderr: "" };
 const image = { type: "image", data: "aW1hZ2UtYnl0ZXM=", mimeType: "image/png" };
-const tree = { name: "Editor", children: [{ name: "Unique text", provider: "user field", runtime: { pid: 82 }, ownerId: "UI content", source: "user document" }] };
+const tree = { name: "Editor", incarnationId: "guest-ui-root", children: [{ name: "Unique text", incarnationId: "guest-ui-child", provider: "user field", runtime: { pid: 82 }, ownerId: "UI content", source: "user document" }] };
 const fixtures: Record<string, Fixture> = {};
 const listing = { entries: [{ name: ".hidden", type: "file", size: 0 }, { name: "Documents", type: "directory" }], truncated: true };
 add("device_list_files", listing, listing);
@@ -107,6 +107,10 @@ describe("every internal Device Lab operation has a compact diagnostic projectio
         const original = structuredClone(fixture.input);
         const result = project(name, fixture.input);
         expect(result).toMatchObject(fixture.keep);
+        if (result.device) expect(result.device).not.toHaveProperty("incarnationId");
+        if (name === "device_list" || name === "device_inventory") {
+            for (const target of result.devices) expect(target).not.toHaveProperty("incarnationId");
+        }
         for (const key of fixture.absent || []) expect(result).not.toHaveProperty(key);
         expect(fixture.input).toEqual(original);
     });

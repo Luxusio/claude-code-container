@@ -108,7 +108,7 @@ function qemuOperation(value) {
 function target(value, options = {}) {
     if (!object(value) || failed(value)) return value;
     value = qemuTarget(value);
-    const result = omit(value, ["ownerId", "stateRoot", "ownerRoot", "stateDir", "metadataPath", "runtimeFile", "avdRoot", "createdAt", "updatedAt", "pid", "appiumPort"]);
+    const result = omit(value, ["ownerId", "stateRoot", "ownerRoot", "stateDir", "metadataPath", "runtimeFile", "avdRoot", "incarnationId", "createdAt", "updatedAt", "pid", "appiumPort"]);
     // Remove only values also represented at the target's top level.
     if (object(value.targetStatus)) {
         const remaining = Object.fromEntries(Object.entries(value.targetStatus).filter(([key, item]) => JSON.stringify(item) !== JSON.stringify(value[key])));
@@ -232,7 +232,8 @@ function withoutEcho(value, result) {
 }
 
 function operationResult(name, value) {
-    const result = { ...value };
+    const result = name === "device_accessibility_snapshot" || name === "mobile_dump_ui"
+        ? { ...value } : omit(value, ["incarnationId"]);
     // These are command diagnostics, not guest command output (device_exec is
     // excluded by project). Nonempty unique diagnostics remain available.
     if (result.stdout === "") delete result.stdout;
@@ -329,6 +330,7 @@ export function compactToolValue(name, value) {
         return result;
     }
     value = operationResult(name, value);
+    if (["device_accessibility_snapshot", "mobile_dump_ui"].includes(name) && value.provider !== "broker-appium") return value;
     if (name === "display_current") return target(value);
     const known = "routedBy" in value || "device" in value || "devices" in value
         || "targetStatus" in value || Array.isArray(value.targets) || (["device_backends", "device_inventory"].includes(name) && Array.isArray(value.backends))

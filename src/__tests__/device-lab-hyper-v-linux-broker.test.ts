@@ -28,6 +28,7 @@ import {
 } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { HYPER_V_IMAGE_CATALOG } from "@ccc/device-lab/device-lab/hyper-v-images.js";
+import { hyperVVmName } from "@ccc/device-lab/host-control/hyper-v/index.js";
 import {
     HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP,
     type HyperVWindowsExecutionRequest,
@@ -439,17 +440,17 @@ describe("device-lab Hyper-V broker", () => {
                 });
                 return { status: response.status, body: await response.json() as any };
             };
-            expect(await invoke("device_click", { incarnationId, x: 20, y: 20 })).toMatchObject({ status: 409, body: { error: "hyper-v-console-screenshot-required" } });
+            expect(await invoke("device_click", { x: 20, y: 20 })).toMatchObject({ status: 409, body: { error: "hyper-v-console-screenshot-required" } });
             const screenshot = await invoke("device_screenshot");
-            expect(screenshot).toMatchObject({ status: 200, body: { result: { width: 640, height: 480, incarnationId } } });
+            expect(screenshot).toMatchObject({ status: 200, body: { result: { width: 640, height: 480 } } });
+            expect(screenshot.body.result).not.toHaveProperty("incarnationId");
             expect(screenshot.body.result.mcpResult.content[0]).toMatchObject({ type: "image", mimeType: "image/png" });
-            expect(await invoke("device_click", { incarnationId: "2".repeat(32), x: 20, y: 20 })).toMatchObject({ status: 409, body: { error: "hyper-v-incarnation-conflict" } });
-            expect(await invoke("device_click", { incarnationId, x: 640, y: 20 })).toMatchObject({ status: 400, body: { error: "hyper-v-console-pixel-invalid" } });
+            expect(await invoke("device_click", { x: 640, y: 20 })).toMatchObject({ status: 400, body: { error: "hyper-v-console-pixel-invalid" } });
             for (const direction of ["left", "right"]) {
-                expect(await invoke("device_scroll", { incarnationId, x: 20, y: 30, direction })).toMatchObject({ status: 400, body: { error: "hyper-v-console-scroll-unsupported" } });
+                expect(await invoke("device_scroll", { x: 20, y: 30, direction })).toMatchObject({ status: 400, body: { error: "hyper-v-console-scroll-unsupported" } });
             }
-            expect(await invoke("device_scroll", { incarnationId, x: 20, y: 30, direction: "up", amount: 11 })).toMatchObject({ status: 400, body: { error: "hyper-v-console-scroll-amount-invalid" } });
-            expect(await invoke("device_click", { incarnationId, x: 20, y: 30 })).toMatchObject({ status: 200, body: { result: { applied: true } } });
+            expect(await invoke("device_scroll", { x: 20, y: 30, direction: "up", amount: 11 })).toMatchObject({ status: 400, body: { error: "hyper-v-console-scroll-amount-invalid" } });
+            expect(await invoke("device_click", { x: 20, y: 30 })).toMatchObject({ status: 200, body: { result: { applied: true } } });
             expect(requests.map((request) => request.operation)).toEqual(["Capture-VMConsole", "Send-VMConsoleInput"]);
             expect(requests[1]).toMatchObject({ selector: { kind: "id", id: vmId }, expectedName: vmName,
                 expectedNotes: `ccc-device-lab:${ownerId}:${deviceId}:${incarnationId}`, x: 20, y: 30,
@@ -482,8 +483,6 @@ describe("device-lab Hyper-V broker", () => {
                     params: {
                         backend: "linux-vm",
                         command: "device_create",
-                        deviceId: "secure-boot-plan",
-                        incarnationId: "0123456789abcdef0123456789abcdef",
                         name: "Secure Boot plan",
                         profile: "ubuntu-lts",
                         sourceImage: "C:\\images\\ubuntu.vhdx",
@@ -510,8 +509,6 @@ describe("device-lab Hyper-V broker", () => {
                     params: {
                         backend: "windows-vm",
                         command: "device_create",
-                        deviceId: "secure-boot-windows-plan",
-                        incarnationId: "fedcba9876543210fedcba9876543210",
                         name: "Windows Secure Boot plan",
                         profile: "windows-11",
                         sourceImage: "C:\\images\\windows.vhdx",
@@ -535,7 +532,7 @@ describe("device-lab Hyper-V broker", () => {
         }
     });
 
-    it("rejects a duplicate Hyper-V create that names a different source image", async () => {
+    it("rejects chosen Hyper-V IDs before source-image comparison", async () => {
         const cwd = join(process.env.HOME!, "project-source-conflict");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
@@ -562,15 +559,14 @@ describe("device-lab Hyper-V broker", () => {
                 body: JSON.stringify({ method: "broker.command.plan", params: { backend: "linux-vm", command: "device_create", deviceId: "source-conflict", name: "Source conflict", profile: "ubuntu-lts", sourceImage } }),
             });
             const repeated = await invoke("first.vhdx");
-            expect(repeated.status, JSON.stringify(await repeated.clone().json())).toBe(200);
+            expect(repeated.status, JSON.stringify(await repeated.clone().json())).toBe(400);
             const repeatedBody = await repeated.json();
-            expect(repeatedBody).toEqual(expect.objectContaining({ result: expect.objectContaining({ idempotent: true }) }));
+            expect(repeatedBody).toMatchObject({ error: "vm-create-device-id-not-supported" });
             expect(JSON.stringify(repeatedBody)).not.toContain("first.vhdx");
             const conflicting = await invoke("second.vhdx");
-            expect(conflicting.status, JSON.stringify(await conflicting.clone().json())).toBe(409);
+            expect(conflicting.status, JSON.stringify(await conflicting.clone().json())).toBe(400);
             expect(await conflicting.json()).toEqual(expect.objectContaining({
-                error: "hyper-v-create-configuration-conflict",
-                conflicts: expect.arrayContaining(["sourceImage"]),
+                error: "vm-create-device-id-not-supported",
             }));
             expect(commandRunner).not.toHaveBeenCalled();
         } finally {
@@ -659,7 +655,7 @@ describe("device-lab Hyper-V broker", () => {
             const invoke = () => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId: "network-intent-retry", name: "Network intent retry", profile: "ubuntu-lts" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Network intent retry", profile: "ubuntu-lts" } }),
             });
             const first = await invoke();
             expect(first.status, JSON.stringify(await first.clone().json())).toBe(502);
@@ -736,7 +732,7 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId: "offline-linux", name: "Offline Linux", profile: "ubuntu-lts", networking: false } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Offline Linux", profile: "ubuntu-lts", networking: false } }),
             });
             expect(response.status).toBe(400);
             expect(await response.json()).toEqual(expect.objectContaining({ ok: false, error: "linux-vm-networking-required" }));
@@ -822,7 +818,7 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId: "network-intent-unlink", name: "Network intent unlink", profile: "ubuntu-lts" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Network intent unlink", profile: "ubuntu-lts" } }),
             });
             expect(response.status).toBeGreaterThanOrEqual(400);
             const body = await response.json();
@@ -909,7 +905,7 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId: "stale-intent", name: "Stale intent", profile: "ubuntu-lts" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Stale intent", profile: "ubuntu-lts" } }),
             });
             expect(response.status).toBeGreaterThanOrEqual(400);
             expect(networkReached).toBe(false);
@@ -972,7 +968,6 @@ describe("device-lab Hyper-V broker", () => {
                 params: {
                     backend: "windows-vm",
                     command: "device_create",
-                    deviceId: "windows-server-e2e",
                     name: "Windows Server E2E",
                     memoryMb: 4096,
                     cpus: 2,
@@ -1029,6 +1024,7 @@ describe("device-lab Hyper-V broker", () => {
         let now = 1_000_000;
         let recoveryCalls = 0;
         let typedVmCreateReached = false;
+        let createdPrivateRoot = "";
         const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
         const commandRunner = vi.fn((command: { mode: string; provider: string; args?: string[]; input?: string }) => {
             const networkCleanup = hyperVNetworkCleanupResult(command);
@@ -1059,6 +1055,7 @@ describe("device-lab Hyper-V broker", () => {
         configureTypedHyperVNetworkOperations(commandRunner, {
             simulateVmCreate: true,
             onOperation(request) {
+                if (request.operation === "New-VM" && request.vhdPath) createdPrivateRoot = dirname(dirname(dirname(request.vhdPath)));
                 if (request.operation === "New-VM") {
                     typedVmCreateReached = true;
                     now += DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS + 1;
@@ -1080,7 +1077,7 @@ describe("device-lab Hyper-V broker", () => {
                 headers: ownerRpcHeaders(ownerId),
                 body: JSON.stringify({
                     method: "broker.command.invoke",
-                    params: { backend: "linux-vm", command: "device_create", deviceId: "deadline-e2e", name: "Deadline E2E", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 },
+                    params: { backend: "linux-vm", command: "device_create", name: "Deadline E2E", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 },
                 }),
             });
             const body = await response.json();
@@ -1088,7 +1085,8 @@ describe("device-lab Hyper-V broker", () => {
             expect(body).toEqual(expect.objectContaining({ error: "hyper-v-operation-deadline-exceeded", rollback: expect.objectContaining({ ok: true }) }));
             expect(typedVmCreateReached).toBe(true);
             expect(recoveryCalls).toBe(0);
-            expect(existsSync(join(process.env.HOME!, ".ccc", "devices", "owners", ownerId, "linux-vm", "deadline-e2e"))).toBe(false);
+            expect(createdPrivateRoot).toContain("linux-vm-");
+            expect(existsSync(createdPrivateRoot)).toBe(false);
             const networkStatePath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
             expect(JSON.parse(readFileSync(networkStatePath, "utf8"))).toMatchObject({
                 managedSwitch: true,
@@ -1177,7 +1175,7 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId: "pre-provider-deadline", name: "Pre-provider deadline", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Pre-provider deadline", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 } }),
             });
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(504);
@@ -1235,6 +1233,7 @@ describe("device-lab Hyper-V broker", () => {
         }));
         let now = 3_000_000;
         let recoveryCalls = 0;
+        let createdPrivateRoot = "";
         const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
         const commandRunner = vi.fn((command: { args?: string[]; input?: string }) => {
             const networkCleanup = hyperVNetworkCleanupResult(command);
@@ -1262,6 +1261,7 @@ describe("device-lab Hyper-V broker", () => {
         });
         configureTypedHyperVNetworkOperations(commandRunner, {
             simulateVmCreate: true,
+            onOperation(request) { if (request.operation === "New-VM" && request.vhdPath) createdPrivateRoot = dirname(dirname(dirname(request.vhdPath))); },
             beforeOperation(request) {
                 if (request.operation === "Get-VMDvdDrive") {
                     return { status: 0, stdout: JSON.stringify({ schemaVersion: 1, operation: request.operation, ok: true, items: [] }) };
@@ -1272,17 +1272,17 @@ describe("device-lab Hyper-V broker", () => {
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe", ssh: "/fake/ssh", scp: "/fake/scp" }, commandRunner });
         try {
             const baseUrl = await listen(server);
-            const deviceId = `${backend}-provision-deadline`;
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend, command: "device_create", deviceId, name: "Provision Deadline", profile, memoryMb: 2048, cpus: 2 } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend, command: "device_create", name: "Provision Deadline", profile, memoryMb: 2048, cpus: 2 } }),
             });
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(504);
             expect(body).toEqual(expect.objectContaining({ error: "hyper-v-operation-deadline-exceeded", rollback: expect.objectContaining({ ok: true }) }));
             expect(recoveryCalls).toBe(0);
-            expect(existsSync(join(process.env.HOME!, ".ccc", "devices", "owners", ownerId, backend, deviceId))).toBe(false);
+            expect(createdPrivateRoot).toContain(`${backend}-`);
+            expect(existsSync(createdPrivateRoot)).toBe(false);
         } finally {
             nowSpy.mockRestore();
             await close(server);
@@ -1318,7 +1318,7 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId: "acquire-deadline", name: "Acquire Deadline", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Acquire Deadline", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 } }),
             });
             expect(response.status, JSON.stringify(await response.clone().json())).toBe(504);
             expect(await response.json()).toEqual(expect.objectContaining({ error: "hyper-v-operation-deadline-exceeded" }));
@@ -1385,7 +1385,6 @@ describe("device-lab Hyper-V broker", () => {
                     params: {
                         backend: "linux-vm",
                         command: "device_create",
-                        deviceId: "acquire-redaction",
                         name: "Acquire Redaction",
                         profile: "ubuntu-lts",
                         memoryMb: 2048,
@@ -1448,7 +1447,7 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId: "hash-deadline", name: "Hash Deadline", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Hash Deadline", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 } }),
             });
             expect(response.status, JSON.stringify(await response.clone().json())).toBe(504);
             expect(await response.json()).toEqual(expect.objectContaining({ error: "hyper-v-operation-deadline-exceeded" }));
@@ -1520,7 +1519,7 @@ describe("device-lab Hyper-V broker", () => {
                 headers: ownerRpcHeaders(ownerId),
                 body: JSON.stringify({
                     method: "broker.command.invoke",
-                    params: { backend: "linux-vm", command: "device_create", deviceId: `cleanup-${detail}`, name: "Cleanup validation", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 },
+                    params: { backend: "linux-vm", command: "device_create", name: "Cleanup validation", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 },
                 }),
             });
             const body = await response.json();
@@ -1575,7 +1574,6 @@ describe("device-lab Hyper-V broker", () => {
                 params: {
                     backend: "linux-vm",
                     command: "device_create",
-                    deviceId: "linux-image-hash-e2e",
                     name: "Linux hash E2E",
                     profile: "ubuntu-lts",
                     memoryMb: 2048,
@@ -1642,7 +1640,6 @@ describe("device-lab Hyper-V broker", () => {
                 params: {
                     backend: "linux-vm",
                     command: "device_create",
-                    deviceId: "linux-nested-import-e2e",
                     name: "Linux nested import E2E",
                     profile: "ubuntu-lts",
                     sourceImage: nestedSourceImagePath,
@@ -1670,7 +1667,6 @@ describe("device-lab Hyper-V broker", () => {
                 params: {
                     backend: "linux-vm",
                     command: "device_create",
-                    deviceId: "linux-hardlink-import-e2e",
                     name: "Linux hardlink import E2E",
                     profile: "ubuntu-lts",
                     sourceImage: hardlinkedSourceImagePath,
@@ -1693,7 +1689,6 @@ describe("device-lab Hyper-V broker", () => {
                 params: {
                     backend: "linux-vm",
                     command: "device_create",
-                    deviceId: "linux-import-hash-e2e",
                     name: "Linux import hash E2E",
                     profile: "ubuntu-lts",
                     sourceImage: sourceImagePath,
@@ -1721,12 +1716,12 @@ describe("device-lab Hyper-V broker", () => {
         const cwd = join(process.env.HOME!, "project");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
-        const deviceId = "linux-seed-failure-e2e";
+        let deviceId = "";
         const vmId = "12345678-1234-1234-1234-123456789abc";
         let vmName = "";
-        const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId);
-        const deviceRoot = join(privateRoot, "artifacts");
-        const diskPath = join(deviceRoot, "disks", "root.vhdx");
+        let privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId);
+        let deviceRoot = join(privateRoot, "artifacts");
+        let diskPath = join(deviceRoot, "disks", "root.vhdx");
         const imageProfileRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "images", "hyper-v", "ubuntu-lts");
         const imagePath = join(imageProfileRoot, "base.vhdx");
         const imageBytes = Buffer.from("valid-image");
@@ -1776,6 +1771,10 @@ describe("device-lab Hyper-V broker", () => {
         configureTypedHyperVNetworkOperations(commandRunner, {
             simulateVmCreate: true,
             onOperation(request) {
+                if (request.operation === "New-VM" && request.vhdPath) {
+                    diskPath = request.vhdPath; deviceRoot = dirname(dirname(diskPath)); privateRoot = dirname(deviceRoot);
+                    deviceId = privateRoot.split(/[/\\]/).at(-1)!;
+                }
                 if (request.operation === "New-VM") vmName = request.name || "";
                 if (request.operation === "Configure-VMGuestBoot") typedAttachCalls += 1;
             },
@@ -1786,7 +1785,7 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId, name: "Linux seed failure", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Linux seed failure", profile: "ubuntu-lts", memoryMb: 2048, cpus: 2 } }),
             });
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(502);
@@ -1803,6 +1802,7 @@ describe("device-lab Hyper-V broker", () => {
                     diagnosticCode: "hyper-v-provisioning-media-copy-incomplete",
                 }));
             }
+            expect(deviceId).toMatch(/^linux-vm-[a-f0-9-]{36}$/);
             expect(typedAttachCalls).toBe(0);
             expect(recoveryCalls).toBe(0);
             const recoveryScripts = commandRunner.mock.calls.map(([command]) => providerScript(command)).filter((script) => script.includes("hyper-v-orphan-vm-ownership-mismatch"));
@@ -1822,7 +1822,7 @@ describe("device-lab Hyper-V broker", () => {
         const cwd = join(process.env.HOME!, "project-rollback-allocation");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
-        const deviceId = "linux-rollback-failure";
+        let deviceId = "";
         const incarnationIdPattern = /^[a-f0-9]{32}$/;
         const vmId = "12345678-1234-1234-1234-123456789abc";
         const profileRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "images", "hyper-v", "ubuntu-lts");
@@ -1865,6 +1865,7 @@ describe("device-lab Hyper-V broker", () => {
             allocations: [{ ownerId, deviceId: "existing-vm", incarnationId: "1".repeat(32), address: "172.29.0.20", macAddress: "02:11:22:33:44:55", allocatedAt: new Date().toISOString() }],
         }));
         let vmName = "";
+        let failedRemoval: unknown;
         const commandRunner = vi.fn((command: { args?: string[]; input?: string }) => {
             const script = providerScript(command);
             if (script.includes("Get-Service -Name vmms")) {
@@ -1888,9 +1889,13 @@ describe("device-lab Hyper-V broker", () => {
         });
         configureTypedHyperVNetworkOperations(commandRunner, {
             simulateVmCreate: true,
-            onOperation(request) { if (request.operation === "New-VM") vmName = request.name || ""; },
+            onOperation(request) {
+                if (request.operation === "New-VM" && request.vhdPath) deviceId = dirname(dirname(dirname(request.vhdPath))).split(/[/\\]/).at(-1)!;
+                if (request.operation === "New-VM") vmName = request.name || "";
+            },
             beforeOperation(request) {
                 if (request.operation === "Remove-VM") {
+                    failedRemoval = request;
                     return {
                         status: 1,
                         stdout: JSON.stringify({ schemaVersion: 1, operation: "Remove-VM", ok: false, errorCode: "vm-identity-mismatch" }),
@@ -1906,25 +1911,31 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId, name: "Rollback failure", profile: "ubuntu-lts" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Rollback failure", profile: "ubuntu-lts" } }),
             });
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(502);
             expect(body).toEqual(expect.objectContaining({ error: "hyper-v-linux-seed-failed", rollback: expect.objectContaining({ ok: false, reason: "hyper-v-rollback-command-failed" }) }));
-            expect(vmName).toContain(deviceId);
+            expect(deviceId).toMatch(/^linux-vm-[a-f0-9-]{36}$/);
             const state = JSON.parse(readFileSync(networkStatePath, "utf8"));
             expect(state.allocations).toHaveLength(2);
             const failed = state.allocations.find((allocation: { deviceId: string }) => allocation.deviceId === deviceId);
             expect(failed).toEqual(expect.objectContaining({ ownerId, deviceId, incarnationId: expect.stringMatching(incarnationIdPattern) }));
             const incarnationPath = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId, "incarnation.json");
             expect(existsSync(incarnationPath)).toBe(true);
+            const birth = JSON.parse(readFileSync(incarnationPath, "utf8"));
+            expect(birth).toMatchObject({ ownerId, backend: "linux-vm", deviceId, incarnationId: failed.incarnationId });
+            expect(vmName).toBe(hyperVVmName(ownerId, deviceId, birth.incarnationId));
+            expect(failedRemoval).toMatchObject({ selector: { kind: "id", id: vmId }, guard: {
+                expectedName: vmName, expectedNotes: `ccc-device-lab:${ownerId}:${deviceId}:${birth.incarnationId}`,
+            } });
         } finally {
             await close(server);
             cleanupOwner(ownerId);
         }
     });
 
-    it("refuses stale network-allocation cleanup without the matching VM incarnation", async () => {
+    it("rejects a chosen ID without reconciling its stale private network allocation", async () => {
         const cwd = join(process.env.HOME!, "project");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
@@ -1952,11 +1963,11 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId, name: "Stale network allocation", profile: "ubuntu-lts" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId, force: true, name: "Stale network allocation", profile: "ubuntu-lts" } }),
             });
             const body = await response.json();
-            expect(response.status, JSON.stringify(body)).toBe(502);
-            expect(body).toEqual(expect.objectContaining({ error: "hyper-v-recovery-cleanup-failed", stage: "network-release", detail: expect.stringContaining("hyper-v-network-allocation-incarnation-conflict") }));
+            expect(response.status, JSON.stringify(body)).toBe(400);
+            expect(body).toEqual(expect.objectContaining({ error: "vm-create-device-id-not-supported" }));
             expect(commandRunner).not.toHaveBeenCalled();
             expect(JSON.parse(readFileSync(networkStatePath, "utf8")).allocations).toEqual([
                 expect.objectContaining({ ownerId, deviceId, incarnationId: staleIncarnationId }),
@@ -2044,7 +2055,7 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId, name: "NAT identity conflict", profile: "ubuntu-lts" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "NAT identity conflict", profile: "ubuntu-lts" } }),
             });
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(409);
@@ -2063,7 +2074,6 @@ describe("device-lab Hyper-V broker", () => {
         const cwd = join(process.env.HOME!, "project-network-commit-failure");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
-        const deviceId = "network-commit-failure";
         const profileRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "images", "hyper-v", "ubuntu-lts");
         const imagePath = join(profileRoot, "base.vhdx");
         const imageContents = "cached-ubuntu-vhdx";
@@ -2118,7 +2128,7 @@ describe("device-lab Hyper-V broker", () => {
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
                 method: "POST",
                 headers: ownerRpcHeaders(ownerId),
-                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", deviceId, name: "Network commit failure", profile: "ubuntu-lts" } }),
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "linux-vm", command: "device_create", name: "Network commit failure", profile: "ubuntu-lts" } }),
             });
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(409);
@@ -2129,7 +2139,12 @@ describe("device-lab Hyper-V broker", () => {
             expect(JSON.stringify(body)).not.toContain(profileRoot);
             expect(cleanupCalls).toBe(0);
             expect(body).toEqual(expect.objectContaining({ artifactCleanup: expect.objectContaining({ preserved: true }) }));
-            const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId);
+            const issuedRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm");
+            const births = readdirSync(issuedRoot).filter(id => existsSync(join(issuedRoot, id, "incarnation.json")));
+            expect(births).toHaveLength(1);
+            const deviceId = births[0];
+            expect(deviceId).toMatch(/^linux-vm-[a-f0-9-]{36}$/);
+            const privateRoot = join(issuedRoot, deviceId);
             expect(existsSync(join(privateRoot, "incarnation.json"))).toBe(true);
             expect(existsSync(join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v-intent.json"))).toBe(true);
         } finally {
@@ -2156,19 +2171,19 @@ describe("device-lab Hyper-V broker", () => {
         const cwd = join(process.env.HOME!, "project");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
-        const deviceId = "linux-hyperv-e2e";
+        let deviceId = "";
         const vmId = "12345678-1234-1234-1234-123456789abc";
         const snapshotId = "87654321-4321-4321-4321-cba987654321";
         let vmName = "";
-        const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId);
-        const deviceRoot = join(privateRoot, "artifacts");
-        const diskPath = join(deviceRoot, "disks", "root.vhdx");
-        const seedDiskPath = join(deviceRoot, "disks", "cidata.iso");
-        const privateKeyPath = join(privateRoot, "secrets", "id_ed25519");
-        const publicKeyPath = `${privateKeyPath}.pub`;
-        const hostPrivateKeyPath = join(privateRoot, "secrets", "ssh_host_ed25519_key");
-        const hostPublicKeyPath = `${hostPrivateKeyPath}.pub`;
-        const knownHostsPath = join(privateRoot, "secrets", "known_hosts");
+        let privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId);
+        let deviceRoot = join(privateRoot, "artifacts");
+        let diskPath = join(deviceRoot, "disks", "root.vhdx");
+        let seedDiskPath = join(deviceRoot, "disks", "cidata.iso");
+        let privateKeyPath = join(privateRoot, "secrets", "id_ed25519");
+        let publicKeyPath = `${privateKeyPath}.pub`;
+        let hostPrivateKeyPath = join(privateRoot, "secrets", "ssh_host_ed25519_key");
+        let hostPublicKeyPath = `${hostPrivateKeyPath}.pub`;
+        let knownHostsPath = join(privateRoot, "secrets", "known_hosts");
         const hostKeyBytes = ed25519PublicKeyBlob(5);
         const hostKeyBase64 = hostKeyBytes.toString("base64");
         const hostKeyFingerprint = `SHA256:${createHash("sha256").update(hostKeyBytes).digest("base64").replace(/=+$/, "")}`;
@@ -2181,7 +2196,7 @@ describe("device-lab Hyper-V broker", () => {
         const downloadPath = join(cwd, "download.txt");
         const imageSha256 = createHash("sha256").update("fake-vhdx").digest("hex");
         writeFileSync(sourceImagePath, "fake-vhdx");
-        const expectedNetworkAddress = `172.29.0.${10 + (createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest().readUInt32BE(0) % 241)}`;
+        let expectedNetworkAddress = `172.29.0.${10 + (createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest().readUInt32BE(0) % 241)}`;
         writeFileSync(uploadPath, "upload");
         let vmState = "Off";
         let vmExists = false;
@@ -2563,6 +2578,19 @@ describe("device-lab Hyper-V broker", () => {
                 return hyperVWindowsOperationSuccess("Get-VM", named);
             },
             onOperation(request) {
+                if (request.operation === "New-VM" && request.vhdPath) {
+                    diskPath = request.vhdPath;
+                    deviceRoot = dirname(dirname(diskPath));
+                    privateRoot = dirname(deviceRoot);
+                    deviceId = privateRoot.split(/[/\\]/).at(-1)!;
+                    seedDiskPath = join(deviceRoot, "disks", "cidata.iso");
+                    privateKeyPath = join(privateRoot, "secrets", "id_ed25519");
+                    publicKeyPath = `${privateKeyPath}.pub`;
+                    hostPrivateKeyPath = join(privateRoot, "secrets", "ssh_host_ed25519_key");
+                    hostPublicKeyPath = `${hostPrivateKeyPath}.pub`;
+                    knownHostsPath = join(privateRoot, "secrets", "known_hosts");
+                    expectedNetworkAddress = `172.29.0.${10 + (createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest().readUInt32BE(0) % 241)}`;
+                }
                 if (request.operation === "Get-VHD" && request.path) typedVhdPaths.push(request.path);
                 if (request.operation === "Mount-VHD" && request.path) typedMountPaths.push(request.path);
                 if (["New-VM", "Rename-VMNetworkAdapter", "Add-VMNetworkAdapter", "Set-VMNetworkAdapter"].includes(request.operation)) {
@@ -2597,12 +2625,12 @@ describe("device-lab Hyper-V broker", () => {
         const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
         const headers = ownerRpcHeaders(ownerId);
         const invoke = (params: Record<string, unknown>) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.command.invoke", params }) });
-        const tool = (name: string, params: Record<string, unknown> = {}) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: name, backend: "linux-vm", deviceId, ...(activeIncarnationId ? { incarnationId: activeIncarnationId } : {}), ...params } }) });
+        const tool = (name: string, params: Record<string, unknown> = {}) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: name, backend: "linux-vm", deviceId, ...params } }) });
         try {
             const backends = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.backends" }) });
             expect(await backends.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ backends: expect.arrayContaining([expect.objectContaining({ name: "linux-vm", provider: "hyper-v", guestTransport: "ssh" })]) }) }));
 
-            const created = await invoke({ backend: "linux-vm", command: "device_create", deviceId, name: "Ubuntu Hyper-V", sourceImage: sourceImagePath, memoryMb: 2048, cpus: 2 });
+            const created = await invoke({ backend: "linux-vm", command: "device_create", name: "Ubuntu 한글 VM", sourceImage: sourceImagePath, memoryMb: 2048, cpus: 2 });
             expect(created.status, JSON.stringify(await created.clone().json())).toBe(200);
             expect(elevatedNetworkSetups).toBe(1);
             expect(commandRunner.mock.calls.some(([command]) => {
@@ -2610,7 +2638,13 @@ describe("device-lab Hyper-V broker", () => {
                 return script.includes("function Save-BoundedDownload") && script.includes("$Profile = 'ubuntu-lts'");
             })).toBe(false);
             const createdBody = await created.json();
-            activeIncarnationId = createdBody.result.device.incarnationId as string;
+            const admittedDeviceId = deviceId;
+            deviceId = createdBody.result.device.id;
+            expect(deviceId).toBe(admittedDeviceId);
+            expect(deviceId).toMatch(/^linux-vm-[a-f0-9-]{36}$/);
+            expect(createdBody.result.device.name).toBe("Ubuntu 한글 VM");
+            expect(createdBody.result.device).not.toHaveProperty("incarnationId");
+            activeIncarnationId = JSON.parse(readFileSync(join(privateRoot, "incarnation.json"), "utf8")).incarnationId as string;
             const allocatedAddress = createdBody.result.device.networkAddress as string;
             const allocatedMac = createdBody.result.device.macAddress as string;
             expect(createdBody).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ backend: "linux-vm", platform: "linux", provider: "hyper-v", guestProvisioned: true, guestTransport: "ssh", sshHostKeyFingerprint: hostKeyFingerprint, networkAddress: expect.stringMatching(/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/) }) }) }));
@@ -2657,24 +2691,22 @@ describe("device-lab Hyper-V broker", () => {
             expect(JSON.stringify(createdBody)).not.toContain('"sshPrivateKeyPath"');
 
             const callsAfterCreate = commandRunner.mock.calls.length;
-            const repeatedCreate = await invoke({ backend: "linux-vm", command: "device_create", deviceId, name: "Ubuntu Hyper-V", memoryMb: 2048, cpus: 2 });
-            expect(repeatedCreate.status, JSON.stringify(await repeatedCreate.clone().json())).toBe(200);
+            const repeatedCreate = await invoke({ backend: "linux-vm", command: "device_create", deviceId, name: "Ubuntu 한글 VM", memoryMb: 2048, cpus: 2 });
+            expect(repeatedCreate.status, JSON.stringify(await repeatedCreate.clone().json())).toBe(400);
             const repeatedCreateBody = await repeatedCreate.json();
-            expect(repeatedCreateBody).toEqual(expect.objectContaining({ result: expect.objectContaining({ idempotent: true, invoked: false }) }));
+            expect(repeatedCreateBody).toMatchObject({ error: "vm-create-device-id-not-supported" });
             expect(commandRunner).toHaveBeenCalledTimes(callsAfterCreate);
-            expect(repeatedCreateBody.result.device).not.toHaveProperty("privateRoot");
-            expect(repeatedCreateBody.result.device).not.toHaveProperty("sshPrivateKeyPath");
             expect(JSON.stringify(repeatedCreateBody)).not.toContain('"sshPrivateKeyPath"');
 
             const callsBeforeUnsafeStart = commandRunner.mock.calls.length;
-            const unsafeStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: false });
+            const unsafeStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: false });
             expect(unsafeStart.status).toBe(400);
             expect(await unsafeStart.json()).toEqual(expect.objectContaining({ error: "linux-vm-bootstrap-requires-boot-wait" }));
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeUnsafeStart);
 
             providerLifecycleFailure = true;
             bootstrapCleanupFailure = true;
-            const providerFailedStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
+            const providerFailedStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true });
             expect(providerFailedStart.status).toBe(502);
             expect(await providerFailedStart.json()).toEqual(expect.objectContaining({
                 result: expect.objectContaining({
@@ -2695,7 +2727,7 @@ describe("device-lab Hyper-V broker", () => {
 
             readinessFailure = true;
             bootDiagnosticFailure = "command";
-            const diagnosticFailure = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            const diagnosticFailure = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(diagnosticFailure.status).toBe(502);
             const diagnosticFailureBody = await diagnosticFailure.json();
             expect(diagnosticFailureBody.result, JSON.stringify(diagnosticFailureBody)).toBeDefined();
@@ -2708,13 +2740,13 @@ describe("device-lab Hyper-V broker", () => {
             expect(diagnosticFailureBody.result.boot).not.toHaveProperty("diagnostic");
             expect(JSON.stringify(diagnosticFailureBody)).not.toContain("host detail");
             bootDiagnosticFailure = "invalid";
-            const invalidDiagnostic = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            const invalidDiagnostic = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect((await invalidDiagnostic.json()).result.boot).toEqual(expect.objectContaining({
                 diagnosticAvailable: false,
                 diagnosticError: "hyper-v-guest-boot-diagnostic-invalid",
             }));
             bootDiagnosticFailure = "identity";
-            const mismatchedDiagnostic = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            const mismatchedDiagnostic = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect((await mismatchedDiagnostic.json()).result.boot).toEqual(expect.objectContaining({
                 diagnosticAvailable: false,
                 diagnosticError: "hyper-v-guest-boot-diagnostic-identity-mismatch",
@@ -2722,7 +2754,7 @@ describe("device-lab Hyper-V broker", () => {
             bootDiagnosticFailure = null;
             bootDiagnosticState = "OffCritical";
             bootstrapCleanupFailure = true;
-            const exhausted = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            const exhausted = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(exhausted.status).toBe(502);
             const exhaustedBody = await exhausted.json();
             const readinessError = exhaustedBody.result.boot.error;
@@ -2806,7 +2838,7 @@ describe("device-lab Hyper-V broker", () => {
 
             managedReadinessFailure = true;
             bootstrapSshFailure = true;
-            const bootstrapSshFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            const bootstrapSshFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(bootstrapSshFailed.status).toBe(502);
             const bootstrapSshReadiness = (await bootstrapSshFailed.json()).result.boot.readiness;
             expect(bootstrapSshReadiness).toEqual(expect.objectContaining({
@@ -2824,7 +2856,7 @@ describe("device-lab Hyper-V broker", () => {
             bootstrapHostKeyRejectedPersistently = true;
             bootstrapAddresses = ["172.20.1.8", "172.20.1.9"];
             managedReadinessFailure = true;
-            const staleBootstrapCandidate = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 60000 });
+            const staleBootstrapCandidate = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 60000 });
             expect(staleBootstrapCandidate.status, JSON.stringify(await staleBootstrapCandidate.clone().json())).toBe(200);
             const staleBootstrapCandidateBody = await staleBootstrapCandidate.json();
             expect(staleBootstrapCandidateBody.result.device.sshHostKeyFingerprint).toBe(hostKeyFingerprint);
@@ -2841,7 +2873,7 @@ describe("device-lab Hyper-V broker", () => {
             bootstrapHostKeyRejectionsRemaining = 1;
             managedReadinessFailure = true;
             const transitionStartedAt = Date.now();
-            const bootstrapHostKeyTransition = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 60000 });
+            const bootstrapHostKeyTransition = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 60000 });
             expect(Date.now() - transitionStartedAt).toBeLessThan(5000);
             expect(bootstrapHostKeyTransition.status, JSON.stringify(await bootstrapHostKeyTransition.clone().json())).toBe(200);
             const bootstrapHostKeyTransitionBody = await bootstrapHostKeyTransition.json();
@@ -2861,7 +2893,7 @@ describe("device-lab Hyper-V broker", () => {
             bootstrapObservedHostKey = ed25519PublicKeyBlob(8);
             bootstrapHostKeyRejectedPersistently = true;
             managedReadinessFailure = true;
-            const bootstrapHostKeyClientFailure = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 10000 });
+            const bootstrapHostKeyClientFailure = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 10000 });
             expect(bootstrapHostKeyClientFailure.status).toBe(502);
             const bootstrapHostKeyClientFailureBoot = (await bootstrapHostKeyClientFailure.json()).result.boot;
             expect(bootstrapHostKeyClientFailureBoot.error, JSON.stringify(bootstrapHostKeyClientFailureBoot)).toBe("ssh-host-key-rejected");
@@ -2876,7 +2908,7 @@ describe("device-lab Hyper-V broker", () => {
             managedReadinessFailure = true;
 
             bootstrapSshMarkerMissing = true;
-            const bootstrapMarkerMissing = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 5000 });
+            const bootstrapMarkerMissing = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 5000 });
             expect(bootstrapMarkerMissing.status, JSON.stringify(await bootstrapMarkerMissing.clone().json())).toBe(502);
             const bootstrapMarkerMissingBoot = (await bootstrapMarkerMissing.json()).result.boot;
             expect(bootstrapMarkerMissingBoot.error, JSON.stringify(bootstrapMarkerMissingBoot)).toBe("ssh-readiness-marker-missing");
@@ -2887,7 +2919,7 @@ describe("device-lab Hyper-V broker", () => {
             bootstrapSshMarkerMissing = false;
 
             networkFinalizeFailure = true;
-            const finalizeFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            const finalizeFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(finalizeFailed.status).toBe(502);
             const finalizeReadiness = (await finalizeFailed.json()).result.boot.readiness;
             expect(finalizeReadiness).toEqual(expect.objectContaining({
@@ -2900,7 +2932,7 @@ describe("device-lab Hyper-V broker", () => {
             networkFinalizeFailure = false;
 
             managedReadinessRemainsFailedAfterFinalize = true;
-            const managedSshFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 3000 });
+            const managedSshFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 3000 });
             expect(managedSshFailed.status).toBe(502);
             const managedSshReadiness = (await managedSshFailed.json()).result.boot.readiness;
             expect(managedSshReadiness).toEqual(expect.objectContaining({
@@ -2917,7 +2949,7 @@ describe("device-lab Hyper-V broker", () => {
             bootstrapAdapterMissing = true;
             managedReadinessFailure = true;
             const cleanupsBeforeMissingAdapter = bootstrapNetworkCleanups;
-            const missingAdapterStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 10000 });
+            const missingAdapterStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 10000 });
             expect(missingAdapterStart.status).toBe(502);
             const missingAdapterBody = await missingAdapterStart.json();
             expect(missingAdapterBody.result.boot.readiness).toEqual(expect.objectContaining({
@@ -2933,7 +2965,7 @@ describe("device-lab Hyper-V broker", () => {
             bootstrapNetworkFinalizations = 0;
             bootstrapNetworkCleanups = 0;
             managedReadinessFailure = true;
-            const started = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
+            const started = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true });
             expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);
             expect(await started.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", bootReady: true }), boot: expect.objectContaining({ provider: "hyper-v-ssh", ready: true }) }) }));
             expect(guiProvisionCalls).toBe(1);
@@ -2987,9 +3019,10 @@ describe("device-lab Hyper-V broker", () => {
             const screenshot = await tool("device_screenshot", {});
             expect(screenshot.status).toBe(200);
             const screenshotBody = await screenshot.json();
-            expect(screenshotBody.result).toMatchObject({ backend: "linux-vm", deviceId, width: 640, height: 480, incarnationId: activeIncarnationId });
+            expect(screenshotBody.result).not.toHaveProperty("incarnationId");
+            expect(screenshotBody.result).toMatchObject({ backend: "linux-vm", deviceId, width: 640, height: 480 });
             expect(screenshotBody.result.mcpResult.content[0]).toEqual({ type: "image", mimeType: "image/png", data: consolePng.toString("base64") });
-            expect(JSON.parse(screenshotBody.result.mcpResult.content[1].text)).toEqual({ backend: "linux-vm", deviceId, width: 640, height: 480, incarnationId: activeIncarnationId, capturedAt: screenshotBody.result.capturedAt });
+            expect(JSON.parse(screenshotBody.result.mcpResult.content[1].text)).toEqual({ backend: "linux-vm", deviceId, width: 640, height: 480, capturedAt: screenshotBody.result.capturedAt });
             expect(screenshotBody.result.capturedAt).toEqual(expect.any(String));
             const beforeGuiScroll = commandRunner.mock.calls.length;
             const guiScroll = await tool("device_scroll", { x: 320, y: 240, direction: "up", amount: 3 });
@@ -3010,7 +3043,7 @@ describe("device-lab Hyper-V broker", () => {
             expect(failedScroll.status).toBe(502);
             expect(await failedScroll.json()).toEqual(expect.objectContaining({ tool: "device_scroll", error: "hyper-v-linux-guest-provider-failed" }));
             sshFailure = false;
-            const rebooted = await invoke({ backend: "linux-vm", command: "device_reboot", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
+            const rebooted = await invoke({ backend: "linux-vm", command: "device_reboot", deviceId, waitForBoot: true });
             expect(rebooted.status, JSON.stringify(await rebooted.clone().json())).toBe(200);
             expect(await rebooted.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", bootReady: true }), boot: expect.objectContaining({ provider: "hyper-v-ssh", ready: true }) }) }));
             expect(guiProvisionCalls).toBe(1);
@@ -3027,7 +3060,7 @@ describe("device-lab Hyper-V broker", () => {
             expect(commandRunner.mock.calls.filter(([command]) => ["Get-VMNetworkAdapter", "Get-NetNeighbor", "Remove-VMNetworkAdapter"]
                 .includes(hyperVWindowsOperationRequest(command)?.operation || ""))
                 .every(([command]) => command.executable === "/fake/powershell.exe")).toBe(true);
-            const forcedReboot = await invoke({ backend: "linux-vm", command: "device_reboot", deviceId, incarnationId: activeIncarnationId, force: true, waitForBoot: true });
+            const forcedReboot = await invoke({ backend: "linux-vm", command: "device_reboot", deviceId, force: true, waitForBoot: true });
             expect(forcedReboot.status, JSON.stringify(await forcedReboot.clone().json())).toBe(200);
             expect(rebootForces.at(-1)).toBe(true);
             const transferRoot = join(privateRoot, "transfers");
@@ -3089,7 +3122,7 @@ describe("device-lab Hyper-V broker", () => {
             const stopJournalPath = join(deviceRoot, "operation.json");
             const beforeForeignStop = readFileSync(ownerDevicesPath, "utf8");
             foreignVmObservation = true;
-            const foreignStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId });
+            const foreignStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId });
             expect(foreignStop.status).toBe(502);
             expect(await foreignStop.json()).toMatchObject({ ok: false, error: "provider-command-failed", detail: "hyper-v-vm-ownership-mismatch" });
             expect(vmState).toBe("Running");
@@ -3104,7 +3137,7 @@ describe("device-lab Hyper-V broker", () => {
             const stopClock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + stopClockOffset);
             afterNativeStop = () => { stopClockOffset = DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS + 1; };
             try {
-                const expiredStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId });
+                const expiredStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId });
                 expect(expiredStop.status).toBe(504);
                 expect(await expiredStop.json()).toMatchObject({ ok: false, error: "hyper-v-operation-deadline-exceeded" });
                 expect(vmState).toBe("Off");
@@ -3125,7 +3158,7 @@ describe("device-lab Hyper-V broker", () => {
                 writeFileSync(ownerDevicesPath, successorBytes);
             };
             try {
-                const supersededStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId });
+                const supersededStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId });
                 expect(supersededStop.status).toBe(409);
                 expect(await supersededStop.json()).toMatchObject({ ok: false, error: "owner-device-state-conflict" });
                 expect(successorBytes).not.toBeNull();
@@ -3138,7 +3171,7 @@ describe("device-lab Hyper-V broker", () => {
                 writeFileSync(ownerDevicesPath, beforeForeignStop);
                 rmSync(stopJournalPath, { force: true });
             }
-            expect((await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId })).status).toBe(200);
+            expect((await invoke({ backend: "linux-vm", command: "device_stop", deviceId })).status).toBe(200);
             const callsBeforeSnapshotCreate = commandRunner.mock.calls.length;
             const createdSnapshotResponse = await tool("device_snapshot_create", { snapshotName: "baseline" });
             expect(createdSnapshotResponse.status).toBe(200);
@@ -3178,7 +3211,7 @@ describe("device-lab Hyper-V broker", () => {
             expect(restoredSnapshotResponse.status, JSON.stringify(await restoredSnapshotResponse.clone().json())).toBe(200);
             expect(await restoredSnapshotResponse.json()).toMatchObject({ ok: true, result: {
                 ownerId, backend: "linux-vm", deviceId, tool: "device_snapshot_restore", snapshot: expectedSnapshot,
-                device: { vmId, vmName, incarnationId: activeIncarnationId, activeSnapshotId: createdSnapshotId,
+                device: { vmId, vmName, activeSnapshotId: createdSnapshotId,
                     status: "running", runtimeState: "Running", bootReady: true, snapshots: [expectedSnapshot] },
             } });
             const restoreCommands = commandRunner.mock.calls.slice(callsBeforeSnapshotRestore).map(([command]) => command);
@@ -3196,7 +3229,7 @@ describe("device-lab Hyper-V broker", () => {
             expect(vmState).toBe("Running");
             expect(existsSync(snapshotJournalPath)).toBe(false);
             // The following recovery/start scenarios begin with the VM stopped.
-            expect((await invoke({ backend: "linux-vm", command: "device_stop", deviceId, incarnationId: activeIncarnationId })).status).toBe(200);
+            expect((await invoke({ backend: "linux-vm", command: "device_stop", deviceId })).status).toBe(200);
             const stagedCreateJournal = {
                 version: 1, operationId: vmId, ownerId, deviceId, incarnationId: activeIncarnationId,
                 tool: "device_snapshot_create", snapshotName: "baseline",
@@ -3204,25 +3237,28 @@ describe("device-lab Hyper-V broker", () => {
                 startedAt: new Date().toISOString(),
             };
             writeFileSync(snapshotJournalPath, JSON.stringify({ ...stagedCreateJournal, snapshotId: "99999999-8888-7777-6666-555555555555" }));
+            const validSnapshotBytes = readFileSync(snapshotJournalPath, "utf8");
+            writeFileSync(snapshotJournalPath, JSON.stringify({ ...JSON.parse(validSnapshotBytes), incarnationId: "f".repeat(32) }));
             const pendingSnapshotBytes = readFileSync(snapshotJournalPath, "utf8");
             const stateBeforeStaleStatus = readFileSync(ownerDevicesPath, "utf8");
-            const staleStatus = await invoke({ backend: "linux-vm", command: "device_status", deviceId, incarnationId: "f".repeat(32) });
+            const staleStatus = await invoke({ backend: "linux-vm", command: "device_status", deviceId });
             expect(staleStatus.status).toBe(409);
-            expect(await staleStatus.json()).toMatchObject({ ok: false, error: "hyper-v-incarnation-conflict" });
+            expect(await staleStatus.json()).toMatchObject({ ok: false, error: "hyper-v-snapshot-reconciliation-metadata-invalid" });
             expect(readFileSync(snapshotJournalPath, "utf8")).toBe(pendingSnapshotBytes);
             expect(readFileSync(ownerDevicesPath, "utf8")).toBe(stateBeforeStaleStatus);
             expect(vmState).toBe("Off");
-            const wrongIdRepair = await invoke({ backend: "linux-vm", command: "device_status", deviceId, incarnationId: activeIncarnationId });
+            writeFileSync(snapshotJournalPath, validSnapshotBytes);
+            const wrongIdRepair = await invoke({ backend: "linux-vm", command: "device_status", deviceId });
             expect(wrongIdRepair.status).toBe(409);
             expect(await wrongIdRepair.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-create-outcome-indeterminate" }));
             expect(existsSync(snapshotJournalPath)).toBe(true);
             writeFileSync(snapshotJournalPath, JSON.stringify(stagedCreateJournal));
-            const unknownIdRepair = await invoke({ backend: "linux-vm", command: "device_status", deviceId, incarnationId: activeIncarnationId });
+            const unknownIdRepair = await invoke({ backend: "linux-vm", command: "device_status", deviceId });
             expect(unknownIdRepair.status).toBe(409);
             expect(await unknownIdRepair.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-create-outcome-indeterminate" }));
             expect(existsSync(snapshotJournalPath)).toBe(true);
             writeFileSync(snapshotJournalPath, JSON.stringify({ ...stagedCreateJournal, snapshotId: createdSnapshotId }));
-            expect((await invoke({ backend: "linux-vm", command: "device_status", deviceId, incarnationId: activeIncarnationId })).status).toBe(200);
+            expect((await invoke({ backend: "linux-vm", command: "device_status", deviceId })).status).toBe(200);
             expect(existsSync(snapshotJournalPath)).toBe(false);
             writeFileSync(snapshotJournalPath, JSON.stringify({
                 version: 1, operationId: vmId, ownerId, deviceId, incarnationId: activeIncarnationId,
@@ -3230,7 +3266,7 @@ describe("device-lab Hyper-V broker", () => {
                 providerName: `ccc-${ownerId}-baseline`, startedAt: new Date().toISOString(),
             }));
             const callsBeforeRepair = commandRunner.mock.calls.length;
-            expect((await invoke({ backend: "linux-vm", command: "device_status", deviceId, incarnationId: activeIncarnationId })).status).toBe(200);
+            expect((await invoke({ backend: "linux-vm", command: "device_status", deviceId })).status).toBe(200);
             expect(existsSync(snapshotJournalPath)).toBe(false);
             const repairCalls = commandRunner.mock.calls.slice(callsBeforeRepair)
                 .map(([command]) => hyperVWindowsOperationRequest(command))
@@ -3240,7 +3276,7 @@ describe("device-lab Hyper-V broker", () => {
             expect((await tool("device_snapshot_delete", { snapshotName: "baseline", confirmDestructive: true })).status).toBe(200);
             guiReady = false;
             guiFailure = true;
-            const guiFailedStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
+            const guiFailedStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true });
             expect(guiFailedStart.status).toBe(502);
             const guiFailurePayload = await guiFailedStart.json();
             expect(guiFailurePayload, JSON.stringify(guiFailurePayload)).toEqual(expect.objectContaining({
@@ -3250,7 +3286,7 @@ describe("device-lab Hyper-V broker", () => {
                     boot: expect.objectContaining({ ready: false, error: "hyper-v-linux-gui-apt-install-failed" }),
                 }),
             }));
-            expect((await invoke({ backend: "linux-vm", command: "device_delete", deviceId, incarnationId: activeIncarnationId })).status).toBe(200);
+            expect((await invoke({ backend: "linux-vm", command: "device_delete", deviceId })).status).toBe(200);
             expect(elevatedNetworkCleanups).toBe(1);
             expect(existsSync(deviceRoot)).toBe(false);
             expect(existsSync(privateRoot)).toBe(false);
@@ -3258,20 +3294,31 @@ describe("device-lab Hyper-V broker", () => {
             rmSync(ownerImageProfileRoot, { recursive: true, force: true });
             mkdirSync(imageProfileRoot, { recursive: true });
             writeFileSync(imagePath, "bad-vhdxx");
-            const unmanaged = await invoke({ backend: "linux-vm", command: "device_create", deviceId, name: "Ubuntu Hyper-V rebuilt", memoryMb: 2048, cpus: 2 });
+            const unmanaged = await invoke({ backend: "linux-vm", command: "device_create", name: "Ubuntu 한글 VM", memoryMb: 2048, cpus: 2 });
             expect(unmanaged.status).toBe(409);
             expect(await unmanaged.json()).toEqual(expect.objectContaining({ error: "hyper-v-base-image-profile-conflict", detail: "hyper-v-base-image-unmanaged-existing" }));
             expect(readFileSync(imagePath, "utf8")).toBe("bad-vhdxx");
             rmSync(imagePath, { force: true });
-            const recreated = await invoke({ backend: "linux-vm", command: "device_create", deviceId, name: "Ubuntu Hyper-V rebuilt", memoryMb: 2048, cpus: 2 });
+            const deletedDeviceId = deviceId;
+            const deletedPrivateRoot = privateRoot;
+            const recreated = await invoke({ backend: "linux-vm", command: "device_create", name: "Ubuntu 한글 VM", memoryMb: 2048, cpus: 2 });
             expect(recreated.status, JSON.stringify(await recreated.clone().json())).toBe(200);
             expect(elevatedNetworkSetups).toBe(2);
-            activeIncarnationId = (await recreated.clone().json()).result.device.incarnationId as string;
+            const recreatedBody = await recreated.clone().json();
+            deviceId = recreatedBody.result.device.id;
+            expect(deviceId).not.toBe(deletedDeviceId);
+            expect(privateRoot).not.toBe(deletedPrivateRoot);
+            expect(recreatedBody.result.device.name).toBe("Ubuntu 한글 VM");
+            activeIncarnationId = JSON.parse(readFileSync(join(privateRoot, "incarnation.json"), "utf8")).incarnationId as string;
+            const callsBeforeOldId = commandRunner.mock.calls.length;
+            const oldTarget = await tool("device_exec", { deviceId: deletedDeviceId, command: "uname -a" });
+            expect(oldTarget.status).toBe(404);
+            expect(commandRunner).toHaveBeenCalledTimes(callsBeforeOldId);
             expect(commandRunner.mock.calls.filter(([command]) => {
                 const script = providerScript(command);
                 return script.includes("function Save-BoundedDownload");
             })).toHaveLength(1);
-            expect((await invoke({ backend: "linux-vm", command: "device_delete", deviceId, incarnationId: activeIncarnationId })).status).toBe(200);
+            expect((await invoke({ backend: "linux-vm", command: "device_delete", deviceId })).status).toBe(200);
             expect(elevatedNetworkCleanups).toBe(2);
             expect(existsSync(privateRoot)).toBe(false);
         } finally {

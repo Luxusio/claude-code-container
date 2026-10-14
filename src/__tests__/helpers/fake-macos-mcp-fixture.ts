@@ -42,13 +42,13 @@ if (args[0] === "clone") {
     if (args[2]?.includes("fail-snapshot")) process.exit(9);
 }
 if (args[0] === "delete") {
-    if (args[1]?.endsWith("macos-partial-delete")) { console.error("primary delete failed"); process.exit(6); }
-    if (args[1]?.includes("fail-delete")) { console.error("delete failed"); process.exit(6); }
+    if (args[1] === env.FAKE_TART_PARTIAL_DELETE_INSTANCE) { console.error("primary delete failed"); process.exit(6); }
+    if (args[1] === env.FAKE_TART_FAIL_DELETE_INSTANCE) { console.error("delete failed"); process.exit(6); }
 }
 if (args[0] === "run" && args[1] === "--help") { console.log("Usage: tart run [--with-softnet] [--no-graphics] VM"); process.exit(0); }
 if (args[0] === "run" && env.FAKE_TART_RUN_EXIT_IMMEDIATELY !== "1") setTimeout(() => {}, 1000);
 if (args[0] === "ip") {
-    if (args.join(" ").includes("macos-arp-fallback")) {
+    if (args.includes(env.FAKE_TART_ARP_INSTANCE)) {
         if (args.includes("--resolver=arp")) console.log("192.0.2.45");
         else { console.error("no IP address found"); process.exit(1); }
     } else console.log("192.0.2.44");
@@ -64,7 +64,7 @@ const args = process.argv.slice(2), command = args.join(" ");
 require("node:fs").appendFileSync(process.env.FAKE_TART_LOG, "ssh " + command + "\\n");
 if (command.includes("screencapture") && command.includes("-v")) { setTimeout(() => {}, 20000); }
 else if (command.includes("screencapture") && command.includes("-x")) {}
-else if (command.includes("ccc-macos-fake-tart-guest-helper.sh'")) {
+else if (command.includes("-guest-helper.sh'")) {
     const result = { ok: true, provider: "macos-helper" };
     if (command.includes("' click '22' '33' 'right'")) result.clicked = { x: 22, y: 33, button: "right" };
     else if (command.includes("' double_click '44' '55' 'left'")) result.doubleClicked = { x: 44, y: 55, button: "left" };
@@ -87,7 +87,7 @@ else console.log("ssh output");
     writeExecutable(join(binDir, "scp"), `#!${process.execPath}
 const fs = require("node:fs"), path = require("node:path"), args = process.argv.slice(2), last = args.at(-1);
 fs.appendFileSync(process.env.FAKE_TART_LOG, "scp " + args.join(" ") + "\\n");
-if (last.includes("fail-helper")) { console.error("scp helper failure"); process.exit(5); }
+if (process.env.FAKE_MACOS_FAIL_HELPER_ID && last.includes(process.env.FAKE_MACOS_FAIL_HELPER_ID)) { console.error("scp helper failure"); process.exit(5); }
 // A Windows drive colon is local; SCP remote destinations have a host prefix.
 if (/^[^/\\\\]+@[^:]+:/.test(last)) process.exit(0);
 if (args.join(" ").includes("fail-once-recording-copy")) {
@@ -140,6 +140,10 @@ export function cleanupFakeMacosMcpContext(context: FakeMacosMcpContext | undefi
     delete process.env.FAKE_TART_REPLACEMENT_STATE;
     delete process.env.FAKE_TART_TARGET_STATE;
     delete process.env.FAKE_TART_RUN_EXIT_IMMEDIATELY;
+    delete process.env.FAKE_TART_FAIL_DELETE_INSTANCE;
+    delete process.env.FAKE_TART_PARTIAL_DELETE_INSTANCE;
+    delete process.env.FAKE_TART_ARP_INSTANCE;
+    delete process.env.FAKE_MACOS_FAIL_HELPER_ID;
     rmSync(context.homeDir, { recursive: true, force: true });
     rmSync(context.binDir, { recursive: true, force: true });
 }

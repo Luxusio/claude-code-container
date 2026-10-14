@@ -176,6 +176,61 @@ describe("shared device request admission", () => {
     });
 });
 
+describe("creation broker endpoint selection without native effects", () => {
+    function routing(args: DeviceArguments) {
+        const ports = requestPorts("device_create", args);
+        ports.handleLinuxVmManagementTool = () => null;
+        ports.handleLinuxVmTool = () => null;
+        ports.invokeBrokerLifecycle = vi.fn(async () => ({ ok: true, receipt: { ok: true, result: { device: { id: "fixture-returned-id" } } } }));
+        ports.implicitBrokerProbeOptions = vi.fn(options => ({ hostCandidates: ["127.0.0.1"], port: options.port ?? 23123, autolaunch: false, timeoutMs: 100 }));
+        ports.observeBrokerBackends = vi.fn(async () => ({ ok: true, selection: { host: "127.0.0.1", port: 24123 }, backends: [{ name: "linux-vm", provider: "hyper-v" }], payloadReceipt: {}, receipt: { ok: true } }));
+        return { ports, run: () => createDeviceRequest(ports).dispatchDevice("device_create", args) };
+    }
+
+    it("resolves the runtime endpoint for an explicit Hyper-V Linux provider", async () => {
+        const f = routing({ backend: "linux-vm", provider: "hyper-v", name: "Runtime VM label" });
+        await f.run();
+        expect(f.ports.invokeBrokerLifecycle).toHaveBeenCalledTimes(1);
+        expect(f.ports.invokeBrokerLifecycle).toHaveBeenCalledWith(expect.objectContaining({ port: 23123, hostCandidates: ["127.0.0.1"], backend: "linux-vm", command: "device_create", name: "Runtime VM label" }));
+        expect(vi.mocked(f.ports.invokeBrokerLifecycle).mock.calls[0][0].devicePort).toBeUndefined();
+        expect(f.ports.observeBrokerBackends).not.toHaveBeenCalled();
+    });
+
+    it("retains the observed endpoint for advertised automatic Hyper-V routing", async () => {
+        const f = routing({ backend: "linux-vm", provider: "auto", name: "Advertised VM label", brokerPort: 23123, devicePort: 9902 });
+        await f.run();
+        expect(f.ports.observeBrokerBackends).toHaveBeenCalledWith(expect.objectContaining({ port: 23123 }));
+        expect(f.ports.invokeBrokerLifecycle).toHaveBeenCalledWith(expect.objectContaining({ port: 24123, hostCandidates: ["127.0.0.1"], backend: "linux-vm", command: "device_create", devicePort: 9902 }));
+    });
+
+    it("preserves an explicitly configured VM broker port", async () => {
+        const f = routing({ backend: "linux-vm", provider: "hyper-v", name: "Configured VM label", brokerPort: 25123 });
+        await f.run();
+        expect(f.ports.invokeBrokerLifecycle).toHaveBeenCalledWith(expect.objectContaining({ port: 25123 }));
+        expect(vi.mocked(f.ports.invokeBrokerLifecycle).mock.calls[0][0].devicePort).toBeUndefined();
+    });
+
+    it.each(["windows-vm", "linux-vm", "macos-vm"])("never reinterprets a selected %s HTTP endpoint as a VM device port", async backend => {
+        const f = routing({ backend, name: "Selected VM label", broker: true, port: 27123 });
+        await f.run();
+        expect(f.ports.invokeBrokerLifecycle).toHaveBeenCalledWith(expect.objectContaining({ port: 27123 }));
+        expect(vi.mocked(f.ports.invokeBrokerLifecycle).mock.calls[0][0].devicePort).toBeUndefined();
+    });
+
+    it("keeps Android console and broker ports separate", async () => {
+        const f = routing({ backend: "android-emulator", name: "Console fixture", broker: true, port: 5556, brokerPort: 26123 });
+        await f.run();
+        expect(f.ports.invokeBrokerLifecycle).toHaveBeenCalledWith(expect.objectContaining({ backend: "android-emulator", port: 26123, devicePort: 5556 }));
+    });
+
+    it("refuses an unavailable VM endpoint before any lifecycle invocation", async () => {
+        const f = routing({ backend: "linux-vm", provider: "hyper-v", name: "Unavailable VM label" });
+        f.ports.implicitBrokerProbeOptions = () => null;
+        expect(await f.run()).toMatchObject({ selection: "json", value: { ok: false, error: "broker-runtime-unavailable" } });
+        expect(f.ports.invokeBrokerLifecycle).not.toHaveBeenCalled();
+    });
+});
+
 function catalogPorts(normalized: DeviceArguments): DeviceRequestPorts<OpaqueResult> {
     const ports = requestPorts("device_backends", normalized);
     ports.ownerId = () => "owned";

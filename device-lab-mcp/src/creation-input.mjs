@@ -1,6 +1,7 @@
 // Public creation describes either real provisioning or explicit resource reuse.
 // Private provider flags remain available to internal definition-only callers.
 const COMMON_FIELDS = ["backend", "name", "deviceId", "detail"];
+const VM_BACKENDS = new Set(["windows-vm", "linux-vm", "macos-vm"]);
 export const CREATE_TOOL_BACKENDS = Object.freeze({
     create_android_emulator: "android-emulator", create_ios_simulator: "ios-simulator",
     create_windows_vm: "windows-vm", create_windows_sandbox: "windows-sandbox",
@@ -97,6 +98,7 @@ export function createInputError(args = {}) {
     if (Object.hasOwn(args, "createAvd") || Object.hasOwn(args, "createSimulator")) return "create provisions resources automatically; omit createAvd/createSimulator (use avdName or udid only to reuse an existing resource)";
     if (!Object.hasOwn(BACKEND_FIELDS, args.backend)) return "create requires a supported backend";
     if (!present(args.name)) return "create requires a nonempty name";
+    if (VM_BACKENDS.has(args.backend) && Object.hasOwn(args, "deviceId")) return "VM creation generates deviceId; omit deviceId";
     if (args.deviceId !== undefined && (typeof args.deviceId !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._-]{1,128}$/.test(args.deviceId))) return "device-id-invalid";
     const allowed = new Set([...COMMON_FIELDS, ...BACKEND_FIELDS[args.backend]]);
     for (const [key, value] of Object.entries(args)) {
@@ -173,11 +175,12 @@ export function createInputSchema(existingSchema, backend) {
     }
     if (backend === "linux-vm") properties.agent = structuredClone(AGENT_SCHEMA);
     properties.name.minLength = 1;
+    if (VM_BACKENDS.has(backend)) properties.name.description = "Display name; creation returns a fresh deviceId for subsequent operations.";
     properties.avdName.description = "With systemImage: optional new owner-prefixed AVD name. Without systemImage: reuse this existing AVD.";
     properties.udid.description = "Reuse an existing owner-scoped simulator. simulatorName must match its actual name (defaults to the owner/name-derived name). Omit udid to provision from deviceType and runtime.";
     properties.systemImage.description = "Installed Android system-images package identifier. Supplying it provisions a new AVD; omit only to reuse avdName. No automatic SDK download.";
     for (const key of ["avdName", "udid", "systemImage", "deviceType", "runtime"]) properties[key].minLength = 1;
-    const common = Object.fromEntries(COMMON_FIELDS.filter(key => properties[key]).map(key => [key, properties[key]]));
+    const common = Object.fromEntries(COMMON_FIELDS.filter(key => properties[key] && !(key === "deviceId" && VM_BACKENDS.has(backend))).map(key => [key, properties[key]]));
     const fields = BACKEND_FIELDS[backend];
     if (!fields) throw new Error("Unknown creation backend");
     const branchProperties = Object.fromEntries(fields.map(key => [key, properties[key]]));

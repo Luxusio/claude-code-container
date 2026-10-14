@@ -1,7 +1,7 @@
 import type { MacosVmLifecycleInput, MacosVmLifecyclePorts, MacosVmProcessHandle, MacosVmDevice, MacosVmLifecycleClaim, MacosVmProviderPlan, MacosVmTransition, MacosVmCommandResult, MacosVmRollback, MacosCloneFailureEvidence, MacosVmNativePlan, MacosVmNativeObservation, MacosVmLifecycleOutcome, MacosNativeCloneFailureEvidence } from '../../ports/lifecycle/macos-vm-lifecycle.mjs';
 export interface MacosVmLifecycle<Result> {
-    create(input: MacosVmLifecycleInput): Result | undefined;
-    createImage(input: MacosVmLifecycleInput): Result | undefined;
+    create(input: MacosVmLifecycleInput, admittedDeviceId?: string): Result | undefined;
+    createImage(input: MacosVmLifecycleInput, admittedDeviceId?: string): Result | undefined;
     start(input: MacosVmLifecycleInput): Promise<Result | undefined>;
     stop(input: MacosVmLifecycleInput): Promise<Result | undefined>;
     delete(input: MacosVmLifecycleInput): Promise<Result | undefined>;

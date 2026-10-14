@@ -38,6 +38,12 @@ function positiveAsyncContract(){
 }
 void synchronousCreate;void synchronousImage;void positiveAsyncContract;
 function negativeContracts(){
+    const {deviceId,...withoutCreationEntropy}=ports;void deviceId;
+    // @ts-expect-error creation entropy is a required native leaf
+    createMacosVmLifecycleApplication(withoutCreationEntropy);
+    // @ts-expect-error admitted creation identity is synchronous
+    const deferredIdentity:typeof ports={...ports,deviceId:async()=>"macos-id"};
+    void deferredIdentity;
     const {parseLifecycleClaimedAt,...missingParse}=ports;void parseLifecycleClaimedAt;
     // @ts-expect-error original claimed-at parsing requires its explicit native leaf
     createMacosVmLifecycleApplication(missingParse);
@@ -104,7 +110,7 @@ function imageContracts(imagePorts:MacosImageSnapshotsPorts<Result>,lifecycle:Ma
     const {presentRestoreFailure,...missingRestorePresenter}=imagePorts;void presentRestoreFailure;
     // @ts-expect-error restore failure presentation remains required by the unchanged consumer
     createMacosImageSnapshots(missingRestorePresenter,lifecycle);
-    const cloned:Promise<Result|undefined>=imageApp.clone({sourceDeviceId:"unit",deviceId:"copy"});
+    const cloned:Promise<Result|undefined>=imageApp.clone({sourceDeviceId:"unit",name:"Copy"});
     const snapshot:Promise<Result|undefined>=imageApp.createSnapshot({deviceId:"unit",snapshotName:"Before"});
     const restored:Promise<Result|undefined>=imageApp.restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
     const deleted:Promise<Result|undefined>=imageApp.deleteSnapshot({deviceId:"unit",snapshotName:"Before"});

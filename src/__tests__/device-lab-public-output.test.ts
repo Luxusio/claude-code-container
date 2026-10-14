@@ -42,10 +42,10 @@ describe("minimal public Device Lab output", () => {
         expect(result.content[0].text).not.toContain("\n");
     });
 
-    it("keeps device identity and fenced-action incarnation while removing duplicate status", () => {
+    it("keeps one public device identity while removing private generation and duplicate status", () => {
         const { value, text } = projected("device_status", target);
         expect(text).toContain("test-vm");
-        expect(text).toContain(incarnationId);
+        expect(text).not.toContain(incarnationId);
         expect(text).toContain("stopped");
         expect(value).not.toHaveProperty("targetStatus");
         expect(text).not.toContain("internal-owner");
@@ -54,7 +54,7 @@ describe("minimal public Device Lab output", () => {
     it("projects inventory devices while keeping empty inventory meaningful", () => {
         const { value, text } = projected("device_list", { ownerId: "internal-owner", devices: [target], routedBy: "device-list-direct" });
         expect(value.devices).toHaveLength(1);
-        expect(text).toContain(incarnationId);
+        expect(text).not.toContain(incarnationId);
         expect(value.devices[0]).not.toHaveProperty("targetStatus");
         expect(projected("device_list", { devices: [] }).value.devices).toEqual([]);
     });
@@ -98,7 +98,7 @@ describe("minimal public Device Lab output", () => {
 
     it.each(["device_broker_rpc", "device_exec"])("preserves arbitrary %s payloads with metadata-looking keys", (name) => {
         const data = {
-            ownerId: "user-owner", source: "user-source", broker: { implemented: ["application-capability"] },
+            incarnationId: "guest-root", nested: { incarnationId: "guest-nested" }, ownerId: "user-owner", source: "user-source", broker: { implemented: ["application-capability"] },
             targetStatus: { status: "application-state" }, status: 0, stdout: "exact command output\n", stderr: "",
         };
         const { value } = projected(name, { ok: true, result: data });
@@ -106,7 +106,7 @@ describe("minimal public Device Lab output", () => {
     });
 
     it("preserves opaque UI data even when object keys resemble transport metadata", () => {
-        const tree = { ownerId: "ui-owner", source: "ui-source", targetStatus: { label: "Readiness" }, broker: "visible label" };
+        const tree = { incarnationId: "guest-ui", children: [{ incarnationId: "guest-child" }], ownerId: "ui-owner", source: "ui-source", targetStatus: { label: "Readiness" }, broker: "visible label" };
         expect(projected("mobile_dump_ui", { source: tree }).value.source).toEqual(tree);
     });
 
@@ -117,7 +117,7 @@ describe("minimal public Device Lab output", () => {
             ["device_record_video_stop", { stopped: true, recording: { active: false }, outputPath: "/tmp/movie.mp4" }],
         ] as const) {
             const { text } = projected(name, data);
-            if (name === "device_create") expect(text).toContain(incarnationId);
+            if (name === "device_create") expect(text).not.toContain(incarnationId);
             if (name === "device_delete") { expect(text).toContain("test-vm"); expect(text).toContain('"avdDeleted":true'); }
             if (name === "device_record_video_stop") { expect(text).toContain("/tmp/movie.mp4"); expect(text).toContain('"stopped":true'); }
         }

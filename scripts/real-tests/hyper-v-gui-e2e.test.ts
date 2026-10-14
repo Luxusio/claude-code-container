@@ -66,7 +66,7 @@ vi.mock("./hyper-v-console-host.ts", () => ({
     unfilteredHyperVConsolePixels: (png: Buffer) => Buffer.alloc(640 * 480 * 3, png[png.length - 1]),
 }));
 
-const direct = { deviceId: "owned-vm", incarnationId: "a".repeat(32) };
+const direct = { deviceId: "windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468" };
 const windowReply = (windows: unknown) => reply({ windows });
 
 function journey(guest: "windows" | "linux", override?: (tool: string, args: Record<string, unknown>) => any) {
@@ -99,7 +99,7 @@ function journey(guest: "windows" | "linux", override?: (tool: string, args: Rec
         if (tool === "screenshot") return {
             content: [
                 { type: "image", mimeType: "image/png", data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, frame++]).toString("base64") },
-                { type: "text", text: JSON.stringify({ width: 640, height: 480, incarnationId: direct.incarnationId }) },
+                { type: "text", text: JSON.stringify({ width: 640, height: 480, deviceId: args.deviceId }) },
             ],
         };
         return reply({ applied: true });
@@ -114,7 +114,7 @@ describe.each(["windows", "linux"] as const)("Hyper-V %s public GUI journey", (g
         expect(result.visibleChange).toBe(true);
         expect(result.tools).toEqual(expect.arrayContaining(["window_list", "focus_window", "drag"]));
         expect(calls.filter(({ tool }) => tool === "focus_window").map(({ args }) => args.handle)).toEqual(["1234"]);
-        expect(calls.every(({ args }) => args.deviceId === direct.deviceId && args.incarnationId === direct.incarnationId)).toBe(true);
+        expect(calls.every(({ args }) => args.deviceId === direct.deviceId && !("incarnationId" in args))).toBe(true);
         const focusIndex = calls.findIndex(({ tool }) => tool === "focus_window");
         const dragIndex = calls.findIndex(({ tool }) => tool === "drag");
         const scrollIndex = calls.findIndex(({ tool }) => tool === "scroll");
@@ -128,6 +128,18 @@ describe.each(["windows", "linux"] as const)("Hyper-V %s public GUI journey", (g
         } else {
             expect(calls.some(({ tool, args }) => tool === "exec" && String(args.command).startsWith("timeout 4s") && args.timeoutMs === 5000)).toBe(true);
         }
+    });
+
+    it("rejects a screenshot from a different VM before applying further GUI input", async () => {
+        const { calls, callTool } = journey(guest, (tool) => tool === "screenshot" ? {
+            content: [
+                { type: "image", mimeType: "image/png", data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]).toString("base64") },
+                { type: "text", text: JSON.stringify({ width: 640, height: 480, deviceId: "windows-vm-other-instance" }) },
+            ],
+        } : undefined);
+        await expect(runHyperVGuiE2E(callTool, direct, guest)).rejects.toThrow("hyper-v-gui-screenshot-device-invalid");
+        expect(calls.at(-1)?.tool).toBe("screenshot");
+        expect(calls.some(call => call.tool === "drag" || call.tool === "scroll")).toBe(false);
     });
 
     it("rejects an acknowledged drag that never moves the cursor", async () => {
@@ -175,14 +187,14 @@ describe("public GUI evidence validation", () => {
 });
 
 
-describe("window_list public incarnation schema", () => {
+describe("window_list public device selector schema", () => {
     const schema = TOOLS.find(tool => tool.name === "window_list")!.inputSchema;
     const validate = new Ajv({ strict: false }).compile(schema);
-    it("accepts an optional valid generation and rejects malformed generations", () => {
+    it("accepts deviceId alone and rejects the removed public generation input", () => {
         expect(toolInputError("window_list", direct)).toBeNull();
         expect(validate(direct)).toBe(true);
         expect(validate({ deviceId: direct.deviceId })).toBe(true);
-        for (const incarnationId of ["incarnation-123", "", "a".repeat(33), 42, null]) {
+        for (const incarnationId of ["a".repeat(32), "incarnation-123", "", "a".repeat(33), 42, null]) {
             expect(validate({ ...direct, incarnationId }), String(incarnationId)).toBe(false);
         }
     });

@@ -166,8 +166,8 @@ function presentMacosLifecycle(outcome) {
 /** @type {import('../application/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycle<ReturnType<typeof textResult>>} */
 const macosVmLifecycle = {
     ...macosVmNativeLifecycle,
-    create: args => presentMacosLifecycle(macosVmNativeLifecycle.create(args)),
-    createImage: args => presentMacosLifecycle(macosVmNativeLifecycle.createImage(args)),
+    create: (args, admittedDeviceId) => presentMacosLifecycle(macosVmNativeLifecycle.create(args, admittedDeviceId)),
+    createImage: (args, admittedDeviceId) => presentMacosLifecycle(macosVmNativeLifecycle.createImage(args, admittedDeviceId)),
     start: async args => presentMacosLifecycle(await macosVmNativeLifecycle.start(args)),
     stop: async args => presentMacosLifecycle(await macosVmNativeLifecycle.stop(args)),
     delete: async args => presentMacosLifecycle(await macosVmNativeLifecycle.delete(args)),
@@ -225,8 +225,8 @@ function macosDiscovery() { return deviceObservation.discovery(); }
 
 export function macosBackend(discovery = macosDiscovery()) { return deviceObservation.backend(discovery); }
 
-function macosDeviceId(name) {
-    return `macos-${slug(name)}`;
+function macosDeviceId() {
+    return `macos-${randomUUID()}`;
 }
 
 function macosSnapshotId(name) {
@@ -1140,7 +1140,14 @@ function macosRecordingResult(outcome) {
     return jsonResult(outcome.value);
 }
 
-async function handleMacosToolUnlocked(name, args) {
+async function handleMacosToolUnlocked(name, args, admittedDeviceId) {
+    if (admittedDeviceId) {
+        const instance = `ccc-${ownerId()}-${admittedDeviceId}`;
+        if (readMacosDevices().some(device => device.id === admittedDeviceId || macosProviderInstanceReferenced(device, instance))
+            || existsSync(macosWorkspaceDir({ id: admittedDeviceId }))) {
+            return textResult(false, `Device already exists for this owner: ${admittedDeviceId}`);
+        }
+    }
     if (requiresOwnerDeviceOperation("macos", name)) {
         for (const candidate of [args?.deviceId, args?.sourceDeviceId]) {
             if (typeof candidate !== "string") continue;
@@ -1152,11 +1159,11 @@ async function handleMacosToolUnlocked(name, args) {
         case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
 
 
-        case "device_base_image_create": return macosVmLifecycle.createImage(args);
+        case "device_base_image_create": return macosVmLifecycle.createImage(args, admittedDeviceId);
 
-        case "device_base_image_clone": return macosImages.clone(args);
+        case "device_base_image_clone": return macosImages.clone(args, admittedDeviceId);
 
-        case "device_create": return macosVmLifecycle.create(args);
+        case "device_create": return macosVmLifecycle.create(args, admittedDeviceId);
 
         case "device_delete": return macosVmLifecycle.delete(args);
 
@@ -1202,20 +1209,19 @@ async function handleMacosToolUnlocked(name, args) {
 }
 
 export async function handleMacosTool(name, args) {
-    if (!requiresOwnerDeviceOperation("macos", name)) return handleMacosToolUnlocked(name, args);
+    if (!requiresOwnerDeviceOperation("macos", name) && !["device_status", "device_record_video_status"].includes(name)) return handleMacosToolUnlocked(name, args);
     const createsDevice = ["device_create", "device_base_image_create", "device_base_image_clone"].includes(name);
-    const deviceId = typeof args?.deviceId === "string"
-        ? args.deviceId
-        : createsDevice && typeof args?.name === "string"
-            ? macosDeviceId(args.name)
-            : null;
+    if (createsDevice && Object.hasOwn(args, "deviceId")) {
+        return textResult(false, "macOS VM creation does not accept deviceId");
+    }
+    const admittedDeviceId = createsDevice ? macosDeviceId() : undefined;
+    const deviceId = admittedDeviceId ?? (typeof args?.deviceId === "string" ? args.deviceId : null);
     if (!deviceId) return handleMacosToolUnlocked(name, args);
-    if (!createsDevice && !findMacosDevice(deviceId)) return handleMacosToolUnlocked(name, args);
     try {
         if (name === "device_base_image_clone" && typeof args?.sourceDeviceId === "string") {
-            return await withOwnerDeviceOperations("macos", [deviceId, args.sourceDeviceId], () => handleMacosToolUnlocked(name, args));
+            return await withOwnerDeviceOperations("macos", [deviceId, args.sourceDeviceId], () => handleMacosToolUnlocked(name, args, admittedDeviceId));
         }
-        return await withOwnerDeviceOperation("macos", deviceId, () => handleMacosToolUnlocked(name, args));
+        return await withOwnerDeviceOperation("macos", deviceId, () => handleMacosToolUnlocked(name, args, admittedDeviceId));
     } catch (error) {
         if (error?.code !== "shared-mutation-lock-timeout") throw error;
         return textResult(false, `macOS VM device operation lock failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1276,7 +1282,7 @@ const macosImages = createMacosImageSnapshots({
     claim: device => claimMacosDevice(device),
     transition: (id, expected, replacement) => transitionMacosDevice(id, expected, replacement),
     owner: () => ownerId(),
-    deviceId: name => macosDeviceId(name),
+    deviceId: () => macosDeviceId(),
     snapshotId: name => macosSnapshotId(name),
     timestamp: () => new Date().toISOString(),
     runtimeId: () => randomUUID(),

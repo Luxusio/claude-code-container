@@ -67,7 +67,7 @@ function fixture(backend = "windows-vm") {
     const target: SnapshotOwnerTarget = { backend, stateKey: backend, device };
     const app = createBrokerHyperVSnapshotApplication(ports);
     const invoke = (tool: SnapshotTool, params: Record<string, unknown> = {}) => app.invoke(owner,
-        { tool, deviceId, params: { incarnationId, confirmDestructive: true, ...params } }, target);
+        { tool, deviceId, params: { confirmDestructive: true, ...params } }, target);
     const journal = (tool: SnapshotJournal["tool"]): SnapshotJournal => ({ version: 1, operationId: "pending-operation", ownerId: owner,
         deviceId, incarnationId, tool, snapshotName: "baseline", providerName, snapshotId: checkpointId,
         confirmationRequired: tool === "device_snapshot_create", startedAt: "2026-10-11T00:00:00.000Z" });

@@ -14,7 +14,7 @@ function accepted(result: any, tool: string): any {
     return value?.result || value;
 }
 
-function screenshot(result: any, incarnationId: string): Buffer {
+function screenshot(result: any, deviceId: string): Buffer {
     assert.notEqual(result?.isError, true, "hyper-v-gui-screenshot-failed");
     const image = result?.content?.find((item: any) => item?.type === "image" && item?.mimeType === "image/png");
     const text = result?.content?.find((item: any) => item?.type === "text")?.text;
@@ -24,7 +24,7 @@ function screenshot(result: any, incarnationId: string): Buffer {
     catch { throw new Error("hyper-v-gui-screenshot-metadata-invalid"); }
     assert.equal(metadata.width, 640, "hyper-v-gui-screenshot-width-invalid");
     assert.equal(metadata.height, 480, "hyper-v-gui-screenshot-height-invalid");
-    assert.ok(metadata.incarnationId === incarnationId, "hyper-v-gui-screenshot-incarnation-invalid");
+    assert.equal(metadata.deviceId, deviceId, "hyper-v-gui-screenshot-device-invalid");
     const png = Buffer.from(image.data, "base64");
     assert.ok(png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), "hyper-v-gui-screenshot-png-invalid");
     return png;
@@ -181,7 +181,7 @@ export async function runHyperVGuiE2E(
     guest: "windows" | "linux",
 ): Promise<{ tools: readonly string[]; visibleChange: boolean }> {
     const nonce = randomBytes(6).toString("hex");
-    const first = screenshot(await callTool("screenshot", { detail: true, ...direct }), String(direct.incarnationId));
+    const first = screenshot(await callTool("screenshot", { detail: true, ...direct }), String(direct.deviceId));
     if (guest === "windows") {
         accepted(await callTool("key", { detail: true, ...direct, key: "Win+R" }), "key");
         await delay(800);
@@ -236,13 +236,13 @@ export async function runHyperVGuiE2E(
     accepted(await callTool("click", { detail: true, ...direct, x: 320, y: 240 }), "click");
     accepted(await callTool("click", { count: 2, detail: true, ...direct, x: 320, y: 240 }), "click count=2");
     await delay(700);
-    const beforeScroll = screenshot(await callTool("screenshot", { detail: true, ...direct }), String(direct.incarnationId));
+    const beforeScroll = screenshot(await callTool("screenshot", { detail: true, ...direct }), String(direct.deviceId));
     accepted(await callTool("scroll", { detail: true, ...direct, x: 320, y: 240, direction: "up", amount: 10 }), "scroll");
     let last = beforeScroll;
     let scrollChangedBytes = 0;
     for (let attempt = 0; attempt < 5; attempt++) {
         await delay(700);
-        last = screenshot(await callTool("screenshot", { detail: true, ...direct }), String(direct.incarnationId));
+        last = screenshot(await callTool("screenshot", { detail: true, ...direct }), String(direct.deviceId));
         scrollChangedBytes = changedHyperVGuiViewportBytes(beforeScroll, last);
         if (scrollChangedBytes >= 3000) break;
     }

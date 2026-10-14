@@ -24,38 +24,43 @@ export const name = "level 2 real Linux VM boot";
 
 export async function run() {
     if (!cap.available) return { status: "SKIP", reason: cap.reason };
-    const labId = `real-linux-vm-${Date.now()}`;
+    let deviceId = "";
     let startedPid = null;
     await withDeviceLabMcp(async ({ callTool }) => {
         try {
             const created = parseToolPayload(await callTool("create_linux_vm", { detail: true,
 
                 name: `Real Linux VM Test ${basename(cap.imagePath)}`,
-                deviceId: labId,
                 sourceImage: cap.sourceImage,
                 memoryMb: 1024,
                 cpus: 1,
             }));
             assert.strictEqual(created.ok, true, JSON.stringify(created));
-            assert.strictEqual(lifecycleDevice(created, "create").deviceId, labId);
+            deviceId = lifecycleDevice(created, "create").deviceId;
+            assert.ok(typeof deviceId === "string" && deviceId, "create must return the generated VM ID");
 
             await callTool("list_images", { detail: true,});
             markExpectedToolError(await callTool("import_image", { detail: true,
                 name: "Missing Linux VM smoke image",
                 sourcePath: "images/__missing-linux-vm-smoke__.qcow2",
             }));
-            const stopped = parseToolPayload(await callTool("status", { detail: true, deviceId: labId }));
+            const stopped = parseToolPayload(await callTool("status", { detail: true, deviceId }));
             assert.strictEqual(stopped.ok, true, JSON.stringify(stopped));
             assert.strictEqual(stopped.readiness?.state, "stopped");
-            const started = parseToolPayload(await callTool("start", { detail: true, deviceId: labId }));
+            const started = parseToolPayload(await callTool("start", { detail: true, deviceId }));
             assert.strictEqual(started.ok, true, JSON.stringify(started));
             startedPid = Number(lifecycleDevice(started, "start").runtime?.pid || started.started?.pid || 0) || null;
             assert.ok(startedPid, "qemu pid should be recorded");
             await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
             assert.doesNotThrow(() => process.kill(startedPid, 0));
         } finally {
-            if (startedPid) await callTool("stop", { detail: true, deviceId: labId, force: true });
-            await callTool("delete", { detail: true, deviceId: labId, force: true, confirmDestructive: true });
+            if (deviceId) {
+                try {
+                    if (startedPid) await callTool("stop", { detail: true, deviceId, force: true });
+                } finally {
+                    await callTool("delete", { detail: true, deviceId, force: true, confirmDestructive: true });
+                }
+            }
         }
     }, { env: providerEnv });
     return { status: "PASS" };

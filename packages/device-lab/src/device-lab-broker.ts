@@ -54,7 +54,7 @@ import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle, 
 import type { BrokerAndroidEmulatorLifecyclePorts } from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 import { createBrokerWindowsSandboxCreate } from "./device-lab/application/lifecycle/windows-sandbox-create.js";
 import { brokerWindowsSandboxRecord } from "./device-lab/domain/lifecycle/windows-sandbox-create.js";
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import { createFocusedInventory, createOwnerInventory } from "./device-lab/application/broker-observation-inventory.js";
 import { createLeaseDatePolicy, createLeaseDirectoryScan, createLeaseList, createPhysicalComposite } from "./device-lab/application/broker-observation-leases.js";
 import { createAppiumObservations } from "./device-lab/application/broker-observation-appium.js";
@@ -94,6 +94,7 @@ import {
     type HyperVImageProfile,
 } from "./device-lab/broker/hyper-v/image-store.js";
 import { createHostBackendDiscovery } from "./device-lab/application/broker-observation-discovery.js";
+import { decodeHyperVNetworkState } from "./device-lab/broker/hyper-v/network-state.js";
 import {
     cachedHyperVOwnerDevicesReader,
     ensureHyperVHostNetworkFabric as ensureHyperVHostNetworkFabricWithRuntime,
@@ -674,7 +675,6 @@ type CommandParamSuccess = {
     stateKey: string;
     command: string;
     deviceId: string;
-    expectedIncarnationId?: string;
     force: boolean;
     startIfStopped?: boolean;
     dryRun: boolean;
@@ -3995,7 +3995,7 @@ function renderHyperVDesktopOutcome(outcome: DesktopOutcome): BrokerRpcResult {
         content: [
             { type: 'image', data: capture.pngBase64, mimeType: 'image/png' },
             { type: 'text', text: JSON.stringify({ backend: result.backend, deviceId: result.deviceId,
-                width: capture.width, height: capture.height, incarnationId: result.incarnationId, capturedAt: result.capturedAt }) },
+                width: capture.width, height: capture.height, capturedAt: result.capturedAt }) },
         ],
     } } } };
 }
@@ -4077,8 +4077,25 @@ async function invokeDeviceTool(ownerId: string, params: unknown, normalized: No
         }
     }
     if (DEVICE_BROKER_BACKEND_TOOL_METHODS.has(parsed.tool)) {
+        if (isHyperVBackend(parsed.backend) && parsed.stateKey) {
+            try {
+                return await withOwnerDeviceOperation(ownerId, parsed.stateKey, String(parsed.deviceId), () => invokeBackendDeviceTool(ownerId, parsed, normalized));
+            } catch (error) {
+                if (!isDeviceOperationLockTimeout(error)) throw error;
+                return deviceOperationLockFailure(ownerId, String(parsed.backend), String(parsed.deviceId), error);
+            }
+        }
         const match = findOwnerDeviceForTool(ownerId, parsed);
-        if ("status" in match) return match;
+        if ("status" in match) {
+            if (parsed.backend || match.status !== 404) return match;
+            try {
+                return await withOwnerDeviceOperation(ownerId, "windows-vm", String(parsed.deviceId), () =>
+                    withOwnerDeviceOperation(ownerId, "linux-vm", String(parsed.deviceId), () => invokeBackendDeviceTool(ownerId, parsed, normalized)));
+            } catch (error) {
+                if (!isDeviceOperationLockTimeout(error)) throw error;
+                return deviceOperationLockFailure(ownerId, "windows-vm", String(parsed.deviceId), error);
+            }
+        }
         if (isHyperVBackend(match.backend)) {
             try {
                 return await withOwnerDeviceOperation(ownerId, match.stateKey, String(parsed.deviceId), () => invokeBackendDeviceTool(ownerId, parsed, normalized));
@@ -4366,7 +4383,7 @@ function createOwnerDeviceRecord(ownerId: string, parsed: CommandParamSuccess): 
         const configPath = brokerWindowsConfigPath(ownerId, parsed.deviceId);
         return brokerWindowsSandboxRecord(ownerId, parsed.deviceId, name, create, configPath, now);
     }
-    if(isHyperVBackend(parsed.backend)){const incarnation=String(create.incarnationId||'');return hyperVDeviceDefinition(ownerId,parsed,{name,timestamp:now,vmName:hyperVVmName(ownerId,parsed.deviceId,incarnation),deviceRoot:hyperVDeviceRoot(ownerId,parsed.backend,parsed.deviceId),privateRoot:hyperVPrivateDeviceRoot(ownerId,parsed.backend,parsed.deviceId),validIncarnation:validHyperVIncarnationId(create.incarnationId)});}
+    if(isHyperVBackend(parsed.backend)){const incarnation=validHyperVIncarnationId(create.incarnationId)?create.incarnationId:null;return hyperVDeviceDefinition(ownerId,parsed,{name,timestamp:now,vmName:incarnation?hyperVVmName(ownerId,parsed.deviceId,incarnation):null,deviceRoot:hyperVDeviceRoot(ownerId,parsed.backend,parsed.deviceId),privateRoot:hyperVPrivateDeviceRoot(ownerId,parsed.backend,parsed.deviceId),validIncarnation:incarnation!==null});}
 
     return {
         id: parsed.deviceId,
@@ -5044,9 +5061,6 @@ function defaultDeviceIdForBackend(backend: string, name: string): string {
     if (backend === "android-emulator") return `android-${suffix}`;
     if (backend === "ios-simulator") return `ios-${suffix}`;
     if (backend === "windows-sandbox") return `windows-${suffix}`;
-    if (backend === "windows-vm") return `windows-vm-${suffix}`;
-    if (backend === "linux-vm") return `linux-vm-${suffix}`;
-    if (backend === "macos-vm") return `macos-${suffix}`;
     return suffix;
 }
 
@@ -5113,7 +5127,7 @@ function createCommandParams(backend: string, input: Record<string, unknown>): R
     };
 }
 
-function validateCommandParams(params: unknown): CommandParamError | CommandParamSuccess {
+function validateCommandParams(params: unknown, admittedDeviceId?: string): CommandParamError | CommandParamSuccess {
     if (!params || typeof params !== "object" || Array.isArray(params)) {
         return { ok: false, status: 400, error: "invalid-command-params" };
     }
@@ -5132,6 +5146,13 @@ function validateCommandParams(params: unknown): CommandParamError | CommandPara
     }
     if (command === "device_reboot" && !isHyperVBackend(backend)) {
         return { ok: false, status: 400, error: "invalid-reboot-backend", allowed: [...DEVICE_BROKER_HYPER_V_BACKENDS] };
+    }
+    const managedVmCreate = command === "device_create" && (isHyperVBackend(backend) || backend === "macos-vm");
+    if (managedVmCreate && input.deviceId !== undefined) {
+        return { ok: false, status: 400, error: "vm-create-device-id-not-supported" };
+    }
+    if (managedVmCreate && backend === "linux-vm" && input.labId !== undefined) {
+        return { ok: false, status: 400, error: "linux-vm-create-lab-id-not-supported" };
     }
     const create = command === "device_create" ? createCommandParams(backend, input) : undefined;
     if (input.nestedVirtualization !== undefined && (command !== "device_create" || backend !== "windows-vm" || typeof input.nestedVirtualization !== "boolean")) {
@@ -5169,7 +5190,9 @@ function validateCommandParams(params: unknown): CommandParamError | CommandPara
     }
     const deviceId = typeof input.deviceId === "string" && input.deviceId.trim()
         ? input.deviceId.trim()
-        : command === "device_create"
+        : managedVmCreate
+            ? admittedDeviceId || ""
+            : command === "device_create"
             ? defaultDeviceIdForBackend(backend, String(create?.name || "device"))
             : "";
     if (!deviceId || deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId)) {
@@ -5182,7 +5205,6 @@ function validateCommandParams(params: unknown): CommandParamError | CommandPara
         stateKey,
         command,
         deviceId,
-        ...(typeof input.incarnationId === "string" ? { expectedIncarnationId: input.incarnationId } : {}),
         force: input.force === true,
         ...(typeof input.startIfStopped === "boolean" ? { startIfStopped: input.startIfStopped } : {}),
         dryRun,
@@ -5199,6 +5221,13 @@ function validateCommandParams(params: unknown): CommandParamError | CommandPara
             : {}),
         ...(create ? { create } : {}),
     };
+}
+
+function admitCommandParams(params: unknown): CommandParamError | CommandParamSuccess {
+    const validated = validateCommandParams(params, "vm-admission");
+    if (!validated.ok || validated.command !== "device_create"
+        || (!isHyperVBackend(validated.backend) && validated.backend !== "macos-vm")) return validated;
+    return { ...validated, deviceId: `${validated.backend === "macos-vm" ? "macos" : validated.backend}-${randomUUID()}` };
 }
 
 function commandParamError(parsed: CommandParamError) {
@@ -6403,14 +6432,20 @@ function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) 
         replayPublish: (owner,backend,id,replacement) => ownerRepository.replayPublish(owner,backend,id,replacement),
         cleanupAuxiliary: (owner,request,expected) => cleanupLifecycleAuxiliaryRuntime(owner,request,normalized,expected),
         clone: value => structuredClone(value),
-        executeStop: async (owner,request,device,connection,deadline) => nativeHyperVObservation(await hyperVTypedPowerExecution(normalized,{
+        executeStop: async (owner,request,device,connection,deadline) => {
+            forgetHyperVConsoleFrame(hyperVConsoleFrameKey(owner,request.backend,request.deviceId));
+            return nativeHyperVObservation(await hyperVTypedPowerExecution(normalized,{
             executable: connection.executable,ownerId:owner,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
             vmId:field(device,"vmId")||"",vmName:field(device,"vmName")||"",
-        },"stop",deadline,120000,{force:request.force,memoryMb:numberField(device,"memoryMb")||4096,cpus:numberField(device,"cpus")||2})),
-        executeDelete: async (owner,request,device,connection,deadline) => nativeHyperVObservation(await hyperVTypedDeleteExecution(normalized,{
+        },"stop",deadline,120000,{force:request.force,memoryMb:numberField(device,"memoryMb")||4096,cpus:numberField(device,"cpus")||2}));
+        },
+        executeDelete: async (owner,request,device,connection,deadline) => {
+            forgetHyperVConsoleFrame(hyperVConsoleFrameKey(owner,request.backend,request.deviceId));
+            return nativeHyperVObservation(await hyperVTypedDeleteExecution(normalized,{
             executable: connection.executable,ownerId:owner,backend:request.backend,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
             vmId:field(device,"vmId")||"",vmName:field(device,"vmName")||"",diskPath:field(device,"diskPath")||"",
-        },deadline)),
+        },deadline));
+        },
         parseObservation: (stdout,deleting) => deleting?parseHyperVDeleteObservation(stdout):parseHyperVVmObservation(stdout),
         samePath: (left,right) => resolve(left)===resolve(right),
         releaseNetwork: (owner,id,incarnation,deadline,preserve) => releaseHyperVNetworkAllocationAndCleanup(owner,id,incarnation,normalized,deadline,{preserveManagedFabric:preserve}),
@@ -6439,8 +6474,8 @@ function nativeHyperVParamFailure(parsed: CommandParamError): HyperVLifecycleOut
     return {kind: "admission-refused", reason: parsed.status === 403 ? "forbidden" : parsed.status === 404 ? "missing" : parsed.status === 409 ? "conflict" : "invalid", error: parsed.error, allowed: parsed.allowed, detail: parsed.detail, journalDisposition: "clear", recoveryDisposition: "required"};
 }
 
-function nativeHyperVLifecyclePlanning(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions, expected?: {device?: unknown}): HyperVLifecyclePlan<NativeHyperVConnection, ProviderCommandResult> {
-    const parsed = validateCommandParams(params);
+function nativeHyperVLifecyclePlanning(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions, expected?: {device?: unknown}, admittedDeviceId?: string): HyperVLifecyclePlan<NativeHyperVConnection, ProviderCommandResult> {
+    const parsed = validateCommandParams(params, admittedDeviceId);
     if (!parsed.ok) return {kind: "plan-refused", failure: nativeHyperVParamFailure(parsed)};
     const observation = observeLifecyclePreview(ownerId, parsed, normalized, false, expected);
     const base = {ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
@@ -6451,13 +6486,9 @@ function nativeHyperVLifecyclePlanning(ownerId: string, params: unknown, normali
     switch (observation.kind) {
         case "state-failed": return {kind: "plan-refused", failure: {kind: "operation-failed", ...nativeHyperVStateFailure(observation.error, parsed), journalDisposition: "clear", recoveryDisposition: "required"}};
         case "allocation-failed": return refuse("conflict", observation.evidence.error, {detail: observation.evidence.detail, allowed: observation.evidence.allowed});
-        case "incarnation-required": return refuse("conflict", "hyper-v-incarnation-required");
-        case "incarnation-conflict": return refuse("conflict", "hyper-v-incarnation-conflict");
-        case "configuration-conflict": return refuse("conflict", "hyper-v-create-configuration-conflict", {conflicts: observation.conflicts});
         case "already-exists": return refuse("conflict", "owner-device-already-exists");
         case "not-found": return refuse("missing", "owner-device-not-found");
         case "not-attached": return refuse("conflict", "physical-device-not-attached", {remedy: "attach the physical device before starting it"});
-        case "equivalent-create": return {kind: "planned", ...observation.value, idempotent: true, availability: {kind: "not-required"}};
         case "missing-delete": return {kind: "planned", ...observation.value, device: null, idempotent: true, availability: {kind: "not-required"}};
         default: {
             const {providerPlan, providerAvailable: _providerAvailable, ...value} = observation.value;
@@ -6528,15 +6559,19 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         recoverVM:async(connection,request,deadline)=>{const executable = connection.executable; const client=createDeviceLabHyperVWindowsClient({executable,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,120000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(executable)}:{})});return deleteDeviceLabHyperVVm(client,request);},
         releaseNetwork:(owner,id,incarnation,deadline,preserve)=>releaseHyperVNetworkAllocationAndCleanup(owner,id,incarnation,normalized,deadline,{preserveManagedFabric:preserve}),
         read:readOwnerDevices,incarnation:hyperVDeviceIncarnationId,stateErrorCode:ownerDeviceStateErrorCode,stateFailure:nativeHyperVStateFailure,
+        hasNetworkAllocation: (owner, id) => Boolean(readDeviceLabStateFile(
+            join(brokerPrivateRoot(), "network", "hyper-v.json"), decodeHyperVNetworkState,
+            "hyper-v-network-state", 256 * 1024,
+        )?.allocations.some(allocation => allocation.ownerId === owner && allocation.deviceId === id)),
         readJournal:readHyperVOperationJournal,writeJournal:writeHyperVOperationJournal,
         clearJournal:(owner,backend,id)=>{clearHyperVOperationJournal(owner,backend,id);return undefined;},
         readSnapshotJournal:readHyperVSnapshotJournal,repairSnapshots:(owner,backend,id,device,connection)=>observeHyperVSnapshotJournal(owner,backend,id,device,connection.executable,normalized),
         journalPath:hyperVOperationJournalPath,snapshotJournalPath:hyperVSnapshotJournalPath,
         forgetConsole:(owner,backend,id)=>{forgetHyperVConsoleFrame(hyperVConsoleFrameKey(owner,backend,id));return undefined;},
         reconcileOperation:(owner,backend,id,deadline,preserve)=>brokerHyperVStopDeleteApplication(normalized).reconcile(owner,backend,id,deadline,preserve),
-        planning: (owner, params, expected) => nativeHyperVLifecyclePlanning(owner, params, normalized, expected),
-        parse: params => {
-            const parsed = validateCommandParams(params);
+        planning: (owner, params, expected, admittedDeviceId) => nativeHyperVLifecyclePlanning(owner, params, normalized, expected, admittedDeviceId),
+        parse: (params, admittedDeviceId) => {
+            const parsed = validateCommandParams(params, admittedDeviceId);
             if (!parsed.ok) return {ok: false, failure: nativeHyperVParamFailure(parsed)};
             if (parsed.command === "device_create" || parsed.command === "device_start" || parsed.command === "device_reboot") return {ok: true, request: {...parsed, command: parsed.command}};
             return {ok: false, failure: {kind: "admission-refused", reason: "unsupported", error: "unsupported-command", backend: parsed.backend, command: parsed.command, journalDisposition: "clear", recoveryDisposition: "required"}};
@@ -8431,8 +8466,8 @@ function hyperVCreateConfigurationConflicts(device: Record<string, unknown>, par
 
 function lifecycleCommandPlanning(ownerId: string, params: unknown, normalized?: NormalizedBrokerOptions, redactSecrets = true, expected?: {
     device?: unknown;
-}) {
-    const parsed = validateCommandParams(params);
+}, admittedDeviceId?: string) {
+    const parsed = admittedDeviceId ? validateCommandParams(params, admittedDeviceId) : admitCommandParams(params);
     if (!parsed.ok) {
         const response = commandParamError(parsed);
         return { response, result: undefined };
@@ -8449,16 +8484,6 @@ function lifecycleCommandPlanning(ownerId: string, params: unknown, normalized?:
             return { response, result: undefined };
         }
     }
-    if (observation.kind === "incarnation-required" || observation.kind === "incarnation-conflict") {
-        const response = {
-            status: 409, payload: { ok: false, error: observation.kind === "incarnation-required" ? "hyper-v-incarnation-required" : "hyper-v-incarnation-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId },
-        };
-        return { response, result: undefined };
-    }
-    if (observation.kind === "configuration-conflict") {
-        const response = { status: 409, payload: { ok: false, error: "hyper-v-create-configuration-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, conflicts: observation.conflicts } };
-        return { response, result: undefined };
-    }
     if (observation.kind === "already-exists") {
         const response = { status: 409, payload: { ok: false, error: "owner-device-already-exists", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
         return { response, result: undefined };
@@ -8470,10 +8495,6 @@ function lifecycleCommandPlanning(ownerId: string, params: unknown, normalized?:
     if (observation.kind === "not-attached") {
         const response = { status: 409, payload: { ok: false, error: "physical-device-not-attached", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, remedy: "attach the physical device before starting it" } };
         return { response, result: undefined };
-    }
-    if (observation.kind === "equivalent-create") {
-        const response = { status: 200, payload: { ok: true, result: { ...observation.value, idempotent: true, providerCommand: null, execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false } } } };
-        return { response, result: response.payload.result };
     }
     if (observation.kind === "missing-delete") {
         const response = { status: 200, payload: { ok: true, result: { ...observation.value, device: null, idempotent: true, alreadyMissing: true, providerCommand: null, execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false } } } };
@@ -8487,7 +8508,7 @@ function lifecycleCommandPlanning(ownerId: string, params: unknown, normalized?:
     }
 }
 
-function lifecycleCommandPlan(ownerId:string,params:unknown,normalized?:NormalizedBrokerOptions,redactSecrets=true,expected?:{device?:unknown}){return lifecycleCommandPlanning(ownerId,params,normalized,redactSecrets,expected).response;}
+function lifecycleCommandPlan(ownerId:string,params:unknown,normalized?:NormalizedBrokerOptions,redactSecrets=true,expected?:{device?:unknown},admittedDeviceId?:string){return lifecycleCommandPlanning(ownerId,params,normalized,redactSecrets,expected,admittedDeviceId).response;}
 
 
 class NativeLifecyclePreviewPlan {
@@ -8511,7 +8532,7 @@ function observeLifecyclePreview(ownerId: string, parsed: CommandParamSuccess, n
             return devices;
         },
         hyperV: parsed => isHyperVBackend(parsed.backend),
-        validIncarnation: parsed => validHyperVIncarnationId(parsed.expectedIncarnationId),
+        validIncarnation: () => true,
         incarnation: device => hyperVDeviceIncarnationId(device),
         conflicts: (device, parsed) => hyperVCreateConfigurationConflicts(device, parsed),
         androidPort: (ownerId, parsed) => resolveAndroidEmulatorCreatePort(ownerId, parsed),
@@ -8528,8 +8549,6 @@ function observeLifecyclePreview(ownerId: string, parsed: CommandParamSuccess, n
             : observation;
     if (!redactSecrets)
         return unwrapped;
-    if (unwrapped.kind === "equivalent-create")
-        return { ...unwrapped, value: { ...unwrapped.value, device: redactHyperVDeviceSecrets(unwrapped.value.device) } };
     if (unwrapped.kind === "create")
         return { ...unwrapped, value: { ...unwrapped.value,
                 device: redactBrokerDeviceSecrets(unwrapped.value.device),
@@ -8760,13 +8779,9 @@ function nativeStatusPreview(ownerId: string, params: unknown, normalized: Norma
     switch (observation.kind) {
         case "state-failed": return { kind: "refused", ...nativeHyperVStateFailure(observation.error, parsed) };
         case "allocation-failed": return { kind: "refused", reason: observation.evidence.error === "invalid-android-emulator-port" ? "invalid" : observation.evidence.error === "android-emulator-port-inventory-unavailable" ? "provider-unavailable" : "conflict", ...base, error: observation.evidence.error, detail: observation.evidence.detail, allowed: observation.evidence.allowed };
-        case "incarnation-required": return { kind: "refused", reason: "conflict", ...base, error: "hyper-v-incarnation-required" };
-        case "incarnation-conflict": return { kind: "refused", reason: "conflict", ...base, error: "hyper-v-incarnation-conflict" };
-        case "configuration-conflict": return { kind: "refused", reason: "conflict", ...base, error: "hyper-v-create-configuration-conflict", conflicts: observation.conflicts };
         case "already-exists": return { kind: "refused", reason: "conflict", ...base, error: "owner-device-already-exists" };
         case "not-found": return { kind: "refused", reason: "missing", ...base, error: "owner-device-not-found" };
         case "not-attached": return { kind: "refused", reason: "conflict", ...base, error: "physical-device-not-attached", remedy: "attach the physical device before starting it" };
-        case "equivalent-create":
         case "missing-delete": return { kind: "prepared", plan: { ...observation.value, idempotent: true, availability: { kind: "not-required" } } };
         case "create":
         case "existing": {
@@ -8781,6 +8796,20 @@ function nativeStatusPreview(ownerId: string, params: unknown, normalized: Norma
                         connection: { command: { ...providerPlan, mode: providerPlan.mode } } } } };
         }
     }
+}
+
+function renderBrokerDeviceStatusWithDiagnostics(outcome: Parameters<typeof renderBrokerDeviceStatus>[0], params: unknown): BrokerRpcResult {
+    const response = renderBrokerDeviceStatus(outcome, redactBrokerDeviceSecrets, providerFailureDetail);
+    if (!params || typeof params !== "object" || (params as Record<string, unknown>).detail !== true
+        || !("device" in outcome) || !desktopRecord(outcome.device)) return response;
+    const incarnationId = hyperVDeviceIncarnationId(outcome.device);
+    const payload = response.payload;
+    if (!desktopRecord(payload)) return response;
+    const result = payload.result;
+    if (incarnationId && desktopRecord(result) && desktopRecord(result.device)) {
+        return { ...response, payload: { ...payload, result: { ...result, device: { ...result.device, incarnationId } } } };
+    }
+    return response;
 }
 
 function brokerDeviceStatusApplication(normalized: NormalizedBrokerOptions) {
@@ -8810,11 +8839,11 @@ function brokerDeviceStatusApplication(normalized: NormalizedBrokerOptions) {
     });
 }
 
-async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions, physicalLeaseGuard?: PhysicalLeaseReleaseGuard, hyperVDeadlineAt = Number.POSITIVE_INFINITY, hyperVCleanupDeadlineAt = hyperVDeadlineAt): Promise<BrokerRpcResult> {
-    const parsed = validateCommandParams(params);
+async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions, physicalLeaseGuard?: PhysicalLeaseReleaseGuard, hyperVDeadlineAt = Number.POSITIVE_INFINITY, hyperVCleanupDeadlineAt = hyperVDeadlineAt, admittedDeviceId?: string): Promise<BrokerRpcResult> {
+    const parsed = validateCommandParams(params, admittedDeviceId);
     if (!parsed.ok)
         return commandParamError(parsed);
-    if (parsed.command === "device_status") return renderBrokerDeviceStatus(await brokerDeviceStatusApplication(normalized).execute(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt), redactBrokerDeviceSecrets, providerFailureDetail);
+    if (parsed.command === "device_status") return renderBrokerDeviceStatusWithDiagnostics(await brokerDeviceStatusApplication(normalized).execute(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt), params);
     if (isHyperVBackend(parsed.backend) && (parsed.command === "device_stop" || parsed.command === "device_delete")) {
         return renderHyperVStopDelete(await brokerHyperVStopDeleteApplication(normalized).invoke(ownerId, { ...parsed, command: parsed.command }, hyperVDeadlineAt, hyperVCleanupDeadlineAt));
     }
@@ -8827,7 +8856,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
     const expectedObservation: {
         device?: unknown;
     } = {};
-    const plan = lifecycleCommandPlan(ownerId, params, normalized, false, expectedObservation);
+    const plan = lifecycleCommandPlan(ownerId, params, normalized, false, expectedObservation, parsed.deviceId);
     let expectedDevice = expectedObservation.device;
     if (plan.status !== 200)
         return plan;
@@ -9087,7 +9116,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
                     },
                 };
             }
-            return lifecycleCommandInvokeUnlocked(ownerId, params, normalized, guard);
+            return lifecycleCommandInvokeUnlocked(ownerId, params, normalized, guard, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
         });
     }
     const physicalUse = (parsed.stateKey === "android-device" || parsed.stateKey === "ios-device")
@@ -9327,14 +9356,14 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
 async function lifecycleHyperVCommandInvokeLocked(ownerId:string,params:unknown,parsed:CommandParamSuccess,normalized:NormalizedBrokerOptions,deadlineAt=Number.POSITIVE_INFINITY,cleanupDeadlineAt=deadlineAt):Promise<BrokerRpcResult>{
     if(parsed.command==="device_create"||parsed.command==="device_start"||parsed.command==="device_reboot")return renderHyperVCreateStart(await brokerHyperVCreateStartApplication(normalized).invoke(ownerId,params,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt));
     assertHyperVOperationDeadline(deadlineAt);
-    if(parsed.command==="device_stop"||parsed.command==="device_delete"){if(!parsed.dryRun)forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId,parsed.backend,parsed.deviceId));return renderHyperVStopDelete(await brokerHyperVStopDeleteApplication(normalized).invoke(ownerId,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt));}
-    if (parsed.command === "device_status") return renderBrokerDeviceStatus(await brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, deadlineAt), redactBrokerDeviceSecrets, providerFailureDetail);
-    return lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, deadlineAt, cleanupDeadlineAt);
+    if(parsed.command==="device_stop"||parsed.command==="device_delete")return renderHyperVStopDelete(await brokerHyperVStopDeleteApplication(normalized).invoke(ownerId,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt));
+    if (parsed.command === "device_status") return renderBrokerDeviceStatusWithDiagnostics(await brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, deadlineAt), params);
+    return lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, deadlineAt, cleanupDeadlineAt, parsed.deviceId);
 }
 
 
 async function lifecycleCommandInvoke(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
-    const parsed = validateCommandParams(params);
+    const parsed = admitCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
     const hyperVCleanupDeadlineAt = isHyperVBackend(parsed.backend) && !parsed.dryRun
         ? Date.now() + (parsed.command === "device_create"
@@ -9342,14 +9371,12 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
             : hyperVLifecycleCleanupTimeoutMs(parsed.backend, parsed.command, hyperVLifecycleOperationTimeoutMs(parsed)))
         : Number.POSITIVE_INFINITY;
     const hyperVDeadlineAt = hyperVProviderDeadlineAt(parsed.backend, parsed.command, hyperVCleanupDeadlineAt);
-    if (isHyperVBackend(parsed.backend) && parsed.dryRun) {
-        return parsed.command === "device_create"
-            ? lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized)
-            : lifecycleCommandInvokeUnlocked(ownerId, params, normalized);
+    if (isHyperVBackend(parsed.backend) && parsed.dryRun && parsed.command === "device_create") {
+        return lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized);
     }
     try {
         return await withOwnerDeviceOperation(ownerId, parsed.stateKey, parsed.deviceId, async () => {
-            if (parsed.command === "device_status") return renderBrokerDeviceStatus(await brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt), redactBrokerDeviceSecrets, providerFailureDetail);
+            if (parsed.command === "device_status") return renderBrokerDeviceStatusWithDiagnostics(await brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt), params);
             if (isHyperVBackend(parsed.backend)) {
                 try {
                     return await withSharedMutationLockAsync(
@@ -9376,7 +9403,7 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
                 }
             }
             if (parsed.backend !== "android-emulator" || (parsed.command !== "device_create" && parsed.command !== "device_start")) {
-                return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized);
+                return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
             }
             try {
                 return await withSharedMutationLockAsync(
@@ -9384,9 +9411,9 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
                     async () => {
                         const initialPlan = lifecycleCommandPlan(ownerId, params, normalized, false);
                         if (initialPlan.status !== 200) return initialPlan;
-                        if (parsed.dryRun) return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized);
+                        if (parsed.dryRun) return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
                         if (parsed.command === "device_start") {
-                            return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized);
+                            return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
                         }
                         const allocation = resolveAndroidEmulatorCreatePortForInvoke(ownerId, parsed, normalized);
                         if (!allocation.ok) {

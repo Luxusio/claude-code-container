@@ -27,15 +27,25 @@ describe("action-first output", () => {
         expect(result.isError).toBe(true);
         expect(result.content[0].text).not.toBe("ok");
     });
-    it("preserves native screenshots and next-operation metadata", () => {
+    it("preserves native screenshots and dimensions without a public generation selector", () => {
         const image = { type: "image", mimeType: "image/png", data: "aGVsbG8=" };
         const result = actionResult("screenshot", "device_screenshot", { content: [image, ...json({ width: 100, height: 200, incarnationId: "a".repeat(32) }).content] });
         expect(result.content[0]).toEqual(image);
-        expect(JSON.parse(result.content[1].text)).toEqual({ width: 100, height: 200, incarnationId: "a".repeat(32) });
+        expect(JSON.parse(result.content[1].text)).toEqual({ width: 100, height: 200 });
     });
     it("keeps false, zero, and opaque query payloads", () => {
-        const raw = json({ found: false, count: 0, nested: { deviceId: "opaque", ok: true, source: "" } });
-        expect(parse(actionResult("wait_for_text", "mobile_wait_for_text", raw))).toEqual({ count: 0, nested: { deviceId: "opaque", ok: true, source: "" }, matched: false, reason: "wait-condition-not-met" });
+        const raw = json({ found: false, count: 0, nested: { deviceId: "opaque", incarnationId: "guest-payload", ok: true, source: "" } });
+        expect(parse(actionResult("wait_for_text", "mobile_wait_for_text", raw))).toEqual({ count: 0, nested: { deviceId: "opaque", incarnationId: "guest-payload", ok: true, source: "" }, matched: false, reason: "wait-condition-not-met" });
+    });
+    it("removes CCC generation metadata while retaining opaque guest output", () => {
+        const guest = { incarnationId: "guest-root", nested: { incarnationId: "guest-child" } };
+        const exec = parse(actionResult("exec", "device_exec", json({ deviceId: "win-existing", incarnationId: "a".repeat(32), status: 0, stdout: JSON.stringify(guest), output: guest })));
+        expect(exec).toMatchObject({ deviceId: "win-existing", status: 0, stdout: JSON.stringify(guest), output: guest });
+        expect(exec).not.toHaveProperty("incarnationId");
+        const status = parse(actionResult("status", "device_status", json({ device: { id: "win-existing", backend: "windows-vm", incarnationId: "a".repeat(32) } })));
+        expect(status.device).not.toHaveProperty("incarnationId");
+        const diagnostic = json({ device: { id: "win-existing", incarnationId: "a".repeat(32) } });
+        expect(parse(actionResult("status", "device_status", diagnostic, { detail: true }))).toMatchObject({ device: { deviceId: "win-existing", incarnationId: "a".repeat(32) } });
     });
     it("returns minimal device rows and cursor coordinates", () => {
         expect(parse(actionResult("devices", "device_list", json({ devices: [{ id: "d", name: "Pixel", runtimeState: "running", ownerId: "private" }], ownerId: "private" }))))

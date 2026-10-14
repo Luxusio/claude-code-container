@@ -173,7 +173,7 @@ export async function runMacosVmE2E(options: any = {}) {
 
     const suffix = `${Date.now()}-${randomBytes(3).toString("hex")}`;
     const name = `Level ${level} macOS E2E ${suffix}`;
-    const deviceId = `macos-level${level}-e2e-${suffix}`;
+    let deviceId = "";
     const snapshotName = `Level ${level} Snapshot ${suffix}`;
     let created = false;
     let stopped = false;
@@ -188,7 +188,6 @@ export async function runMacosVmE2E(options: any = {}) {
         try {
             const create = await timedStep(timings, "createMs", async () => parsePayload(await callTool("create_macos_vm", { detail: true,
                 name,
-                deviceId,
                 image: cap.source,
                 provider: "tart",
                 ...(ssh.available ? {
@@ -200,9 +199,10 @@ export async function runMacosVmE2E(options: any = {}) {
                     },
                 } : {}),
             })));
-        created = true;
         const createdDevice = lifecycleDevice(create, "macOS VM create_macos_vm");
-        assert.strictEqual(createdDevice.deviceId, deviceId);
+        deviceId = createdDevice.deviceId;
+        created = true;
+        assert.ok(typeof deviceId === "string" && deviceId, "create must return the generated VM ID");
         assert.strictEqual(createdDevice.provider, "tart");
         assert.ok(createdDevice.providerInstance);
         managedProviderInstances.push(createdDevice.providerInstance);
@@ -372,7 +372,6 @@ export async function runMacosVmE2E(options: any = {}) {
             await timedStep(timings, "imageToolsMs", async () => {
                 const createViaBase = parsePayload(await callTool("create_macos_vm", { detail: true,
                     name: `Base create ${suffix}`,
-                    deviceId: `${deviceId}-base-create`,
                     image: cap.source,
                     provider: "tart",
                 }));
@@ -387,16 +386,16 @@ export async function runMacosVmE2E(options: any = {}) {
 
                 const cloneViaBase = parsePayload(await callTool("create_macos_vm", { detail: true,
                     name: `Base clone ${suffix}`,
-                    deviceId: `${deviceId}-base-clone`,
                     sourceDeviceId: deviceId,
                 }));
-                disposableDeviceIds.push(cloneViaBase.device.deviceId);
-                managedProviderInstances.push(cloneViaBase.device.providerInstance);
+                const clonedDevice = lifecycleDevice(cloneViaBase, "macOS VM device clone");
+                disposableDeviceIds.push(clonedDevice.deviceId);
+                managedProviderInstances.push(clonedDevice.providerInstance);
                 assert.strictEqual(cloneViaBase.operation, "base-image-clone");
-                assert.ok(cloneViaBase.device.providerInstance);
-                assert.strictEqual(cloneViaBase.device.status, "stopped");
-                const tartClone = inspectTartInstance(cap.tart, cloneViaBase.device.providerInstance);
-                assert.strictEqual(tartClone.found, true, `Tart clone missing after device clone: ${cloneViaBase.device.providerInstance}`);
+                assert.ok(clonedDevice.providerInstance);
+                assert.strictEqual(clonedDevice.status, "stopped");
+                const tartClone = inspectTartInstance(cap.tart, clonedDevice.providerInstance);
+                assert.strictEqual(tartClone.found, true, `Tart clone missing after device clone: ${clonedDevice.providerInstance}`);
                 assert.match(tartClone.image.state, /stopped/i, JSON.stringify(tartClone));
 
                 for (const disposableId of [...disposableDeviceIds]) {

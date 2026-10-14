@@ -2802,6 +2802,12 @@
         ]
       },
       "acceptedIntegrationCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54"
+    },
+    {
+      "id": "vm-instance-identity-compatibility",
+      "taskId": "TASK__vm-unique-public-identity-20261014",
+      "coveredOperationIds": [],
+      "status": "Main implementation frozen: managed Windows/Linux/macOS VM births use one native-admitted UUID; public MCP/CLI/flow use deviceId alone with protocol5. Current source workspace/root/strict/QEMU contract/MCP build and source lint passed. Eight whole-file correction check had425 passes and one diagnostic-fixture mismatch; that fixture was corrected and passed in the exact selection. Independent final reviews and fresh Linux/native Windows QA remain pending. No new operation or structural-group completion credit."
     }
   ],
   "currentSourceQualificationAudit": {
@@ -2945,7 +2951,7 @@
     "remainingGroups": 9,
     "sourceUniverseCertified": false,
     "scope": "완료14/23(60.9%)·잔여9개(부분6·진행3). R15 현재 Main의 버전 동기화는 독립 Code/Security 및 현재 소스 실행 QA·실제 package shipping·로컬 통합으로 완료. R08/R11/R12/R13/R14/R16 후보의 공동 qualification·통합, R17 Appium HTTP/session 경계는 현재 Main 0ab2d1de에서 독립 Code/Security 및 Linux/Windows 실행 QA로 개별 검증·통합됨. R17의 native command-status/recording/owner-cleanup 잔여 경계와 R18/R19 framing이 남음. 아래 원래71473106 joint FAIL과 과거 측정은 보존하며 R15 개별 PASS로 해당 공동 FAIL을 덮어쓰지 않는다. Native 전체·reliability·전수 범위·formal 조건 미검증.",
-    "currentQualificationTask": "TASK__appium-boundary-recovery-20261014",
+    "currentQualificationTask": "TASK__vm-unique-public-identity-20261014",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",
       "independentReviews": "Smoke route correction2fca1f74: actual independent Code/Security PASS; committed WBS71473106 documentation PASS. Final QA remains FAIL; no integration or completion credit.",
@@ -3391,7 +3397,7 @@
       "remainingGroups": 10,
       "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음."
     },
-    "currentQualificationScope": "Top-level structural accounting includes qualified R15 Main recovery and the bounded R17 Appium HTTP/session contribution at0ab2d1de. The retained currentQualification object is historical71473106 joint failure and follow-ups, not the current R15 or bounded R17 verdict. R17 broader native command-status/recording/owner-cleanup seams remain partial. Current Appium evidence is in planningLanes/broker-remaining-semantic-results-structural/currentWork."
+    "currentQualificationScope": "Top-level structural accounting includes qualified R15 Main recovery and the bounded R17 Appium HTTP/session contribution at0ab2d1de. The retained currentQualification object is historical71473106 joint failure and follow-ups, not the current R15 or bounded R17 verdict. R17 broader native command-status/recording/owner-cleanup seams remain partial. Current Appium evidence is in planningLanes/broker-remaining-semantic-results-structural/currentWork. Active VM identity compatibility work is tracked in planningLanes/vm-instance-identity-compatibility; it does not alter the structural completion count or replace prior Appium evidence."
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
     "sourceCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",

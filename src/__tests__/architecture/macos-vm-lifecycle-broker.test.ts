@@ -29,7 +29,7 @@ async function start(runner: NonNullable<DeviceBrokerOptions["commandRunner"]>) 
 async function invoke(base: string, command: string, extra: Record<string, unknown> = {}, authenticated = true) {
     const response = await fetch(ownerRpcEndpoint(base, owner), {
         method: "POST", headers: authenticated ? ownerRpcHeaders(owner) : { "content-type": "application/json" },
-        body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "macos-vm", command, deviceId: "unit", ...extra } }),
+        body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "macos-vm", command, ...(command === "device_create" ? {} : { deviceId: "unit" }), ...extra } }),
     });
     return { status: response.status, body: await response.json() };
 }
@@ -47,7 +47,7 @@ describe("authenticated macOS broker lifecycle", () => {
         const stored = devices()[0];
         delete stored.providerInstance;
         writeBrokerDevices(owner, "macos", [stored]);
-        const deleted = await invoke(base, "device_delete", { confirmDestructive: true });
+        const deleted = await invoke(base, "device_delete", { deviceId: stored.id, confirmDestructive: true });
         expect(deleted.status).toBe(200);
         expect(devices()).toEqual([]);
         expect(runner).toHaveBeenCalledOnce();
@@ -61,9 +61,12 @@ describe("authenticated macOS broker lifecycle", () => {
             ...command, status: 0, stdout: command.args?.[0] === "ip" ? "192.0.2.20" : "", stderr: "",
         }));
         const base = await start(runner);
-        expect((await invoke(base, "device_create", { name: "Unit", provider: "tart", image: "base-image" })).status).toBe(200);
-        expect(devices()[0]).toMatchObject({ id: "unit", status: "stopped", provider: "tart" });
-        expect((await invoke(base, "device_start", { waitForBoot: true, bootTimeoutMs: 1000 })).status).toBe(200);
+        const created = await invoke(base, "device_create", { name: "Unit", provider: "tart", image: "base-image" });
+        expect(created.status).toBe(200);
+        const deviceId = created.body.result.device.id;
+        expect(deviceId).toMatch(/^macos-[0-9a-f-]{36}$/);
+        expect(devices()[0]).toMatchObject({ id: deviceId, status: "stopped", provider: "tart" });
+        expect((await invoke(base, "device_start", { deviceId, waitForBoot: true, bootTimeoutMs: 1000 })).status).toBe(200);
         expect(devices()[0]).toMatchObject({
             status: "running", bootReady: true, ssh: { host: "192.0.2.20" },
             lastBootCheck: { ready: true, ip: "192.0.2.20", result: {
@@ -71,9 +74,9 @@ describe("authenticated macOS broker lifecycle", () => {
             } },
         });
         expect(devices()[0]).not.toHaveProperty("lastBootCheck.result.receipt");
-        expect((await invoke(base, "device_stop")).status).toBe(200);
+        expect((await invoke(base, "device_stop", { deviceId })).status).toBe(200);
         expect(devices()[0]).toMatchObject({ status: "stopped", recording: null });
-        expect((await invoke(base, "device_delete", { confirmDestructive: true })).status).toBe(200);
+        expect((await invoke(base, "device_delete", { deviceId, confirmDestructive: true })).status).toBe(200);
         expect(devices()).toEqual([]);
         expect(runner.mock.calls.map(([command]) => command.args?.[0])).toEqual(["clone", "run", "ip", "stop", "delete"]);
     });

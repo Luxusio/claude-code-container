@@ -37,13 +37,13 @@ import { startServer } from "../../device-lab-mcp/src/server.mjs";
 import { TOOLS, DEVICE_FLOW_TOOL_NAMES, publicToolName } from "../../device-lab-mcp/src/tools.mjs";
 
 const hidden = ["mobile_install_app", "mobile_launch_app", "mobile_screenshot", "mobile_rotate_left", "mobile_rotate_right", "mobile_run_flow"];
-const shared = { deviceId: "target-a", incarnationId: "a".repeat(32) };
+const shared = { deviceId: "target-a" };
 const direct = { implicitBroker: false };
 const step = (args: Record<string, unknown> = {}, tool = "click") => ({ tool, arguments: { ...direct,
     ...(tool === "click" ? { x: 1, y: 2 } : {}), ...args } });
 const call = (name: string, args: Record<string, unknown>) => fixture.handlers[1]({ params: { name, arguments: args } });
 const parse = (result: any) => JSON.parse(result.content[0].text);
-const flow = (steps: unknown[], args: Record<string, unknown> = {}) => call("run_flow", { deviceId: shared.deviceId, incarnationId: shared.incarnationId, ...args, steps });
+const flow = (steps: unknown[], args: Record<string, unknown> = {}) => call("run_flow", { ...shared, ...args, steps });
 beforeAll(async () => { await startServer(); });
 beforeEach(() => { fixture.calls.length = 0; fixture.scope = 0; fixture.nextScope = 0; });
 
@@ -63,7 +63,8 @@ describe("canonical public contract", () => {
         expect(schema.properties.steps.items.properties).not.toHaveProperty("name");
         expect(schema.properties.steps.items.properties.tool.enum).toEqual(DEVICE_FLOW_TOOL_NAMES);
         expect(new Set(DEVICE_FLOW_TOOL_NAMES).size).toBe(DEVICE_FLOW_TOOL_NAMES.length);
-        for (const key of ["deviceId", "incarnationId"]) expect(schema.properties).toHaveProperty(key);
+        expect(schema.properties).toHaveProperty("deviceId");
+        expect(schema.properties).not.toHaveProperty("incarnationId");
         expect(DEVICE_FLOW_TOOL_NAMES.every(name => TOOLS.some(tool => tool.name === name))).toBe(true);
         for (const name of [...hidden, "start", "exec", "run_flow", "backends"]) expect(DEVICE_FLOW_TOOL_NAMES).not.toContain(name);
     });
@@ -108,20 +109,20 @@ describe("canonical public contract", () => {
 
 describe("shared target selection", () => {
     it("inherits only target fields and starts a fresh broker scope for every step", async () => {
-        const input = [step(), step({ deviceId: shared.deviceId, incarnationId: "b".repeat(32) })];
+        const input = [step(), step({ deviceId: shared.deviceId })];
         const original = structuredClone(input);
         expect(parse(await flow(input, { viaBroker: true, autolaunch: true, port: 1234 })).ok).toBe(true);
         expect(fixture.calls.map(call => call.args)).toEqual([
             { ...shared, ...direct, x: 1, y: 2 },
-            { ...shared, ...direct, x: 1, y: 2, incarnationId: "b".repeat(32) },
+            { ...shared, ...direct, x: 1, y: 2 },
         ]);
         expect(fixture.calls[0].scope).toBeGreaterThan(0);
         expect(fixture.calls[0].scope).not.toBe(fixture.calls[1].scope);
         expect(input).toEqual(original);
     });
-    it("inherits incarnation only for actions that accept it", async () => {
+    it("shares only deviceId across actions with different input schemas", async () => {
         expect(parse(await flow([step({}, "click"), step({}, "home")])).ok).toBe(true);
-        expect(fixture.calls[0].args.incarnationId).toBe(shared.incarnationId);
+        expect(fixture.calls[0].args).not.toHaveProperty("incarnationId");
         expect(fixture.calls[1].args).not.toHaveProperty("incarnationId");
     });
     it.each([{ deviceId: "target-b" }])("resets the entire inherited target group on %j", async (override) => {
@@ -140,10 +141,13 @@ describe("shared target selection", () => {
         expect(JSON.stringify(result)).toContain("device-id-invalid");
         expect(fixture.calls).toEqual([]);
     });
-    it("preserves explicit null incarnation and rejects backend selectors", async () => {
-        expect(parse(await flow([step({ incarnationId: null })])).ok).toBe(true);
-        expect(fixture.calls[0].args.incarnationId).toBeNull();
-        fixture.calls.length = 0;
+    it.each([null, "a".repeat(32)])("rejects explicit obsolete generation %j without provider effects", async incarnationId => {
+        expect(parse(await flow([step({ incarnationId })])).ok).toBe(false);
+        expect(fixture.calls).toEqual([]);
+        expect(parse(await flow([step()], { incarnationId })).ok).toBe(false);
+        expect(fixture.calls).toEqual([]);
+    });
+    it("rejects backend selectors without provider effects", async () => {
         const rejected = parse(await flow([step({ backend: null })]));
         expect(rejected.ok).toBe(false);
         expect(JSON.stringify(rejected)).toContain("omit backend");

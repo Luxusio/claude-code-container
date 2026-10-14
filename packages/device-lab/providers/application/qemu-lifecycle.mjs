@@ -1,29 +1,24 @@
-import { safeSshText, guestSshInput, validateGuestAgent, publicLab, publicMaterializedResult, publicReadinessProbeResult, requireRunningLab, qemuLifecycleSlug, validQemuLabId } from "../domain/qemu-lifecycle.mjs";
+import { safeSshText, guestSshInput, validateGuestAgent, publicLab, publicMaterializedResult, publicReadinessProbeResult, requireRunningLab, validQemuLabId } from "../domain/qemu-lifecycle.mjs";
 import { inferQemuImageFormat, qemuCommandTimeout } from "../domain/qemu-image-disk-target.mjs";
 /** @typedef {import('../domain/qemu-lifecycle.mjs').QemuLifecycleArguments} QemuLifecycleArguments */
 /** @typedef {import('../domain/qemu-lifecycle.mjs').QemuLab} QemuLab */
 /** @param {import('../ports/qemu-lifecycle.mjs').QemuLifecyclePorts} ports */
 export function createQemuLifecycleApplication(ports) {
 
-/** @param {QemuLifecycleArguments} [args] */
-function create(args = {}) {
+/** @param {QemuLifecycleArguments} [args] @param {string} [admittedLabId] */
+function create(args = {}, admittedLabId) {
+    if (Object.hasOwn(args, "labId") || Object.hasOwn(args, "deviceId")) {
+        return { ok: false, error: "vm-creation-id-not-supported" };
+    }
     const ctx = ports.scope();
     const unavailable = ports.runnerUnavailable(ctx);
     if (unavailable) return unavailable;
     const name = String(args.name || "").trim();
-    const labId = args.labId ? String(args.labId) : qemuLifecycleSlug(name);
     if (!name) return { ok: false, error: "missing-lab-name" };
+    const labId = admittedLabId ?? ports.labId();
     if (!validQemuLabId(labId)) return { ok: false, error: "invalid-lab-id" };
     const labDir = ports.labDirectory(ctx, labId);
-    if (ports.metadataExists(ctx, labId)) {
-        if (args.force !== true) return { ok: false, error: "lab-already-exists", labId };
-        const existing = ports.readLab(ctx, labId);
-        if (!existing.ok) return existing;
-        if (existing.lab.runtimeState === "running" || existing.lab.runtime) {
-            const observed = ports.inspectRuntime(existing.lab.runtime);
-            if (observed.status !== "exited") return { ok: false, error: "lab-runtime-active-or-unverified", labId, reason: observed.status };
-        }
-    }
+    if (ports.metadataExists(ctx, labId)) return { ok: false, error: "lab-already-exists", labId };
     if (args.baseImageId && args.sourceImage) return { ok: false, error: "ambiguous-source-image" };
     const baseImage = args.baseImageId ? ports.resolveBaseImage(ctx, String(args.baseImageId)) : null;
     if (baseImage && !baseImage.ok) return baseImage;

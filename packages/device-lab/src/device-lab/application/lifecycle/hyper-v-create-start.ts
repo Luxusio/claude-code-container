@@ -694,38 +694,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
     async function invoke(ownerId: string, params: unknown, parsed: HyperVCreateStartRequest, deadlineAt = Number.POSITIVE_INFINITY, cleanupDeadlineAt = deadlineAt): Promise<HyperVLifecycleOutcome<Connection,Receipt>> {
         ports.assertDeadline(deadlineAt);
         if(parsed.dryRun&&parsed.command!=="device_create")return execute(ownerId,parsed,params,deadlineAt,cleanupDeadlineAt);
-        if (!parsed.dryRun && (parsed.command==="device_start"||parsed.command==="device_reboot")) {
-            ports.forgetConsole(ownerId, parsed.backend, parsed.deviceId);
-        }
         if (parsed.command !== "device_create") {
-            if (!parsed.dryRun) {
-                let expectedIncarnationId: string | null = null;
-                try {
-                    const current = hyperVSelectedDevice(ports.read(ownerId, parsed.stateKey), parsed.deviceId);
-                    expectedIncarnationId = current ? ports.incarnation(current) : null;
-                    if (!expectedIncarnationId)
-                        expectedIncarnationId = ports.readJournal(ownerId, parsed.backend, parsed.deviceId)?.incarnationId || null;
-                }
-                catch (error) {
-                    const stateCode = ports.stateErrorCode(error);
-                    if (stateCode)
-                        return {kind:'operation-failed',journalDisposition:'retain',recoveryDisposition:'required',...ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey })};
-                    return {
-                        kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-operation-journal-invalid",
-                            ownerId,
-                            backend: parsed.backend,
-                            deviceId: parsed.deviceId,
-                            detail: ports.boundedErrorCode(error, "hyper-v-operation-journal-invalid"),};
-                }
-                if (expectedIncarnationId) {
-                    if (!ports.validIncarnation(parsed.expectedIncarnationId)) {
-                        return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-incarnation-required", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
-                    }
-                    if (parsed.expectedIncarnationId !== expectedIncarnationId) {
-                        return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-incarnation-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
-                    }
-                }
-            }
             // Only an explicit device_delete may tear the shared fabric down. Replaying a pending
             // delete journal ahead of any other command is compensation and keeps it.
             const reconciliation = await ports.reconcileOperation(ownerId, parsed.backend, parsed.deviceId, deadlineAt, true);
@@ -757,7 +726,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 return quotaFailure;
             if (parsed.dryRun)
                 return await execute(ownerId, parsed, params, deadlineAt, cleanupDeadlineAt);
-            const plan = ports.planning(ownerId, params);
+            const plan = ports.planning(ownerId, params, undefined, parsed.deviceId);
             if (plan.kind === 'plan-refused') return plan.failure;
             if (plan.idempotent) {
                 return await execute(ownerId, parsed, params, deadlineAt, cleanupDeadlineAt);
@@ -779,39 +748,26 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         catch (error) {
             return {kind:'operation-failed',journalDisposition:'retain',recoveryDisposition:'required',...ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey })};
         }
-        if (!parsed.dryRun && (existing.some((candidate) => hyperVCreateRecord(candidate) && candidate.id === parsed.deviceId)
-            || ports.exists(ports.journalPath(ownerId, parsed.backend, parsed.deviceId)))) {
-            // Journal replay ahead of a create is compensation, so it keeps the shared fabric.
-            const operationReconciliation = await ports.reconcileOperation(ownerId, parsed.backend, parsed.deviceId, deadlineAt, true);
-            if (!operationReconciliation.ok)
-                return { kind:'operation-failed',reason:operationReconciliation.reason,journalDisposition:'retain',recoveryDisposition:'required',error: operationReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(operationReconciliation.detail ? { detail: operationReconciliation.detail } : {})};
-            existing = ports.read(ownerId, parsed.stateKey);
+        if (existing.some(candidate => hyperVCreateRecord(candidate) && candidate.id === parsed.deviceId)) {
+            return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'already-handled',error: "owner-device-already-exists", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
         }
-        if (!parsed.dryRun && ports.exists(ports.snapshotJournalPath(ownerId, parsed.backend, parsed.deviceId))) {
-            const current = hyperVSelectedDevice(existing, parsed.deviceId);
-            if (!current)
-                return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-snapshot-reconciliation-metadata-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
-            const powershell = ports.connection('powershell');
-            if (!powershell)
-                return { kind:'admission-refused',reason:'invalid',journalDisposition:'clear',recoveryDisposition:'required',error: "missing-provider-command", missing: ["powershell"], backend: parsed.backend, deviceId: parsed.deviceId};
-            const snapshotReconciliation = await ports.repairSnapshots(ownerId, parsed.backend, parsed.deviceId, current, powershell);
-            if (!snapshotReconciliation.ok)
-                return { kind:'operation-failed',reason:snapshotReconciliation.reason,journalDisposition:'retain',recoveryDisposition:'required',error: snapshotReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(snapshotReconciliation.detail ? { detail: snapshotReconciliation.detail } : {})};
-            existing = ports.read(ownerId, parsed.stateKey);
-        }
-        if (existing.some((candidate) => hyperVCreateRecord(candidate) && candidate.id === parsed.deviceId)) {
-            return await execute(ownerId, parsed, params, deadlineAt, cleanupDeadlineAt);
+        try {
+            if (ports.exists(ports.privateRoot(ownerId, parsed.backend, parsed.deviceId))
+                || ports.exists(ports.deviceRoot(ownerId, parsed.backend, parsed.deviceId))
+                || ports.exists(ports.journalPath(ownerId, parsed.backend, parsed.deviceId))
+                || ports.exists(ports.snapshotJournalPath(ownerId, parsed.backend, parsed.deviceId))
+                || ports.hasNetworkAllocation(ownerId, parsed.deviceId)) {
+                return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'already-handled',error: "hyper-v-device-id-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
+            }
+        } catch (error) {
+            return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'already-handled',error: "hyper-v-create-residue-state-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: ports.boundedErrorCode(error, "hyper-v-create-residue-state-invalid")};
         }
         const siblingBackend = parsed.backend === "windows-vm" ? "linux-vm" : "windows-vm";
         if (ports.read(ownerId, siblingBackend).some((candidate) => hyperVCreateRecord(candidate) && candidate.id === parsed.deviceId)) {
-            return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'required',error: "hyper-v-device-id-conflict", ownerId, backend: parsed.backend, conflictingBackend: siblingBackend, deviceId: parsed.deviceId};
+            return { kind:'admission-refused',reason:'conflict',journalDisposition:'clear',recoveryDisposition:'already-handled',error: "hyper-v-device-id-conflict", ownerId, backend: parsed.backend, conflictingBackend: siblingBackend, deviceId: parsed.deviceId};
         }
+        let admittedIncarnationId: string | null = null;
         try {
-            if (!parsed.dryRun) {
-                const recovery = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, deadlineAt);
-                if (!recovery.ok)
-                    return { kind:'operation-failed',reason:recovery.reason,journalDisposition:'retain',recoveryDisposition:'required',error: recovery.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(recovery.detail ? { detail: recovery.detail } : {}), ...(recovery.stage ? { stage: recovery.stage } : {})};
-            }
             const image = await ports.resolveImage(ownerId, parsed, params, deadlineAt);
             if (image.kind !== 'resolved') {
                 return {
@@ -822,7 +778,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                         ...(image.detail ? { detail: image.detail } : {}),
                         ...(image.remedy ? { remedy: image.remedy } : {}),};
             }
-            const parsedImage = ports.parse(image.params);
+            const parsedImage = ports.parse(image.params, parsed.deviceId);
             if (!parsedImage.ok)
                 return parsedImage.failure;
             const resolved = parsedImage.request;
@@ -832,6 +788,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             if (resolved.dryRun)
                 return await execute(ownerId, resolved, image.params, deadlineAt, cleanupDeadlineAt);
             const incarnationId = ports.newIncarnation();
+            admittedIncarnationId = incarnationId;
             const withIncarnation = (base: unknown) => ({
                 ...(base && typeof base === "object" && !Array.isArray(base) ? base : {}),
                 incarnationId,
@@ -848,7 +805,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                         detail: ports.boundedErrorCode(error, "hyper-v-incarnation-record-write-failed"),};
             }
             if (resolved.create?.networking === false) {
-                return await executeParsed(ownerId, withIncarnation(image.params), deadlineAt, cleanupDeadlineAt);
+                return await executeParsed(ownerId, withIncarnation(image.params), deadlineAt, cleanupDeadlineAt, parsed.deviceId);
             }
             const allocation = await ports.allocateNetwork(ownerId, resolved.deviceId, incarnationId, deadlineAt);
             if (allocation.kind !== 'allocated') {
@@ -873,7 +830,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 networkPrefix: allocation.prefix,
                 outboundPolicy: allocation.outboundPolicy,
             };
-            const result = await executeParsed(ownerId, networkParams, deadlineAt, cleanupDeadlineAt);
+            const result = await executeParsed(ownerId, networkParams, deadlineAt, cleanupDeadlineAt, parsed.deviceId);
             if (result.kind === 'admission-refused' || result.kind === 'operation-failed' || result.kind === 'uncertain') {
                 if (result.recoveryDisposition === 'already-handled') return result;
                 const reconciliation = await recoverCreateResidue(ownerId, resolved.backend, resolved.deviceId, cleanupDeadlineAt, incarnationId);
@@ -894,7 +851,11 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             const deadlineError = ports.deadlineError(error);
             if (!deadlineError)
                 throw error;
-            const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, cleanupDeadlineAt);
+            if (!admittedIncarnationId) return {
+                kind:'operation-failed',reason:'deadline',journalDisposition:'clear',recoveryDisposition:'already-handled',error: deadlineError,
+                ownerId, backend: parsed.backend, deviceId: parsed.deviceId,
+            };
+            const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, cleanupDeadlineAt, admittedIncarnationId);
             if (!rollback.ok) {
                 return {
                     kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-create-deadline-cleanup-failed",
@@ -1042,7 +1003,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         const expectedObservation: {
             device?: unknown;
         } = {};
-        const planned = ports.planning(ownerId, params, expectedObservation);
+        const planned = ports.planning(ownerId, params, expectedObservation, parsed.deviceId);
         let expectedDevice = expectedObservation.device;
         if (planned.kind === 'plan-refused') return planned.failure;
         const {kind: plannedKind,availability: plannedAvailability,...planFacts}=planned;
@@ -1065,6 +1026,9 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                         dryRun: false,
                         execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false }};
         }
+    if ((parsed.command === "device_start" || parsed.command === "device_reboot") && planned.availability.kind === "available") {
+        ports.forgetConsole(ownerId, parsed.backend, parsed.deviceId);
+    }
     if (parsed.command === "device_create") {
         const availability = planned.availability;
         if (availability.kind === 'unavailable') {
@@ -2148,8 +2112,8 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         detail:hyperVGuestReadyExecution ? hyperVGuestReadyFailureCode || 'guest-not-ready' : ports.diagnosticCode(execution,'hyper-v-provider-command-failed') || 'hyper-v-provider-command-failed'};
     return {kind:parsed.command === 'device_reboot' ? 'rebooted' : 'started',journalDisposition:'clear',recoveryDisposition:'already-handled',...observed};
     }
-    async function executeParsed(owner: string, params: unknown, deadline: number, cleanupDeadline: number): Promise<HyperVLifecycleOutcome<Connection,Receipt>> {
-        const parsed = ports.parse(params);
+    async function executeParsed(owner: string, params: unknown, deadline: number, cleanupDeadline: number, admittedDeviceId: string): Promise<HyperVLifecycleOutcome<Connection,Receipt>> {
+        const parsed = ports.parse(params, admittedDeviceId);
         return parsed.ok
             ? execute(owner, parsed.request, params, deadline, cleanupDeadline)
             : parsed.failure;

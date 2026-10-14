@@ -35,8 +35,8 @@ operations fail explicitly rather than silently becoming different actions.
 Successful simple actions return literal MCP text `ok`. Queries return useful
 data or native images, without repeating success or request arguments. Errors
 set MCP isError and retain the cause and necessary recovery evidence. Warnings,
-partial failures, lifecycle IDs, artifact paths and screenshot incarnationId
-must survive. Detailed diagnostic output remains available with detail:true.
+partial failures, lifecycle deviceIds and artifact paths must survive. Private VM
+generation metadata is available only through opt-in diagnostic evidence. Detailed diagnostic output remains available with detail:true.
 Flows use the same public names, preserve step identity and native images, and
 classify failed waits before simplifying output. Old prefixed calls are rejected.
 These rules supersede historical prefixed names in the sections below.
@@ -45,7 +45,7 @@ These rules supersede historical prefixed names in the sections below.
 
 Existing-device tools accept `deviceId`, never `backend`. The server resolves
 the owned device’s provider internally. `run_flow` inherits only `deviceId`
-and `incarnationId` within that request. Explicit backend input is rejected
+within that request. Public VM operations do not accept `incarnationId`. Explicit backend input is rejected
 before dispatch. Creation and discovery may still select a kind because no
 existing device is targeted.
 Unknown or ambiguous device IDs fail without choosing a provider or sending an
@@ -84,7 +84,7 @@ Default MCP responses contain actionable state and operation results, without
 repeated transport traces, owner storage paths, protocol capability versions or
 duplicate status representations. Discovery returns one authoritative backend
 list. Normal discovery retains public capabilities and action-specific supportedActions,
-along with backend/provider, availability and missing prerequisites. Device identities, incarnation IDs, unknown/unavailable state, lease
+along with backend/provider, availability and missing prerequisites. Public deviceIds, unknown/unavailable state, lease
 problems, operation outcomes and returned artifact paths remain usable.
 
 Projection happens only at the public MCP response boundary. Internal provider
@@ -150,7 +150,7 @@ Caller-supplied arguments cannot provide trusted preparation evidence.
 The compact contract applies to every advertised tool, including current-display
 and VM management tools. Known successful helper envelopes must not repeat UI
 hierarchies, input text, parsed response JSON or empty command diagnostics.
-Opaque command output, image data, semantic UI content, current incarnation IDs,
+Opaque command output, image data, semantic UI content, public deviceIds,
 artifact paths and unique failure/containment evidence remain available.
 `detail: true` preserves diagnostics while retaining canonical public identities and condition outcomes.
 
@@ -277,11 +277,10 @@ commands, broker management and nested flows remain disallowed. Every destructiv
 step requires its own confirmation. Empty flows and malformed step arguments fail.
 Flow steps require tool; name is rejected even when tool is also present.
 
-Optional flow-level deviceId/incarnationId apply only to device-targeted
-steps. Step arguments are flat. If an explicit step deviceId
-differs from a provided default, inherit none of the target group.
-Otherwise fill only omitted target fields supported by that step tool (mobile
-actions do not receive an inherited incarnationId). Explicit invalid values still fail
+Optional flow-level deviceId applies only to device-targeted
+steps. Step arguments are flat. An explicit step deviceId selects that exact
+device; otherwise eligible steps inherit the flow deviceId. Public flows do not
+accept or inherit incarnationId. Explicit invalid values still fail
 validation. Never inherit confirmation, credentials, force or routing controls.
 Target-neutral devices steps receive no defaults. Each step retains
 fresh broker/ownership checks, stopping semantics and compact/detail output.
@@ -339,7 +338,9 @@ Public boolean options reject nonboolean values before dispatch, including destr
 
 Compact simple-action failures retain nonempty command stdout diagnostics, including failures signalled by the MCP error flag. Battery-setting command warnings remain visible instead of becoming plain `ok`. Diagnostics remain bounded; arbitrary exec and UI payloads are not interpreted as operation diagnostics. Tool names and per-operation device selection remain unchanged.
 
-Owned device records returned by public tools use `deviceId`, including detailed output. Native candidate serial/udid and snapshot/image IDs keep their domain names. Guest exec and UI payloads remain opaque.
+Managed Windows, Linux and macOS VM creation issues a fresh opaque deviceId; names are display labels and duplicate names create independent instances. VM creation rejects caller-selected deviceId (and QEMU labId) before provider effects. Later operations select the exact owned deviceId alone; deleted IDs cannot select a new definition. VM CLI create positional text is the display name and its output supplies the generated ID. Broker clients require the shared version5 compatibility contract.
+
+Owned device records returned by public tools use `deviceId`, including detailed output. Normal VM metadata omits incarnationId; opt-in diagnostics may retain private native generation evidence. Native candidate serial/udid and snapshot/image IDs keep their domain names. Guest exec and UI payloads remain opaque.
 
 ## Argument and diagnostic integrity
 Public tool schemas reject unknown argument names. Runtime validation rejects unknown names before provider dispatch, including flow steps; internal routing controls remain a separate unadvertised compatibility seam for broker transports and test isolation. A misspelled clipboard write must never become a read.

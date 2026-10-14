@@ -43,6 +43,7 @@ import {
 } from "./real-provider-cycles.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const hyperVFixtureDeviceIds = ["windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468", "linux-vm-2468ace0-1357-4bdf-8ace-2468ace01357", "windows-vm-abcdef12-3456-4789-8abc-def123456789", "windows-vm-11111111-2222-4333-8444-555555555555", "windows-vm-66666666-7777-4888-8999-aaaaaaaaaaaa"];
 
 test("resolves Android AVD storage using Android SDK environment precedence", () => {
     assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_AVD_HOME: "/avds", ANDROID_USER_HOME: "/android-user" } }), "/avds");
@@ -816,26 +817,28 @@ test("detects test-owned Hyper-V VMs even when CCC owner state is absent", () =>
     const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-"));
     const owner = "0123456789abcdef";
     const incarnationId = "a".repeat(32);
-    const vmName = `ccc-${owner}-windows-vm-real-e2e-123-${incarnationId}`;
+    const deviceId = hyperVFixtureDeviceIds[0];
+    const vmName = `ccc-${owner}-${deviceId.slice(0, 32)}-${incarnationId}`;
     try {
         assert.deepEqual(parseHyperVVmInventory(JSON.stringify({
             name: vmName,
-            notes: `ccc-device-lab:${owner}:windows-vm-real-e2e-123`,
+            notes: `ccc-device-lab:${owner}:windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468`,
             vmId: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
             diskPaths: ["C:\\ccc\\root.vhdx"],
             checkpoints: ["durability-checkpoint"],
         })), [{
             name: vmName,
-            notes: `ccc-device-lab:${owner}:windows-vm-real-e2e-123`,
+            notes: `ccc-device-lab:${owner}:windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468`,
             vmId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             diskPaths: ["C:\\ccc\\root.vhdx"],
             checkpoints: ["durability-checkpoint"],
         }]);
         const residue = inspectTestOwnedResidue("windows-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
             listHyperVVms: () => [
-                { name: vmName, notes: `ccc-device-lab:${owner}:windows-vm-real-e2e-123:${incarnationId}`, vmId: "id", diskPaths: ["C:\\ccc\\root.vhdx"], checkpoints: ["before-upgrade"] },
+                { name: vmName, notes: `ccc-device-lab:${owner}:windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468:${incarnationId}`, vmId: "id", diskPaths: ["C:\\ccc\\root.vhdx"], checkpoints: ["before-upgrade"] },
                 { name: "foreign-vm", notes: "", vmId: "foreign", diskPaths: [] },
             ],
         });
@@ -968,17 +971,19 @@ test("Hyper-V host identity excludes only exact persisted managed network identi
 test("preserves ambiguously identified Hyper-V VMs and does not attribute their disks or checkpoints", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-ambiguous-"));
     const owner = "0123456789abcdef";
+    const nameOnlyVmName = `ccc-${owner}-${hyperVFixtureDeviceIds[3].slice(0, 32)}-${"a".repeat(32)}`;
     try {
         const residue = inspectTestOwnedResidue("windows-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
             listHyperVVms: () => [
-                { name: `ccc-${owner}-windows-vm-real-e2e-name-only-${"a".repeat(32)}`, notes: "foreign", diskPaths: ["C:\\foreign.vhdx"], checkpoints: ["foreign-checkpoint"] },
-                { name: "foreign-name", notes: `ccc-device-lab:${owner}:windows-vm-real-e2e-marker-only`, diskPaths: ["C:\\foreign-2.vhdx"], checkpoints: ["foreign-checkpoint-2"] },
+                { name: nameOnlyVmName, notes: "foreign", diskPaths: ["C:\\foreign.vhdx"], checkpoints: ["foreign-checkpoint"] },
+                { name: "foreign-name", notes: `ccc-device-lab:${owner}:windows-vm-66666666-7777-4888-8999-aaaaaaaaaaaa`, diskPaths: ["C:\\foreign-2.vhdx"], checkpoints: ["foreign-checkpoint-2"] },
             ],
         });
         assert.deepEqual(residue, [
-            `ambiguous-host-vm:ccc-${owner}-windows-vm-real-e2e-name-only-${"a".repeat(32)}`,
+            `ambiguous-host-vm:${nameOnlyVmName}`,
             "ambiguous-host-vm:foreign-name",
         ]);
     } finally {
@@ -989,7 +994,7 @@ test("preserves ambiguously identified Hyper-V VMs and does not attribute their 
 test("detects test-owned Hyper-V VHDX and exact mutation and operation locks", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-locks-"));
     const owner = "0123456789abcdef";
-    const deviceId = "windows-vm-real-e2e-locked";
+    const deviceId = "windows-vm-abcdef12-3456-4789-8abc-def123456789";
     const backendRoot = join(home, ".ccc", "devices", "owners", owner, "windows-vm");
     const deviceRoot = join(backendRoot, deviceId);
     const diskPath = join(deviceRoot, "disks", "root.vhdx");
@@ -1004,6 +1009,7 @@ test("detects test-owned Hyper-V VHDX and exact mutation and operation locks", (
         writeFileSync(mutationLock, "lock");
         writeFileSync(operationLock, "lock");
         assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
             listHyperVVms: () => [],
@@ -1019,21 +1025,22 @@ test("detects test-owned Hyper-V VHDX and exact mutation and operation locks", (
     }
 });
 
-test("detects and removes only current-owner test-prefixed Hyper-V private artifacts", () => {
+test("detects and removes only current-owner registered returned-ID Hyper-V private artifacts", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-private-"));
     const owner = "0123456789abcdef";
     const backendRoot = join(home, ".ccc", "device-broker-private", "owners", owner, "linux-vm");
-    const testArtifact = join(backendRoot, "linux-hyper-v-real-e2e-123");
+    const testArtifact = join(backendRoot, "linux-vm-2468ace0-1357-4bdf-8ace-2468ace01357");
     const userArtifact = join(backendRoot, "user-linux-vm");
     try {
         mkdirSync(testArtifact, { recursive: true });
         mkdirSync(userArtifact, { recursive: true });
         assert.deepEqual(inspectTestOwnedResidue("linux-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("linux-vm-")),
             home,
             owner,
             listHyperVVms: () => [],
         }), [`private-artifact:${testArtifact}`]);
-        assert.deepEqual(recoverHyperVPrivateResidue("linux-vm", { home, owner }), { privateArtifacts: 1 });
+        assert.deepEqual(recoverHyperVPrivateResidue("linux-vm", { home, owner, fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("linux-vm-")) }), { privateArtifacts: 1 });
         assert.equal(existsSync(testArtifact), false);
         assert.equal(existsSync(userArtifact), true);
     } finally {
@@ -1041,7 +1048,7 @@ test("detects and removes only current-owner test-prefixed Hyper-V private artif
     }
 });
 
-test("detects current-owner test-prefixed Hyper-V network allocations", () => {
+test("detects current-owner registered returned-ID Hyper-V network allocations", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-network-"));
     const owner = "0123456789abcdef";
     const networkRoot = join(home, ".ccc", "device-broker-private", "network");
@@ -1056,19 +1063,77 @@ test("detects current-owner test-prefixed Hyper-V network allocations", () => {
             prefix: "172.29.0.0/24",
             gateway: "172.29.0.1",
             allocations: [
-                { ownerId: owner, deviceId: "windows-vm-real-e2e-123", address: "172.29.0.10", allocatedAt: new Date().toISOString() },
+                { ownerId: owner, deviceId: "windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468", address: "172.29.0.10", allocatedAt: new Date().toISOString() },
                 { ownerId: owner, deviceId: "user-windows-vm", address: "172.29.0.11", allocatedAt: new Date().toISOString() },
                 { ownerId: "fedcba9876543210", deviceId: "windows-vm-real-e2e-456", address: "172.29.0.12", allocatedAt: new Date().toISOString() },
             ],
         }));
         assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
             listHyperVVms: () => [],
-        }), [`network-allocation:${networkPath}:windows-vm-real-e2e-123`]);
+        }), [`network-allocation:${networkPath}:windows-vm-13579bdf-2468-4ace-8bdf-13579bdf2468`]);
     } finally {
         rmSync(home, { recursive: true, force: true });
     }
+});
+
+test("records both returned same-name VM fixture IDs and forgets only the confirmed deletion", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-vm-fixture-record-"));
+    const options = { owner: "0123456789abcdef", fixtureIdsPath: join(root, "fixture-ids.json") };
+    const ledger = await import("./real-provider-cycles.mjs");
+    const first = hyperVFixtureDeviceIds[0], second = hyperVFixtureDeviceIds[2];
+    try {
+        assert.equal(typeof ledger.recordHyperVFixtureDeviceId, "function");
+        assert.deepEqual(ledger.readHyperVFixtureDeviceIds("windows-vm", options), []);
+        ledger.recordHyperVFixtureDeviceId("windows-vm", first, options);
+        ledger.recordHyperVFixtureDeviceId("windows-vm", second, options);
+        ledger.recordHyperVFixtureDeviceId("windows-vm", first, options);
+        assert.deepEqual(ledger.readHyperVFixtureDeviceIds("windows-vm", options), [first, second]);
+        ledger.forgetHyperVFixtureDeviceId("windows-vm", first, options);
+        assert.deepEqual(ledger.readHyperVFixtureDeviceIds("windows-vm", options), [second]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("refuses malformed VM fixture ownership records without overwriting the evidence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-vm-fixture-record-invalid-"));
+    const options = { fixtureIdsPath: join(root, "fixture-ids.json") };
+    const ledger = await import("./real-provider-cycles.mjs");
+    try {
+        assert.equal(typeof ledger.recordHyperVFixtureDeviceId, "function");
+        for (const malformed of ["{not-json", JSON.stringify({ devices: [] }), JSON.stringify(["../user-vm"])]) {
+            writeFileSync(options.fixtureIdsPath, malformed);
+            assert.throws(() => ledger.readHyperVFixtureDeviceIds("windows-vm", options), /malformed/);
+            assert.throws(() => ledger.recordHyperVFixtureDeviceId("windows-vm", hyperVFixtureDeviceIds[0], options), /malformed/);
+            assert.equal(readFileSync(options.fixtureIdsPath, "utf8"), malformed);
+        }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("does not infer Hyper-V cleanup ownership from labels or generic backend prefixes", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-unregistered-vm-"));
+    const owner = "0123456789abcdef";
+    const ids = ["windows-vm-eeeeeeee-dddd-4ccc-8bbb-aaaaaaaaaaaa", "windows-vm-real-e2e-user"];
+    const backendRoot = join(home, ".ccc", "devices", "owners", owner, "windows-vm");
+    const privateRoot = join(home, ".ccc", "device-broker-private", "owners", owner, "windows-vm");
+    try {
+        mkdirSync(backendRoot, { recursive: true });
+        for (const id of ids) {
+            mkdirSync(join(backendRoot, id), { recursive: true });
+            mkdirSync(join(privateRoot, id), { recursive: true });
+        }
+        writeFileSync(join(backendRoot, "devices.json"), JSON.stringify({ devices: ids.map(id => ({ id, name: "Windows E2E display name" })) }));
+        const incarnationId = "a".repeat(32);
+        assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            home, owner, fixtureDeviceIds: [],
+            listHyperVVms: () => ids.map(id => ({ name: `ccc-${owner}-${id.slice(0, 32)}-${incarnationId}`,
+                notes: `ccc-device-lab:${owner}:${id}:${incarnationId}`, diskPaths: [], checkpoints: [] })),
+        }), []);
+        assert.deepEqual(recoverHyperVPrivateResidue("windows-vm", { home, owner, fixtureDeviceIds: [] }), { privateArtifacts: 0 });
+        assert.ok(ids.every(id => existsSync(join(privateRoot, id))));
+        assert.ok(ids.every(id => existsSync(join(backendRoot, id))));
+    } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 test("parses independently observable Hyper-V network inventory sections", () => {
@@ -1106,6 +1171,7 @@ test("allows a valid Hyper-V bootstrap intent to be adopted by the next provider
             createdAt: new Date().toISOString(),
         }));
         assert.deepEqual(inspectTestOwnedResidue("linux-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("linux-vm-")),
             home,
             owner,
             listHyperVVms: () => [],
@@ -1138,6 +1204,7 @@ test("detects live CCC-owned Hyper-V switch, NAT, and gateway after the last all
             allocations: [],
         }));
         assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
             listHyperVVms: () => [],
@@ -1175,6 +1242,7 @@ test("treats a replacement Hyper-V NAT instance as ambiguous", () => {
             allocations: [],
         }));
         assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
             listHyperVVms: () => [],
@@ -1208,6 +1276,7 @@ test("preserves shared or ambiguous Hyper-V network resources", () => {
             allocations: [{ ownerId: owner, deviceId: "user-windows-vm", address: "172.29.0.10", allocatedAt: new Date().toISOString() }],
         }));
         assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
             listHyperVVms: () => [],
@@ -1218,6 +1287,7 @@ test("preserves shared or ambiguous Hyper-V network resources", () => {
             }),
         }), []);
         assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("windows-vm-")),
             home,
             owner,
             listHyperVVms: () => [],
@@ -1248,6 +1318,7 @@ test("fails closed on malformed Hyper-V network allocation state", () => {
             allocations: [{ ownerId: owner }],
         }));
         assert.throws(() => inspectTestOwnedResidue("linux-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("linux-vm-")),
             home,
             owner,
             listHyperVVms: () => [],
@@ -1274,6 +1345,7 @@ test("fails closed when managed Hyper-V NAT state lacks its instance identity", 
             allocations: [],
         }));
         assert.throws(() => inspectTestOwnedResidue("linux-vm", {
+            fixtureDeviceIds: hyperVFixtureDeviceIds.filter(id => id.startsWith("linux-vm-")),
             home,
             owner,
             listHyperVVms: () => [],

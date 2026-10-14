@@ -21,7 +21,6 @@ export type DesktopOutcome =
     { kind: 'failure'; category: DesktopFailureCategory; facts: DesktopFacts };
 /** Raw request fields retain their input types until the application admits them. */
 export interface DesktopArguments {
-    incarnationId?: unknown;
     helperTimeoutMs?: unknown;
     command?: unknown;
     key?: unknown;

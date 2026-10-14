@@ -52,15 +52,25 @@ describe("complete inward lifecycle preview", () => {
         f.ports.existingPlan = () => evidence; const result = f.run({ backend: "ios-simulator", stateKey: "ios", command: "device_stop" });
         if (result.kind !== "existing") throw new Error("unexpected refusal"); expect(result.value.providerPlan).toBe(evidence);
     });
-    it("requires exact incarnation only for an existing Hyper-V mutation", () => {
-        const f = fixture([{ id: "device" }]); f.ports.validIncarnation = () => false;
-        expect(f.run({ backend: "linux-vm", command: "device_stop" }).kind).toBe("incarnation-required");
-        f.ports.validIncarnation = () => true; expect(f.run({ backend: "linux-vm", command: "device_stop", expectedIncarnationId: "other" }).kind).toBe("incarnation-conflict");
-        expect(f.run({ backend: "linux-vm", command: "device_status" }).kind).toBe("existing");
+    it.each(["windows-vm", "linux-vm"])("selects an existing %s mutation with deviceId alone", backend => {
+        const device = { id: "device", incarnationId: "private-generation" };
+        const f = fixture([device]);
+        f.ports.existingPlan = (_owner, parsed, observed) => {
+            f.trace.push("existing-plan");
+            expect(parsed.deviceId).toBe("device");
+            expect(observed).toBe(device);
+            return { token: "existing" };
+        };
+        expect(f.run({ backend, command: "device_stop" }).kind).toBe("existing");
+        expect(f.trace).toEqual(["read", "existing-plan"]);
     });
-    it("preserves create/missing-delete idempotency and non-Hyper-V existence refusal", () => {
-        const f = fixture([{ id: "device" }]); expect(f.run().kind).toBe("already-exists"); expect(f.run({ backend: "linux-vm" }).kind).toBe("equivalent-create");
-        f.ports.conflicts = () => ["cpus"]; expect(f.run({ backend: "linux-vm" })).toEqual({ kind: "configuration-conflict", conflicts: ["cpus"] });
+    it("refuses creation identity collisions and keeps effect-free missing-delete behavior", () => {
+        const f = fixture([{ id: "device" }]); expect(f.run().kind).toBe("already-exists");
+        for (const backend of ["windows-vm", "linux-vm"]) {
+            expect(f.run({ backend }).kind).toBe("already-exists");
+            expect(f.run({ backend, force: true }).kind).toBe("already-exists");
+        }
+        expect(f.trace).not.toContain("create-plan");
         const g = fixture(); expect(g.run({ backend: "linux-vm", command: "device_delete" }).kind).toBe("missing-delete"); expect(g.run({ command: "device_status" }).kind).toBe("not-found");
     });
     it("checks physical attachment before the record-status refusal", () => {

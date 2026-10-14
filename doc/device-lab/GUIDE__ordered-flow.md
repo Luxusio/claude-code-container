@@ -6,6 +6,6 @@ The native MCP `device-flow-adapter.mjs`, composed in `server.mjs`, decodes text
 
 Public schemas and destructive admission remain controlling. Invalid, empty, oversized or forbidden steps are refused before dispatch. Destructive confirmation remains per-step. Each executed step uses fresh state-dependent routing, so earlier effects can change later observations. Failures retain prior native payloads; stopOnError decides whether later steps run. Native dispatch exceptions are decoded at the boundary and classified by the core.
 
-Target inheritance uses the existing required-deviceId schema eligibility. Only deviceId and incarnationId are shared, and an explicit different deviceId suppresses the inherited target group. Provider and broker authorization/owner/lease guards remain in their existing native compositions.
+Target inheritance uses the existing required-deviceId schema eligibility. Only deviceId is shared, and an explicit step deviceId selects that exact instance. Public flows do not accept or inherit incarnationId. Provider and broker authorization/owner/lease guards remain in their existing native compositions.
 
 Verification retains ordinary public flow/output/wait/stdio and current facade cases, focused semantic core cases, and a small consumed static port contract. Runtime TypeScript compiler fixtures and incidental mutable-property/order contracts are not part of this boundary. Build/shipping checks and native acceptance remain separate qualification steps; this source cut grants no operation or whole-Goal certification.

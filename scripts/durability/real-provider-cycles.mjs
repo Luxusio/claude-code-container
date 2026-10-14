@@ -2,7 +2,7 @@
 
 import { spawn, spawnSync } from "child_process";
 import { createHash } from "crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -66,14 +66,12 @@ export const REAL_PROVIDER_TARGETS = Object.freeze({
     "windows-vm": {
         module: "scripts/real-tests/level2-hyper-v-windows-vm.ts",
         backendState: "windows-vm",
-        devicePrefix: "windows-vm-real-e2e-",
         tempPrefixes: ["ccc-hyper-v-windows-e2e-"],
         destructive: "Creates, boots, controls, checkpoints, stops, and deletes a disposable Hyper-V Windows VM.",
     },
     "linux-vm": {
         module: "scripts/real-tests/level2-hyper-v-linux-vm.ts",
         backendState: "linux-vm",
-        devicePrefix: "linux-hyper-v-real-e2e-",
         tempPrefixes: ["ccc-hyper-v-linux-e2e-"],
         destructive: "Creates, boots, controls, checkpoints, stops, and deletes a disposable Hyper-V Linux VM.",
     },
@@ -206,7 +204,40 @@ function hyperVOperationLockKey(deviceId) {
     return createHash("sha256").update(deviceId).digest("hex").slice(0, 32);
 }
 
-function classifyHyperVVm(vm, owner, definition) {
+// Real-provider VM ownership comes only from successful create responses, never a label or routing prefix.
+function hyperVFixtureIdsPath(target, options = {}) {
+    if (!["windows-vm", "linux-vm"].includes(target)) throw new Error(`unsupported VM fixture target: ${target}`);
+    return options.fixtureIdsPath || join(repoRoot, "results", "device-lab-real", `${target}-fixture-ids-${options.owner || currentOwnerId()}.json`);
+}
+
+export function readHyperVFixtureDeviceIds(target, options = {}) {
+    const path = hyperVFixtureIdsPath(target, options);
+    const record = readOptionalJson(path, "VM fixture IDs");
+    if (!record.exists) return [];
+    if (!Array.isArray(record.value) || record.value.some(id => typeof id !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._:-]{1,128}$/.test(id))) {
+        throw new Error(`VM fixture IDs malformed at ${path}`);
+    }
+    return [...new Set(record.value)];
+}
+
+export function recordHyperVFixtureDeviceId(target, deviceId, options = {}) {
+    if (typeof deviceId !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._:-]{1,128}$/.test(deviceId)) throw new Error("VM fixture create returned an invalid deviceId");
+    const path = hyperVFixtureIdsPath(target, options);
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, JSON.stringify([...new Set([...readHyperVFixtureDeviceIds(target, options), deviceId])]), { mode: 0o600 });
+    renameSync(temporary, path);
+}
+
+export function forgetHyperVFixtureDeviceId(target, deviceId, options = {}) {
+    const path = hyperVFixtureIdsPath(target, options);
+    if (!existsSync(path)) return;
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, JSON.stringify(readHyperVFixtureDeviceIds(target, options).filter(id => id !== deviceId)), { mode: 0o600 });
+    renameSync(temporary, path);
+}
+
+function classifyHyperVVm(vm, owner, fixtureDeviceIds) {
     const namePrefix = `ccc-${owner}-`;
     const markerPrefix = `ccc-device-lab:${owner}:`;
     const nameBody = vm.name.startsWith(namePrefix) ? vm.name.slice(namePrefix.length) : "";
@@ -216,13 +247,12 @@ function classifyHyperVVm(vm, owner, definition) {
     const markerBody = vm.notes.startsWith(markerPrefix) ? vm.notes.slice(markerPrefix.length) : "";
     const incarnationMarker = markerBody.match(/^(.*):([a-f0-9]{32})$/);
     const markerDeviceId = incarnationMarker ? incarnationMarker[1] : markerBody;
-    const nameMatches = nameDeviceId.startsWith(definition.devicePrefix);
-    const markerMatches = markerDeviceId.startsWith(definition.devicePrefix);
+    const markerMatches = fixtureDeviceIds.has(markerDeviceId);
+    const nameMatches = [...fixtureDeviceIds].some(id => nameDeviceId === id.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32));
     const expectedNameDeviceId = markerDeviceId.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "vm";
     if (nameMatches && markerMatches && nameDeviceId === expectedNameDeviceId && nameIncarnationId === incarnationMarker?.[2]) {
         return { ownership: "owned", deviceId: markerDeviceId };
     }
-    if (nameMatches && !vm.notes) return { ownership: "owned", deviceId: nameDeviceId };
     if (nameMatches || markerMatches) return { ownership: "ambiguous", deviceId: nameDeviceId || markerDeviceId };
     return { ownership: "foreign", deviceId: "" };
 }
@@ -418,8 +448,9 @@ function hyperVSnapshotNetworkIdentity(options = {}) {
 }
 
 export function snapshotHyperVHostIdentity(options = {}) {
+    const fixtureDeviceIds = new Set(options.fixtureDeviceIds || (options.owner && options.definition ? readHyperVFixtureDeviceIds(options.definition.backendState, options) : []));
     const vms = (options.listHyperVVms || listHyperVVmInventory)(options.hyperVOptions || {})
-        .filter((vm) => !options.owner || !options.definition || classifyHyperVVm(vm, options.owner, options.definition).ownership !== "owned")
+        .filter((vm) => !options.owner || !options.definition || classifyHyperVVm(vm, options.owner, fixtureDeviceIds).ownership !== "owned")
         .map((vm) => ({
             name: vm.name,
             notes: vm.notes,
@@ -517,14 +548,18 @@ export function inspectTestOwnedResidue(target, options = {}) {
     }
     const residue = [];
     const hyperVTarget = target === "windows-vm" || target === "linux-vm";
+    const fixtureDeviceIds = new Set(hyperVTarget ? (options.fixtureDeviceIds || readHyperVFixtureDeviceIds(target, options)) : []);
+    const isFixtureId = id => hyperVTarget ? fixtureDeviceIds.has(id) : String(id || "").startsWith(definition.devicePrefix);
     const testDeviceIds = new Set();
     for (const device of Array.isArray(state?.devices) ? state.devices : []) {
-        if (String(device?.id || "").startsWith(definition.devicePrefix)) {
+        if (isFixtureId(device?.id)) {
             residue.push(`device-state:${device.id}`);
             testDeviceIds.add(device.id);
         }
     }
-    const ownerArtifacts = matchingEntries(backendRoot, definition.devicePrefix);
+    const ownerArtifacts = hyperVTarget
+        ? listOptionalDirectory(backendRoot, "VM fixture artifact").filter(entry => fixtureDeviceIds.has(entry)).map(entry => join(backendRoot, entry))
+        : matchingEntries(backendRoot, definition.devicePrefix);
     for (const path of ownerArtifacts) {
         residue.push(`owner-artifact:${path}`);
         testDeviceIds.add(path.replace(/\\/g, "/").split("/").at(-1));
@@ -534,7 +569,7 @@ export function inspectTestOwnedResidue(target, options = {}) {
     let hyperVNetworkIntent = null;
     if (hyperVTarget) {
         const privateBackendRoot = join(home, ".ccc", "device-broker-private", "owners", owner, definition.backendState);
-        for (const path of matchingEntries(privateBackendRoot, definition.devicePrefix)) {
+        for (const path of listOptionalDirectory(privateBackendRoot, "VM private artifact").filter(entry => fixtureDeviceIds.has(entry)).map(entry => join(privateBackendRoot, entry))) {
             residue.push(`private-artifact:${path}`);
             testDeviceIds.add(path.replace(/\\/g, "/").split("/").at(-1));
         }
@@ -585,7 +620,7 @@ export function inspectTestOwnedResidue(target, options = {}) {
             }
             identities.add(identity);
             addresses.add(allocation.address);
-            if (allocation.ownerId === owner && allocation.deviceId.startsWith(definition.devicePrefix)) {
+            if (allocation.ownerId === owner && isFixtureId(allocation.deviceId)) {
                 residue.push(`network-allocation:${networkStatePath}:${allocation.deviceId}`);
             }
         }
@@ -600,7 +635,7 @@ export function inspectTestOwnedResidue(target, options = {}) {
             if (!lease || typeof lease !== "object" || typeof lease.ownerId !== "string" || typeof lease.deviceId !== "string") {
                 throw new Error(`physical lease metadata malformed at ${path}: expected ownerId and deviceId strings`);
             }
-            if (lease?.ownerId === owner && String(lease?.deviceId || "").startsWith(definition.devicePrefix)) {
+            if (lease?.ownerId === owner && isFixtureId(lease?.deviceId)) {
                 residue.push(`physical-lease:${path}`);
             }
         }
@@ -612,7 +647,7 @@ export function inspectTestOwnedResidue(target, options = {}) {
         throw new Error(`physical lease aggregate metadata malformed at ${leaseAggregatePath}: expected an object with leases[]`);
     }
     for (const lease of Array.isArray(leaseAggregate?.leases) ? leaseAggregate.leases : []) {
-        if (lease?.ownerId === owner && String(lease?.deviceId || "").startsWith(definition.devicePrefix)) {
+        if (lease?.ownerId === owner && isFixtureId(lease?.deviceId)) {
             residue.push(`physical-lease-aggregate:${leaseAggregatePath}:${lease.deviceId}`);
         }
     }
@@ -624,7 +659,7 @@ export function inspectTestOwnedResidue(target, options = {}) {
         if (lockMetadata.exists && (!lock || typeof lock !== "object" || typeof lock.ownerId !== "string" || typeof lock.deviceId !== "string")) {
             throw new Error(`Windows Sandbox host lock metadata malformed at ${lockPath}: expected ownerId and deviceId strings`);
         }
-        if (lock?.ownerId === owner && String(lock?.deviceId || "").startsWith(definition.devicePrefix)) {
+        if (lock?.ownerId === owner && isFixtureId(lock?.deviceId)) {
             residue.push(`host-lock:${lockPath}`);
         }
     }
@@ -646,7 +681,7 @@ export function inspectTestOwnedResidue(target, options = {}) {
     if (hyperVTarget) {
         const inventory = (options.listHyperVVms || listHyperVVmInventory)(options.hyperVOptions || {});
         for (const vm of inventory) {
-            const classification = classifyHyperVVm(vm, owner, definition);
+            const classification = classifyHyperVVm(vm, owner, fixtureDeviceIds);
             if (classification.ownership === "ambiguous") {
                 residue.push(`ambiguous-host-vm:${vm.name || classification.deviceId}`);
                 continue;
@@ -669,7 +704,7 @@ export function inspectTestOwnedResidue(target, options = {}) {
         const mutationLocks = listOptionalDirectory(backendRoot, "Hyper-V mutation lock")
             .filter((entry) => entry.startsWith("devices.mutation.lock"));
         if (testDeviceIds.size > 0) {
-            const hasForeignState = (state?.devices || []).some((device) => !String(device?.id || "").startsWith(definition.devicePrefix));
+            const hasForeignState = (state?.devices || []).some((device) => !isFixtureId(device?.id));
             for (const entry of mutationLocks) {
                 residue.push(`${hasForeignState ? "ambiguous-mutation-lock" : "mutation-lock"}:${join(backendRoot, entry)}`);
             }
@@ -688,7 +723,7 @@ export function inspectTestOwnedResidue(target, options = {}) {
             residue.push(`ambiguous-host-network-switch:${HYPER_V_NETWORK.switchName}`);
         }
         const hasNonTargetAllocation = (hyperVNetworkState?.allocations || []).some((allocation) =>
-            allocation.ownerId !== owner || !allocation.deviceId.startsWith(definition.devicePrefix));
+            allocation.ownerId !== owner || !isFixtureId(allocation.deviceId));
         if (ownedSwitches.length === 1 && !hasNonTargetAllocation && !hyperVNetworkIntent) {
             residue.push(`host-network-switch:${ownedSwitches[0].name}`);
             const matchingNats = Array.isArray(networkInventory?.nats)
@@ -726,9 +761,10 @@ export function recoverHyperVPrivateResidue(target, options = {}) {
     if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
         throw new Error(`Hyper-V private residue root is not a stable directory: ${backendRoot}`);
     }
+    const fixtureDeviceIds = new Set(options.fixtureDeviceIds || readHyperVFixtureDeviceIds(target, options));
     let privateArtifacts = 0;
     for (const entry of listOptionalDirectory(backendRoot, "Hyper-V private artifact")) {
-        if (!entry.startsWith(definition.devicePrefix)) continue;
+        if (!fixtureDeviceIds.has(entry)) continue;
         const path = resolve(backendRoot, entry);
         if (dirname(path) !== backendRoot) throw new Error(`refusing Hyper-V private residue path outside root: ${path}`);
         const metadata = lstatSync(path);
@@ -1505,7 +1541,7 @@ export async function main(args = process.argv.slice(2), dependencies = {}) {
         if (recoverableHyperVResidue) {
             console.log(`RECOVER cycle=${cycle}/${options.cycles} Hyper-V ${options.target === "linux-vm" ? "Linux" : "Windows"} VM E2E residue will be verified and cleaned by the provider test`);
         }
-        const hyperVIdentityOptions = { owner: currentOwnerId(), definition, home: homedir() };
+        const hyperVIdentityOptions = { owner: currentOwnerId(), definition, home: homedir(), fixtureDeviceIds: ["windows-vm", "linux-vm"].includes(options.target) ? readHyperVFixtureDeviceIds(options.target) : [] };
         const hyperVIdentityBaseline = (options.target === "windows-vm" || options.target === "linux-vm")
             ? snapshotHyperVIdentity(hyperVIdentityOptions)
             : null;
@@ -1571,13 +1607,16 @@ export async function main(args = process.argv.slice(2), dependencies = {}) {
         }
         if (hyperVIdentityBaseline) {
             try {
-                assertHyperVHostIdentityUnchanged(hyperVIdentityBaseline, snapshotHyperVIdentity(hyperVIdentityOptions));
+                assertHyperVHostIdentityUnchanged(hyperVIdentityBaseline, snapshotHyperVIdentity({ ...hyperVIdentityOptions, fixtureDeviceIds: readHyperVFixtureDeviceIds(options.target) }));
             } catch (error) {
                 failures.push(error.message);
             }
         }
         if (failures.length > 0) {
             throw new Error(`cycle ${cycle}/${options.cycles} failed: ${failures.join("; ")}`);
+        }
+        if (hyperVIdentityBaseline) {
+            for (const deviceId of readHyperVFixtureDeviceIds(options.target)) forgetHyperVFixtureDeviceId(options.target, deviceId);
         }
         console.log(`PASS cycle=${cycle}/${options.cycles} target=${options.target} duration=${formatElapsed(elapsed)}`);
     }

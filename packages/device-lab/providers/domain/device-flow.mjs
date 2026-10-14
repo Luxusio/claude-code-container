@@ -15,7 +15,7 @@ export function sharedFlowTarget(args, stepArgs, targetProperties) {
     const changedTarget = ["deviceId"].some((key) =>
         Object.hasOwn(args, key) && Object.hasOwn(stepArgs, key) && args[key] !== stepArgs[key]);
     if (targetProperties && !changedTarget) {
-        for (const key of ["deviceId", "incarnationId"]) {
+        for (const key of ["deviceId"]) {
             if (Object.hasOwn(args, key) && Object.hasOwn(targetProperties, key)) sharedTarget[key] = args[key];
         }
     }

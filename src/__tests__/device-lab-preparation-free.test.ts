@@ -13,6 +13,26 @@ describe("preparation-free public contract", () => {
         expect(normalizePublicToolArgs(name, { name: "Test" }).backend).toBe(backend);
         expect(toolInputError(name, { name: "Test", backend })).toBeTruthy();
     });
+    it.each(["create_windows_vm", "create_linux_vm", "create_macos_vm"])("%s refuses caller IDs even when empty, malformed or forced", name => {
+        const input = { name: "重复 VM name", ...(name === "create_macos_vm" ? { image: "fixture-image" } : {}) };
+        expect(toolInputError(name, input)).toBeNull();
+        expect(normalizePublicToolArgs(name, input)).not.toHaveProperty("deviceId");
+        for (const deviceId of ["chosen-id", "", null, undefined, "../outside"]) {
+            expect(toolInputError(name, { ...input, deviceId }), String(deviceId)).toContain("deviceId");
+            expect(toolInputError(name, { ...input, deviceId, force: true }), String(deviceId)).toBeTruthy();
+        }
+    });
+    it("preserves caller IDs on non-VM creation", () => {
+        const android = { name: "Phone", deviceId: "existing-phone", avdName: "Existing_Phone" };
+        expect(toolInputError("create_android_emulator", android)).toBeNull();
+        expect(normalizePublicToolArgs("create_android_emulator", android)).toMatchObject({ deviceId: "existing-phone" });
+        const ios = { name: "Phone", deviceId: "existing-ios", udid: "Existing-iPhone" };
+        expect(toolInputError("create_ios_simulator", ios)).toBeNull();
+        expect(normalizePublicToolArgs("create_ios_simulator", ios)).toMatchObject({ deviceId: "existing-ios" });
+        const sandbox = { name: "Desktop", deviceId: "legacy-sandbox" };
+        expect(toolInputError("create_windows_sandbox", sandbox)).toBeNull();
+        expect(normalizePublicToolArgs("create_windows_sandbox", sandbox)).toMatchObject({ deviceId: "legacy-sandbox" });
+    });
     it("rejects the removed create alias and confines nesting to Windows VMs", () => {
         expect(toolInputError("create", { name: "Test", backend: "windows-vm" })).toContain("Unknown tool");
         expect(toolInputError("create_windows_vm", { name: "Test", nestedVirtualization: true })).toBeNull();

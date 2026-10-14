@@ -6,11 +6,12 @@ clicks support only the left button. `swipe` and `long_press` remain distinct
 touch gestures. The current container display has deviceId `x11-current-display`.
 
 Simple successful actions reply `ok`; queries return their data or image.
-Warnings and errors remain visible. Screenshots keep any incarnationId needed
-for subsequent input. Request `detail:true` only for troubleshooting.
-For Hyper-V, retain the `incarnationId` returned by create/list/status for lifecycle
-changes. Before pixel input, capture a screenshot and use its `incarnationId` and
-in-bounds image coordinates, including on `run_flow`. After an incarnation conflict,
+Warnings and errors remain visible. VM creation returns a fresh opaque deviceId;
+retain it for every later operation. Display names may repeat and do not select
+an instance. Public VM creation accepts no chosen deviceId or QEMU labId.
+Request `detail:true` only for troubleshooting. Before pixel input, capture a
+screenshot and use in-bounds image coordinates, including on `run_flow`.
+After an identity conflict,
 take a fresh screenshot before deciding whether to repeat the intended input.
 
 Choose a device from `devices`, then include its `deviceId` in each operation.
@@ -118,15 +119,15 @@ Battery `charging` controls simulated AC connection separately from `status`:
 1 unknown, 2 charging, 3 discharging, 4 not charging, 5 full, following
 [Android BatteryManager constants](https://developer.android.com/reference/android/os/BatteryManager#BATTERY_STATUS_CHARGING).
 
-Use the same action tools for mobile and desktop devices. Use `devices` to find an existing owned device and its current `incarnationId`. Use `devices({view:"backends"})` when prerequisites are unclear; `devices({view:"available",backend})` finds candidates for creation or attachment. `windows-vm` and `linux-vm` mean Hyper-V only when `provider` is `hyper-v`; the container QEMU `linux-vm` provider has a different capability set.
+Use the same action tools for mobile and desktop devices. Use `devices` to find an existing owned device and its exact `deviceId`. Use `devices({view:"backends"})` when prerequisites are unclear; `devices({view:"available",backend})` finds candidates for creation or attachment. `windows-vm` and `linux-vm` mean Hyper-V only when `provider` is `hyper-v`; the container QEMU `linux-vm` provider has a different capability set.
 
 ## Screenshot → input → screenshot
 
-1. Create with `create_windows_vm` or `create_linux_vm`, then `start`. Reuse the returned device ID and current `incarnationId`; request `status` only if they are missing or stale. On the first start of a default Hyper-V Linux guest, `start` installs Xfce and starts a graphical desktop automatically. This can add about 15 minutes; the response reports GUI readiness or the failed stage. The persistent console auto-login uses a dedicated unprivileged `ccc-desktop` guest account, separate from the sudo SSH account. Later starts and reboots check readiness and repair the desktop if needed.
-2. Call `screenshot` with `{ "deviceId": "dev-windows", "incarnationId": "<current incarnationId>" }`. The result is a PNG plus its width and height. The top-left pixel is `(0,0)`; the bottom-right pixel is `(width-1,height-1)`.
-3. Call `click` with that device, incarnation, and `x,y` measured on the returned image. `button` defaults to `left`; `right` is available. Use `click` with `count:2` for a double-click.
+1. Create with `create_windows_vm` or `create_linux_vm`, then `start`. Reuse the generated returned deviceId; request `status` for current state or diagnostics. On the first start of a default Hyper-V Linux guest, `start` installs Xfce and starts a graphical desktop automatically. This can add about 15 minutes; the response reports GUI readiness or the failed stage. The persistent console auto-login uses a dedicated unprivileged `ccc-desktop` guest account, separate from the sudo SSH account. Later starts and reboots check readiness and repair the desktop if needed.
+2. Call `screenshot` with `{ "deviceId": "<returned deviceId>" }`. The result is a PNG plus its width and height. The top-left pixel is `(0,0)`; the bottom-right pixel is `(width-1,height-1)`.
+3. Call `click` with that deviceId and `x,y` measured on the returned image. `button` defaults to `left`; `right` is available. Use `click` with `count:2` for a double-click.
 4. Use `key` for one key or combination, such as `Enter`, `Ctrl+A`, or `Alt+Tab`. Hyper-V key names are case insensitive. `type` sends text to the focused control; on Hyper-V `windows-vm` only ASCII text is verified. Use `scroll` with `direction: "up"` or `"down"`, `x,y`, and optional `amount`. `cursor_position` reads the cursor; `move` moves it using required x,y screenshot coordinates.
-5. Capture another screenshot and inspect the visible result before the next input. Keep the same `incarnationId`; if the VM was recreated, discover the new incarnation and capture again.
+5. Capture another screenshot and inspect the visible result before the next input. Keep the exact deviceId; recreating the same display name returns a new ID, which must be captured again.
 
 Hyper-V mouse coordinates are pixels of the latest returned PNG and expire after two minutes. Capture again after a VM reboot, restore, or display-size change. Hyper-V horizontal scrolling is unavailable; `left` and `right` are accepted by the generic tool schema for other providers. The Hyper-V key set includes letters, digits, F1–F12, navigation/editing keys, and Ctrl/Alt/Shift/Win combinations. Unsupported keys and missing console devices return errors.
 
@@ -222,7 +223,7 @@ running the test. SKIP is not evidence of a working Sandbox.
 
 - `hyper-v-display-unavailable`: start the VM and wait for its graphical session. For the default `ubuntu-lts` server image, wait for `start` to finish; its first run can take about 15 extra minutes and reports the failed setup stage if the desktop cannot be prepared. SSH readiness alone does not mean the desktop is ready.
 - Windows evaluation VM at the sign-in screen: the unattended bootstrap uses a one-time auto-login; after reboot, interactive sign-in may be needed before GUI automation can reach the desktop. The default Windows Level 3 GUI proof runs during that first desktop session.
-- Identity conflict or stale incarnation: call `status` for that device, use the current `incarnationId`, then capture a new screenshot before input.
+- Identity conflict: call `status` for the exact deviceId and inspect the refusal, then capture a new screenshot before input. A deleted ID cannot select a later VM with the same display name.
 - `device-cursor-move-backend-unsupported`: `move` supports the current X11 display and Hyper-V `windows-vm`/`linux-vm`. Other providers report unsupported; `cursor_position` never moves it.
 - Native console device or permission error: check Hyper-V host support and permissions for the exact VM. These tools do not redirect input to the host desktop or another VM.
 
@@ -247,9 +248,9 @@ Steps stop on failure by default. Add `screenshot` as the last step to
 inspect the result in the same response. Images appear after the JSON summary;
 each producing step identifies its image/content range with `contentIndex` and
 `contentCount` (zero-based in the outer content array). Arguments
-are literal, with no result interpolation. Set `incarnationId` at the flow level
-when the target requires it; only step tools accepting that field inherit it. A step changing `deviceId` must supply
-its complete new target: none of the old target fields are inherited. Each
+are literal, with no result interpolation. Set `deviceId` at the flow level
+to share that exact target among eligible steps. An explicit step deviceId
+selects its own target. Public flows do not accept or inherit incarnationId. Each
 destructive step requires its own `confirmDestructive:true`; routing controls
 and confirmations are never inherited from the flow.
 
@@ -338,7 +339,11 @@ is preserved and reported; rerunning after successful recovery is harmless.
 Previous Windows E2E VM cleanup accepts `device-not-found` only for the exact
 requested ID and only after a fresh, successful inventory confirms it is absent.
 A remaining or replaced device, unreadable inventory, or other deletion error
-still fails cleanup. Stop/delete requests retain the recorded incarnation ID.
+still fails cleanup. Real-test cleanup uses only exact IDs recorded from successful
+fixture creation; display names and backend prefixes cannot authorize deletion.
+Stop/delete requests select those IDs alone. Private console/setup diagnostic
+helpers obtain generation evidence through `status({deviceId,detail:true})` and
+retain exact native identity checks.
 
 Snapshot operations require a complete VHD parent-chain observation and compare
 the terminal disk with the recorded disk identity. Windows drive/UNC paths are
@@ -406,7 +411,7 @@ MCP errors. Diagnostic verbosity never changes failure classification.
 
 Clean simple actions return `ok`. Failures retain bounded recovery and
 cleanup/containment evidence even when bulk diagnostics are truncated. Obtain a
-fresh screenshot after changing VM incarnation before issuing fenced input.
+fresh screenshot after a VM state or identity conflict before issuing input.
 
 ### Android creation and physical attachment
 

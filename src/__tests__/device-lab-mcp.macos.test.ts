@@ -12,6 +12,13 @@ import { cleanupDeviceLabMcpTestContext, createDeviceLabMcpTestContext, expected
 import { nodeProviderFixturePreloadSource } from "./helpers/node-provider-fixture.js";
 import { createHash } from "node:crypto";
 
+function createdMacosDeviceId(result: Awaited<ReturnType<typeof handleMacosTool>>): string {
+    expect(result?.isError, result?.content?.[0]?.text).not.toBe(true);
+    const value = JSON.parse((result?.content as Array<{ text?: string }>)[0].text || "{}");
+    expect(typeof value.device?.id).toBe("string");
+    return value.device.id;
+}
+
 describe("macOS VM backend with fake Tart provider", () => {
     let context: FakeMacosMcpContext;
     let logPath: string;
@@ -81,65 +88,65 @@ describe("macOS VM backend with fake Tart provider", () => {
             const statePath = join(wire.homeDir, ".ccc/devices/owners", ownerId, "macos", "devices.json");
             type Device = { deviceId: string; ownerId: string; providerInstance: string };
             const imageResult = await wire.client.callTool({ name: "create_macos_vm", arguments: {
-                name: "Wire Image", deviceId: "wire-image", image: "ghcr.io/example/macos-base:latest", provider: "tart",
+                name: "Wire Image", image: "ghcr.io/example/macos-base:latest", provider: "tart",
             } });
             expect(imageResult.isError).not.toBe(true);
             const image = JSON.parse((imageResult.content as Array<{ text: string }>)[0].text) as { device: Device };
             expect(image).toMatchObject({ operation: "base-image-create", device: {
-                deviceId: "wire-image", ownerId, provider: "tart", providerResourceManaged: true, status: "stopped",
+                deviceId: image.device.deviceId, ownerId, provider: "tart", providerResourceManaged: true, status: "stopped",
             } });
             const cloneResult = await wire.client.callTool({ name: "create_macos_vm", arguments: {
-                name: "Wire Copy", deviceId: "wire-copy", sourceDeviceId: "wire-image",
+                name: "Wire Copy", sourceDeviceId: image.device.deviceId,
             } });
             expect(cloneResult.isError).not.toBe(true);
             const clone = JSON.parse((cloneResult.content as Array<{ text: string }>)[0].text) as { device: Device };
             expect(clone).toMatchObject({ operation: "base-image-clone", device: {
-                deviceId: "wire-copy", ownerId, provider: "tart", providerResourceManaged: true, status: "stopped",
-                clonedFrom: { deviceId: "wire-image", providerInstance: image.device.providerInstance },
+                deviceId: clone.device.deviceId, ownerId, provider: "tart", providerResourceManaged: true, status: "stopped",
+                clonedFrom: { deviceId: image.device.deviceId, providerInstance: image.device.providerInstance },
             } });
             const snapshotResult = await wire.client.callTool({ name: "snapshot", arguments: {
-                action: "create", deviceId: "wire-copy", snapshotName: "Wire Snapshot",
+                action: "create", deviceId: clone.device.deviceId, snapshotName: "Wire Snapshot",
             } });
             expect(snapshotResult.isError).not.toBe(true);
             const snapshot = JSON.parse((snapshotResult.content as Array<{ text: string }>)[0].text) as {
                 snapshot: { id: string; name: string; providerInstance: string };
             };
-            expect(snapshot).toMatchObject({ device: { deviceId: "wire-copy", ownerId, status: "stopped" },
+            expect(snapshot).toMatchObject({ device: { deviceId: clone.device.deviceId, ownerId, status: "stopped" },
                 snapshot: { id: "snapshot-wire-snapshot", name: "Wire Snapshot", provider: "tart" } });
             type StoredDevice = { id: string; ownerId: string; providerInstance: string; lifecycle?: unknown; snapshots?: unknown[] };
             const createdState = JSON.parse(readFileSync(statePath, "utf8")) as { devices: StoredDevice[] };
-            expect(createdState.devices.find(device => device.id === "wire-copy")).toMatchObject({
+            expect(createdState.devices.find(device => device.id === clone.device.deviceId)).toMatchObject({
                 ownerId, providerInstance: clone.device.providerInstance, snapshots: [snapshot.snapshot],
             });
-            expect(createdState.devices.find(device => device.id === "wire-image")).not.toHaveProperty("lifecycle");
+            expect(createdState.devices.find(device => device.id === image.device.deviceId)).not.toHaveProperty("lifecycle");
 
             const beforeList = readFileSync(statePath, "utf8"), beforeListLog = readFileSync(wireLog, "utf8");
-            const listResult = await wire.client.callTool({ name: "snapshot", arguments: { action: "list", deviceId: "wire-copy" } });
+            const listResult = await wire.client.callTool({ name: "snapshot", arguments: { action: "list", deviceId: clone.device.deviceId } });
             expect(listResult.isError).toBe(true);
             expect(JSON.parse((listResult.content as Array<{ text: string }>)[0].text)).toMatchObject({
-                ok: false, error: "device-tool-unsupported", deviceId: "wire-copy", backend: "macos-vm",
+                ok: false, error: "device-tool-unsupported", deviceId: clone.device.deviceId, backend: "macos-vm",
             });
             expect(readFileSync(statePath, "utf8")).toBe(beforeList);
             expect(readFileSync(wireLog, "utf8")).toBe(beforeListLog);
 
             const restoreResult = await wire.client.callTool({ name: "snapshot", arguments: {
-                action: "restore", deviceId: "wire-copy", snapshotId: snapshot.snapshot.id, confirmDestructive: true,
+                action: "restore", deviceId: clone.device.deviceId, snapshotId: snapshot.snapshot.id, confirmDestructive: true,
             } });
             expect(restoreResult.isError).not.toBe(true);
             expect(JSON.parse((restoreResult.content as Array<{ text: string }>)[0].text)).toMatchObject({
-                device: { deviceId: "wire-copy", ownerId, status: "stopped", restoreRecovery: null,
+                device: { deviceId: clone.device.deviceId, ownerId, status: "stopped", restoreRecovery: null,
                     restoredFrom: { id: snapshot.snapshot.id, name: "Wire Snapshot", providerInstance: snapshot.snapshot.providerInstance } },
             });
             const deleteResult = await wire.client.callTool({ name: "snapshot", arguments: {
-                action: "delete", deviceId: "wire-copy", snapshotName: "Wire Snapshot", confirmDestructive: true,
+                action: "delete", deviceId: clone.device.deviceId, snapshotName: "Wire Snapshot", confirmDestructive: true,
             } });
             expect(deleteResult.isError).not.toBe(true);
             expect(JSON.parse((deleteResult.content as Array<{ text: string }>)[0].text)).toMatchObject({
-                deleted: snapshot.snapshot.id, device: { deviceId: "wire-copy", ownerId, snapshots: [] },
+                deleted: snapshot.snapshot.id, device: { deviceId: clone.device.deviceId, ownerId, snapshots: [] },
             });
             const finalState = JSON.parse(readFileSync(statePath, "utf8")) as { devices: StoredDevice[] };
-            expect(finalState.devices.map(device => device.id).sort()).toEqual(["wire-copy", "wire-image"]);
-            expect(finalState.devices.find(device => device.id === "wire-copy")).toMatchObject({
+            expect(finalState.devices.map(device => device.id).sort()).toEqual([clone.device.deviceId, image.device.deviceId].sort());
+            expect(finalState.devices.find(device => device.id === clone.device.deviceId)).toMatchObject({
                 ownerId, providerInstance: clone.device.providerInstance, status: "stopped", snapshots: [], restoreRecovery: null,
             });
             expect(finalState.devices.every(device => !device.lifecycle)).toBe(true);
@@ -202,13 +209,13 @@ describe("macOS VM backend with fake Tart provider", () => {
     });
 
     it("recovers stale lifecycle claims before accepting a new mutation", async () => {
-        const deviceId = "macos-stale-lifecycle";
+
         const created = await handleMacosTool("device_create", {
             backend: "macos-vm",
             name: "Stale Lifecycle",
-            deviceId,
             provider: "tart",
         });
+        const deviceId = createdMacosDeviceId(created);
         expect(created?.isError).not.toBe(true);
         updateMacosDevice(deviceId, (device) => ({
             ...device,
@@ -286,13 +293,14 @@ describe("macOS VM backend with fake Tart provider", () => {
         const originalTart = readFileSync(tartPath, "utf-8");
         const oldCloneTimeout = process.env.CCC_MACOS_VM_CLONE_TIMEOUT_MS;
         const oldDeleteTimeout = process.env.CCC_MACOS_VM_DELETE_TIMEOUT_MS;
-        const deviceId = `macos-restore-timeout-${cleanupFails ? "failed" : "clean"}`;
-        const resourceDir = join(homeDir, `${deviceId}-resources`);
+        let deviceId: string | undefined;
+        const resourceDir = join(homeDir, `restore-timeout-${cleanupFails}-resources`);
         mkdirSync(resourceDir);
         try {
             const created = await handleMacosTool("device_create", {
-                backend: "macos-vm", name: "Restore Timeout", deviceId, provider: "tart",
+                backend: "macos-vm", name: "Restore Timeout", provider: "tart",
             });
+            deviceId = createdMacosDeviceId(created);
             expect(created?.isError).not.toBe(true);
             const primary = (JSON.parse((created?.content as Array<{ text: string }>)[0].text) as {
                 device: { providerInstance: string };
@@ -369,20 +377,20 @@ describe("macOS VM backend with fake Tart provider", () => {
             else process.env.CCC_MACOS_VM_CLONE_TIMEOUT_MS = oldCloneTimeout;
             if (oldDeleteTimeout === undefined) delete process.env.CCC_MACOS_VM_DELETE_TIMEOUT_MS;
             else process.env.CCC_MACOS_VM_DELETE_TIMEOUT_MS = oldDeleteTimeout;
-            await handleMacosTool("device_delete", { deviceId });
+            if (deviceId) await handleMacosTool("device_delete", { deviceId });
             rmSync(resourceDir, { recursive: true, force: true });
             writeFileSync(logPath, "");
         }
     });
 
     it("does not persist a Tart process that exits successfully during startup as running", async () => {
-        const deviceId = "macos-immediate-exit";
+
         const created = await handleMacosTool("device_create", {
             backend: "macos-vm",
             name: "Immediate Exit",
-            deviceId,
             provider: "tart",
         });
+        const deviceId = createdMacosDeviceId(created);
         expect(created?.isError).not.toBe(true);
         // Deliver the provider's exit during startup deterministically. A real Node
         // fixture may itself take longer than the readiness grace period to boot.
@@ -426,7 +434,7 @@ describe("macOS VM backend with fake Tart provider", () => {
             image: "ghcr.io/example/macos:latest",
         });
         expect(created?.isError).not.toBe(true);
-        const deviceId = "macos-snapshot-lock";
+        const deviceId = createdMacosDeviceId(created);
         let release!: () => void;
         let entered!: () => void;
         const enteredLock = new Promise<void>((resolve) => { entered = resolve; });
@@ -457,20 +465,18 @@ describe("macOS VM backend with fake Tart provider", () => {
     });
 
     it("fences direct lifecycle generations and preserves exact same-id successors", async () => {
-        const create = async (deviceId: string, managed = false) => {
+        const create = async (name: string, managed = false) => {
             const result = await handleMacosTool(managed ? "device_base_image_create" : "device_create", managed ? {
                 backend: "macos-vm",
-                name: deviceId,
-                deviceId,
+                name,
                 sourceImage: "ghcr.io/example/macos:latest",
                 provider: "tart",
             } : {
                 backend: "macos-vm",
-                name: deviceId,
-                deviceId,
+                name,
                 provider: "tart",
             });
-            expect(result?.isError).not.toBe(true);
+            return createdMacosDeviceId(result);
         };
         const persisted = (deviceId: string) => {
             const state = JSON.parse(readFileSync(macosStatePath(), "utf-8")) as { devices: Array<Record<string, unknown>> };
@@ -498,100 +504,101 @@ describe("macOS VM backend with fake Tart provider", () => {
             expect(deleted?.isError).not.toBe(true);
         };
 
-        await create("macos-generation-duplicate-start");
-        const firstStart = await handleMacosTool("device_start", { deviceId: "macos-generation-duplicate-start" });
+        const duplicateStartId = await create("macos-generation-duplicate-start");
+        const firstStart = await handleMacosTool("device_start", { deviceId: duplicateStartId });
         expect(firstStart?.isError).not.toBe(true);
         const beforeDuplicate = readFileSync(logPath, "utf-8");
-        const duplicate = await handleMacosTool("device_start", { deviceId: "macos-generation-duplicate-start" });
+        const duplicate = await handleMacosTool("device_start", { deviceId: duplicateStartId });
         expect(duplicate?.isError).toBe(true);
         expect((duplicate?.content as Array<{ text?: string }>)[0].text).toContain("Refusing to start");
         expect(readFileSync(logPath, "utf-8")).toBe(beforeDuplicate);
-        await handleMacosTool("device_stop", { deviceId: "macos-generation-duplicate-start" });
-        await handleMacosTool("device_delete", { deviceId: "macos-generation-duplicate-start" });
+        await handleMacosTool("device_stop", { deviceId: duplicateStartId });
+        await handleMacosTool("device_delete", { deviceId: duplicateStartId });
 
-        await create("macos-fail-delete-force", true);
-        const forceDeleteStart = await handleMacosTool("device_start", { deviceId: "macos-fail-delete-force" });
+        const forceDeleteId = await create("macos-fail-delete-force", true);
+        process.env.FAKE_TART_FAIL_DELETE_INSTANCE = (persisted(forceDeleteId) as { providerInstance: string }).providerInstance;
+        const forceDeleteStart = await handleMacosTool("device_start", { deviceId: forceDeleteId });
         expect(forceDeleteStart?.isError).not.toBe(true);
-        const forceDeleteFailure = await handleMacosTool("device_delete", { deviceId: "macos-fail-delete-force", force: true });
+        const forceDeleteFailure = await handleMacosTool("device_delete", { deviceId: forceDeleteId, force: true });
         expect(forceDeleteFailure?.isError).toBe(true);
-        expect(persisted("macos-fail-delete-force")).toEqual(expect.objectContaining({
+        expect(persisted(forceDeleteId)).toEqual(expect.objectContaining({
             status: "stopped",
             runtime: null,
             recording: null,
             bootReady: false,
             lastBootCheck: null,
         }));
-        await cleanupSuccessor("macos-fail-delete-force");
+        await cleanupSuccessor(forceDeleteId);
+        delete process.env.FAKE_TART_FAIL_DELETE_INSTANCE;
 
         for (const scenario of [
-            { command: "run", operation: "device_start", deviceId: "macos-generation-start", managed: false },
-            { command: "stop", operation: "device_stop", deviceId: "macos-generation-stop", managed: false },
-            { command: "delete", operation: "device_delete", deviceId: "macos-generation-delete", managed: true },
+            { command: "run", operation: "device_start", name: "macos-generation-start", managed: false },
+            { command: "stop", operation: "device_stop", name: "macos-generation-stop", managed: false },
+            { command: "delete", operation: "device_delete", name: "macos-generation-delete", managed: true },
         ]) {
-            await create(scenario.deviceId, scenario.managed);
+            const deviceId = await create(scenario.name, scenario.managed);
             if (scenario.operation === "device_stop") {
-                const started = await handleMacosTool("device_start", { deviceId: scenario.deviceId });
+                const started = await handleMacosTool("device_start", { deviceId });
                 expect(started?.isError).not.toBe(true);
             }
-            const armed = armMacosReplacement(scenario.command, scenario.deviceId);
+            const armed = armMacosReplacement(scenario.command, deviceId);
             let result;
             try {
-                result = await handleMacosTool(scenario.operation, { deviceId: scenario.deviceId });
+                result = await handleMacosTool(scenario.operation, { deviceId });
             } finally {
                 disarmMacosReplacement();
             }
             expect(result?.isError, `${scenario.operation}: ${(result?.content as Array<{ text?: string }>)[0]?.text}`).toBe(true);
             expect((result?.content as Array<{ text?: string }>)[0].text).toContain("owner-device-state-conflict");
-            expect(persisted(scenario.deviceId)).toEqual(armed.successor);
-            await cleanupSuccessor(scenario.deviceId);
+            expect(persisted(deviceId)).toEqual(armed.successor);
+            await cleanupSuccessor(deviceId);
         }
 
         for (const scenario of [
-            { operation: "device_snapshot_create", command: "clone", deviceId: "macos-generation-snapshot-create", snapshotName: "Race Create", seed: false },
-            { operation: "device_snapshot_delete", command: "delete", deviceId: "macos-generation-snapshot-delete", snapshotName: "Race Delete", seed: true },
-            { operation: "device_snapshot_restore", command: "clone", deviceId: "macos-generation-snapshot-restore", snapshotName: "Race Restore", seed: true },
+            { operation: "device_snapshot_create", command: "clone", name: "macos-generation-snapshot-create", snapshotName: "Race Create", seed: false },
+            { operation: "device_snapshot_delete", command: "delete", name: "macos-generation-snapshot-delete", snapshotName: "Race Delete", seed: true },
+            { operation: "device_snapshot_restore", command: "clone", name: "macos-generation-snapshot-restore", snapshotName: "Race Restore", seed: true },
         ]) {
-            await create(scenario.deviceId, true);
+            const deviceId = await create(scenario.name, true);
             if (scenario.seed) {
-                const seeded = await handleMacosTool("device_snapshot_create", { deviceId: scenario.deviceId, snapshotName: scenario.snapshotName });
+                const seeded = await handleMacosTool("device_snapshot_create", { deviceId, snapshotName: scenario.snapshotName });
                 expect(seeded?.isError).not.toBe(true);
             }
-            const original = persisted(scenario.deviceId) as { providerInstance: string };
-            const armed = armMacosReplacement(scenario.command, scenario.deviceId);
+            const original = persisted(deviceId) as { providerInstance: string };
+            const armed = armMacosReplacement(scenario.command, deviceId);
             const logBefore = readFileSync(logPath, "utf-8");
             let result;
             try {
-                result = await handleMacosTool(scenario.operation, { deviceId: scenario.deviceId, snapshotName: scenario.snapshotName });
+                result = await handleMacosTool(scenario.operation, { deviceId, snapshotName: scenario.snapshotName });
             } finally {
                 disarmMacosReplacement();
             }
             expect(result?.isError, `${scenario.operation}: ${(result?.content as Array<{ text?: string }>)[0]?.text}`).toBe(true);
             expect((result?.content as Array<{ text?: string }>)[0].text).toContain("owner-device-state-conflict");
-            expect(persisted(scenario.deviceId)).toEqual(armed.successor);
+            expect(persisted(deviceId)).toEqual(armed.successor);
             if (scenario.operation === "device_snapshot_restore") {
                 expect(readFileSync(logPath, "utf-8").slice(logBefore.length)).not.toContain(`tart delete ${original.providerInstance}\n`);
             }
-            await cleanupSuccessor(scenario.deviceId);
+            await cleanupSuccessor(deviceId);
         }
 
-        await create("macos-generation-clone-source", true);
-        const cloneSource = armMacosReplacement("clone", "macos-generation-clone-source");
+        const cloneSourceId = await create("macos-generation-clone-source", true);
+        const cloneSource = armMacosReplacement("clone", cloneSourceId);
         let cloned;
         try {
             cloned = await handleMacosTool("device_base_image_clone", {
                 backend: "macos-vm",
                 name: "Generation Clone Target",
-                deviceId: "macos-generation-clone-target",
-                sourceDeviceId: "macos-generation-clone-source",
+                sourceDeviceId: cloneSourceId,
             });
         } finally {
             disarmMacosReplacement();
         }
         expect(cloned?.isError).toBe(true);
         expect((cloned?.content as Array<{ text?: string }>)[0].text).toContain("owner-device-state-conflict");
-        expect(persisted("macos-generation-clone-source")).toEqual(cloneSource.successor);
-        expect(persisted("macos-generation-clone-target")).toBeUndefined();
-        await cleanupSuccessor("macos-generation-clone-source");
+        expect(persisted(cloneSourceId)).toEqual(cloneSource.successor);
+        expect(JSON.parse(readFileSync(macosStatePath(), "utf-8")).devices.some((device: { name?: string }) => device.name === "Generation Clone Target")).toBe(false);
+        await cleanupSuccessor(cloneSourceId);
         writeFileSync(logPath, "");
     });
 
@@ -644,18 +651,18 @@ describe("macOS VM backend with fake Tart provider", () => {
             + `process.exit(0);\n`);
         chmodSync(tartPath, 0o755);
 
-        const deviceId = "macos-stateful-restore";
+
         process.env.FAKE_TART_RESOURCE_DIR = resourceDir;
         process.env.FAKE_TART_INTERRUPTED = interruptionPath;
         process.env.FAKE_TART_CLEANUP_INTERRUPTED = cleanupInterruptionPath;
-        process.env.FAKE_TART_DEVICE_ID = deviceId;
         try {
             const created = await handleMacosTool("device_create", {
                 backend: "macos-vm",
                 name: "Stateful Restore",
-                deviceId,
                 provider: "tart",
             });
+            const deviceId = createdMacosDeviceId(created);
+            process.env.FAKE_TART_DEVICE_ID = deviceId;
             expect(created?.isError).not.toBe(true);
             const createdPayload = JSON.parse(((created?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
                 device: { providerInstance: string };
@@ -756,17 +763,18 @@ describe("macOS VM backend with fake Tart provider", () => {
             sshUser: "ccc",
             sshKeyPath: mutableSshKey,
         });
+        const mutableKeyCreateDeviceId = createdMacosDeviceId(mutableKeyCreate);
         expect(mutableKeyCreate?.isError).not.toBe(true);
         rmSync(mutableSshKey, { force: true });
         fileSymlinkOrSkip(testContext, mutableSshKeyTarget, mutableSshKey);
         const mutableKeyExec = await handleMacosTool("device_exec", {
-            deviceId: "macos-mutable-key",
+            deviceId: mutableKeyCreateDeviceId,
             command: "whoami",
         });
         expect(mutableKeyExec?.isError).toBe(true);
         expect((mutableKeyExec?.content as Array<{ text?: string }>)[0].text).toContain("ssh-key-path-symlink-rejected");
         const logBeforeMutableKeyStart = readFileSync(logPath, "utf-8");
-        const mutableKeyStart = await handleMacosTool("device_start", { deviceId: "macos-mutable-key" });
+        const mutableKeyStart = await handleMacosTool("device_start", { deviceId: mutableKeyCreateDeviceId });
         expect(mutableKeyStart?.isError).toBe(true);
         expect((mutableKeyStart?.content as Array<{ text?: string }>)[0].text).toContain("ssh-key-path-symlink-rejected");
         expect(readFileSync(logPath, "utf-8").slice(logBeforeMutableKeyStart.length)).not.toContain("tart run");
@@ -785,16 +793,17 @@ describe("macOS VM backend with fake Tart provider", () => {
             sshPort: 2222,
             sshUser: "ccc",
         });
+        const createDeviceId = createdMacosDeviceId(create);
         expect(create?.isError).not.toBe(true);
         const created = JSON.parse(((create?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { id: string; providerPlan: { selectedProvider: string; providerInstance: string; startCommand: { args: string[] }; helper: { workspaceDir: string; hostHelperScript: string; remoteScriptPath: string }; implemented: string[]; deferred: string[] } };
         };
-        expect(created.device.id).toBe("macos-fake-tart");
+        expect(created.device.id).toMatch(/^macos-[0-9a-f-]{36}$/);
         expect(created.device.providerPlan.selectedProvider).toBe("tart");
-        expect(created.device.providerPlan.providerInstance).toContain("macos-fake-tart");
+        expect(created.device.providerPlan.providerInstance).toContain(createDeviceId);
         expect(created.device.providerPlan.startCommand.args).toEqual(["run", created.device.providerPlan.providerInstance]);
-        expect(created.device.providerPlan.helper.workspaceDir).toContain("macos-fake-tart");
-        expect(created.device.providerPlan.helper.remoteScriptPath).toBe("/tmp/ccc-macos-fake-tart-guest-helper.sh");
+        expect(created.device.providerPlan.helper.workspaceDir).toContain(createDeviceId);
+        expect(created.device.providerPlan.helper.remoteScriptPath).toBe(`/tmp/ccc-${createDeviceId}-guest-helper.sh`);
         expect(created.device.providerPlan.implemented).toEqual(expect.arrayContaining(["base-image-clone", "snapshot-clone", "provider-delete"]));
         expect(created.device.providerPlan.deferred).toEqual([]);
         expect(existsSync(created.device.providerPlan.helper.hostHelperScript)).toBe(false);
@@ -812,7 +821,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         expect(inventoryPayload.hostVms).toEqual(expect.objectContaining({ lazy: true }));
         expect(inventoryPayload.devices).toEqual(expect.arrayContaining([
             expect.objectContaining({
-                id: "macos-fake-tart",
+                id: createDeviceId,
                 providerPlan: expect.objectContaining({
                     selectedProvider: "tart",
                     startCommand: expect.objectContaining({ args: ["run", created.device.providerPlan.providerInstance] }),
@@ -827,6 +836,7 @@ describe("macOS VM backend with fake Tart provider", () => {
             provider: "auto",
             image: "ccc-macos-base",
         });
+        const passwordCreateDeviceId = createdMacosDeviceId(passwordCreate);
         expect(passwordCreate?.isError).not.toBe(true);
         const passwordCreated = JSON.parse(((passwordCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { ssh: { user?: string; password?: string; passwordConfigured?: boolean }; providerPlan: { helper: { ssh: { user?: string; password?: string; passwordConfigured?: boolean } } } };
@@ -837,7 +847,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         expect(passwordCreated.device.providerPlan.helper.ssh.user).toBe("admin");
         expect(passwordCreated.device.providerPlan.helper.ssh.password).toBeUndefined();
         expect(passwordCreated.device.providerPlan.helper.ssh.passwordConfigured).toBe(true);
-        updateMacosDevice("macos-password-tart", (device) => ({
+        updateMacosDevice(passwordCreateDeviceId, (device) => ({
             ...device,
             ssh: {
                 ...device.ssh,
@@ -846,10 +856,10 @@ describe("macOS VM backend with fake Tart provider", () => {
             },
         }));
 
-        const passwordStart = await handleMacosTool("device_start", { deviceId: "macos-password-tart" });
+        const passwordStart = await handleMacosTool("device_start", { deviceId: passwordCreateDeviceId });
         expect(passwordStart?.isError).not.toBe(true);
         const passwordExec = await handleMacosTool("device_exec", {
-            deviceId: "macos-password-tart",
+            deviceId: passwordCreateDeviceId,
             command: "whoami",
         });
         expect(passwordExec?.isError).not.toBe(true);
@@ -865,6 +875,7 @@ describe("macOS VM backend with fake Tart provider", () => {
             memoryMb: 4096,
             cpus: 2,
         });
+        const imageCreateDeviceId = createdMacosDeviceId(imageCreate);
         expect(imageCreate?.isError).not.toBe(true);
         const imageCreated = JSON.parse(((imageCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             operation: string;
@@ -872,18 +883,19 @@ describe("macOS VM backend with fake Tart provider", () => {
         };
         expect(imageCreated.operation).toBe("base-image-create");
         expect(imageCreated.device).toEqual(expect.objectContaining({
-            id: "macos-base-image",
+            id: imageCreateDeviceId,
             provider: "tart",
             imageSource: "ghcr.io/example/macos-base:latest",
             provisioning: "image-created",
         }));
-        expect(imageCreated.device.providerInstance).toContain("macos-base-image");
+        expect(imageCreated.device.providerInstance).toContain(imageCreateDeviceId);
 
         const imageClone = await handleMacosTool("device_base_image_clone", {
             backend: "macos-vm",
             name: "Base Clone",
-            sourceDeviceId: "macos-base-image",
+            sourceDeviceId: imageCreateDeviceId,
         });
+        const imageCloneDeviceId = createdMacosDeviceId(imageClone);
         expect(imageClone?.isError).not.toBe(true);
         const imageCloned = JSON.parse(((imageClone?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             operation: string;
@@ -891,15 +903,15 @@ describe("macOS VM backend with fake Tart provider", () => {
         };
         expect(imageCloned.operation).toBe("base-image-clone");
         expect(imageCloned.device).toEqual(expect.objectContaining({
-            id: "macos-base-clone",
+            id: imageCloneDeviceId,
             provider: "tart",
             provisioning: "image-cloned",
         }));
-        expect(imageCloned.device.clonedFrom.deviceId).toBe("macos-base-image");
+        expect(imageCloned.device.clonedFrom.deviceId).toBe(imageCreateDeviceId);
         expect(imageCloned.device.clonedFrom.providerInstance).toBe(imageCreated.device.providerInstance);
 
         const imageSnapshotForCascadeDelete = await handleMacosTool("device_snapshot_create", {
-            deviceId: "macos-base-image",
+            deviceId: imageCreateDeviceId,
             snapshotName: "Delete Cascade",
         });
         expect(imageSnapshotForCascadeDelete?.isError).not.toBe(true);
@@ -907,7 +919,7 @@ describe("macOS VM backend with fake Tart provider", () => {
             snapshot: { providerInstance: string };
         };
 
-        const startBaseImage = await handleMacosTool("device_start", { deviceId: "macos-base-image" });
+        const startBaseImage = await handleMacosTool("device_start", { deviceId: imageCreateDeviceId });
         expect(startBaseImage?.isError).not.toBe(true);
         const startedBaseImage = JSON.parse(((startBaseImage?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             helper: { status: string };
@@ -915,7 +927,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         };
         expect(startedBaseImage.helper.status).toBe("skipped-missing-ssh");
         expect(startedBaseImage.device.helper.provisioning.status).toBe("skipped-missing-ssh");
-        const baseStatusAfterSkippedHelper = await handleMacosTool("device_status", { deviceId: "macos-base-image" });
+        const baseStatusAfterSkippedHelper = await handleMacosTool("device_status", { deviceId: imageCreateDeviceId });
         const baseStatusAfterSkippedHelperPayload = JSON.parse(((baseStatusAfterSkippedHelper?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { helper: { status: string; provisioning: { status: string } } };
         };
@@ -924,11 +936,12 @@ describe("macOS VM backend with fake Tart provider", () => {
         const forceClone = await handleMacosTool("device_base_image_clone", {
             backend: "macos-vm",
             name: "Forced Clone",
-            sourceDeviceId: "macos-base-image",
+            sourceDeviceId: imageCreateDeviceId,
             force: true,
         });
+        const forceCloneDeviceId = createdMacosDeviceId(forceClone);
         expect(forceClone?.isError).not.toBe(true);
-        const baseStatusAfterForceClone = await handleMacosTool("device_status", { deviceId: "macos-base-image" });
+        const baseStatusAfterForceClone = await handleMacosTool("device_status", { deviceId: imageCreateDeviceId });
         const baseAfterForceClone = JSON.parse(((baseStatusAfterForceClone?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { status: string };
         };
@@ -948,8 +961,9 @@ describe("macOS VM backend with fake Tart provider", () => {
             name: "Headless Tart",
             provider: "auto",
         });
+        const headlessCreateDeviceId = createdMacosDeviceId(headlessCreate);
         expect(headlessCreate?.isError).not.toBe(true);
-        const headlessStart = await handleMacosTool("device_start", { deviceId: "macos-headless-tart", headless: true, waitForBoot: true, bootTimeoutMs: 1000 });
+        const headlessStart = await handleMacosTool("device_start", { deviceId: headlessCreateDeviceId, headless: true, waitForBoot: true, bootTimeoutMs: 1000 });
         expect(headlessStart?.isError).not.toBe(true);
         const headlessStarted = JSON.parse(((headlessStart?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { headless: boolean; bootReady: boolean; lastBootCheck: { ready: boolean; ip: string }; runtime: { detached: boolean; providerPid: number; startCommand: { args: string[] } } };
@@ -966,7 +980,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         }));
         expect(headlessStarted.providerStart.startCommand.args).toEqual(["run", "--with-softnet", "--no-graphics", headlessStarted.providerStart.startCommand.args.at(-1)]);
         expect(headlessStarted.device.runtime.startCommand.args).toEqual(headlessStarted.providerStart.startCommand.args);
-        const headlessStop = await handleMacosTool("device_stop", { deviceId: "macos-headless-tart" });
+        const headlessStop = await handleMacosTool("device_stop", { deviceId: headlessCreateDeviceId });
         const headlessStopped = JSON.parse(((headlessStop?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { status: string; bootReady: boolean; lastBootCheck: null; runtime: null };
         };
@@ -976,16 +990,17 @@ describe("macOS VM backend with fake Tart provider", () => {
             lastBootCheck: null,
             runtime: null,
         }));
-        await handleMacosTool("device_delete", { deviceId: "macos-headless-tart" });
+        await handleMacosTool("device_delete", { deviceId: headlessCreateDeviceId });
 
         const arpFallbackCreate = await handleMacosTool("device_create", {
             backend: "macos-vm",
             name: "ARP Fallback",
-            deviceId: "macos-arp-fallback",
             provider: "tart",
         });
+        const arpFallbackCreateDeviceId = createdMacosDeviceId(arpFallbackCreate);
         expect(arpFallbackCreate?.isError).not.toBe(true);
-        const arpFallbackStart = await handleMacosTool("device_start", { deviceId: "macos-arp-fallback", waitForBoot: true, bootTimeoutMs: 1000 });
+        process.env.FAKE_TART_ARP_INSTANCE = JSON.parse((arpFallbackCreate?.content as Array<{ text: string }>)[0].text).device.providerInstance;
+        const arpFallbackStart = await handleMacosTool("device_start", { deviceId: arpFallbackCreateDeviceId, waitForBoot: true, bootTimeoutMs: 1000 });
         expect(arpFallbackStart?.isError).not.toBe(true);
         const arpFallbackStarted = JSON.parse(((arpFallbackStart?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             boot: { ready: boolean; ip: string; resolver: string; attempts: Array<{ resolver: string; status: number }> };
@@ -1001,8 +1016,8 @@ describe("macOS VM backend with fake Tart provider", () => {
             expect.objectContaining({ resolver: "arp", status: 0 }),
         ]));
         expect(arpFallbackStarted.device.lastBootCheck).toEqual(expect.objectContaining({ resolver: "arp" }));
-        await handleMacosTool("device_stop", { deviceId: "macos-arp-fallback" });
-        await handleMacosTool("device_delete", { deviceId: "macos-arp-fallback" });
+        await handleMacosTool("device_stop", { deviceId: arpFallbackCreateDeviceId });
+        await handleMacosTool("device_delete", { deviceId: arpFallbackCreateDeviceId });
 
         const inferredSshCreate = await handleMacosTool("device_create", {
             backend: "macos-vm",
@@ -1010,9 +1025,10 @@ describe("macOS VM backend with fake Tart provider", () => {
             provider: "tart",
             sshUser: "ccc",
         });
+        const inferredSshCreateDeviceId = createdMacosDeviceId(inferredSshCreate);
         expect(inferredSshCreate?.isError).not.toBe(true);
         const inferredSshStart = await handleMacosTool("device_start", {
-            deviceId: "macos-inferred-ssh-host",
+            deviceId: inferredSshCreateDeviceId,
             waitForBoot: true,
             bootTimeoutMs: 1000,
         });
@@ -1032,8 +1048,8 @@ describe("macOS VM backend with fake Tart provider", () => {
             status: "provisioned",
             provider: "ssh-scp",
         }));
-        await handleMacosTool("device_stop", { deviceId: "macos-inferred-ssh-host" });
-        await handleMacosTool("device_delete", { deviceId: "macos-inferred-ssh-host" });
+        await handleMacosTool("device_stop", { deviceId: inferredSshCreateDeviceId });
+        await handleMacosTool("device_delete", { deviceId: inferredSshCreateDeviceId });
 
         const helperFailureCreate = await handleMacosTool("device_create", {
             backend: "macos-vm",
@@ -1043,8 +1059,11 @@ describe("macOS VM backend with fake Tart provider", () => {
             sshPort: 2222,
             sshUser: "ccc",
         });
+        const helperFailureCreateDeviceId = createdMacosDeviceId(helperFailureCreate);
         expect(helperFailureCreate?.isError).not.toBe(true);
-        const helperFailureStart = await handleMacosTool("device_start", { deviceId: "macos-fail-helper" });
+        process.env.FAKE_MACOS_FAIL_HELPER_ID = helperFailureCreateDeviceId;
+        const helperFailureStart = await handleMacosTool("device_start", { deviceId: helperFailureCreateDeviceId });
+        delete process.env.FAKE_MACOS_FAIL_HELPER_ID;
         expect(helperFailureStart?.isError).toBe(true);
         const helperFailurePayload = JSON.parse((helperFailureStart?.content as Array<{ text?: string }>)[0].text ?? "{}") as {
             ok: boolean;
@@ -1060,7 +1079,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         expect(helperFailurePayload.device.status).toBe("running");
         expect(helperFailurePayload.device.helper.provisioning).toEqual(expect.objectContaining({
             status: "failed",
-            remoteScriptPath: "/tmp/ccc-macos-fail-helper-guest-helper.sh",
+            remoteScriptPath: `/tmp/ccc-${helperFailureCreateDeviceId}-guest-helper.sh`,
         }));
 
         const localHelperFailureCreate = await handleMacosTool("device_create", {
@@ -1071,12 +1090,13 @@ describe("macOS VM backend with fake Tart provider", () => {
             sshPort: 2222,
             sshUser: "ccc",
         });
+        const localHelperFailureCreateDeviceId = createdMacosDeviceId(localHelperFailureCreate);
         expect(localHelperFailureCreate?.isError).not.toBe(true);
         const localHelperFailureCreated = JSON.parse(((localHelperFailureCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { providerPlan: { helper: { hostHelperScript: string } } };
         };
         mkdirSync(localHelperFailureCreated.device.providerPlan.helper.hostHelperScript, { recursive: true });
-        const localHelperFailureStart = await handleMacosTool("device_start", { deviceId: "macos-local-helper-failure" });
+        const localHelperFailureStart = await handleMacosTool("device_start", { deviceId: localHelperFailureCreateDeviceId });
         expect(localHelperFailureStart?.isError).toBe(true);
         const localHelperFailurePayload = JSON.parse((localHelperFailureStart?.content as Array<{ text?: string }>)[0].text ?? "{}") as {
             ok: boolean;
@@ -1099,15 +1119,16 @@ describe("macOS VM backend with fake Tart provider", () => {
             sourceImage: "ghcr.io/example/macos-base:latest",
             provider: "auto",
         });
+        const deleteFailureCreateDeviceId = createdMacosDeviceId(deleteFailureCreate);
         expect(deleteFailureCreate?.isError).not.toBe(true);
         const deleteFailureCreated = JSON.parse(((deleteFailureCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { id: string; providerInstance: string };
         };
-        expect(deleteFailureCreated.device.providerInstance).toContain("fail-delete");
-        const deleteFailure = await handleMacosTool("device_delete", { deviceId: "macos-fail-delete" });
+        process.env.FAKE_TART_FAIL_DELETE_INSTANCE = deleteFailureCreated.device.providerInstance;
+        const deleteFailure = await handleMacosTool("device_delete", { deviceId: deleteFailureCreateDeviceId });
         expect(deleteFailure?.isError).toBe(true);
         expect((deleteFailure?.content as Array<{ text?: string }>)[0].text).toContain("delete failed");
-        const deleteFailureStillPresent = await handleMacosTool("device_status", { deviceId: "macos-fail-delete" });
+        const deleteFailureStillPresent = await handleMacosTool("device_status", { deviceId: deleteFailureCreateDeviceId });
         expect(deleteFailureStillPresent?.isError).not.toBe(true);
 
         const partialDeleteCreate = await handleMacosTool("device_base_image_create", {
@@ -1116,34 +1137,36 @@ describe("macOS VM backend with fake Tart provider", () => {
             sourceImage: "ghcr.io/example/macos-base:latest",
             provider: "auto",
         });
+        const partialDeleteCreateDeviceId = createdMacosDeviceId(partialDeleteCreate);
         expect(partialDeleteCreate?.isError).not.toBe(true);
         const partialDeleteCreated = JSON.parse(((partialDeleteCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { id: string; providerInstance: string };
         };
+        process.env.FAKE_TART_PARTIAL_DELETE_INSTANCE = partialDeleteCreated.device.providerInstance;
         const partialDeleteSnapshot = await handleMacosTool("device_snapshot_create", {
-            deviceId: "macos-partial-delete",
+            deviceId: partialDeleteCreateDeviceId,
             snapshotName: "Retry Safe",
         });
         expect(partialDeleteSnapshot?.isError).not.toBe(true);
         const partialDeleteSnapshotPayload = JSON.parse(((partialDeleteSnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             snapshot: { providerInstance: string };
         };
-        const partialDelete = await handleMacosTool("device_delete", { deviceId: "macos-partial-delete" });
+        const partialDelete = await handleMacosTool("device_delete", { deviceId: partialDeleteCreateDeviceId });
         expect(partialDelete?.isError).toBe(true);
         expect((partialDelete?.content as Array<{ text?: string }>)[0].text).toContain("primary delete failed");
-        const partialDeleteStatus = await handleMacosTool("device_status", { deviceId: "macos-partial-delete" });
+        const partialDeleteStatus = await handleMacosTool("device_status", { deviceId: partialDeleteCreateDeviceId });
         const partialDeleteStillPresent = JSON.parse(((partialDeleteStatus?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { snapshots: unknown[] };
         };
         expect(partialDeleteStillPresent.device.snapshots).toEqual([]);
         const logBeforePartialRetry = readFileSync(logPath, "utf-8");
-        const partialDeleteRetry = await handleMacosTool("device_delete", { deviceId: "macos-partial-delete" });
+        const partialDeleteRetry = await handleMacosTool("device_delete", { deviceId: partialDeleteCreateDeviceId });
         expect(partialDeleteRetry?.isError).toBe(true);
         const partialRetryDelta = readFileSync(logPath, "utf-8").slice(logBeforePartialRetry.length);
         expect(partialRetryDelta).toContain(`tart delete ${partialDeleteCreated.device.providerInstance}`);
         expect(partialRetryDelta).not.toContain(partialDeleteSnapshotPayload.snapshot.providerInstance);
 
-        const start = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        const start = await handleMacosTool("device_start", { deviceId: createDeviceId });
         expect(start?.isError).not.toBe(true);
         const started = JSON.parse(((start?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { status: string; provider: string; providerInstance: string; runtime: { detached: boolean; providerPid: number }; helper: { hostHelperScript: string; remoteScriptPath: string; provisioning: { status: string; provider: string; localScriptPath: string; remoteScriptPath: string } } };
@@ -1165,14 +1188,14 @@ describe("macOS VM backend with fake Tart provider", () => {
             status: "provisioned",
             provider: "ssh-scp",
             localScriptPath: started.device.helper.hostHelperScript,
-            remoteScriptPath: "/tmp/ccc-macos-fake-tart-guest-helper.sh",
+            remoteScriptPath: `/tmp/ccc-${createDeviceId}-guest-helper.sh`,
         }));
         const hostHelperScript = readFileSync(started.device.helper.hostHelperScript, "utf-8");
-        expect(hostHelperScript).toContain("ccc macOS guest helper for macos-fake-tart");
+        expect(hostHelperScript).toContain(`ccc macOS guest helper for ${createDeviceId}`);
         expect(hostHelperScript).toContain("window_list|focus_window)");
         expect(hostHelperScript).toContain("accessibility_snapshot)");
         expect(hostHelperScript).toContain("macos-system-events");
-        const startedStatus = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const startedStatus = await handleMacosTool("device_status", { deviceId: createDeviceId });
         const startedStatusPayload = JSON.parse(((startedStatus?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             backend: { capabilities: string[] };
         };
@@ -1188,30 +1211,30 @@ describe("macOS VM backend with fake Tart provider", () => {
         ]));
 
         const snapshotWhileRunning = await handleMacosTool("device_snapshot_create", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Before Install",
         });
         expect(snapshotWhileRunning?.isError).toBe(true);
         expect((snapshotWhileRunning?.content as Array<{ text?: string }>)[0].text).toContain("Refusing to snapshot");
 
         const failingSnapshot = await handleMacosTool("device_snapshot_create", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Fail Snapshot",
             force: true,
         });
         expect(failingSnapshot?.isError).toBe(true);
-        const statusAfterFailingSnapshot = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const statusAfterFailingSnapshot = await handleMacosTool("device_status", { deviceId: createDeviceId });
         const failingSnapshotStatus = JSON.parse(((statusAfterFailingSnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { status: string; snapshots: unknown[] };
         };
         expect(failingSnapshotStatus.device.status).toBe("stopped");
         expect(failingSnapshotStatus.device.snapshots || []).toEqual([]);
 
-        const restartAfterFailedSnapshot = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        const restartAfterFailedSnapshot = await handleMacosTool("device_start", { deviceId: createDeviceId });
         expect(restartAfterFailedSnapshot?.isError).not.toBe(true);
 
         const snapshotCreate = await handleMacosTool("device_snapshot_create", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Before Install",
             force: true,
         });
@@ -1229,27 +1252,27 @@ describe("macOS VM backend with fake Tart provider", () => {
             expect.objectContaining({ id: "snapshot-before-install", name: "Before Install" }),
         ]));
 
-        const restartAfterSnapshot = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        const restartAfterSnapshot = await handleMacosTool("device_start", { deviceId: createDeviceId });
         expect(restartAfterSnapshot?.isError).not.toBe(true);
 
         const restoreWhileRunning = await handleMacosTool("device_snapshot_restore", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Before Install",
         });
         expect(restoreWhileRunning?.isError).toBe(true);
         expect((restoreWhileRunning?.content as Array<{ text?: string }>)[0].text).toContain("Refusing to restore");
 
         const failingRestore = await handleMacosTool("device_snapshot_create", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Fail Restore",
             force: true,
         });
         expect(failingRestore?.isError).not.toBe(true);
-        const restartBeforeFailRestore = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        const restartBeforeFailRestore = await handleMacosTool("device_start", { deviceId: createDeviceId });
         expect(restartBeforeFailRestore?.isError).not.toBe(true);
         const logBeforeFailedRestore = readFileSync(logPath, "utf-8");
         const restoreCloneFailure = await handleMacosTool("device_snapshot_restore", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Fail Restore",
             force: true,
         });
@@ -1257,7 +1280,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         const failedRestoreLogDelta = readFileSync(logPath, "utf-8").slice(logBeforeFailedRestore.length);
         expect(failedRestoreLogDelta).toContain("fail-restore");
         expect(failedRestoreLogDelta).not.toContain(`tart delete ${started.device.providerInstance}`);
-        const statusAfterFailedRestore = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const statusAfterFailedRestore = await handleMacosTool("device_status", { deviceId: createDeviceId });
         const failedRestoreStatus = JSON.parse(((statusAfterFailedRestore?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { status: string; snapshots: Array<{ name: string }> };
         };
@@ -1267,7 +1290,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         ]));
 
         const activationFailureSnapshot = await handleMacosTool("device_snapshot_create", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Fail Activate",
             force: true,
         });
@@ -1275,11 +1298,11 @@ describe("macOS VM backend with fake Tart provider", () => {
         const activationSnapshotPayload = JSON.parse(((activationFailureSnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             snapshot: { providerInstance: string };
         };
-        const restartBeforeActivationFailure = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        const restartBeforeActivationFailure = await handleMacosTool("device_start", { deviceId: createDeviceId });
         expect(restartBeforeActivationFailure?.isError).not.toBe(true);
         const logBeforeActivationFailure = readFileSync(logPath, "utf-8");
         const activationFailure = await handleMacosTool("device_snapshot_restore", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Fail Activate",
             force: true,
         });
@@ -1293,7 +1316,7 @@ describe("macOS VM backend with fake Tart provider", () => {
             .find((line) => line.includes("fail-activate"))?.split(" ").pop() || "";
         expect(preservedCandidate).toContain("restore-");
         expect(activationFailureDelta).not.toContain(`tart delete ${preservedCandidate}`);
-        const statusAfterActivationFailure = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const statusAfterActivationFailure = await handleMacosTool("device_status", { deviceId: createDeviceId });
         const activationFailureStatus = JSON.parse(((statusAfterActivationFailure?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { restoreRecovery: { candidateProviderInstance: string; snapshotName: string } };
         };
@@ -1303,7 +1326,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         }));
 
         const snapshotRestore = await handleMacosTool("device_snapshot_restore", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Before Install",
             force: true,
         });
@@ -1318,7 +1341,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         }));
 
         const snapshotDelete = await handleMacosTool("device_snapshot_delete", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Before Install",
         });
         expect(snapshotDelete?.isError).not.toBe(true);
@@ -1335,7 +1358,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         ]));
 
         const failRestoreSnapshotDeleted = await handleMacosTool("device_snapshot_delete", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Fail Restore",
         });
         expect(failRestoreSnapshotDeleted?.isError).not.toBe(true);
@@ -1349,7 +1372,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         ]));
 
         const failActivateSnapshotDeleted = await handleMacosTool("device_snapshot_delete", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Fail Activate",
         });
         expect(failActivateSnapshotDeleted?.isError).not.toBe(true);
@@ -1360,18 +1383,18 @@ describe("macOS VM backend with fake Tart provider", () => {
         expect(failActivateDeleted.deleted).toBe("snapshot-fail-activate");
         expect(failActivateDeleted.device.snapshots).toEqual([]);
 
-        const restartAfterRestore = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        const restartAfterRestore = await handleMacosTool("device_start", { deviceId: createDeviceId });
         expect(restartAfterRestore?.isError).not.toBe(true);
 
         const cloneWhileRunning = await handleMacosTool("device_base_image_clone", {
             backend: "macos-vm",
             name: "Running Clone",
-            sourceDeviceId: "macos-fake-tart",
+            sourceDeviceId: createDeviceId,
         });
         expect(cloneWhileRunning?.isError).toBe(true);
         expect((cloneWhileRunning?.content as Array<{ text?: string }>)[0].text).toContain("Refusing to clone");
 
-        const stop = await handleMacosTool("device_stop", { deviceId: "macos-fake-tart" });
+        const stop = await handleMacosTool("device_stop", { deviceId: createDeviceId });
         expect(stop?.isError).not.toBe(true);
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain(`tart run --with-softnet ${started.device.providerInstance}`);
@@ -1389,23 +1412,23 @@ describe("macOS VM backend with fake Tart provider", () => {
         expect(log).toContain(`tart delete ${snapshotCreated.snapshot.providerInstance}`);
         expect(log).not.toContain("vz clone");
         expect(log).toContain("scp -P 2222 -o BatchMode=yes -o StrictHostKeyChecking=no");
-        expect(log).toContain("ccc-guest-helper.sh ccc@127.0.0.1:/tmp/ccc-macos-fake-tart-guest-helper.sh");
-        expect(log).toContain("chmod 700 '/tmp/ccc-macos-fake-tart-guest-helper.sh'");
+        expect(log).toContain(`ccc-guest-helper.sh ccc@127.0.0.1:/tmp/ccc-${createDeviceId}-guest-helper.sh`);
+        expect(log).toContain(`chmod 700 '/tmp/ccc-${createDeviceId}-guest-helper.sh'`);
 
-        const startCloneBeforeDelete = await handleMacosTool("device_start", { deviceId: "macos-base-clone" });
+        const startCloneBeforeDelete = await handleMacosTool("device_start", { deviceId: imageCloneDeviceId });
         expect(startCloneBeforeDelete?.isError).not.toBe(true);
-        const runningCloneDelete = await handleMacosTool("device_delete", { deviceId: "macos-base-clone" });
+        const runningCloneDelete = await handleMacosTool("device_delete", { deviceId: imageCloneDeviceId });
         expect(runningCloneDelete?.isError).toBe(true);
-        expect((runningCloneDelete?.content as Array<{ text?: string }>)[0].text).toContain("Refusing to delete macos-base-clone while status is running");
-        const clonedDeleted = await handleMacosTool("device_delete", { deviceId: "macos-base-clone", force: true });
+        expect((runningCloneDelete?.content as Array<{ text?: string }>)[0].text).toContain(`Refusing to delete ${imageCloneDeviceId} while status is running`);
+        const clonedDeleted = await handleMacosTool("device_delete", { deviceId: imageCloneDeviceId, force: true });
         expect(clonedDeleted?.isError).not.toBe(true);
         const clonedDeletedPayload = JSON.parse(((clonedDeleted?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             providerDeleted: string[];
         };
         expect(clonedDeletedPayload.providerDeleted).toContain(imageCloned.device.providerInstance);
-        const forcedClonedDeleted = await handleMacosTool("device_delete", { deviceId: "macos-forced-clone" });
+        const forcedClonedDeleted = await handleMacosTool("device_delete", { deviceId: forceCloneDeviceId });
         expect(forcedClonedDeleted?.isError).not.toBe(true);
-        const imageDeleted = await handleMacosTool("device_delete", { deviceId: "macos-base-image" });
+        const imageDeleted = await handleMacosTool("device_delete", { deviceId: imageCreateDeviceId });
         expect(imageDeleted?.isError).not.toBe(true);
         const imageDeletedPayload = JSON.parse(((imageDeleted?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             providerDeleted: string[];
@@ -1414,27 +1437,27 @@ describe("macOS VM backend with fake Tart provider", () => {
         expect(imageDeletedPayload.providerDeleted).toContain(imageCreated.device.providerInstance);
 
         const recoverySnapshot = await handleMacosTool("device_snapshot_create", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Fail Activate Delete",
         });
         expect(recoverySnapshot?.isError).not.toBe(true);
         const recoverySnapshotPayload = JSON.parse(((recoverySnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             snapshot: { providerInstance: string };
         };
-        const restartBeforeRecoveryDelete = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        const restartBeforeRecoveryDelete = await handleMacosTool("device_start", { deviceId: createDeviceId });
         expect(restartBeforeRecoveryDelete?.isError).not.toBe(true);
         const recoveryRestoreFailure = await handleMacosTool("device_snapshot_restore", {
-            deviceId: "macos-fake-tart",
+            deviceId: createDeviceId,
             snapshotName: "Fail Activate Delete",
             force: true,
         });
         expect(recoveryRestoreFailure?.isError).toBe(true);
-        const statusBeforeRecoveryDelete = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const statusBeforeRecoveryDelete = await handleMacosTool("device_status", { deviceId: createDeviceId });
         const recoveryDeleteStatus = JSON.parse(((statusBeforeRecoveryDelete?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { restoreRecovery: { candidateProviderInstance: string } };
         };
         expect(recoveryDeleteStatus.device.restoreRecovery.candidateProviderInstance).toContain("restore-");
-        const deleted = await handleMacosTool("device_delete", { deviceId: "macos-fake-tart" });
+        const deleted = await handleMacosTool("device_delete", { deviceId: createDeviceId });
         expect(deleted?.isError).not.toBe(true);
         const deletedPayload = JSON.parse(((deleted?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             providerDeleted: string[];

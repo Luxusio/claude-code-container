@@ -20,19 +20,24 @@ vi.mock("@ccc/device-lab/providers/backends/ios-simulator.mjs", async original =
 vi.mock("@ccc/device-lab/providers/backends/linux-vm.mjs", async original => ({
     ...await original<Record<string, unknown>>(), handleLinuxVmManagementTool: () => null, handleLinuxVmTool: () => null,
 }));
-vi.mock("../../device-lab-mcp/src/broker.mjs", async original => ({
-    ...await original<Record<string, unknown>>(), implicitBrokerProbeOptions: () => ({}),
-    brokerStatus: async () => ({ available: true }),
-    brokerRpc: async (args: any) => {
-        fixture.rpc.push(args.method);
-        if (fixture.broken) return { ok: false, error: "broker-unavailable" };
-        return { ok: true, result: { backends: [
+vi.mock("../../device-lab-mcp/src/broker.mjs", async original => {
+    const actual = await original<Record<string, any>>();
+    const observe = async (method: string) => {
+        fixture.rpc.push(method);
+        const receipt = fixture.broken ? { ok: false, error: "broker-unavailable" } : { ok: true, result: { backends: [
             { name: "android-emulator", stateKey: "android", status: "available", devices: [{ id: "phone", backend: "android-emulator" }] },
             { name: "ios-simulator", stateKey: "ios", status: "unavailable", devices: [{ id: "ios", backend: "ios-simulator" }] },
         ] } };
-    },
-    brokerDeviceTool: async (args: any) => ({ ok: true, result: { mcpResult: response(args.tool, args) } }),
-}));
+        return { ...actual.brokerObservation(receipt), backends: receipt.result?.backends ?? null, devices: null, payloadReceipt: receipt.result };
+    };
+    return {
+        ...actual, implicitBrokerProbeOptions: () => ({}),
+        observeBrokerStatus: async () => ({ ok: true, available: true, receipt: { available: true } }),
+        observeBrokerBackends: () => observe("broker.backends"),
+        observeBrokerInventory: () => observe("broker.inventory"),
+        brokerDeviceTool: async (args: any) => ({ ok: true, result: { mcpResult: response(args.tool, args) } }),
+    };
+});
 import { startServer } from "../../device-lab-mcp/src/server.mjs";
 import { TOOLS } from "../../device-lab-mcp/src/tools.mjs";
 import { normalizePublicToolArgs, toolInputError } from "../../device-lab-mcp/src/tool-arguments.mjs";

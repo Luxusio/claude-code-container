@@ -447,6 +447,7 @@ describe("device-lab MCP foundation and definitions", () => {
         }));
         expect(createProperties).not.toHaveProperty("backend");
         expect(createProperties).not.toHaveProperty("options");
+        expect(createProperties).not.toHaveProperty("deviceId");
         for (const name of Object.keys(CREATE_TOOL_BACKENDS)) {
             expect(toolProperties(TOOLS.find((tool: { name: string }) => tool.name === name))).not.toHaveProperty("options");
         }
@@ -472,9 +473,7 @@ describe("device-lab MCP foundation and definitions", () => {
             }),
         );
         for (const name of ["status", "snapshot"]) {
-            expect(toolProperties(result.tools.find((tool) => tool.name === name))).toEqual(expect.objectContaining({
-                incarnationId: expect.objectContaining({ type: "string", pattern: "^[a-f0-9]{32}$" }),
-            }));
+            expect(toolProperties(result.tools.find((tool) => tool.name === name))).not.toHaveProperty("incarnationId");
         }
         const inventoryTool = result.tools.find((tool) => tool.name === "devices");
         const inventoryProperties = toolProperties(inventoryTool);
@@ -1067,17 +1066,21 @@ describe("device-lab MCP foundation and definitions", () => {
         const iosId = "ios-exhaustive-smoke";
         const windowsId = "windows-exhaustive-smoke";
         const macosId = "macos-exhaustive-smoke";
-        const linuxId = "linux-exhaustive-smoke";
+        let linuxId = "linux-exhaustive-smoke-missing";
 
         for (const args of [
             { backend: "android-emulator", name: "Android exhaustive smoke", avdName: "existing-smoke", deviceId: androidId },
             { backend: "ios-simulator", name: "iOS exhaustive smoke", deviceId: iosId },
             { backend: "windows-sandbox", name: "Windows exhaustive smoke", deviceId: windowsId },
-            { backend: "macos-vm", name: "macOS exhaustive smoke", deviceId: macosId, image: "missing-image" },
-            { backend: "linux-vm", name: "Linux exhaustive smoke", deviceId: linuxId },
+            { backend: "macos-vm", name: "macOS exhaustive smoke", image: "missing-image" },
+            { backend: "linux-vm", name: "Linux exhaustive smoke" },
         ]) {
             const { backend, ...input } = args;
-            await client.callTool({ name: createToolName(backend), arguments: { ...direct, ...input } });
+            const created = await client.callTool({ name: createToolName(backend), arguments: { ...direct, ...input } });
+            if (backend === "linux-vm") {
+                expect(created.isError, JSON.stringify(created.content)).not.toBe(true);
+                linuxId = JSON.parse((created.content[0] as { text: string }).text).device.deviceId;
+            }
         }
 
         const samples: Record<string, Record<string, unknown>> = {
@@ -1090,8 +1093,8 @@ describe("device-lab MCP foundation and definitions", () => {
             create_ios_simulator: { ...direct, name: "iOS smoke", deviceType: "missing", runtime: "missing" },
             create_windows_vm: { broker: true, hostCandidates: ["127.0.0.1"], brokerPort: 9, timeoutMs: 1, launchTimeoutMs: 1, name: "Windows VM smoke", dryRun: true },
             create_windows_sandbox: { ...direct, name: "Windows sandbox smoke", deviceId: windowsId },
-            create_linux_vm: { ...direct, name: "Linux smoke", deviceId: linuxId },
-            create_macos_vm: { ...direct, name: "macOS smoke", image: "missing-image", deviceId: macosId },
+            create_linux_vm: { ...direct, name: "Linux smoke" },
+            create_macos_vm: { ...direct, name: "macOS smoke", image: "missing-image" },
             attach: { ...direct, backend: "android-device", name: "Android attach smoke", serial: "SERIAL-SMOKE" },
             detach: { ...brokerProbe, broker: true, deviceId: "missing-detach-smoke" },
             delete: { ...brokerProbe, broker: true, deviceId: "missing-delete-smoke", confirmDestructive: true },

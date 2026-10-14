@@ -29,6 +29,11 @@ vi.mock("@ccc/device-lab/providers/backends/linux-vm.mjs", async original => ({
 vi.mock("../../device-lab-mcp/src/broker.mjs", async original => ({
     ...await original<Record<string, unknown>>(), implicitBrokerProbeOptions: () => ({}),
     brokerRpc: async () => { fixture.inventoryCalls++; return { ok: true, result: { backends: [{ stateKey: "windows-vm", devices: [{ id: "hv" }] }, { stateKey: "ios-device", devices: [{ id: "iphone" }] }, { stateKey: "linux-vm", devices: [{ id: "hv-linux" }] }] } }; },
+    observeBrokerInventory: async () => {
+        fixture.inventoryCalls++;
+        const backends = [{ stateKey: "windows-vm", devices: [{ id: "hv" }] }, { stateKey: "ios-device", devices: [{ id: "iphone" }] }, { stateKey: "linux-vm", devices: [{ id: "hv-linux" }] }];
+        return { ok: true, backends, receipt: { ok: true, result: { backends } } };
+    },
     brokerDeviceTool: async (args: any) => ({ ok: true, result: { mcpResult: execution(args.tool, args) } }),
 }));
 import { startServer } from "../../device-lab-mcp/src/server.mjs";
@@ -48,20 +53,18 @@ describe("public list_files routing", () => {
         expect(fixture.calls[0].args.command).toBeTypeOf("string");
         expect(fixture.inventoryCalls).toBe(0);
     });
-    it.each(["hv", "hv-linux"])("preserves %s incarnation through the existing broker exec path", async deviceId => {
-        const incarnationId = "a".repeat(32);
-        const result = await call({ deviceId, path: deviceId === "hv" ? "C:\\work" : "/work", incarnationId });
+    it.each(["hv", "hv-linux"])("selects %s with deviceId alone through the existing broker exec path", async deviceId => {
+        const result = await call({ deviceId, path: deviceId === "hv" ? "C:\\work" : "/work" });
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         expect(fixture.calls).toHaveLength(1);
-        expect(fixture.calls[0]).toMatchObject({ name: "device_exec", args: { deviceId, incarnationId } });
+        expect(fixture.calls[0]).toMatchObject({ name: "device_exec", args: { deviceId } });
     });
     it("honors an explicit broker route while implicit routing is disabled", async () => {
         fixture.stdout = JSON.stringify({ entries: [{ name: "hello.txt", type: "file", size: 5 }] });
-        const incarnationId = "b".repeat(32);
-        const result = await call({ deviceId: "hv", path: "C:\\work", incarnationId, broker: true, implicitBroker: false });
+        const result = await call({ deviceId: "hv", path: "C:\\work", broker: true, implicitBroker: false });
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(JSON.parse(result.content[0].text)).toEqual({ entries: [{ name: "hello.txt", type: "file", size: 5 }], incarnationId });
-        expect(fixture.calls[0]).toMatchObject({ name: "device_exec", args: { deviceId: "hv", backend: "windows-vm", incarnationId } });
+        expect(JSON.parse(result.content[0].text)).toEqual({ entries: [{ name: "hello.txt", type: "file", size: 5 }] });
+        expect(fixture.calls[0]).toMatchObject({ name: "device_exec", args: { deviceId: "hv", backend: "windows-vm" } });
     });
     it("refuses a missing or ambiguous owner target before execution", async () => {
         expect((await call({ deviceId: "absent", path: "/" })).isError).toBe(true);

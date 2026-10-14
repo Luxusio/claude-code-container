@@ -113,7 +113,7 @@ export const TOOLS = selected.map((operation) => {
     if (tool.name === "ui") tool.description = "Inspect mobile UI hierarchy or desktop accessibility for this device.";
     if (tool.name === "click") {
         schema.properties.count = { type: "integer", enum: [1, 2], description: "Clicks: 1 (default) or 2 for double-click/double-tap." };
-        tool.description = "Click or tap at screenshot x,y. count:2 double-clicks/double-taps. Mobile supports only the left button. Hyper-V requires the screenshot incarnationId.";
+        tool.description = "Click or tap at screenshot x,y. count:2 double-clicks/double-taps. Mobile supports only the left button.";
     }
     if (tool.name === "screenshot") {
         schema.properties.region = { type: "object", additionalProperties: false, properties: {
@@ -123,13 +123,12 @@ export const TOOLS = selected.map((operation) => {
         tool.description += " Optional region crops without resizing; input coordinates remain relative to the full screenshot. Returns crop origin and full dimensions. Region supports PNG only.";
     }
     if (tool.name === "drag") {
-        schema.properties.incarnationId = structuredClone(OPERATIONS.find(t => t.name === "device_click").inputSchema.properties.incarnationId);
         schema.properties.timeoutMs = { type: "number", minimum: 1, maximum: 300000 };
         for (const key of ["x1", "y1", "x2", "y2"]) schema.properties[key] = { type: "integer", minimum: 0 };
         schema.properties.durationMs = { type: "integer", minimum: 1, maximum: 10000 };
-        tool.description = "Drag from x1,y1 to x2,y2 in full screenshot pixels. Desktop uses the left button; mobile uses touch. durationMs defaults to 700. Supports mobile, X11, Sandbox, macOS and Hyper-V desktops. Hyper-V requires screenshot incarnationId.";
+        tool.description = "Drag from x1,y1 to x2,y2 in full screenshot pixels. Desktop uses the left button; mobile uses touch. durationMs defaults to 700. Supports mobile, X11, Sandbox, macOS and Hyper-V desktops.";
     }
-    if (tool.name === "type") tool.description = "Type text into the focused device. Hyper-V requires the screenshot incarnationId; Windows VM console typing supports ASCII only.";
+    if (tool.name === "type") tool.description = "Type text into the focused device. Windows VM console typing supports ASCII only.";
     if (tool.name === "key") {
         schema.properties.key.minLength = 1;
         schema.properties.key.description = "Desktop key or combination (Enter, Ctrl+C); Android ADB key name (KEYCODE_HOME); iOS Appium key value.";
@@ -138,7 +137,7 @@ export const TOOLS = selected.map((operation) => {
         delete schema.anyOf;
         schema.oneOf = [{ required: ["key"] }, { required: ["keyCode"] }];
         schema.properties.keyCode.minimum = 0;
-        tool.description = "Send a key or combination. Desktop: Enter, Ctrl+C, Alt+Tab. Android also accepts numeric keyCode. Hyper-V requires the screenshot incarnationId. Unsupported keys fail.";
+        tool.description = "Send a key or combination. Desktop: Enter, Ctrl+C, Alt+Tab. Android also accepts numeric keyCode. Unsupported keys fail.";
     }
     if (tool.name === "cursor_position") {
         delete schema.properties.x;
@@ -225,7 +224,7 @@ for (const [name, backend] of Object.entries(CREATE_TOOL_BACKENDS)) {
 }
 const move = structuredClone(TOOLS.find(({ name }) => name === "cursor_position"));
 move.name = "move";
-move.description = "Move the cursor to full screenshot x,y on X11, Windows Sandbox, macOS VM or Hyper-V Windows/Linux VM. Mobile and container QEMU are unsupported. Hyper-V requires the screenshot incarnationId.";
+move.description = "Move the cursor to full screenshot x,y on X11, Windows Sandbox, macOS VM or Hyper-V Windows/Linux VM. Mobile and container QEMU are unsupported.";
 move.inputSchema.properties.x = { type: "integer", minimum: 0 };
 move.inputSchema.properties.y = { type: "integer", minimum: 0 };
 move.inputSchema.required = ["deviceId", "x", "y"];

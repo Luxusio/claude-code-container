@@ -1,6 +1,6 @@
 import type {QemuLifecycleArguments,QemuLifecyclePorts,QemuLifecycleResult,QemuScope,QemuSsh,QemuFailure} from "../ports/qemu-lifecycle.mjs";
 export function createQemuLifecycleApplication(ports:QemuLifecyclePorts): {
-    create(args?:QemuLifecycleArguments):QemuLifecycleResult;
+    create(args?:QemuLifecycleArguments, admittedLabId?:string):QemuLifecycleResult;
     start(args?:QemuLifecycleArguments):QemuLifecycleResult;
     stop(args?:QemuLifecycleArguments):QemuLifecycleResult;
     delete(args?:QemuLifecycleArguments):QemuLifecycleResult;

@@ -17,31 +17,39 @@ import { aggregateStepResult } from "./result-status.ts";
 export const name = "level 2 host broker MCP E2E";
 
 // Keep broker transport separate from the device's own creation fields.
-export function missingWindowsImageProbe(route: Record<string, unknown>, deviceId: string) {
+export function missingWindowsImageProbe(route: Record<string, unknown>) {
     const args = { ...route };
     delete args.port;
     return {
         ...args,
         detail: true,
         name: "Level 2 missing-image diagnostic",
-        deviceId,
         image: "ccc-level2-missing-image",
         dryRun: true,
     };
 }
 
-export async function probeMissingMacosImage(callTool: (tool: string, args: Record<string, unknown>) => Promise<any>, deviceId: string) {
-    const args = {
-        detail: true, name: "Level 2 public missing base image", deviceId, image: "missing-source",
+export async function probeMissingMacosImage(callTool: (tool: string, args: Record<string, unknown>) => Promise<any>) {
+    const inventory = async () => {
+        const value = parseToolPayload(await callTool("devices", { detail: true, view: "owned", implicitBroker: false }));
+        const devices = (value.result || value).devices;
+        assert.ok(Array.isArray(devices) && devices.every(device => typeof device?.deviceId === "string" && device.deviceId), "missing-image probe requires owned inventory");
+        return devices.map(device => device.deviceId).sort();
     };
+    const before = await inventory();
+    const args = { detail: true, implicitBroker: false, name: "Level 2 public missing base image", image: "missing-source" };
     assert.strictEqual(toolInputError("create_macos_vm", args), null, "missing-image probe must reach the provider");
     const create = markExpectedToolError(await callTool("create_macos_vm", args));
     assert.strictEqual(create?.isError, true, "missing image unexpectedly cloned during create");
     const diagnostic = String(create.content?.[0]?.text || "");
-    assert.ok(diagnostic.trim().length > 0, "missing image create: missing diagnostic text");
-    assert.doesNotMatch(diagnostic, /Unknown tool:|Unexpected error:/i, "missing image create: unexpected dispatch or internal error");
-    // Creation clones the image before publishing owner state; failure must leave no device to start.
-    assertMissingTargetDiagnostic("status", await callTool("status", { detail: true, deviceId }), { deviceId });
+    let code = "";
+    try { code = JSON.parse(diagnostic).error || ""; } catch { /* Native provider refusals can be plain text. */ }
+    assert.ok(code === "macos-tart-clone-failed"
+        || /^macOS VM backend missing prerequisites: .+/.test(diagnostic)
+        || /(?:missing-source.*(?:does not exist|not found|no such)|(?:does not exist|not found|no such).*missing-source)/i.test(diagnostic),
+    "missing image create must report its provider rejection");
+    // A failed create has no public fixture ID. Verify no definition was published instead of guessing one.
+    assert.deepStrictEqual(await inventory(), before, "missing image create published or replaced a device");
 }
 
 const expectedBackends = [
@@ -172,7 +180,8 @@ function brokerEnumSample(toolName, route, facetKey, facetValue, index) {
         // Every enum probe remains a broker plan, never resource creation.
         for (const key of ["avdName", "systemImage", "deviceType", "runtime", "udid", "image", "provider"]) delete args[key];
         args.name = `Level 2 enum ${facetKey} ${facetValue}`;
-        args.deviceId = `level2-enum-${facetKey}-${facetValue}-${index}`;
+        if (["windows-vm", "linux-vm", "macos-vm"].includes(CREATE_TOOL_BACKENDS[toolName])) delete args.deviceId;
+        else args.deviceId = `level2-enum-${facetKey}-${facetValue}-${index}`;
         args.dryRun = true;
         const backend = CREATE_TOOL_BACKENDS[toolName];
         if (facetKey === "provider") args.provider = facetValue;
@@ -785,7 +794,7 @@ export async function runBrokerE2E(options: any = {}) {
             const fakeAndroid = "level2-broker-e2e-public-android";
             const fakeWindows = "level2-broker-e2e-public-windows";
             const createPlan = parseToolResult(await callTool("create_windows_vm",
-                missingWindowsImageProbe(publicRoute, fakeWindows)), { expectedError: true });
+                missingWindowsImageProbe(publicRoute)), { expectedError: true });
             assert.strictEqual(createPlan.ok, false, JSON.stringify(createPlan));
             assert.strictEqual(createPlan.error, "hyper-v-base-image-not-prepared", JSON.stringify(createPlan));
             assert.strictEqual(createPlan.routedBy, "device-lifecycle-broker", JSON.stringify(createPlan));
@@ -925,15 +934,14 @@ export async function runBrokerE2E(options: any = {}) {
                     assertFailureDiagnostic(tool, parseToolResult(result, { expectedError: true }), expectedPublicDeviceRoutedBy(tool, args));
                 } else assertMissingTargetDiagnostic(tool, result, args);
             }
-            await probeMissingMacosImage(callTool, "level2-public-missing-base-image");
+            await probeMissingMacosImage(callTool);
             const directMacosImageDiagnostics = scriptedToolCases([
-                ["create_macos_vm", { name: "Level 2 public missing clone", sourceDeviceId: "level2-public-missing-source" }],
+                ["create_macos_vm", { implicitBroker: false, name: "Level 2 public missing clone", sourceDeviceId: "level2-public-missing-source" }],
             ]);
             for (const [tool, args] of directMacosImageDiagnostics) {
                 const diagnostic = markExpectedToolError(await callTool(tool, { detail: true, ...args }));
                 assert.strictEqual(diagnostic?.isError, true, `${tool} unexpectedly succeeded: ${diagnostic?.content?.[0]?.text || ""}`);
-                assert.ok(String(diagnostic.content?.[0]?.text || "").length > 0, `${tool}: missing diagnostic text`);
-                assert.ok(!String(diagnostic.content?.[0]?.text || "").includes("omit backend"), `${tool}: selector rejection did not reach provider diagnostics`);
+                assert.strictEqual(String(diagnostic.content?.[0]?.text || ""), "Unknown source macOS device: level2-public-missing-source", `${tool}: clone must reach exact missing-source refusal`);
             }
             steps.push({ name: "public macOS image and snapshot diagnostics", status: "PASS", detail: `tools=${publicMacosDiagnostics.length + directMacosImageDiagnostics.length}` });
         } catch (error) {
