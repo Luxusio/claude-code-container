@@ -16,8 +16,12 @@ protected Main user paths, bytes, status and stage. This is the historical
 19-group snapshot; the later clean-boundary integration reached **16/24**.
 The current native-result audit reopens R04/R05/R06 and adds the original-scope
 shared-provider R21. At discovery the subtotal was13/25. After qualified
-local Source integration, current accounting is **17/25 groups completed, eight
-remaining** in the [WBS](GUIDE__architecture-work-breakdown.md).
+local Source integration, that checkpoint reached **17/25 groups completed, eight
+remaining**. The [current owning-body audit](AUDIT__architecture-current-boundaries.md)
+then confirmed additional original-scope Source seams and reopens R03/R06: current
+accounting is **15/25 groups completed, ten remaining** in the
+[WBS](GUIDE__architecture-work-breakdown.md). Historical bounded qualifications
+remain valid; the current audit is not exhaustive Source or native acceptance.
 
 That historical snapshot is an unweighted subtotal of confirmed structural
 groups, not a certified exhaustive source denominator or full Goal completion. It adds no operation IDs
