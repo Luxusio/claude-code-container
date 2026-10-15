@@ -210,7 +210,7 @@ function readKnownPriorAutomaticManifest(profileRoot: string, manifestPath: stri
 }
 
 async function isKnownPriorAutomaticImage(
-    profile: "windows-server" | "ubuntu-lts",
+    profile: HyperVImageProfile,
     profileRoot: string,
     deadlineAt: number,
     now: () => number,
