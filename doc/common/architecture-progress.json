@@ -2385,7 +2385,7 @@
       "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
       "title": "브로커 provider 수명주기 결과",
       "workStatus": "partial",
-      "remainingWork": "기존 direct 전환을 유지하고 broker Android/Apple 및 direct/broker Sandbox 의미 관측·native receipt 변환을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 추가 Source 잔여 CB-07: 공유 macOS observation domain이 실제 spawn/stop에 쓰이는 Tart/VZ/UTM argv를 구성한다. provider 선택·claim은 inward에 두고 실제 recipe/public plan materialization을 기존 native adapter로 옮겨 검증한다.",
+      "remainingWork": "기존 direct 전환을 유지하고 broker Android/Apple 및 direct/broker Sandbox 의미 관측·native receipt 변환을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. CB-07 macOS 선택·native recipe/public plan 경계는 f57b0923에서 독립 Code/Security, 실제 portable 산출물·공개 경로·패키지 QA 후 로컬 통합했다. 아래 currentSemanticControlProcessOwnerQualification에 새 실행·재사용·보존한 실패를 구분했다. 실제 Windows/macOS 및 원래 전수 범위·reliability·formal 조건은 여전히 미완료다.",
       "completionCriteria": "Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects with outward native framing and response presentation. Actual independent Code/Security/Docs and QA425 across17 whole files with zero skips passed; genuine1330 build artifacts qualified from unchanged executable Source/output bytes, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed. Protected42 pins/97 user paths delivered; current f5a0 Source pins qualified. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -2397,16 +2397,32 @@
           "packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.ts",
           "packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.ts",
           "packages/device-lab/src/device-lab/application/lifecycle/windows-sandbox-lifecycle.ts",
-          "packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs",
-          "packages/device-lab/providers/domain/device-observation.mjs",
-          "packages/device-lab/providers/backends/macos-vm.mjs"
+          "packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs"
         ],
         "nativeConsumers": [
           "packages/device-lab/providers/backends/android.mjs",
           "packages/device-lab/providers/backends/android-device.mjs",
           "packages/device-lab/providers/backends/ios-simulator.mjs",
           "packages/device-lab/providers/backends/macos-vm.mjs"
-        ]
+        ],
+        "historicalRemainingPathsBeforeControlProcessOwnerQualification": [
+          "packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/windows-sandbox-lifecycle.ts",
+          "packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs",
+          "packages/device-lab/providers/domain/device-observation.mjs",
+          "packages/device-lab/providers/backends/macos-vm.mjs"
+        ],
+        "owningPaths": [
+          "packages/device-lab/providers/domain/device-observation.mjs",
+          "packages/device-lab/providers/application/device-observation.mjs",
+          "packages/device-lab/providers/ports/device-observation.d.mts",
+          "packages/device-lab/providers/application/device-observation.d.mts",
+          "packages/device-lab/providers/backends/macos-vm.mjs",
+          "packages/device-lab/providers/adapters/macos-observation-plan.mjs"
+        ],
+        "qualifiedSourceReferenceCommit": "f57b092367ead801bffd02bd233082368b91feaf"
       },
       "currentSourceAudit": {
         "sourceCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
@@ -2423,6 +2439,15 @@
       },
       "historicalQualificationTasks": [
         "TASK__windows-native-termination-observation-budget"
+      ],
+      "currentBoundaryTask": "TASK__architecture-control-process-owner-boundaries-20261016",
+      "currentControlProcessOwnerQualification": "confirmedStructuralScopeAudit.currentSemanticControlProcessOwnerQualification",
+      "qualifiedContributions": [
+        {
+          "acceptedIntegrationCommit": "f57b092367ead801bffd02bd233082368b91feaf",
+          "taskId": "TASK__architecture-control-process-owner-boundaries-20261016",
+          "qualification": "Actual independent Code PASS, Security PASS with sole test-only qualified carry, affected portable emitted/public/package QA PASS and local Source delivery. No native, whole-group or formal completion credit."
+        }
       ]
     },
     {
@@ -2684,20 +2709,19 @@
       "coveredOperationIds": [],
       "title": "Desktop 제어·파일 전송",
       "workStatus": "partial",
-      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다. General Hyper-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음. 별도 mount audit·전수 범위·native·reliability 조건도 남는다. 추가 Source 잔여 CB-06: original M08 Android control/transfer/orientation의 status/stdout/stderr 판정과 native key/rotation 표현을 두 실제 backend에서 outward 정규화한다. double-tap·rotation 순서, stage commit/disposal와 public 결과는 보존해 검증한다. CB-04 Hyper-V readiness native diagnostics 정리는0211995a에서 독립 리뷰·portable QA·로컬 통합했다. 이 기여는 CB-06 Android control 및 기존 Windows/native 조건을 완료하지 않는다.",
+      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다. General Hyper-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음. 별도 mount audit·전수 범위·native·reliability 조건도 남는다. CB-06 Android control/transfer/orientation 경계는 f57b0923에서 의미 관측·의도로 전환하고 두 native backend가 판정·매핑·응답을 구성하도록 로컬 통합했다. 독립 리뷰와 실제 portable 산출물·공개 경로·패키지 QA를 확인했으며 상세 근거는 currentSemanticControlProcessOwnerQualification에 있다. CB-04 Hyper-V readiness native diagnostics 정리는0211995a에서 독립 리뷰·portable QA·로컬 통합했다. 기존 Windows/native 조건과 전체 범위·reliability·formal 조건은 여전히 미완료다.",
       "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다.",
       "confirmedAtCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
       "sourceTrace": {
         "owningPaths": [
           "packages/device-lab/providers/application/desktop-control-transfer.mjs",
-          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts"
-        ],
-        "remainingPaths": [
+          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts",
           "packages/device-lab/providers/application/android-control-transfer.mjs",
           "packages/device-lab/providers/domain/android-control-transfer.mjs",
           "packages/device-lab/providers/ports/android-control-transfer.d.mts",
           "packages/device-lab/providers/backends/android.mjs",
-          "packages/device-lab/providers/backends/android-device.mjs"
+          "packages/device-lab/providers/backends/android-device.mjs",
+          "packages/device-lab/providers/adapters/android-control-transfer.mjs"
         ],
         "nativeConsumers": [
           "packages/device-lab/providers/backends/windows-vm.mjs",
@@ -2712,7 +2736,14 @@
           "packages/device-lab/providers/backends/android.mjs",
           "packages/device-lab/providers/backends/android-device.mjs"
         ],
-        "qualifiedSourceReferenceCommit": "0211995a168faa2132b2bab42707659578d82ff0"
+        "qualifiedSourceReferenceCommit": "f57b092367ead801bffd02bd233082368b91feaf",
+        "historicalRemainingPathsBeforeControlProcessOwnerQualification": [
+          "packages/device-lab/providers/application/android-control-transfer.mjs",
+          "packages/device-lab/providers/domain/android-control-transfer.mjs",
+          "packages/device-lab/providers/ports/android-control-transfer.d.mts",
+          "packages/device-lab/providers/backends/android.mjs",
+          "packages/device-lab/providers/backends/android-device.mjs"
+        ]
       },
       "status": "Current source9b12312 integrated and independently Code/Security reviewed; Linux QA948PASS in23 whole files, ordinary shipping and four actual source/emitted/npm/Unix public behavior forms passed. Required Windows qualification remains BLOCKED_ENV. No structural group completion credit or formal close; prior accepted contributions and historical failures retained.",
       "taskId": "TASK__architecture-desktop-native-boundaries",
@@ -2740,6 +2771,15 @@
         "TASK__architecture-hyperv-create-provision-observations-20261015",
         "TASK__architecture-container-mount-observations-20261015",
         "TASK__architecture-native-results-and-workspace-repair-20261015"
+      ],
+      "currentBoundaryTask": "TASK__architecture-control-process-owner-boundaries-20261016",
+      "currentControlProcessOwnerQualification": "confirmedStructuralScopeAudit.currentSemanticControlProcessOwnerQualification",
+      "qualifiedContributions": [
+        {
+          "acceptedIntegrationCommit": "f57b092367ead801bffd02bd233082368b91feaf",
+          "taskId": "TASK__architecture-control-process-owner-boundaries-20261016",
+          "qualification": "Actual independent Code PASS, Security PASS with sole test-only qualified carry, affected portable emitted/public/package QA PASS and local Source delivery. No native, whole-group or formal completion credit."
+        }
       ]
     },
     {
@@ -5419,6 +5459,30 @@
       "sourceUniverseCertified": false,
       "knownCeiling": "Native Windows/macOS and real providers were not executed here. Original whole-Source/caller/export closure, reliability, native and formal gates remain unverified; CB-06/07/08/09 remain Source work. No whole-Goal completion.",
       "formalClose": "Not claimed. Automatic ordered review/QA attestation remains a separate gate; direct finals are non-attesting when receipts are absent."
+    },
+    "currentSemanticControlProcessOwnerQualification": {
+      "taskId": "TASK__architecture-control-process-owner-boundaries-20261016",
+      "runId": "01a14069-3b19-79be-b52d-11d4af30b914",
+      "sourceReferenceCommit": "f57b092367ead801bffd02bd233082368b91feaf",
+      "scope": "CB-06 Android semantic control/transfer (R19), CB-07 macOS selection/native recipes (R18), CB-08 session native decoding (original M10), CB-09 invalid owner top-level refusal. No additional group or operation credit.",
+      "codeReview": "Actual independent final Code PASS, DEEP with both discovery focuses and bounded test-only cycle2; final Source19/Test12/REQ inspected, zero findings.",
+      "securityReview": "Actual independent Security PASS on unchanged Source19/r1 tests; qualified carry for the sole later finite native-import test typing correction, same runtime file/mocks/assertions and no authority/evidence change. Not a new Security review of identical final Test bytes.",
+      "actualQa": "Actual independent qa-cli PASS after review. Owning eight files475 cases qualified across preserved runs; actual packaged Node/strict TypeScript consumers2 PASS; fresh sixteen public whole files650 PASS/2 existing Windows-only skips. Broker109 qualifies from106 earlier passes plus exact3-case retry;106 filtered, no fresh whole109 replay claim.",
+      "strictAndProduction": "Fresh genuine Device Lab/Root TypeScript emission, MCP bundle, strict architecture and five strict emitted consumers with skipLibCheck:false, scoped typed Source ESLint, version injection and ordinary assembly PASS. Authenticated unchanged Hyper-V44 outputs and resume bundle/eight inputs retained as carry.",
+      "publicRuntimeCompatibility": "Two exact legacy helper exports resolve outward. Dedicated plain Node verifies17 helper exports/results and strict TypeScript consumes actual package root; functional proof passed without per-child resolution tracing because those children reset audit environment.",
+      "shipping": "Fresh ordinary offline npm archive and materialized Unix payload CLI help/version, public exports/native assets and bundled MCP initialization/list/ping/graceful EOF PASS.",
+      "privateSetupAndRetainedFailures": "Preserved initial inactive Main Vitest-cache closure refusal, compiled MCP-asset/Source-literal child failures, private require.resolve setup failure and intermediate broker bootstrap failures. Corrections affect only private exact cache classification,18 authenticated native MCP assets and three exact test child URLs/tsx bootstraps bound to genuine emitted JavaScript; no product/test/dependency/guard bytes changed during QA.",
+      "resolutionAudit": "35,708 Node resolutions,2,476 Vitest resolutions and9,615 loads/transforms across595 physical targets; zero hash mismatch/Main targets/production TypeScript in audited routes. Five exact child redirects for three declared Source-shaped URLs. Bare-package functional proof is separate, not an all-child trace claim.",
+      "processAndNetwork": "All991 observed process identities and process groups gone, zero live/zombie survivors. One npm registry lookup and three earlier tsx socket attempts denied before dispatch; no external dispatch.",
+      "preservation": "Independent final authentication retained1752 Main/private inputs,1737 tracked metadata records,1712 unowned tracked bytes,81 original untracked inputs/link targets, original105-path binary diff, semantic index/HEAD and two PR merge ancestors. Main7598 dependency byte/mode proof is before-check carry; private dependencies reauthenticated afterward. Source commit separately guarded exact30 paths, index/diff and tracked metadata.",
+      "evidencePath": "/tmp/ccc-control-process-owner-01a14069/qa1/evidence/independent-qa-final-evidence.json",
+      "evidenceSha256": "352e6432feb42b090165de8eb074dafa23f8b4c030312d405cf06abd98b0589f",
+      "deliveryEvidence": "/tmp/ccc-control-process-owner-01a14069/source-delivery.json",
+      "knownCeiling": "Native Windows/macOS/real providers, exhaustive Source/caller/export closure, reliability and formal acceptance remain unverified. The existing Hyper-V monotonic-clock reconciliation and finite composition-owner decisions remain original obligations. No whole-Goal completion.",
+      "formalClose": "Not claimed. Required automatic ordered review/QA attestation is separate; direct unreceipted finals are NON-ATTESTING. Canonical task state owns final verification/park disposition.",
+      "structuralGroupCredit": 0,
+      "operationCredit": 0,
+      "sourceUniverseCertified": false
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {

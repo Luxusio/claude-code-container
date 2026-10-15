@@ -4,7 +4,7 @@ Checked: 2026-10-15. Source reference: `b047dd3ca691a879135068e9148fcd3b14d4d41b
 
 The [original ADR](ADR__ccc-target-architecture.md), [contracts](SPEC__ccc-architecture-contracts.md) and [migration packets](PLAN__ccc-architecture-migration.md) still define completion. The [historical inventory](architecture-operation-inventory.json) remains at c284; the [progress overlay](architecture-progress.json) preserves later qualified contributions. No operation IDs, acceptance gates or target architecture were added by this audit.
 
-Latest qualified Source: `0211995a168faa2132b2bab42707659578d82ff0`. CB-04/05 now qualify R06/R03 after actual independent review, affected portable QA and local delivery: **17/25 complete (68%), eight remaining: five partial and three in progress**. The audit-time findings and hashes below remain historical witnesses. See the subsequent semantic lifecycle/Workspace section for current proof and limits.
+Latest qualified Source: `f57b092367ead801bffd02bd233082368b91feaf`. CB-06/07/08/09 now have independent review, affected portable emitted/public/package QA and local Source delivery. Earlier CB-04/05 qualification of R06/R03 remains: **17/25 complete (68%), eight remaining: five partial and three in progress**. R18/R19 retain their native/global conditions and receive no additional group credit. The original finding table, hashes and earlier qualification ceilings below are historical revision-bound witnesses; see the latest control/process section for current proof and limits.
 
 ## Audit-time disposition
 
@@ -151,3 +151,30 @@ R03/R06 return to completed within the confirmed structural subtotal: **17/25 (6
 ### Known ceiling
 
 Native Windows/macOS and real providers were not executed here. Original whole-Source/caller/export closure, reliability, native and formal gates remain unverified; CB-06/07/08/09 remain Source work. No whole-Goal completion. Automatic ordered review/QA attestation remains separate; formal close is not claimed by this document.
+
+## Semantic control, provider recipes and process qualification (2026-10-16)
+
+Task: `TASK__architecture-control-process-owner-boundaries-20261016`; Source commit: `f57b092367ead801bffd02bd233082368b91feaf`. This qualifies the four bounded Source findings below; original global/native/reliability/formal gates remain.
+
+| Finding | Qualified ownership | Actual affected proof |
+| --- | --- | --- |
+| CB-06 | Android core retains admission, ordering, staging, conditional commit and disposal; native bindings decode status, map intentions and render public evidence. | 36 owning cases; public Android/broker family203PASS/2 existing Windows-only skips. |
+| CB-07 | macOS selection remains inward; finite outward materialization supplies native recipes and the existing public plan. | 26 owning and26 public cases; both exact legacy package routes consumed by actual Node/strict TypeScript. |
+| CB-08 | Existing session facade owns Windows stdout and native errno decoding; application/domain preserve opaque token and active/stale/unknown policy. | 249 owning cases qualified across runs,421 public session/claim/cleanup/clipboard cases; actual owned Linux zombie. Source-labeled child cases here execute authenticated emitted JS. |
+| CB-09 | Invalid top-level owner data returns existing semantic400 refusal before identity, registration or auth; existing route/renderer and other mappings remain. | 55 application cases and109 broker cases across runs:106 retained passes plus3 fresh recovered cases,106 filtered. |
+
+Independent final DEEP Code review and Security review passed. Security is qualified carry for the sole later test-import typing correction; no Source/authority change followed its review. QA passed eight owning files475 cases across preserved runs, two actual plain Node/strict TypeScript package cases and sixteen fresh public whole files650PASS/2existing native Windows skips. These are not a fresh single all-green25-file invocation; original failures and the exact broker retry remain recorded. Development477 was not added as fresh QA.
+
+Fresh genuine Device Lab/Root emission, MCP bundle, strict architecture and five emitted consumers (`skipLibCheck:false`), scoped typed Source lint, version injection and assembly passed. Unchanged Hyper-V44 outputs and resume bundle/eight inputs are authenticated carry. Fresh ordinary offline npm archive and Unix payload CLI/public-export/assets/bundled-MCP checks passed.
+
+Private setup corrected an inactive Main-only Vitest cache classification,18 pinned native MCP assets and three exact Source-shaped child URLs/tsx bootstraps bound to genuine emitted JS. Product, test, dependency and guard bytes remained unchanged during QA. Initial fixture failures and three denied tsx socket attempts remain retained. One optional npm registry lookup was denied before dispatch.
+
+The audited routes record35,708 Node resolutions,2,476 Vitest resolutions and9,615 loads/transforms over595 physical targets, with zero hash mismatch/Main resolution/production TypeScript. Five redirects bind the three declared child URLs. Dedicated package children passed functional Node/TypeScript checks but cleared audit environment; no per-child or all-child resolution trace is claimed. All991 observed process identities and groups were gone, with no live/zombie survivors.
+
+Independent final authentication preserved1752 inputs,1737 tracked metadata records,1712 unowned tracked byte records,81 original untracked inputs/link targets, the original105-path binary diff, index/HEAD and both PR merge ancestors. Main7598 dependency proof is before-check carry; private dependencies were reauthenticated afterward. The guarded Source commit contains only30 owned Source/test/REQ paths.
+
+Evidence: `/tmp/ccc-control-process-owner-01a14069/qa1/evidence/independent-qa-final-evidence.json` (SHA-256 `352e6432feb42b090165de8eb074dafa23f8b4c030312d405cf06abd98b0589f`) and `/tmp/ccc-control-process-owner-01a14069/source-delivery.json`. Source at `f57b092367ead801bffd02bd233082368b91feaf` contributes to existing R18/R19 and original M10/owner scope; **17/25 (68%), eight remaining** is unchanged. No operation or gate denominator changed.
+
+### Known ceiling
+
+Native Windows/macOS and real providers were not executed. Whole Source/caller/export closure, reliability and formal acceptance remain unverified. The existing Hyper-V monotonic clock-domain reconciliation and finite capability/lock-owner/CLI composition decisions remain original work. Historical native owner/access and driver-terminal UNKNOWN records were not retried or resolved here. Automatic ordered review/QA attestation is separate, and formal close or whole-Goal completion is not claimed.
