@@ -118,6 +118,74 @@ describe("Hyper-V inward create/start readiness policy", () => {
         expect(f.mediaExists()).toBe(true);
     });
 
+    it.each(["hyper-v-guest-first-logon-incomplete", "hyper-v-guest-provisioning-not-scrubbed"] as const)(
+        "preserves %s when readiness expires between retry admission and the next probe",
+        async reason => {
+            const f = readinessFixture();
+            let now = 17.25, advanceAfterRead = false;
+            f.ports.probe.mockResolvedValue({ kind: "valid", probe: {
+                computerName: "CCC-WIN", addresses: ["172.29.0.10"],
+                firstLogonCompleted: reason === "hyper-v-guest-first-logon-incomplete" ? "other" : f.request.identity.expectedNotes,
+                provisioningSecretsPresent: reason === "hyper-v-guest-provisioning-not-scrubbed",
+            } });
+            const sleep = vi.fn(async (milliseconds: number) => {
+                now += milliseconds - 0.5;
+                advanceAfterRead = true;
+            });
+            const ports = {
+                ...f.ports, sleep,
+                now: () => {
+                    const observedAt = now;
+                    // The next loop is admitted before expiry; its budget read sees expiry.
+                    if (advanceAfterRead) { now += 0.5; advanceAfterRead = false; }
+                    return observedAt;
+                },
+            } satisfies WindowsReadinessPorts;
+
+            expect(await waitHyperVWindowsGuestReadiness({ ...f.request, timeoutMilliseconds: 1000 }, ports)).toMatchObject({
+                ok: false, error: "hyper-v-guest-ready-timeout", reason, attempts: 2,
+                scrubConfirmed: false, mediaDetached: false,
+            });
+            expect(f.ports.probe).toHaveBeenCalledExactlyOnceWith(f.request.identity, 1000);
+            expect(sleep).toHaveBeenCalledExactlyOnceWith(1000);
+            expect(now).toBe(1017.25);
+            expect(f.ports.detachMedia).not.toHaveBeenCalled();
+            expect(f.ports.machines).not.toHaveBeenCalled();
+            expect(f.ports.media).not.toHaveBeenCalled();
+            expect(f.ports.removeMedia).not.toHaveBeenCalled();
+            expect(f.attached()).toBe(true);
+            expect(f.mediaExists()).toBe(true);
+        },
+    );
+
+    it("stops on a semantic detach deadline without inspecting or replaying native media work", async () => {
+        const f = readinessFixture();
+        const deadlineError = new Error("local dispatch refused");
+        let now = 17.25;
+        const probe = f.ports.probe.getMockImplementation()!;
+        f.ports.probe.mockImplementation(async () => { now += 4999.5; return probe(); });
+        f.ports.detachMedia.mockRejectedValue(deadlineError);
+        const sleep = vi.fn(async (milliseconds: number) => { now += milliseconds; });
+        const ports = {
+            ...f.ports, now: () => now, sleep,
+            errorInfo: (error: unknown) => error === deadlineError
+                ? { code: "hyper-v-operation-deadline-exceeded", category: "deadline" } : null,
+        } satisfies WindowsReadinessPorts;
+
+        expect(await waitHyperVWindowsGuestReadiness(f.request, ports)).toMatchObject({
+            ok: false, error: "hyper-v-guest-ready-timeout", attempts: 1, scrubConfirmed: true, mediaDetached: false,
+        });
+        expect(f.ports.probe).toHaveBeenCalledExactlyOnceWith(f.request.identity, 5000);
+        expect(f.ports.detachMedia).toHaveBeenCalledExactlyOnceWith(f.request.identity, f.request.provisioningMediaPath, 0.5);
+        expect(f.ports.machines).not.toHaveBeenCalled();
+        expect(f.ports.media).not.toHaveBeenCalled();
+        expect(f.ports.removeMedia).not.toHaveBeenCalled();
+        expect(sleep).not.toHaveBeenCalled();
+        expect(now).toBe(5016.75);
+        expect(f.attached()).toBe(true);
+        expect(f.mediaExists()).toBe(true);
+    });
+
     it("does not claim an uncertain detach succeeded when native observation names a successor", async () => {
         const f = readinessFixture();
         f.ports.detachMedia.mockRejectedValue(new Error("detach result uncertain"));

@@ -182,6 +182,41 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
         expect(run).not.toHaveBeenCalled();
     });
 
+    it.each([
+        { output: probe("other"), reason: "hyper-v-guest-first-logon-incomplete", wallJump: -86_400_000 },
+        { output: probe(marker, true), reason: "hyper-v-guest-provisioning-not-scrubbed", wallJump: 86_400_000 },
+    ])("preserves $reason when an early wake leaves no integral native allowance", async ({ output, reason, wallJump }) => {
+        let monotonicNow = 17.25, wallNow = Date.now(), sleepCount = 0;
+        const wallClock = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const sleep = vi.fn(async (milliseconds: number) => {
+            sleepCount += 1;
+            monotonicNow += milliseconds - (sleepCount === 1 ? 0.5 : 0);
+        });
+        const run = vi.fn((command: { input?: string }, _options: { timeoutMs: number }) => {
+            const request = requestOf(command);
+            monotonicNow += 0.25;
+            wallNow += wallJump;
+            return envelope(request, [{ action: "job", output }]);
+        });
+        const removeProvisioningMedia = vi.fn();
+        try {
+            const result = await waitForDeviceLabHyperVGuestReadiness({
+                executable: "powershell.exe", run, identity, provisioningMediaPath: mediaPath,
+                expectedNetworkAddress: "172.29.0.10", timeoutMilliseconds: 1000,
+                now: () => monotonicNow, sleep, removeProvisioningMedia,
+            });
+
+            expect(result).toMatchObject({ ok: false, error: "hyper-v-guest-ready-timeout", reason,
+                attempts: 2, scrubConfirmed: false, mediaDetached: false });
+            expect(run).toHaveBeenCalledTimes(1);
+            expect(requestOf(run.mock.calls[0][0])).toMatchObject({ operation: "Invoke-Guest", action: "job", ...identity });
+            expect(run.mock.calls[0][1].timeoutMs).toBe(1000);
+            expect(sleep).toHaveBeenCalledExactlyOnceWith(999.75);
+            expect(monotonicNow).toBe(1016.75);
+            expect(removeProvisioningMedia).not.toHaveBeenCalled();
+        } finally { wallClock.mockRestore(); }
+    });
+
     it("never detaches media when the incarnation marker or secrets gate fails", async () => {
         for (const [output, expectedReason] of [
             [probe("other"), "hyper-v-guest-first-logon-incomplete"],

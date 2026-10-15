@@ -123,11 +123,12 @@ export function createSharedMutationLock(ports) {
     }
     /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs */
     function stale(file,lock,staleMs) { const facts = staleFacts(file,lock,staleMs,false); if (!facts.probe) return facts.stale; const status = observation(facts.probe); return status === 'mismatch' || status === 'exited'; }
-    /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs @param {boolean} [allowQueue] */
-    async function staleAsync(file,lock,staleMs,allowQueue = true) {
+    /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs @param {boolean} [budgeted] */
+    async function staleAsync(file,lock,staleMs,budgeted = false) {
         const facts = staleFacts(file,lock,staleMs,true);
         if (facts.legacyProbe) {
-            if (!allowQueue && active >= 4) return false;
+            // A budgeted claim's wall timestamp cannot prove a live identity-less owner was replaced.
+            if (budgeted) return false;
             const current = await slot(() => ports.identityAsync(facts.legacyProbe.pid));
             if (!current) return !ports.alive(facts.legacyProbe.pid);
             // A process born after publication cannot own this claim, even when
@@ -136,7 +137,7 @@ export function createSharedMutationLock(ports) {
             return times.kind === 'known' && times.processStartedAtMs > times.claimCreatedAtMs + 1000;
         }
         if (!facts.probe) return facts.stale;
-        const status = await observationAsync(facts.probe,allowQueue);
+        const status = await observationAsync(facts.probe,!budgeted);
         return status === 'mismatch' || status === 'exited';
     }
     /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockOptions} options */
@@ -230,7 +231,7 @@ export function createSharedMutationLock(ports) {
             if (observed.kind === 'missing' || observed.kind === 'value' && observed.value.token === token) continue;
             if (observed.kind === 'unavailable') return false;
             const lock = observed.kind === 'value' ? observed.value : null;
-            if (!(wait ? await waitForObservation(wait,() => staleAsync(archive,lock,staleMs,false)) : await staleAsync(archive,lock,staleMs))) return false;
+            if (!(wait ? await waitForObservation(wait,() => staleAsync(archive,lock,staleMs,true)) : await staleAsync(archive,lock,staleMs))) return false;
             if (wait) {
                 ports.check(fence); wait.check();
                 const current = readObservation(archive);
@@ -341,7 +342,7 @@ export function createSharedMutationLock(ports) {
                     if (ports.variant === 'typescript') wait.check();
                     const observed = readObservation(file), staleMs = options.staleMs ?? 30000;
                     const existing = observed.kind === 'value' ? observed.value : null;
-                    if (existing && (options.waitBudget ? await waitForObservation(wait,() => staleAsync(file,existing,staleMs,false)) : await staleAsync(file,existing,staleMs))) {
+                    if (existing && (options.waitBudget ? await waitForObservation(wait,() => staleAsync(file,existing,staleMs,true)) : await staleAsync(file,existing,staleMs))) {
                         if (options.waitBudget) {
                             check(); wait.check();
                             if (readLock(file)?.token !== existing.token) continue;
@@ -349,7 +350,7 @@ export function createSharedMutationLock(ports) {
                         }
                         if (ports.moveQualified(file,existing.token,'stale',fence)) continue;
                     }
-                    if (observed.kind === 'malformed' && (options.waitBudget ? await waitForObservation(wait,() => staleAsync(file,null,staleMs,false)) : await staleAsync(file,null,staleMs))) {
+                    if (observed.kind === 'malformed' && (options.waitBudget ? await waitForObservation(wait,() => staleAsync(file,null,staleMs,true)) : await staleAsync(file,null,staleMs))) {
                         if (options.waitBudget) {
                             check(); wait.check();
                             if (readObservation(file).kind !== 'malformed') continue;

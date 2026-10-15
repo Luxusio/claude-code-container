@@ -153,7 +153,7 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
 
     it.each([
         ["sync", "cold"], ["async", "cold"], ["sync", "warm"], ["async", "warm"],
-    ] as const)("bounds contended %s acquisition with a %s budget while preserving async legacy-owner verification", async (mode, warmth) => {
+    ] as const)("bounds contended %s acquisition with a %s budget while retaining a live identity-less Windows owner", async (mode, warmth) => {
         const f = fixture(variant);
         if (warmth === "warm") await f.app.withLockAsync(f.file, f.record);
         vi.mocked(f.ports.identitySync).mockClear();
@@ -163,26 +163,94 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
         vi.mocked(f.ports.identityAsync).mockImplementation(async pid => pid === legacy.pid ? current : identity);
         f.seed(legacy);
         f.ports.openClaim = vi.fn(f.ports.openClaim);
+        f.ports.moveQualified = vi.fn(f.ports.moveQualified);
+        f.ports.moveMalformed = vi.fn(f.ports.moveMalformed);
+        f.ports.removeArchive = vi.fn(f.ports.removeArchive);
         const deadline = f.ports.now() + 30;
         const options = { waitMs: 30, waitBudget: { remaining: () => deadline - f.ports.now() } };
-        const operation = vi.fn(() => "recovered asynchronously");
+        const operation = vi.fn(() => "unexpected admission");
         if (mode === "sync") {
             expect(() => f.app.withLock(f.file, operation, options)).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
-            expect(operation).not.toHaveBeenCalled();
-            expect(f.record()).toEqual(legacy);
             expect(f.ports.identityAsync).not.toHaveBeenCalled();
             expect(f.ports.publicationTimes).not.toHaveBeenCalled();
         } else {
-            await expect(f.app.withLockAsync(f.file, operation, options)).resolves.toBe("recovered asynchronously");
-            expect(operation).toHaveBeenCalledOnce();
-            expect(f.ports.readRaw(f.file)).toEqual({ kind: "missing" });
-            expect(f.ports.now()).toBeLessThan(deadline);
-            expect(f.ports.identityAsync).toHaveBeenCalledExactlyOnceWith(legacy.pid);
-            expect(f.ports.publicationTimes).toHaveBeenCalledWith(current, legacy.createdAt);
+            await expect(f.app.withLockAsync(f.file, operation, options)).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
         }
+        expect(operation).not.toHaveBeenCalled();
+        expect(f.record()).toEqual(legacy);
+        expect(f.ports.now()).toBe(deadline);
+        expect(f.ports.moveQualified).not.toHaveBeenCalled();
+        expect(f.ports.moveMalformed).not.toHaveBeenCalled();
+        expect(f.ports.removeArchive).not.toHaveBeenCalled();
         expect(f.ports.openClaim).toHaveBeenCalled();
         expect(f.ports.identitySync).not.toHaveBeenCalled();
         expect(f.ports.observe).not.toHaveBeenCalled();
+    });
+
+    it.each(["active", "archived"] as const)("retains a cold budgeted %s Windows owner after wall rollback despite a later apparent process birth", async location => {
+        const f = fixture(variant);
+        const initialWall = Date.UTC(2026, 9, 16, 12);
+        const processStartedAtMs = initialWall - 1000;
+        const ownerIdentity = { ...identity, startToken: `windows:${new Date(processStartedAtMs).toISOString()}` };
+        let wallNow = initialWall, monotonicNow = 17.25, ownerPath = f.file;
+        let releaseOwner!: () => void, ownerEntered!: () => void;
+        const ownerGate = new Promise<void>(resolve => { releaseOwner = resolve; });
+        const ownerReady = new Promise<void>(resolve => { ownerEntered = resolve; });
+        const pause = f.ports.pause;
+        f.ports.now = () => wallNow;
+        f.ports.monotonic = () => monotonicNow;
+        f.ports.timestamp = () => {
+            wallNow -= 60_000;
+            return new Date(wallNow).toISOString();
+        };
+        f.ports.mtime = () => wallNow - 5000;
+        f.ports.alive = () => true;
+        f.ports.pause = (milliseconds, signal) => {
+            if (signal) return pause(milliseconds, signal);
+            monotonicNow += milliseconds;
+            wallNow -= 86_400_000;
+            return Promise.resolve(undefined);
+        };
+        vi.mocked(f.ports.identityAsync).mockImplementation(async pid => pid === ownerIdentity.pid ? ownerIdentity : { ...identity, pid });
+        const owner = f.app.withLockAsync(f.file, async () => {
+            if (location === "archived") ownerPath = f.displace();
+            ownerEntered();
+            await ownerGate;
+            return "owner";
+        }, { waitMs: 1000, waitBudget: { remaining: () => 1000 } });
+        await ownerReady;
+        try {
+            const published = f.app.readLock(ownerPath)!;
+            expect(published).toMatchObject({ pid: ownerIdentity.pid, processIdentityStatus: "unavailable" });
+            expect(published).not.toHaveProperty("processIdentity");
+            expect(readLockPublicationTimes(ownerIdentity, published.createdAt)).toEqual({
+                kind: "known", processStartedAtMs, claimCreatedAtMs: initialWall - 60_000,
+            });
+            const contenderToken = "e".repeat(32);
+            f.ports.moveQualified = vi.fn(f.ports.moveQualified);
+            f.ports.moveMalformed = vi.fn(f.ports.moveMalformed);
+            f.ports.removeArchive = vi.fn(f.ports.removeArchive);
+            const contender = createSharedMutationLock({ ...f.ports, pid: () => 456, token: () => contenderToken });
+            const operation = vi.fn(() => "unexpected admission");
+            const deadline = monotonicNow + 47;
+            await expect(contender.withLockAsync(f.file, operation, {
+                waitMs: 1000, waitBudget: { remaining: () => deadline - monotonicNow },
+            })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+
+            expect(monotonicNow).toBe(deadline);
+            expect(wallNow).toBeLessThan(initialWall - 60_000);
+            expect(operation).not.toHaveBeenCalled();
+            expect(f.records.get(ownerPath)).toEqual({ kind: "value", value: published });
+            expect(f.ports.moveMalformed).not.toHaveBeenCalled();
+            expect(f.ports.removeArchive).not.toHaveBeenCalled();
+            if (location === "archived") {
+                expect(f.ports.moveQualified).toHaveBeenCalledExactlyOnceWith(f.file, contenderToken, "release", []);
+                expect(f.records.has(f.file)).toBe(false);
+            } else expect(f.ports.moveQualified).not.toHaveBeenCalled();
+        } finally {
+            releaseOwner();
+            await owner;
+        }
     });
 
     it.each(["success", "failure", "timeout"] as const)("cancels the concurrent owner-observation wait after %s without late reclamation", async outcome => {

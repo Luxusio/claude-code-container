@@ -48,7 +48,7 @@ export async function waitHyperVWindowsGuestReadiness(options: WindowsReadinessR
         return remaining;
     };
     let attempts = 0;
-    let reason = "powershell-direct-unavailable";
+    let reason: string | null = null;
     let scrubConfirmed = false;
     let mediaDetached = false;
     while (true) {
@@ -86,7 +86,7 @@ export async function waitHyperVWindowsGuestReadiness(options: WindowsReadinessR
                     mediaDetached = true;
                 }
                 catch (error) {
-                    if (error instanceof ReadinessRetry) throw error;
+                    if (error instanceof ReadinessRetry || ports.errorInfo(error)?.category === "deadline") throw error;
                     mediaDetached = await inspectDetached(ports, options.identity, options.provisioningMediaPath, deadline, now, remainingTimeout);
                     if (!mediaDetached) {
                         return {
@@ -115,10 +115,14 @@ export async function waitHyperVWindowsGuestReadiness(options: WindowsReadinessR
             };
         }
         catch (error) {
-            reason = error instanceof ReadinessRetry ? error.reason : windowsReadinessReason(ports.errorInfo(error));
-            if (error instanceof ReadinessRetry && error.reason === "hyper-v-guest-ready-deadline-exceeded")
+            const errorInfo = ports.errorInfo(error);
+            if (errorInfo?.category === "deadline"
+                || error instanceof ReadinessRetry && error.reason === "hyper-v-guest-ready-deadline-exceeded") {
+                reason ??= "hyper-v-guest-ready-deadline-exceeded";
                 break;
-            if (ports.errorInfo(error) !== null)
+            }
+            reason = error instanceof ReadinessRetry ? error.reason : windowsReadinessReason(errorInfo);
+            if (errorInfo !== null)
                 currentObservationFingerprint = `transport:${reason}`;
         }
         const observedAt = now();
@@ -141,7 +145,7 @@ export async function waitHyperVWindowsGuestReadiness(options: WindowsReadinessR
         if (remaining > 0)
             await sleep(Math.min(2000, remaining, noProgressRemaining));
     }
-    return { ok: false, error: "hyper-v-guest-ready-timeout", reason, attempts, scrubConfirmed, mediaDetached };
+    return { ok: false, error: "hyper-v-guest-ready-timeout", reason: reason ?? "powershell-direct-unavailable", attempts, scrubConfirmed, mediaDetached };
 }
 import type { VmCreationRequest, VmCreationEffect, VmCreationObservation } from '../../domain/lifecycle/hyper-v-create-start.js';
 import type { VmCreationPorts } from '../../ports/lifecycle/hyper-v-create-start.js';

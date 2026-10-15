@@ -1780,6 +1780,7 @@ describe("device-lab host broker lifecycle commands", () => {
             for (const scrubReason of ["hyper-v-guest-first-logon-incomplete", "hyper-v-guest-provisioning-not-scrubbed"] as const) {
                 guestReadyScrubFailure = scrubReason;
                 const stopsBefore = containmentStops().length;
+                expect(existsSync(provisioningMediaPath), "unsafe guest containment must apply even when the host ISO is absent").toBe(false);
                 const refused = await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 });
                 const refusedBody = await refused.json();
                 expect(JSON.stringify(refusedBody)).toContain(scrubReason);

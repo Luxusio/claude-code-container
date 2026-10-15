@@ -74,7 +74,7 @@ export function deviceLabWindowsReadinessPorts(options:Pick<Options,"executable"
   machines:async(identity,budget)=>{setBudget(budget);return clients().host.getVM(identity.selector);},
   media:async(identity,budget)=>{setBudget(budget);return clients().host.getVMDvdDrives(identity.selector);},
   removeMedia:async()=>{await options.removeProvisioningMedia();return undefined;},
-  errorInfo:error=>error instanceof HyperVWindowsError?{code:error.code,category:error.category}:null,
+  errorInfo:error=>error instanceof HyperVWindowsError?{code:error.code,category:error.category}:error instanceof HyperVOperationDeadlineError?{code:error.code,category:"deadline"}:null,
   now:options.now??Date.now,
   sleep:options.sleep??(milliseconds=>new Promise<void>(resolve=>setTimeout(resolve,milliseconds))),
  };
