@@ -2154,7 +2154,7 @@
       "coveredOperationIds": [],
       "title": "Desktop 제어·파일 전송",
       "workStatus": "partial",
-      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다. General Hyper-V 생성·prologue·프로비저닝·종료·bootstrap 및 컨테이너 생성 pure-wiring은 현재 후보 구현을 마쳤으며 통합 검증·독립 리뷰/QA가 남는다. 별도 mount audit·전수 범위·native·reliability 조건도 남는다.",
+      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다. General Hyper-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음. 별도 mount audit·전수 범위·native·reliability 조건도 남는다.",
       "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다.",
       "confirmedAtCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
       "sourceTrace": {
@@ -3411,7 +3411,7 @@
       "id": "broker-semantic-observation-integration-current",
       "taskId": "TASK__architecture-broker-semantic-finish-20261015",
       "coveredOperationIds": [],
-      "status": "Source9b12312: actual independent DEEP Code/Security and final docs review PASS; independent Linux23whole948PASS/0FAIL/0SKIP, genuine shipping/CLI0/0/1 and four public behavior forms PASS. Actual qa-cli overall BLOCKED_ENV solely for required Windows. Task blocked; WBS15/23 unchanged. No attestation, native-provider, full-source or whole-Goal completion claim. Additional power Sourcecabb56a2: actual independent reviews and local6whole435PASS/compiled170PASS plus shipping/CLI; required Windows BLOCKED_ENV. General lifecycle/container-native candidate follows in TASK__architecture-hyperv-create-provision-observations-20261015; independent review/QA pending, no new credit.",
+      "status": "Source9b12312: actual independent DEEP Code/Security and final docs review PASS; independent Linux23whole948PASS/0FAIL/0SKIP, genuine shipping/CLI0/0/1 and four public behavior forms PASS. Actual qa-cli overall BLOCKED_ENV solely for required Windows. Task blocked; WBS15/23 unchanged. No attestation, native-provider, full-source or whole-Goal completion claim. Additional power Sourcecabb56a2: actual independent reviews and local6whole435PASS/compiled170PASS plus shipping/CLI; required Windows BLOCKED_ENV. General Source903ebab9 now has actual independent Code/Security/Docs PASS and local fifteen-whole772PASS/3existingSKIP, compiled broker170PASS/Root57PASS, eight strict producers and shipping/CLI PASS; required Windows actual BLOCKED_ENV, no new group/formal credit.",
       "currentWork": {
         "runId": "01a13cff-f82a-7f6a-8db2-f857e4ce685d",
         "sourceCommit": "9b12312ad25e66ad250742d75a29082ff44c57c5",
@@ -3472,7 +3472,87 @@
           "groupCompletionCredit": false,
           "formalClose": false,
           "windows": "BLOCKED_ENV; owner-correct Device Lab unavailable; old driver8704/target2860 terminal UNKNOWN, never replaced."
+        },
+        "additionalGeneralLifecycleQualification": {
+          "sourceCommit": "903ebab9f57df7622c37fc545997653626e9cf2b",
+          "taskId": "TASK__architecture-hyperv-create-provision-observations-20261015",
+          "stage": "independent-local-pass-required-windows-blocked-env",
+          "independentReviews": "Actual Code DEEP/both, Security and Docs PASS; both hunters empty",
+          "sourceWholeFiles": 15,
+          "sourcePassed": 772,
+          "sourceFailed": 0,
+          "sourceSkipped": 3,
+          "compiledBrokerRepeatedPassed": 170,
+          "compiledRootFacadeRepeatedPassed": 57,
+          "strictProducers": 8,
+          "lintPaths": 21,
+          "shippingCli": "genuine offline npm archive/Unix payload/exports/assets/MCP and CLI0/0/1 PASS",
+          "evidenceRoot": "results/native-general-lifecycle-903ebab9-20261015/independent-qa/",
+          "inventorySha256": "2a6e8517c2052bea7a5c82adee6d5f8e4abd4e339a4279ffceb176dd841fb860",
+          "inventoryFiles": 114,
+          "inventoryBytes": 21081051,
+          "retainedPrivateFailures": "Intrusive exit audit caused first596PASS/176FAIL/3SKIP and one cancelled corrective whole run; removed exit hook. Initial compiled Root36PASS/21FAIL from source/assembled module identity; installed-layout links restored after57PASS. Original attempts and no-test guard failure retained; product/tests/emits unchanged.",
+          "observedPidBirths": 1543,
+          "knownOwnedSurvivors": 0,
+          "windows": "Actual DeviceLab foreign metadata owner3e9859a70ecbdf4f/PID16304 and six failed/timeout health routes; not live proof. Old driver8704/target2860 terminalUNKNOWN, no restart.",
+          "groupCompletionCredit": false,
+          "formalClose": false,
+          "scope": "Actual local results remain NON-ATTESTING without watcher records; no Windows/native/full-Source/reliability/wholeGoal completion."
         }
+      }
+    },
+    {
+      "id": "confirmed-native-boundary-followups-current",
+      "taskId": "TASK__architecture-container-mount-observations-20261015",
+      "coveredOperationIds": [],
+      "title": "Confirmed remaining native observation/policy seams",
+      "status": "Bounded actual Source audit at903ebab9 confirmed five next Source seams: mount admission, workspace removal, lab-state ownership, macOS image/snapshot (R18), shared mobile inventory/Android wireless. Disjoint paired implementation is being planned with one integration/review/QA barrier. This adds explicit follow-up scope, not operation/group completion credit; prior23 bounded groups are not whole-Goal accounting. Existing accepted opening/readiness/broker-status contributions remain valid; full Source/native/reliability/formal scope remains unverified.",
+      "currentWork": {
+        "sourceCommit": "903ebab9f57df7622c37fc545997653626e9cf2b",
+        "stage": "independent-full-plan-review-in-progress-no-Source-edit",
+        "sourceSeams": [
+          {
+            "id": "mount-admission",
+            "paths": [
+              "src/docker.ts",
+              "src/bind-mount-verification.ts"
+            ],
+            "scope": "Separate native source/daemon/inspect facts from strict/safe-defer and stopped/live/fresh policy; reuse existing validator."
+          },
+          {
+            "id": "workspace-removal",
+            "paths": [
+              "src/application/workspace/cli-removal.ts",
+              "src/ports/workspace/cli-removal.ts"
+            ],
+            "scope": "Replace inward ps/stop/rm argv/raw results with finite runtime observations; retain captured-ID/family/claims/removal order."
+          },
+          {
+            "id": "lab-state-ownership",
+            "paths": [
+              "src/application/container/lab-state-ownership.ts",
+              "src/lab-state-ownership.ts"
+            ],
+            "scope": "Normalize volume/use/principal/apply facts outward; retain unknown refusal and migrate/verify policy."
+          },
+          {
+            "id": "macos-image-snapshot",
+            "paths": [
+              "packages/device-lab/providers/application/macos-image-snapshots.mjs"
+            ],
+            "scope": "Consume existing native lifecycle observations and outward presentation; retain candidates/recovery/CAS."
+          },
+          {
+            "id": "mobile-inventory-wireless",
+            "paths": [
+              "packages/device-lab/providers/application/device-observation.mjs",
+              "packages/device-lab/providers/application/android-wireless.mjs"
+            ],
+            "scope": "Move SDK/ADB output and command shape outward; preserve per-operation refresh, reconciliation and wireless order/redaction."
+          }
+        ],
+        "groupCompletionCredit": false,
+        "operationCredit": 0
       }
     }
   ],
@@ -3616,7 +3696,7 @@
     "pendingGroups": 0,
     "remainingGroups": 8,
     "sourceUniverseCertified": false,
-    "scope": "완료15/23(65.2%)·잔여8개(부분5·진행3). R08/R12/R13/R14/R16은 구현·독립 Code/Security·Linux QA2를 마쳤고, R17/R18/R19 추가 의미 관측은9b12312에 통합되어 독립 Code/Security 및 Linux23whole948PASS·네 실제 공개 배포 형태·shipping을 확인했다. 두 작업의 필수 Windows 검증은 연결 불가로 보류되어 완료 credit 없음. 원래71473106 공동 FAIL·QEMU QA1·root QA1 실패와 기존 완료 기여를 보존한다. 추가 전원 경계cabb56a2의 실제 독립 local435/compiled170 검증은 통과했다. General Hyper-V·컨테이너 pure-wiring 후속은 후보 구현 상태이며 현재 통합 검증·독립 리뷰/QA가 남는다. 별도 mount audit·실기기/native 전체·reliability·전수 범위·formal 조건도 계속 미검증이다.",
+    "scope": "완료15/23(65.2%)·잔여8개(부분5·진행3). R08/R12/R13/R14/R16은 구현·독립 Code/Security·Linux QA2를 마쳤고, R17/R18/R19 추가 의미 관측은9b12312에 통합되어 독립 Code/Security 및 Linux23whole948PASS·네 실제 공개 배포 형태·shipping을 확인했다. 두 작업의 필수 Windows 검증은 연결 불가로 보류되어 완료 credit 없음. 원래71473106 공동 FAIL·QEMU QA1·root QA1 실패와 기존 완료 기여를 보존한다. 추가 전원 경계cabb56a2의 실제 독립 local435/compiled170 검증은 통과했다. General 경계903ebab9는 실제 독립 리뷰·통합772PASS/3기존SKIP 및 compiled170+57·shipping/CLI를 통과했고 Windows는 보류 중이다. 실제 후속 Source 감사에서 mount·workspace 삭제·lab-state·macOS snapshot·mobile inventory/wireless 다섯 경계를 다음 병렬 작업으로 명시했다. 별도 mount audit·실기기/native 전체·reliability·전수 범위·formal 조건도 계속 미검증이다.",
     "currentQualificationTask": "TASK__qemu-native-framing-recovery-20261014",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",

@@ -34,7 +34,7 @@ Bootstrap bindings supply trace status and bounded failure classification while 
 
 Container creation composition now connects the existing semantic application to its native adapter. The adapter owns process execution, output/exception presentation and its per-instance cause latch; the application still orders guards, source assertions, exact-ID verification, rejected-ID removal, independent absence and setup. Mount observation/policy separation remains separately queued architecture work.
 
-Source/built/package consumers and controlled native-platform QA qualify different surfaces; a source-alias test or prepared candidate is not distribution/native acceptance. The current general-lifecycle/container integration is a candidate until independent review and qualification finish; required Windows and broader native/reliability/full-source acceptance remain separate.
+Source/built/package consumers and controlled native-platform QA qualify different surfaces; a source-alias test or prepared candidate is not distribution/native acceptance. At source `903ebab9`, independent Code/Security/Docs review and local QA passed: fifteen whole files772PASS/3existing optional skips, compiled broker170PASS and unchanged emitted Root facade57PASS, eight strict producers, genuine shipping and CLI checks. Required Windows remains actual BLOCKED_ENV; broader native/reliability/full-source acceptance stays separate. Private QA instrumentation and consumer-layout failures are retained in the evidence; product/tests were not weakened.
 
 ## Known ceiling
 
