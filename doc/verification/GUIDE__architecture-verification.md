@@ -44,3 +44,15 @@ The checker examines the extracted npm package and the locally materialized Unix
 The checker has no migration preflight or operation-coverage ledger. Package smoke proves packaging and startup; application tests and provider E2E prove their respective behavior. Report unavailable hosts and unrun checks honestly.
 
 Use local verification. CI, pushing and global installation are separate actions requiring user authorization.
+
+## Installed Linux broker reliability
+
+After authenticating an existing installed payload, set `installed_root` to that payload and invoke its runner directly with the qualified Node executable:
+
+```sh
+node "$installed_root/scripts/durability/device-lab.mjs" --iterations 40 --concurrency 8 --restart-every 10 --timeout 3s --rss-sample-every 5 --max-rss-growth 128MiB --max-survivors 0
+```
+
+Use a clean environment, private HOME/TMPDIR and the existing loopback/provider fence; the runner creates its own broker home and ephemeral loopback port. Observe and join only its own PID/start identities. Do not rebuild, fall back to Source, reuse a host broker or install globally. The 128MiB value limits observed RSS growth per broker generation in this test; it is not a runtime/container memory default.
+
+Independent installed-Linux QA passed on 2026-10-15: 40 rounds, 323 counted requests, three authenticated restart recoveries across four broker generations, reported maximum RSS growth 3.9MiB and zero observed owned survivors. The runner reported 878ms elapsed; this is a bounded restart check, not a long soak or exhaustive process-monitoring proof. Execution inputs remained unchanged. [Local raw evidence](../../results/linux-broker-reliability-01a13e56-20261015/independent-qa/inventory.json) records commands, output and process observations. `ACC-M14-reliability`, native-platform and whole-source acceptance remain unverified.

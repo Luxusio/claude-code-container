@@ -4139,6 +4139,31 @@
           "inventorySha256": "a671aeb69cb749b351b98bde543442ab21bcd20f91af27bdf276d4ea98ad6885"
         }
       }
+    },
+    {
+      "id": "linux-installed-broker-reliability-current",
+      "taskId": "TASK__architecture-linux-installed-broker-reliability-20261015",
+      "coveredOperationIds": [],
+      "status": "Actual independent installed-Linux QA PASS: 40 rounds, 323 counted requests, three authenticated restart recoveries/four broker generations, reported RSS growth 3.9MiB and zero observed owned survivors. Runner elapsed878ms; bounded restart check, not long-soak, exhaustive process-monitoring or native proof. Zero operation/group credit; WBS15/23 and all75 delivery gates unchanged. ACC-M14-reliability, whole-source, native and formal acceptance remain unverified.",
+      "qualification": {
+        "baseHead": "4c7df3764b8fd89488bf761d3bd3b83f23758dba",
+        "rounds": 40,
+        "countedRequests": 323,
+        "restartRecoveries": 3,
+        "brokerGenerations": 4,
+        "reportedMaxRssGrowthMiB": 3.9,
+        "observedOwnSurvivors": 0,
+        "runnerElapsedMs": 878,
+        "inputFilesStable": 1212,
+        "groupCompletionCredit": false,
+        "operationCredit": 0,
+        "evidence": {
+          "root": "results/linux-broker-reliability-01a13e56-20261015/independent-qa",
+          "files": 20,
+          "bytes": 1354242,
+          "inventorySha256": "23d99db49001aa19997f29a95eab87bae0c3da08c4e657ded8d5be632bae2d9a"
+        }
+      }
     }
   ],
   "currentSourceQualificationAudit": {
