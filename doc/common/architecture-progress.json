@@ -4164,6 +4164,14 @@
           "inventorySha256": "23d99db49001aa19997f29a95eab87bae0c3da08c4e657ded8d5be632bae2d9a"
         }
       }
+    },
+    {
+      "id": "m14-existing-invariant-detection-current",
+      "taskId": "TASK__architecture-m14-invariant-detection-20261015",
+      "coveredOperationIds": [],
+      "status": "Bounded independent Linux test-suite QA PASS: four normal cases passed; three private single-check removals caused four attributable existing assertion failures (2/1/1). Six invocations ran once in two parallel phases; three files restored, inputs unchanged and 18 observed owned identities gone. Zero operation/group credit; broader M14/model/fault/native/whole-source and formal acceptance remain unverified. WBS 15/23 and 75 gates unchanged.",
+      "evidenceRoot": "results/m14-invariant-detection-01a13e7a-20261015/independent-qa/",
+      "evidenceInventoryMapSha256": "74557818c9fb47a9f6fbb82badbdd95e85b824b35182e29539465ea56ca6e2c8"
     }
   ],
   "currentSourceQualificationAudit": {
