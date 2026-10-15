@@ -4,15 +4,17 @@ Checked: 2026-10-15. Source reference: `b047dd3ca691a879135068e9148fcd3b14d4d41b
 
 The [original ADR](ADR__ccc-target-architecture.md), [contracts](SPEC__ccc-architecture-contracts.md) and [migration packets](PLAN__ccc-architecture-migration.md) still define completion. The [historical inventory](architecture-operation-inventory.json) remains at c284; the [progress overlay](architecture-progress.json) preserves later qualified contributions. No operation IDs, acceptance gates or target architecture were added by this audit.
 
-## Current disposition
+Latest qualified Source: `0211995a168faa2132b2bab42707659578d82ff0`. CB-04/05 now qualify R06/R03 after actual independent review, affected portable QA and local delivery: **17/25 complete (68%), eight remaining: five partial and three in progress**. The audit-time findings and hashes below remain historical witnesses. See the subsequent semantic lifecycle/Workspace section for current proof and limits.
+
+## Audit-time disposition
 
 Five independent read-only scouts traced Root, MCP/shared providers, broker/native, Hyper-V and distribution. The coordinator read the disputed bodies and reconciled specific retained exceptions. No product, test, build, provider, GUI or network command ran for these source findings. No native failure was reproduced.
 
-Two previously completed structural groups reopen: **R03 workspace admission/recovery** and **R06 Hyper-V lifecycle**. Existing R17/R18/R19 partial groups gain precise Source work. The current bounded subtotal becomes **15/25 complete (60%), ten remaining: seven partial and three in progress**. Historical 17/25 and its actual qualification remain valid for their narrower inspected scope. Source9c807d1e's six qualified seams are not retracted.
+Two previously completed structural groups reopen: **R03 workspace admission/recovery** and **R06 Hyper-V lifecycle**. Existing R17/R18/R19 partial groups gain precise Source work. The audit-time bounded subtotal became **15/25 complete (60%), ten remaining: seven partial and three in progress**. Historical 17/25 and its actual qualification remain valid for their narrower inspected scope. Source9c807d1e's six qualified seams are not retracted.
 
 The former eight groups were Windows qualification holds. That description does not cover the newly demonstrated Source seams below. The original 218 in-scope / 219 inventoried operations and 75 packet gates are unchanged. `exhaustive`, `sourceScopeClosed` and denominator/universe certification remain false.
 
-## Source findings and next repair scopes
+## Original source findings and repair scopes
 
 | Finding | Reached body and trigger | Required next scope / accounting |
 | --- | --- | --- |
@@ -125,6 +127,27 @@ Independent qa-cli retry3 actual PASS after final Code PASS and qualified Securi
 
 QA4 actual FAIL17 and QA5 actual FAIL1 remain retained. Corrected product duplicate conflict counting, stale fixture expectations and private raw/assembled QA layout; final test-only change removes the obsolete whole-journey450-call cap while retaining exact operation/deadline/identity/receipt assertions. Source, tests and behavior docs committed together at1a3dbf97296774a8877eed99fd518268381968e5. Precommit preservation verified1733 tracked metadata entries, all unowned tracked bytes,81 original untracked inputs/link targets, the original semantic index and both PR merge ancestors. Formal close is not claimed by this record. Required automatic ordered review/QA receipts remain a separate gate; direct finals are non-attesting when receipts are absent. The canonical task state records the final verification/park disposition.
 
-These repairs contribute no whole structural-group credit: **15/25 complete (60%), ten remaining: seven partial and three in progress**. CB-04 and all other original findings remain in their groups. The original218 in-scope cutovers,219 inventoried operations and75 delivery gates are unchanged. No exhaustive Source/caller/export closure, native-platform certification, reliability or whole-Goal completion is claimed.
+At that stop/cleanup checkpoint, these repairs contributed no whole structural-group credit: **15/25 complete (60%), ten remaining: seven partial and three in progress**. CB-04 and all other original findings remain in their groups. The original218 in-scope cutovers,219 inventoried operations and75 delivery gates are unchanged. No exhaustive Source/caller/export closure, native-platform certification, reliability or whole-Goal completion is claimed.
 
 Native Windows/macOS acceptance was not executed in this task. The previously recorded owner/access condition was not retried or resolved here; driver8704/target2860 termination remains unknown. No runtime metadata adoption, provider restart or native completion is claimed. The retained global clock-domain reconciliation and other audit exceptions remain outside this repair.
+
+## Subsequent semantic lifecycle and Workspace qualification
+
+Task: `TASK__architecture-native-results-and-workspace-repair-20261015`; Source commit: `0211995a168faa2132b2bab42707659578d82ff0`. This completes CB-04/05's reviewed Source scope. The original finding table and previous stop/cleanup checkpoint remain historical; CB-06/07/08/09 are not completed here.
+
+| Finding | Current implementation | Qualification |
+| --- | --- | --- |
+| CB-04 | Core lifecycle/readiness uses semantic facts and opaque receipts; existing native bindings decode execution and present legacy/synthetic summaries and diagnostic overlays. Exact VM plus canonical `Off`, precedence, journals and compensation remain. | Final independent Code r4 PASS and qualified prior Security carry. Strict emitted11, compiled readiness27 and whole broker170 PASS. |
+| CB-05 | Four Workspace applications consume semantic Git/metadata observations; existing native bindings own framing and actual staged/no-op inode plus exact bytes. Core retains admission, confirmation, index and successor-safe compensation. | Workspace339PASS/9existing native skips across runs: original336 plus corrected-setup1 and final2. This is not a fresh whole-suite pass. |
+
+Twenty unchanged compiled files394PASS, strict architecture, genuine Device Lab/Root/MCP emissions, scoped Source lint and ordinary assembly are authenticated carry. Fresh ordinary offline npm archive and materialized Unix payload CLI/public-export/MCP checks passed. QA authenticated1745 inputs,7598 dependencies per fixture,1055 assembled/537 raw artifacts and zero production TypeScript fallback in emitted tests. Whole worktree intentionally exercises the real Source CLI.
+
+Original QA1/QA2 type-fixture failures and QA3 whole-worktree3 failures, first setup retry2 failures and diagnostic failure remain retained. QA3 setup repairs touched only private launcher/preload/fake external-runtime/owned-parent tsx IPC bindings; product Source, tests and original dependency bytes stayed unchanged. The standalone CLI passed with finite fake capability observations; the final two inventory cases used their own unchanged transport fixtures. Ordinary shipping used neither extra fixture nor observer. One optional npm registry lookup was denied before dispatch and is retained; no external communication occurred. All1002 observed runtime identities were gone, with zero survivors.
+
+Source, tests and the boundary REQ (39 paths) were locally committed with1736 original tracked metadata entries,1692 unowned tracked files,81 original untracked inputs, the semantic index and both PR merge ancestors preserved. Evidence: `/tmp/ccc-native-results-workspace-01a13fd3/qa3/evidence/final-qualified-runtime-audit.json` (SHA-256 `b35d44e29999b2e62a3d38ffea48ec7ab61511b4405380c84c154c45a1fb6c4f`) and `/tmp/ccc-native-results-workspace-01a13fd3/source-delivery.json`. No CI or push ran.
+
+R03/R06 return to completed within the confirmed structural subtotal: **17/25 (68%), eight remaining**. R19 receives only its Hyper-V readiness contribution and remains partial. No operation or delivery-gate denominator changed.
+
+### Known ceiling
+
+Native Windows/macOS and real providers were not executed here. Original whole-Source/caller/export closure, reliability, native and formal gates remain unverified; CB-06/07/08/09 remain Source work. No whole-Goal completion. Automatic ordered review/QA attestation remains separate; formal close is not claimed by this document.

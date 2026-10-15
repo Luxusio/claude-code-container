@@ -1,11 +1,11 @@
 # Architecture work breakdown and progress
 
-Updated: 2026\-10\-15. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Updated: 2026\-10\-16. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
-확인된 구조 정리 그룹: **15/25 완료 (60.0%)**, **10개 남음**.
-부분 완료: **7**; 진행 중: **3**; 미착수: **0**.
+확인된 구조 정리 그룹: **17/25 완료 (68.0%)**, **8개 남음**.
+부분 완료: **5**; 진행 중: **3**; 미착수: **0**.
 
 이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
 
@@ -15,8 +15,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 | WBS | 그룹 | 상태 | 선행 작업 | 남은 구현 |
 | --- | --- | --- | --- | --- |
-| R03 | Workspace 열기·사용자 안내 | 부분 완료 | 없음 | 부분 완료: 기존 workspace open의 소유권·lock 해제·안내 기여를 유지한다\. 현재 감사 CB\-05에서 original M11 root/nested/broken repair 및 addition 코어의 raw Git status/stdout/metadata grammar가 확인됐다\. 기존 native composition으로 의미 관측·metadata decoding/materialization·진단을 옮기고 identity·확인·index·보상·successor 정책을 inward에 유지한 뒤 qualified 검증·통합한다\. |
-| R06 | Hyper\-V 수명주기·네이티브 경계 | 부분 완료 | R04 | 부분 완료:9c807d1e seed/snapshot 의미 관측의 실제 독립 검증·통합은 유지한다\. CB\-01 ordinary stop은 semantic ok·exact VM·canonical Off 증거를 요구하도록 수정했고1a3dbf97에서 독립 Code·qualified Security carry·affected Linux/portable QA·로컬 통합을 확인했다\. 남은 Source CB\-04는 create/start·stop/delete inward native execution 표현을 semantic facts/opaque receipt 경계로 옮기는 작업이다\. Native·전수·reliability·formal 조건은 별도 미완료다\. |
 | R08 | Codex·Claude 설정 포트 단순화 | 부분 완료 | 없음 | Codex Harness native\-result Source 기여는9c807d1e로 독립 리뷰·Source/emitted/type·shipping 검증 및 로컬 통합했다\. 이 기여가 기존 필수 Windows 조건을 대신하지 않는다\. 현재 c2a1f54f 기준 구현과 독립 최종 Code/Security 리뷰를 마쳤다\. 독립 Linux QA2는 whole27파일1176PASS·기존1SKIP, 명시 빌드·shipping/CLI·실제 소비자21개 명령을 확인했다\. 필수 Windows QA는 Device Lab MCP의 다른 소유자 runtime 및 접근 불가로 보류 중이다\. 기존 Windows driver8704/target2860의 종료 상태는 미확인으로 보존하며 재시작하지 않는다\. Windows 검증·최종 통합 판정 전 완료 credit 없음\. |
 | R12 | Codex credential runtime observations | 진행 중 | 없음 | 현재 c2a1f54f 기준 구현과 독립 최종 Code/Security 리뷰를 마쳤다\. 독립 Linux QA2는 whole27파일1176PASS·기존1SKIP, 명시 빌드·shipping/CLI·실제 소비자21개 명령을 확인했다\. 필수 Windows QA는 Device Lab MCP의 다른 소유자 runtime 및 접근 불가로 보류 중이다\. 기존 Windows driver8704/target2860의 종료 상태는 미확인으로 보존하며 재시작하지 않는다\. Windows 검증·최종 통합 판정 전 완료 credit 없음\. 별도 Windows 복구 허용·socket 격리 허용 정책은 application/ports로 분리해5eb8a0d9로 로컬 커밋했다\. 독립 Code/Security 리뷰와149개 portable Source 사례, strict 검사, 새 컴파일 모듈·materialized payload 소비를 확인했다\. 이번 변경의125개 실제 Windows 사례와 R12 전반의 Windows 검증은 여전히 보류 중이다\. 기존 native 보호는 유지하며 완료 credit 없음\. |
 | R13 | Top\-level installer presentation and materialization | 진행 중 | 없음 | 현재 c2a1f54f 기준 구현과 독립 최종 Code/Security 리뷰를 마쳤다\. 독립 Linux QA2는 whole27파일1176PASS·기존1SKIP, 명시 빌드·shipping/CLI·실제 소비자21개 명령을 확인했다\. 필수 Windows QA는 Device Lab MCP의 다른 소유자 runtime 및 접근 불가로 보류 중이다\. 기존 Windows driver8704/target2860의 종료 상태는 미확인으로 보존하며 재시작하지 않는다\. Windows 검증·최종 통합 판정 전 완료 credit 없음\. |
@@ -24,25 +22,13 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | R16 | Remote 연결·전송 경계 | 부분 완료 | 없음 | 현재 c2a1f54f 기준 구현과 독립 최종 Code/Security 리뷰를 마쳤다\. 독립 Linux QA2는 whole27파일1176PASS·기존1SKIP, 명시 빌드·shipping/CLI·실제 소비자21개 명령을 확인했다\. 필수 Windows QA는 Device Lab MCP의 다른 소유자 runtime 및 접근 불가로 보류 중이다\. 기존 Windows driver8704/target2860의 종료 상태는 미확인으로 보존하며 재시작하지 않는다\. Windows 검증·최종 통합 판정 전 완료 credit 없음\. |
 | R17 | 브로커 상태·녹화·Appium 결과 | 부분 완료 | 없음 | 기존 Appium 검증 기여를 유지하고 status/recording 의미 관측을 통합했다\. owner\-cleanup은 기존 의미 결과 경계의 회귀 검증으로 확인했다\. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다\. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다\. Windows 검증과 최종 판정 전 완료 credit·formal close 없음\. CB\-02/CB\-03의 한정된 종료 관측·canonical stop 조합·partial commit·publication deadline 수정은1a3dbf97에서 독립 Code·qualified Security carry·affected Linux/portable QA·로컬 통합을 확인했다\. Darwin raw token은 동일하면 live로 관측하며 다른 live token은 locale/timezone 차이와 구분할 수 없어 unavailable로 보존한다\. 실제 Windows/macOS·broader R17·native/reliability/formal 조건은 별도 미완료다\. 아래 currentStopCleanupRepairQualification에 새 실행과 인증 재사용의 범위를 구분했다\. |
 | R18 | 브로커 provider 수명주기 결과 | 부분 완료 | 없음 | 기존 direct 전환을 유지하고 broker Android/Apple 및 direct/broker Sandbox 의미 관측·native receipt 변환을 통합했다\. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다\. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다\. Windows 검증과 최종 판정 전 완료 credit·formal close 없음\. 추가 Source 잔여 CB\-07: 공유 macOS observation domain이 실제 spawn/stop에 쓰이는 Tart/VZ/UTM argv를 구성한다\. provider 선택·claim은 inward에 두고 실제 recipe/public plan materialization을 기존 native adapter로 옮겨 검증한다\. |
-| R19 | Desktop 제어·파일 전송 | 부분 완료 | 없음 | 기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다\. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다\. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다\. Windows 검증과 최종 판정 전 완료 credit·formal close 없음\. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다\. General Hyper\-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다\. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음\. 별도 mount audit·전수 범위·native·reliability 조건도 남는다\. 추가 Source 잔여 CB\-06: original M08 Android control/transfer/orientation의 status/stdout/stderr 판정과 native key/rotation 표현을 두 실제 backend에서 outward 정규화한다\. double\-tap·rotation 순서, stage commit/disposal와 public 결과는 보존해 검증한다\. |
+| R19 | Desktop 제어·파일 전송 | 부분 완료 | 없음 | 기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다\. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다\. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다\. Windows 검증과 최종 판정 전 완료 credit·formal close 없음\. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다\. General Hyper\-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다\. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음\. 별도 mount audit·전수 범위·native·reliability 조건도 남는다\. 추가 Source 잔여 CB\-06: original M08 Android control/transfer/orientation의 status/stdout/stderr 판정과 native key/rotation 표현을 두 실제 backend에서 outward 정규화한다\. double\-tap·rotation 순서, stage commit/disposal와 public 결과는 보존해 검증한다\. CB\-04 Hyper\-V readiness native diagnostics 정리는0211995a에서 독립 리뷰·portable QA·로컬 통합했다\. 이 기여는 CB\-06 Android control 및 기존 Windows/native 조건을 완료하지 않는다\. |
 
 ### 진행 순서와 완료 판정
 
 남은 그룹은 표의 선행 작업과 실제 파일 소유권을 기준으로 병렬 진행한다. 공유 조합 파일은 코디네이터가 연결하고, 각 그룹의 결과를 함께 검증한다.
 
 공통 조합 지점의 연결, 독립 리뷰, portable QA, 로컬 통합까지 확인한 그룹만 완료로 바꾼다. 이 공통 작업은 각 그룹의 완료 조건에 포함하며 별도 그룹으로 더하지 않는다. 계획 작성·코드 작성만으로 완료 수를 올리지 않는다.
-
-### R03. Workspace 열기·사용자 안내
-
-완료 조건: 코어가 충돌·복구 선택·파일 보존·재시도를 판단하고, 어댑터가 안내와 확인을 처리한다\. 이미 통합한 workspace open의 소유권·lock 해제 경계는 유지한다\. 현재 감사에서 확인한 inward native framing과 완료 증거 조건을 함께 충족해야 한다\.
-
-확인한 소스: [src/application/workspace/repair\-root\.ts](../../src/application/workspace/repair-root.ts), [src/application/workspace/repair\-nested\.ts](../../src/application/workspace/repair-nested.ts), [src/application/workspace/repair\-broken\.ts](../../src/application/workspace/repair-broken.ts), [src/application/workspace/worktree\-addition\.ts](../../src/application/workspace/worktree-addition.ts), [src/ports/workspace/repair\-root\.ts](../../src/ports/workspace/repair-root.ts), [src/worktree\.ts](../../src/worktree.ts)
-
-### R06. Hyper\-V 수명주기·네이티브 경계
-
-완료 조건: 어댑터가 seed 실행 결과를 정규화하고, 코어가 VM·키·네트워크 동일성·host trust·rollback을 판단한다\. Native process/command grammar is decoded outward; inward admission/finalization consumes semantic facts\. 현재 감사에서 확인한 inward native framing과 완료 증거 조건을 함께 충족해야 한다\.
-
-확인한 소스: [packages/device\-lab/src/device\-lab/application/lifecycle/hyper\-v\-stop\-delete\.ts](../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-stop-delete.ts), [packages/device\-lab/src/device\-lab/domain/lifecycle/hyper\-v\-stop\-delete\.ts](../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-stop-delete.ts), [packages/device\-lab/src/device\-lab/application/lifecycle/hyper\-v\-create\-start\.ts](../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts), [packages/device\-lab/src/device\-lab/domain/lifecycle/hyper\-v\-create\-start\.ts](../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.ts)
 
 ### R08. Codex·Claude 설정 포트 단순화
 
@@ -90,7 +76,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 완료 조건: 네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다\.
 
-확인한 소스: [packages/device\-lab/src/device\-lab/application/lifecycle/hyper\-v\-create\-start\.ts](../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts), [packages/device\-lab/providers/application/android\-control\-transfer\.mjs](../../packages/device-lab/providers/application/android-control-transfer.mjs), [packages/device\-lab/providers/domain/android\-control\-transfer\.mjs](../../packages/device-lab/providers/domain/android-control-transfer.mjs), [packages/device\-lab/providers/ports/android\-control\-transfer\.d\.mts](../../packages/device-lab/providers/ports/android-control-transfer.d.mts), [packages/device\-lab/providers/backends/android\.mjs](../../packages/device-lab/providers/backends/android.mjs), [packages/device\-lab/providers/backends/android\-device\.mjs](../../packages/device-lab/providers/backends/android-device.mjs)
+확인한 소스: [packages/device\-lab/providers/application/android\-control\-transfer\.mjs](../../packages/device-lab/providers/application/android-control-transfer.mjs), [packages/device\-lab/providers/domain/android\-control\-transfer\.mjs](../../packages/device-lab/providers/domain/android-control-transfer.mjs), [packages/device\-lab/providers/ports/android\-control\-transfer\.d\.mts](../../packages/device-lab/providers/ports/android-control-transfer.d.mts), [packages/device\-lab/providers/backends/android\.mjs](../../packages/device-lab/providers/backends/android.mjs), [packages/device\-lab/providers/backends/android\-device\.mjs](../../packages/device-lab/providers/backends/android-device.mjs)
 
 ## 0.1 완료한 구조 정리
 
@@ -98,11 +84,13 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | --- | --- | --- | --- |
 | R02 | MCP 요청·결과 경계 | `6ea57ca5` | 코어가 기기 선택·검증·순서·대기 예산을 결정하고, 어댑터가 모바일 요청 프레임과 응답을 정규화한다\. 활성 앱 대기 경계의 통합 기여는 유지한다\. |
 | R04 | 브로커 물리 기기·리스·정리 | `9c807d1e` | 선택·소유권·리스·정리 정책은 유지하고, 코어가 정규화된 기기 목록과 의미 결과만 사용한다\. Native process/command grammar is decoded outward; inward admission/finalization consumes semantic facts\. |
+| R06 | Hyper\-V 수명주기·네이티브 경계 | `0211995a` | 어댑터가 seed 실행 결과를 정규화하고, 코어가 VM·키·네트워크 동일성·host trust·rollback을 판단한다\. Native process/command grammar is decoded outward; inward admission/finalization consumes semantic facts\. 현재 감사에서 확인한 inward native framing과 완료 증거 조건을 함께 충족해야 한다\. |
 | 기완료 | Android·iOS 환경 제어 | `438db1c0` | 환경 코어가 의미 입력·결과만 사용하고, ADB·simctl 명령 구성과 응답 처리는 네이티브 어댑터에 둔다\. |
 | 기완료 | Android 앱 관리 | `438db1c0` | 앱 설치·실행·삭제·권한 정책과 ADB 명령 구성이 분리되고, emulator·physical 양쪽 호출 경로의 QA가 확인된다\. |
 | R07 | Device Lab 관리 명령 | `6ea57ca5` | 코어가 종료·소유권·record lock·프로세스 동일성·physical lease·조건부 공개를 판단하고, 어댑터가 유한한 종료 효과와 터미널 출력을 처리한다\. 기존 진단·setup·delete 기여를 유지한다\. |
 | R05 | 컨테이너 실행·준비 경계 | `9c807d1e` | 코어는 준비 상태·거절 이유만 반환하고, CLI가 runtime별 복구 안내와 종료를 처리한다\. Native process/command grammar is decoded outward; inward admission/finalization consumes semantic facts\. |
 | 기완료 | 도구 설치·Doctor 진단 | `c9cae5ae` | 설치·진단 정책이 의미 관측을 사용하고, 네이티브 실행·터미널 표현이 어댑터에 있으며 리뷰·QA·통합이 확인된다\. |
+| R03 | Workspace 열기·사용자 안내 | `0211995a` | 코어가 충돌·복구 선택·파일 보존·재시도를 판단하고, 어댑터가 안내와 확인을 처리한다\. 이미 통합한 workspace open의 소유권·lock 해제 경계는 유지한다\. 현재 감사에서 확인한 inward native framing과 완료 증거 조건을 함께 충족해야 한다\. |
 | R01 | Runtime capability 관측 | `ca88c404` | 어댑터가 정규화된 capability 관측을 제공하고, 코어가 runtime 선택·rootless·remote·socket 정책을 결정한다\. |
 | 기완료 | 컨테이너 identity digest | `6d1e2a15` | labels digest의 네이티브 책임을 하나의 포트로 명시하고, identity lock·캐시·UID/GID·빌드 재검증·보상 정책을 유지한다\. |
 | R09 | iOS 앱 관리 | `6ea57ca5` | 코어는 앱 작업 선택·physical 제한·대상 소유권·컨테이너 fence·reset 공개를 유지하고, 어댑터가 설치·실행·종료·삭제·권한의 네이티브 효과와 응답을 처리한다\. |

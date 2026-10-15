@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-15",
+  "updatedAt": "2026-10-16",
   "inventoryPath": "doc/common/architecture-operation-inventory.json",
   "baselineCommit": "c284ead3a637d4d31ca93661920ee0f0200b9077",
   "scope": "Current Codex/Claude architecture migration; existing shared behavior retained.",
@@ -2263,26 +2263,31 @@
         "broker-lease-physical-cleanup-results-structural"
       ],
       "coveredOperationIds": [],
-      "status": "Six-seam native-result correction independently reviewed, affected Source/emitted/type/native-fixture/shipping QA passed and Source locally integrated; broader native/exhaustive/formal gates remain separate.",
-      "taskId": "TASK__architecture-remaining-native-boundaries",
-      "acceptedIntegrationCommit": "9c807d1e2b42af2a9ff42fb5886156007ac7a014",
-      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/remaining-boundaries-67ca-aklmya70/qaCa88-carry-final.json",
-      "deliveryEvidence": "/tmp/ccc-remaining-boundaries-integration-20261012.json",
+      "status": "Current bounded Source scope independently reviewed, portable QA qualified and locally committed; full Goal/native/formal completion not claimed.",
+      "taskId": "TASK__architecture-native-results-and-workspace-repair-20261015",
+      "acceptedIntegrationCommit": "0211995a168faa2132b2bab42707659578d82ff0",
+      "qaEvidence": "/tmp/ccc-native-results-workspace-01a13fd3/qa3/evidence/final-qualified-runtime-audit.json",
+      "deliveryEvidence": "/tmp/ccc-native-results-workspace-01a13fd3/source-delivery.json",
       "title": "Hyper-V 수명주기·네이티브 경계",
-      "workStatus": "partial",
-      "remainingWork": "부분 완료:9c807d1e seed/snapshot 의미 관측의 실제 독립 검증·통합은 유지한다. CB-01 ordinary stop은 semantic ok·exact VM·canonical Off 증거를 요구하도록 수정했고1a3dbf97에서 독립 Code·qualified Security carry·affected Linux/portable QA·로컬 통합을 확인했다. 남은 Source CB-04는 create/start·stop/delete inward native execution 표현을 semantic facts/opaque receipt 경계로 옮기는 작업이다. Native·전수·reliability·formal 조건은 별도 미완료다.",
+      "workStatus": "completed",
+      "remainingWork": "Hyper-V lifecycle/readiness는 의미 관측과 opaque receipt를 사용하고 native 실행·진단·합성 요약은 기존 outward binding에서 표현한다. Ordinary stop의 exact VM·canonical Off 조건과 오류 우선순위·journal·보상을 유지했다. 0211995a에서 독립 리뷰·portable QA·로컬 통합을 확인했다. 새 실행과 인증 재사용·원래 실패는 currentSemanticNativeResultsWorkspaceQualification에 구분했다. 전체 소스·native·reliability·formal 조건은 별도로 남는다.",
       "completionCriteria": "어댑터가 seed 실행 결과를 정규화하고, 코어가 VM·키·네트워크 동일성·host trust·rollback을 판단한다. Native process/command grammar is decoded outward; inward admission/finalization consumes semantic facts. 현재 감사에서 확인한 inward native framing과 완료 증거 조건을 함께 충족해야 한다.",
       "confirmedAtCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
       "sourceTrace": {
-        "remainingPaths": [
+        "remainingPaths": [],
+        "owningPaths": [
+          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-stop-delete.ts",
+          "packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-stop-delete.ts",
+          "packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.ts"
+        ],
+        "historicalRemainingPathsBeforeSemanticNativeResultsQualification": [
           "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-stop-delete.ts",
           "packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-stop-delete.ts",
           "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts",
           "packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.ts"
         ],
-        "owningPaths": [
-          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts"
-        ]
+        "qualifiedSourceReferenceCommit": "0211995a168faa2132b2bab42707659578d82ff0"
       },
       "qualifiedContributions": [
         {
@@ -2299,6 +2304,21 @@
           "deliveryEvidence": "/tmp/ccc-remaining-boundaries-integration-20261012.json",
           "status": "Actual independent Code/Security/Docs and current portable QA PASS;24 fresh whole files and518 unchanged prior passing files carried separately, not a new full/default-suite PASS. Compiled/extracted public native bindings qualified. Original empty automatic receipt formal park retained; native, exhaustive source and full Goal acceptance remain unverified. Zero additional operation credit.",
           "contribution": "Native final-line Linux seed normalization and semantic identity/trust admission"
+        },
+        {
+          "acceptedIntegrationCommit": "9c807d1e2b42af2a9ff42fb5886156007ac7a014",
+          "taskId": "TASK__architecture-remaining-native-boundaries",
+          "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/remaining-boundaries-67ca-aklmya70/qaCa88-carry-final.json",
+          "deliveryEvidence": "/tmp/ccc-remaining-boundaries-integration-20261012.json",
+          "status": "Six-seam native-result correction independently reviewed, affected Source/emitted/type/native-fixture/shipping QA passed and Source locally integrated; broader native/exhaustive/formal gates remain separate."
+        },
+        {
+          "acceptedIntegrationCommit": "0211995a168faa2132b2bab42707659578d82ff0",
+          "taskId": "TASK__architecture-native-results-and-workspace-repair-20261015",
+          "qaEvidence": "/tmp/ccc-native-results-workspace-01a13fd3/qa3/evidence/final-qualified-runtime-audit.json",
+          "deliveryEvidence": "/tmp/ccc-native-results-workspace-01a13fd3/source-delivery.json",
+          "contribution": "Hyper-V lifecycle/readiness는 의미 관측과 opaque receipt를 사용하고 native 실행·진단·합성 요약은 기존 outward binding에서 표현한다. Ordinary stop의 exact VM·canonical Off 조건과 오류 우선순위·journal·보상을 유지했다.",
+          "status": "Actual independent Code PASS, qualified Security carry, affected portable QA and local integration verified. Native/universe/reliability/formal gates remain separate."
         }
       ],
       "historicalCompletionBeforeNativeObservationWave": {
@@ -2307,7 +2327,7 @@
         "completionCriteria": "어댑터가 seed 실행 결과를 정규화하고, 코어가 VM·키·네트워크 동일성·host trust·rollback을 판단한다.",
         "acceptedIntegrationCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9"
       },
-      "currentBoundaryTask": "TASK__architecture-native-observation-wave-20261015",
+      "currentBoundaryTask": "TASK__architecture-native-results-and-workspace-repair-20261015",
       "currentNativeObservationQualification": {
         "taskId": "TASK__architecture-native-observation-wave-20261015",
         "sourceCommit": "9c807d1e2b42af2a9ff42fb5886156007ac7a014",
@@ -2664,15 +2684,15 @@
       "coveredOperationIds": [],
       "title": "Desktop 제어·파일 전송",
       "workStatus": "partial",
-      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다. General Hyper-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음. 별도 mount audit·전수 범위·native·reliability 조건도 남는다. 추가 Source 잔여 CB-06: original M08 Android control/transfer/orientation의 status/stdout/stderr 판정과 native key/rotation 표현을 두 실제 backend에서 outward 정규화한다. double-tap·rotation 순서, stage commit/disposal와 public 결과는 보존해 검증한다.",
+      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다. General Hyper-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음. 별도 mount audit·전수 범위·native·reliability 조건도 남는다. 추가 Source 잔여 CB-06: original M08 Android control/transfer/orientation의 status/stdout/stderr 판정과 native key/rotation 표현을 두 실제 backend에서 outward 정규화한다. double-tap·rotation 순서, stage commit/disposal와 public 결과는 보존해 검증한다. CB-04 Hyper-V readiness native diagnostics 정리는0211995a에서 독립 리뷰·portable QA·로컬 통합했다. 이 기여는 CB-06 Android control 및 기존 Windows/native 조건을 완료하지 않는다.",
       "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다.",
       "confirmedAtCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
       "sourceTrace": {
         "owningPaths": [
-          "packages/device-lab/providers/application/desktop-control-transfer.mjs"
+          "packages/device-lab/providers/application/desktop-control-transfer.mjs",
+          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts"
         ],
         "remainingPaths": [
-          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts",
           "packages/device-lab/providers/application/android-control-transfer.mjs",
           "packages/device-lab/providers/domain/android-control-transfer.mjs",
           "packages/device-lab/providers/ports/android-control-transfer.d.mts",
@@ -2683,7 +2703,16 @@
           "packages/device-lab/providers/backends/windows-vm.mjs",
           "packages/device-lab/providers/backends/ios-simulator.mjs",
           "packages/device-lab/providers/backends/ios-device.mjs"
-        ]
+        ],
+        "historicalRemainingPathsBeforeSemanticNativeResultsQualification": [
+          "packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts",
+          "packages/device-lab/providers/application/android-control-transfer.mjs",
+          "packages/device-lab/providers/domain/android-control-transfer.mjs",
+          "packages/device-lab/providers/ports/android-control-transfer.d.mts",
+          "packages/device-lab/providers/backends/android.mjs",
+          "packages/device-lab/providers/backends/android-device.mjs"
+        ],
+        "qualifiedSourceReferenceCommit": "0211995a168faa2132b2bab42707659578d82ff0"
       },
       "status": "Current source9b12312 integrated and independently Code/Security reviewed; Linux QA948PASS in23 whole files, ordinary shipping and four actual source/emitted/npm/Unix public behavior forms passed. Required Windows qualification remains BLOCKED_ENV. No structural group completion credit or formal close; prior accepted contributions and historical failures retained.",
       "taskId": "TASK__architecture-desktop-native-boundaries",
@@ -2709,7 +2738,8 @@
       "additionalQualificationTasks": [
         "TASK__architecture-hyperv-power-observations-20261015",
         "TASK__architecture-hyperv-create-provision-observations-20261015",
-        "TASK__architecture-container-mount-observations-20261015"
+        "TASK__architecture-container-mount-observations-20261015",
+        "TASK__architecture-native-results-and-workspace-repair-20261015"
       ]
     },
     {
@@ -2718,12 +2748,16 @@
       "dependsOn": [],
       "coveredOperationIds": [],
       "title": "Workspace 열기·사용자 안내",
-      "workStatus": "partial",
-      "remainingWork": "부분 완료: 기존 workspace open의 소유권·lock 해제·안내 기여를 유지한다. 현재 감사 CB-05에서 original M11 root/nested/broken repair 및 addition 코어의 raw Git status/stdout/metadata grammar가 확인됐다. 기존 native composition으로 의미 관측·metadata decoding/materialization·진단을 옮기고 identity·확인·index·보상·successor 정책을 inward에 유지한 뒤 qualified 검증·통합한다.",
+      "workStatus": "completed",
+      "remainingWork": "Workspace root/nested/broken repair 및 addition의 Git/process/metadata 해석을 기존 native binding으로 옮겼다. 코어의 소유권·확인·index·보상 정책과 exact-byte/inode publication/no-op receipt를 유지했다. 0211995a에서 독립 리뷰·portable QA·로컬 통합을 확인했다. 새 실행과 인증 재사용·원래 실패는 currentSemanticNativeResultsWorkspaceQualification에 구분했다. 전체 소스·native·reliability·formal 조건은 별도로 남는다.",
       "completionCriteria": "코어가 충돌·복구 선택·파일 보존·재시도를 판단하고, 어댑터가 안내와 확인을 처리한다. 이미 통합한 workspace open의 소유권·lock 해제 경계는 유지한다. 현재 감사에서 확인한 inward native framing과 완료 증거 조건을 함께 충족해야 한다.",
       "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
-        "remainingPaths": [
+        "remainingPaths": [],
+        "owningPaths": [
+          "src/application/workspace/content-repair-admission.ts",
+          "src/ports/workspace/content-repair-admission.ts",
+          "src/index.ts",
           "src/application/workspace/repair-root.ts",
           "src/application/workspace/repair-nested.ts",
           "src/application/workspace/repair-broken.ts",
@@ -2731,13 +2765,17 @@
           "src/ports/workspace/repair-root.ts",
           "src/worktree.ts"
         ],
-        "owningPaths": [
-          "src/application/workspace/content-repair-admission.ts",
-          "src/ports/workspace/content-repair-admission.ts",
-          "src/index.ts"
-        ]
+        "historicalRemainingPathsBeforeSemanticNativeResultsQualification": [
+          "src/application/workspace/repair-root.ts",
+          "src/application/workspace/repair-nested.ts",
+          "src/application/workspace/repair-broken.ts",
+          "src/application/workspace/worktree-addition.ts",
+          "src/ports/workspace/repair-root.ts",
+          "src/worktree.ts"
+        ],
+        "qualifiedSourceReferenceCommit": "0211995a168faa2132b2bab42707659578d82ff0"
       },
-      "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
+      "status": "Current bounded Source scope independently reviewed, portable QA qualified and locally committed; full Goal/native/formal completion not claimed.",
       "qualifiedContributions": [
         {
           "status": "Confirmed current source scope; pending. Zero additional operation credit; full Goal acceptance remains unverified."
@@ -2757,12 +2795,20 @@
           "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
           "status": "Confirmed bounded group independently Code/Security/Docs reviewed, portable QA qualified (28 whole files,913 passed/9 existing platform skips) and locally delivered at6ea57ca5. Zero additional operation credit; full-default suite, native, reliability, exhaustive source, full Goal and formal close remain unverified; original empty automatic receipt park retained.",
           "contribution": "Workspace content-repair semantic admission and CLI presentation"
+        },
+        {
+          "acceptedIntegrationCommit": "0211995a168faa2132b2bab42707659578d82ff0",
+          "taskId": "TASK__architecture-native-results-and-workspace-repair-20261015",
+          "qaEvidence": "/tmp/ccc-native-results-workspace-01a13fd3/qa3/evidence/final-qualified-runtime-audit.json",
+          "deliveryEvidence": "/tmp/ccc-native-results-workspace-01a13fd3/source-delivery.json",
+          "contribution": "Workspace root/nested/broken repair 및 addition의 Git/process/metadata 해석을 기존 native binding으로 옮겼다. 코어의 소유권·확인·index·보상 정책과 exact-byte/inode publication/no-op receipt를 유지했다.",
+          "status": "Actual independent Code PASS, qualified Security carry, affected portable QA and local integration verified. Native/universe/reliability/formal gates remain separate."
         }
       ],
-      "acceptedIntegrationCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
-      "taskId": "TASK__architecture-seven-confirmed-native-boundaries",
-      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/seven-native-c273-247g_3qu/qa6ea5-after.json",
-      "deliveryEvidence": "/tmp/ccc-seven-native-integration-20261012.json",
+      "acceptedIntegrationCommit": "0211995a168faa2132b2bab42707659578d82ff0",
+      "taskId": "TASK__architecture-native-results-and-workspace-repair-20261015",
+      "qaEvidence": "/tmp/ccc-native-results-workspace-01a13fd3/qa3/evidence/final-qualified-runtime-audit.json",
+      "deliveryEvidence": "/tmp/ccc-native-results-workspace-01a13fd3/source-delivery.json",
       "historicalStatusBeforeCurrentBoundaryReconciliation": {
         "workStatus": "completed",
         "remainingWork": "이 그룹의 확인된 정리 항목은 완료했다.",
@@ -4676,17 +4722,17 @@
     "scope": "Nine existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery, including direct physical attach/detach at b14321e7. Only known recording start/finalize/status operations remain partial. Historical twelve-operation retraction and prior seven-credit qualification retained; no exhaustive/native/formal certification."
   },
   "confirmedStructuralScopeAudit": {
-    "sourceCommit": "9c807d1e2b42af2a9ff42fb5886156007ac7a014",
+    "sourceCommit": "0211995a168faa2132b2bab42707659578d82ff0",
     "previousCompleted": 19,
     "previousGroups": 19,
     "confirmedGroups": 25,
-    "completedGroups": 15,
-    "partialGroups": 7,
+    "completedGroups": 17,
+    "partialGroups": 5,
     "inProgressGroups": 3,
     "pendingGroups": 0,
-    "remainingGroups": 10,
+    "remainingGroups": 8,
     "sourceUniverseCertified": false,
-    "scope": "완료15/25(60.0%)·잔여10(부분7·진행3). 현재 owning-body 감사에서 original M11의 Git 결과/metadata framing과 M05/M06의 Hyper-V stop 완료 판정·native 실행 표현을 확인하여 R03/R06을 다시 부분 완료로 분류했다. 기존9c807d1e의 여섯 경계와17/25 checkpoint의 실제 독립 qualification은 유지한다. 기존 R17/R18/R19에는 확인한 cleanup·macOS recipe·Android control 잔여를 구체화했다. 전체 전환율·전수/native/reliability/formal completion은 미검증이다.",
+    "scope": "완료17/25(68.0%)·잔여8(부분5·진행3). CB-04/05의 현재 Source 경계와 actual independent review·affected portable QA·로컬 통합을 확인하여 R03/R06을 완료로 복원했다. 원래15/25 감사·이전 qualification·218cutovers/219inventory/75gates는 유지한다. 전체 전환율·전수/native/reliability/formal completion은 미검증이다.",
     "currentQualificationTask": "TASK__qemu-native-framing-recovery-20261014",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",
@@ -5133,7 +5179,7 @@
       "remainingGroups": 10,
       "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음."
     },
-    "currentQualificationScope": "Top-level structural accounting now includes completed R11 current Main recovery at7b0fb1d0 as well as R15. R17 remains partial despite qualified HTTP/session and native Appium contributions. Historical currentQualification71473106 remains original joint FAIL, not the current R11 verdict. R11 actual QA2 and fresh/carry provenance are in planningLanes/qemu-image-lifecycle-native-boundaries-structural/currentQemuQualification; its prior QA1 FAIL is retained in qemu-native-framing-recovery-current/currentWork/nativeQa1. VM identity work changes no group count; native hardware, formal receipts, reliability and source-universe acceptance remain separate.",
+    "currentQualificationScope": "Latest bounded Source qualification is currentSemanticNativeResultsWorkspaceQualification. Earlier currentQualification remains historical71473106 FAIL; retained stop/cleanup and other accepted contributions keep their original scope. No fresh native or full-Goal verdict.",
     "historicalStructuralAccountingBeforeQemuRecovery": {
       "sourceCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
       "completedGroups": 14,
@@ -5323,6 +5369,56 @@
       "structuralGroupCredit": 0,
       "operationCredit": 0,
       "sourceUniverseCertified": false
+    },
+    "currentSemanticNativeResultsWorkspaceQualification": {
+      "taskId": "TASK__architecture-native-results-and-workspace-repair-20261015",
+      "runId": "01a13fd3-3bd8-7392-97af-c5b670689741",
+      "sourceReferenceCommit": "0211995a168faa2132b2bab42707659578d82ff0",
+      "scope": "CB-04 semantic Hyper-V lifecycle/readiness results and CB-05 semantic Git repair/addition. R03/R06 bounded structural qualification; R19 readiness contribution only.",
+      "codeReview": "Actual final independent Code r4 PASS, DEEP formal-only after discovery budget exhausted; full final19 Source/25 Tests and boundary REQ reviewed. Earlier chained timeout-overlay defect corrected and both normalizer/public presenter behavioral regressions retained.",
+      "securityReview": "Prior actual Security PASS qualified for four outward diagnostic-overlay lines and later test-fixture/type corrections: no product identity, process, lease, publication or deadline authority changed. Not a fresh Security review of identical final bytes.",
+      "actualQa": {
+        "strictEmittedConsumers": 11,
+        "compiledReadinessPassed": 27,
+        "wholeCompiledBrokerPassed": 170,
+        "sourceWorktreeAcrossRuns": {
+          "passed": 339,
+          "nativeSkipped": 9,
+          "originalWholeRunPassed": 336,
+          "firstSetupRetryPassed": 1,
+          "finalTwoCaseRetryPassed": 2,
+          "freshWholeSuitePass": false
+        },
+        "offlineShipping": "Actual npm archive and materialized Unix payload CLI version/help, public exports/assets and bundled MCP initialize/list/ping/graceful exit PASS."
+      },
+      "qualifiedEvidenceCarry": "QA2 twenty unchanged compiled files394PASS, strict architecture, version injection and assembly; QA1 genuine Device Lab/Root/MCP emission and scoped Source lint. Current product inputs/artifacts authenticated; not fresh producer or twenty-suite execution.",
+      "priorFailureDisposition": "QA1 two partial-port fixture casts and QA2 twenty-four outer-consumer fixture diagnostics corrected without weakening strict compilation. QA3 original whole worktree336PASS/3FAIL/9SKIP, its first setup retry1PASS/2FAIL and an expected-failing child-output diagnostic remain immutable. Private-only launcher binding, preload ordering, finite fake runtime observations and exact same-UID canonical parent tsx IPC corrected setup; final two unchanged cases passed. No product Source/test change for this setup rescue.",
+      "genuineBuildAndResolution": "1745 final inputs,7598 physical dependency hashes per fixture,1055 assembled and537 raw layout artifacts authenticated; emitted tests use actual JS without Source aliases or production TS fallback. Whole worktree intentionally executes real Source CLI.",
+      "containment": "All1002 observed runtime identities gone, zero survivors. One optional npm registry lookup denied before dispatch; shipping still passed and the event is retained. No real provider or external communication occurred.",
+      "localIntegration": {
+        "sourceCommit": "0211995a168faa2132b2bab42707659578d82ff0",
+        "committedPaths": 39,
+        "deliveryEvidence": "/tmp/ccc-native-results-workspace-01a13fd3/source-delivery.json",
+        "deliverySha256": "5e8de91def25272c874314c7eba35291f7be4d1adf6c53161d877078dea3ed25",
+        "originalTrackedMetadata": 1736,
+        "unownedTrackedBytes": 1692,
+        "originalUntrackedInputs": 81,
+        "semanticIndexAndTwoPrMergeAncestorsPreserved": true,
+        "pushed": false
+      },
+      "evidenceDirectory": "/tmp/ccc-native-results-workspace-01a13fd3/qa3/evidence",
+      "runtimeAuditSha256": "b35d44e29999b2e62a3d38ffea48ec7ab61511b4405380c84c154c45a1fb6c4f",
+      "previousStructuralCounts": {
+        "completed": 15,
+        "partial": 7,
+        "inProgress": 3,
+        "total": 25
+      },
+      "structuralGroupCredit": 2,
+      "operationCredit": 0,
+      "sourceUniverseCertified": false,
+      "knownCeiling": "Native Windows/macOS and real providers were not executed here. Original whole-Source/caller/export closure, reliability, native and formal gates remain unverified; CB-06/07/08/09 remain Source work. No whole-Goal completion.",
+      "formalClose": "Not claimed. Automatic ordered review/QA attestation remains a separate gate; direct finals are non-attesting when receipts are absent."
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
