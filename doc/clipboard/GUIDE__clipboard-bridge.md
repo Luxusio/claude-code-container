@@ -84,9 +84,25 @@ owner/link/mode safeguards remain in the facade and lock helpers.
 Retirement bindings return undefined synchronously and ignore the asynchronous
 shutdown result. They retain the other-session/bind-user vetoes and do not rescan
 sessions, unlink metadata or adopt a Promise. The exported stop function currently
-has test callers only. index.ts registers explicit retirement as a deprecated
+has test callers only. It remains an externally callable compatibility API; the
+original inventory explicitly preserves exports with no internal consumer. An
+internal production caller is unnecessary to trace this retained binding. index.ts registers explicit retirement as a deprecated
 home-migration compatibility option; the migration application does not invoke
 that option. This extraction adds no session or home cleanup edge.
+
+Independent artifact QA passed on 2026-10-15: two external consumers ran once
+in parallel against the qualified assembled emission and Unix payload, with
+eight cases each. Both observed synchronous undefined returns, preserved
+metadata, conservative vetoes and one authenticated loopback POST /shutdown.
+Original leaders were reaped and owned groups were empty.
+[Local raw evidence](../../results/clipboard-retire-artifact-01a13ea8-20261015/independent-qa/inventory.json)
+retains exact commands, outputs and cleanup. Container inventory facts are
+simulated; daemon termination, Docker, native desktop and broader acceptance
+remain unverified.
+
+### Known ceiling
+
+Synthetic CLI facts establish controlled consumer behavior only — broader native acceptance remains open.
 
 The fixed compatibility hash includes the compiled facade and six runtime
 domain/application files, with literal labels/length framing and import-time

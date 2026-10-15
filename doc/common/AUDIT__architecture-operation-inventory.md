@@ -29,9 +29,25 @@ and separately hashed dirty working bytes. Compact caller, inward owner, native
 effect, export and authority witnesses are under
 `planningLanes[id=final-inventory-reconciliation].currentSourceCheck` in the
 [progress overlay](architecture-progress.json). The retained
-`BIND-source-clipboard-server-retire` has no found production caller and remains
-explicitly unresolved; the actual orphan watchdog is a distinct trace. No new
-demonstrated Source boundary gap or operation/group credit is claimed.
+`BIND-source-clipboard-server-retire` had no found production caller and was
+left unresolved in that historical check; the actual orphan watchdog is a
+distinct trace. No new demonstrated Source boundary gap or operation/group
+credit was claimed.
+
+A 2026-10-15 follow-up resolves that one static disposition through its declared
+retained-export route. The original inventory names the exported stop API and
+explicitly preserves public compatibility without internal consumers. The
+facade export reaches the application lifecycle and native shutdown binding;
+external production usage remains unknown and is not required by that contract.
+The cumulative bounded static check is 40/40 bindings across those same sixteen
+operations, while the original 39/40 report remains unchanged. Independent
+artifact QA ran two consumers once in parallel, with eight cases each and one
+real authenticated shutdown request per artifact. Synchronous returns, private
+metadata and observed owned-process cleanup passed.
+[Local artifact evidence](../../results/clipboard-retire-artifact-01a13ea8-20261015/independent-qa/inventory.json)
+keeps simulated native inventory facts distinct from exercised module/file/HTTP
+boundaries. This correction grants no operation/group, native-daemon or full
+`ACC-M12-source` acceptance.
 
 The [retained input inventory](../../results/architecture-m12-source-01a13e2f-20261015/input-inventory.json)
 (SHA-256 `b658f3c881001bb1f15c6761aa1014a011bf9537f7e1c26b493a3ce549bf638a`)

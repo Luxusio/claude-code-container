@@ -1461,7 +1461,7 @@
       "id": "final-inventory-reconciliation",
       "taskId": "TASK__architecture-final-inventory-reconciliation",
       "coveredOperationIds": [],
-      "status": "Bounded current M12 static audit at HEAD5d20a316 with separately pinned dirty working bytes:16 existing operations,39/40 required bindings source-traced; retained clipboard-retire production caller unresolved. No new demonstrated Source boundary gap, operation/group credit or behavior acceptance. ACC-M12-source, global source/denominator, native, artifact, reliability and formal acceptance remain unverified; historical reconciliation retained.",
+      "status": "Retained clipboard stop API static disposition resolved under original external-compatibility contract: cumulative bounded16ops/40of40bindings; original39/40 report retained. Independent actual assembled/materialized consumers PASS, eight cases each in one parallel pair. No operation/group credit; full ACC-M12-source, global denominator, native, reliability and formal acceptance remain unverified.",
       "historicalStatusBeforeRecordingAcceptance": "Nine bounded current reference corrections candidate-reconciled-awaiting-independent-current-review; historical source/proofs and existing provisional accounting retained. Broader direct physical/admin policy omissions await coordinator review; no whole-Goal/native/exhaustive certification.",
       "historicalStatusBeforeM12CurrentSourceCheck": "Recording three credits and accepted1877 accounting reconciled in accepted958c56c2 metadata after actual independent reviews/QA/delivery. Current operation-only218/218 is not overall migration completion. Known original structural groups and whole-source, final artifact, native, reliability and formal gates remain separate; no exhaustive certification.",
       "currentSourceCheck": {
@@ -1778,6 +1778,46 @@
             "authority": "Startup flock plus PID/path/start-token/script+policy generation guards replacement; exit-record unlink is PID-only. Detached startup/final bridge move are unchecked, no explicit shell image-byte cap is inferred, and daemon/Xvfb/native/install reliability remains unexecuted."
           }
         ]
+      },
+      "historicalStatusBeforeRetainedApiDisposition": "Bounded current M12 static audit at HEAD5d20a316 with separately pinned dirty working bytes:16 existing operations,39/40 required bindings source-traced; retained clipboard-retire production caller unresolved. No new demonstrated Source boundary gap, operation/group credit or behavior acceptance. ACC-M12-source, global source/denominator, native, artifact, reliability and formal acceptance remain unverified; historical reconciliation retained.",
+      "currentRetainedApiDisposition": {
+        "taskId": "TASK__architecture-clipboard-retire-artifact-20261015",
+        "runId": "01a13ea8-e1f8-7405-82db-637ada2471b1",
+        "sourceCommit": "75a82494854b7ce78cec9e7b0fc2ff889d35aca9",
+        "checkedAt": "2026-10-15",
+        "bindingId": "BIND-source-clipboard-server-retire",
+        "operationId": "OP-clipboard-server-retire",
+        "sourceDisposition": "retained externally callable compatibility API; no internal production caller required; actual external production usage unknown",
+        "sourceEvidence": [
+          "doc/common/architecture-operation-inventory.json:149368 retained exported source API",
+          "doc/common/architecture-operation-inventory.json:259015 external compatibility scope and :259020 no-in-repo-consumer rule",
+          "doc/common/ADR__ccc-target-architecture.md:121 public compatibility",
+          "src/clipboard-server.ts:1483 facade export -> src/application/clipboard/server-lifecycle.ts:77 -> src/clipboard-server.ts:1395 native shutdown"
+        ],
+        "historicalCheckedBindings": 39,
+        "resolvedRetainedBindingCount": 1,
+        "cumulativeBoundedStaticBindings": 40,
+        "requiredBindings": 40,
+        "operationCount": 16,
+        "artifactQualification": {
+          "status": "bounded-independent-PASS",
+          "checkedAt": "2026-10-15",
+          "verificationDepth": "executed-command",
+          "invocations": 2,
+          "casesPerArtifact": 8,
+          "totalCases": 16,
+          "runtimeRelaunches": 0,
+          "parallelOverlapNs": 649562079,
+          "authenticatedPostPerArtifact": 1,
+          "nativeFacts": "simulated readonly container CLI inventory; actual artifact modules/private files/synchronous subprocess/loopback HTTP exercised",
+          "cleanup": "both original leaders reaped and owned groups empty; seven simulated CLI children joined and eight fence startup events per artifact",
+          "evidenceRoot": "results/clipboard-retire-artifact-01a13ea8-20261015/independent-qa/",
+          "evidenceInventorySha256": "1b40a6741eb765ccfb042d7eff6d3f0de12d57ada5058dfb842999f77fd04380"
+        },
+        "completionCredit": false,
+        "operationCredit": 0,
+        "structuralGroupCredit": 0,
+        "scope": "Original retained-export static disposition plus bounded actual assembled/materialized consumer witness; no invented internal caller, real Docker/daemon termination/native/full Source/M12 acceptance."
       }
     },
     {
