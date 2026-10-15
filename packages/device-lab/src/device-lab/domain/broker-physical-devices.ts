@@ -44,7 +44,7 @@ export interface AppleTrustFacts {
     trustState:'visible-unavailable'|'visible-to-xctrace'|'not-visible';
     ownerId?:string;inventory?:{devices:AppleHostDevice[];count:number};alreadyNetworkVisible?:boolean;
 }
-export interface PhysicalExecution<Receipt> {status?:number|null;stdout?:string;stderr?:string;error?:string;timedOut?:boolean;receipt:Receipt}
+export interface PhysicalExecution<Receipt> {ok:boolean;receipt:Receipt}
 export interface PhysicalContext<Receipt> {
     error:string; allowed?:string[]; ownerId?:string; backend?:string; deviceId?:string; hardwareId?:string;
     connection?:string; state?:string; detail?:string; selectionReason?:AndroidSelectionReason; existing?:PhysicalRecord|null;
@@ -71,7 +71,6 @@ export interface PhysicalStopRequest {
     force: boolean;
     dryRun: boolean;
 }
-export function commandSucceeded(command: PhysicalExecution<unknown>) { return command.status === 0 && !command.error; }
 export function physicalStopReplacement(device: PhysicalRecord, timestamp: string) { return {
     ...device, status: 'detached', leaseClaimId: null, leaseClaimNonce: null, updatedAt: timestamp
 }; }

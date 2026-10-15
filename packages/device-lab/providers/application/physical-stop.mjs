@@ -40,10 +40,10 @@ export function createPhysicalStopApplication(ports) {
                 if (exited) return { exited: true };
                 return { exited: false, error: `Android real-device recording did not exit within 3000ms for ${device.id}; recording metadata and physical lease were preserved for retry.` };
             }
-            if (recorderSignal.exited || adbFallback?.status === 0) return { exited: true };
+            if (recorderSignal.exited || adbFallback?.ok) return { exited: true };
             const signalFailure = recorderSignal.reason || "owned recorder signaling failed";
             const adbFailure = adbFallback
-                ? adbFallback.stderr || adbFallback.stdout || `exit ${adbFallback.status}`
+                ? adbFallback.detail
                 : "ADB fallback unavailable";
             return { exited: false, error: `Android real-device recording cleanup failed for ${device.id}: ${signalFailure}; ${adbFailure}. Recording metadata and physical lease were preserved for retry.` };
         }

@@ -30,8 +30,7 @@ export interface BrokerHyperVSnapshotPorts<Connection,Receipt> {
     recordCreatedId(ownerId: string, backend: string, deviceId: string, incarnationId: string, providerName: string, snapshotId: string): undefined;
     clearJournal(ownerId: string, backend: string, deviceId: string): undefined;
     removeRepairJournal(ownerId: string, backend: string, deviceId: string): undefined;
-    status(connection:Connection, identity: SnapshotIdentity, deadlineAt: number, timeoutMs: number): Promise<SnapshotExecution<Receipt>>;
-    parseStatus(text: string): SnapshotVmObservation | null;
+    status(connection:Connection, identity: SnapshotIdentity, deadlineAt: number, timeoutMs: number): Promise<{ readonly execution: SnapshotExecution<Receipt>; readonly observation: SnapshotVmObservation | null }>;
     observationMismatch(observation: SnapshotVmObservation | null, expected: { vmId: string; vmName: string; diskPath: string }): string | null;
     create(connection:Connection, target: SnapshotCheckpointTarget, options: SnapshotCreateOptions): Promise<SnapshotMutationObservation>;
     restore(connection:Connection, target: SnapshotCheckpointTarget, options: { force: boolean; startAfterRestore: boolean }): Promise<SnapshotMutationObservation>;
@@ -41,11 +40,11 @@ export interface BrokerHyperVSnapshotPorts<Connection,Receipt> {
     isValidationError(error: unknown): boolean;
     providerErrorCode(error: unknown): string | undefined;
     errorCode(error: unknown, fallback: string): string;
-    diagnosticCode(execution: { error?: string; stdout?: string; stderr?: string }, fallback: string): string;
+    diagnosticCode(execution: SnapshotExecution<Receipt> | null, fallback: string, providerErrorCode?: string): string;
     publish(ownerId: string, backend: string, deviceId: string, expected: Record<string, unknown>, replacement: Record<string, unknown>): SnapshotPublication;
     mergeRepair(ownerId: string, backend: string, deviceId: string, original: Record<string, unknown>, patch: SnapshotRepairPatch): Record<string, unknown>;
     forgetConsole(ownerId: string, backend: string, deviceId: string): undefined;
-    sshReady(connection:Connection, target: { deviceRoot: string; privateRoot?: string; sshPrivateKeyPath: string; knownHostsPath: string; guestUsername: string; networkAddress: string }): Promise<SnapshotExecution<Receipt>>;
+    sshReady(connection:Connection, target: { deviceRoot: string; privateRoot?: string; sshPrivateKeyPath: string; knownHostsPath: string; guestUsername: string; networkAddress: string }): Promise<{ readonly ready: boolean; readonly execution: SnapshotExecution<Receipt> }>;
     remainingTimeout(deadlineAt: number, maximumMs: number): number;
     now(): number;
     timestamp(): string;

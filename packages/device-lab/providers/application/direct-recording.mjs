@@ -211,13 +211,13 @@ export function createDirectRecordingApplication(ports) {
             if (!target || target.kind === 'simulator') return failure(`${label} recording target unavailable`);
             const transferTimeout = ports.kind === 'macos-vm' ? args.helperTimeoutMs : 300000;
             const copied = ports.copyRecording(target, remote, stage.stagedPath, transferTimeout);
-            if (copied.status !== 0) return failure(`Error: ${copied.stderr || copied.stdout || `exit ${copied.status}`}. ${label} recording remains pending finalization for ${args.deviceId}.`);
+            if (!copied.ok) return failure(`Error: ${copied.detail}. ${label} recording remains pending finalization for ${args.deviceId}.`);
             const committed = ports.commitStage(stage);
             if (!committed.ok) return failure(`${committed.message}. ${label} recording remains pending finalization for ${args.deviceId}.`);
             const cleared = generation.transitionRecordingGeneration(args.deviceId, pending, null, ports.timestamp());
             if (!cleared.committed) return failure(`${label} recording state changed while stopping for ${args.deviceId}; successor state and remote artifact were preserved.`);
             ports.removeRecording(target, remote, transferTimeout);
-            return { kind: 'success', value: { deviceId: args.deviceId, stopped: true, provider, recording: { ...pending, active: false, localPath: policy.path, stoppedAt: ports.timestamp() }, ...(ports.kind === 'android-device' ? {} : { device: cleared.device }), stdout: copied.stdout, stderr: copied.stderr, ...(ports.kind === 'macos-vm' ? {} : { status: copied.status }) } };
+            return { kind: 'success', value: { deviceId: args.deviceId, stopped: true, provider, recording: { ...pending, active: false, localPath: policy.path, stoppedAt: ports.timestamp() }, ...(ports.kind === 'android-device' ? {} : { device: cleared.device }), ...copied.output } };
         } finally { ports.disposeStage(stage); }
     }
     /** @param {import('../ports/direct-recording.mjs').SimulatorRecordingPorts} effects @param {Record} device @param {Record} previous @param {Record} pending @param {string} path @param {Args} args @returns {Promise<Outcome>} */

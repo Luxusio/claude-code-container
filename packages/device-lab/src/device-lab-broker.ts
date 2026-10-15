@@ -11,7 +11,7 @@ import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
 import type {BrokerAppiumInstrumentationStep} from "./device-lab/ports/broker-appium.js";
 import type {DeviceStatusPreparation, DeviceStatusPhysicalAdmission} from "./device-lab/domain/broker-observation.js";
 import { renderHyperVCreateStart, renderHyperVCreateRollback, renderHyperVStopDelete, renderHyperVSnapshot, renderHyperVSnapshotRepair, type NativeHyperVConnection } from "./device-lab/broker/hyper-v/lifecycle-outcomes.js";
-import { normalizeAppleInventory, renderLeaseOutcome, renderLeaseFailure as leaseParamError, renderCleanupRollback, renderPhysicalAttachOutcome, renderPhysicalDetachOutcome, renderAppleTrustOutcome, renderPhysicalStopOutcome, renderOwnerCleanupOutcome } from './device-lab/broker/physical-outcomes.js';
+import { normalizePhysicalExecution, normalizeAppleInventory, renderLeaseOutcome, renderLeaseFailure as leaseParamError, renderCleanupRollback, renderPhysicalAttachOutcome, renderPhysicalDetachOutcome, renderAppleTrustOutcome, renderPhysicalStopOutcome, renderOwnerCleanupOutcome } from './device-lab/broker/physical-outcomes.js';
 import type { NativePhysicalReceipt } from './device-lab/broker/physical-outcomes.js';
 import {hyperVLinuxGuestReadyTraceFailureCode as coreLinuxTraceFailure,compareHyperVLinuxEd25519HostKeyFingerprint as coreLinuxFingerprint,hyperVLinuxGuestSignalDeadlineAt as coreLinuxSignalDeadline,hyperVLinuxGuestSignalTimedOut as coreLinuxSignalTimedOut,type HyperVLinuxGuestReadyTrace} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVSecureBootConfiguration} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
@@ -3839,8 +3839,11 @@ function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions) {
         recordCreatedId: (...args) => { recordHyperVSnapshotCreatedId(hyperVJournalPersistenceRuntime(), ...args); return undefined; },
         clearJournal: (...args) => { clearHyperVSnapshotJournal(hyperVJournalPersistenceRuntime(), ...args); return undefined; },
         removeRepairJournal: (ownerId, backend, deviceId) => { rmSync(hyperVSnapshotJournalPath(ownerId, backend, deviceId), { force: true }); return undefined; },
-        status: async (connection, identity, deadlineAt, timeoutMs) => nativeHyperVObservation(await hyperVTypedStatusExecution(normalized, {executable: connection.executable, ...identity}, deadlineAt, timeoutMs, true)),
-        parseStatus: parseHyperVVmObservation,
+        status: async (connection, identity, deadlineAt, timeoutMs) => {
+            const receipt = await hyperVTypedStatusExecution(normalized, {executable: connection.executable, ...identity}, deadlineAt, timeoutMs, true);
+            const ok = commandSucceeded(receipt);
+            return { execution: { ok, receipt }, observation: ok ? parseHyperVVmObservation(receipt.stdout || "") : null };
+        },
         observationMismatch: hyperVSnapshotObservationMismatch,
         create: async (connection, target, options) => {
             const effect = recording(connection.executable, options.timeoutMilliseconds);
@@ -3862,17 +3865,25 @@ function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions) {
             try { return await repairDeviceLabHyperVSnapshotState(effect.client, target); }
             finally { lastExecution = effect.lastExecution(); }
         },
-        lastExecution: () => lastExecution ? {mode: lastExecution.mode, provider: lastExecution.provider, status: lastExecution.status, stdout: lastExecution.stdout, stderr: lastExecution.stderr, error: lastExecution.error, receipt: lastExecution} : null,
+        lastExecution: () => lastExecution ? { ok: lastExecution.status === 0 && !lastExecution.error, receipt: lastExecution } : null,
         isValidationError: error => error instanceof HyperVWindowsError && error.category === "validation",
         providerErrorCode: error => error instanceof HyperVWindowsError ? error.code : undefined,
         errorCode: hyperVBoundedErrorCode,
-        diagnosticCode: hyperVProviderDiagnosticCode,
+        diagnosticCode: (execution, fallback, providerErrorCode) => hyperVProviderDiagnosticCode({
+            error: providerErrorCode ?? execution?.receipt?.error,
+            stdout: execution?.receipt?.stdout,
+            stderr: execution?.receipt?.stderr,
+        }, fallback),
         publish: transitionHyperVSnapshotState,
         mergeRepair: (ownerId, backend, deviceId, original, patch) => ownerRepository.mergeSnapshotRepair(ownerId, backend, deviceId, original, patch),
         forgetConsole: (ownerId, backend, deviceId) => { forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, backend, deviceId)); return undefined; },
-        sshReady: async (connection, target) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({
-            executable: connection.executable, ...target, timeoutMs: 15000,
-        }), { timeoutMs: 20000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT })),
+        sshReady: async (connection, target) => {
+            const receipt = await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({
+                executable: connection.executable, ...target, timeoutMs: 15000,
+            }), { timeoutMs: 20000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
+            const observation = deviceLabHyperVLinuxReadinessObservation(nativeHyperVObservation(receipt));
+            return { ready: observation.ready, execution: { ok: observation.ok, receipt } };
+        },
         remainingTimeout: hyperVRemainingTimeout,
         now: Date.now,
         timestamp: () => new Date().toISOString(),
@@ -5995,7 +6006,7 @@ function brokerPhysicalDevicesApplication(normalized: NormalizedBrokerOptions) {
         deriveDeviceId: physicalDeviceId,
         read: readOwnerDevices,
         androidInventory: () => androidHostDeviceInventory(normalized),
-        connectAndroid: target => observePhysicalCommand(normalized, { mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["connect", target] }),
+        connectAndroid: target => normalizePhysicalExecution(observePhysicalCommand(normalized, { mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["connect", target] })),
         appleInventory: () => normalizeAppleInventory(observePhysicalCommand(normalized, { mode: "exec", provider: "xcrun", executable: executableFor("xcrun", normalized), args: ["xctrace", "list", "devices"] }), parseXctraceDevices),
         nonce: () => randomBytes(16).toString("hex"),
         timestamp: () => new Date().toISOString(),
@@ -6025,7 +6036,7 @@ function brokerPhysicalDevicesApplication(normalized: NormalizedBrokerOptions) {
         publish: (ownerId, stateKey, deviceId, expected, replacement) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, () => replacement),
         observePhysicalStop: backend => {
             const command: ProviderCommand = { mode: "noop", provider: backend, reason: backend === "android-device" ? "physical Android stop/delete does not power off or disconnect the real device" : "physical iOS stop/delete does not power off, erase, or disconnect the real device" };
-            return observePhysicalCommand(normalized, command);
+            return normalizePhysicalExecution(observePhysicalCommand(normalized, command));
         },
         clone: structuredClone,
     };

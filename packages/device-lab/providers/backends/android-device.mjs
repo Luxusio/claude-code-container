@@ -128,8 +128,11 @@ const physicalStop = createPhysicalStopApplication({
     runtimeId: randomUUID,
     signalRecording: signalOwnedRuntimeProcess,
     discoverAdb: () => androidDiscovery().adb,
-    // The selected native runner uses default UTF-8; retain its raw result.
-    stopAdbRecording: (adb, serial) => /** @type {import("../ports/physical-stop.mjs").PhysicalCommandResult} */ (run(adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"])),
+    stopAdbRecording(adb, serial) {
+        // The selected native runner uses default UTF-8.
+        const result = /** @type {{status:number|null,stdout:string,stderr:string}} */ (run(adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"]));
+        return { ok: result.status === 0, detail: result.stderr || result.stdout || `exit ${result.status}` };
+    },
     waitRecordingExit: waitForProcessExit,
 });
 

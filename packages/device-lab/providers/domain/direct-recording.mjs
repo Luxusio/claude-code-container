@@ -2,7 +2,7 @@
  * @typedef {'android-emulator'|'android-device'|'ios-simulator'|'macos-vm'|'windows-sandbox'} RecordingVariant
  * @typedef {{deviceId:string,localPath?:string,remotePath?:string,timeLimitSec?:number,helperTimeoutMs?:number}} RecordingArguments
  * @typedef {{executable:string,args:string[],env?:Record<string,string|undefined>,timeoutMs?:number}} RecordingCommand
- * @typedef {{status:number|null,stdout:string,stderr:string}} RecordingCommandResult
+ * @typedef {{ok:boolean,detail:string,output:Record<string,unknown>}} RecordingCopyOutcome
  * @typedef {{kind:'adb',executable:string,prefix:string[]}} AdbRecordingTarget
  * @typedef {{kind:'simulator',executable:string,target:string}} SimulatorRecordingTarget
  * @typedef {{kind:'ssh',executable:string,prefix:string[],target:string,scp:string,scpPrefix:string[],env?:Record<string,string|undefined>}} MacosRecordingTarget
@@ -18,7 +18,7 @@
  * @typedef {{signaled:boolean,reason?:string}} RecordingSignal
  * @typedef {{active?:boolean,frameDir?:string,archivePath?:string,hostArchivePath?:string,[field:string]:unknown}} HelperRecording
  * @typedef {{error:string,response?:undefined,helper?:unknown}|{error?:undefined,response:{ok:boolean,error?:string,recording?:HelperRecording},helper:unknown}} RecordingHelperResult
- * @typedef {{deviceId:string,recording:RecordingRecord|null,provider?:string,stopped?:boolean,device?:RecordingRecord|null,helper?:unknown,stdout?:string,stderr?:string,status?:number|null}} RecordingValue
+ * @typedef {RecordingRecord & {deviceId:string,recording:RecordingRecord|null,provider?:string,stopped?:boolean,device?:RecordingRecord|null,helper?:unknown}} RecordingValue
  * @typedef {RecordingRefusal|{kind:'success',value:RecordingValue}} RecordingOutcome
  */
 export {};

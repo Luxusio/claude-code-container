@@ -1,6 +1,6 @@
 import type { HyperVLifecycleOutcome, HyperVPlannedFacts, HyperVNativeExecution, HyperVRollback, HyperVCreateRecovery, HyperVLifecycleFailureReason } from "../../domain/lifecycle/hyper-v-create-start.js";
 import type { HyperVStopDeleteOutcome, HyperVReplayResult, HyperVNetworkCleanupEvidence } from "../../domain/lifecycle/hyper-v-stop-delete.js";
-import type { SnapshotOutcome, SnapshotRepairResult } from "../../domain/lifecycle/hyper-v-snapshots.js";
+import type { SnapshotExecution, SnapshotOutcome, SnapshotRepairResult } from "../../domain/lifecycle/hyper-v-snapshots.js";
 import type { ProviderCommand, ProviderCommandResult } from "../../../device-lab-broker.js";
 import type { DeviceLabHyperVCommandResult } from "./lifecycle-adapter.js";
 import { publicHyperVArtifactCleanup, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./public-response.js";
@@ -56,6 +56,9 @@ export function renderHyperVSnapshotRepair(outcome: SnapshotRepairResult) {
         } : {})
     };
 }
+function snapshotExecutionReceipt(execution: SnapshotExecution<DeviceLabHyperVCommandResult>) {
+    return execution.receipt ?? { mode: "exec", provider: "hyper-v", status: execution.ok ? 0 : null };
+}
 export function renderHyperVSnapshot(outcome: SnapshotOutcome<DeviceLabHyperVCommandResult>): HyperVWireResponse {
     const { kind, journalDisposition: _journalDisposition, ...facts } = outcome;
     if (kind === "refused" || kind === "uncertain") {
@@ -70,13 +73,13 @@ export function renderHyperVSnapshot(outcome: SnapshotOutcome<DeviceLabHyperVCom
                 } : {}),
                 ...(execution ? {
                     execution: redactProviderCommandInput({
-                        ...execution.receipt ?? execution
+                        ...snapshotExecutionReceipt(execution)
                     }, true, executionDiagnostic)
                 } : {}),
                 ...(rollback ? {
                     rollback: {
                         ...rollback, execution: redactProviderCommandInput({
-                            ...rollback.execution.receipt ?? rollback.execution
+                            ...snapshotExecutionReceipt(rollback.execution)
                         }, true, "hyper-v-snapshot-rollback-failed")
                     }
                 } : {}),
@@ -93,7 +96,7 @@ export function renderHyperVSnapshot(outcome: SnapshotOutcome<DeviceLabHyperVCom
                 } : {}),
                 ...(execution ? {
                     execution: redactProviderCommandInput({
-                        ...execution.receipt ?? execution
+                        ...snapshotExecutionReceipt(execution)
                     }, true)
                 } : {}),
             }

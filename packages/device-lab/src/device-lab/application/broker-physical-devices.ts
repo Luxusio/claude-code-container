@@ -1,4 +1,4 @@
-import { validateAttachParams, validateAppleTrustParams, detachedPhysicalDeviceCanReattach, appleTrustFacts, commandSucceeded, physicalStopReplacement, type AttachParams, type PhysicalStopRequest, type AttachOutcome, type DetachOutcome, type TrustOutcome, type PhysicalStopOutcome } from '../domain/broker-physical-devices.js';
+import { validateAttachParams, validateAppleTrustParams, detachedPhysicalDeviceCanReattach, appleTrustFacts, physicalStopReplacement, type AttachParams, type PhysicalStopRequest, type AttachOutcome, type DetachOutcome, type TrustOutcome, type PhysicalStopOutcome } from '../domain/broker-physical-devices.js';
 import { cleanupRecord, type PhysicalRecord, type CleanupLeaseGuard, type CleanupPublication, type CleanupLeaseResult } from '../domain/broker-owner-cleanup.js';
 import type { BrokerPhysicalDevicesPorts, AndroidInventory } from '../ports/broker-physical-devices.js';
 export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: BrokerPhysicalDevicesPorts<Handle, Receipt>) {
@@ -68,7 +68,7 @@ export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: B
         });
         if (parsed.connection === "wifi") {
             const connect = ports.connectAndroid(target);
-            if (!commandSucceeded(connect)) {
+            if (!connect.ok) {
                 releaseLease();
                 return {kind:'attach-refused',category:'provider-failed',error: "adb-connect-failed", command: connect};
             }
@@ -286,7 +286,7 @@ export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: B
             device:auxiliary.device,auxiliaryCleanup:auxiliary.result,invoked:false,dryRun:false,
             mutatesHost:auxiliary.result.changed || auxiliary.result.appium.cleared === true || auxiliary.result.recording.cleared === true || auxiliary.result.minimizeWatchdog.cleared === true};
         const execution = ports.observePhysicalStop(parsed.backend);
-        const success = commandSucceeded(execution);
+        const success = execution.ok;
         const lease = success ? ports.releaseLease(ownerId,guard) : null;
         if (lease && !lease.ok) return {kind:'stop-refused',category:lease.failure.kind === 'conflict' ? 'conflict' : 'provider-failed',
             error:'physical-lease-cleanup-failed',ownerId,backend:parsed.backend,deviceId:parsed.deviceId,physicalLeaseCleanup:lease,

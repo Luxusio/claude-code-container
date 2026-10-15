@@ -3,14 +3,14 @@ import { createBrokerOwnerCleanupApplication } from "../../../packages/device-la
 import type { BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
 import { createBrokerPhysicalDevicesApplication } from "../../../packages/device-lab/src/device-lab/application/broker-physical-devices.js";
 import type { BrokerPhysicalDevicesPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-devices.js";
-import { normalizeAppleInventory, renderAppleTrustDiagnostic, renderPhysicalAttachOutcome } from "../../../packages/device-lab/src/device-lab/broker/physical-outcomes.js";
+import { normalizeAppleInventory, normalizePhysicalExecution, renderAppleTrustDiagnostic, renderPhysicalAttachOutcome, renderPhysicalStopOutcome } from "../../../packages/device-lab/src/device-lab/broker/physical-outcomes.js";
 import { appleTrustFacts } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-devices.js";
 
 function physicalPorts(): BrokerPhysicalDevicesPorts<string, { observed: boolean }> {
     return {
         deriveDeviceId: () => "phone", read: () => [],
         androidInventory: () => ({ ok: true, devices: [{ serial: "usb", state: "device", details: {}, connection: "usb", attachable: true }] }),
-        connectAndroid: () => ({ status: 0, receipt: { observed: true } }),
+        connectAndroid: () => ({ ok: true, receipt: { observed: true } }),
         appleInventory: () => ({ kind: "observed", receipt: { observed: true }, devices: [{ name: "Phone", udid: "udid", version: "18", connection: "usb", availability: "available", raw: "visible" }] }),
         nonce: () => "nonce", timestamp: () => "now",
         claimLease: () => ({ kind: "claimed", created: true, lease: { claimId: "claim" } }),
@@ -22,7 +22,7 @@ function physicalPorts(): BrokerPhysicalDevicesPorts<string, { observed: boolean
         removeDevice: () => undefined,
         auxiliary: (_owner, _request, expected) => ({ result: { ok: true, changed: false, appium: { cleared: false }, recording: { cleared: false }, minimizeWatchdog: { cleared: false } }, device: expected, committed: false }),
         publish: (_owner, _state, _id, _expected, replacement) => ({ found: true, matched: true, device: replacement }),
-        observePhysicalStop: () => ({ status: 0, receipt: { observed: true } }), clone: value => value,
+        observePhysicalStop: () => ({ ok: true, receipt: { observed: true } }), clone: value => value,
     };
 }
 
@@ -49,19 +49,24 @@ describe("broker physical devices", () => {
     it("holds the exact Android claim during connect and publishes before heartbeat", () => {
         const ports = physicalPorts(); let claimed = false, published = false;
         ports.claimLease = (owner, request) => { expect(owner).toBe("owner"); expect(request).toMatchObject({ hardwareId: "host:5555", claimNonce: "nonce" }); claimed = true; return { kind: "claimed", created: true, lease: { claimId: "claim" } }; };
-        ports.connectAndroid = target => { expect(claimed).toBe(true); expect(target).toBe("host:5555"); return { status: 0, receipt: { observed: true } }; };
+        ports.connectAndroid = target => { expect(claimed).toBe(true); expect(target).toBe("host:5555"); return { ok: true, receipt: { observed: true, status: 7, error: "opaque native detail" } }; };
         ports.androidInventory = () => ({ ok: true, devices: [{ serial: "host:5555", state: "device", details: {}, connection: "wifi", attachable: true }] });
         ports.claimDevice = (_owner, _state, device) => { published = true; return { ok: true, device, reattached: false }; };
         ports.heartbeat = () => { expect(published).toBe(true); return { active: true }; };
         expect(createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone", connection: "wifi", host: "host" })).toMatchObject({ kind: "attached" });
     });
 
-    it.each(["connect", "inventory"])("preserves thrown native %s faults without adding claim rescue", phase => {
-        const ports = physicalPorts(), fault = new Error("native fault"), release = vi.fn(ports.releaseClaim); ports.releaseClaim = release;
+    it.each(["connect", "inventory", "stop"])("preserves thrown native %s faults without adding claim rescue", phase => {
+        const ports = physicalPorts(), fault = new Error("native fault"), release = vi.fn(ports.releaseClaim), releaseStop = vi.fn(ports.releaseLease), publish = vi.fn(ports.publish);
+        ports.releaseClaim = release; ports.releaseLease = releaseStop; ports.publish = publish;
         if (phase === "connect") ports.connectAndroid = () => { throw fault; };
-        else ports.androidInventory = () => { throw fault; };
-        expect(() => createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone", connection: "wifi", host: "host" })).toThrow(fault);
+        else if (phase === "inventory") ports.androidInventory = () => { throw fault; };
+        else ports.observePhysicalStop = () => { throw fault; };
+        const app = createBrokerPhysicalDevicesApplication(ports);
+        expect(() => phase === "stop" ? app.stop("owner", stopRequest, { id: "phone" }, { id: "phone" }) : app.attach("owner", { backend: "android-device", deviceId: "phone", connection: "wifi", host: "host" })).toThrow(fault);
         expect(release).not.toHaveBeenCalled();
+        expect(releaseStop).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
     });
 
     it.each(["inventory", "publication"])("compensates returned %s refusal with the exact claim and no heartbeat", phase => {
@@ -91,10 +96,13 @@ describe("broker physical devices", () => {
     });
     it("publishes detached status against the committed auxiliary replacement", () => {
         const ports = physicalPorts(), initial = { id: "phone", status: "attached", appium: { serverPid: 21 }, leaseClaimId: "claim", leaseClaimNonce: "nonce" };
-        const cleaned = { ...initial, appium: null, updatedAt: "cleaned" };
+        const cleaned = { ...initial, appium: null, updatedAt: "cleaned" }, receipt = { observed: true, status: 7, error: "opaque native detail" };
+        ports.observePhysicalStop = () => ({ ok: true, receipt });
         ports.auxiliary = () => ({ result: { ok: true, changed: true, appium: { cleared: true }, recording: { cleared: false }, minimizeWatchdog: { cleared: false } }, device: cleaned, committed: true });
         const publish = vi.fn(ports.publish); ports.publish = publish;
-        expect(createBrokerPhysicalDevicesApplication(ports).stop("owner", stopRequest, initial, initial)).toMatchObject({ kind: "stop-observed", success: true, device: { status: "detached", appium: null, leaseClaimId: null, leaseClaimNonce: null } });
+        const outcome = createBrokerPhysicalDevicesApplication(ports).stop("owner", stopRequest, initial, initial);
+        expect(outcome).toMatchObject({ kind: "stop-observed", success: true, device: { status: "detached", appium: null, leaseClaimId: null, leaseClaimNonce: null }, execution: { ok: true, receipt } });
+        if (outcome.kind === "stop-observed") expect(outcome.execution.receipt).toBe(receipt);
         expect(publish).toHaveBeenCalledWith("owner", "android-device", "phone", cleaned, expect.objectContaining({ status: "detached" }));
     });
 
@@ -116,23 +124,25 @@ describe("broker physical devices", () => {
     it("keeps dry-run stop free of auxiliary and lease effects", () => {
         const ports = physicalPorts();
         ports.auxiliary = () => { throw new Error("unexpected cleanup"); };
+        ports.observePhysicalStop = () => { throw new Error("unexpected physical observation"); };
         ports.releaseLease = () => { throw new Error("unexpected release"); };
         expect(createBrokerPhysicalDevicesApplication(ports).stop("owner", { ...stopRequest, dryRun: true }, { id: "phone" }, { id: "phone" })).toMatchObject({ kind: "stop-preview" });
     });
 
     it("does not release or publish after a failed physical stop observation", () => {
-        const ports = physicalPorts(), initial = { id: "phone", status: "attached" };
-        ports.observePhysicalStop = () => ({ status: 7, error: "native noop refused", receipt: { observed: true } });
+        const ports = physicalPorts(), initial = { id: "phone", status: "attached" }, receipt = { observed: true, status: 0 };
+        ports.observePhysicalStop = () => ({ ok: false, receipt });
         ports.releaseLease = () => { throw new Error("failed-observation-must-not-release"); };
         ports.publish = () => { throw new Error("failed-observation-must-not-publish"); };
         expect(createBrokerPhysicalDevicesApplication(ports).stop("owner", stopRequest, initial, initial)).toMatchObject({
-            kind: "stop-observed", success: false, device: initial, release: null, execution: { status: 7 },
+            kind: "stop-observed", success: false, device: initial, release: null, execution: { ok: false, receipt },
         });
     });
 
     it("retains partial auxiliary cleanup without releasing the stop lease", () => {
         const ports = physicalPorts(), initial = { id: "phone", appium: { serverPid: 21 }, recording: { pid: 22 } };
         ports.auxiliary = () => ({ result: { ok: false, changed: true, appium: { cleared: true }, recording: { cleared: false }, minimizeWatchdog: { cleared: false } }, device: { ...initial, appium: null }, committed: true });
+        ports.observePhysicalStop = () => { throw new Error("unexpected physical observation"); };
         ports.releaseLease = () => { throw new Error("unexpected lease release"); };
         expect(createBrokerPhysicalDevicesApplication(ports).stop("owner", stopRequest, initial, initial)).toMatchObject({ kind: "stop-refused", category: "provider-failed", error: "auxiliary-runtime-cleanup-failed", invoked: false, device: { appium: null, recording: { pid: 22 } } });
     });
@@ -145,11 +155,16 @@ describe("broker physical devices", () => {
     });
 
     it("releases the exact Android claim when WiFi connection fails", () => {
-        const ports = physicalPorts(); ports.connectAndroid = () => ({ status: 7, receipt: { observed: true } });
-        const release = vi.fn(ports.releaseClaim); ports.releaseClaim = release;
+        const ports = physicalPorts(), receipt = { observed: true, status: 0 };
+        ports.connectAndroid = () => ({ ok: false, receipt });
+        const release = vi.fn(ports.releaseClaim), heartbeat = vi.fn(ports.heartbeat); ports.releaseClaim = release; ports.heartbeat = heartbeat;
+        ports.androidInventory = () => { throw new Error("unexpected inventory after refused connect"); };
         ports.claimDevice = () => { throw new Error("unexpected publication"); };
-        expect(createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone", connection: "wifi", host: "127.0.0.1" })).toMatchObject({ error: "adb-connect-failed" });
+        const outcome = createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone", connection: "wifi", host: "127.0.0.1" });
+        expect(outcome).toMatchObject({ error: "adb-connect-failed", command: { ok: false, receipt } });
+        if (outcome.kind === "attach-refused") expect(outcome.command?.receipt).toBe(receipt);
         expect(release).toHaveBeenCalledWith("owner", expect.objectContaining({ hardwareId: "127.0.0.1:5555", claimId: "claim", claimNonce: "nonce" }));
+        expect(heartbeat).not.toHaveBeenCalled();
     });
 
     it("refuses an invisible iOS device before claiming a lease", () => {
@@ -196,32 +211,50 @@ describe("broker physical devices", () => {
     });
 });
 
-describe("native Apple inventory normalization and presentation", () => {
+describe("native physical observations and Apple inventory presentation", () => {
     it.each([
         { status: 1, error: "executable-not-found", reason: "missing-executable" },
         { status: 1, error: undefined, reason: "command-failed" },
         { status: 0, error: "native error", reason: "command-failed" },
         { status: null, error: undefined, reason: "command-failed" },
+        { status: undefined, error: undefined, reason: "command-failed" },
     ] as const)("refuses status $status / $error before parsing and retains opaque receipt", ({ status, error, reason }) => {
-        const receipt = { native: "private" }, parse = vi.fn(() => []);
-        const result = normalizeAppleInventory({ status, error, stdout: "untrusted devices", receipt }, parse);
+        const execution = { mode: "exec", provider: "xcrun", status, error, stdout: "untrusted devices" };
+        const receipt = { command: { mode: "exec" as const, provider: "xcrun" }, execution }, parse = vi.fn(() => []);
+        const observation = { status, error, stdout: "untrusted devices", receipt };
+        const result = normalizeAppleInventory(observation, parse), command = normalizePhysicalExecution(observation);
         expect(result).toEqual({ kind: "failed", reason, receipt });
         expect(result.receipt).toBe(receipt);
         expect(parse).not.toHaveBeenCalled();
+        expect(command).toEqual({ ok: false, receipt });
+        expect(command.receipt).toBe(receipt);
+        expect(renderPhysicalAttachOutcome({ kind: "attach-refused", category: "provider-failed", error: "xctrace-inventory-failed", command: result })).toEqual({
+            status: 502, payload: { ok: false, error: "xctrace-inventory-failed", command: execution },
+        });
     });
 
     it("passes empty successful output to the parser and reports empty inventory", () => {
         const receipt = { native: "private" }, parse = vi.fn(() => []);
-        const result = normalizeAppleInventory({ status: 0, receipt }, parse);
+        const observation = { status: 0, receipt }, result = normalizeAppleInventory(observation, parse);
         expect(result).toEqual({ kind: "observed", devices: [], receipt });
         expect(result.receipt).toBe(receipt);
         expect(parse).toHaveBeenCalledWith("");
+        expect(normalizePhysicalExecution(observation)).toEqual({ ok: true, receipt });
+        const stopReceipt = { command: { mode: "noop" as const, provider: "adb" }, execution: { mode: "noop", provider: "adb", status: 0 } };
+        const execution = normalizePhysicalExecution({ status: 0, receipt: stopReceipt });
+        expect(execution.receipt).toBe(stopReceipt);
+        const auxiliaryCleanup = { ok: true, changed: false, appium: { cleared: false }, recording: { cleared: false }, minimizeWatchdog: { cleared: false } };
+        expect(renderPhysicalStopOutcome({ kind: "stop-observed", success: true, device: { status: "detached" }, auxiliaryCleanup, release: null, execution, invoked: true, dryRun: false, mutatesHost: true, publicationMatched: true }, {}, value => value)).toEqual({
+            status: 200, payload: { ok: true, result: { providerCommand: stopReceipt.command, device: { status: "detached" }, auxiliaryCleanup, invoked: true, dryRun: false, execution: { mode: "noop", providerExecution: "executed", mutatesHost: true, command: stopReceipt.execution } } },
+        });
     });
 
     it("forwards successful native inventory stdout unchanged for xctrace decoding", () => {
         const stdout = "== Devices ==\r\n  iPhone (18.0) (00008110-0011223344556677) (Network)\r\n", receipt = { native: "private" };
-        const parse = vi.fn(() => []);
-        expect(normalizeAppleInventory({ status: 0, stdout, receipt }, parse)).toEqual({ kind: "observed", devices: [], receipt });
+        const device = { name: "iPhone", udid: "00008110-0011223344556677", version: "18.0", connection: "wifi", availability: "available", raw: "visible" }, parse = vi.fn(() => [device]);
+        const observation = { status: 0, error: "", stdout, receipt };
+        expect(normalizeAppleInventory(observation, parse)).toEqual({ kind: "observed", devices: [device], receipt });
+        expect(normalizePhysicalExecution(observation)).toEqual({ ok: true, receipt });
         expect(parse).toHaveBeenCalledWith(stdout);
         expect(parse).toHaveBeenCalledTimes(1);
     });

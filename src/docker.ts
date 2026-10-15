@@ -742,13 +742,26 @@ export const CONTAINER_MANAGER_SOCKET_GRANT =
     + 'n=ccc-host-socket; fi; usermod -aG "$n" "$u"';
 
 const containerSocketAccess = createContainerSocketAccess({
-    probe: target => spawnSync(runtimeCli(), ["exec", target, "sh", "-c", CONTAINER_MANAGER_SOCKET_PROBE], {
-        encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: SOCKET_ACCESS_TIMEOUT_MS,
-    }),
-    grant: (target, user, gid) => spawnSync(runtimeCli(), [
-        "exec", "--user", "root", target,
-        "timeout", "-k", "2s", "8s", "sh", "-c", CONTAINER_MANAGER_SOCKET_GRANT, "ccc-socket-grant", user, gid,
-    ], { stdio: "ignore", timeout: SOCKET_ACCESS_TIMEOUT_MS }),
+    probe: target => {
+        const probe = spawnSync(runtimeCli(), ["exec", target, "sh", "-c", CONTAINER_MANAGER_SOCKET_PROBE], {
+            encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: SOCKET_ACCESS_TIMEOUT_MS,
+        });
+        if (probe.status === 0) return { kind: "usable" };
+        const [user, gid] = String(probe.stdout ?? "").trim().split(/\s+/);
+        if (probe.status !== SOCKET_ACCESS_NEEDS_GROUP_EXIT
+            || !/^[a-z_][a-z0-9_-]{0,31}$/.test(user ?? "")
+            || !/^\d{1,10}$/.test(gid ?? "")) {
+            return { kind: "unavailable" };
+        }
+        return { kind: "requires-group", user, gid };
+    },
+    grant: (target, user, gid) => {
+        const grant = spawnSync(runtimeCli(), [
+            "exec", "--user", "root", target,
+            "timeout", "-k", "2s", "8s", "sh", "-c", CONTAINER_MANAGER_SOCKET_GRANT, "ccc-socket-grant", user, gid,
+        ], { stdio: "ignore", timeout: SOCKET_ACCESS_TIMEOUT_MS });
+        return { ok: grant.status === 0 };
+    },
     warn: () => {
         console.warn("[ccc] Could not grant the container user access to the container-manager socket; "
             + "docker commands inside the container may need sudo.");

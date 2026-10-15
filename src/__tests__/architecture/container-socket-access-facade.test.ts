@@ -69,14 +69,22 @@ describe("container socket access actual public facade", () => {
         expect(docker.CONTAINER_MANAGER_SOCKET_GRANT).toBe(grantScript);
         expect(grantScript).not.toMatch(/\bch(mod|own|grp)\b/);
     });
-    it.each(["docker", "podman"] as const)("dispatches exactly one default-user %s probe on success", cli => {
+    it.each(["docker", "podman"] as const)("dispatches exactly one default-user %s probe on status zero", cli => {
         runtime._setRuntimeInfoForTest({ runtime: cli });
-        native.spawn.mockReturnValueOnce({ status: 0, get stdout(): unknown { throw new Error("unobserved stdout"); } });
+        native.spawn.mockReturnValueOnce({ status: 0, stdout: "invalid ignored output" });
         expect(docker.ensureContainerManagerSocketAccess("selected-target")).toBeUndefined();
         expect(native.spawn.mock.calls).toEqual([probeCall(cli, "selected-target")]);
         expect(console.warn).not.toHaveBeenCalled();
     });
-    it("keeps exact root grant arguments, options, leading-zero GID and first two output tokens", () => {
+    it.each([
+        ["a", "0"], ["_", "1"], ["a_b-9", "000"], ["a".repeat(32), "1234567890"], ["ubuntu", "1000"],
+    ])("accepts native user %s and GID %s at the syntax boundaries", (user, gid) => {
+        native.spawn.mockReturnValueOnce({ status: 10, stdout: `${user}\n${gid}\n` }).mockReturnValueOnce({ status: 0 });
+        expect(docker.ensureContainerManagerSocketAccess("target")).toBeUndefined();
+        expect(native.spawn.mock.calls).toEqual([probeCall("docker", "target"), grantCall("docker", "target", user, gid)]);
+        expect(console.warn).not.toHaveBeenCalled();
+    });
+    it("keeps exact bounded root grant arguments, leading-zero GID and the first two whitespace-delimited tokens", () => {
         native.spawn.mockReturnValueOnce({ status: 10, stdout: " \tubuntu\n00042 surplus output\n" })
             .mockReturnValueOnce({ status: 0 });
         expect(docker.ensureContainerManagerSocketAccess("pinned-id")).toBeUndefined();
@@ -91,14 +99,44 @@ describe("container socket access actual public facade", () => {
         docker.ensureContainerManagerSocketAccess("target");
         expect(native.spawn.mock.calls).toEqual([probeCall("docker", "target"), grantCall("podman", "target")]);
     });
-    it.each([
-        [1, "ccc 0"], [null, "ccc 0"], [10, "bad;user 0"], [10, "ccc 0x1"], [10, undefined],
-    ])("warns once for probe status %s/output %s without privileged dispatch", (status, stdout) => {
-        native.spawn.mockReturnValue({ status, stdout });
+    it.each([1, -1, null, 124, 137])("warns once for native probe status %s without privileged dispatch", status => {
+        native.spawn.mockReturnValue({ status, stdout: "ccc 0" });
         docker.ensureContainerManagerSocketAccess("one");
         docker.ensureContainerManagerSocketAccess("two");
         expect(native.spawn.mock.calls).toEqual([probeCall("docker", "one"), probeCall("docker", "two")]);
         expect(console.warn).toHaveBeenCalledExactlyOnceWith(warning);
+    });
+    it.each([
+        undefined, null, "", " \t\n", "ccc", "0ccc 0", "CCC 0", "bad;user 0", "ccc$(id) 0",
+        `${"a".repeat(33)} 0`, "ccc -1", "ccc 0x1", "ccc 1;id", "ccc 12345678901", 123,
+    ])("refuses malformed status-ten native output %s without privileged dispatch", stdout => {
+        native.spawn.mockReturnValueOnce({ status: 10, stdout });
+        expect(docker.ensureContainerManagerSocketAccess("target")).toBeUndefined();
+        expect(native.spawn.mock.calls).toEqual([probeCall("docker", "target")]);
+        expect(console.warn).toHaveBeenCalledExactlyOnceWith(warning);
+    });
+    it.each([1, -1, null, 124, 137])("warns and continues after native grant status %s", status => {
+        native.spawn.mockReturnValueOnce({ status: 10, stdout: "ccc 0" }).mockReturnValueOnce({ status });
+        expect(docker.ensureContainerManagerSocketAccess("target")).toBeUndefined();
+        expect(native.spawn.mock.calls).toEqual([probeCall("docker", "target"), grantCall("docker", "target")]);
+        expect(console.warn).toHaveBeenCalledExactlyOnceWith(warning);
+    });
+    it.each([0, 10])("preserves status-only native probe classification for status %s even with an error field", status => {
+        native.spawn.mockReturnValueOnce({ status, stdout: "ccc 0", error: new Error("probe fixture detail") })
+            .mockReturnValueOnce({ status: 0, error: new Error("grant fixture detail") });
+        expect(docker.ensureContainerManagerSocketAccess("target")).toBeUndefined();
+        expect(native.spawn.mock.calls).toEqual([probeCall("docker", "target"), ...(status === 10 ? [grantCall("docker", "target")] : [])]);
+        expect(console.warn).not.toHaveBeenCalled();
+    });
+    it.each(["probe", "grant"] as const)("propagates native %s dispatch exceptions without a warning or later dispatch", step => {
+        for (const failure of [new Error(step), { step }]) {
+            native.spawn.mockReset();
+            if (step === "grant") native.spawn.mockReturnValueOnce({ status: 10, stdout: "ccc 0" });
+            native.spawn.mockImplementationOnce(() => { throw failure; });
+            expect(thrown(() => docker.ensureContainerManagerSocketAccess("target"))).toBe(failure);
+            expect(native.spawn.mock.calls).toEqual([probeCall("docker", "target"), ...(step === "grant" ? [grantCall("docker", "target")] : [])]);
+            expect(console.warn).not.toHaveBeenCalled();
+        }
     });
     it("shares warning state across probe/grant failures and targets; reset has no native effects", () => {
         native.spawn.mockReturnValueOnce({ status: 10, stdout: "ccc 0" }).mockReturnValueOnce({ status: null })
@@ -112,9 +150,6 @@ describe("container socket access actual public facade", () => {
         expect(console.warn).toHaveBeenCalledTimes(2);
         expect(native.spawn.mock.calls).toEqual([probeCall("docker", "one"), grantCall("docker", "one"), probeCall("docker", "two"), probeCall("docker", "three"), grantCall("docker", "three")]);
     });
-
-
-
     it("deduplicates reentrant and later warnings after publication throws", () => {
         const failure = { warning: "failure" };
         native.spawn.mockReturnValue({ status: 1 });
@@ -131,11 +166,5 @@ describe("container socket access actual public facade", () => {
         vi.mocked(console.warn).mockImplementation(() => undefined);
         docker.ensureContainerManagerSocketAccess("reset");
         expect(console.warn).toHaveBeenCalledTimes(2);
-    });
-    it("ignores hostile values returned by a replaced live console warning", () => {
-        native.spawn.mockReturnValue({ status: 1 });
-        const ignored = { get then(): unknown { throw new Error("unobserved console return"); } };
-        vi.mocked(console.warn).mockImplementation((() => ignored) as unknown as typeof console.warn);
-        expect(docker.ensureContainerManagerSocketAccess("target")).toBeUndefined();
     });
 });

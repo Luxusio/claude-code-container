@@ -35,8 +35,7 @@ export type SnapshotMutationObservation = {
 };
 export type SnapshotDeleteObservation = SnapshotMutationObservation & { readonly deleted: true };
 export type SnapshotExecution<Receipt> = {
-    mode?: string; provider?: string; status?: number | null; error?: string;
-    stdout?: string; stderr?: string; receipt?:Receipt;
+    readonly ok: boolean; readonly receipt?: Receipt;
 };
 
 export function isSnapshotTool(tool: string): tool is SnapshotTool {

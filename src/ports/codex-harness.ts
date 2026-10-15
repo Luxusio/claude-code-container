@@ -6,5 +6,5 @@ export interface CodexHarnessPorts {
     readonly executeBootstrap: (container: string) => CodexHarnessObservation;
     readonly restoreAccess: (container: string, profile?: string) => void;
     readonly publishBootstrapOutput: (message: string) => undefined;
-    readonly publishUnavailable: (message: string) => undefined;
+    readonly publishUnavailable: (error: unknown) => undefined;
 }

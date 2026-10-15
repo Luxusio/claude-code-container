@@ -18,16 +18,19 @@ function recorderCommand(target, paths, timeLimitSec) {
     const limit = timeLimitSec ? `sleep ${Number(timeLimitSec)}; pkill -INT -f ${shellQuote(`screencapture.*${paths.remotePath}`)}` : 'wait';
     return { executable: target.executable, args: [...target.prefix, target.target, [`rm -f ${shellQuote(paths.remotePath)}`, `(screencapture -v ${shellQuote(paths.remotePath)} &)`, limit].join('; ')], env: target.env };
 }
-/** @param {(command:import('../domain/direct-recording.mjs').RecordingCommand)=>import('../domain/direct-recording.mjs').RecordingCommandResult} runCommand
+/** @param {(command:import('../domain/direct-recording.mjs').RecordingCommand)=>import('../ports/direct-recording.mjs').RecordingCommandResult} runCommand
  * @returns {import('../ports/direct-recording.mjs').RecordingRemoteEffects} */
 function remoteEffects(runCommand) {
     return {
         fallbackStop: (target, remote, timeoutMs) => runCommand(target.kind === 'adb'
             ? { executable: target.executable, args: [...target.prefix, 'shell', 'pkill', '-2', 'screenrecord'] }
             : { executable: target.executable, args: [...target.prefix, target.target, `pkill -INT -f ${shellQuote(`screencapture.*${remote}`)} || true`], env: target.env, timeoutMs }),
-        copyRecording: (target, remote, stagedPath, timeoutMs) => runCommand(target.kind === 'adb'
-            ? { executable: target.executable, args: [...target.prefix, 'pull', remote, stagedPath], timeoutMs }
-            : { executable: target.scp, args: [...target.scpPrefix, `${target.target}:${remote}`, stagedPath], env: target.env, timeoutMs }),
+        copyRecording: (target, remote, stagedPath, timeoutMs) => {
+            const copied = runCommand(target.kind === 'adb'
+                ? { executable: target.executable, args: [...target.prefix, 'pull', remote, stagedPath], timeoutMs }
+                : { executable: target.scp, args: [...target.scpPrefix, `${target.target}:${remote}`, stagedPath], env: target.env, timeoutMs });
+            return { ok: copied.status === 0, detail: copied.stderr || copied.stdout || `exit ${copied.status}`, output: { stdout: copied.stdout, stderr: copied.stderr, ...(target.kind === 'adb' ? { status: copied.status } : {}) } };
+        },
         removeRecording: (target, remote, timeoutMs) => runCommand(target.kind === 'adb'
             ? { executable: target.executable, args: [...target.prefix, 'shell', 'rm', '-f', remote], timeoutMs }
             : { executable: target.executable, args: [...target.prefix, target.target, `rm -f ${shellQuote(remote)}`], env: target.env, timeoutMs }),

@@ -48,7 +48,7 @@ function fixture(backend: Backend, options: Options = {}) {
     };
     const ports: PhysicalStopPorts = backend === "android-device" ? { ...common, backend,
         discoverAdb: () => { calls.push(["discover"]); return options.noAdb ? null : "fake-adb"; },
-        stopAdbRecording: (adb, serial) => { calls.push(["adb", adb, serial]); effect("adb"); return options.adb ?? { status: 0, stdout: "", stderr: "" }; },
+        stopAdbRecording: (adb, serial) => { calls.push(["adb", adb, serial]); effect("adb"); return options.adb ?? { ok: true, detail: "" }; },
         waitRecordingExit: async (pid, ms) => { calls.push(["wait", pid, ms]); effect("wait"); return options.wait ?? true; },
     } : { ...common, backend,
         waitRecordingExit: async (recording, ms) => { calls.push(["wait", recording, ms]); effect("wait"); return options.wait ?? true; },
@@ -134,21 +134,29 @@ describe("physical stop cleanup and successor safety", () => {
         });
     });
     it.each([
-        { signal: { attempted: false, signaled: false, exited: true }, adb: { status: 17, stderr: "raw", stdout: "" }, noAdb: false },
+        { signal: { attempted: false, signaled: false, exited: true }, adb: { ok: false, detail: "raw" }, noAdb: false },
         { signal: { attempted: false, signaled: false, exited: true }, noAdb: true },
         { signal: { attempted: false, signaled: false, reason: "unsafe" }, noAdb: false },
     ])("Android unsignaled exit/fallback observes available ADB before deciding %#", async options => {
         const f = fixture("android-device", options); success(f, await f.app.stop(id));
         expect(effects(f).map(row => row[0])).toEqual(options.noAdb ? ["discover", "signal"] : ["discover", "signal", "adb"]);
     });
-    it.each([
-        [{ status: 7, stderr: "stderr raw", stdout: "stdout raw" }, "stderr raw"],
-        [{ status: 7, stderr: "", stdout: "stdout raw" }, "stdout raw"],
-        [{ status: null, stderr: "", stdout: "" }, "exit null"],
-    ] as const)("Android keeps raw stderr/stdout/status precedence %#", async (adb, ending) => {
-        const f = fixture("android-device", { signal: { attempted: false, signaled: false, reason: "signal raw" }, adb });
+    it.each(["stderr raw", "stdout raw", "exit null", "  native detail\n", ""])("Android preserves semantic fallback detail in its failure text: %j", async detail => {
+        const f = fixture("android-device", { signal: { attempted: false, signaled: false, reason: "signal raw" }, adb: { ok: false, detail } });
         const result = await f.app.stop(id); restored(f, result);
-        expect(failureError(result)).toBe(`Android real-device recording cleanup failed for ${id}: signal raw; ${ending}. Recording metadata and physical lease were preserved for retry.`);
+        expect(failureError(result)).toBe(`Android real-device recording cleanup failed for ${id}: signal raw; ${detail}. Recording metadata and physical lease were preserved for retry.`);
+        expect(effects(f).map(row => row[0])).toEqual(["discover", "signal", "adb"]);
+    });
+    it("Android still waits for a signaled recorder when its semantic fallback succeeds", async () => {
+        const f = fixture("android-device", { adb: { ok: true, detail: "fallback completed" }, wait: false });
+        const result = await f.app.stop(id); restored(f, result);
+        expect(failureError(result)).toBe(timeout("android-device"));
+        expect(effects(f).map(row => row[0])).toEqual(["discover", "signal", "adb", "wait"]);
+    });
+    it("Android confirms a signaled recorder even when its semantic fallback fails", async () => {
+        const f = fixture("android-device", { adb: { ok: false, detail: "fallback failed" } });
+        success(f, await f.app.stop(id));
+        expect(effects(f).map(row => row[0])).toEqual(["discover", "signal", "adb", "wait"]);
     });
     it("Android absent fallback preserves default raw reason", async () => {
         const f = fixture("android-device", { noAdb: true, signal: { attempted: false, signaled: false } }); const result = await f.app.stop(id); restored(f, result);

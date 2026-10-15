@@ -37,9 +37,9 @@ export function createPhysicalAttachmentApplication(ports) {
                     return { kind: "error", message: `Android serial is already attached or an attach is in progress: ${connectTarget}` };
                 }
                 const connect = ports.connect(discovery.adb, connectTarget);
-                if (connect.status !== 0) {
+                if (!connect.ok) {
                     releaseClaimedLease(connectTarget, id);
-                    return { kind: "command-failure", command: connect };
+                    return { kind: "command-failure", command: connect.receipt };
                 }
                 resolvedSerial = connectTarget;
             }
@@ -51,7 +51,7 @@ export function createPhysicalAttachmentApplication(ports) {
                 if (connection === "wifi") releaseClaimedLease(resolvedSerial, deviceId || ports.deriveId(deviceName || resolvedSerial));
                 return { kind: "error", message: `Android device is not visible to adb: ${resolvedSerial}` };
             }
-            if (hostDevice.state !== "device") {
+            if (!hostDevice.attachable) {
                 if (connection === "wifi") releaseClaimedLease(resolvedSerial, deviceId || ports.deriveId(deviceName || resolvedSerial));
                 return { kind: "error", message: `Android device ${resolvedSerial} is not attachable; adb state is ${hostDevice.state}` };
             }

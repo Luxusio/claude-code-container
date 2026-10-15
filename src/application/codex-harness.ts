@@ -1,4 +1,3 @@
-import { codexHarnessExecutionFailure, codexHarnessUnavailableMessage } from "../domain/codex-harness.js";
 import type { CodexHarnessPorts } from "../ports/codex-harness.js";
 
 export function createCodexHarness(ports: CodexHarnessPorts) {
@@ -11,14 +10,14 @@ export function createCodexHarness(ports: CodexHarnessPorts) {
                 try {
                     ports.prepareConfig(containerName, profile);
                     const result = ports.executeBootstrap(containerName);
-                    if (result.stdout?.trim()) ports.publishBootstrapOutput(result.stdout.trim());
-                    if (result.error || result.status !== 0) throw codexHarnessExecutionFailure(result);
+                    if (result.output) ports.publishBootstrapOutput(result.output);
+                    if (result.kind === "failed") throw result.failure;
                 } finally {
                     ports.restoreAccess(containerName, profile);
                 }
             }, profile);
         } catch (error) {
-            ports.publishUnavailable(codexHarnessUnavailableMessage(error));
+            ports.publishUnavailable(error);
         }
     }
     return {ensure};

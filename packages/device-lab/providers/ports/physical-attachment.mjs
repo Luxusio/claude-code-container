@@ -5,11 +5,11 @@
  * @typedef {import('./physical-leases.mjs').PhysicalLeaseOptions} LeaseOptions
  * @typedef {import('./physical-leases.mjs').PhysicalLeaseResult} LeaseResult
  * @typedef {{ok:boolean,field?:string,value?:unknown,error?:string}} DeviceClaim
- * @typedef {{status:number|null,stdout:string|Uint8Array|null,stderr:string|Uint8Array|null,error?:Error,signal?:string|null}} ConnectResult
+ * @typedef {{ok:boolean,receipt:unknown}} ConnectResult
  * @typedef {{backend?:string,name?:string,deviceId?:string,serial?:string,udid?:string,connection?:string,host?:string,port?:number}} AttachRequest
- * @typedef {{serial:string,state:string,connection?:string,details:object}} AndroidHostDevice
+ * @typedef {{serial:string,attachable:boolean,state:string,connection?:string,details:object}} AndroidHostDevice
  * @typedef {{udid:string,name?:string,connection?:string}} IosHostDevice
- * @typedef {{kind:'missing'}|{kind:'error',message:string|undefined}|{kind:'command-failure',command:ConnectResult}|{kind:'conflict',backend:'android-device'|'ios-device',deviceId:string,operation:string,found:boolean}|{kind:'attached',device:AttachmentDevice}|{kind:'detached',deviceId:string}} AttachmentOutcome
+ * @typedef {{kind:'missing'}|{kind:'error',message:string|undefined}|{kind:'command-failure',command:unknown}|{kind:'conflict',backend:'android-device'|'ios-device',deviceId:string,operation:string,found:boolean}|{kind:'attached',device:AttachmentDevice}|{kind:'detached',deviceId:string}} AttachmentOutcome
  * @typedef {{ok:boolean,transition:Transition,rollback?:()=>undefined}} DetachMutation
  * @typedef {{ok:true}|{ok:false,error:string,mutation?:DetachMutation|null}} DetachRelease
  * @typedef {{claimLifecycle:(id:string,device:AttachmentDevice,operation:string)=>{lifecycle:Lifecycle,transition:Transition},currentLifecycleDevice:(id:string,lifecycle:Lifecycle)=>AttachmentDevice|null,abortLifecycle:(id:string,lifecycle:Lifecycle,original:AttachmentDevice,actual?:Partial<AttachmentDevice>)=>{matched:boolean,found:boolean},cleanup:(device:AttachmentDevice,adb?:string|null)=>Promise<ExitResult>}} PhysicalStopPeer

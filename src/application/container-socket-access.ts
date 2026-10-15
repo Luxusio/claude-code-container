@@ -17,16 +17,13 @@ export function createContainerSocketAccess(ports: ContainerSocketAccessPorts) {
 
     function run(target: string): undefined {
         const probe = ports.probe(target);
-        if (probe.status === 0) return;
-        const [user, gid] = String(probe.stdout ?? "").trim().split(/\s+/);
-        if (probe.status !== 10
-            || !/^[a-z_][a-z0-9_-]{0,31}$/.test(user ?? "")
-            || !/^\d{1,10}$/.test(gid ?? "")) {
+        if (probe.kind === "usable") return;
+        if (probe.kind === "unavailable") {
             warn();
             return;
         }
-        const grant = ports.grant(target, user, gid);
-        if (grant.status !== 0) warn();
+        const grant = ports.grant(target, probe.user, probe.gid);
+        if (!grant.ok) warn();
     }
 
     function resetWarning(): undefined {

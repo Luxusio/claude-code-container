@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createBrokerPhysicalDevicesApplication } from "../../../packages/device-lab/src/device-lab/application/broker-physical-devices.js";
 import { createBrokerOwnerCleanupApplication } from "../../../packages/device-lab/src/device-lab/application/broker-owner-cleanup.js";
-import { physicalStopReplacement } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-devices.js";
+import { physicalStopReplacement, type PhysicalExecution } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-devices.js";
 import type { BrokerPhysicalDevicesPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-devices.js";
 import type { BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
 
@@ -22,6 +22,21 @@ export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevices
     }
     const receipt: { observed: boolean } = inventory.receipt;
     void receipt;
+    const connected: PhysicalExecution<{ observed: boolean }> = physical.connectAndroid("host:5555");
+    const stopped: PhysicalExecution<{ observed: boolean }> = physical.observePhysicalStop("android-device");
+    const completed: boolean[] = [connected.ok, stopped.ok];
+    const executionReceipts: { observed: boolean }[] = [connected.receipt, stopped.receipt];
+    void [completed, executionReceipts];
+    // @ts-expect-error native exit status stays outside semantic physical completion
+    void connected.status;
+    // @ts-expect-error native failure detail stays inside the opaque receipt
+    void stopped.error;
+    // @ts-expect-error raw native connect execution does not supply semantic completion
+    createBrokerPhysicalDevicesApplication({ ...physical, connectAndroid: () => ({ status: 0, receipt: { observed: true } }) });
+    // @ts-expect-error raw native stop execution does not supply semantic completion
+    createBrokerPhysicalDevicesApplication({ ...physical, observePhysicalStop: () => ({ status: 0, receipt: { observed: true } }) });
+    // @ts-expect-error native connect completion settles synchronously
+    createBrokerPhysicalDevicesApplication({ ...physical, connectAndroid: async () => ({ ok: true, receipt: { observed: true } }) });
     // @ts-expect-error raw native execution is not a semantic inventory observation
     createBrokerPhysicalDevicesApplication({ ...physical, appleInventory: () => ({ status: 0, stdout: "raw", receipt: { observed: true } }) });
     // @ts-expect-error an observed inventory requires decoded devices
@@ -58,7 +73,7 @@ export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevices
     // @ts-expect-error the physical stop observation is required
     createBrokerPhysicalDevicesApplication(withoutObservation);
     // @ts-expect-error physical stop observation cannot defer its outcome
-    createBrokerPhysicalDevicesApplication({ ...physical, observePhysicalStop: async () => ({ status: 0, receipt: { observed: true } }) });
+    createBrokerPhysicalDevicesApplication({ ...physical, observePhysicalStop: async () => ({ ok: true, receipt: { observed: true } }) });
     void [prepareStop, runPreparedStop, observePhysicalStop];
     return { devices, owner, releaseLease, publish };
 }

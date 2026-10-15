@@ -39,7 +39,11 @@ import type { ProviderCommand, ProviderCommandResult } from '../../device-lab-br
 import type { AttachOutcome, DetachOutcome, TrustOutcome, PhysicalStopOutcome, PhysicalContext, PhysicalExecution, AppleHostDevice, AppleInventoryObservation, AppleTrustFacts } from '../domain/broker-physical-devices.js';
 import type { OwnerCleanupOutcome, CleanupDeviceReport } from '../domain/broker-owner-cleanup.js';
 export interface NativePhysicalReceipt { command: ProviderCommand; execution: ProviderCommandResult }
-export function normalizeAppleInventory<Receipt>(observation: PhysicalExecution<Receipt>, devices: (text:string)=>AppleHostDevice[]): AppleInventoryObservation<Receipt> {
+export interface NativePhysicalObservation<Receipt> {status?:number|null;stdout?:string;stderr?:string;error?:string;timedOut?:boolean;receipt:Receipt}
+export function normalizePhysicalExecution<Receipt>(observation: NativePhysicalObservation<Receipt>): PhysicalExecution<Receipt> {
+    return {ok:observation.status === 0 && !observation.error,receipt:observation.receipt};
+}
+export function normalizeAppleInventory<Receipt>(observation: NativePhysicalObservation<Receipt>, devices: (text:string)=>AppleHostDevice[]): AppleInventoryObservation<Receipt> {
     if (observation.status !== 0 || observation.error) return {kind:'failed',reason:observation.error === 'executable-not-found' ? 'missing-executable' : 'command-failed',receipt:observation.receipt};
     return {kind:'observed',devices:devices(observation.stdout || ''),receipt:observation.receipt};
 }

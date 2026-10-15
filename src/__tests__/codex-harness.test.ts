@@ -271,6 +271,25 @@ describe("ensureCodexHarness", () => {
         expect(vi.mocked(prepareCodexConfigForContainer).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(spawnSync).mock.invocationCallOrder[0]);
         expect(vi.mocked(spawnSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(restoreCodexConfigHostOwnership).mock.invocationCallOrder[0]);
     });
+    it("publishes trimmed installer output before restoration, lock release and the native failure warning", () => {
+        const trace: string[] = [];
+        vi.mocked(withCodexConfigLock).mockImplementationOnce(operation => {
+            trace.push("lock");
+            try { return operation(); } finally { trace.push("unlock"); }
+        });
+        vi.mocked(prepareCodexConfigForContainer).mockImplementationOnce(() => { trace.push("prepare"); });
+        vi.mocked(spawnSync).mockImplementationOnce(() => {
+            trace.push("execute");
+            return {status: 1, stdout: "  installed partially\n", stderr: "  installer refused\n"} as ReturnType<typeof spawnSync>;
+        });
+        vi.mocked(restoreCodexConfigHostOwnership).mockImplementationOnce(() => { trace.push("restore"); });
+        const output = vi.spyOn(console, "error").mockImplementation(() => { trace.push("output"); });
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => { trace.push("warning"); });
+        expect(ensureCodexHarness("test-container", "work")).toBeUndefined();
+        expect(trace).toEqual(["lock", "prepare", "execute", "output", "restore", "unlock", "warning"]);
+        expect(output).toHaveBeenCalledExactlyOnceWith("installed partially");
+        expect(warn).toHaveBeenCalledExactlyOnceWith("[ccc] Harness is unavailable: installer refused. Codex will continue. Check the container's ~/.codex/config.toml and Harness installation, then retry ccc codex.");
+    });
     it.skip("reads private config when the default UID differs from named ccc (Docker; native-only)", async (context) => {
         const image = process.env.CCC_TEST_HARNESS_IMAGE!;
         if (realSpawn("docker", ["image", "inspect", image], { timeout: 5000, stdio: "ignore" }).status !== 0) {
@@ -311,6 +330,12 @@ describe("ensureCodexHarness", () => {
         if (failure === "lock") vi.mocked(withCodexConfigLock).mockImplementation(() => { throw new Error("lock timed out"); });
         expect(() => ensureCodexHarness("test-container")).not.toThrow();
         expect(warn).toHaveBeenCalledWith(expect.stringContaining("Codex will continue"));
-        if (failure !== "lock") expect(restoreCodexConfigHostOwnership).toHaveBeenCalledOnce();
+        if (failure === "lock") {
+            expect(prepareCodexConfigForContainer).not.toHaveBeenCalled();
+            expect(spawnSync).not.toHaveBeenCalled();
+            expect(restoreCodexConfigHostOwnership).not.toHaveBeenCalled();
+        } else {
+            expect(restoreCodexConfigHostOwnership).toHaveBeenCalledOnce();
+        }
     });
 });

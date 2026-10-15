@@ -15,9 +15,31 @@ export function consumeRecordingConstructors(native: DirectRecordingNative, port
         // @ts-expect-error Guarded repository publication must complete synchronously.
         updateDevice: async () => null,
     };
-    const missingCommandReceipt: AndroidRecordingPorts = { ...android,
-        // @ts-expect-error Individual command effect requires a concrete status/stdout/stderr receipt.
-        copyRecording: () => undefined,
+    const semanticCopy: AndroidRecordingPorts = { ...android,
+        copyRecording: () => ({ ok: true, detail: '', output: { stdout: 'copied', stderr: '', status: 0 } }),
+        fallbackStop: () => ({ opaque: 'ignored native receipt' }),
+        removeRecording: () => undefined,
     };
-    return { application, semantic, missing, deferredRead, deferredPublication, missingCommandReceipt };
+    const rawCopy: AndroidRecordingPorts = { ...android,
+        // @ts-expect-error Native status/stdout/stderr is normalized before entering the application.
+        copyRecording: () => ({ status: 0, stdout: '', stderr: '' }),
+    };
+    const missingCopyDetail: AndroidRecordingPorts = { ...android,
+        // @ts-expect-error Copy failure detail is supplied by the native adapter.
+        copyRecording: () => ({ ok: false, output: {} }),
+    };
+    const missingCopyOutput: AndroidRecordingPorts = { ...android,
+        // @ts-expect-error Public compatibility output is an explicit opaque fragment.
+        copyRecording: () => ({ ok: true, detail: '' }),
+    };
+    const consumeCopy = (copy: ReturnType<AndroidRecordingPorts['copyRecording']>) => {
+        // @ts-expect-error Native status is not an inward copy observation field.
+        const status: number | null = copy.status;
+        // @ts-expect-error Native stderr is not an inward copy observation field.
+        const stderr: string = copy.stderr;
+        // @ts-expect-error Adapter-prepared output fields remain opaque to application decisions.
+        const outputStatus: number = copy.output.status;
+        return { ok: copy.ok, detail: copy.detail, output: copy.output, status, stderr, outputStatus };
+    };
+    return { application, semantic, missing, deferredRead, deferredPublication, semanticCopy, rawCopy, missingCopyDetail, missingCopyOutput, consumeCopy };
 }

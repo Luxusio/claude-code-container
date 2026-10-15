@@ -1,4 +1,4 @@
-import type { RecordingRecord, RecordingArguments, RecordingOutcome, RecordingCommand, RecordingCommandResult, RecordingIdentity, RecordingSignal, RecordingPath, RecordingStage, RecordingStageResult, RecordingFileResult, RecordingHelperResult, RecordingRefusal, AdbRecordingAdmission, SimulatorRecordingAdmission, MacosRecordingAdmission, AdbRecordingTarget, SimulatorRecordingTarget, MacosRecordingTarget } from '../domain/direct-recording.mjs';
+import type { RecordingRecord, RecordingArguments, RecordingOutcome, RecordingCommand, RecordingCopyOutcome, RecordingIdentity, RecordingSignal, RecordingPath, RecordingStage, RecordingStageResult, RecordingFileResult, RecordingHelperResult, RecordingRefusal, AdbRecordingAdmission, SimulatorRecordingAdmission, MacosRecordingAdmission, AdbRecordingTarget, SimulatorRecordingTarget, MacosRecordingTarget } from '../domain/direct-recording.mjs';
 export interface RecordingCommonPorts {
     findDevice(id:string):RecordingRecord|null|undefined;
     updateDevice(id:unknown, update:(device:RecordingRecord)=>RecordingRecord):RecordingRecord|null;
@@ -26,9 +26,9 @@ export interface RecordingProcessPorts {
     disposeStage(stage:RecordingStage):undefined;
 }
 export interface RecordingRemoteEffects {
-    fallbackStop(target:AdbRecordingTarget|MacosRecordingTarget,remotePath:string,timeoutMs?:number):RecordingCommandResult;
-    copyRecording(target:AdbRecordingTarget|MacosRecordingTarget,remotePath:string,stagedPath:string,timeoutMs?:number):RecordingCommandResult;
-    removeRecording(target:AdbRecordingTarget|MacosRecordingTarget,remotePath:string,timeoutMs?:number):RecordingCommandResult;
+    fallbackStop(target:AdbRecordingTarget|MacosRecordingTarget,remotePath:string,timeoutMs?:number):unknown;
+    copyRecording(target:AdbRecordingTarget|MacosRecordingTarget,remotePath:string,stagedPath:string,timeoutMs?:number):RecordingCopyOutcome;
+    removeRecording(target:AdbRecordingTarget|MacosRecordingTarget,remotePath:string,timeoutMs?:number):unknown;
 }
 export interface AndroidRecordingPorts extends RecordingCommonPorts, RecordingProcessPorts, RecordingRemoteEffects {
     kind:'android-emulator'|'android-device';
@@ -58,6 +58,7 @@ export interface RecordingApplication {
 }
 /** Actual native mechanisms, distinct from application ports. Native producer binds clocks, entropy,
  * process handles, command options and fenced stage operations itself. */
+export interface RecordingCommandResult { status:number|null; stdout:string; stderr:string; }
 export interface RecordingNativeCommon {
     findDevice:RecordingCommonPorts['findDevice'];
     updateDevice:RecordingCommonPorts['updateDevice'];
