@@ -13,3 +13,13 @@ Linux Hyper-V start/reboot authenticated SSH host identity reconciliation also c
 Ordinary publication conflicts do not trigger physical lease restoration. Genuine matched inventory storage exceptions retain existing physical lease rollback and error behavior. Create, status, dry-run, idempotent, authentication, provider authority, native cleanup policy and operation budgets retain their existing contracts.
 
 Complete-record equality cannot distinguish byte-identical ABA replacements or establish OS process generations. No additional registry or mutation authority is introduced.
+
+## Native observations and response compatibility
+
+Lifecycle, status and recording applications receive settled semantic facts beside opaque native receipts. Native composition decodes provider output; public converters replay the original native evidence and existing HTTP/MCP envelopes. Internal observation fields such as `ok`, recording guard classification, ADB state, parsed VM facts, created UDID, provider address, runtime IDs, window handles and registration/minimize reasons do not become extra native command fields or persisted boot receipts. Existing public readiness fields remain in their documented envelope.
+
+Success remains specific to the existing boundary: direct Sandbox lifecycle accepts native status zero; broker commands require status zero without a native error. A failed ADB status is tolerated only for an already-stopped emulator, never a physical device. Recording guard refusal cannot be excused by a successful host signal; uncertain identity retains metadata and prohibits later artifact effects.
+
+Android stop confirmation retains complete inventory/header and truncation/timeout checks, exact serial matching and existing polling budgets. iOS create keeps the current whitespace-free token rule, macOS keeps existing missing-resource phrases and successful nonempty address acceptance, and Sandbox uncertainty retains exact runtime/singleton ownership. Registration timeout diagnostics retain the original bounded native fields rather than replay unrelated launch metadata.
+
+Hyper-V Windows readiness retains the typed result, including scrub and media-detach facts, before checking the enclosing deadline. Linux SSH/GUI markers, native diagnostics and bounded host-key extraction are normalized by the existing adapter; identity comparison, polling, publication and containment stay with the application. This extraction adds no native calls, authority, retries or broader paths. Actual authenticated broker/native regression tests must cover these facts and public receipt rendering; source-only tests do not establish built/package or real-provider acceptance.

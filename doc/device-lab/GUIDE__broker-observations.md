@@ -18,6 +18,14 @@ Device status consumes semantic lifecycle preview and direct Hyper-V operation/s
 
 Verification uses ordinary consumed contracts, actual-source dependency checks and meaningful application/native fault fixtures. Existing authenticated RPC/MCP tests cover public mapping, recovery, authority and partial effects; synthetic tests of the dependency guard itself are unnecessary. Public declaration and emitted/packed/installer consumers are separate checks. Portable fixtures do not certify real Windows/macOS/Android/iOS querying, and broker facets alone do not certify direct/MCP operation closure.
 
+## Settled native lifecycle observations
+
+Status adapters supply native success, normalized ADB state and parsed VM facts beside the original receipt. The application distinguishes native failure from the stored-stopped-emulator fallback and keeps exact VM identity/deadline policy. Recording effects return success and a finite guard-refusal classification; process identity, signaling, artifact publication and recovery ordering retain their existing authority.
+
+Lifecycle adapters normalize Android inventory/boot, iOS created UDIDs, macOS missing-resource/address observations and Sandbox runtime/window/minimize facts. Direct Sandbox retains status-zero success while broker commands require status zero without an error. Core policy consumes these facts; the existing converter renders the native receipt, including historical timeout/noop shapes, without publishing observation-only fields. Owner cleanup already consumes semantic stop observations and needs no second workflow extraction.
+
+The Hyper-V readiness adapter retains typed Windows outcomes and normalizes Linux SSH/GUI markers, bounded diagnostics and ED25519 fingerprints. Core policy retains expected-identity comparison, scrub/media-detach containment, deadlines and polling. General Hyper-V create, power and provisioning framing is outside this readiness extraction and remains separately tracked architecture work. Source/built/package consumers and controlled native-platform QA qualify different surfaces; a source-alias test or prepared candidate is not distribution/native acceptance.
+
 ## Known ceiling
 
 Known ceiling: authorized service status diagnostics retain raw native command output — upgrade through a separately reviewed public redaction contract change.
