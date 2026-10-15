@@ -4,6 +4,7 @@ import { renderHyperVSnapshot } from "../../../packages/device-lab/src/device-la
 import type { DeviceLabHyperVCommandResult } from "../../../packages/device-lab/src/device-lab/broker/hyper-v/lifecycle-adapter.js";
 import type { SnapshotExecution, SnapshotJournal, SnapshotOwnerTarget, SnapshotTool, SnapshotTracked, SnapshotVmObservation } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import type { BrokerHyperVSnapshotPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-snapshots.js";
+import { HyperVOperationDeadlineError, hyperVRemainingTimeout } from "../../../packages/device-lab/src/device-lab/broker/hyper-v/deadline.js";
 
 type Connection = { readonly provider: "powershell" | "ssh" };
 type Receipt = DeviceLabHyperVCommandResult & { readonly nativeEvidence: string };
@@ -55,18 +56,20 @@ function fixture(backend = "windows-vm") {
             snapshotId: target.snapshotId || checkpointId, snapshotName: target.providerName })),
         repairPolicy: vi.fn<SnapshotPorts["repairPolicy"]>(async (_connection, target) => ({ checkpointPolicy: target.expectedCheckpointPolicy, candidateCount: 1 })),
         lastExecution: vi.fn<SnapshotPorts["lastExecution"]>(() => execution), isValidationError: () => false,
+        isDeadlineError: error => error instanceof HyperVOperationDeadlineError,
         errorCode: (error, fallback) => error instanceof Error ? error.message : fallback,
         providerErrorCode: vi.fn<SnapshotPorts["providerErrorCode"]>(() => undefined),
         diagnosticCode: vi.fn<SnapshotPorts["diagnosticCode"]>((result, fallback, override) => override ?? result?.receipt?.error ?? fallback),
         publish: vi.fn<SnapshotPorts["publish"]>((_owner, _backend, _device, _expected, replacement) => {
             state.current = replacement; return { found: true, matched: true, device: replacement };
         }),
-        mergeRepair: vi.fn<SnapshotPorts["mergeRepair"]>((_owner, _backend, _device, _original, patch) => {
-            state.current = { ...state.current, ...patch }; return state.current;
+        mergeRepair: vi.fn<SnapshotPorts["mergeRepair"]>((_owner, _backend, _device, _original, patch, beforePublish) => {
+            beforePublish?.();
+            state.current = { ...state.current, ...patch }; return { found: true, matched: true, device: state.current };
         }),
         forgetConsole: () => undefined,
         sshReady: vi.fn<SnapshotPorts["sshReady"]>(async () => ({ ready: false, execution: { ok: false } })),
-        remainingTimeout: (deadline, maximum) => Math.min(maximum, deadline - state.now), now: () => state.now,
+        remainingTimeout: (deadline, maximum) => hyperVRemainingTimeout(deadline, maximum, () => state.now), now: () => state.now,
         timestamp: () => "2026-10-11T00:00:00.000Z", sleep: async milliseconds => { state.now += milliseconds; },
     };
     const target: SnapshotOwnerTarget = { backend, stateKey: backend, device };
@@ -76,7 +79,7 @@ function fixture(backend = "windows-vm") {
     const journal = (tool: SnapshotJournal["tool"]): SnapshotJournal => ({ version: 1, operationId: "pending-operation", ownerId: owner,
         deviceId, incarnationId, tool, snapshotName: "baseline", providerName, snapshotId: checkpointId,
         confirmationRequired: tool === "device_snapshot_create", startedAt: "2026-10-11T00:00:00.000Z" });
-    const repair = (retry?: string) => app.repair(owner, { backend, deviceId, device, connection: powershell }, retry);
+    const repair = (retry?: string, parentDeadlineAt?: number) => app.repair(owner, { backend, deviceId, device, connection: powershell }, retry, parentDeadlineAt);
     return { device, state, observation, execution, ports, invoke, journal, repair };
 }
 
@@ -326,6 +329,157 @@ describe("broker Hyper-V snapshot policy", () => {
         expect(await f.repair()).toMatchObject({ ok: false, reason: "conflict", journalDisposition: "retain", error: "hyper-v-snapshot-reconciliation-ambiguous" });
         expect(f.state.journal).not.toBeNull();
         expect(f.ports.mergeRepair).not.toHaveBeenCalled();
+    });
+
+    it.each([-1, 1] as const)("uses the parent repair deadline while wall time jumps %s", async direction => {
+        const f = fixture();
+        f.state.now = 17.25;
+        const deadline = f.state.now + 5000;
+        const journal = f.journal("device_snapshot_delete");
+        f.state.journal = journal;
+        let wall = 1_800_000_000_000;
+        const wallClock = vi.spyOn(Date, "now").mockImplementation(() => wall);
+        vi.mocked(f.ports.repairPolicy).mockImplementation(async (_connection, target, repairDeadline) => {
+            expect(repairDeadline).toBe(deadline);
+            f.state.now += 1250.5;
+            wall += direction * 86_400_000;
+            return { checkpointPolicy: target.expectedCheckpointPolicy, candidateCount: 0 };
+        });
+        vi.mocked(f.ports.status).mockImplementation(async (_connection, _identity, statusDeadline, cap) => {
+            expect(statusDeadline).toBe(deadline);
+            expect(cap).toBeGreaterThan(0);
+            expect(cap).toBeLessThanOrEqual(30000);
+            expect(Math.floor(statusDeadline - f.state.now)).toBe(3749);
+            return { execution: f.execution, observation: f.observation };
+        });
+        try {
+            expect(await f.repair(undefined, deadline)).toMatchObject({ ok: true, reconciled: true, journalDisposition: "clear" });
+            expect(f.ports.repairPolicy).toHaveBeenCalledOnce();
+            expect(f.ports.status).toHaveBeenCalledOnce();
+            expect(f.ports.mergeRepair).toHaveBeenCalledOnce();
+            expect(f.state.journal).toBeNull();
+        } finally { wallClock.mockRestore(); }
+    });
+
+    it("keeps separate native primitive caps for repair without a parent budget", async () => {
+        const f = fixture();
+        f.state.journal = f.journal("device_snapshot_delete");
+        vi.mocked(f.ports.repairPolicy).mockImplementation(async (_connection, target) => {
+            f.state.now += 45000;
+            return { checkpointPolicy: target.expectedCheckpointPolicy, candidateCount: 0 };
+        });
+        expect(await f.repair()).toMatchObject({ ok: true, reconciled: true, journalDisposition: "clear" });
+        expect(vi.mocked(f.ports.repairPolicy).mock.calls[0]?.[2]).toBeUndefined();
+        expect(f.ports.status).toHaveBeenCalledWith(powershell, expect.objectContaining({ vmId: "owned-vm-id" }), 75000, 30000);
+        expect(f.state.now).toBe(45000);
+    });
+
+    it("retains the status combination's own cap when a longer parent still has time", async () => {
+        const f = fixture();
+        f.state.now = 17.25;
+        const parentDeadline = f.state.now + 120000;
+        f.state.journal = f.journal("device_snapshot_delete");
+        vi.mocked(f.ports.repairPolicy).mockImplementation(async (_connection, target, deadline) => {
+            expect(deadline).toBe(parentDeadline);
+            f.state.now += 10000.5;
+            return { checkpointPolicy: target.expectedCheckpointPolicy, candidateCount: 0 };
+        });
+        vi.mocked(f.ports.status).mockImplementation(async (_connection, _identity, deadline, cap) => {
+            expect(deadline).toBe(f.state.now + 30000);
+            expect(deadline).toBeLessThan(parentDeadline);
+            expect(cap).toBe(30000);
+            f.state.now = deadline;
+            return { execution: { ok: false, receipt: { nativeEvidence: "status cap", error: "hyper-v-status-timeout" } }, observation: null };
+        });
+        expect(await f.repair(undefined, parentDeadline)).toMatchObject({ ok: false, reason: "provider-failed",
+            error: "hyper-v-snapshot-reconciliation-failed", detail: "hyper-v-status-timeout", journalDisposition: "retain" });
+        expect(f.state.now).toBeLessThan(parentDeadline);
+        expect(f.ports.mergeRepair).not.toHaveBeenCalled();
+        expect(f.ports.removeRepairJournal).not.toHaveBeenCalled();
+    });
+
+    it.each(["before-repair", "fractional-before-repair", "after-repair", "fractional-after-repair", "after-status", "inside-publication", "before-clear"] as const)(
+        "retains journal and refuses expired parent budget %s", async phase => {
+            const f = fixture();
+            f.state.now = 17.25;
+            const deadline = f.state.now + 5000;
+            f.state.journal = f.journal("device_snapshot_delete");
+            const journal = structuredClone(f.state.journal);
+            vi.mocked(f.ports.repairPolicy).mockImplementation(async (_connection, target) => {
+                if (phase === "after-repair") f.state.now = deadline;
+                if (phase === "fractional-after-repair") f.state.now = deadline - 0.25;
+                return { checkpointPolicy: target.expectedCheckpointPolicy, candidateCount: 0 };
+            });
+            vi.mocked(f.ports.status).mockImplementation(async () => {
+                if (phase === "after-status") f.state.now = deadline;
+                return { execution: f.execution, observation: f.observation };
+            });
+            if (phase === "before-repair") f.state.now = deadline;
+            if (phase === "fractional-before-repair") f.state.now = deadline - 0.25;
+            if (phase === "inside-publication" || phase === "before-clear") {
+                vi.mocked(f.ports.mergeRepair).mockImplementation((_owner, _backend, _id, _original, patch, beforePublish) => {
+                    if (phase === "inside-publication") f.state.now = deadline;
+                    beforePublish?.();
+                    f.state.current = { ...f.state.current, ...patch };
+                    if (phase === "before-clear") f.state.now = deadline;
+                    return { found: true, matched: true, device: f.state.current };
+                });
+            }
+            await expect(f.repair(undefined, deadline)).rejects.toBeInstanceOf(HyperVOperationDeadlineError);
+            expect(f.state.journal).toEqual(journal);
+            expect(f.ports.removeRepairJournal).not.toHaveBeenCalled();
+            if (phase === "before-repair" || phase === "fractional-before-repair") expect(f.ports.repairPolicy).not.toHaveBeenCalled();
+            if (["before-repair", "fractional-before-repair", "after-repair", "fractional-after-repair"].includes(phase)) expect(f.ports.status).not.toHaveBeenCalled();
+            if (["before-repair", "fractional-before-repair", "after-repair", "fractional-after-repair", "after-status"].includes(phase)) expect(f.ports.mergeRepair).not.toHaveBeenCalled();
+            if (phase !== "before-clear") expect(f.state.current).toBe(f.device);
+        },
+    );
+
+    it.each(["repair", "status"] as const)("does not replace the real %s provider failure when its response is late", async phase => {
+        const f = fixture();
+        const deadline = 5000;
+        f.state.journal = f.journal("device_snapshot_delete");
+        const nativeFailure = new Error("original-native-failure");
+        vi.mocked(f.ports.providerErrorCode).mockReturnValue("hyper-v-native-failure");
+        vi.mocked(f.ports.repairPolicy).mockImplementation(async (_connection, target) => {
+            if (phase === "repair") { f.state.now = deadline; throw nativeFailure; }
+            return { checkpointPolicy: target.expectedCheckpointPolicy, candidateCount: 0 };
+        });
+        vi.mocked(f.ports.status).mockImplementation(async () => {
+            f.state.now = deadline;
+            return { execution: { ok: false, receipt: { nativeEvidence: "native failure", error: "hyper-v-native-failure" } }, observation: null };
+        });
+        expect(await f.repair(undefined, deadline)).toMatchObject({ ok: false, reason: "provider-failed", journalDisposition: "retain",
+            error: "hyper-v-snapshot-reconciliation-failed", detail: "hyper-v-native-failure" });
+        expect(f.ports.mergeRepair).not.toHaveBeenCalled();
+        expect(f.ports.removeRepairJournal).not.toHaveBeenCalled();
+        expect(f.state.journal?.snapshotId).toBe(checkpointId);
+    });
+
+    it("propagates a typed pre-dispatch repair deadline instead of classifying it as native failure", async () => {
+        const f = fixture();
+        f.state.journal = f.journal("device_snapshot_delete");
+        const expired = new HyperVOperationDeadlineError();
+        vi.mocked(f.ports.repairPolicy).mockRejectedValue(expired);
+        await expect(f.repair(undefined, 5000)).rejects.toBe(expired);
+        expect(f.ports.providerErrorCode).not.toHaveBeenCalled();
+        expect(f.ports.status).not.toHaveBeenCalled();
+        expect(f.ports.mergeRepair).not.toHaveBeenCalled();
+        expect(f.ports.removeRepairJournal).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])("refuses a repair publication when current record found=%s no longer matches", async found => {
+        const f = fixture();
+        const successor = { ...f.device, incarnationId: "b".repeat(32), snapshots: [{ id: "new-checkpoint" }] };
+        f.state.journal = f.journal("device_snapshot_delete");
+        const journal = structuredClone(f.state.journal);
+        vi.mocked(f.ports.repairPolicy).mockResolvedValue({ checkpointPolicy: "ProductionOnly", candidateCount: 0 });
+        vi.mocked(f.ports.mergeRepair).mockReturnValue({ found, matched: false, device: found ? successor : null });
+        expect(await f.repair(undefined, 5000)).toMatchObject({ ok: false, reason: "conflict", journalDisposition: "retain",
+            error: "hyper-v-snapshot-state-conflict" });
+        expect(f.state.current).toBe(f.device);
+        expect(f.state.journal).toEqual(journal);
+        expect(f.ports.removeRepairJournal).not.toHaveBeenCalled();
     });
 
     it("permits only the exact restore retry and retains its journal after reconciliation", async () => {

@@ -111,7 +111,8 @@ export function createBrokerDeviceStatus<Connection, Receipt>(ports: BrokerDevic
             if (!deviceStatusRecord(current)) return failure(ownerId, request, "conflict", "hyper-v-snapshot-reconciliation-metadata-invalid");
             const connection = ports.recoveryConnection();
             if (!connection) return {kind: "refused", reason: "invalid", error: "missing-provider-command", missing: ["powershell"], backend: request.backend, deviceId: request.deviceId};
-            const repaired = await ports.repairSnapshots(ownerId, request.backend, request.deviceId, current, connection);
+            const repaired = await ports.repairSnapshots(ownerId, request.backend, request.deviceId, current, connection, deadline);
+            if (repaired.ok) ports.assertDeadline(deadline);
             if (!repaired.ok) return failure(ownerId, request, repaired.reason, repaired.error, repaired.detail);
         }
         return null;

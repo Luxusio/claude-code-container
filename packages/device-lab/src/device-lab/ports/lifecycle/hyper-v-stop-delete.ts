@@ -1,4 +1,5 @@
 import type { SnapshotJournal } from "../../domain/lifecycle/hyper-v-snapshots.js";
+import type { SnapshotPublication } from "./hyper-v-snapshots.js";
 import type { AuxiliaryOutcome } from "../../domain/broker-owner-cleanup.js";
 import type { HyperVStopDeleteRequest, HyperVOperationEvidence, HyperVReplayObservation, HyperVCommandExecution, HyperVTerminalResult, HyperVNetworkCleanupEvidence, HyperVArtifactEvidence, HyperVPublication, HyperVStateFailure, HyperVStopDeletePreparation } from "../../domain/lifecycle/hyper-v-stop-delete.js";
 export interface HyperVStopDeletePorts<Connection,Receipt> {
@@ -8,7 +9,7 @@ export interface HyperVStopDeletePorts<Connection,Receipt> {
     connection(provider:'powershell'):Connection|null;
     prepareStopDelete(owner:string,request:HyperVStopDeleteRequest,device:Record<string,unknown>):HyperVStopDeletePreparation<Connection>;
     readJournal(owner: string, backend: string, id: string): HyperVOperationEvidence | null;
-    writeJournal(owner: string, request: HyperVStopDeleteRequest): {
+    writeJournal(owner: string, request: HyperVStopDeleteRequest, capturedTarget?: Record<string, unknown>, deadline?: number): {
         ok: true;
         path: string;
     } | {
@@ -17,8 +18,8 @@ export interface HyperVStopDeletePorts<Connection,Receipt> {
     };
     clearJournal(owner: string, backend: string, id: string): undefined;
     readSnapshotJournal(owner: string, backend: string, id: string): SnapshotJournal | null;
-    repairSnapshots(owner:string,backend:string,id:string,device:Record<string,unknown>,connection:Connection):Promise<import('../../domain/lifecycle/hyper-v-snapshots.js').SnapshotRepairResult>;
-    clearSnapshotJournal(owner: string, backend: string, id: string): undefined;
+    repairSnapshots(owner:string,backend:string,id:string,device:Record<string,unknown>,connection:Connection,parentDeadlineAt?:number):Promise<import('../../domain/lifecycle/hyper-v-snapshots.js').SnapshotRepairResult>;
+    clearSnapshotJournal(owner: string, backend: string, id: string, capturedTarget: Record<string, unknown>, capturedJournal: SnapshotJournal, deadline: number): SnapshotPublication;
     replayObservation(connection:Connection, owner: string, journal: HyperVOperationEvidence, media: string[], deadline: number): Promise<HyperVReplayObservation>;
     replayPower(connection:Connection, owner: string, journal: HyperVOperationEvidence, action: "start" | "stop", turnOff: boolean, deadline: number): Promise<void>;
     replayRemoveVm(connection:Connection, owner: string, journal: HyperVOperationEvidence, media: string[], deadline: number): Promise<void>;

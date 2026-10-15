@@ -123,7 +123,7 @@ export interface BrokerDeviceStatusPorts<Connection, Receipt> {
     readOperationJournal(owner: string, backend: string, id: string): {incarnationId: string} | null;
     readSnapshotJournal(owner: string, backend: string, id: string): {operationId: string} | null;
     reconcileOperation(owner: string, backend: string, id: string, deadline: number, preserveNetwork: true): Promise<import("../domain/lifecycle/hyper-v-stop-delete.js").HyperVReplayResult>;
-    repairSnapshots(owner: string, backend: string, id: string, device: Record<string, unknown>, connection: Connection): Promise<import("../domain/lifecycle/hyper-v-snapshots.js").SnapshotRepairResult>;
+    repairSnapshots(owner: string, backend: string, id: string, device: Record<string, unknown>, connection: Connection, parentDeadlineAt?: number): Promise<import("../domain/lifecycle/hyper-v-snapshots.js").SnapshotRepairResult>;
     recoveryConnection(): Connection | null;
     stateErrorCode(error: unknown): string | null;
     stateFailure(error: unknown, request: DeviceStatusRequest): import("../domain/lifecycle/hyper-v-stop-delete.js").HyperVStateFailure;

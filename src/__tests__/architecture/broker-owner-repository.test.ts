@@ -187,9 +187,148 @@ describe("broker owner repository publication", () => {
     });
 
     it("merges snapshot repair into current fields with repository clock precedence", () => {
-        const f = repository([{ id: "one", name: "current", custom: 42 }]);
-        expect(f.app.mergeSnapshotRepair("owner", "windows-vm", "one", { id: "one", name: "old" }, { status: "stopped", updatedAt: "patch-time" })).toEqual({ id: "one", name: "current", custom: 42, status: "stopped", updatedAt: "repository-time" });
-        expect(f.stored()).toEqual([{ id: "one", name: "current", custom: 42, status: "stopped", updatedAt: "repository-time" }]);
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm", vmName: "name", diskPath: "/owned/root.vhdx", name: "old" };
+        const current = { ...captured, name: "current", custom: 42, recording: { runtimeId: "concurrent-recording" } };
+        const f = repository([current]);
+        const expected = { ...current, status: "stopped", updatedAt: "repository-time" };
+        expect(f.app.mergeSnapshotRepair("owner", "windows-vm", "one", captured, { status: "stopped", updatedAt: "patch-time" }))
+            .toEqual({ found: true, matched: true, device: expected });
+        expect(f.stored()).toEqual([expected]);
+    });
+
+    it.each(["incarnationId", "vmId", "vmName", "diskPath", "provider", "backend"] as const)(
+        "refuses snapshot repair for a same-id successor with a different %s without writing", field => {
+            const captured = { id: "one", incarnationId: "generation", vmId: "vm", vmName: "name", diskPath: "/owned/root.vhdx", provider: "hyper-v", backend: "windows-vm" };
+            const successor = { ...captured, [field]: "successor", snapshots: [{ id: "successor-checkpoint" }] };
+            const other = { id: "other", marker: "unrelated" };
+            const f = repository([other, successor]);
+            const guard = vi.fn((): undefined => { throw new Error("do not consult a deadline before qualifying identity"); });
+            expect(f.app.mergeSnapshotRepair("owner", "windows-vm", "one", captured, { snapshots: [] }, guard))
+                .toEqual({ found: true, matched: false, device: successor });
+            expect(f.stored()).toEqual([other, successor]);
+            expect(f.published()).toBeUndefined();
+            expect(guard).not.toHaveBeenCalled();
+        },
+    );
+
+    it("does not revive a deleted record or publish an unchanged owner list during snapshot repair", () => {
+        const other = { id: "other", marker: "unrelated" };
+        const f = repository([other]);
+        const guard = vi.fn(() => undefined);
+        expect(f.app.mergeSnapshotRepair("owner", "windows-vm", "absent", { id: "absent" }, { snapshots: [] }, guard))
+            .toEqual({ found: false, matched: false, device: null });
+        expect(f.stored()).toEqual([other]);
+        expect(f.published()).toBeUndefined();
+        expect(guard).not.toHaveBeenCalled();
+    });
+
+    it("checks the snapshot publication guard inside the lock after qualification and validation", () => {
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm", vmName: "name", diskPath: "/owned/root.vhdx" };
+        const f = repository([captured]);
+        const events: string[] = [];
+        let locked = false, now = 17.25;
+        const deadline = now + 5000, expired = new Error("hyper-v-operation-deadline-exceeded");
+        const read = f.ports.read;
+        f.ports.withLock = (_owner, _key, operation) => {
+            now = deadline;
+            locked = true;
+            try { return operation(); } finally { locked = false; }
+        };
+        f.ports.read = (...args) => { expect(locked).toBe(true); events.push("read"); return read(...args); };
+        f.ports.validate = () => { expect(locked).toBe(true); events.push("validate"); return undefined; };
+        const guard = vi.fn(() => {
+            expect(locked).toBe(true); events.push("guard");
+            if (now >= deadline) throw expired;
+            return undefined;
+        });
+        expect(() => f.app.mergeSnapshotRepair("owner", "windows-vm", "one", captured, { snapshots: [] }, guard)).toThrow(expired);
+        expect(events).toEqual(["read", "validate", "guard"]);
+        expect(guard).toHaveBeenCalledOnce();
+        expect(f.stored()).toEqual([captured]);
+        expect(f.published()).toBeUndefined();
+    });
+
+    it("preserves a snapshot repository validation failure before its publication guard", () => {
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm" };
+        const f = repository([captured]), invalid = new Error("invalid repaired state");
+        f.ports.validate = () => { throw invalid; };
+        const guard = vi.fn(() => undefined);
+        expect(() => f.app.mergeSnapshotRepair("owner", "windows-vm", "one", captured, { snapshots: [] }, guard)).toThrow(invalid);
+        expect(guard).not.toHaveBeenCalled();
+        expect(f.stored()).toEqual([captured]);
+        expect(f.published()).toBeUndefined();
+    });
+
+    it("qualifies forced snapshot-journal removal inside the owner lock without publishing device state", () => {
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm", vmName: "name", diskPath: "/owned/root.vhdx",
+            provider: "hyper-v", backend: "windows-vm", name: "captured" };
+        const current = { ...captured, name: "current", concurrentMetadata: { retained: true } };
+        const f = repository([current]);
+        let locked = false, journalPresent = true;
+        f.ports.withLock = (_owner, _key, operation) => {
+            locked = true;
+            try { return operation(); } finally { locked = false; }
+        };
+        const removeCapturedJournal = vi.fn((qualified: Record<string, unknown>) => {
+            expect(locked).toBe(true);
+            expect(qualified).toEqual(current);
+            journalPresent = false;
+            return true;
+        });
+        expect(f.app.withSnapshotRepairTarget("owner", "windows-vm", "one", captured, removeCapturedJournal))
+            .toEqual({ found: true, matched: true, device: current });
+        expect(journalPresent).toBe(false);
+        expect(removeCapturedJournal).toHaveBeenCalledOnce();
+        expect(f.stored()).toEqual([current]);
+        expect(f.published()).toBeUndefined();
+    });
+
+    it.each(["missing", "incarnationId", "vmId"] as const)("does not invoke forced journal removal for a %s target", change => {
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm", vmName: "name", diskPath: "/owned/root.vhdx" };
+        const successor = { ...captured, [change]: "successor" };
+        const current = change === "missing" ? [] : [successor];
+        const f = repository(current), removeJournal = vi.fn(() => true);
+        expect(f.app.withSnapshotRepairTarget("owner", "windows-vm", "one", captured, removeJournal)).toEqual({
+            found: change !== "missing", matched: false, device: change === "missing" ? null : successor,
+        });
+        expect(removeJournal).not.toHaveBeenCalled();
+        expect(f.stored()).toEqual(current);
+        expect(f.published()).toBeUndefined();
+    });
+
+    it("retains journal evidence when the qualified removal callback finds a changed journal", () => {
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm" };
+        const f = repository([captured]);
+        const changedJournal = { operationId: "successor-operation" };
+        const qualifyJournal = vi.fn(() => changedJournal.operationId === "captured-operation");
+        expect(f.app.withSnapshotRepairTarget("owner", "windows-vm", "one", captured, qualifyJournal))
+            .toEqual({ found: true, matched: false, device: captured });
+        expect(qualifyJournal).toHaveBeenCalledOnce();
+        expect(changedJournal).toEqual({ operationId: "successor-operation" });
+        expect(f.stored()).toEqual([captured]);
+        expect(f.published()).toBeUndefined();
+    });
+
+    it("does not clear a qualified journal after the owner lock consumes the remaining deadline", () => {
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm" };
+        const f = repository([captured]);
+        const deadline = 5017.25, expired = new Error("hyper-v-operation-deadline-exceeded");
+        let now = 17.25, locked = false, journalPresent = true;
+        f.ports.withLock = (_owner, _key, operation) => {
+            locked = true; now = deadline;
+            try { return operation(); } finally { locked = false; }
+        };
+        const removeJournal = vi.fn(() => {
+            expect(locked).toBe(true);
+            if (now >= deadline) throw expired;
+            journalPresent = false;
+            return true;
+        });
+        expect(() => f.app.withSnapshotRepairTarget("owner", "windows-vm", "one", captured, removeJournal)).toThrow(expired);
+        expect(removeJournal).toHaveBeenCalledOnce();
+        expect(journalPresent).toBe(true);
+        expect(f.stored()).toEqual([captured]);
+        expect(f.published()).toBeUndefined();
     });
 
     it("applies selected updates and replay merges without removing another device or a successor claim", () => {

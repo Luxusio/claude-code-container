@@ -727,7 +727,8 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     const powershell = ports.connection('powershell');
                     if (!powershell)
                         return { kind:'admission-refused',reason:'invalid',journalDisposition:'clear',recoveryDisposition:'required',error: "missing-provider-command", missing: ["powershell"], backend: parsed.backend, deviceId: parsed.deviceId};
-                    const snapshotReconciliation = await ports.repairSnapshots(ownerId, parsed.backend, parsed.deviceId, current, powershell);
+                    const snapshotReconciliation = await ports.repairSnapshots(ownerId, parsed.backend, parsed.deviceId, current, powershell, deadlineAt);
+                    if (snapshotReconciliation.ok) ports.assertDeadline(deadlineAt);
                     if (!snapshotReconciliation.ok) {
                         return { kind:'operation-failed',reason:snapshotReconciliation.reason,journalDisposition:'retain',recoveryDisposition:'required',error: snapshotReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(snapshotReconciliation.detail ? { detail: snapshotReconciliation.detail } : {})};
                     }

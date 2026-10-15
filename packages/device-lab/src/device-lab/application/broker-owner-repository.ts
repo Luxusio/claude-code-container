@@ -7,6 +7,9 @@ import { cleanupRecord } from '../domain/broker-owner-cleanup.js';
 import { retainAfterWindowsConfigFailure } from '../domain/lifecycle/windows-sandbox-create.js';
 
 export function createBrokerOwnerRepository(ports: BrokerOwnerRepositoryPorts) {
+    function snapshotRepairTargetMatches(current: Record<string, unknown>, original: Record<string, unknown>) {
+        return ["incarnationId", "vmId", "vmName", "diskPath", "provider", "backend"].every(field => ports.equal(current[field], original[field]));
+    }
     function publish(owner: string, key: string, devices: unknown[]) {
         ports.validate(devices);
         ports.publish(owner, key, devices);
@@ -101,14 +104,32 @@ export function createBrokerOwnerRepository(ports: BrokerOwnerRepositoryPorts) {
         }));
         return { found, matched, currentAppium, device };
     }
-    function mergeSnapshotRepair(owner: string, key: string, id: string, original: Record<string, unknown>, patch: Record<string, unknown>) {
-        let updated = original;
-        mutate(owner, key, devices => devices.map(candidate => {
-            if (!ownerObject(candidate) || !('id' in candidate) || candidate.id !== id) return candidate;
-            updated = { ...candidate, ...patch, updatedAt: ports.timestamp() };
-            return updated;
-        }));
-        return updated;
+    function mergeSnapshotRepair(owner: string, key: string, id: string, original: Record<string, unknown>, patch: Record<string, unknown>, beforePublish?: () => undefined): {found:boolean;matched:boolean;device:Record<string,unknown>|null} {
+        return ports.withLock(owner, key, () => {
+            const devices = ports.read(owner, key);
+            const index = devices.findIndex(candidate => ownerRecord(candidate) && candidate.id === id);
+            const selected = index < 0 ? null : devices[index];
+            const current = ownerRecord(selected) ? selected : null;
+            if (!current || !snapshotRepairTargetMatches(current, original)) {
+                return { found: index >= 0, matched: false, device: current };
+            }
+            const updated = { ...current, ...patch, updatedAt: ports.timestamp() };
+            const next = devices.map((candidate, candidateIndex) => candidateIndex === index ? updated : candidate);
+            assertUniqueOwnerDeviceIds(next);
+            ports.validate(next);
+            beforePublish?.();
+            ports.publish(owner, key, next);
+            return { found: true, matched: true, device: updated };
+        });
+    }
+    function withSnapshotRepairTarget(owner: string, key: string, id: string, original: Record<string, unknown>, operation: (current: Record<string, unknown>) => boolean): {found:boolean;matched:boolean;device:Record<string,unknown>|null} {
+        return ports.withLock(owner, key, () => {
+            const current = ports.read(owner, key).find(candidate => ownerRecord(candidate) && candidate.id === id);
+            if (!ownerRecord(current) || !snapshotRepairTargetMatches(current, original)) {
+                return { found: current !== undefined, matched: false, device: ownerRecord(current) ? current : null };
+            }
+            return { found: true, matched: operation(current), device: current };
+        });
     }
     function removeDevice(owner: string, key: string, id: string): undefined {
         mutate(owner, key, devices => devices.filter(candidate => !(ownerObject(candidate) && 'id' in candidate && candidate.id === id)));
@@ -126,5 +147,5 @@ export function createBrokerOwnerRepository(ports: BrokerOwnerRepositoryPorts) {
     function removeMatchingClaim(owner: string, key: string, id: unknown, createdAt: unknown) {
         return mutate(owner, key, devices => devices.filter(candidate => retainAfterWindowsConfigFailure(candidate, id, createdAt)));
     }
-    return { mutate, transitionLifecycle, claim, transitionSnapshot, claimOrReattachPhysical, transitionRecording, transitionAppium, mergeSnapshotRepair, removeDevice, updateDevice, replayPublish, removeMatchingClaim };
+    return { mutate, transitionLifecycle, claim, transitionSnapshot, claimOrReattachPhysical, transitionRecording, transitionAppium, mergeSnapshotRepair, withSnapshotRepairTarget, removeDevice, updateDevice, replayPublish, removeMatchingClaim };
 }

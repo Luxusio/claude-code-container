@@ -45,7 +45,6 @@ function fixture(variant: "typescript" | "provider") {
         readRaw: path => records.get(path) ?? { kind: "missing" },
         mtime: () => now - 5000, alive: () => true,
         identitySync: vi.fn(() => identity), identityAsync: vi.fn(async () => identity),
-        publicationTimes: vi.fn(readLockPublicationTimes),
         observe: vi.fn(() => "unavailable" as const), matches: (expected, current) => expected.startToken === current.startToken,
         moveQualified: (path, expected) => { const raw = records.get(path); if (raw?.kind !== "value" || (raw.value as Record<string, unknown>).token !== expected) return false; records.delete(path); return true; },
         moveMalformed: () => false,
@@ -63,52 +62,36 @@ function fixture(variant: "typescript" | "provider") {
 
 describe.each(["typescript", "provider"] as const)("%s Windows own guard identity", variant => {
     it.each([
-        ["later process", "windows:2026-10-12T14:52:34.0000000Z", true],
-        ["original process", "windows:2026-10-12T14:50:00.0000000Z", false],
-        ["ambiguous start", "windows:unavailable", false],
-        ["start without timezone", "windows:2026-10-12T14:52:34", false],
-    ])("qualifies an identity-unavailable claim against a %s", async (_label, startToken, reclaimed) => {
+        ["later process", "windows:2026-10-12T14:52:34.0000000Z"],
+        ["original process", "windows:2026-10-12T14:50:00.0000000Z"],
+        ["process born at publication", "windows:2026-10-12T14:51:20.492Z"],
+        ["process born 999ms after publication", "windows:2026-10-12T14:51:21.491Z"],
+        ["process born 1000ms after publication", "windows:2026-10-12T14:51:21.492Z"],
+        ["process born 1001ms after publication", "windows:2026-10-12T14:51:21.493Z"],
+        ["ambiguous start", "windows:unavailable"],
+        ["start without timezone", "windows:2026-10-12T14:52:34"],
+    ])("retains an identity-unavailable live claim despite a %s observation", async (_label, startToken) => {
         const f = fixture(variant);
         const legacy = { token: "f".repeat(32), pid: 456, host: "test-host", createdAt: "2026-10-12T14:51:20.492Z", processIdentityStatus: "unavailable" };
         f.seed(legacy);
         vi.mocked(f.ports.identityAsync).mockImplementation(async pid => pid === 456 ? { ...identity, pid, startToken } : identity);
         const operation = vi.fn(() => "recovered");
-        const result = f.app.withLockAsync(f.file, operation, { waitMs: 30 });
-        if (reclaimed) {
-            await expect(result).resolves.toBe("recovered");
-            expect(operation).toHaveBeenCalledOnce();
-        } else {
-            await expect(result).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
-            expect(operation).not.toHaveBeenCalled();
-            expect(f.record()).toEqual(legacy);
-        }
+        await expect(f.app.withLockAsync(f.file, operation, { waitMs: 30 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+        expect(operation).not.toHaveBeenCalled();
+        expect(f.record()).toEqual(legacy);
+        expect(vi.mocked(f.ports.identityAsync).mock.calls.every(([pid]) => pid === identity.pid)).toBe(true);
     });
-    it.each<{ label: string; times: LockPublicationTimes; reclaimed: boolean }>([
-        { label: "original owner", times: { kind: "known", processStartedAtMs: 49_000, claimCreatedAtMs: 50_000 }, reclaimed: false },
-        { label: "owner born at publication", times: { kind: "known", processStartedAtMs: 50_000, claimCreatedAtMs: 50_000 }, reclaimed: false },
-        { label: "owner born within the tolerance", times: { kind: "known", processStartedAtMs: 50_999, claimCreatedAtMs: 50_000 }, reclaimed: false },
-        { label: "owner born exactly 1000ms after publication", times: { kind: "known", processStartedAtMs: 51_000, claimCreatedAtMs: 50_000 }, reclaimed: false },
-        { label: "replacement born 1001ms after publication", times: { kind: "known", processStartedAtMs: 51_001, claimCreatedAtMs: 50_000 }, reclaimed: true },
-        { label: "unavailable publication observation", times: { kind: "unavailable" }, reclaimed: false },
-    ])("uses injected publication facts for an opaque $label", async ({ times, reclaimed }) => {
+    it.each(["opaque-publication-time", undefined, ""])("retains a live identity-less claim with publication %s without probing it", async createdAt => {
         const f = fixture(variant);
         const current = { ...identity, pid: 456, startToken: "opaque-native-process-generation" };
-        const legacy = { token: "f".repeat(32), pid: current.pid, host: "test-host", createdAt: "opaque-publication-time", processIdentityStatus: "unavailable" };
+        const legacy = { token: "f".repeat(32), pid: current.pid, host: "test-host", ...(createdAt === undefined ? {} : { createdAt }), processIdentityStatus: "unavailable" };
         f.seed(legacy);
         vi.mocked(f.ports.identityAsync).mockImplementation(async pid => pid === current.pid ? current : identity);
-        vi.mocked(f.ports.publicationTimes).mockReturnValue(times);
         const operation = vi.fn(() => "recovered");
-        const result = f.app.withLockAsync(f.file, operation, { waitMs: 30 });
-        if (reclaimed) {
-            await expect(result).resolves.toBe("recovered");
-            expect(operation).toHaveBeenCalledOnce();
-            expect(f.ports.readRaw(f.file)).toEqual({ kind: "missing" });
-        } else {
-            await expect(result).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
-            expect(operation).not.toHaveBeenCalled();
-            expect(f.record()).toEqual(legacy);
-        }
-        expect(f.ports.publicationTimes).toHaveBeenCalledWith(current, legacy.createdAt);
+        await expect(f.app.withLockAsync(f.file, operation, { waitMs: 30 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+        expect(operation).not.toHaveBeenCalled();
+        expect(f.record()).toEqual(legacy);
+        expect(vi.mocked(f.ports.identityAsync).mock.calls.every(([pid]) => pid === identity.pid)).toBe(true);
         expect(f.ports.observe).not.toHaveBeenCalled();
     });
 
@@ -121,34 +104,30 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
         await expect(f.app.withLockAsync(f.file, operation, { waitMs: 30 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
         expect(operation).not.toHaveBeenCalled();
         expect(f.record()).toEqual(legacy);
-        expect(f.ports.publicationTimes).not.toHaveBeenCalled();
+        expect(vi.mocked(f.ports.identityAsync).mock.calls.every(([pid]) => pid === identity.pid)).toBe(true);
     });
 
-    it("protects the recorded original owner without consulting publication times", async () => {
+    it("protects the original owner using its recorded identity", async () => {
         const f = fixture(variant);
         const original = { ...identity, pid: 456, startToken: "opaque-original-generation" };
         const claim = { token: "f".repeat(32), pid: original.pid, host: "test-host", createdAt: "opaque-publication-time", processIdentityStatus: "recorded", processIdentity: original };
         f.seed(claim);
         vi.mocked(f.ports.identityAsync).mockImplementation(async pid => pid === original.pid ? original : identity);
-        vi.mocked(f.ports.publicationTimes).mockReturnValue({ kind: "known", processStartedAtMs: 51_001, claimCreatedAtMs: 50_000 });
         const operation = vi.fn();
         await expect(f.app.withLockAsync(f.file, operation, { waitMs: 30 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
         expect(operation).not.toHaveBeenCalled();
         expect(f.record()).toEqual(claim);
-        expect(f.ports.publicationTimes).not.toHaveBeenCalled();
     });
 
     it("keeps synchronous acquisition from probing a live Windows legacy owner", () => {
         const f = fixture(variant);
         const legacy = { token: "f".repeat(32), pid: 456, host: "test-host", createdAt: "2026-10-12T14:51:20.492Z", processIdentityStatus: "unavailable" };
         f.seed(legacy);
-        vi.mocked(f.ports.publicationTimes).mockReturnValue({ kind: "known", processStartedAtMs: 51_001, claimCreatedAtMs: 50_000 });
         const operation = vi.fn();
         expect(() => f.app.withLock(f.file, operation, { waitMs: 30 })).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
         expect(operation).not.toHaveBeenCalled();
         expect(f.record()).toEqual(legacy);
         expect(f.ports.identityAsync).not.toHaveBeenCalled();
-        expect(f.ports.publicationTimes).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -172,7 +151,6 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
         if (mode === "sync") {
             expect(() => f.app.withLock(f.file, operation, options)).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
             expect(f.ports.identityAsync).not.toHaveBeenCalled();
-            expect(f.ports.publicationTimes).not.toHaveBeenCalled();
         } else {
             await expect(f.app.withLockAsync(f.file, operation, options)).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
         }
@@ -187,12 +165,17 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
         expect(f.ports.observe).not.toHaveBeenCalled();
     });
 
-    it.each(["active", "archived"] as const)("retains a cold budgeted %s Windows owner after wall rollback despite a later apparent process birth", async location => {
+    it.each([
+        ["active", "sync", false], ["active", "async", false],
+        ["archived", "sync", false], ["archived", "async", false],
+        ["active", "sync", true], ["active", "async", true],
+        ["archived", "sync", true], ["archived", "async", true],
+    ] as const)("retains a cold %s Windows owner after wall rollback against a %s contender (budgeted: %s)", async (location, mode, budgeted) => {
         const f = fixture(variant);
         const initialWall = Date.UTC(2026, 9, 16, 12);
         const processStartedAtMs = initialWall - 1000;
         const ownerIdentity = { ...identity, startToken: `windows:${new Date(processStartedAtMs).toISOString()}` };
-        let wallNow = initialWall, monotonicNow = 17.25, ownerPath = f.file;
+        let wallNow = initialWall, monotonicNow = 17.25, ownerPath = f.file, publications = 0;
         let releaseOwner!: () => void, ownerEntered!: () => void;
         const ownerGate = new Promise<void>(resolve => { releaseOwner = resolve; });
         const ownerReady = new Promise<void>(resolve => { ownerEntered = resolve; });
@@ -200,7 +183,7 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
         f.ports.now = () => wallNow;
         f.ports.monotonic = () => monotonicNow;
         f.ports.timestamp = () => {
-            wallNow -= 60_000;
+            if (publications++ === 0) wallNow -= 60_000;
             return new Date(wallNow).toISOString();
         };
         f.ports.mtime = () => wallNow - 5000;
@@ -208,16 +191,17 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
         f.ports.pause = (milliseconds, signal) => {
             if (signal) return pause(milliseconds, signal);
             monotonicNow += milliseconds;
-            wallNow -= 86_400_000;
+            wallNow += milliseconds;
             return Promise.resolve(undefined);
         };
-        vi.mocked(f.ports.identityAsync).mockImplementation(async pid => pid === ownerIdentity.pid ? ownerIdentity : { ...identity, pid });
+        f.ports.pauseSync = milliseconds => { monotonicNow += milliseconds; wallNow += milliseconds; };
+        vi.mocked(f.ports.identityAsync).mockResolvedValue(null);
         const owner = f.app.withLockAsync(f.file, async () => {
             if (location === "archived") ownerPath = f.displace();
             ownerEntered();
             await ownerGate;
             return "owner";
-        }, { waitMs: 1000, waitBudget: { remaining: () => 1000 } });
+        }, { waitMs: 1000 });
         await ownerReady;
         try {
             const published = f.app.readLock(ownerPath)!;
@@ -226,19 +210,22 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
             expect(readLockPublicationTimes(ownerIdentity, published.createdAt)).toEqual({
                 kind: "known", processStartedAtMs, claimCreatedAtMs: initialWall - 60_000,
             });
+            vi.mocked(f.ports.identityAsync).mockClear().mockImplementation(async pid => pid === ownerIdentity.pid ? ownerIdentity : { ...identity, pid });
+            vi.mocked(f.ports.identitySync).mockClear().mockImplementation(pid => ({ ...identity, pid }));
             const contenderToken = "e".repeat(32);
             f.ports.moveQualified = vi.fn(f.ports.moveQualified);
             f.ports.moveMalformed = vi.fn(f.ports.moveMalformed);
             f.ports.removeArchive = vi.fn(f.ports.removeArchive);
-            const contender = createSharedMutationLock({ ...f.ports, pid: () => 456, token: () => contenderToken });
+            // A separate runtime has its own local ownership keys, but observes the same native claim.
+            const contender = createSharedMutationLock({ ...f.ports, key: path => `contender:${path}`, pid: () => 456, token: () => contenderToken });
             const operation = vi.fn(() => "unexpected admission");
-            const deadline = monotonicNow + 47;
-            await expect(contender.withLockAsync(f.file, operation, {
-                waitMs: 1000, waitBudget: { remaining: () => deadline - monotonicNow },
-            })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            const deadline = monotonicNow + 30;
+            const options = { waitMs: 30, ...(budgeted ? { waitBudget: { remaining: () => deadline - monotonicNow } } : {}) };
+            if (mode === "sync") expect(() => contender.withLock(f.file, operation, options)).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+            else await expect(contender.withLockAsync(f.file, operation, options)).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
 
             expect(monotonicNow).toBe(deadline);
-            expect(wallNow).toBeLessThan(initialWall - 60_000);
+            expect(wallNow).toBe(initialWall - 60_000 + 30);
             expect(operation).not.toHaveBeenCalled();
             expect(f.records.get(ownerPath)).toEqual({ kind: "value", value: published });
             expect(f.ports.moveMalformed).not.toHaveBeenCalled();
@@ -247,10 +234,14 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
                 expect(f.ports.moveQualified).toHaveBeenCalledExactlyOnceWith(f.file, contenderToken, "release", []);
                 expect(f.records.has(f.file)).toBe(false);
             } else expect(f.ports.moveQualified).not.toHaveBeenCalled();
+            expect(vi.mocked(f.ports.identityAsync).mock.calls.every(([pid]) => pid === 456)).toBe(true);
+            expect(vi.mocked(f.ports.identitySync).mock.calls.every(([pid]) => pid === 456)).toBe(true);
+            expect(f.ports.observe).not.toHaveBeenCalled();
         } finally {
             releaseOwner();
             await owner;
         }
+        expect(f.records.size).toBe(0);
     });
 
     it.each(["success", "failure", "timeout"] as const)("cancels the concurrent owner-observation wait after %s without late reclamation", async outcome => {
@@ -473,27 +464,21 @@ describe.each(["typescript", "provider"] as const)("%s archived claim admission"
     });
 
     it.each([
-        ["original archived process", 50_000, false],
-        ["replacement within tolerance", 51_000, false],
-        ["replacement strictly after tolerance", 51_001, true],
-        ["unknown publication facts", null, false],
-    ] as const)("qualifies a Windows legacy %s using the existing publication policy", async (_label, processStartedAtMs, recovered) => {
+        ["original archived process", "windows:1970-01-01T00:00:50.000Z"],
+        ["process born exactly 1000ms after publication", "windows:1970-01-01T00:00:51.000Z"],
+        ["process born 1001ms after publication", "windows:1970-01-01T00:00:51.001Z"],
+        ["unknown process birth", "opaque-native-birth"],
+    ] as const)("retains a live Windows legacy archive despite a %s observation", async (_label, startToken) => {
         const f = fixture(variant);
-        const owner = { token: "f".repeat(32), pid: 456, host: "test-host", createdAt: "opaque-native-publication", processIdentityStatus: "unavailable" };
+        const owner = { token: "f".repeat(32), pid: 456, host: "test-host", createdAt: "1970-01-01T00:00:50.000Z", processIdentityStatus: "unavailable" };
         const archived = f.archive({ kind: "value", value: owner });
-        vi.mocked(f.ports.identityAsync).mockImplementation(async pid => ({ ...identity, pid }));
-        vi.mocked(f.ports.publicationTimes).mockReturnValue(processStartedAtMs === null ? { kind: "unavailable" } : { kind: "known", processStartedAtMs, claimCreatedAtMs: 50_000 });
+        vi.mocked(f.ports.identityAsync).mockImplementation(async pid => ({ ...identity, pid, startToken }));
         const operation = vi.fn(() => "recovered");
-        const result = f.app.withLockAsync(f.file, operation, { waitMs: 30, staleMs: 1 });
-        if (recovered) {
-            await expect(result).resolves.toBe("recovered");
-            expect(f.records.has(archived)).toBe(false);
-        } else {
-            await expect(result).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
-            expect(operation).not.toHaveBeenCalled();
-            expect(f.records.get(archived)).toEqual({ kind: "value", value: owner });
-        }
-        expect(f.ports.publicationTimes).toHaveBeenCalledWith({ ...identity, pid: owner.pid }, owner.createdAt);
+        await expect(f.app.withLockAsync(f.file, operation, { waitMs: 30, staleMs: 1 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+        expect(operation).not.toHaveBeenCalled();
+        expect(f.records.get(archived)).toEqual({ kind: "value", value: owner });
+        expect(f.records.has(f.file)).toBe(false);
+        expect(vi.mocked(f.ports.identityAsync).mock.calls.every(([pid]) => pid === identity.pid)).toBe(true);
     });
 
     for (const mode of ["sync", "async"] as const) {
@@ -647,7 +632,8 @@ describe("native lock publication timestamp observations", () => {
         ["seven fractional digits", "windows:2026-10-12T14:52:34.4921234Z"],
         ["seven fractional digits and an offset", "windows:2026-10-12T20:22:34.4921234+05:30"],
     ])("normalizes a %s native start token", (_label, startToken) => {
-        expect(readLockPublicationTimes({ ...identity, startToken }, "2026-10-12T14:51:20.492Z")).toEqual({
+        const observation: LockPublicationTimes = readLockPublicationTimes({ ...identity, startToken }, "2026-10-12T14:51:20.492Z");
+        expect(observation).toEqual({
             kind: "known",
             processStartedAtMs: Date.UTC(2026, 9, 12, 14, 52, 34, 492),
             claimCreatedAtMs: Date.UTC(2026, 9, 12, 14, 51, 20, 492),

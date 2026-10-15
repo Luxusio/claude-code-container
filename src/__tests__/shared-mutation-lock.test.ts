@@ -18,6 +18,7 @@ import {
 } from "@ccc/device-lab/device-lab-shared-state.js";
 import { readDeviceRuntimeProcessIdentity } from "@ccc/device-lab/device-lab-process-identity.js";
 import { readProcessIdentity } from "@ccc/device-lab/providers/state/process-identity.mjs";
+import { readLockPublicationTimes } from "@ccc/device-lab/providers/adapters/lock-publication-times.mjs";
 import type { LockProcessIdentity } from "../../packages/device-lab/providers/ports/shared-mutation-lock.mjs";
 
 const withSharedMutationLock = withNestedSharedMutationLock;
@@ -197,6 +198,106 @@ describe("device-lab shared mutation lock", () => {
             ? await import("@ccc/device-lab/device-lab-shared-state.js?windows-budgeted-owner")
             : await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?windows-budgeted-owner");
         return { acquire: api.withSharedMutationLockAsync, identitySync, observe };
+    }
+
+    for (const implementation of ["host", "provider"] as const) {
+        it.each([
+            ["active", "sync", false], ["active", "async", false],
+            ["archived", "sync", false], ["archived", "async", false],
+            ["active", "sync", true], ["active", "async", true],
+            ["archived", "sync", true], ["archived", "async", true],
+        ] as const)(`${implementation} filesystem facade retains a cold %s Windows owner after wall rollback against a %s contender (budgeted: %s)`, async (location, mode, budgeted) => {
+            const file = lockPath();
+            const claim = location === "active" ? file : `${file}.0123456789abcdef.stale`;
+            const initialWall = Date.now();
+            const processStartedAtMs = initialWall - 1000;
+            const ownerIdentity = { pid: process.pid, startToken: `windows:${new Date(processStartedAtMs).toISOString()}`, commandHash: "a".repeat(64) };
+            let wallNow = initialWall, monotonicNow = 0, published = false;
+            let releaseOwner!: () => void, ownerEntered!: () => void;
+            const ownerGate = new Promise<void>(resolve => { releaseOwner = resolve; });
+            const ownerReady = new Promise<void>(resolve => { ownerEntered = resolve; });
+            const identities = {
+                owner: { sync: vi.fn(() => null), async: vi.fn(async () => null) },
+                contender: {
+                    sync: vi.fn((pid: number) => ({ ...ownerIdentity, pid })),
+                    async: vi.fn(async (pid: number) => ({ ...ownerIdentity, pid })),
+                },
+            };
+            const observe = vi.fn((): never => { throw new Error("live-legacy-owner-must-not-be-probed"); });
+            const advance = (milliseconds: number) => { wallNow += milliseconds; monotonicNow += milliseconds; };
+            async function facade(role: "owner" | "contender") {
+                vi.resetModules();
+                vi.doMock("@ccc/device-lab/providers/application/shared-mutation-lock.mjs", async importOriginal => {
+                    const actual = await importOriginal<typeof import("@ccc/device-lab/providers/application/shared-mutation-lock.mjs")>();
+                    return { ...actual, createSharedMutationLock(ports: Parameters<typeof actual.createSharedMutationLock>[0]) {
+                        return actual.createSharedMutationLock({ ...ports,
+                            // Independent runtime instances share native bytes, not in-process owner keys.
+                            key: path => `${role}:${ports.key(path)}`,
+                            pid: () => role === "owner" ? ownerIdentity.pid : ownerIdentity.pid + 1,
+                            platform: () => "win32", alive: () => true,
+                            now: () => wallNow, monotonic: () => monotonicNow,
+                            timestamp: () => {
+                                if (role === "owner" && !published) { published = true; wallNow -= 60_000; }
+                                return new Date(wallNow).toISOString();
+                            },
+                            identitySync: identities[role].sync, identityAsync: identities[role].async, observe,
+                            pauseSync: advance,
+                            pause: (milliseconds, signal) => {
+                                if (signal) return ports.pause(milliseconds, signal);
+                                advance(milliseconds);
+                                return Promise.resolve(undefined);
+                            },
+                        });
+                    } };
+                });
+                return implementation === "host"
+                    ? import("@ccc/device-lab/device-lab-shared-state.js?windows-legacy-rollback")
+                    : import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?windows-legacy-rollback");
+            }
+            let owner: Promise<string> | undefined;
+            try {
+                const ownerFacade = await facade("owner");
+                owner = ownerFacade.withSharedMutationLockAsync(file, async () => {
+                    if (location === "archived") renameSync(file, claim);
+                    ownerEntered();
+                    await ownerGate;
+                    return "owner";
+                }, { waitMs: 1000 });
+                await ownerReady;
+                const bytes = readFileSync(claim, "utf8");
+                const record = JSON.parse(bytes);
+                expect(record).toMatchObject({ pid: ownerIdentity.pid, processIdentityStatus: "unavailable" });
+                expect(record).not.toHaveProperty("processIdentity");
+                expect(identities.owner.async).toHaveBeenCalledExactlyOnceWith(ownerIdentity.pid);
+                expect(readLockPublicationTimes(ownerIdentity, record.createdAt)).toEqual({
+                    kind: "known", processStartedAtMs, claimCreatedAtMs: initialWall - 60_000,
+                });
+                const old = new Date(wallNow - 5000);
+                utimesSync(claim, old, old);
+                const contender = await facade("contender");
+                const operation = vi.fn(() => "unexpected admission");
+                const deadline = monotonicNow + 30;
+                const options = { waitMs: 30, staleMs: 1, ...(budgeted ? { waitBudget: { remaining: () => deadline - monotonicNow } } : {}) };
+                if (mode === "sync") expect(() => contender.withSharedMutationLock(file, operation, options)).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+                else await expect(contender.withSharedMutationLockAsync(file, operation, options)).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                expect(monotonicNow).toBe(deadline);
+                expect(wallNow).toBe(initialWall - 60_000 + 30);
+                expect(operation).not.toHaveBeenCalled();
+                expect(readFileSync(claim, "utf8")).toBe(bytes);
+                expect(readdirSync(dirname(file))).toEqual([claim.slice(dirname(file).length + 1)]);
+                expect(identities.contender.sync.mock.calls.every(([pid]) => pid === ownerIdentity.pid + 1)).toBe(true);
+                expect(identities.contender.async.mock.calls.every(([pid]) => pid === ownerIdentity.pid + 1)).toBe(true);
+                expect(observe).not.toHaveBeenCalled();
+                releaseOwner();
+                expect(await owner).toBe("owner");
+                expect(readdirSync(dirname(file))).toEqual([]);
+            } finally {
+                releaseOwner?.();
+                await owner;
+                vi.doUnmock("@ccc/device-lab/providers/application/shared-mutation-lock.mjs");
+                vi.resetModules();
+            }
+        });
     }
 
     for (const implementation of ["host", "provider"] as const) {

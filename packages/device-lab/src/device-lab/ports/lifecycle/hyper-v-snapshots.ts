@@ -35,14 +35,15 @@ export interface BrokerHyperVSnapshotPorts<Connection,Receipt> {
     create(connection:Connection, target: SnapshotCheckpointTarget, options: SnapshotCreateOptions): Promise<SnapshotMutationObservation>;
     restore(connection:Connection, target: SnapshotCheckpointTarget, options: { force: boolean; startAfterRestore: boolean }): Promise<SnapshotMutationObservation>;
     delete(connection:Connection, target: SnapshotCheckpointTarget): Promise<SnapshotDeleteObservation>;
-    repairPolicy(connection:Connection, target: { vmId: string; vmName: string; expectedNotes: string; providerName: string; expectedCheckpointPolicy: SnapshotCheckpointPolicy }): Promise<{ readonly checkpointPolicy: SnapshotCheckpointPolicy; readonly candidateCount: 0 | 1 }>;
+    repairPolicy(connection:Connection, target: { vmId: string; vmName: string; expectedNotes: string; providerName: string; expectedCheckpointPolicy: SnapshotCheckpointPolicy }, deadlineAt?: number): Promise<{ readonly checkpointPolicy: SnapshotCheckpointPolicy; readonly candidateCount: 0 | 1 }>;
     lastExecution(): SnapshotExecution<Receipt> | null;
     isValidationError(error: unknown): boolean;
+    isDeadlineError(error: unknown): boolean;
     providerErrorCode(error: unknown): string | undefined;
     errorCode(error: unknown, fallback: string): string;
     diagnosticCode(execution: SnapshotExecution<Receipt> | null, fallback: string, providerErrorCode?: string): string;
     publish(ownerId: string, backend: string, deviceId: string, expected: Record<string, unknown>, replacement: Record<string, unknown>): SnapshotPublication;
-    mergeRepair(ownerId: string, backend: string, deviceId: string, original: Record<string, unknown>, patch: SnapshotRepairPatch): Record<string, unknown>;
+    mergeRepair(ownerId: string, backend: string, deviceId: string, original: Record<string, unknown>, patch: SnapshotRepairPatch, beforePublish?: () => undefined): SnapshotPublication;
     forgetConsole(ownerId: string, backend: string, deviceId: string): undefined;
     sshReady(connection:Connection, target: { deviceRoot: string; privateRoot?: string; sshPrivateKeyPath: string; knownHostsPath: string; guestUsername: string; networkAddress: string }): Promise<{ readonly ready: boolean; readonly execution: SnapshotExecution<Receipt> }>;
     remainingTimeout(deadlineAt: number, maximumMs: number): number;

@@ -2,7 +2,6 @@ import { ownerContext, runOwnerContext } from "../providers/state/mutation-lock-
 import { randomBytes } from "crypto";
 import { createStateFilePublication } from "../providers/application/state-file-publication.mjs";
 import { createSharedMutationLock } from "../providers/application/shared-mutation-lock.mjs";
-import { readLockPublicationTimes } from "../providers/adapters/lock-publication-times.mjs";
 import type { StateFilePublicationPorts } from "../providers/ports/state-file-publication.mjs";
 import type { LockReadObservation, SharedMutationLockPorts } from "../providers/ports/shared-mutation-lock.mjs";
 import { chmodSync, closeSync, constants as fsConstants, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
@@ -309,7 +308,6 @@ const lockPorts: SharedMutationLockPorts<DirectoryIdentity[]> = {
     alive: processIsAlive,
     identitySync: readDeviceRuntimeProcessIdentity,
     identityAsync: readDeviceRuntimeProcessIdentityAsync,
-    publicationTimes: readLockPublicationTimes,
     observe: (identity, pid) => inspectDeviceRuntimeProcessIdentity(identity, pid).status,
     matches: deviceRuntimeProcessIdentityMatches,
     moveQualified: (file, token, suffix, fence) => moveIfTokenMatches(file, token, suffix, () => assertStateDirectoriesUnchanged(fence)),

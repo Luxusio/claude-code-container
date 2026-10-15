@@ -1,6 +1,7 @@
 import { join } from "path";
 import { hyperVField, hyperVSelectedDevice, hyperVStopReplacement, type HyperVOperationEvidence, type HyperVStopDeleteRequest, type HyperVStopDeleteOutcome, type HyperVStopDeletePreparation, type HyperVReplayResult, type HyperVPublication } from "../../domain/lifecycle/hyper-v-stop-delete.js";
 import type { HyperVStopDeletePorts } from "../../ports/lifecycle/hyper-v-stop-delete.js";
+import type { SnapshotJournal } from "../../domain/lifecycle/hyper-v-snapshots.js";
 export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: HyperVStopDeletePorts<Connection,Receipt>) {
     async function reconcile(ownerId: string, backend: string, deviceId: string, deadlineAt = Number.POSITIVE_INFINITY, preserveNetwork = false): Promise<HyperVReplayResult> {
         let journal: HyperVOperationEvidence | null;
@@ -144,6 +145,7 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
             return execute(ownerId, parsed, deadlineAt, cleanupDeadlineAt);
         ports.assertDeadline(deadlineAt);
         const { backend, stateKey, deviceId } = parsed;
+        let capturedSnapshotTarget: Record<string, unknown> | undefined;
         const replay = await reconcile(ownerId, backend, deviceId, deadlineAt, parsed.command === "device_delete" ? parsed.preserveNetwork === true : true);
         if (!replay.ok)
             return {
@@ -154,7 +156,7 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
                         ...(replay.networkCleanup ? { networkCleanup: replay.networkCleanup } : {}), invoked: true, dryRun: false};
         }
         if (!parsed.dryRun) {
-            let snapshotJournal: unknown;
+            let snapshotJournal: SnapshotJournal | null;
             try {
                 snapshotJournal = ports.readSnapshotJournal(ownerId, backend, deviceId);
             }
@@ -171,24 +173,34 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
                 if (!connection)
                     return {
                         kind:'refused',reason:'invalid',journalDisposition:'clear',error: "missing-provider-command", missing: ["powershell"], backend, deviceId};
-                const snapshot = await ports.repairSnapshots(ownerId, backend, deviceId, current, connection);
+                const capturedTarget = { ...current };
+                const capturedJournal = { ...snapshotJournal };
+                const snapshot = await ports.repairSnapshots(ownerId, backend, deviceId, current, connection, deadlineAt);
+                if (snapshot.ok) ports.assertDeadline(deadlineAt);
                 if (!snapshot.ok) {
-                    if (parsed.command === "device_delete" && parsed.force)
-                        ports.clearSnapshotJournal(ownerId, backend, deviceId);
-                    else
+                    if (parsed.command === "device_delete" && parsed.force && snapshot.error !== "hyper-v-snapshot-state-conflict") {
+                        const superseded = ports.clearSnapshotJournal(ownerId, backend, deviceId, capturedTarget, capturedJournal, deadlineAt);
+                        if (!superseded.matched || !superseded.device) return {
+                            kind:'refused',reason:'conflict',journalDisposition:'retain',error:"hyper-v-snapshot-state-conflict",ownerId,backend,deviceId,
+                        };
+                        capturedSnapshotTarget = { ...superseded.device };
+                    } else
                         return {
                             kind:'refused',reason:snapshot.reason,journalDisposition:'retain',error: snapshot.error, ownerId, backend, deviceId, ...(snapshot.detail ? { detail: snapshot.detail } : {})};
                 }
             }
         }
-        const result = await execute(ownerId, parsed, deadlineAt, cleanupDeadlineAt);
+        const result = await execute(ownerId, parsed, deadlineAt, cleanupDeadlineAt, false, capturedSnapshotTarget);
         return result;
     }
-    async function execute(ownerId:string,parsed:HyperVStopDeleteRequest,deadlineAt:number,cleanupDeadlineAt:number,staged=false):Promise<HyperVStopDeleteOutcome<Connection,Receipt>> {
+    async function execute(ownerId:string,parsed:HyperVStopDeleteRequest,deadlineAt:number,cleanupDeadlineAt:number,staged=false,capturedSnapshotTarget?:Record<string,unknown>):Promise<HyperVStopDeleteOutcome<Connection,Receipt>> {
         const {backend,stateKey,deviceId}=parsed;
         let device:Record<string,unknown>|undefined;
         try { device=hyperVSelectedDevice(ports.read(ownerId,stateKey),deviceId); }
         catch(error) { return {kind:'refused',journalDisposition:'retain',...ports.stateFailure(error,parsed)}; }
+        if (capturedSnapshotTarget && (!device || ["incarnationId", "vmId", "vmName", "diskPath", "provider", "backend"].some(field => hyperVField(device, field) !== hyperVField(capturedSnapshotTarget, field)))) {
+            return {kind:'refused',reason:'conflict',journalDisposition:'retain',error:'hyper-v-snapshot-state-conflict',ownerId,backend,deviceId};
+        }
         let expected=ports.clone(device);
         const base={ownerId,backend,stateKey,command:parsed.command,deviceId};
         if(!device) {
@@ -200,9 +212,10 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
         const preparation=ports.prepareStopDelete(ownerId,parsed,device);
         if(parsed.dryRun) return {kind:'preview',journalDisposition:'clear',...base,device,preparation,force:parsed.force,invoked:false,dryRun:true};
         if(staged) return perform(ownerId,parsed,preparation,device,expected,deadlineAt,cleanupDeadlineAt);
-        const journal=ports.writeJournal(ownerId,parsed);
+        const journal=ports.writeJournal(ownerId,parsed,capturedSnapshotTarget,deadlineAt);
+        if(!journal.ok && journal.error==='hyper-v-snapshot-state-conflict') return {kind:'refused',reason:'conflict',journalDisposition:'retain',error:journal.error,ownerId,backend,deviceId};
         if(!journal.ok) return {kind:'refused',reason:'conflict',journalDisposition:'clear',error:'hyper-v-operation-journal-write-failed',ownerId,backend,deviceId,detail:journal.error};
-        const outcome=await execute(ownerId,parsed,deadlineAt,cleanupDeadlineAt,true);
+        const outcome=await execute(ownerId,parsed,deadlineAt,cleanupDeadlineAt,true,capturedSnapshotTarget);
         if(outcome.journalDisposition==='clear') ports.clearJournal(ownerId,backend,deviceId);
         return outcome;
     }

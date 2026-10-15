@@ -26,7 +26,7 @@ import { hostname, tmpdir, uptime } from "os";
 import { delimiter, dirname, join, resolve } from "path";
 import { runInNewContext } from "vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeviceBrokerServer as createRawDeviceBrokerServer, ensureHyperVHostNetworkForSetup, hiddenChildProcessOptions, hiddenProviderCommandEnv, providerCommandSpawn, redactProviderCommandInput, registerDeviceBrokerOwner, waitForBrokerWindowsMinimizeConfirmation, windowsHiddenChildProcessPreloadScript, windowsHiddenVbsLauncherInvocation, windowsHiddenVbsLauncherScript, windowsProcessTreeOutcome, windowsSandboxMinimizeWatchdogArgs, windowsSandboxSessionIdsFromBrokerListOutput, windowsSandboxWindowHandleSnapshotArgs, windowsSandboxWindowHandlesFromOutput } from "@ccc/device-lab/device-lab-broker.js";
+import { createDeviceBrokerServer as createRawDeviceBrokerServer, DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS, ensureHyperVHostNetworkForSetup, hiddenChildProcessOptions, hiddenProviderCommandEnv, providerCommandSpawn, redactProviderCommandInput, registerDeviceBrokerOwner, waitForBrokerWindowsMinimizeConfirmation, windowsHiddenChildProcessPreloadScript, windowsHiddenVbsLauncherInvocation, windowsHiddenVbsLauncherScript, windowsProcessTreeOutcome, windowsSandboxMinimizeWatchdogArgs, windowsSandboxSessionIdsFromBrokerListOutput, windowsSandboxWindowHandleSnapshotArgs, windowsSandboxWindowHandlesFromOutput } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId, deviceLabProjectMountPath } from "@ccc/device-lab/device-lab-owner.js";
 import { readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess } from "@ccc/device-lab/device-lab-process-identity.js";
 import { withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
@@ -1064,6 +1064,232 @@ describe("device-lab host broker lifecycle commands", () => {
             await close(server);
             cleanupOwner(ownerId);
         }
+    });
+
+    describe("snapshot journal recovery inside a public lifecycle budget", () => {
+        async function repairFixture(label: string, direction: -1 | 1 = 1) {
+            const cwd = join(process.env.HOME!, `broker-snapshot-budget-${label}`);
+            mkdirSync(cwd, { recursive: true });
+            const ownerId = deviceLabOwnerId(cwd), deviceId = "snapshot-budget", incarnationId = "a".repeat(32);
+            const vmId = "12345678-1234-1234-1234-123456789abc", vmName = hyperVVmName(ownerId, deviceId, incarnationId);
+            const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+            const deviceRoot = join(privateRoot, "artifacts"), diskPath = join(deviceRoot, "disks", "root.vhdx");
+            const root = writeBrokerDevices(ownerId, "windows-vm", [{ id: deviceId, ownerId, name: "Snapshot budget",
+                backend: "windows-vm", provider: "hyper-v", incarnationId, vmId, vmName, diskPath, privateRoot, deviceRoot,
+                status: "stopped", runtimeState: "Off", snapshots: [], retainedField: "original" }]);
+            const stateFile = join(root, "devices.json"), snapshotJournal = join(deviceRoot, "snapshot-operation.json");
+            mkdirSync(dirname(diskPath), { recursive: true });
+            writeFileSync(diskPath, "owned root disk");
+            writeFileSync(snapshotJournal, JSON.stringify({ version: 1, operationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                ownerId, deviceId, incarnationId, tool: "device_snapshot_delete", snapshotName: "baseline",
+                providerName: `ccc-${ownerId}-baseline`, snapshotId: "87654321-4321-4321-4321-cba987654321",
+                expectedCheckpointPolicy: "ProductionOnly", startedAt: new Date().toISOString() }));
+            const original = { state: readFileSync(stateFile), journal: readFileSync(snapshotJournal), disk: readFileSync(diskPath) };
+            const clock = { now: 17.25, wall: Date.now() };
+            const wallClock = vi.spyOn(Date, "now").mockImplementation(() => clock.wall);
+            const calls: Array<{ operation: string; timeoutMs: number }> = [];
+            const observe = vi.fn<(operation: string) => void>();
+            const failNative = new Set<string>();
+            const commandRunner = vi.fn<FixtureCommandRunner>((command, options) => {
+                const native = nativeLibraryRequest(command);
+                if (!native) throw new Error("unexpected non-library native request");
+                calls.push({ operation: native.operation, timeoutMs: options.timeoutMs });
+                observe(native.operation);
+                if (failNative.has(native.operation)) return { ...command, status: 1, stdout: JSON.stringify({ schemaVersion: 1,
+                    operation: native.operation, ok: false, errorCode: "vm-not-found" }), stderr: "" };
+                const items = native.operation === "Repair-VMSnapshotState" ? [{ checkpointPolicy: "ProductionOnly", candidateCount: 0 }]
+                    : native.operation === "Get-VM" ? [{ id: vmId, name: vmName, state: "Off", status: "Operating normally",
+                        notes: `ccc-device-lab:${ownerId}:${deviceId}:${incarnationId}`, uptimeMilliseconds: 0, generation: 2, checkpointType: "ProductionOnly" }]
+                        : native.operation === "Get-VMHardDiskDrive" ? [{ vmId, vmName, path: diskPath, controllerType: "SCSI",
+                            controllerNumber: 0, controllerLocation: 0, diskNumber: null }]
+                            : native.operation === "Get-VHD" ? [{ path: native.path, vhdFormat: "VHDX", vhdType: "Dynamic", parentPath: null,
+                                virtualSizeBytes: 4096, fileSizeBytes: 1024 }]
+                                : [];
+                return { ...command, status: 0, stdout: nativeEnvelope(native.operation, items), stderr: "" };
+            });
+            const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32",
+                providerPaths: { "powershell.exe": "/fake/powershell.exe" }, hyperVMonotonicNow: () => clock.now, commandRunner });
+            const baseUrl = await listen(server);
+            return { ownerId, deviceId, incarnationId, stateFile, snapshotJournal, diskPath, deviceRoot, original, clock, calls, observe, failNative,
+                advance(milliseconds: number) { clock.now += milliseconds; clock.wall += direction * 86_400_000; },
+                invoke(command: string, extra: Record<string, unknown> = {}) {
+                    return fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                        body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command, deviceId,
+                            bootTimeoutMs: 1000, ...extra } }) });
+                },
+                async close() { wallClock.mockRestore(); await close(server); cleanupOwner(ownerId); },
+            };
+        }
+
+        const commands = ["device_start", "device_reboot", "device_stop", "device_delete", "device_status"] as const;
+        const cases = commands.flatMap(command => ([-1, 1] as const).flatMap(direction =>
+            (["repair", "status"] as const).map(phase => ({ command, direction, phase }))));
+        it.each(cases)("retains evidence when $command expires after $phase with wall jump $direction", async ({ command, direction, phase }) => {
+            const f = await repairFixture(`${command}-${phase}-${direction}`, direction);
+            const total = DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS + (command === "device_start" || command === "device_reboot" ? 1000 : 0);
+            f.observe.mockImplementation(operation => {
+                if (operation === "Repair-VMSnapshotState") f.advance(phase === "repair" ? total : total - 1250.5);
+                else if (operation === "Get-VM") f.advance(1251);
+            });
+            try {
+                const response = await f.invoke(command, command === "device_delete" ? { force: true } : {});
+                const body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(504);
+                expect(body).toMatchObject({ ok: false, error: "hyper-v-operation-deadline-exceeded" });
+                expect(f.calls.map(call => call.operation)).toEqual(phase === "repair" ? ["Repair-VMSnapshotState"] : ["Repair-VMSnapshotState", "Get-VM"]);
+                expect(f.calls[0]?.timeoutMs).toBe(30000);
+                if (phase === "status") expect(f.calls[1]?.timeoutMs).toBe(1250);
+                for (const call of f.calls) {
+                    expect(Number.isInteger(call.timeoutMs)).toBe(true);
+                    expect(call.timeoutMs).toBeGreaterThan(0);
+                    expect(call.timeoutMs).toBeLessThanOrEqual(30000);
+                }
+                expect(readFileSync(f.stateFile)).toEqual(f.original.state);
+                expect(readFileSync(f.snapshotJournal)).toEqual(f.original.journal);
+                expect(readFileSync(f.diskPath)).toEqual(f.original.disk);
+                expect(existsSync(join(f.deviceRoot, "operation.json"))).toBe(false);
+            } finally { await f.close(); }
+        });
+
+        it.each([
+            { change: "missing", command: "device_status" },
+            { change: "successor", command: "device_status" },
+            { change: "same-generation", command: "device_status" },
+            { change: "missing", command: "device_delete" },
+            { change: "successor", command: "device_delete" },
+        ] as const)("qualifies $change publication after real journal recovery for $command", async ({ change, command }) => {
+            const f = await repairFixture(`publication-${change}-${command}`);
+            let concurrent: Buffer | undefined;
+            f.observe.mockImplementation(operation => {
+                if (operation !== "Repair-VMSnapshotState") return;
+                const state = JSON.parse(readFileSync(f.stateFile, "utf8"));
+                state.devices = change === "missing" ? [] : state.devices.map((device: Record<string, unknown>) => ({ ...device,
+                    concurrentMetadata: { field: "retained" }, ...(change === "successor" ? { incarnationId: "b".repeat(32) } : {}) }));
+                writeFileSync(f.stateFile, JSON.stringify(state));
+                concurrent = readFileSync(f.stateFile);
+            });
+            try {
+                const response = await f.invoke(command, command === "device_delete" ? { force: true } : {}), body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(change === "same-generation" ? 200 : 409);
+                if (change === "same-generation") {
+                    expect(JSON.parse(readFileSync(f.stateFile, "utf8")).devices[0]).toMatchObject({ incarnationId: f.incarnationId,
+                        retainedField: "original", concurrentMetadata: { field: "retained" }, snapshots: [] });
+                    expect(existsSync(f.snapshotJournal)).toBe(false);
+                } else {
+                    expect(body).toMatchObject({ ok: false, error: "hyper-v-snapshot-state-conflict" });
+                    expect(readFileSync(f.stateFile)).toEqual(concurrent);
+                    expect(readFileSync(f.snapshotJournal)).toEqual(f.original.journal);
+                    expect(existsSync(join(f.deviceRoot, "operation.json"))).toBe(false);
+                    expect(f.calls.some(call => ["Remove-VM", "Remove-VMSnapshot", "Remove-HostFiles", "Stop-VM"].includes(call.operation))).toBe(false);
+                }
+            } finally { await f.close(); }
+        });
+
+        it.each([false, true])("keeps the status cap ordinary while a longer parent permits force=%s", async force => {
+            const f = await repairFixture(`status-local-cap-${force}`);
+            let reads = 0;
+            f.observe.mockImplementation(operation => {
+                if (operation === "Repair-VMSnapshotState") f.advance(10000.5);
+                if (operation === "Get-VM") {
+                    if (++reads === 1) f.advance(30000);
+                    else f.failNative.add("Get-VM");
+                }
+            });
+            try {
+                const response = await f.invoke(force ? "device_delete" : "device_status", { force }), body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(502);
+                if (force) expect(body.error).not.toBe("hyper-v-snapshot-reconciliation-failed");
+                else expect(body).toMatchObject({ ok: false, error: "hyper-v-snapshot-reconciliation-failed", detail: "hyper-v-status-timeout" });
+                expect(f.calls.slice(0, 2)).toEqual([{ operation: "Repair-VMSnapshotState", timeoutMs: 30000 }, { operation: "Get-VM", timeoutMs: 30000 }]);
+                if (force) expect(f.calls.length).toBeGreaterThan(2);
+                else expect(f.calls).toHaveLength(2);
+                expect(f.calls.slice(2).every(call => call.operation === "Get-VM")).toBe(true);
+                expect(f.clock.now).toBeLessThan(17.25 + DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS);
+                expect(readFileSync(f.stateFile)).toEqual(f.original.state);
+                if (force) {
+                    expect(existsSync(f.snapshotJournal)).toBe(false);
+                    expect(existsSync(join(f.deviceRoot, "operation.json"))).toBe(true);
+                } else expect(readFileSync(f.snapshotJournal)).toEqual(f.original.journal);
+                expect(readFileSync(f.diskPath)).toEqual(f.original.disk);
+            } finally { await f.close(); }
+        });
+
+        it("lets forced delete supersede ordinary repair failure while its parent still has time", async () => {
+            const f = await repairFixture("force-native-failure");
+            f.failNative.add("Repair-VMSnapshotState");
+            f.failNative.add("Get-VM");
+            try {
+                const response = await f.invoke("device_delete", { force: true }), body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(502);
+                expect(body.error).not.toBe("hyper-v-snapshot-reconciliation-failed");
+                expect(f.calls[0]?.operation).toBe("Repair-VMSnapshotState");
+                expect(f.calls.slice(1).some(call => call.operation === "Get-VM")).toBe(true);
+                expect(existsSync(f.snapshotJournal)).toBe(false);
+                expect(existsSync(join(f.deviceRoot, "operation.json"))).toBe(true);
+                expect(readFileSync(f.stateFile)).toEqual(f.original.state);
+                expect(readFileSync(f.diskPath)).toEqual(f.original.disk);
+            } finally { await f.close(); }
+        });
+
+        it.each(["missing", "incarnation", "vm-id", "journal"] as const)(
+            "refuses forced-delete supersession after a failed repair encounters a concurrent %s replacement", async change => {
+                const f = await repairFixture(`force-failed-repair-${change}`);
+                f.failNative.add("Repair-VMSnapshotState");
+                let concurrentState = f.original.state, concurrentJournal = f.original.journal;
+                f.observe.mockImplementation(operation => {
+                    if (operation !== "Repair-VMSnapshotState") return;
+                    if (change === "journal") {
+                        const journal = JSON.parse(readFileSync(f.snapshotJournal, "utf8"));
+                        writeFileSync(f.snapshotJournal, JSON.stringify({ ...journal,
+                            operationId: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", startedAt: "2026-10-16T00:00:00.000Z" }));
+                    } else {
+                        const state = JSON.parse(readFileSync(f.stateFile, "utf8"));
+                        state.devices = change === "missing" ? [] : state.devices.map((device: Record<string, unknown>) => ({ ...device,
+                            concurrentMetadata: { field: "successor must remain" },
+                            ...(change === "incarnation" ? { incarnationId: "b".repeat(32) }
+                                : { vmId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }),
+                        }));
+                        writeFileSync(f.stateFile, JSON.stringify(state));
+                    }
+                    concurrentState = readFileSync(f.stateFile);
+                    concurrentJournal = readFileSync(f.snapshotJournal);
+                });
+                try {
+                    const response = await f.invoke("device_delete", { force: true }), body = await response.json();
+                    expect(response.status, JSON.stringify(body)).toBe(409);
+                    expect(body).toMatchObject({ ok: false, error: "hyper-v-snapshot-state-conflict" });
+                    expect(f.calls.map(call => call.operation)).toEqual(["Repair-VMSnapshotState"]);
+                    expect(readFileSync(f.stateFile)).toEqual(concurrentState);
+                    expect(readFileSync(f.snapshotJournal)).toEqual(concurrentJournal);
+                    expect(readFileSync(f.diskPath)).toEqual(f.original.disk);
+                    expect(existsSync(join(f.deviceRoot, "operation.json"))).toBe(false);
+                } finally { await f.close(); }
+            },
+        );
+
+        it.each((["repair", "status"] as const).flatMap(phase => [false, true].map(force => ({ phase, force }))))(
+            "preserves a late $phase failure and refuses expired force=$force journal supersession", async ({ phase, force }) => {
+                const f = await repairFixture(`late-native-${phase}-${force}`);
+                f.failNative.add(phase === "repair" ? "Repair-VMSnapshotState" : "Get-VM");
+                f.observe.mockImplementation(operation => {
+                    if (operation === "Repair-VMSnapshotState") f.advance(phase === "repair"
+                        ? DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS : DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS - 1250.5);
+                    if (operation === "Get-VM") f.advance(1251);
+                });
+                try {
+                    const response = await f.invoke("device_delete", { force }), body = await response.json();
+                    expect(response.status, JSON.stringify(body)).toBe(force ? 504 : 502);
+                    expect(body).toMatchObject({ ok: false, error: force
+                        ? "hyper-v-operation-deadline-exceeded" : "hyper-v-snapshot-reconciliation-failed" });
+                    expect(f.calls.map(call => call.operation)).toEqual(phase === "repair"
+                        ? ["Repair-VMSnapshotState"] : ["Repair-VMSnapshotState", "Get-VM"]);
+                    expect(readFileSync(f.stateFile)).toEqual(f.original.state);
+                    expect(readFileSync(f.snapshotJournal)).toEqual(f.original.journal);
+                    expect(readFileSync(f.diskPath)).toEqual(f.original.disk);
+                    expect(existsSync(join(f.deviceRoot, "operation.json"))).toBe(false);
+                } finally { await f.close(); }
+            },
+        );
     });
 
     it.each([-1, 1] as const)("captures a legacy setup Unix deadline once while wall time jumps %s", async direction => {

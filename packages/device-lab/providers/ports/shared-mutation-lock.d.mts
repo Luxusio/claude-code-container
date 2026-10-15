@@ -20,7 +20,6 @@ export interface SharedMutationLockPorts<Fence extends readonly PublicationDirec
     mtime(file:string):number|null;alive(pid:number):boolean;
     identitySync(pid:number):LockProcessIdentity|null;
     identityAsync(pid:number):Promise<LockProcessIdentity|null>;
-    publicationTimes(identity:LockProcessIdentity,createdAt:string|undefined):LockPublicationTimes;
     observe(identity:LockProcessIdentity,pid:number):LockObservationStatus;
     matches(expected:LockProcessIdentity,current:LockProcessIdentity):boolean;
     moveQualified(file:string,token:string,suffix:'stale'|'release',fence:Fence):boolean;

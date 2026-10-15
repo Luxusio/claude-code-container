@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { observeDeviceLabHyperVStatus } from "@ccc/device-lab/device-lab/broker/hyper-v/status.js";
 import type { DeviceLabHyperVCommandRunner } from "@ccc/device-lab/device-lab/broker/hyper-v/lifecycle-adapter.js";
 import type { HyperVWindowsExecutionRequest } from "@ccc/hyper-v/index.js";
+import { HyperVOperationDeadlineError } from "@ccc/device-lab/device-lab/broker/hyper-v/deadline.js";
 
 const vmId = "12345678-1234-1234-1234-123456789abc";
 const snapshotId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -57,6 +58,96 @@ function harness(respond?: (request: HyperVWindowsExecutionRequest, count: numbe
 }
 
 describe("Device Lab typed Hyper-V status", () => {
+    it.each(["vm", "vhd"] as const)("keeps a local status cap ordinary when it expires at the %s executor callback", async phase => {
+        const test = harness();
+        const localCap = new HyperVOperationDeadlineError(), parentDeadline = new HyperVOperationDeadlineError();
+        const completedReads = phase === "vm" ? 0 : 2;
+        let localChecks = 0;
+        const timeoutMilliseconds = vi.fn(() => {
+            if (test.requests.length === completedReads && ++localChecks > 1) throw localCap;
+            return 5000;
+        });
+        expect(await observeDeviceLabHyperVStatus({ ...test.options, timeoutMilliseconds,
+            // Only the separate parent refusal may escape as a lifecycle deadline.
+            isDeadlineError: error => error === parentDeadline,
+        })).toEqual({ ok: false, code: "hyper-v-status-timeout" });
+        expect(localChecks, "one preliminary admission and one refused dispatch, without resampling the expired cap").toBe(2);
+        expect(test.requests.map(request => request.operation)).toEqual(phase === "vm" ? [] : ["Get-VM", "Get-VMHardDiskDrive"]);
+        expect(test.run).toHaveBeenCalledTimes(completedReads);
+    });
+
+    it("preserves the exact opted-in deadline refused by a native timeout callback without dispatch", async () => {
+        const test = harness(), expired = new HyperVOperationDeadlineError();
+        let checks = 0;
+        await expect(observeDeviceLabHyperVStatus({
+            ...test.options,
+            isDeadlineError: error => error instanceof HyperVOperationDeadlineError,
+            timeoutMilliseconds: () => {
+                if (++checks > 1) throw expired;
+                return 5000;
+            },
+        })).rejects.toBe(expired);
+        expect(test.run).not.toHaveBeenCalled();
+        expect(test.requests).toEqual([]);
+    });
+
+    it.each(["first-read", "final-read"] as const)("refuses a late successful %s with the parent's exact deadline", async phase => {
+        const expired = new HyperVOperationDeadlineError();
+        let elapsed = false;
+        const test = harness((request, count) => {
+            if (request.operation === "Get-VM" && (phase === "first-read" || count === 4)) elapsed = true;
+            return request.operation === "Get-VM" ? [vm()] : [];
+        });
+        await expect(observeDeviceLabHyperVStatus({ ...test.options,
+            isDeadlineError: error => error instanceof HyperVOperationDeadlineError,
+            timeoutMilliseconds: () => { if (elapsed) throw expired; return 5000; },
+        })).rejects.toBe(expired);
+        expect(test.requests.map(request => request.operation)).toEqual(phase === "first-read" ? ["Get-VM"] : [
+            "Get-VM", "Get-VMHardDiskDrive", "Get-VMSnapshot", "Get-VM",
+        ]);
+    });
+
+    it.each([
+        { operation: "Get-VM", failure: "native", expected: "hyper-v-status-vm-lookup-command-failed" },
+        { operation: "Get-VM", failure: "protocol", expected: "hyper-v-status-vm-lookup-command-failed" },
+        { operation: "Get-VM", failure: "transport", expected: "hyper-v-status-timeout" },
+        { operation: "Get-VHD", failure: "native", expected: "hyper-v-status-vhd-lookup-command-failed" },
+        { operation: "Get-VHD", failure: "protocol", expected: "hyper-v-status-vhd-lookup-command-failed" },
+        { operation: "Get-VHD", failure: "transport", expected: "hyper-v-status-timeout" },
+    ])("retains a real $failure failure from $operation when the parent also expires", async ({ operation, failure, expected }) => {
+        const test = harness(), expired = new HyperVOperationDeadlineError();
+        let elapsed = false;
+        const issued: string[] = [];
+        const run: DeviceLabHyperVCommandRunner = (command, options) => {
+            const native = requestOf(command);
+            issued.push(native.operation);
+            if (native.operation !== operation) return test.run(command, options);
+            elapsed = true;
+            return failure === "protocol" ? { status: 0, stdout: "not-json" }
+                : failure === "transport" ? { status: null, stdout: "", timedOut: true }
+                    : { status: 1, stdout: JSON.stringify({ schemaVersion: 1, operation, ok: false,
+                        errorCode: operation === "Get-VHD" ? "vhd-path-reparse-point-rejected" : "vm-not-found" }) };
+        };
+        expect(await observeDeviceLabHyperVStatus({ ...test.options, run, requireCompleteVhdChain: true,
+            isDeadlineError: error => error instanceof HyperVOperationDeadlineError,
+            timeoutMilliseconds: () => { if (elapsed) throw expired; return 5000; },
+        })).toEqual({ ok: false, code: expected });
+        expect(issued).toEqual(operation === "Get-VM" ? ["Get-VM"] : ["Get-VM", "Get-VMHardDiskDrive", "Get-VHD"]);
+    });
+
+    it("keeps a non-deadline callback exception as a classified provider failure", async () => {
+        const test = harness();
+        let checks = 0;
+        expect(await observeDeviceLabHyperVStatus({ ...test.options,
+            isDeadlineError: error => error instanceof HyperVOperationDeadlineError,
+            timeoutMilliseconds: () => {
+                if (++checks > 1) throw new Error("not a local deadline");
+                return 5000;
+            },
+        })).toEqual({ ok: false, code: "hyper-v-status-vm-lookup-command-failed" });
+        expect(test.run).not.toHaveBeenCalled();
+    });
+
     it("walks nested differencing disks to the root and filters snapshots by owner", async () => {
         const test = harness();
         const result = await observeDeviceLabHyperVStatus(test.options);
