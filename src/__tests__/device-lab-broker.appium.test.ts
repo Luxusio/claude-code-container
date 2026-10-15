@@ -4,12 +4,13 @@ import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { isolatedDeviceLabPackage } from "./helpers/isolated-device-lab-package.js";
 import { createHash } from "crypto";
+import { spawn, type ChildProcess } from "child_process";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createServer } from "http";
 import { AddressInfo } from "net";
-import { homedir, tmpdir } from "os";
+import { homedir, hostname, tmpdir, uptime } from "os";
 import { join } from "path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { appiumWebDriverRequestTimeoutMs, createDeviceBrokerServer, DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES, DEVICE_BROKER_APPIUM_RESPONSE_LIMIT_BYTES, DEVICE_BROKER_COMMAND_OUTPUT_LIMIT, managedAppiumCommandLine, registerDeviceBrokerOwner } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { readDeviceRuntimeProcessIdentity } from "@ccc/device-lab/device-lab-process-identity.js";
@@ -144,6 +145,29 @@ function writePhysicalLease(ownerId: string, backend: "android-device" | "ios-de
         claimNonce,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
     }));
+}
+
+async function ownedCleanupChild(script: string, args: string[] = []) {
+    const child = spawn(process.execPath, ["-e", `${script}\nprocess.stdout.write('ready\\n'); setInterval(() => {}, 1000);`, ...args], {
+        stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+    });
+    onTestFinished(() => reapCleanupChild(child));
+    await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("owned cleanup child did not become ready")), 5000);
+        child.once("error", error => { clearTimeout(timeout); reject(error); });
+        child.once("exit", code => { clearTimeout(timeout); reject(new Error(`owned cleanup child exited before ready: ${code}`)); });
+        child.stdout!.once("data", () => { clearTimeout(timeout); resolve(); });
+    });
+    const identity = readDeviceRuntimeProcessIdentity(child.pid!);
+    if (!identity) { child.kill("SIGKILL"); throw new Error("owned cleanup child identity unavailable"); }
+    return { child, identity };
+}
+
+async function reapCleanupChild(child: ChildProcess) {
+    if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+    const reaped = new Promise<void>(resolve => child.once("exit", () => resolve()));
+    child.kill("SIGKILL");
+    await reaped;
 }
 
 describe("device-lab host broker Appium session authority", () => {
@@ -3122,9 +3146,13 @@ describe("device-lab host broker Appium session authority", () => {
         const ownerA = deviceLabOwnerId("/project/broker-owner-cleanup-test");
         const ownerB = "4646464678787878";
         const iosSimulatorName = `ccc-${ownerA}-ios-owned`;
+        let androidRunning = true, iosRunning = true, sandboxRunning = true;
         const commands: unknown[] = [];
         const commandRunner = vi.fn((command) => {
             commands.push(command);
+            if (command.provider === "adb" && command.args?.at(-1) === "kill") androidRunning = false;
+            if (command.provider === "xcrun" && command.args?.[1] === "shutdown") iosRunning = false;
+            if (command.provider === "wsb" && command.args?.[0] === "stop") sandboxRunning = false;
             return {
                 mode: command.mode,
                 provider: command.provider,
@@ -3132,7 +3160,11 @@ describe("device-lab host broker Appium session authority", () => {
                 args: command.args,
                 status: 0,
                 stdout: command.provider === "xcrun" && command.args?.join(" ") === "simctl list devices -j"
-                    ? JSON.stringify({ devices: { runtime: [{ name: iosSimulatorName, udid: "SIM-UDID-1", state: "Booted" }] } })
+                    ? JSON.stringify({ devices: { runtime: [{ name: iosSimulatorName, udid: "SIM-UDID-1", state: iosRunning ? "Booted" : "Shutdown" }] } })
+                    : command.provider === "adb" && command.args?.join(" ") === "devices -l"
+                        ? `List of devices attached\n${androidRunning ? "emulator-5580\tdevice\n" : ""}`
+                    : command.provider === "wsb" && command.args?.[0] === "list"
+                        ? JSON.stringify({ WindowsSandboxEnvironments: sandboxRunning ? [{ Id: "12345678-1234-4234-9234-1234567890ab" }] : [] })
                     : "",
                 stderr: "",
             };
@@ -3154,6 +3186,7 @@ describe("device-lab host broker Appium session authority", () => {
                 status: "running",
                 backend: "android-emulator",
                 port: 5580,
+                avdName: `ccc-${ownerA}-pixel-owned`,
                 appium: { authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start", serverPid: 11111, serverUrl: "http://127.0.0.1:4723" },
                 recording: { active: true, pid: 22222, provider: "adb-screenrecord", authority: "host-broker", processOwner: "host-broker", startedBy: "broker.device.recording.start" },
             },
@@ -3161,7 +3194,7 @@ describe("device-lab host broker Appium session authority", () => {
                 id: "pixel-stopped",
                 status: "stopped",
                 backend: "android-emulator",
-                appium: { authority: "host-broker", serverPid: 99999, serverUrl: "http://127.0.0.1:4999" },
+                appium: { authority: "external", serverUrl: "http://127.0.0.1:4999", sessionId: "EXTERNAL-ASSOCIATION" },
             },
         ]);
         const iosRoot = writeBrokerDevices(ownerA, "ios", [
@@ -3231,7 +3264,8 @@ describe("device-lab host broker Appium session authority", () => {
                 body: JSON.stringify({ method: "broker.cleanup.owner", params: {} }),
             });
             expect(cleanup.status).toBe(200);
-            expect(await cleanup.json()).toEqual(expect.objectContaining({
+            const body = await cleanup.json();
+            expect(body).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     ownerId: ownerA,
@@ -3240,6 +3274,15 @@ describe("device-lab host broker Appium session authority", () => {
                     failed: 0,
                 }),
             }));
+            expect(Object.keys(body).sort()).toEqual(["ok", "result"]);
+            expect(Object.keys(body.result).sort()).toEqual(["authority", "changedDevices", "cleaned", "detachPhysical", "failed", "ownerId", "results", "stopDevices"]);
+            for (const backend of body.result.results) for (const device of backend.devices || []) {
+                for (const signal of [device.appium?.signal, device.recording?.signal]) if (signal) {
+                    expect(signal).not.toHaveProperty("ended");
+                    expect(signal).not.toHaveProperty("receipt");
+                }
+                if (device.stop?.attempted) expect(Object.keys(device.stop).sort()).toEqual(["attempted", "execution", "ok"]);
+            }
             expect(killSpy).not.toHaveBeenCalledWith(11111, "SIGTERM");
             expect(killSpy).not.toHaveBeenCalledWith(22222, "SIGINT");
             expect(killSpy).not.toHaveBeenCalledWith(33333, "SIGTERM");
@@ -3293,17 +3336,493 @@ describe("device-lab host broker Appium session authority", () => {
         }
     });
 
+    it.each([true, false])("owner cleanup requires confirmed Android stop and reports unusable provider metadata (metadata available=%s)", async available => {
+        const cwd = `/project/broker-owner-cleanup-confirmed-android-${available}`;
+        const ownerId = deviceLabOwnerId(cwd), deviceId = "pixel-unconfirmed";
+        const original = { id: deviceId, backend: "android-emulator", status: "running", ...(available ? {port: 5580} : {}),
+            avdName: `ccc-${ownerId}-${deviceId}`, createdAt: "original", updatedAt: "original" };
+        const root = writeBrokerDevices(ownerId, "android", [original]);
+        const file = join(root, "devices.json"), before = readFileSync(file, "utf8");
+        let now = performance.now();
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+        const commandRunner = vi.fn(command => {
+            if (command.provider === "process-inventory") now += 11_000;
+            return { ...command, status: 0, stderr: "", stdout: command.provider === "adb" && command.args?.join(" ") === "devices -l"
+                ? "List of devices attached\nemulator-5580\tdevice\n"
+                : command.provider === "process-inventory" ? `emulator -avd ${original.avdName} -port 5580\n` : "" };
+        });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0,
+            providerPaths: { adb: "/fake/adb" }, commandRunner });
+        const baseUrl = await listen(server);
+        try {
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.cleanup.owner", params: { backend: "android" } }) });
+            expect(cleanup.status).toBe(200);
+            const body = await cleanup.json();
+            expect(body).toMatchObject({ ok: false, result: { changedDevices: 0, failed: 1,
+                results: [{ stateKey: "android", devices: [{ deviceId, stop: { attempted: available, ok: false } }] }] } });
+            expect(readFileSync(file, "utf8")).toBe(before);
+            const kills = commandRunner.mock.calls.filter(([command]) => command.provider === "adb" && command.args?.at(-1) === "kill");
+            expect(kills).toHaveLength(available ? 1 : 0);
+            if (available) {
+                expect(commandRunner.mock.calls.some(([command]) => command.provider === "process-inventory")).toBe(true);
+                expect(Object.keys(body.result.results[0].devices[0].stop).sort()).toEqual(["attempted", "execution", "ok"]);
+            } else {
+                expect(commandRunner).not.toHaveBeenCalled();
+                expect(body.result.results[0].devices[0].stop).not.toHaveProperty("execution");
+            }
+        } finally { clock.mockRestore(); await close(server); cleanupOwner(ownerId); }
+    });
+
+    it.each([
+        {stateKey: "android", backend: "android-emulator", provider: "adb"},
+        {stateKey: "ios", backend: "ios-simulator", provider: "xcrun"},
+        {stateKey: "macos", backend: "macos-vm", provider: "tart"},
+        {stateKey: "windows", backend: "windows-sandbox", provider: "wsb"},
+    ])("owner cleanup retains late successful $backend stop receipts without publishing stopped", async ({stateKey, backend, provider}) => {
+        const cwd = `/project/broker-owner-cleanup-late-stop-${stateKey}`, ownerId = deviceLabOwnerId(cwd), deviceId = "late-stop";
+        const simulatorName = `ccc-${ownerId}-${deviceId}`;
+        const sandboxId = "12345678-1234-4234-9234-1234567890ab", singletonClaimId = "1234567890abcdef1234567890abcdef";
+        const original = {id: deviceId, backend, status: stateKey === "ios" ? "booted" : "running", createdAt: "original", updatedAt: "original",
+            ...(stateKey === "android" ? {port: 5580, avdName: simulatorName} : {}),
+            ...(stateKey === "ios" ? {udid: "LATE-SIM-UDID", simulatorName} : {}),
+            ...(stateKey === "macos" ? {provider: "tart", providerInstance: simulatorName, headless: true} : {}),
+            ...(stateKey === "windows" ? {sandboxId, singletonClaimId} : {})};
+        const root = writeBrokerDevices(ownerId, stateKey, [original]), file = join(root, "devices.json");
+        const before = readFileSync(file, "utf8");
+        const singletonFile = join(homedir(), ".ccc/devices/host-locks/windows-sandbox.json");
+        let singletonBefore: string | undefined;
+        if (stateKey === "windows") {
+            let bootId: string;
+            try {bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();}
+            catch {bootId = `${hostname()}:${Math.floor((Date.now() - uptime() * 1000) / 1000)}`;}
+            mkdirSync(join(homedir(), ".ccc/devices/host-locks"), {recursive: true});
+            writeFileSync(singletonFile, JSON.stringify({provider: "windows-sandbox", host: hostname(), bootId, ownerId, deviceId,
+                sandboxId, claimId: singletonClaimId, pid: process.pid, acquiredAt: new Date().toISOString(), updatedAt: new Date().toISOString()}));
+            singletonBefore = readFileSync(singletonFile, "utf8");
+        }
+        let now = Date.now(), stopObserved = false;
+        const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+        const isStop = (command: {provider: string; args?: string[]}) => command.provider === provider && (
+            stateKey === "android" ? command.args?.at(-1) === "kill"
+                : stateKey === "ios" ? command.args?.[1] === "shutdown" : command.args?.[0] === "stop");
+        const commandRunner = vi.fn((command, options) => {
+            if (isStop(command)) {
+                expect(options.timeoutMs).toBeLessThanOrEqual(1000);
+                stopObserved = true;
+                now += 2000;
+            }
+            return {...command, status: 0, stderr: "", stdout: command.provider === "xcrun" && command.args?.join(" ") === "simctl list devices -j"
+                ? JSON.stringify({devices: {runtime: [{name: simulatorName, udid: "LATE-SIM-UDID", state: "Booted"}]}}) : ""};
+        });
+        const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0, commandTimeoutMs: 1000,
+            ...(stateKey === "windows" ? {platform: "linux" as const} : {}),
+            providerPaths: {adb: "/fake/adb", xcrun: "/fake/xcrun", tart: "/fake/tart", wsb: "/fake/wsb"}, commandRunner});
+        const baseUrl = await listen(server);
+        try {
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: stateKey}})});
+            expect(cleanup.status).toBe(200);
+            const body = await cleanup.json();
+            expect(stopObserved).toBe(true);
+            expect(body).toMatchObject({ok: false, result: {changedDevices: 0, failed: 1,
+                results: [{devices: [{deviceId, stop: {attempted: true, ok: false, execution: {provider, status: 0}}}]}]}});
+            expect(readFileSync(file, "utf8")).toBe(before);
+            if (stateKey === "windows") expect(readFileSync(singletonFile, "utf8")).toBe(singletonBefore);
+            const stopIndex = commandRunner.mock.calls.findIndex(([command]) => isStop(command));
+            expect(commandRunner.mock.calls.slice(stopIndex + 1)).toEqual([]);
+        } finally {clock.mockRestore(); await close(server); cleanupOwner(ownerId);}
+    });
+
+    it.runIf(process.platform === "linux")("owner cleanup rechecks the publication deadline after waiting for the inventory lock", async () => {
+        const cwd = "/project/broker-owner-cleanup-publication-contention", ownerId = deviceLabOwnerId(cwd), deviceId = "late-publication";
+        const original = {id: deviceId, backend: "macos-vm", status: "running", provider: "tart",
+            providerInstance: `ccc-${ownerId}-${deviceId}`, headless: true, createdAt: "original", updatedAt: "original"};
+        const root = writeBrokerDevices(ownerId, "macos", [original]), file = join(root, "devices.json");
+        const before = readFileSync(file, "utf8"), lock = join(root, "devices.mutation.lock");
+        const ready = join(homedir(), "publication-lock-module-ready"), request = join(homedir(), "publication-lock-request");
+        const acquired = join(homedir(), "publication-lock-acquired"), released = join(homedir(), "publication-lock-released");
+        const sharedStateModule = new URL("../../packages/device-lab/dist/device-lab-shared-state.js", import.meta.url).href;
+        const {child} = await ownedCleanupChild(`const fs=require('node:fs');
+            import(process.argv[1]).then(({withSharedMutationLock}) => {
+                fs.writeFileSync(process.argv[2],'ready');
+                const timer=setInterval(() => {
+                    if (!fs.existsSync(process.argv[3])) return;
+                    clearInterval(timer);
+                    withSharedMutationLock(process.argv[4], () => {
+                        fs.writeFileSync(process.argv[5],'acquired');
+                        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1200);
+                        fs.writeFileSync(process.argv[6],'released');
+                    });
+                },10);
+            }).catch(error => {process.stderr.write(String(error)); process.exit(1);});`,
+            [sharedStateModule, ready, request, lock, acquired, released]);
+        await vi.waitFor(() => expect(existsSync(ready)).toBe(true), {timeout: 5000, interval: 20});
+        let providerReturnedAt = 0;
+        const commandRunner = vi.fn(command => {
+            expect(command.provider).toBe("tart");
+            expect(command.args).toEqual(["stop", original.providerInstance]);
+            writeFileSync(request, "acquire");
+            const waitUntil = performance.now() + 500;
+            while (!existsSync(acquired) && performance.now() < waitUntil)
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+            expect(existsSync(acquired)).toBe(true);
+            expect(existsSync(lock)).toBe(true);
+            providerReturnedAt = Date.now();
+            return {...command, status: 0, stdout: "", stderr: ""};
+        });
+        const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0, commandTimeoutMs: 1000,
+            providerPaths: {tart: "/fake/tart"}, commandRunner}), baseUrl = await listen(server);
+        try {
+            const requestedAt = Date.now();
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "macos"}})});
+            expect(cleanup.status).toBe(200);
+            expect(providerReturnedAt - requestedAt).toBeLessThan(1000);
+            expect(await cleanup.json()).toMatchObject({ok: false, result: {changedDevices: 0, failed: 1,
+                results: [{devices: [{deviceId, stop: {attempted: true, ok: false, execution: {provider: "tart", status: 0}}}]}]}});
+            expect(existsSync(released)).toBe(true);
+            expect(commandRunner).toHaveBeenCalledTimes(1);
+            expect(readFileSync(file, "utf8")).toBe(before);
+            expect(existsSync(lock)).toBe(false);
+        } finally {await reapCleanupChild(child); await close(server); cleanupOwner(ownerId);}
+    });
+
+    it.runIf(process.platform === "linux")("owner Sandbox cleanup retains its exact singleton claim after release-lock contention expires the deadline", async () => {
+        const cwd = "/project/broker-owner-cleanup-sandbox-singleton-deadline", ownerId = deviceLabOwnerId(cwd), deviceId = "win-deadline";
+        const sandboxId = "12345678-1234-4234-9234-1234567890ab", claimId = "1234567890abcdef1234567890abcdef";
+        const original = {id: deviceId, backend: "windows-sandbox", status: "running", sandboxId, singletonClaimId: claimId,
+            createdAt: "original", updatedAt: "original"};
+        const root = writeBrokerDevices(ownerId, "windows", [original]), file = join(root, "devices.json"), before = readFileSync(file, "utf8");
+        const hostLocks = join(homedir(), ".ccc/devices/host-locks"), singletonFile = join(hostLocks, "windows-sandbox.json");
+        mkdirSync(hostLocks, {recursive: true});
+        writeFileSync(singletonFile, JSON.stringify({provider: "windows-sandbox", host: hostname(),
+            bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), ownerId, deviceId, sandboxId, claimId,
+            pid: process.pid, acquiredAt: new Date().toISOString(), updatedAt: new Date().toISOString()}));
+        const singletonBefore = readFileSync(singletonFile, "utf8"), lock = join(hostLocks, "windows-sandbox.mutation.lock");
+        const ready = join(homedir(), "singleton-lock-module-ready"), request = join(homedir(), "singleton-lock-request");
+        const acquired = join(homedir(), "singleton-lock-acquired"), elapsed = join(homedir(), "singleton-lock-deadline-elapsed");
+        const sharedStateModule = new URL("../../packages/device-lab/dist/device-lab-shared-state.js", import.meta.url).href;
+        const {child} = await ownedCleanupChild(`const fs=require('node:fs');
+            import(process.argv[1]).then(({withSharedMutationLock}) => {
+                fs.writeFileSync(process.argv[2],'ready');
+                const timer=setInterval(() => {
+                    if (!fs.existsSync(process.argv[3])) return;
+                    clearInterval(timer);
+                    withSharedMutationLock(process.argv[4], () => {
+                        fs.writeFileSync(process.argv[5],'acquired');
+                        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1500);
+                        fs.writeFileSync(process.argv[6],'elapsed');
+                    });
+                },10);
+            }).catch(error => {process.stderr.write(String(error)); process.exit(1);});`,
+            [sharedStateModule, ready, request, lock, acquired, elapsed]);
+        await vi.waitFor(() => expect(existsSync(ready)).toBe(true), {timeout: 5000, interval: 20});
+        let providerReturnedAt = 0;
+        const commandRunner = vi.fn(command => {
+            expect(command.provider).toBe("wsb");
+            expect(command.args).toEqual(["stop", "--id", sandboxId]);
+            writeFileSync(request, "acquire");
+            const waitUntil = performance.now() + 500;
+            while (!existsSync(acquired) && performance.now() < waitUntil)
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+            expect(existsSync(acquired)).toBe(true);
+            providerReturnedAt = Date.now();
+            return {...command, status: 0, stdout: "", stderr: ""};
+        });
+        const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0, platform: "linux", commandTimeoutMs: 1000,
+            providerPaths: {wsb: "/fake/wsb"}, commandRunner}), baseUrl = await listen(server);
+        try {
+            const requestedAt = Date.now();
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "windows"}})});
+            expect(cleanup.status).toBe(200);
+            expect(providerReturnedAt - requestedAt).toBeLessThan(1000);
+            expect(await cleanup.json()).toMatchObject({ok: false, result: {changedDevices: 0, failed: 1,
+                results: [{devices: [{deviceId, stop: {attempted: true, ok: false, execution: {provider: "wsb", status: 0}}}]}]}});
+            expect(existsSync(elapsed)).toBe(true);
+            expect(existsSync(lock)).toBe(false);
+            expect(commandRunner).toHaveBeenCalledTimes(1);
+            expect(readFileSync(file, "utf8")).toBe(before);
+            expect(readFileSync(singletonFile, "utf8")).toBe(singletonBefore);
+        } finally {await reapCleanupChild(child); await close(server); cleanupOwner(ownerId);}
+    });
+
+    it.runIf(process.platform === "linux").each(["hardware-guard", "publication-rollback"] as const)("owner physical cleanup refuses effects after lock contention exhausts its deadline: %s", async mode => {
+        const cwd = `/project/broker-owner-cleanup-physical-deadline-${mode}`, ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "phone-owned", serial = "PHYSICAL-DEADLINE", claimId = "physical-deadline-claim", claimNonce = "physical-deadline-nonce";
+        const original = {id: deviceId, backend: "android-device", status: "attached", physical: true, serial,
+            leaseClaimId: claimId, leaseClaimNonce: claimNonce, createdAt: "original", updatedAt: "original"};
+        const root = writeBrokerDevices(ownerId, "android-device", [original]), file = join(root, "devices.json");
+        const before = readFileSync(file, "utf8");
+        writePhysicalLease(ownerId, "android-device", serial, deviceId, claimId, claimNonce);
+        const leaseDirectory = join(homedir(), ".ccc/devices/physical-leases/android-device/locks");
+        const leaseFile = join(leaseDirectory, `${serial}.json`), leaseBefore = readFileSync(leaseFile, "utf8");
+        const lock = mode === "hardware-guard" ? join(leaseDirectory, `${serial}.mutation.lock`) : join(root, "devices.mutation.lock");
+        const ready = join(homedir(), "physical-lock-module-ready"), request = join(homedir(), "physical-lock-request");
+        const acquired = join(homedir(), "physical-lock-acquired"), elapsed = join(homedir(), "physical-lock-deadline-elapsed");
+        const sharedStateModule = new URL("../../packages/device-lab/dist/device-lab-shared-state.js", import.meta.url).href;
+        const {child} = await ownedCleanupChild(`const fs=require('node:fs');
+            import(process.argv[1]).then(({withSharedMutationLock}) => {
+                fs.writeFileSync(process.argv[2],'ready');
+                const hold=() => withSharedMutationLock(process.argv[4], () => {
+                    fs.writeFileSync(process.argv[5],'acquired');
+                    while (!fs.existsSync(process.argv[3])) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);
+                    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1500);
+                    fs.writeFileSync(process.argv[6],'elapsed');
+                });
+                if (process.argv[7]==='hardware-guard') hold();
+                else {
+                    const timer=setInterval(() => {
+                        if (!fs.existsSync(process.argv[3])) return;
+                        clearInterval(timer); hold();
+                    },10);
+                }
+            }).catch(error => {process.stderr.write(String(error)); process.exit(1);});`,
+            [sharedStateModule, ready, request, lock, acquired, elapsed, mode]);
+        await vi.waitFor(() => expect(existsSync(ready)).toBe(true), {timeout: 5000, interval: 20});
+        if (mode === "hardware-guard") await vi.waitFor(() => expect(existsSync(acquired)).toBe(true), {timeout: 5000, interval: 20});
+        const nativeUnlink = fixtureFs.unlinkSync;
+        let exactLeaseReleased = false;
+        const releaseBoundary = vi.spyOn(fixtureFs, "unlinkSync").mockImplementation(path => {
+            const result = nativeUnlink(path);
+            if (String(path) === leaseFile) {
+                exactLeaseReleased = true;
+                if (mode === "publication-rollback") {
+                    expect(existsSync(leaseFile)).toBe(false);
+                    writeFileSync(request, "acquire");
+                    const waitUntil = performance.now() + 500;
+                    while (!existsSync(acquired) && performance.now() < waitUntil)
+                        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+                    expect(existsSync(acquired)).toBe(true);
+                }
+            }
+            return result;
+        });
+        const commandRunner = vi.fn(() => {throw new Error("physical cleanup must not run a provider command");});
+        const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0, commandTimeoutMs: 1000, commandRunner});
+        const baseUrl = await listen(server);
+        try {
+            if (mode === "hardware-guard") writeFileSync(request, "start-hold");
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "android-device"}})});
+            expect(cleanup.status).toBe(200);
+            const body = await cleanup.json();
+            expect(body).toMatchObject({ok: false, result: {changedDevices: 0, failed: 1}});
+            expect(existsSync(elapsed)).toBe(true);
+            expect(existsSync(lock)).toBe(false);
+            expect(commandRunner).not.toHaveBeenCalled();
+            expect(readFileSync(file, "utf8")).toBe(before);
+            if (mode === "hardware-guard") {
+                expect(exactLeaseReleased).toBe(false);
+                expect(readFileSync(leaseFile, "utf8")).toBe(leaseBefore);
+            } else {
+                expect(exactLeaseReleased).toBe(true);
+                const restored = JSON.parse(readFileSync(leaseFile, "utf8"));
+                expect(restored).toMatchObject({backend: "android-device", hardwareId: serial, ownerId, deviceId, claimId, claimNonce});
+                expect(Date.parse(restored.expiresAt)).toBeGreaterThanOrEqual(Date.parse(JSON.parse(leaseBefore).expiresAt));
+                expect(body.result.results[0].devices[0]).toMatchObject({stateWrite: {ok: false,
+                    leaseRollback: {attempted: true, ok: true, lease: restored}}});
+            }
+        } finally {releaseBoundary.mockRestore(); await reapCleanupChild(child); await close(server); cleanupOwner(ownerId); rmSync(leaseFile, {force: true});}
+    });
+
+    it.runIf(process.platform === "linux").each(["recording-ignores-int", "appium-delayed-term"] as const)("owner cleanup observes native child completion before releasing a physical lease: %s", async mode => {
+        const cwd = `/project/broker-owner-cleanup-native-${mode}`, ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "phone-owned", serial = "NATIVE-CLEANUP", claimId = "native-claim", claimNonce = "native-nonce";
+        const { child, identity } = await ownedCleanupChild(mode === "recording-ignores-int"
+            ? "process.on('SIGINT', () => {});"
+            : "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 100));");
+        const runtime = mode === "recording-ignores-int"
+            ? { recording: { active: true, pid: child.pid, runtimeId: "native-recording", processIdentity: identity,
+                provider: "adb-screenrecord", authority: "host-broker", processOwner: "host-broker", startedBy: "broker.device.recording.start" } }
+            : { appium: { serverPid: child.pid, runtimeId: "native-appium", processIdentity: identity,
+                serverUrl: "http://127.0.0.1:4723", authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start" } };
+        const original = { id: deviceId, backend: "android-device", status: "attached", physical: true, serial,
+            leaseClaimId: claimId, leaseClaimNonce: claimNonce, ...runtime };
+        const root = writeBrokerDevices(ownerId, "android-device", [original]);
+        writePhysicalLease(ownerId, "android-device", serial, deviceId, claimId, claimNonce);
+        const file = join(root, "devices.json"), before = readFileSync(file, "utf8");
+        const leaseFile = join(homedir(), ".ccc/devices/physical-leases/android-device/locks", `${serial}.json`);
+        const leaseBefore = readFileSync(leaseFile, "utf8");
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        try {
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.cleanup.owner", params: { backend: "android-device" } }) });
+            expect(cleanup.status).toBe(200);
+            const body = await cleanup.json(), ended = mode === "appium-delayed-term";
+            expect(body).toMatchObject({ ok: ended, result: { changedDevices: ended ? 1 : 0, failed: ended ? 0 : 1 } });
+            const report = body.result.results[0].devices[0], signal = ended ? report.appium.signal : report.recording.signal;
+            expect(signal).toMatchObject({ ok: ended });
+            expect(signal).not.toHaveProperty("ended");
+            expect(signal).not.toHaveProperty("receipt");
+            if (ended) {
+                expect(readDeviceRuntimeProcessIdentity(child.pid!)).toBeNull();
+                expect(existsSync(leaseFile)).toBe(false);
+                expect(JSON.parse(readFileSync(file, "utf8")).devices[0]).toMatchObject({ status: "detached", appium: null });
+            } else {
+                expect(readDeviceRuntimeProcessIdentity(child.pid!)).toEqual(identity);
+                expect(readFileSync(file, "utf8")).toBe(before);
+                expect(readFileSync(leaseFile, "utf8")).toBe(leaseBefore);
+                expect(report.physical?.lease?.payload?.released ?? false).toBe(false);
+            }
+        } finally { await reapCleanupChild(child); await close(server); cleanupOwner(ownerId); rmSync(leaseFile, { force: true }); }
+    });
+
+    it.runIf(process.platform === "linux")("owner cleanup clears a prior process birth without signaling the live PID successor", async () => {
+        const cwd = "/project/broker-owner-cleanup-process-birth", ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "phone-owned", serial = "PROCESS-BIRTH", claimId = "birth-claim", claimNonce = "birth-nonce";
+        const signalMarker = join(homedir(), "successor-signal-unexpected");
+        const { child, identity } = await ownedCleanupChild(`const fs=require('node:fs');
+            for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => fs.writeFileSync(process.argv[1],signal));`, [signalMarker]);
+        const original = {id: deviceId, backend: "android-device", status: "attached", physical: true, serial,
+            leaseClaimId: claimId, leaseClaimNonce: claimNonce,
+            appium: {serverPid: child.pid, runtimeId: "previous-process-birth", processIdentity: {...identity, startToken: "linux:0"},
+                serverUrl: "http://127.0.0.1:4723", authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start"}};
+        const root = writeBrokerDevices(ownerId, "android-device", [original]), file = join(root, "devices.json");
+        writePhysicalLease(ownerId, "android-device", serial, deviceId, claimId, claimNonce);
+        const leaseFile = join(homedir(), ".ccc/devices/physical-leases/android-device/locks", `${serial}.json`);
+        const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0}), baseUrl = await listen(server);
+        try {
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "android-device"}})});
+            expect(cleanup.status).toBe(200);
+            const body = await cleanup.json();
+            expect(body).toMatchObject({ok: true, result: {changedDevices: 1, failed: 0,
+                results: [{devices: [{appium: {cleared: true, signal: {attempted: false, ok: true}}}]}]}});
+            expect(JSON.parse(readFileSync(file, "utf8")).devices[0]).toMatchObject({status: "detached", appium: null});
+            expect(existsSync(leaseFile)).toBe(false);
+            expect(readDeviceRuntimeProcessIdentity(child.pid!)).toEqual(identity);
+            expect(existsSync(signalMarker)).toBe(false);
+        } finally {await reapCleanupChild(child); await close(server); cleanupOwner(ownerId); rmSync(leaseFile, {force: true});}
+    });
+
+    it.runIf(process.platform === "linux")("owner cleanup stops issuing runtime effects when its parent deadline expires", async () => {
+        const cwd = "/project/broker-owner-cleanup-parent-deadline", ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "phone-owned", serial = "PARENT-DEADLINE", claimId = "deadline-claim", claimNonce = "deadline-nonce";
+        const termMarker = join(homedir(), "cleanup-term-observed"), intMarker = join(homedir(), "cleanup-int-unexpected");
+        const { child, identity } = await ownedCleanupChild(`const fs=require('node:fs');
+            process.on('SIGTERM', () => fs.writeFileSync(process.argv[1],'observed'));
+            process.on('SIGINT', () => fs.writeFileSync(process.argv[2],'unexpected'));`, [termMarker, intMarker]);
+        const original = { id: deviceId, backend: "android-device", status: "attached", physical: true, serial,
+            leaseClaimId: claimId, leaseClaimNonce: claimNonce,
+            appium: { serverPid: child.pid, runtimeId: "deadline-appium", processIdentity: identity, serverUrl: "http://127.0.0.1:4723",
+                authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start" },
+            recording: { active: true, pid: child.pid, runtimeId: "deadline-recording", processIdentity: identity,
+                authority: "host-broker", processOwner: "host-broker", startedBy: "broker.device.recording.start", provider: "adb-screenrecord" } };
+        const root = writeBrokerDevices(ownerId, "android-device", [original]), file = join(root, "devices.json");
+        const before = readFileSync(file, "utf8");
+        writePhysicalLease(ownerId, "android-device", serial, deviceId, claimId, claimNonce);
+        const leaseFile = join(homedir(), ".ccc/devices/physical-leases/android-device/locks", `${serial}.json`);
+        const leaseBefore = readFileSync(leaseFile, "utf8");
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandTimeoutMs: 1000 });
+        const baseUrl = await listen(server);
+        try {
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "android-device"}})});
+            expect(cleanup.status).toBe(200);
+            const body = await cleanup.json();
+            expect(body).toMatchObject({ok: false, result: {changedDevices: 0}});
+            expect(body.result.failed).toBeGreaterThan(0);
+            expect(readFileSync(termMarker, "utf8")).toBe("observed");
+            expect(readDeviceRuntimeProcessIdentity(child.pid!)).toEqual(identity);
+            expect(existsSync(intMarker)).toBe(false);
+            expect(readFileSync(file, "utf8")).toBe(before);
+            expect(readFileSync(leaseFile, "utf8")).toBe(leaseBefore);
+        } finally { await reapCleanupChild(child); await close(server); cleanupOwner(ownerId); rmSync(leaseFile, {force: true}); }
+    });
+
+    it.runIf(process.platform === "win32")("owner cleanup refuses Windows runtime PID and process identity PID disagreement before termination", async () => {
+        const cwd = "/project/broker-owner-cleanup-windows-pid-binding", ownerId = deviceLabOwnerId(cwd);
+        const appium = {...currentProcessAppiumRuntime("http://127.0.0.1:4723", 4723, "windows-pid-binding"), serverPid: process.pid + 1};
+        const original = {id: "pixel-pid-binding", backend: "android-emulator", status: "stopped", appium};
+        const root = writeBrokerDevices(ownerId, "android", [original]), file = join(root, "devices.json");
+        const before = readFileSync(file, "utf8");
+        const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+        const terminate = vi.spyOn(windowsProcesses, "terminateWindowsProcessByStartToken")
+            .mockImplementation(pid => ({ok: true, pid, status: 0}));
+        const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0}), baseUrl = await listen(server);
+        try {
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "android", stopDevices: false}})});
+            expect(cleanup.status).toBe(200);
+            expect(await cleanup.json()).toMatchObject({ok: false, result: {changedDevices: 0, failed: 1}});
+            expect(terminate).not.toHaveBeenCalled();
+            expect(kill.mock.calls.some(([pid, signal]) => pid === appium.serverPid && signal !== 0)).toBe(false);
+            expect(readFileSync(file, "utf8")).toBe(before);
+        } finally {await close(server); cleanupOwner(ownerId);}
+    });
+
+    it.runIf(process.platform === "win32")("owner cleanup preserves Appium metadata when the Windows liveness probe is denied", async () => {
+        const cwd = "/project/broker-owner-cleanup-windows-probe-denied", ownerId = deviceLabOwnerId(cwd);
+        const original = {id: "pixel-denied", backend: "android-emulator", status: "stopped",
+            appium: currentProcessAppiumRuntime("http://127.0.0.1:4723", 4723, "windows-probe-denied")};
+        const root = writeBrokerDevices(ownerId, "android", [original]), file = join(root, "devices.json");
+        const before = readFileSync(file, "utf8");
+        const denied = Object.assign(new Error("process liveness probe denied"), {code: "EPERM"});
+        vi.spyOn(process, "kill").mockImplementation(() => { throw denied; });
+        const terminate = vi.spyOn(windowsProcesses, "terminateWindowsProcessByStartToken")
+            .mockImplementation(pid => ({ok: false, pid, status: 1, reason: "process-handle-unavailable"}));
+        const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0}), baseUrl = await listen(server);
+        try {
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "android", stopDevices: false}})});
+            expect(cleanup.status).toBe(200);
+            expect(await cleanup.json()).toMatchObject({ok: false, result: {changedDevices: 0, failed: 1}});
+            expect(terminate).toHaveBeenCalledWith(process.pid, original.appium.processIdentity.startToken);
+            expect(readFileSync(file, "utf8")).toBe(before);
+        } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
+    it.runIf(process.platform === "linux")("owner cleanup preserves a successor written during Appium wait before later runtime or lease effects", async () => {
+        const cwd = "/project/broker-owner-cleanup-native-successor", ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "phone-owned", serial = "NATIVE-SUCCESSOR", claimId = "successor-claim", claimNonce = "successor-nonce";
+        const control = join(homedir(), "cleanup-successor.json"), laterSignal = join(homedir(), "unexpected-recording-int");
+        const { child, identity } = await ownedCleanupChild(`const fs=require('node:fs');
+            process.on('SIGTERM', () => { const c=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); fs.writeFileSync(c.file,JSON.stringify({devices:[c.successor]})); });
+            process.on('SIGINT', () => fs.writeFileSync(process.argv[2],'unexpected'));`, [control, laterSignal]);
+        const original = { id: deviceId, backend: "android-device", status: "attached", physical: true, serial,
+            leaseClaimId: claimId, leaseClaimNonce: claimNonce, createdAt: "predecessor",
+            appium: { serverPid: child.pid, runtimeId: "old-appium", processIdentity: identity, serverUrl: "http://127.0.0.1:4723",
+                authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start" },
+            recording: { active: true, pid: child.pid, runtimeId: "old-recording", processIdentity: identity,
+                authority: "host-broker", processOwner: "host-broker", startedBy: "broker.device.recording.start", provider: "adb-screenrecord" },
+            minimizeWatchdog: { processOwner: "host-broker", startedBy: "broker.windows-sandbox.minimize-watchdog", pid: 987654 } };
+        const successor = { ...original, createdAt: "successor", appium: { ...original.appium, runtimeId: "new-appium" },
+            recording: { ...original.recording, runtimeId: "new-recording" } };
+        const root = writeBrokerDevices(ownerId, "android-device", [original]), file = join(root, "devices.json");
+        writeFileSync(control, JSON.stringify({ file, successor }));
+        writePhysicalLease(ownerId, "android-device", serial, deviceId, claimId, claimNonce);
+        const leaseFile = join(homedir(), ".ccc/devices/physical-leases/android-device/locks", `${serial}.json`);
+        const leaseBefore = readFileSync(leaseFile, "utf8");
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 }), baseUrl = await listen(server);
+        try {
+            const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.cleanup.owner", params: { backend: "android-device" } }) });
+            expect(cleanup.status).toBe(200);
+            expect(await cleanup.json()).toMatchObject({ ok: false, result: { changedDevices: 0,
+                results: [{ devices: [{ stateConflict: true }] }] } });
+            expect(JSON.parse(readFileSync(file, "utf8")).devices).toEqual([successor]);
+            expect(readDeviceRuntimeProcessIdentity(child.pid!)).toEqual(identity);
+            expect(existsSync(laterSignal)).toBe(false);
+            expect(existsSync(join(homedir(), ".ccc/devices/owners", ownerId, "windows", deviceId, "downloads/ccc-minimize-watchdog.cancel"))).toBe(false);
+            expect(readFileSync(leaseFile, "utf8")).toBe(leaseBefore);
+        } finally { await reapCleanupChild(child); await close(server); cleanupOwner(ownerId); rmSync(leaseFile, { force: true }); }
+    });
+
     it("runs provider cleanup outside the state mutation lock and preserves a concurrent successor record", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-owner-cleanup-race-test");
         let androidRoot = "";
         const commandRunner = vi.fn((command) => {
             expect(existsSync(join(androidRoot, "devices.mutation.lock"))).toBe(false);
-            writeFileSync(join(androidRoot, "devices.json"), JSON.stringify({
+            if (command.provider === "adb" && command.args?.at(-1) === "kill") writeFileSync(join(androidRoot, "devices.json"), JSON.stringify({
                 devices: [{
                     id: "pixel-cleanup-race",
                     status: "running",
                     backend: "android-emulator",
                     port: 5582,
+                    avdName: `ccc-${ownerId}-pixel-cleanup-race`,
                     successorGeneration: 2,
                 }],
             }));
@@ -3313,7 +3832,7 @@ describe("device-lab host broker Appium session authority", () => {
                 executable: command.executable,
                 args: command.args,
                 status: 0,
-                stdout: "",
+                stdout: command.provider === "adb" && command.args?.join(" ") === "devices -l" ? "List of devices attached\n" : "",
                 stderr: "",
             };
         });
@@ -3330,6 +3849,7 @@ describe("device-lab host broker Appium session authority", () => {
             status: "running",
             backend: "android-emulator",
             port: 5582,
+            avdName: `ccc-${ownerId}-pixel-cleanup-race`,
             successorGeneration: 1,
         }]);
 
@@ -3351,7 +3871,8 @@ describe("device-lab host broker Appium session authority", () => {
                     })],
                 }),
             }));
-            expect(commandRunner).toHaveBeenCalledTimes(1);
+            expect(commandRunner.mock.calls.filter(([command]) => command.provider === "adb" && command.args?.at(-1) === "kill")).toHaveLength(1);
+            expect(commandRunner.mock.calls.some(([command]) => command.provider === "process-inventory")).toBe(true);
             const state = JSON.parse(readFileSync(join(androidRoot, "devices.json"), "utf8")) as { devices: Array<Record<string, unknown>> };
             expect(state.devices[0]).toEqual(expect.objectContaining({ status: "running", successorGeneration: 2 }));
         } finally {
@@ -3452,8 +3973,7 @@ describe("device-lab host broker Appium session authority", () => {
 
     it("reports cleanup backend failures while preserving physical attachment on lease conflict", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-owner-cleanup-partial-test");
-        const recordingIdentity = readDeviceRuntimeProcessIdentity(process.pid);
-        if (!recordingIdentity) throw new Error("current process identity unavailable");
+        const recordingIdentity = { pid: 2147483647, startToken: "missing-process", commandHash: "1".repeat(64) };
         const stale = new Error("no such process") as Error & { code: string };
         stale.code = "ESRCH";
         const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
@@ -3473,7 +3993,7 @@ describe("device-lab host broker Appium session authority", () => {
                 appium: { authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start", serverPid: 88888, serverUrl: "http://127.0.0.1:8100" },
                 recording: {
                     active: true,
-                    pid: process.pid,
+                    pid: recordingIdentity.pid,
                     runtimeId: "cleanup-stale-recording",
                     processIdentity: recordingIdentity,
                     authority: "host-broker",
@@ -3533,7 +4053,7 @@ describe("device-lab host broker Appium session authority", () => {
             }));
             expect(killSpy).toHaveBeenCalledWith(88888, 0);
             expect(killSpy).not.toHaveBeenCalledWith(88888, "SIGTERM");
-            expect(killSpy).toHaveBeenCalledWith(process.pid, "SIGINT");
+            expect(killSpy).not.toHaveBeenCalledWith(recordingIdentity.pid, "SIGINT");
             expect(killSpy).not.toHaveBeenCalledWith(77777, 0);
             expect(killSpy).not.toHaveBeenCalledWith(77778, 0);
             const ios = JSON.parse(readFileSync(join(iosRoot, "devices.json"), "utf8")) as { devices: Array<Record<string, unknown>> };

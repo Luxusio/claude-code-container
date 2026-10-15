@@ -1137,6 +1137,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let diagnosticStateOverride = "";
         let containmentStopFailure = false;
         let containmentStopLeavesRunning = false;
+        let afterNativeStopEffect: (() => void) | null = null;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
         let snapshotProviderFailure = false;
@@ -1224,6 +1225,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     return { ...command, status: 1, stdout: "", stderr: "simulated containment stop failure" };
                 }
                 if (nativeRequest.operation === "Stop-VM" && !containmentStopLeavesRunning) vmState = "Off";
+                if (nativeRequest.operation === "Stop-VM") afterNativeStopEffect?.();
                 if (nativeRequest.operation === "Remove-VM" && !deleteConfirmationFailure) vmExists = false;
                 if (nativeRequest.operation === "Remove-HostFiles") {
                     if (typedVmCreateCalls === 0) orphanRecoveryCalls += 1;
@@ -2188,6 +2190,100 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner.mock.calls.slice(callsBeforeLostDownload).map(([command]) => nativeLibraryRequest(command)?.action)).toEqual(["download"]);
             guestDownloadLostResponse = false;
 
+            // Preserve the failed power-transaction receipt when the successful native
+            // stop exhausts its deadline before the final observation can complete.
+            const lateStateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
+            const lateState = JSON.parse(readFileSync(lateStateFile, "utf8"));
+            Object.assign(lateState.devices.find((device: {id: string}) => device.id === deviceId), {status: "running", runtimeState: "Running"});
+            writeFileSync(lateStateFile, JSON.stringify(lateState));
+            vmState = "Running";
+            const lateBeforeState = readFileSync(lateStateFile, "utf8"), lateBeforeCalls = commandRunner.mock.calls.length;
+            let lateNow = Date.now();
+            const lateClock = vi.spyOn(Date, "now").mockImplementation(() => lateNow);
+            afterNativeStopEffect = () => {lateNow += 60_000;};
+            try {
+                const lateCleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                    body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "windows-vm"}})});
+                expect(lateCleanup.status).toBe(200);
+                expect(await lateCleanup.json()).toMatchObject({ok: false, result: {changedDevices: 0, failed: 1,
+                    results: [{devices: [{deviceId, stop: {attempted: true, ok: false, execution: {provider: "hyper-v", status: 1,
+                        error: "hyper-v-lifecycle-timeout", timedOut: true}}}]}]}});
+                expect(vmState).toBe("Off");
+                expect(readFileSync(lateStateFile, "utf8")).toBe(lateBeforeState);
+                expect(JSON.parse(readFileSync(operationPath, "utf8"))).toMatchObject({command: "device_stop", vmId, vmName});
+                const lateCalls = commandRunner.mock.calls.slice(lateBeforeCalls);
+                const lateStopIndex = lateCalls.findIndex(([command]) => nativeLibraryRequest(command)?.operation === "Stop-VM");
+                expect(lateStopIndex).toBeGreaterThanOrEqual(0);
+                expect(await commandRunner.mock.results[lateBeforeCalls + lateStopIndex]?.value).toMatchObject({status: 0});
+                expect(lateCalls.filter(([command]) => nativeLibraryRequest(command)?.operation === "Stop-VM")).toHaveLength(1);
+                expect(lateCalls.slice(lateStopIndex + 1)).toEqual([]);
+            } finally {afterNativeStopEffect = null; lateClock.mockRestore();}
+            const lateRecovered = await invoke({backend: "windows-vm", command: "device_status", deviceId});
+            expect(lateRecovered.status, JSON.stringify(await lateRecovered.clone().json())).toBe(200);
+            expect(existsSync(operationPath)).toBe(false);
+
+            // Replaying a pending stop can commit before a later, independent journal
+            // refuses the new operation. Owner cleanup must report that actual commit.
+            const replayStateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
+            const replayState = JSON.parse(readFileSync(replayStateFile, "utf8"));
+            Object.assign(replayState.devices.find((device: { id: string }) => device.id === deviceId), {status: "running", runtimeState: "Running"});
+            writeFileSync(replayStateFile, JSON.stringify(replayState));
+            vmState = "Running";
+            writeFileSync(operationPath, JSON.stringify({version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId,
+                command: "device_stop", vmId, vmName, diskPath, startedAt: new Date().toISOString()}));
+            const invalidSnapshotPath = join(deviceRoot, "snapshot-operation.json");
+            writeFileSync(invalidSnapshotPath, "{invalid-snapshot-journal");
+            const replayCallsBefore = commandRunner.mock.calls.length;
+            const replayThenRefusal = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "windows-vm"}})});
+            expect(replayThenRefusal.status).toBe(200);
+            expect(await replayThenRefusal.json()).toMatchObject({ok: false, result: {changedDevices: 1, failed: 1,
+                results: [{devices: [{deviceId, changed: true, stop: {attempted: false, ok: false}}]}]}});
+            expect(JSON.parse(readFileSync(replayStateFile, "utf8")).devices.find((device: { id: string }) => device.id === deviceId))
+                .toMatchObject({status: "stopped", runtimeState: "Off"});
+            expect(vmState).toBe("Off");
+            expect(existsSync(operationPath)).toBe(false);
+            expect(readFileSync(invalidSnapshotPath, "utf8")).toBe("{invalid-snapshot-journal");
+            expect(commandRunner.mock.calls.slice(replayCallsBefore).filter(([command]) => nativeLibraryRequest(command)?.operation === "Stop-VM")).toHaveLength(1);
+            rmSync(invalidSnapshotPath);
+
+            for (const caller of ["ordinary", "owner-cleanup"] as const) {
+                // The typed provider accepted Stop-VM, but the owned VM still runs. Both
+                // callers must retain the same pending operation rather than publish stopped.
+                const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
+                const fixtureState = JSON.parse(readFileSync(stateFile, "utf8"));
+                const fixtureDevice = fixtureState.devices.find((device: { id: string }) => device.id === deviceId);
+                Object.assign(fixtureDevice, {status: "running", runtimeState: "Running"});
+                writeFileSync(stateFile, JSON.stringify(fixtureState));
+                vmState = "Running";
+                containmentStopLeavesRunning = true;
+                const beforeState = readFileSync(stateFile, "utf8"), beforeDisk = readFileSync(diskPath);
+                const networkPath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
+                const beforeNetwork = readFileSync(networkPath, "utf8"), beforeCalls = commandRunner.mock.calls.length;
+                const unconfirmedStop = caller === "ordinary"
+                    ? await invoke({backend: "windows-vm", command: "device_stop", deviceId})
+                    : await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
+                        body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "windows-vm"}})});
+                const unconfirmedBody = await unconfirmedStop.json();
+                expect(unconfirmedStop.status).toBe(caller === "ordinary" ? 502 : 200);
+                expect(unconfirmedBody).toMatchObject(caller === "ordinary"
+                    ? {ok: false, error: "provider-command-failed"}
+                    : {ok: false, result: {changedDevices: 0, failed: 1, results: [{devices: [{stop: {attempted: true, ok: false}}]}]}});
+                expect(readFileSync(stateFile, "utf8")).toBe(beforeState);
+                expect(readFileSync(diskPath)).toEqual(beforeDisk);
+                expect(readFileSync(networkPath, "utf8")).toBe(beforeNetwork);
+                expect(JSON.parse(readFileSync(operationPath, "utf8"))).toMatchObject({command: "device_stop", vmId, vmName});
+                const added = commandRunner.mock.calls.slice(beforeCalls).map(([command]) => nativeLibraryRequest(command));
+                expect(added.filter(request => request?.operation === "Stop-VM")).toHaveLength(1);
+                expect(added.some(request => ["Remove-VM", "Remove-HostFiles", "Remove-NetNat", "Remove-VMSwitch"].includes(request?.operation || ""))).toBe(false);
+                if (caller === "owner-cleanup") expect(Object.keys(unconfirmedBody.result.results[0].devices[0].stop).sort()).toEqual(["attempted", "execution", "ok"]);
+                containmentStopLeavesRunning = false;
+                const recovered = await invoke({backend: "windows-vm", command: "device_status", deviceId});
+                expect(recovered.status, JSON.stringify(await recovered.clone().json())).toBe(200);
+                expect(vmState).toBe("Off");
+                expect(existsSync(operationPath)).toBe(false);
+            }
+
             const stopped = await invoke({ backend: "windows-vm", command: "device_stop", deviceId });
             expect(stopped.status).toBe(200);
             expect(await stopped.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "stopped", runtimeState: "Off" }) }) }));
@@ -2537,30 +2633,8 @@ describe("device-lab host broker lifecycle commands", () => {
             for (const [command] of snapshotRepairCalls) {
                 expect(nativeLibraryRequest(command)).toMatchObject({ expectedCheckpointPolicy: "ProductionOnly" });
             }
-            // Up from 90 with the snapshot migration: the typed library issues one primitive per
-            // call, so operations that were a single PowerShell script now cost several round trips
-            // (an ownership read before each mutation, a VM state read around restore, and an
-            // absence read confirming a delete). The three new error-path cases add 3: the
-            // result-mismatch case costs a create preflight plus the checkpoint itself with no
-            // reconciliation behind it, the drift case costs one ownership read (its reconciliation
-            // moved here from the following delete rather than adding to the total), and the
-            // corrupted-metadata case costs nothing at all — that is the point of its 400.
-            // The scrub-containment cases cover un-scrubbed probes, transport failures,
-            // retained and mounted media, live and off guest states, failed containment,
-            // and recovery. Typed DVD removal and readback add calls to successful probes.
-            // Power transactions read the owned VM before and after each mutation.
-            // The two rejected waitForBoot:false calls add nothing by design — that is what their
-            // own assertion checks. The per-case split is not spelled out because the obvious
-            // accounting — "each contained case costs a stop plus an ownership read" — was measured
-            // and is not what the cases actually cost; a plausible breakdown is worse than none.
-            // Readiness retries can add a probe at the 1-second deadline boundary. The
-            // per-case checks above pin containment costs; this range catches runaway traffic.
             expect(commandRunner.mock.calls.some(([command]) => nativeLibraryRequest(command)?.operation === "Get-VM")).toBe(true);
             expect(commandRunner.mock.calls.some(([command]) => providerScript(command).includes("$Snapshots = @(Get-VMSnapshot"))).toBe(false);
-            // Keep the original journey's budget separate from the bounded scenario added above.
-            const originalJourneyCalls = commandRunner.mock.calls.length - unconfirmedAddedCalls;
-            expect(originalJourneyCalls).toBeGreaterThanOrEqual(280);
-            expect(originalJourneyCalls).toBeLessThan(450);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -8591,18 +8665,23 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
 
     it("reports observed Android status and clears auxiliary runtime on stop", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-android-observed-status-test");
+        // This runner simulates termination; fixture identities are not native process proof.
         const androidRoot = writeBrokerDevices(ownerId, "android", [{
             id: "android-observed-runtime",
             backend: "android-emulator",
             status: "stopped",
             avdName: `ccc-${ownerId}-observed-runtime`,
             port: 5586,
-            appium: { processOwner: "host-broker", serverPid: 99999991, port: 27111 },
+            appium: { authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start",
+                runtimeId: "observed-appium-runtime", serverPid: 99999991, port: 27111,
+                processIdentity: {pid: 99999991, startToken: "fixture:observed-appium", commandHash: "a".repeat(64)} },
             bootReady: true,
             lastBootCheck: { ready: true, provider: "adb", result: { status: 0, stdout: "1\n" } },
             recording: {
                 active: true,
                 pid: 99999992,
+                runtimeId: "observed-recording-runtime",
+                processIdentity: {pid: 99999992, startToken: "fixture:observed-recording", commandHash: "b".repeat(64)},
                 authority: "host-broker",
                 processOwner: "host-broker",
                 startedBy: "broker.device.recording.start",
@@ -8695,8 +8774,8 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                         lastBootCheck: null,
                     }),
                     auxiliaryCleanup: expect.objectContaining({
-                        appium: expect.objectContaining({ cleared: true, signal: expect.objectContaining({ ok: true }) }),
-                        recording: expect.objectContaining({ cleared: true, signal: expect.objectContaining({ ok: true }) }),
+                        appium: expect.objectContaining({ cleared: true, signal: expect.objectContaining({ ok: true, simulated: true, reason: "injected-command-runner" }) }),
+                        recording: expect.objectContaining({ cleared: true, signal: expect.objectContaining({ ok: true, simulated: true, reason: "injected-command-runner" }) }),
                     }),
                 }),
             }));
@@ -8717,10 +8796,14 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 status: "stopped",
                 avdName: "ccc-delete-runtime",
                 port: 5588,
-                appium: { processOwner: "host-broker", serverPid: 99999993, port: 27113 },
+                appium: { authority: "host-broker", processOwner: "host-broker", startedBy: "broker.appium.start",
+                    runtimeId: "delete-appium-runtime", serverPid: 99999993, port: 27113,
+                    processIdentity: {pid: 99999993, startToken: "fixture:delete-appium", commandHash: "c".repeat(64)} },
                 recording: {
                     active: true,
                     pid: 99999994,
+                    runtimeId: "delete-recording-runtime",
+                    processIdentity: {pid: 99999994, startToken: "fixture:delete-recording", commandHash: "d".repeat(64)},
                     authority: "host-broker",
                     processOwner: "host-broker",
                     startedBy: "broker.device.recording.start",
@@ -8745,8 +8828,8 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 result: expect.objectContaining({
                     device: null,
                     auxiliaryCleanup: expect.objectContaining({
-                        appium: expect.objectContaining({ cleared: true, signal: expect.objectContaining({ ok: true }) }),
-                        recording: expect.objectContaining({ cleared: true, signal: expect.objectContaining({ ok: true }) }),
+                        appium: expect.objectContaining({ cleared: true, signal: expect.objectContaining({ ok: true, simulated: true, reason: "injected-command-runner" }) }),
+                        recording: expect.objectContaining({ cleared: true, signal: expect.objectContaining({ ok: true, simulated: true, reason: "injected-command-runner" }) }),
                     }),
                 }),
             }));

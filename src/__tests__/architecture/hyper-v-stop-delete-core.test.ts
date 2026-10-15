@@ -85,6 +85,28 @@ function terminalFixture(command: TerminalCommand) {
 }
 
 describe("Hyper-V inward terminal observations", () => {
+    it.each(["Running", "Stopping", "Unknown", "", "off", " Off "])("retains ordinary stop state and recovery evidence for noncanonical state %j", async (state) => {
+        const f = terminalFixture("device_stop");
+        const predecessor = structuredClone(f.device);
+        // Native status/bytes can look successful; only the semantic observation
+        // establishes completion. In particular, status is not the VM power state.
+        const execution = { ...f.execution, stdout: JSON.stringify({ ...f.observation, state: "Off" }) };
+        f.ports.executeStop.mockResolvedValue({ ok: true, observation: { ...f.observation, state, status: "Stopped" }, execution });
+        const outcome = await f.application.invoke("owner", f.request, 100000, 130000);
+        expect(outcome).toMatchObject({ kind: "uncertain", journalDisposition: "retain" });
+        expect(outcome.execution).toBe(execution);
+        expect(outcome.execution?.receipt).toBe(f.execution.receipt);
+        expect(f.current()).toBe(f.device);
+        expect(f.current()).toEqual(predecessor);
+        expect(f.journal()).toMatchObject({ command: "device_stop", vmId: predecessor.vmId, vmName: predecessor.vmName, incarnationId: predecessor.incarnationId });
+        expect(f.ports.executeStop).toHaveBeenCalledOnce();
+        expect(f.ports.executeDelete).not.toHaveBeenCalled();
+        expect(f.ports.publish).not.toHaveBeenCalled();
+        expect(f.ports.clearJournal).not.toHaveBeenCalled();
+        expect(f.ports.releaseNetwork).not.toHaveBeenCalled();
+        expect(f.ports.cleanupArtifacts).not.toHaveBeenCalled();
+    });
+
     it.each(["device_stop", "device_delete"] as const)("uses captured terminal facts for %s with non-JSON evidence", async (command) => {
         const f = terminalFixture(command);
         const outcome = await f.application.invoke("owner", f.request, 100000, 130000);
@@ -117,6 +139,7 @@ describe("Hyper-V inward terminal observations", () => {
         const outcome = await f.application.invoke("owner", f.request, 100000, 130000);
         expect(outcome).toMatchObject({ kind: "uncertain", reason: "provider-failed", error: "provider-command-failed", journalDisposition: "retain", mutatesHost: false });
         expect(outcome.execution).toBe(execution);
+        expect(outcome.execution?.receipt).toBe(execution.receipt);
         expect(f.ports.diagnosticCode).toHaveBeenCalledWith(execution, "hyper-v-provider-command-failed");
         expect(f.journal()).toMatchObject({ command, vmId: f.device.vmId });
         expect(f.current()).toBe(f.device);
@@ -134,6 +157,7 @@ describe("Hyper-V inward terminal observations", () => {
             { name: "foreign VM id", observation: { vmId: "87654321-4321-4321-4321-cba987654321" } },
             { name: "missing VM name", observation: { vmName: "" } },
             { name: "foreign VM name", observation: { vmName: "successor-vm" } },
+            { name: "VM name case mismatch", observation: { vmName: "OWNED-VM" } },
         ])("retains the journal and withholds cleanup for $name", async ({ observation }) => {
             const f = terminalFixture(command);
             const operation = command === "device_stop" ? f.ports.executeStop : f.ports.executeDelete;
@@ -141,6 +165,7 @@ describe("Hyper-V inward terminal observations", () => {
             const outcome = await f.application.invoke("owner", f.request, 100000, 130000);
             expect(outcome).toMatchObject({ kind: "uncertain", reason: "provider-failed", error: "provider-command-failed", journalDisposition: "retain", mutatesHost: false });
             expect(outcome.execution).toBe(f.execution);
+            expect(outcome.execution?.receipt).toBe(f.execution.receipt);
             expect(f.journal()).toMatchObject({ command, vmId: f.device.vmId });
             expect(f.current()).toBe(f.device);
             expect(operation).toHaveBeenCalledOnce();

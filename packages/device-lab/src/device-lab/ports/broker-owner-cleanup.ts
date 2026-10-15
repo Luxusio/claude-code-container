@@ -1,5 +1,5 @@
-import type { PhysicalRecord, CleanupSignal, CleanupPublication, CleanupLeaseGuard, CleanupLeaseResult, CleanupRollback, CleanupPreparedStop, CleanupStopObservation } from '../domain/broker-owner-cleanup.js';
-export interface BrokerOwnerCleanupPorts<Handle, Prepared, Receipt> {
+import type { PhysicalRecord, CleanupSignal, CleanupTermination, CleanupPublication, CleanupLeaseGuard, CleanupLeaseResult, CleanupRollback, CleanupCommandTarget, CleanupStopOutcome } from '../domain/broker-owner-cleanup.js';
+export interface BrokerOwnerCleanupPorts<Handle, Receipt> {
     stateKeys: readonly string[];
     backendAliases: ReadonlyMap<string, string>;
     stateBackends: ReadonlyMap<string, string>;
@@ -10,12 +10,10 @@ export interface BrokerOwnerCleanupPorts<Handle, Prepared, Receipt> {
     withLeaseGuard<T>(ownerId: string, stateKey: string, record: PhysicalRecord, operation: (guard: CleanupLeaseGuard<Handle>) => T): T;
     releaseLease(ownerId: string, guard: CleanupLeaseGuard<Handle>): CleanupLeaseResult;
     restoreLease(ownerId: string, guard: CleanupLeaseGuard<Handle>): CleanupRollback;
-    terminateAppium(runtime: unknown): CleanupSignal;
-    signalRecording(runtime: PhysicalRecord): CleanupSignal;
+    terminateAppium(runtime: unknown, stillCurrent: () => boolean): CleanupTermination;
+    signalRecording(runtime: PhysicalRecord, stillCurrent: () => boolean): CleanupTermination;
     cancelWatchdog(ownerId: string, deviceId: string): CleanupSignal;
-    prepareStop(ownerId:string,target:{backend:string;stateKey:string;deviceId:string},device:PhysicalRecord):CleanupPreparedStop<Prepared>;
-    runPreparedStop(handle:Prepared):CleanupStopObservation<Receipt>;
-    releaseWindows(ownerId:string,device:PhysicalRecord,observation:CleanupStopObservation<Receipt>):undefined;
+    stopLocked(ownerId: string, target: CleanupCommandTarget, current: PhysicalRecord): Promise<CleanupStopOutcome<Receipt>>;
     timestamp(): string;
     stateErrorCode(error: unknown): string | null;
     isDeviceLockTimeout(error: unknown): boolean;

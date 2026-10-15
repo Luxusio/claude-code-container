@@ -2,12 +2,20 @@ export type PhysicalRecord = Record<string, unknown>;
 import type { LeaseFailure, PhysicalLeaseRecord } from './broker-physical-leases.js';
 export type OwnerCleanupOutcome<Receipt> = {kind:'invalid-backend';error:string;allowed:string[]} |
     {kind:'cleaned';ownerId:string;cleaned:true;stopDevices:boolean;detachPhysical:boolean;changedDevices:number;failed:number;results:CleanupBackendReport<Receipt>[];authority:'host-broker'};
-export type CleanupPreparedStop<Prepared> = {kind:'unavailable';error:string;missing?:string[]} | {kind:'prepared';handle:Prepared};
 export interface CleanupStopObservation<Receipt> {ok:boolean;operationKind:'runtime-stop'|'metadata-only';receipt:Receipt}
+export type CleanupStopOutcome<Receipt> = (
+    {attempted:false;ok:false;error:string;missing?:string[]} |
+    {attempted:true;ok:boolean;observation:CleanupStopObservation<Receipt>}
+) & {changed:boolean;auxiliary?:AuxiliaryCleanup;stateConflict?:boolean};
 export interface CleanupSignal {
     attempted?: boolean;
     ok: boolean;
     [key: string]: unknown;
+}
+export interface CleanupTermination {
+    ok: boolean;
+    ended: boolean;
+    receipt: CleanupSignal;
 }
 export interface CleanupPublication {
     found: boolean;
@@ -70,20 +78,24 @@ export interface CleanupDeviceOutcome<Receipt> {
     result: CleanupDeviceReport<Receipt>;
 }
 export function cleanupFailureCount(outcome: PhysicalRecord) {
-    let failed = 0;
-    if (outcome.stateConflict)
-        failed += 1;
+    let failed = outcome.stateConflict ? 1 : 0;
     const stateWrite = cleanupRecord(outcome.stateWrite) ? outcome.stateWrite : null;
-    if (stateWrite && !stateWrite.ok)
-        failed += 1;
-    const stop = cleanupRecord(outcome.stop) ? outcome.stop : null;
-    if (stop?.attempted && !stop.ok)
-        failed += 1;
-    for (const name of ["appium", "recording", "physical"]) {
+    if (stateWrite && !stateWrite.ok) failed += 1;
+    let auxiliaryFailures = 0;
+    for (const name of ["appium", "recording", "physical", "minimizeWatchdog"]) {
         const entry = cleanupRecord(outcome[name]) ? outcome[name] : null;
-        const signal = entry && cleanupRecord(entry[name === "physical" ? "lease" : "signal"]) ? entry[name === "physical" ? "lease" : "signal"] : null;
-        if (cleanupRecord(signal) && !signal.ok && (name === "recording" || signal.attempted))
+        const field = name === "physical" ? "lease" : name === "minimizeWatchdog" ? "cancellation" : "signal";
+        const signal = entry && cleanupRecord(entry[field]) ? entry[field] : null;
+        if (signal && !signal.ok) {
             failed += 1;
+            if (name !== "physical") auxiliaryFailures += 1;
+        }
+    }
+    const stop = cleanupRecord(outcome.stop) ? outcome.stop : null;
+    if (stop && !stop.ok) {
+        const alreadyReported = Boolean(outcome.stateConflict)
+            || (!stop.attempted && stop.error === "auxiliary-runtime-cleanup-failed" && auxiliaryFailures > 0);
+        if (!alreadyReported) failed += 1;
     }
     return failed;
 }

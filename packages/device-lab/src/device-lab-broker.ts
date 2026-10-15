@@ -1,3 +1,4 @@
+import { waitForExpectedRuntimeExitSync } from "./device-lab/adapters/process/runtime-exit.js";
 import { readBrokerOwnerSecret } from "@ccc/device-lab/providers/state/broker-owner-secret.mjs";
 import {planBrokerAndroidCreate, planBrokerAndroidExisting} from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import {planBrokerIosCreateCommand as semanticIosCreate, planBrokerIosExistingCommand as semanticIosExisting} from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
@@ -23,7 +24,7 @@ import { createBrokerPhysicalDevicesApplication } from './device-lab/application
 import { createBrokerOwnerCleanupApplication } from './device-lab/application/broker-owner-cleanup.js';
 import { validateAttachParams as validatePhysicalAttachParams } from './device-lab/domain/broker-physical-devices.js';
 import { createBrokerOwnerRepository } from './device-lab/application/broker-owner-repository.js';
-import { cleanupRecord, type CleanupLeaseGuard } from './device-lab/domain/broker-owner-cleanup.js';
+import { cleanupRecord, type CleanupLeaseGuard, type CleanupTermination, type AuxiliaryOutcome, type CleanupStopOutcome } from './device-lab/domain/broker-owner-cleanup.js';
 import type { BrokerPhysicalDevicesPorts } from './device-lab/ports/broker-physical-devices.js';
 import type { BrokerOwnerCleanupPorts } from './device-lab/ports/broker-owner-cleanup.js';
 import { createHyperVDesktopTransferApplication } from "./device-lab/application/hyper-v-desktop-transfer.js";
@@ -669,6 +670,8 @@ type NormalizedBrokerOptions = {
     trustedCliPaths: string[];
     portProcessResolver: BrokerPortProcessResolver;
     strictAppiumPortOwnership: boolean;
+    cleanupObservation?: { changed: boolean; auxiliary?: AuxiliaryOutcome; execution?: ProviderCommandResult };
+    cleanupDeadlineAt?: number;
 };
 type CommandParamError = { ok: false; status: number; error: string; allowed?: string[]; detail?: string };
 type CommandParamSuccess = {
@@ -983,10 +986,11 @@ function claimBrokerWindowsSandboxLock(ownerId: string, device: unknown, sandbox
     });
 }
 
-function releaseBrokerWindowsSandboxLock(ownerId: string, device: unknown, sandboxId?: string): void {
+function releaseBrokerWindowsSandboxLock(ownerId: string, device: unknown, sandboxId?: string, beforeRelease?: () => void): void {
     withSharedMutationLock(brokerWindowsSandboxMutationLockPath(), () => {
         const existing = readBrokerWindowsSandboxLock();
         if (!sameBrokerWindowsSandboxLockOwner(existing, ownerId, device, sandboxId)) return;
+        beforeRelease?.();
         try { unlinkSync(brokerWindowsSandboxLockPath()); } catch { /* ignore missing lock */ }
     });
 }
@@ -4204,6 +4208,17 @@ function transitionOwnerLifecycleDevice(ownerId: string, stateKey: string, devic
     return ownerRepository.transitionLifecycle(ownerId, stateKey, deviceId, expected, replace);
 }
 
+function publishLifecycleDevice(normalized: NormalizedBrokerOptions, ...args: Parameters<typeof transitionOwnerLifecycleDevice>) {
+    assertCleanupDeadline(normalized);
+    const [ownerId, stateKey, deviceId, expected, replace] = args;
+    const publication = transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, current => {
+        assertCleanupDeadline(normalized);
+        return replace(current);
+    });
+    if (normalized.cleanupObservation && publication.matched) normalized.cleanupObservation.changed = true;
+    return publication;
+}
+
 function claimOwnerDevice(ownerId: string, stateKey: string, device: Record<string, unknown>, uniqueFields: Array<string | string[]>) {
     return ownerRepository.claim(ownerId, stateKey, device, uniqueFields);
 }
@@ -5600,6 +5615,7 @@ function terminateWindowsProcessTree(
     expectedIdentity?: DeviceRuntimeProcessIdentity,
     forceTreeAttempt = false,
     expectedStartToken?: string,
+    authorize: () => boolean = () => true,
 ) {
     if (expectedIdentity) {
         const observation = inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid);
@@ -5630,7 +5646,7 @@ function terminateWindowsProcessTree(
             };
         }
     }
-    if (!forceTreeAttempt && !processIsAlive(pid)) {
+    if (!forceTreeAttempt && probeDeviceRuntimeProcessLiveness(pid) === "exited") {
         return {
             attempted: false,
             ok: true,
@@ -5664,11 +5680,12 @@ function terminateWindowsProcessTree(
             error: "runtime-process-start-token-unavailable",
         };
     }
+    if (!authorize()) return { attempted: false, ok: false, stale: false, pid, reason: "runtime-termination-not-authorized" };
     const result = terminateWindowsProcessByStartToken(pid, startToken);
     return {
         attempted: true,
         ok: result.ok,
-        stale: !processIsAlive(pid),
+        stale: probeDeviceRuntimeProcessLiveness(pid) === "exited",
         pid,
         signal: "SIGTERM" as const,
         status: result.status,
@@ -5792,12 +5809,15 @@ function terminateManagedAppiumPortListener(port: number, normalized: Normalized
     };
 }
 
-function terminateBrokerOwnedAppium(appium: unknown, normalized?: NormalizedBrokerOptions) {
+function terminateBrokerOwnedAppium(appium: unknown, normalized?: NormalizedBrokerOptions, stillCurrent: () => boolean = () => true) {
+    if (!stillCurrent()) return { attempted: false, ok: false, reason: "owner-device-state-conflict" };
     const runtime = brokerOwnedAppiumRuntime(appium);
     if (!runtime) return { attempted: false, ok: true };
     if (normalized && !normalized.usesDefaultCommandRunner) {
         return { attempted: false, ok: true, simulated: true, reason: "injected-command-runner" };
     }
+    if (runtime.processIdentity != null && (!cleanupRecord(runtime.processIdentity) || runtime.processIdentity.pid !== runtime.pid))
+        return { attempted: false, ok: false, reason: "runtime-process-identity-unavailable" };
     if (typeof runtime.runtimeId !== "string" || !runtime.processIdentity) {
         const liveness = probeDeviceRuntimeProcessLiveness(runtime.pid);
         if (liveness === "exited") {
@@ -5811,6 +5831,8 @@ function terminateBrokerOwnedAppium(appium: unknown, normalized?: NormalizedBrok
         };
     }
     const serverPid = runtime.pid;
+    if (!cleanupRecord(runtime.processIdentity) || runtime.processIdentity.pid !== serverPid)
+        return { attempted: false, ok: false, reason: "runtime-process-identity-unavailable" };
     if (process.platform === "win32") {
         const port = brokerOwnedAppiumPort(appium);
         const listener = port ? discoverWindowsBrokerPortProcess(port) : null;
@@ -5830,11 +5852,23 @@ function terminateBrokerOwnedAppium(appium: unknown, normalized?: NormalizedBrok
                 listenerPort: port,
             };
         }
-        const processTree = terminateWindowsProcessTree(serverPid, runtime.processIdentity as DeviceRuntimeProcessIdentity);
-        if (!processTree.ok) return processTree;
-        const listenerTree = listenerIdentity && separateManagedListener
-            ? terminateWindowsProcessTree(separateManagedListener.pid, listenerIdentity)
-            : null;
+        const processTree = terminateWindowsProcessTree(serverPid, runtime.processIdentity as DeviceRuntimeProcessIdentity, false, undefined, stillCurrent);
+        if (!processTree.ok) {
+            const ended = waitForExpectedRuntimeExitSync(runtime.processIdentity,
+                normalized ? cleanupExitBudget(normalized, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS) : DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS) === "ended";
+            // Predecessor exit does not bind a newly discovered listener to that runtime.
+            return ended && !separateManagedListener ? { ...processTree, ok: true, stale: true } : processTree;
+        }
+        if (separateManagedListener && !processTree.attempted)
+            return { ...processTree, ok: false, reason: "appium-listener-runtime-unverified" };
+        // The owned handle-tree operation terminates its verified descendants.
+        // A process discovered on a port is not independently owned by this runtime.
+        const listenerEnded = listenerIdentity && separateManagedListener
+            ? waitForExpectedRuntimeExitSync(listenerIdentity,
+                normalized ? cleanupExitBudget(normalized, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS) : DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS) === "ended"
+            : true;
+        const listenerTree = separateManagedListener ? { attempted: false, ok: listenerEnded, pid: separateManagedListener.pid,
+            ...(!listenerEnded ? { reason: "appium-listener-runtime-unverified" } : {}) } : null;
         return {
             ...processTree,
             ok: processTree.ok && (!listenerTree || listenerTree.ok),
@@ -5842,7 +5876,10 @@ function terminateBrokerOwnedAppium(appium: unknown, normalized?: NormalizedBrok
             ...(listenerTree ? { listenerTree, listenerPort: port } : {}),
         };
     }
-    return signalDeviceRuntimeProcess(runtime, "SIGTERM");
+    return signalDeviceRuntimeProcess(runtime, "SIGTERM", { kill: (pid, signal) => {
+        if (!stillCurrent()) throw new Error("runtime-termination-not-authorized");
+        process.kill(pid, signal);
+    } });
 }
 
 async function terminateBrokerOwnedAppiumAndWait(appium: unknown, normalized: NormalizedBrokerOptions) {
@@ -5871,7 +5908,7 @@ async function terminateBrokerOwnedAppiumAndWait(appium: unknown, normalized: No
     };
 }
 
-function signalBrokerOwnedRecording(recording: Record<string, unknown>, normalized: NormalizedBrokerOptions, signal: NodeJS.Signals) {
+function signalBrokerOwnedRecording(recording: Record<string, unknown>, normalized: NormalizedBrokerOptions, signal: NodeJS.Signals, authorize: () => boolean = () => true) {
     const owned = recording.authority === "host-broker"
         && recording.processOwner === "host-broker"
         && recording.startedBy === "broker.device.recording.start";
@@ -5879,10 +5916,79 @@ function signalBrokerOwnedRecording(recording: Record<string, unknown>, normaliz
     if (!normalized.usesDefaultCommandRunner) {
         return { attempted: false, ok: true, simulated: true, reason: "injected-command-runner" };
     }
-    return signalDeviceRuntimeProcess(recording, signal);
+    return signalDeviceRuntimeProcess(recording, signal, { kill: (pid, selectedSignal) => {
+        if (!authorize()) throw new Error("runtime-termination-not-authorized");
+        process.kill(pid, selectedSignal);
+    } });
 }
 
 
+function cleanupExitBudget(normalized: NormalizedBrokerOptions, cap: number) {
+    return Math.max(0, Math.min(cap, (normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY) - Date.now()));
+}
+
+class CleanupOperationDeadlineError extends Error {
+    constructor() { super("cleanup-operation-deadline-exceeded"); }
+}
+function assertCleanupDeadline(normalized: NormalizedBrokerOptions) {
+    if (cleanupExitBudget(normalized, 1) <= 0) throw new CleanupOperationDeadlineError();
+}
+function runLifecycleEffect(normalized: NormalizedBrokerOptions, command: ProviderCommand, options: ProviderCommandRunnerOptions) {
+    const execution = normalized.commandRunner(command, options);
+    if (normalized.cleanupObservation) normalized.cleanupObservation.execution = execution;
+    return execution;
+}
+
+function cleanupAppiumTermination(appium: unknown, normalized: NormalizedBrokerOptions, stillCurrent: () => boolean): CleanupTermination {
+    const refused = (reason: string): CleanupTermination => ({ ok: false, ended: false, receipt: { attempted: false, ok: false, reason } });
+    const authorized = () => cleanupExitBudget(normalized, 1) > 0 && stillCurrent();
+    if (cleanupExitBudget(normalized, 1) <= 0) return refused("cleanup-operation-deadline-exceeded");
+    if (!stillCurrent()) return refused("owner-device-state-conflict");
+    const runtime = brokerOwnedAppiumRuntime(appium);
+    if (!runtime) {
+        // A session association without process metadata has no owned process to terminate.
+        const associationOnly = cleanupRecord(appium) && appium.serverPid == null && appium.pid == null
+            && appium.processIdentity == null && appium.processOwner == null && appium.startedBy == null
+            && (typeof appium.sessionId === "string" || typeof appium.serverUrl === "string");
+        return associationOnly ? { ok: true, ended: true, receipt: { attempted: false, ok: true } }
+            : refused("runtime-process-metadata-unverified");
+    }
+    const receipt = terminateBrokerOwnedAppium(appium, normalized, authorized);
+    if (!normalized.usesDefaultCommandRunner) return { ok: receipt.ok, ended: receipt.ok, receipt };
+    if ("stale" in receipt && receipt.stale === true && receipt.ok)
+        return { ok: true, ended: true, receipt };
+    if (!cleanupRecord(runtime.processIdentity) || runtime.processIdentity.pid !== runtime.pid)
+        return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "runtime-process-identity-unavailable" } };
+    if (process.platform === "win32" && !receipt.ok) return { ok: false, ended: false, receipt };
+    // The Windows handle-bound tree helper already waits for the verified process.
+    if (process.platform === "win32" && "processTree" in receipt && receipt.ok)
+        return { ok: true, ended: true, receipt };
+    const observed = waitForExpectedRuntimeExitSync(runtime.processIdentity, cleanupExitBudget(normalized, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS));
+    if (observed === "ended") return { ok: true, ended: true, receipt: { ...receipt, ok: true } };
+    if (!receipt.ok || observed !== "still-running")
+        return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "runtime-process-exit-unverified" } };
+    if (!authorized() || cleanupExitBudget(normalized, 500) < 500) return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "runtime-termination-not-authorized" } };
+    const force = signalDeviceRuntimeProcess(runtime, "SIGKILL", { kill: (pid, signal) => {
+        if (!authorized()) throw new Error("runtime-termination-not-authorized");
+        process.kill(pid, signal);
+    } });
+    const ended = force.ok && waitForExpectedRuntimeExitSync(runtime.processIdentity, cleanupExitBudget(normalized, 500)) === "ended";
+    return { ok: ended, ended, receipt: { ...receipt, ok: ended, force, ...(!ended ? { reason: "runtime-process-exit-unverified" } : {}) } };
+}
+
+function cleanupRecordingTermination(recording: Record<string, unknown>, normalized: NormalizedBrokerOptions, stillCurrent: () => boolean): CleanupTermination {
+    const authorized = () => cleanupExitBudget(normalized, 1) > 0 && stillCurrent();
+    if (cleanupExitBudget(normalized, 1) <= 0) return { ok: false, ended: false, receipt: { attempted: false, ok: false, reason: "cleanup-operation-deadline-exceeded" } };
+    if (!stillCurrent()) return { ok: false, ended: false, receipt: { attempted: false, ok: false, reason: "owner-device-state-conflict" } };
+    const receipt = signalBrokerOwnedRecording(recording, normalized, "SIGINT", authorized);
+    if (!normalized.usesDefaultCommandRunner) return { ok: receipt.ok, ended: receipt.ok, receipt };
+    if ("reason" in receipt && receipt.reason === "recording-process-not-broker-owned") return { ok: false, ended: false, receipt };
+    if (!cleanupRecord(recording.processIdentity) || recording.processIdentity.pid !== recording.pid)
+        return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "runtime-process-identity-unavailable" } };
+    if ("stale" in receipt && receipt.stale === true && receipt.ok) return { ok: true, ended: true, receipt };
+    const ended = waitForExpectedRuntimeExitSync(recording.processIdentity, cleanupExitBudget(normalized, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS)) === "ended";
+    return { ok: ended, ended, receipt: { ...receipt, ok: ended, ...(!ended ? { reason: "runtime-process-exit-unverified" } : {}) } };
+}
 
 type PhysicalLeaseReleaseGuard = {
     attempted: boolean;
@@ -5968,29 +6074,34 @@ function restoreCleanupLease(ownerId: string, envelope: CleanupLeaseGuard<Physic
     return brokerPhysicalLeases.restoreReleased(ownerId, guard.parsed, guard.file, guard.existing);
 }
 function brokerOwnerCleanupApplication(normalized: NormalizedBrokerOptions) {
-    const ports: BrokerOwnerCleanupPorts<PhysicalLeaseReleaseGuard, ProviderCommand, NativePhysicalReceipt> = {
+    // Each request gets its own application; its device operations run serially.
+    let deviceOptions = normalized;
+    const ports: BrokerOwnerCleanupPorts<PhysicalLeaseReleaseGuard, ProviderCommandResult> = {
         stateKeys: DEVICE_BROKER_BACKEND_STATE_KEYS,
         backendAliases: DEVICE_BROKER_COMMAND_BACKENDS,
         stateBackends: DEVICE_BROKER_STATE_BACKENDS,
         read: readOwnerDevices,
         equal: isDeepStrictEqual,
-        publish: (ownerId, stateKey, deviceId, expected, replacement) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, () => replacement),
-        withDeviceOperation: withOwnerDeviceOperation,
-        withLeaseGuard: (ownerId, stateKey, record, operation) => withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, record, guard => operation(cleanupLeaseGuard(guard))),
-        releaseLease: releaseCleanupLease,
+        publish: (ownerId, stateKey, deviceId, expected, replacement) => publishLifecycleDevice(deviceOptions, ownerId, stateKey, deviceId, expected, () => replacement),
+        withDeviceOperation: (ownerId, stateKey, deviceId, operation) => withOwnerDeviceOperation(ownerId, stateKey, deviceId, () => {
+            deviceOptions = { ...normalized, cleanupDeadlineAt: Math.min(normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + normalized.commandTimeoutMs) };
+            return operation();
+        }),
+        withLeaseGuard: (ownerId, stateKey, record, operation) => withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, record, guard => {
+            const observed = cleanupLeaseGuard(guard);
+            return operation(cleanupExitBudget(deviceOptions, 1) > 0 ? observed : {
+                ...observed, admission: { kind: "refused", failure: { kind: "conflict", error: "cleanup-operation-deadline-exceeded" } },
+            });
+        }),
+        releaseLease: (ownerId, guard) => cleanupExitBudget(deviceOptions, 1) > 0 ? releaseCleanupLease(ownerId, guard)
+            : { kind: "refused", attempted: false, ok: false, failure: { kind: "conflict", error: "cleanup-operation-deadline-exceeded" } },
         restoreLease: restoreCleanupLease,
-        terminateAppium: runtime => terminateBrokerOwnedAppium(runtime, normalized),
-        signalRecording: runtime => signalBrokerOwnedRecording(runtime, normalized, "SIGINT"),
-        cancelWatchdog: cancelBrokerWindowsMinimizeWatchdog,
-        prepareStop: (ownerId, target, record) => {
-            const command = providerCommandFor(ownerId, { ok: true, ...target, command: "device_stop", force: true, dryRun: false }, record, normalized);
-            return "error" in command ? { kind: "unavailable", error: command.error, missing: command.missing } : { kind: "prepared", handle: command };
-        },
-        runPreparedStop: command => {
-            const execution = normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-            return { ok: commandSucceeded(execution), operationKind: command.mode === "noop" ? "metadata-only" : "runtime-stop", receipt: { command, execution } };
-        },
-        releaseWindows: (ownerId, record, observed) => { releaseBrokerWindowsSandboxLock(ownerId, record, observed.receipt.command.sandboxId); return undefined; },
+        terminateAppium: (runtime, stillCurrent) => cleanupAppiumTermination(runtime, deviceOptions, stillCurrent),
+        signalRecording: (runtime, stillCurrent) => cleanupRecordingTermination(runtime, deviceOptions, stillCurrent),
+        cancelWatchdog: (ownerId, deviceId) => cleanupExitBudget(deviceOptions, 1) > 0
+            ? cancelBrokerWindowsMinimizeWatchdog(ownerId, deviceId)
+            : { attempted: false, ok: false, reason: "cleanup-operation-deadline-exceeded" },
+        stopLocked: (ownerId, target, record) => cleanupVirtualStopLocked(ownerId, target, record, deviceOptions),
         timestamp: () => new Date().toISOString(),
         stateErrorCode: error => ownerDeviceStateErrorCode(error) || null,
         isDeviceLockTimeout: isDeviceOperationLockTimeout,
@@ -6457,10 +6568,13 @@ function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) 
         clone: value => structuredClone(value),
         executeStop: async (owner,request,device,connection,deadline) => {
             forgetHyperVConsoleFrame(hyperVConsoleFrameKey(owner,request.backend,request.deviceId));
-            return hyperVTypedPowerObservation(normalized,{
+            const outcome = await hyperVTypedPowerObservation(normalized,{
             executable: connection.executable,ownerId:owner,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
             vmId:field(device,"vmId")||"",vmName:field(device,"vmName")||"",
         },"stop",deadline,120000,{force:request.force,memoryMb:numberField(device,"memoryMb")||4096,cpus:numberField(device,"cpus")||2});
+            if (normalized.cleanupObservation && outcome.execution.receipt)
+                normalized.cleanupObservation.execution = outcome.execution.receipt;
+            return outcome;
         },
         executeDelete: async (owner,request,device,connection,deadline) => {
             forgetHyperVConsoleFrame(hyperVConsoleFrameKey(owner,request.backend,request.deviceId));
@@ -6472,7 +6586,7 @@ function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) 
         samePath: (left,right) => resolve(left)===resolve(right),
         releaseNetwork: (owner,id,incarnation,deadline,preserve) => releaseHyperVNetworkAllocationAndCleanup(owner,id,incarnation,normalized,deadline,{preserveManagedFabric:preserve}),
         cleanupArtifacts: cleanupHyperVDeviceArtifacts,
-        publish: transitionOwnerLifecycleDevice,
+        publish: (...args) => publishLifecycleDevice(normalized, ...args),
         stateErrorCode: ownerDeviceStateErrorCode, stateFailure: nativeHyperVStateFailure,
         errorCode: hyperVBoundedErrorCode, diagnosticCode: hyperVProviderDiagnosticCode,
         assertDeadline: deadline=>{assertHyperVOperationDeadline(deadline);return undefined;}, deadlineExpired:hyperVOperationDeadlineExpired,
@@ -8486,7 +8600,11 @@ function cancelBrokerWindowsMinimizeWatchdog(ownerId: string, deviceId: string) 
     }
 }
 
-function cleanupLifecycleAuxiliaryRuntime(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, expected: unknown) { return brokerOwnerCleanupApplication(normalized).auxiliary(ownerId, parsed, expected); }
+function cleanupLifecycleAuxiliaryRuntime(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, expected: unknown) {
+    const outcome = brokerOwnerCleanupApplication(normalized).auxiliary(ownerId, parsed, expected);
+    if (normalized.cleanupObservation) normalized.cleanupObservation.auxiliary = outcome;
+    return outcome;
+}
 
 function redactBrokerDeviceSecrets(device: unknown) {
     if (!device || typeof device !== "object") return device;
@@ -8644,7 +8762,7 @@ function nativeAndroidFailureReason(status: number) {
 }
 function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerAndroidEmulatorLifecyclePorts<NativeProviderLifecycleEffect, NativeBrokerExecutionReceipt> {
     return {
-        executePrepared: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
+        executePrepared: (effect, options) => nativeLifecycleObservation(runLifecycleEffect(normalized, effect.command, options)),
         observeStopInventory: (effect, serial, options) => {
             const receipt = normalized.commandRunner(effect.command, options);
             const lines = String(receipt.stdout || "").split(/\r?\n/).map(line => line.trim());
@@ -8678,7 +8796,7 @@ function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
         removeAvdArtifacts: (name, owner, root, verifyInactive) => removeOwnedAndroidAvdArtifacts(name, owner, { root, verifyInactive }),
         claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
         cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
-        transition: (owner, parsed, expected, replace) => transitionOwnerLifecycleDevice(owner, parsed.stateKey, parsed.deviceId, expected, candidate => {
+        transition: (owner, parsed, expected, replace) => publishLifecycleDevice(normalized, owner, parsed.stateKey, parsed.deviceId, expected, candidate => {
             const replacement = replace(candidate);
             if (cleanupRecord(replacement) && cleanupRecord(replacement.lastBootCheck)) {
                 const boot = replacement.lastBootCheck.result;
@@ -8732,7 +8850,7 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
                 return { kind: "unavailable", error: command.error, missing: command.missing };
             return { kind: "ready", handle: new NativeProviderLifecycleEffect(command), operationKind: command.mode === "noop" ? "metadata-only" : "runtime", sandboxId: command.sandboxId, minimized: command.windowStyle === "minimized" };
         },
-        run: (handle, options) => nativeLifecycleObservation(normalized.commandRunner(handle.command, options), handle.command),
+        run: (handle, options) => nativeLifecycleObservation(runLifecycleEffect(normalized, handle.command, options), handle.command),
         listRuntime: (handle, options) => {
             const receipt = normalized.commandRunner({ mode: "exec", provider: "wsb", executable: handle.command.executable, args: ["list", "--raw"] }, options);
             const observed = nativeLifecycleObservation(receipt);
@@ -8743,7 +8861,7 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
         isCanonicalConfig: (ownerId, deviceId, path) => resolve(path) === resolve(brokerWindowsConfigPath(ownerId, deviceId)),
         writeConfig: (ownerId, deviceId, device) => { writeBrokerWindowsConfig(ownerId, deviceId, device, normalized); return undefined; },
         claimSingleton: (ownerId, device, id) => claimBrokerWindowsSandboxLock(ownerId, device, id),
-        releaseSingleton: (ownerId, device, id) => { releaseBrokerWindowsSandboxLock(ownerId, device, id); return undefined; },
+        releaseSingleton: (ownerId, device, id) => { releaseBrokerWindowsSandboxLock(ownerId, device, id, () => assertCleanupDeadline(normalized)); return undefined; },
         updateSingletonRuntimeId: (ownerId, device, claimed, runtime) => { updateBrokerWindowsSandboxLockRuntimeId(ownerId, device, claimed, runtime); return undefined; },
         helperPaths: (ownerId, deviceId) => brokerWindowsHelperPaths(ownerId, deviceId),
         removeMarker: path => { rmSync(path, { force: true }); return undefined; },
@@ -8771,7 +8889,7 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
             const device = readOwnerDevices(ownerId, stateKey).find(candidate => candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as Record<string, unknown>).id === deviceId);
             return { found: Boolean(device), matched: Boolean(device && isDeepStrictEqual(device, expected)), device: device || null };
         }),
-        publish: (ownerId, stateKey, deviceId, expected, change) => transitionOwnerLifecycleDevice(ownerId, stateKey, deviceId, expected, candidate => {
+        publish: (ownerId, stateKey, deviceId, expected, change) => publishLifecycleDevice(normalized, ownerId, stateKey, deviceId, expected, candidate => {
             const replacement = brokerWindowsSandboxReplacement(candidate, change);
             if (replacement === null)
                 return null;
@@ -8796,7 +8914,7 @@ function nativeLifecycleObservation(receipt: ProviderCommandResult, preparedComm
 }
 function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIosSimulatorLifecyclePorts<NativeProviderLifecycleEffect> {
     return {
-        execute: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
+        execute: (effect, options) => nativeLifecycleObservation(runLifecycleEffect(normalized, effect.command, options)),
         executeCreate: (effect, options) => {
             const receipt = normalized.commandRunner(effect.command, options);
             return { ...nativeLifecycleObservation(receipt),
@@ -8821,7 +8939,7 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
         verifyOwnedTarget: (owner, device) => resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized),
         claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
         cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
-        publish: (owner, state, id, expected, change) => transitionOwnerLifecycleDevice(owner, state, id, expected, candidate => {
+        publish: (owner, state, id, expected, change) => publishLifecycleDevice(normalized, owner, state, id, expected, candidate => {
             const replacement = brokerIosReplacement(candidate, change);
             return replacement === null ? null : { ...replacement, updatedAt: new Date().toISOString() };
         }),
@@ -8835,7 +8953,7 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
     };
     return {
         executeMetadata: (purpose, options) => observed(normalized.commandRunner({ mode: "noop", provider: "host-broker-state", reason: nativeMetadataDescription(purpose) }, options)),
-        execute: (effect, options) => observed(normalized.commandRunner(effect.command, options)),
+        execute: (effect, options) => observed(runLifecycleEffect(normalized, effect.command, options)),
         prepareCreate: ({ provider, image, instance }) => {
             const command: ProviderCommand = { mode: "exec", provider, executable: executableFor(provider, normalized), args: ["clone", image, instance] };
             return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider, canCompensate: Boolean(command.executable), bootEligible: false };
@@ -8855,7 +8973,7 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
         timestamp: () => new Date().toISOString(), now: () => performance.now(), sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
         claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
         cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
-        publish: (owner, state, id, expected, change) => transitionOwnerLifecycleDevice(owner, state, id, expected, candidate => {
+        publish: (owner, state, id, expected, change) => publishLifecycleDevice(normalized, owner, state, id, expected, candidate => {
             const replacement = brokerMacosReplacement(candidate, change);
             if (replacement === null)
                 return null;
@@ -9477,6 +9595,121 @@ async function lifecycleHyperVCommandInvokeLocked(ownerId:string,params:unknown,
 }
 
 
+async function lifecycleCommandInvokeDeviceLocked(ownerId: string, params: unknown, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, hyperVDeadlineAt: number, hyperVCleanupDeadlineAt: number): Promise<BrokerRpcResult> {
+    if (parsed.command === "device_status") return renderBrokerDeviceStatusWithDiagnostics(await brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt), params);
+    if (isHyperVBackend(parsed.backend)) {
+        try {
+            return await withSharedMutationLockAsync(
+                brokerHyperVMutationLockPath(),
+                () => lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt),
+                { waitMs: hyperVRemainingTimeout(hyperVDeadlineAt, DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS), staleMs: DEVICE_BROKER_HYPER_V_HOST_LOCK_STALE_MS },
+            );
+        } catch (error) {
+            if (!isDeviceOperationLockTimeout(error)) throw error;
+            return {
+                status: 409,
+                payload: {
+                    ok: false,
+                    error: "hyper-v-host-operation-lock-failed",
+                    ownerId,
+                    backend: parsed.backend,
+                    deviceId: parsed.deviceId,
+                    detail: hyperVBoundedErrorCode(
+                        error,
+                        "hyper-v-host-operation-lock-failed",
+                    ),
+                },
+            };
+        }
+    }
+    if (parsed.backend !== "android-emulator" || (parsed.command !== "device_create" && parsed.command !== "device_start")) {
+        return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
+    }
+    try {
+        return await withSharedMutationLockAsync(
+            androidEmulatorPortAllocationLockFile(),
+            async () => {
+                const initialPlan = lifecycleCommandPlan(ownerId, params, normalized, false);
+                if (initialPlan.status !== 200) return initialPlan;
+                if (parsed.dryRun) return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
+                if (parsed.command === "device_start") {
+                    return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
+                }
+                const allocation = resolveAndroidEmulatorCreatePortForInvoke(ownerId, parsed, normalized);
+                if (!allocation.ok) {
+                    return {
+                        status: allocation.status,
+                        payload: {
+                            ok: false,
+                            error: allocation.error,
+                            ...(allocation.allowed ? { allowed: allocation.allowed } : {}),
+                            ...(allocation.detail ? { detail: allocation.detail } : {}),
+                            ownerId,
+                            backend: parsed.backend,
+                            deviceId: parsed.deviceId,
+                        },
+                    };
+                }
+                return await lifecycleCommandInvokeUnlocked(ownerId, {
+                    ...(params as Record<string, unknown>),
+                    port: allocation.port,
+                }, normalized);
+            },
+            { waitMs: DEVICE_BROKER_ANDROID_PORT_LOCK_WAIT_MS, staleMs: DEVICE_BROKER_ANDROID_PORT_LOCK_STALE_MS },
+        );
+    } catch (error) {
+        if (!isDeviceOperationLockTimeout(error)) throw error;
+        return {
+            status: 409,
+            payload: {
+                ok: false,
+                error: "android-emulator-port-allocation-lock-failed",
+                ownerId,
+                backend: parsed.backend,
+                deviceId: parsed.deviceId,
+                detail: error instanceof Error ? error.message : String(error),
+            },
+        };
+    }
+}
+
+async function cleanupVirtualStopLocked(ownerId: string, target: { backend: string; stateKey: string; deviceId: string }, expected: Record<string, unknown>, normalized: NormalizedBrokerOptions): Promise<CleanupStopOutcome<ProviderCommandResult>> {
+    const current = readOwnerDevices(ownerId, target.stateKey).find(device => cleanupRecord(device) && device.id === target.deviceId);
+    if (!isDeepStrictEqual(current, expected)) return { attempted: false, ok: false, error: "owner-device-state-conflict", changed: false, stateConflict: true };
+    const params = { backend: target.backend, deviceId: target.deviceId, command: "device_stop", force: true };
+    const parsed = admitCommandParams(params);
+    if (!parsed.ok) return { attempted: false, ok: false, error: parsed.error, changed: false };
+    const cleanupObservation: NonNullable<NormalizedBrokerOptions["cleanupObservation"]> = { changed: false };
+    const deadline = Math.min(normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + normalized.commandTimeoutMs);
+    let response: BrokerRpcResult;
+    const options: NormalizedBrokerOptions = { ...normalized, cleanupObservation, cleanupDeadlineAt: deadline,
+        commandRunner: (command, settings) => {
+            assertCleanupDeadline(options);
+            return normalized.commandRunner(command, { ...settings, timeoutMs: Math.max(1, Math.floor(cleanupExitBudget(options, settings.timeoutMs))) });
+        } };
+    try {
+        response = await lifecycleCommandInvokeDeviceLocked(ownerId, params, parsed, options, deadline, deadline);
+    } catch (error) {
+        if (!(error instanceof HyperVOperationDeadlineError) && !(error instanceof CleanupOperationDeadlineError)) throw error;
+        response = { status: 504, payload: { ok: false, error: error instanceof CleanupOperationDeadlineError ? error.message : error.code } };
+    }
+    const payload = cleanupRecord(response.payload) ? response.payload : {};
+    const result = cleanupRecord(payload.result) ? payload.result : {};
+    const execution = cleanupRecord(result.execution) ? result.execution : {};
+    const auxiliary = cleanupObservation.auxiliary;
+    // Include recovery publications even when a later provider or snapshot step refuses.
+    const facts = { changed: auxiliary?.committed === true || cleanupObservation.changed,
+        ...(auxiliary ? { auxiliary: auxiliary.result } : {}),
+        ...(payload.error === "owner-device-state-conflict" || auxiliary?.result.stateConflict ? { stateConflict: true } : {}) };
+    const receipt = cleanupRecord(execution.command) ? execution.command as ProviderCommandResult : cleanupObservation.execution;
+    if (!receipt)
+        return { attempted: false, ok: false, error: typeof payload.error === "string" ? payload.error : "provider-stop-not-executed",
+            ...(Array.isArray(payload.missing) ? { missing: payload.missing as string[] } : {}), ...facts };
+    const native = receipt;
+    return { attempted: true, ok: payload.ok === true,
+        observation: { ok: payload.ok === true, operationKind: native.mode === "noop" ? "metadata-only" : "runtime-stop", receipt: native }, ...facts };
+}
+
 async function lifecycleCommandInvoke(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
     const parsed = admitCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
@@ -9490,83 +9723,8 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
         return lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized);
     }
     try {
-        return await withOwnerDeviceOperation(ownerId, parsed.stateKey, parsed.deviceId, async () => {
-            if (parsed.command === "device_status") return renderBrokerDeviceStatusWithDiagnostics(await brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, hyperVDeadlineAt), params);
-            if (isHyperVBackend(parsed.backend)) {
-                try {
-                    return await withSharedMutationLockAsync(
-                        brokerHyperVMutationLockPath(),
-                        () => lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt),
-                        { waitMs: hyperVRemainingTimeout(hyperVDeadlineAt, DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS), staleMs: DEVICE_BROKER_HYPER_V_HOST_LOCK_STALE_MS },
-                    );
-                } catch (error) {
-                    if (!isDeviceOperationLockTimeout(error)) throw error;
-                    return {
-                        status: 409,
-                        payload: {
-                            ok: false,
-                            error: "hyper-v-host-operation-lock-failed",
-                            ownerId,
-                            backend: parsed.backend,
-                            deviceId: parsed.deviceId,
-                            detail: hyperVBoundedErrorCode(
-                                error,
-                                "hyper-v-host-operation-lock-failed",
-                            ),
-                        },
-                    };
-                }
-            }
-            if (parsed.backend !== "android-emulator" || (parsed.command !== "device_create" && parsed.command !== "device_start")) {
-                return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
-            }
-            try {
-                return await withSharedMutationLockAsync(
-                    androidEmulatorPortAllocationLockFile(),
-                    async () => {
-                        const initialPlan = lifecycleCommandPlan(ownerId, params, normalized, false);
-                        if (initialPlan.status !== 200) return initialPlan;
-                        if (parsed.dryRun) return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
-                        if (parsed.command === "device_start") {
-                            return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
-                        }
-                        const allocation = resolveAndroidEmulatorCreatePortForInvoke(ownerId, parsed, normalized);
-                        if (!allocation.ok) {
-                            return {
-                                status: allocation.status,
-                                payload: {
-                                    ok: false,
-                                    error: allocation.error,
-                                    ...(allocation.allowed ? { allowed: allocation.allowed } : {}),
-                                    ...(allocation.detail ? { detail: allocation.detail } : {}),
-                                    ownerId,
-                                    backend: parsed.backend,
-                                    deviceId: parsed.deviceId,
-                                },
-                            };
-                        }
-                        return await lifecycleCommandInvokeUnlocked(ownerId, {
-                            ...(params as Record<string, unknown>),
-                            port: allocation.port,
-                        }, normalized);
-                    },
-                    { waitMs: DEVICE_BROKER_ANDROID_PORT_LOCK_WAIT_MS, staleMs: DEVICE_BROKER_ANDROID_PORT_LOCK_STALE_MS },
-                );
-            } catch (error) {
-                if (!isDeviceOperationLockTimeout(error)) throw error;
-                return {
-                    status: 409,
-                    payload: {
-                        ok: false,
-                        error: "android-emulator-port-allocation-lock-failed",
-                        ownerId,
-                        backend: parsed.backend,
-                        deviceId: parsed.deviceId,
-                        detail: error instanceof Error ? error.message : String(error),
-                    },
-                };
-            }
-        });
+        return await withOwnerDeviceOperation(ownerId, parsed.stateKey, parsed.deviceId, () =>
+            lifecycleCommandInvokeDeviceLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt));
     } catch (error) {
         if (error instanceof HyperVOperationDeadlineError) {
             return {

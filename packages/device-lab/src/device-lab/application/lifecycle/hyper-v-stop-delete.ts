@@ -214,7 +214,7 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
         if(ports.deadlineExpired(deadlineAt)) return {kind:'uncertain',reason:'deadline',journalDisposition:'retain',error:'hyper-v-operation-deadline-exceeded',ownerId,backend,deviceId};
         const observation=result.ok ? result.observation : null;
         const expectedVmId=(hyperVField(device,'vmId')||'').toLowerCase();
-        const success=Boolean(observation&&expectedVmId&&observation.vmId===expectedVmId&&observation.vmName===hyperVField(device,'vmName')&&(!deleting||ports.samePath(observation.diskPath||'',hyperVField(device,'diskPath')||'')));
+        const success=Boolean(observation&&expectedVmId&&observation.vmId===expectedVmId&&observation.vmName===hyperVField(device,'vmName')&&(deleting ? ports.samePath(observation.diskPath||'',hyperVField(device,'diskPath')||'') : observation.state==='Off'));
         const network=success&&deleting ? await ports.releaseNetwork(ownerId,deviceId,ports.incarnation(device),cleanupDeadlineAt,parsed.preserveNetwork===true) : null;
         const artifacts=success&&deleting&&network?.ok===true ? ports.cleanupArtifacts(ownerId,backend,deviceId) : null;
         if(artifacts?.ok===false||network?.ok===false) return {kind:'uncertain',reason:'provider-failed',journalDisposition:'retain',...base,error:'hyper-v-device-cleanup-failed',device,artifactCleanup:artifacts,networkCleanup:network,invoked:true,dryRun:false,execution,mutatesHost:true};

@@ -273,7 +273,7 @@ describe("native physical observations and Apple inventory presentation", () => 
     });
 });
 
-function cleanupPorts(): BrokerOwnerCleanupPorts<string, { deviceId: string }, { observed: boolean }> {
+function cleanupPorts(): BrokerOwnerCleanupPorts<string, { observed: boolean }> {
     return {
         stateKeys: ["android", "ios"], backendAliases: new Map([["android-emulator", "android"]]),
         stateBackends: new Map([["android", "android-emulator"], ["ios", "ios-simulator"]]),
@@ -282,9 +282,11 @@ function cleanupPorts(): BrokerOwnerCleanupPorts<string, { deviceId: string }, {
         withDeviceOperation: async (_owner, _state, _id, operation) => await operation(),
         withLeaseGuard: (_owner, _state, _record, operation) => operation({ handle: "claim", attempted: true, admission: { kind: "exact" }, canRestore: true }),
         releaseLease: () => ({ kind: "released", attempted: true, ok: true, lease: { claimId: "claim" } }), restoreLease: () => ({ kind: "restored", attempted: true, ok: true, lease: { claimId: "claim" }, heartbeat: null }),
-        terminateAppium: () => ({ attempted: true, ok: true }), signalRecording: () => ({ attempted: true, ok: true }),
-        cancelWatchdog: () => ({ ok: true }), prepareStop: (_owner, target) => ({ kind: "prepared", handle: { deviceId: target.deviceId } }),
-        runPreparedStop: () => ({ ok: true, operationKind: "runtime-stop", receipt: { observed: true } }), releaseWindows: () => undefined, timestamp: () => "now",
+        terminateAppium: () => ({ ok: true, ended: true, receipt: { attempted: true, ok: true } }),
+        signalRecording: () => ({ ok: true, ended: true, receipt: { attempted: true, ok: true } }),
+        cancelWatchdog: () => ({ ok: true }),
+        stopLocked: async () => ({ attempted: true, ok: true, changed: true, observation: { ok: true, operationKind: "runtime-stop", receipt: { observed: true } } }),
+        timestamp: () => "now",
         stateErrorCode: () => "owner-devices-state-read-failed", isDeviceLockTimeout: () => false,
     };
 }
@@ -305,14 +307,14 @@ describe("broker owner cleanup", () => {
             ports.read = () => [];
             return await operation();
         };
-        ports.runPreparedStop = () => { throw new Error("unexpected provider mutation"); };
+        ports.stopLocked = async () => { throw new Error("unexpected provider mutation"); };
         expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({ kind: "cleaned", changedDevices: 0, failed: 0, results: [{ devices: [{ skipped: true, reason: "device-no-longer-present" }] }] });
     });
 
     it("counts a provider failure and continues to the next device", async () => {
         const ports = cleanupPorts(), bad = { id: "bad", status: "running" }, good = { id: "good", status: "running" };
         ports.stateKeys = ["ios"]; ports.read = () => [bad, good];
-        ports.runPreparedStop = handle => ({ ok: handle.deviceId !== "bad", operationKind: "runtime-stop", receipt: { observed: true } });
+        ports.stopLocked = async (_owner, target) => ({ attempted: true, ok: target.deviceId !== "bad", changed: target.deviceId !== "bad", observation: { ok: target.deviceId !== "bad", operationKind: "runtime-stop", receipt: { observed: true } } });
         expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({ kind: "cleaned", changedDevices: 1, failed: 1, results: [{ devices: [
                 { deviceId: "bad", stop: { attempted: true, ok: false } },
                 { deviceId: "good", stop: { attempted: true, ok: true } },
@@ -324,24 +326,27 @@ describe("broker owner cleanup", () => {
         expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", { backend: "unknown" })).toMatchObject({ kind: "invalid-backend", error: "invalid-cleanup-backend" });
     });
 
-    it("continues after a backend read failure and publishes the healthy backend stop", async () => {
+    it("continues after a backend read failure using the healthy backend's canonical stop", async () => {
         const ports = cleanupPorts(), device = { id: "sim", status: "running" };
         ports.read = (_owner, state) => { if (state === "android") throw new Error("corrupt"); return [device]; };
-        const publish = vi.fn(ports.publish); ports.publish = publish;
+        const stop = vi.fn(ports.stopLocked), publish = vi.fn(ports.publish); ports.stopLocked = stop; ports.publish = publish;
         expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({ kind: "cleaned", changedDevices: 1, failed: 1, results: [
                 { stateKey: "android", ok: false, error: "owner-devices-state-read-failed" },
                 { stateKey: "ios", ok: true, changed: true },
             ] });
-        expect(publish).toHaveBeenCalledWith("owner", "ios", "sim", device, expect.objectContaining({ status: "stopped" }));
+        expect(stop).toHaveBeenCalledWith("owner", { backend: "ios-simulator", stateKey: "ios", deviceId: "sim" }, device);
+        expect(publish).not.toHaveBeenCalled();
     });
 
-    it("keeps refused recording metadata while committing a successful Appium clear", () => {
+    it("keeps refused recording metadata while committing a confirmed Appium clear", () => {
         const ports = cleanupPorts(), recording = { pid: 22 }, appium = { serverPid: 21 };
-        ports.signalRecording = () => ({ attempted: true, ok: false, reason: "identity-mismatch" });
+        const initial = { id: "sim", status: "stopped", recording, appium };
+        ports.read = () => [initial];
+        ports.signalRecording = () => ({ ok: false, ended: false, receipt: { attempted: true, ok: false, reason: "identity-mismatch" } });
         const app = createBrokerOwnerCleanupApplication(ports);
-        expect(app.cleanupDevice("owner", "ios", { id: "sim", status: "stopped", recording, appium }, { stopDevices: false, detachPhysical: false })).toMatchObject({
-            changed: true, device: { recording, appium: null },
-            result: { recording: { cleared: false }, appium: { cleared: true } },
+        expect(app.auxiliary("owner", { backend: "ios-simulator", stateKey: "ios", deviceId: "sim" }, initial)).toMatchObject({
+            committed: true, device: { recording, appium: null },
+            result: { ok: false, changed: true, recording: { cleared: false }, appium: { cleared: true } },
         });
     });
 
@@ -367,29 +372,223 @@ describe("broker owner cleanup", () => {
 
 describe("owner stop native-effect refusals", () => {
     const device = { id: "sim", status: "running" };
-    it("reports unavailable preparation without invoking a stop or publishing", async () => {
+    it("counts a refused canonical stop without publishing owner state", async () => {
         const ports = cleanupPorts(); ports.stateKeys = ["ios"]; ports.read = () => [device];
-        ports.prepareStop = () => ({ kind: "unavailable", error: "provider unavailable", missing: ["provider"] });
-        ports.runPreparedStop = () => { throw new Error("unavailable-provider-must-not-run"); };
+        ports.stopLocked = async () => ({ attempted: false, ok: false, changed: false, error: "provider unavailable", missing: ["provider"] });
         ports.publish = () => { throw new Error("unavailable-provider-must-not-publish"); };
         expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({
-            kind: "cleaned", changedDevices: 0, results: [{ devices: [{ stop: { attempted: false, ok: false, error: "provider unavailable" } }] }],
+            kind: "cleaned", changedDevices: 0, failed: 1, results: [{ devices: [{ stop: { attempted: false, ok: false, error: "provider unavailable", missing: ["provider"] } }] }],
         });
     });
     it("retains a failed metadata-only observation without publication", async () => {
         const ports = cleanupPorts(); ports.stateKeys = ["ios"]; ports.read = () => [device];
-        ports.runPreparedStop = () => ({ ok: false, operationKind: "metadata-only", receipt: { observed: true } });
+        ports.stopLocked = async () => ({ attempted: true, ok: false, changed: false, observation: { ok: false, operationKind: "metadata-only", receipt: { observed: true } } });
         ports.publish = () => { throw new Error("failed-noop-must-not-publish"); };
         expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({
             kind: "cleaned", changedDevices: 0, failed: 1, results: [{ devices: [{ stop: { attempted: true, ok: false, observation: { operationKind: "metadata-only" } } }] }],
         });
     });
-    it("propagates raw preparation and runner exceptions without continuing the batch", async () => {
-        const preparation = cleanupPorts(); preparation.stateKeys = ["ios"]; preparation.read = () => [device];
-        const prepareFault = new Error("native preparation"); preparation.prepareStop = () => { throw prepareFault; };
-        await expect(createBrokerOwnerCleanupApplication(preparation).cleanup("owner", {})).rejects.toBe(prepareFault);
+    it("propagates raw canonical stop exceptions without continuing the batch", async () => {
         const execution = cleanupPorts(); execution.stateKeys = ["ios"]; execution.read = () => [device];
-        const runFault = new Error("native run"); execution.runPreparedStop = () => { throw runFault; };
+        const runFault = new Error("native run"); execution.stopLocked = async () => { throw runFault; };
         await expect(createBrokerOwnerCleanupApplication(execution).cleanup("owner", {})).rejects.toBe(runFault);
+    });
+});
+
+describe("owner cleanup completion proof", () => {
+    const target = { backend: "ios-simulator", stateKey: "ios", deviceId: "sim" };
+
+    it.each(["appium", "recording"] as const)("keeps %s metadata when a successful signal has no exit proof", field => {
+        const ports = cleanupPorts(), runtime = field === "appium" ? { serverPid: 21 } : { pid: 22 };
+        const device = { id: "sim", status: "stopped", [field]: runtime };
+        const receipt = { attempted: true, ok: true, nativeDetail: "signal accepted" };
+        ports.read = () => [device];
+        const notEnded = () => ({ ok: true, ended: false, receipt });
+        if (field === "appium") ports.terminateAppium = notEnded;
+        else ports.signalRecording = notEnded;
+        const publish = vi.fn(ports.publish); ports.publish = publish;
+        const outcome = createBrokerOwnerCleanupApplication(ports).auxiliary("owner", target, device);
+        expect(outcome).toMatchObject({ committed: false, device, result: { ok: false, changed: false, [field]: { cleared: false, signal: { attempted: true, ok: false, nativeDetail: "signal accepted" } } } });
+        expect(outcome.result[field].signal).not.toHaveProperty("ended");
+        expect(outcome.result[field].signal).not.toHaveProperty("receipt");
+        expect(receipt.ok).toBe(true);
+        expect(publish).not.toHaveBeenCalled();
+    });
+
+    it.each(["appium", "recording"] as const)("retains the physical lease when %s termination is unavailable", async field => {
+        const ports = cleanupPorts(), runtime = field === "appium" ? { serverPid: 21 } : { pid: 22 };
+        const device = { id: "phone", status: "attached", serial: "usb", [field]: runtime };
+        ports.stateKeys = ["ios-device"]; ports.read = () => [device];
+        const unavailable = () => ({ ok: false, ended: false, receipt: { attempted: false, ok: false, reason: "identity-unavailable" } });
+        if (field === "appium") ports.terminateAppium = unavailable;
+        else ports.signalRecording = unavailable;
+        const release = vi.fn(ports.releaseLease), publish = vi.fn(ports.publish); ports.releaseLease = release; ports.publish = publish;
+        const outcome = await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {});
+        expect(outcome).toMatchObject({ kind: "cleaned", failed: 1, changedDevices: 0, results: [{ devices: [{ [field]: { cleared: false, signal: { ok: false } } }] }] });
+        expect(release).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
+        expect(device[field]).toBe(runtime);
+    });
+
+    it("does not treat an unattempted successful no-op as proof that the owned Appium runtime ended", () => {
+        const ports = cleanupPorts(), device = { id: "sim", appium: { serverPid: 21 } };
+        ports.read = () => [device];
+        ports.terminateAppium = () => ({ ok: true, ended: false, receipt: { attempted: false, ok: true } });
+        ports.publish = () => { throw new Error("no-op-is-not-exit-proof"); };
+        expect(createBrokerOwnerCleanupApplication(ports).auxiliary("owner", target, device)).toMatchObject({ committed: false, result: { ok: false, appium: { cleared: false, signal: { attempted: false, ok: false } } } });
+    });
+
+    it("does not signal later runtimes or publish after the predecessor changes during Appium termination", () => {
+        const ports = cleanupPorts(), initial = {
+            id: "sim", appium: { serverPid: 21 }, recording: { pid: 22 },
+            minimizeWatchdog: { processOwner: "host-broker", startedBy: "broker.windows-sandbox.minimize-watchdog" },
+        };
+        const successor = { ...initial, generation: "new", recording: { pid: 32 } };
+        let current = initial;
+        ports.read = () => [current];
+        ports.terminateAppium = (_runtime, stillCurrent) => {
+            expect(stillCurrent()).toBe(true);
+            current = successor;
+            expect(stillCurrent()).toBe(false);
+            return { ok: true, ended: true, receipt: { attempted: true, ok: true } };
+        };
+        const recorder = vi.fn(ports.signalRecording), watchdog = vi.fn(ports.cancelWatchdog), publish = vi.fn(ports.publish);
+        ports.signalRecording = recorder; ports.cancelWatchdog = watchdog; ports.publish = publish;
+        expect(createBrokerOwnerCleanupApplication(ports).auxiliary("owner", target, initial)).toMatchObject({
+            committed: false, device: successor, result: { ok: false, changed: false, stateConflict: true },
+        });
+        expect(recorder).not.toHaveBeenCalled();
+        expect(watchdog).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
+        expect(current).toBe(successor);
+    });
+
+    it("does not cancel the watchdog or publish after the predecessor changes during recorder termination", () => {
+        const ports = cleanupPorts(), initial = {
+            id: "sim", recording: { pid: 22 },
+            minimizeWatchdog: { processOwner: "host-broker", startedBy: "broker.windows-sandbox.minimize-watchdog" },
+        };
+        const successor = { ...initial, generation: "new" };
+        let current = initial;
+        ports.read = () => [current];
+        ports.signalRecording = (_runtime, stillCurrent) => {
+            expect(stillCurrent()).toBe(true);
+            current = successor;
+            expect(stillCurrent()).toBe(false);
+            return { ok: true, ended: true, receipt: { attempted: true, ok: true } };
+        };
+        const watchdog = vi.fn(ports.cancelWatchdog), publish = vi.fn(ports.publish);
+        ports.cancelWatchdog = watchdog; ports.publish = publish;
+        expect(createBrokerOwnerCleanupApplication(ports).auxiliary("owner", target, initial)).toMatchObject({
+            committed: false, device: successor, result: { ok: false, changed: false, stateConflict: true },
+        });
+        expect(watchdog).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
+    });
+
+    it("commits only a confirmed auxiliary clear while preserving the still-running recorder and physical claim", async () => {
+        const ports = cleanupPorts(), device = { id: "phone", status: "attached", appium: { serverPid: 21 }, recording: { pid: 22 }, leaseClaimId: "claim" };
+        ports.stateKeys = ["ios-device"]; ports.read = () => [device];
+        ports.signalRecording = () => ({ ok: true, ended: false, receipt: { attempted: true, ok: true, reason: "still-running" } });
+        const release = vi.fn(ports.releaseLease), publish = vi.fn(ports.publish); ports.releaseLease = release; ports.publish = publish;
+        expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({
+            kind: "cleaned", changedDevices: 1, failed: 1, results: [{ changed: true, devices: [{ changed: true, appium: { cleared: true }, recording: { cleared: false, signal: { ok: false } } }] }],
+        });
+        expect(publish).toHaveBeenCalledTimes(1);
+        expect(publish).toHaveBeenCalledWith("owner", "ios-device", "phone", device, { ...device, appium: null, updatedAt: "now" });
+        expect(release).not.toHaveBeenCalled();
+    });
+
+    it("blocks physical release when an owned watchdog cancellation fails", async () => {
+        const ports = cleanupPorts(), device = { id: "phone", status: "attached", minimizeWatchdog: { processOwner: "host-broker", startedBy: "broker.windows-sandbox.minimize-watchdog" } };
+        ports.stateKeys = ["ios-device"]; ports.read = () => [device];
+        ports.cancelWatchdog = () => ({ attempted: true, ok: false, reason: "write-failed" });
+        const release = vi.fn(ports.releaseLease), publish = vi.fn(ports.publish); ports.releaseLease = release; ports.publish = publish;
+        expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({ kind: "cleaned", failed: 1, changedDevices: 0 });
+        expect(release).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
+    });
+
+    it("refuses a foreign physical claim before any auxiliary effect", async () => {
+        const ports = cleanupPorts(), device = { id: "phone", status: "attached", appium: { serverPid: 21 }, recording: { pid: 22 } };
+        ports.stateKeys = ["ios-device"]; ports.read = () => [device];
+        ports.withLeaseGuard = (_owner, _state, _record, operation) => operation({ handle: "foreign", attempted: true, admission: { kind: "refused", failure: { kind: "conflict", error: "claim-mismatch" } }, canRestore: false });
+        ports.releaseLease = () => ({ kind: "refused", attempted: true, ok: false, failure: { kind: "conflict", error: "claim-mismatch" } });
+        const appium = vi.fn(ports.terminateAppium), recording = vi.fn(ports.signalRecording), publish = vi.fn(ports.publish);
+        ports.terminateAppium = appium; ports.signalRecording = recording; ports.publish = publish;
+        expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({ kind: "cleaned", failed: 1, changedDevices: 0 });
+        expect(appium).not.toHaveBeenCalled();
+        expect(recording).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
+    });
+});
+
+describe("canonical owner stop ownership", () => {
+    it("delegates a running virtual device once under its held device operation without repeating auxiliary cleanup or publication", async () => {
+        const ports = cleanupPorts(), device = { id: "sim", status: "running", appium: { serverPid: 21 } }, receipt = { observed: true, nativeDetail: "canonical-stop" };
+        ports.stateKeys = ["ios"]; ports.read = () => [device];
+        let deviceLockHeld = false;
+        const operationCalls = vi.fn();
+        ports.withDeviceOperation = async (_owner, _state, _id, operation) => {
+            operationCalls();
+            expect(deviceLockHeld).toBe(false); deviceLockHeld = true;
+            try { return await operation(); } finally { deviceLockHeld = false; }
+        };
+        const stop = vi.fn(async (_owner: string, _target: unknown, current: unknown) => {
+            expect(deviceLockHeld).toBe(true); expect(current).toBe(device);
+            return { attempted: true as const, ok: true, changed: true, observation: { ok: true, operationKind: "runtime-stop" as const, receipt }, auxiliary: { ok: true, changed: true, appium: { cleared: true }, recording: { cleared: false }, minimizeWatchdog: { cleared: false } } };
+        });
+        ports.stopLocked = stop;
+        ports.terminateAppium = () => { throw new Error("canonical-stop-owns-auxiliary"); };
+        ports.publish = () => { throw new Error("canonical-stop-owns-publication"); };
+        const outcome = await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {});
+        expect(outcome).toMatchObject({ kind: "cleaned", changedDevices: 1, failed: 0, results: [{ devices: [{ appium: { cleared: true }, stop: { attempted: true, ok: true, observation: { receipt } } }] }] });
+        expect(stop).toHaveBeenCalledOnce();
+        expect(operationCalls).toHaveBeenCalledOnce();
+        if (outcome.kind === "cleaned") {
+            const report = outcome.results[0].devices![0];
+            expect(report.stop).not.toHaveProperty("changed");
+            expect(report.stop).not.toHaveProperty("auxiliary");
+            if (report.stop?.attempted) expect(report.stop.observation.receipt).toBe(receipt);
+        }
+        expect(device.status).toBe("running");
+    });
+
+    it.each([false, true])("uses the canonical committed change fact even when stop fails (changed=%s)", async changed => {
+        const ports = cleanupPorts(), device = { id: "sim", status: "running" };
+        ports.stateKeys = ["ios"]; ports.read = () => [device];
+        ports.stopLocked = async () => ({ attempted: true, ok: false, changed, observation: { ok: false, operationKind: "runtime-stop", receipt: { observed: true } } });
+        ports.publish = () => { throw new Error("failed-canonical-stop-must-not-republish"); };
+        expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({ kind: "cleaned", changedDevices: changed ? 1 : 0, failed: 1, results: [{ changed, devices: [{ changed, stop: { ok: false } }] }] });
+    });
+
+    it("does not credit a successor as a committed cleanup or repeat its publication", async () => {
+        const ports = cleanupPorts(), device = { id: "sim", status: "running" }, successor = { ...device, generation: "new" };
+        let current = device;
+        ports.stateKeys = ["ios"]; ports.read = () => [current];
+        ports.stopLocked = async () => { current = successor; return { attempted: true, ok: false, changed: false, stateConflict: true, observation: { ok: false, operationKind: "runtime-stop", receipt: { observed: true } } }; };
+        ports.publish = () => { throw new Error("successor-must-not-be-republished"); };
+        const outcome = await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {});
+        expect(outcome).toMatchObject({ kind: "cleaned", changedDevices: 0, failed: 1, results: [{ devices: [{ changed: false, stateConflict: true }] }] });
+        expect(current).toBe(successor);
+    });
+
+    it("counts an independent auxiliary failure in addition to the same canonical state conflict", async () => {
+        const ports = cleanupPorts(), device = { id: "sim", status: "running", appium: { serverPid: 21 } };
+        ports.stateKeys = ["ios"]; ports.read = () => [device];
+        ports.stopLocked = async () => ({
+            attempted: true, ok: false, changed: false, stateConflict: true,
+            observation: { ok: false, operationKind: "runtime-stop", receipt: { observed: true } },
+            auxiliary: {
+                ok: false, changed: false,
+                appium: { cleared: false, signal: { attempted: true, ok: false, reason: "still-running" } },
+                recording: { cleared: false }, minimizeWatchdog: { cleared: false },
+            },
+        });
+        ports.publish = () => { throw new Error("failed-canonical-stop-must-not-republish"); };
+        expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {})).toMatchObject({
+            kind: "cleaned", changedDevices: 0, failed: 2,
+            results: [{ devices: [{ stateConflict: true, appium: { cleared: false, signal: { ok: false } }, stop: { ok: false } }] }],
+        });
     });
 });

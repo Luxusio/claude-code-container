@@ -1,175 +1,112 @@
 import { recordingCopyPending } from "../domain/broker-recording.js";
-import { cleanupRecord, isPhysicalState, deviceHasRuntimeMetadata, shouldStopOwnerDevice, cleanupFailureCount, ownerCleanupSelection, type PhysicalRecord, type CleanupLeaseGuard, type CleanupOptions, type CleanupDeviceOutcome, type CleanupCommandTarget, type AuxiliaryOutcome, type CleanupDeviceReport, type CleanupBackendReport, type OwnerCleanupOutcome } from '../domain/broker-owner-cleanup.js';
+import { cleanupRecord, isPhysicalState, deviceHasRuntimeMetadata, shouldStopOwnerDevice, cleanupFailureCount, ownerCleanupSelection, type PhysicalRecord, type CleanupLeaseGuard, type CleanupOptions, type CleanupDeviceOutcome, type CleanupCommandTarget, type AuxiliaryOutcome, type AuxiliaryCleanup, type CleanupSignal, type CleanupTermination, type CleanupDeviceReport, type CleanupBackendReport, type OwnerCleanupOutcome } from '../domain/broker-owner-cleanup.js';
 import type { BrokerOwnerCleanupPorts } from '../ports/broker-owner-cleanup.js';
-export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(ports: BrokerOwnerCleanupPorts<Handle, Prepared, Receipt>) {
-    function cleanupRecording(recording: PhysicalRecord) {
+export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: BrokerOwnerCleanupPorts<Handle, Receipt>) {
+    function readCurrent(ownerId: string, target: CleanupCommandTarget) {
+        return ports.read(ownerId, target.stateKey).find((candidate): candidate is PhysicalRecord => cleanupRecord(candidate) && candidate.id === target.deviceId) || null;
+    }
+    function settledSignal(termination: CleanupTermination): CleanupSignal {
+        return {...termination.receipt, ok: termination.ok && termination.ended};
+    }
+    function cleanupRecording(recording: PhysicalRecord, stillCurrent: () => boolean): CleanupSignal {
         if (recordingCopyPending(recording))
             return {attempted: false, ok: false, reason: 'recording-artifact-copy-pending'};
-        const signal = ports.signalRecording(recording);
-        // A signal does not prove recorder exit or complete Android artifact recovery.
+        const signal = settledSignal(ports.signalRecording(recording, stillCurrent));
         return signal.ok && recordingCopyPending({...recording, active: false, stoppedAt: ports.timestamp()})
             ? {...signal, ok: false, reason: 'recording-artifact-copy-pending'} : signal;
     }
-    function auxiliary(ownerId: string, parsed: CleanupCommandTarget, expected: unknown): AuxiliaryOutcome {
-        const observed = ports.read(ownerId, parsed.stateKey).find((candidate): candidate is PhysicalRecord => cleanupRecord(candidate) && candidate.id === parsed.deviceId);
-        if (!observed || !ports.equal(observed, expected))
-            return {
-                result: {
-                    ok: false, changed: false, stateConflict: true, appium: {
-                        cleared: false
-                    }, recording: {
-                        cleared: false
-                    }, minimizeWatchdog: {
-                        cleared: false
-                    }
-                },
-                device: observed || null,
-                committed: false,
-            };
-        const record = observed;
-        const appiumSignal = record.appium != null ? ports.terminateAppium(record.appium) : null;
-        const recording = cleanupRecord(record.recording) ? record.recording : null;
-        const recordingSignal = recording ? cleanupRecording(recording) : null;
-        const minimizeWatchdog = cleanupRecord(record.minimizeWatchdog) ? record.minimizeWatchdog : null;
+    function inspectAuxiliary(ownerId: string, target: CleanupCommandTarget, expected: unknown) {
+        let current = readCurrent(ownerId, target);
+        const record = current;
+        let stateConflict = !record || !ports.equal(record, expected);
+        const stillCurrent = () => {
+            if (stateConflict) return false;
+            current = readCurrent(ownerId, target);
+            stateConflict = !current || !ports.equal(current, expected);
+            return !stateConflict;
+        };
+        const appiumSignal = record?.appium != null && stillCurrent()
+            ? settledSignal(ports.terminateAppium(record.appium, stillCurrent)) : null;
+        const recording = record?.recording != null
+            ? cleanupRecord(record.recording) ? record.recording : {} : null;
+        const recordingSignal = recording && stillCurrent() ? cleanupRecording(recording, stillCurrent) : null;
+        const minimizeWatchdog = record && cleanupRecord(record.minimizeWatchdog) ? record.minimizeWatchdog : null;
         const minimizeWatchdogOwned = minimizeWatchdog?.processOwner === 'host-broker'
             && minimizeWatchdog?.startedBy === 'broker.windows-sandbox.minimize-watchdog';
-        const cancellation = minimizeWatchdogOwned ? ports.cancelWatchdog(ownerId, parsed.deviceId) : null;
+        const cancellation = minimizeWatchdogOwned && stillCurrent() ? ports.cancelWatchdog(ownerId, target.deviceId) : null;
+        stillCurrent();
         const appiumCleared = Boolean(appiumSignal?.ok), recordingCleared = Boolean(recordingSignal?.ok), watchdogCleared = Boolean(cancellation?.ok);
-        const changed = appiumCleared || recordingCleared || watchdogCleared;
-        const transition = changed ? ports.publish(ownerId, parsed.stateKey, parsed.deviceId, expected, {
-            ...record,
-            ...(appiumCleared ? {
-                appium: null
-            } : {}),
-            ...(recordingCleared ? {
-                recording: null
-            } : {}),
-            ...(watchdogCleared ? {
-                minimizeWatchdog: null
-            } : {}),
-            updatedAt: ports.timestamp(),
-        }) : {
-            found: true, matched: true, device: observed
-        };
-        const stateConflict = !transition.matched;
-        return {
-            result: {
-                ok: (!appiumSignal || appiumCleared) && (!recordingSignal || recordingCleared) && (!cancellation || watchdogCleared) && !stateConflict,
-                changed: changed && !stateConflict,
-                ...(stateConflict ? {
-                    stateConflict: true
-                } : {}),
-                appium: appiumSignal ? {
-                    cleared: appiumCleared, signal: appiumSignal
-                } : {
-                    cleared: false
-                },
-                recording: recordingSignal ? {
-                    cleared: recordingCleared, signal: recordingSignal
-                } : {
-                    cleared: false
-                },
-                minimizeWatchdog: cancellation ? {
-                    cleared: watchdogCleared, cancellation
-                } : {
-                    cleared: false, ...(minimizeWatchdog ? {
-                        skipped: true, reason: 'not-broker-owned'
-                    } : {})
-                },
+        const changed = (appiumCleared || recordingCleared || watchdogCleared) && !stateConflict;
+        const result: AuxiliaryCleanup = {
+            ok: (!appiumSignal || appiumCleared) && (!recordingSignal || recordingCleared) && (!cancellation || watchdogCleared) && !stateConflict,
+            changed,
+            ...(stateConflict ? {stateConflict: true} : {}),
+            appium: appiumSignal ? {cleared: appiumCleared, signal: appiumSignal} : {cleared: false},
+            recording: recordingSignal ? {cleared: recordingCleared, signal: recordingSignal} : {cleared: false},
+            minimizeWatchdog: cancellation ? {cleared: watchdogCleared, cancellation} : {
+                cleared: false, ...(minimizeWatchdog && !minimizeWatchdogOwned ? {skipped: true, reason: 'not-broker-owned'} : {}),
             },
+        };
+        const device = changed ? {
+            ...record,
+            ...(appiumCleared ? {appium: null} : {}),
+            ...(recordingCleared ? {recording: null} : {}),
+            ...(watchdogCleared ? {minimizeWatchdog: null} : {}),
+            updatedAt: ports.timestamp(),
+        } : current;
+        return {result, device, changed};
+    }
+    function auxiliary(ownerId: string, parsed: CleanupCommandTarget, expected: unknown): AuxiliaryOutcome {
+        const pending = inspectAuxiliary(ownerId, parsed, expected);
+        if (!pending.changed) return {result: pending.result, device: pending.device, committed: false};
+        const transition = ports.publish(ownerId, parsed.stateKey, parsed.deviceId, expected, pending.device);
+        return {
+            result: {...pending.result, ok: pending.result.ok && transition.matched, changed: transition.matched,
+                ...(!transition.matched ? {stateConflict: true} : {})},
             device: transition.device,
-            committed: changed && transition.matched,
+            committed: transition.matched,
         };
     }
     function cleanupDevice(ownerId: string, stateKey: string, device: unknown, options: CleanupOptions, guard?: CleanupLeaseGuard<Handle>): CleanupDeviceOutcome<Receipt> {
-        if (!cleanupRecord(device))
-            return {
-                device, changed: false, result: {
-                    skipped: true, reason: 'invalid-device-record'
-                }
-            };
-        const id = typeof device.id === 'string' ? device.id : null;
+        if (!cleanupRecord(device) || typeof device.id !== 'string' || !device.id)
+            return {device, changed: false, result: {skipped: true, reason: 'invalid-device-record'}};
+        const deviceId = device.id;
         const backend = ports.stateBackends.get(stateKey) || stateKey;
-        const result: CleanupDeviceReport<Receipt> = {
-            stateKey, backend, deviceId: id, changed: false
-        };
+        const target = {backend, stateKey, deviceId};
         const physical = isPhysicalState(stateKey);
-        const retainRecordingAttachment = stateKey === 'android-device' && cleanupRecord(device.recording)
-            && recordingCopyPending({...device.recording, active: false, stoppedAt: ports.timestamp()});
         if (physical && options.detachPhysical && !guard)
             return ports.withLeaseGuard(ownerId, stateKey, device, lease => cleanupDevice(ownerId, stateKey, device, options, lease));
         if (guard?.admission.kind === 'refused') {
-            result.physical = {
-                detached: false, poweredOff: false, disconnected: false, lease: ports.releaseLease(ownerId, guard)
-            };
-            return {
-                device, changed: false, result
-            };
+            return {device, changed: false, result: {stateKey, backend, deviceId, changed: false,
+                physical: {detached: false, poweredOff: false, disconnected: false, lease: ports.releaseLease(ownerId, guard)}}};
         }
-        const updated = {
-            ...device
+        const pending = inspectAuxiliary(ownerId, target, device);
+        const result: CleanupDeviceReport<Receipt> = {
+            stateKey, backend, deviceId, changed: pending.changed,
+            ...(device.appium != null ? {appium: pending.result.appium} : {}),
+            ...(device.recording != null ? {recording: pending.result.recording} : {}),
+            ...(device.minimizeWatchdog != null ? {minimizeWatchdog: pending.result.minimizeWatchdog} : {}),
+            ...(pending.result.stateConflict ? {stateConflict: true} : {}),
         };
-        let changed = false;
-        if (device.appium != null) {
-            const signal = ports.terminateAppium(device.appium);
-            if (signal.ok) {
-                updated.appium = null;
-                changed = true;
-            }
-            result.appium = {
-                cleared: signal.ok, signal
+        if (!pending.result.ok) return {device: pending.device, changed: pending.changed, result};
+        const updated = cleanupRecord(pending.device) ? {...pending.device} : {...device};
+        let changed = pending.changed;
+        if (physical && options.detachPhysical && guard) {
+            const current = readCurrent(ownerId, target);
+            if (!current || !ports.equal(current, device)) return {
+                device: current, changed: false, result: {...result, changed: false, stateConflict: true},
             };
-        }
-        if (device.recording != null) {
-            const signal = cleanupRecording(cleanupRecord(device.recording) ? device.recording : {});
-            if (signal.ok) {
-                updated.recording = null;
-                changed = true;
-            }
-            result.recording = {
-                cleared: signal.ok, signal
-            };
-        }
-        if (physical && options.detachPhysical && guard && !retainRecordingAttachment) {
             const lease = ports.releaseLease(ownerId, guard);
             if (lease.ok && updated.status !== 'detached') {
                 updated.status = 'detached';
                 changed = true;
             }
-            result.physical = {
-                detached: lease.ok, poweredOff: false, disconnected: false, lease
-            };
+            result.physical = {detached: lease.ok, poweredOff: false, disconnected: false, lease};
         }
-        else if (options.stopDevices && id && shouldStopOwnerDevice(stateKey, device.status)) {
-            const prepared = ports.prepareStop(ownerId, {
-                backend, stateKey, deviceId: id
-            }, device);
-            if (prepared.kind === 'unavailable')
-                result.stop = {
-                    attempted: false, ok: false, error: prepared.error, missing: prepared.missing
-                };
-            else {
-                const observation = ports.runPreparedStop(prepared.handle);
-                const ok = observation.ok;
-                result.stop = {
-                    attempted: true, ok, observation
-                };
-                if (ok) {
-                    updated.status = 'stopped';
-                    if (stateKey === 'windows')
-                        ports.releaseWindows(ownerId, device, observation);
-                    changed = true;
-                }
-            }
-        }
-        if (changed)
-            updated.updatedAt = ports.timestamp();
+        if (changed) updated.updatedAt = ports.timestamp();
         result.changed = changed;
-        if (!changed && !deviceHasRuntimeMetadata(device))
-            result.skipped = true;
-        return {
-            device: changed ? updated : device, changed, result
-        };
+        if (!changed && !deviceHasRuntimeMetadata(device) && !device.minimizeWatchdog) result.skipped = true;
+        return {device: changed ? updated : device, changed, result};
     }
     async function cleanup(ownerId: string, params: unknown): Promise<OwnerCleanupOutcome<Receipt>> {
         const selection = ownerCleanupSelection(params, ports.stateKeys, ports.backendAliases);
@@ -200,7 +137,7 @@ export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(p
                     continue;
                 }
                 try {
-                    const outcome = await ports.withDeviceOperation(ownerId, stateKey, deviceId, () => {
+                    const outcome = await ports.withDeviceOperation(ownerId, stateKey, deviceId, async () => {
                         const latest = ports.read(ownerId, stateKey).find((candidate): candidate is PhysicalRecord => cleanupRecord(candidate) && candidate.id === deviceId);
                         if (!latest)
                             return {
@@ -208,6 +145,20 @@ export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(p
                                     stateKey, backend: ports.stateBackends.get(stateKey) || stateKey, deviceId, skipped: true, reason: 'device-no-longer-present'
                                 }
                             };
+                        if (stopDevices && shouldStopOwnerDevice(stateKey, latest.status)) {
+                            const backend = ports.stateBackends.get(stateKey) || stateKey;
+                            const stopped = await ports.stopLocked(ownerId, {backend, stateKey, deviceId}, latest);
+                            const stop = stopped.attempted
+                                ? {attempted: true as const, ok: stopped.ok, observation: stopped.observation}
+                                : {attempted: false as const, ok: false as const, error: stopped.error, ...(stopped.missing ? {missing: stopped.missing} : {})};
+                            return {changed: stopped.changed, result: {
+                                stateKey, backend, deviceId, changed: stopped.changed, stop,
+                                ...(stopped.auxiliary && (latest.appium != null || stopped.auxiliary.appium.signal || stopped.auxiliary.appium.cleared) ? {appium: stopped.auxiliary.appium} : {}),
+                                ...(stopped.auxiliary && (latest.recording != null || stopped.auxiliary.recording.signal || stopped.auxiliary.recording.cleared) ? {recording: stopped.auxiliary.recording} : {}),
+                                ...(stopped.auxiliary && (latest.minimizeWatchdog != null || stopped.auxiliary.minimizeWatchdog.cancellation || stopped.auxiliary.minimizeWatchdog.cleared) ? {minimizeWatchdog: stopped.auxiliary.minimizeWatchdog} : {}),
+                                ...(stopped.stateConflict || stopped.auxiliary?.stateConflict ? {stateConflict: true} : {}),
+                            }};
+                        }
                         const cleanupAndPersist = (guard?: CleanupLeaseGuard<Handle>): {changed:boolean;result:CleanupDeviceReport<Receipt>} => {
                             const runtime = cleanupDevice(ownerId, stateKey, latest, {
                                 stopDevices, detachPhysical
@@ -226,7 +177,7 @@ export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(p
                                     };
                                     return {
                                         changed: false, result: {
-                                            ...runtime.result, stateWrite: {
+                                            ...runtime.result, changed: false, stateWrite: {
                                                 ok: false, error: rollback.ok ? 'owner-state-write-failed' : 'physical-lease-rollback-failed', detail: error instanceof Error ? error.message : String(error), leaseRollback: rollback
                                             }
                                         }
@@ -235,7 +186,7 @@ export function createBrokerOwnerCleanupApplication<Handle, Prepared, Receipt>(p
                             }
                             return {
                                 changed: runtime.changed && persisted, result: {
-                                    ...runtime.result, ...(stateConflict || !persisted ? {
+                                    ...runtime.result, changed: runtime.changed && persisted, ...(stateConflict || !persisted ? {
                                         stateConflict: true
                                     } : {})
                                 }

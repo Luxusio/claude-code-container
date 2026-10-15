@@ -1,0 +1,133 @@
+import { spawnSync } from "child_process";
+import { closeSync, constants as fsConstants, openSync, readSync } from "fs";
+import { performance } from "perf_hooks";
+import type { DeviceRuntimeProcessIdentity } from "../../../device-lab-process-identity.js";
+import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs, windowsStartTokenExpression } from "../../../windows-system-powershell.js";
+
+export type RuntimeExitObservation = "ended" | "still-running" | "unavailable";
+
+export interface RuntimeExitOptions {
+    platform?: NodeJS.Platform;
+    now?: () => number;
+    sleep?: (milliseconds: number) => void;
+    readProcStat?: (pid: number, timeoutMs: number, maxBytes: number) => string;
+    run?: (executable: string, args: string[], options: {
+        encoding: "utf8";
+        timeout: number;
+        maxBuffer: number;
+        killSignal: "SIGKILL";
+        windowsHide: true;
+    }) => { status: number | null; stdout: string; stderr?: string; error?: unknown; signal?: string | null };
+    powershellPath?: string | null;
+}
+
+const MAX_PROBE_BYTES = 4096;
+const sleepControl = new Int32Array(new SharedArrayBuffer(4));
+const windowsBirth = /^windows:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{7}Z$/;
+
+function validPsBirth(value: string): boolean {
+    return value.length > 0 && value === value.trim() && Buffer.byteLength(value, "utf8") <= MAX_PROBE_BYTES - 3
+        && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value);
+}
+
+function validBirth(token: string, platform: NodeJS.Platform): boolean {
+    if (platform === "linux") return /^linux:[0-9]+$/.test(token);
+    if (platform === "darwin") return token.startsWith("ps:") && validPsBirth(token.slice(3));
+    return platform === "win32" && windowsBirth.test(token);
+}
+
+function expectedProcess(value: unknown, platform: NodeJS.Platform): DeviceRuntimeProcessIdentity | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const expected = value as Partial<DeviceRuntimeProcessIdentity>;
+    return Number.isSafeInteger(expected.pid) && Number(expected.pid) > 0
+        && typeof expected.startToken === "string" && validBirth(expected.startToken, platform)
+        && typeof expected.commandHash === "string" && /^[a-f0-9]{64}$/.test(expected.commandHash)
+        ? expected as DeviceRuntimeProcessIdentity : null;
+}
+
+function linuxObservation(expected: DeviceRuntimeProcessIdentity, text: string): RuntimeExitObservation {
+    if (Buffer.byteLength(text, "utf8") > MAX_PROBE_BYTES) return "unavailable";
+    const close = text.lastIndexOf(")");
+    if (close < 0 || !text.startsWith(`${expected.pid} (`)) return "unavailable";
+    const fields = text.slice(close + 1).trim().split(/\s+/);
+    if (!/^[RSDZTtXxKWPI]$/.test(fields[0] || "") || !/^[0-9]+$/.test(fields[19] || "")) return "unavailable";
+    if (`linux:${fields[19]}` !== expected.startToken || fields[0] === "Z" || fields[0] === "X") return "ended";
+    return "still-running";
+}
+
+/** Observe only the saved incarnation. A reused PID proves its predecessor ended,
+ * and never grants permission to signal the process now holding that PID. */
+export function waitForExpectedRuntimeExitSync(
+    expectedIdentity: unknown,
+    timeoutMs: number,
+    options: RuntimeExitOptions = {},
+): RuntimeExitObservation {
+    const platform = options.platform || process.platform;
+    const expected = expectedProcess(expectedIdentity, platform);
+    if (!expected || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return "unavailable";
+    const now = options.now || (() => performance.now());
+    const started = now();
+    if (!Number.isFinite(started)) return "unavailable";
+    const deadline = started + Math.min(timeoutMs, 2_147_483_647);
+    const sleep = options.sleep || ((milliseconds: number) => { Atomics.wait(sleepControl, 0, 0, milliseconds); });
+    const run: NonNullable<RuntimeExitOptions["run"]> = options.run || ((executable, args, settings) => spawnSync(executable, args, settings));
+    const readProcStat = options.readProcStat || ((pid: number, remainingMs: number, maxBytes: number) => {
+        const probeDeadline = Math.min(deadline, now() + remainingMs);
+        if (now() >= probeDeadline) throw new Error("runtime-exit-probe-expired");
+        const descriptor = openSync(`/proc/${pid}/stat`, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+        try {
+            if (now() >= probeDeadline) throw new Error("runtime-exit-probe-expired");
+            const bytes = Buffer.allocUnsafe(maxBytes + 1);
+            const count = readSync(descriptor, bytes, 0, bytes.length, null);
+            if (count > maxBytes) throw new Error("runtime-exit-probe-output-too-large");
+            return bytes.subarray(0, count).toString("utf8");
+        } finally { closeSync(descriptor); }
+    });
+    function observe(identity: DeviceRuntimeProcessIdentity): RuntimeExitObservation {
+        try {
+            const remaining = Math.floor(deadline - now());
+            if (remaining <= 0) return "unavailable";
+            if (platform === "linux") {
+                try { return linuxObservation(identity, readProcStat(identity.pid, remaining, MAX_PROBE_BYTES)); }
+                catch (error) { return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? "ended" : "unavailable"; }
+            }
+            const executable = platform === "darwin" ? "/bin/ps"
+                : options.powershellPath === undefined ? canonicalWindowsPowerShellPath() : options.powershellPath;
+            if (!executable) return "unavailable";
+            const args = platform === "darwin" ? ["-p", String(identity.pid), "-o", "lstart=", "-o", "state="]
+                : hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command",
+                    `try { $P = Get-Process -Id ${identity.pid} -ErrorAction Stop; [Console]::Out.Write('windows:' + ${windowsStartTokenExpression("$P")}) } catch { if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId*') { [Console]::Out.Write('ended') } else { exit 2 } }`]);
+            const timeout = Math.floor(deadline - now());
+            if (timeout <= 0) return "unavailable";
+            const result = run(executable, args, { encoding: "utf8", timeout, maxBuffer: MAX_PROBE_BYTES, killSignal: "SIGKILL", windowsHide: true });
+            if (result.error || result.signal || Buffer.byteLength(result.stdout, "utf8") > MAX_PROBE_BYTES
+                || Buffer.byteLength(result.stderr || "", "utf8") > MAX_PROBE_BYTES) return "unavailable";
+            const output = result.stdout.trim();
+            if (platform === "darwin") {
+                if (result.status === 1 && !output && !result.stderr?.trim()) return "ended";
+                if (result.status !== 0 || result.stderr?.trim()) return "unavailable";
+                const match = /^(.+?)\s+([IRSTUZ])(?:<|N)?X?E?V?L?s?\+?$/.exec(output);
+                if (!match || !validPsBirth(match[1])) return "unavailable";
+                if (match[2] === "Z") return "ended";
+                // lstart inherits locale and TZ, so a changed live birth string cannot prove PID reuse.
+                return `ps:${match[1]}` === identity.startToken ? "still-running" : "unavailable";
+            }
+            if (result.status !== 0 || result.stderr?.trim()) return "unavailable";
+            if (output === "ended") return "ended";
+            if (!windowsBirth.test(output)) return "unavailable";
+            return output === identity.startToken ? "still-running" : "ended";
+        } catch { return "unavailable"; }
+    }
+    let last: RuntimeExitObservation = "unavailable";
+    while (true) {
+        if (deadline - now() < 1) return last;
+        const observation = observe(expected);
+        const completed = now();
+        if (!Number.isFinite(completed) || completed > deadline) return "unavailable";
+        if (observation === "ended") return observation;
+        last = observation;
+        const remaining = deadline - completed;
+        if (remaining <= 0) return last;
+        try { sleep(Math.min(50, remaining)); } catch { return "unavailable"; }
+    }
+}

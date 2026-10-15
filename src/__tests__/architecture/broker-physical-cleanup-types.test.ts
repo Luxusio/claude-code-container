@@ -5,11 +5,11 @@ import { physicalStopReplacement, type PhysicalExecution } from "../../../packag
 import type { BrokerPhysicalDevicesPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-devices.js";
 import type { BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
 
-export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevicesPorts<string, { observed: boolean }>, cleanup: BrokerOwnerCleanupPorts<string, { deviceId: string }, { observed: boolean }>): {
+export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevicesPorts<string, { observed: boolean }>, cleanup: BrokerOwnerCleanupPorts<string, { observed: boolean }>): {
     devices: ReturnType<typeof createBrokerPhysicalDevicesApplication<string, { observed: boolean }>>;
-    owner: ReturnType<typeof createBrokerOwnerCleanupApplication<string, { deviceId: string }, { observed: boolean }>>;
+    owner: ReturnType<typeof createBrokerOwnerCleanupApplication<string, { observed: boolean }>>;
     releaseLease: BrokerPhysicalDevicesPorts<string, { observed: boolean }>["releaseLease"];
-    publish: BrokerOwnerCleanupPorts<string, { deviceId: string }, { observed: boolean }>["publish"];
+    publish: BrokerOwnerCleanupPorts<string, { observed: boolean }>["publish"];
 } {
     const devices = createBrokerPhysicalDevicesApplication(physical), owner = createBrokerOwnerCleanupApplication(cleanup);
     const inventory = physical.appleInventory();
@@ -59,22 +59,37 @@ export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevices
     createBrokerOwnerCleanupApplication(missingPublication);
     // @ts-expect-error synchronous publication cannot defer its guarded decision
     createBrokerOwnerCleanupApplication({ ...cleanup, publish: async () => ({ found: true, matched: true, device: null }) });
-    const { prepareStop, ...withoutPreparation } = cleanup;
-    // @ts-expect-error owner stop admission requires native preparation
-    createBrokerOwnerCleanupApplication(withoutPreparation);
-    const { runPreparedStop, ...withoutRun } = cleanup;
-    // @ts-expect-error one captured native stop effect is required
-    createBrokerOwnerCleanupApplication(withoutRun);
-    // @ts-expect-error native stop preparation settles synchronously
-    createBrokerOwnerCleanupApplication({ ...cleanup, prepareStop: async () => ({ kind: "prepared", handle: { deviceId: "phone" } }) });
-    // @ts-expect-error native stop observations settle synchronously
-    createBrokerOwnerCleanupApplication({ ...cleanup, runPreparedStop: async () => ({ ok: true, operationKind: "metadata-only", receipt: { observed: true } }) });
+    const { stopLocked, ...withoutStop } = cleanup;
+    // @ts-expect-error the existing locked canonical lifecycle stop is required
+    createBrokerOwnerCleanupApplication(withoutStop);
+    // @ts-expect-error native exit status does not prove canonical stop completion
+    createBrokerOwnerCleanupApplication({ ...cleanup, stopLocked: async () => ({ status: 0, changed: true }) });
+    // @ts-expect-error successful canonical stop must report whether it committed a change
+    createBrokerOwnerCleanupApplication({ ...cleanup, stopLocked: async () => ({ attempted: true, ok: true, observation: { ok: true, operationKind: "runtime-stop", receipt: { observed: true } } }) });
+    // @ts-expect-error canonical stop settles asynchronously inside the held device operation
+    createBrokerOwnerCleanupApplication({ ...cleanup, stopLocked: () => ({ attempted: false, ok: false, changed: false, error: "unavailable" }) });
+    const termination = cleanup.terminateAppium({}, () => true);
+    const semanticExit: boolean = termination.ok && termination.ended;
+    const nativeReceipt: boolean = termination.receipt.ok;
+    void [semanticExit, nativeReceipt];
+    // @ts-expect-error accepting a signal is not a process exit proof
+    createBrokerOwnerCleanupApplication({ ...cleanup, terminateAppium: () => ({ ok: true, receipt: { ok: true } }) });
+    // @ts-expect-error Appium termination must settle before a synchronous physical guard releases
+    createBrokerOwnerCleanupApplication({ ...cleanup, terminateAppium: async () => ({ ok: true, ended: true, receipt: { ok: true } }) });
+    // @ts-expect-error recorder termination must settle before a synchronous physical guard releases
+    createBrokerOwnerCleanupApplication({ ...cleanup, signalRecording: async () => ({ ok: true, ended: true, receipt: { ok: true } }) });
+    // @ts-expect-error watchdog cancellation is synchronous and carries no process exit promise
+    createBrokerOwnerCleanupApplication({ ...cleanup, cancelWatchdog: async () => ({ ok: true }) });
+    createBrokerOwnerCleanupApplication({ ...cleanup, terminateAppium: (_runtime, stillCurrent) => {
+        const authorized: boolean = stillCurrent();
+        return { ok: authorized, ended: authorized, receipt: { ok: authorized } };
+    } });
     const { observePhysicalStop, ...withoutObservation } = physical;
     // @ts-expect-error the physical stop observation is required
     createBrokerPhysicalDevicesApplication(withoutObservation);
     // @ts-expect-error physical stop observation cannot defer its outcome
     createBrokerPhysicalDevicesApplication({ ...physical, observePhysicalStop: async () => ({ ok: true, receipt: { observed: true } }) });
-    void [prepareStop, runPreparedStop, observePhysicalStop];
+    void [stopLocked, observePhysicalStop];
     return { devices, owner, releaseLease, publish };
 }
 

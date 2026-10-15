@@ -145,14 +145,14 @@ export function renderPhysicalStopOutcome(outcome: PhysicalStopOutcome<NativePhy
         ...(outcome.ownerId === undefined ? {} : {ownerId:outcome.ownerId,backend:outcome.backend,deviceId:outcome.deviceId}),
         ...(outcome.detail === undefined ? {} : {detail:outcome.detail}),result}};
 }
-function renderCleanupDevice(device: CleanupDeviceReport<NativePhysicalReceipt>) {
+function renderCleanupDevice(device: CleanupDeviceReport<ProviderCommandResult>) {
     return {
         ...device,
         ...(device.stop?.attempted ? {
             stop: {
                 attempted: true,
                 ok: device.stop.ok,
-                execution: device.stop.observation.receipt.execution,
+                execution: device.stop.observation.receipt,
             },
         } : {}),
         ...(device.physical ? {
@@ -163,7 +163,7 @@ function renderCleanupDevice(device: CleanupDeviceReport<NativePhysicalReceipt>)
         } : {}),
     };
 }
-export function renderOwnerCleanupOutcome(outcome: OwnerCleanupOutcome<NativePhysicalReceipt>): PhysicalWireResult {
+export function renderOwnerCleanupOutcome(outcome: OwnerCleanupOutcome<ProviderCommandResult>): PhysicalWireResult {
     if (outcome.kind === 'invalid-backend') return { status: 400, payload: { ok: false, error: outcome.error, allowed: outcome.allowed } };
     const { kind, ...report } = outcome;
     void kind;
