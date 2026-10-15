@@ -40,6 +40,8 @@ import type { ClipboardTextWriteResult, PreparedClipboardTextWrite } from "./por
 import { createClipboardServerLifecycle } from "./application/clipboard/server-lifecycle.js";
 import { CACHE_TTL_MS, shouldReuseClipboardCache, buildImageMimeReadOrder, isSupportedImageTarget, type ClipboardPlatform, type ClipboardSnapshot as PolicyClipboardSnapshot } from "./domain/clipboard/snapshot.js";
 import { MAX_CLIPBOARD_TEXT_BYTES, CLIPBOARD_WRITE_TIMEOUT_MS } from "./domain/clipboard/text-write.js";
+import { CLIPBOARD_SERVER_ORPHAN_GRACE_MS, clipboardServerOrphanWatchdogState } from "./domain/clipboard/server-lifecycle.js";
+export { CLIPBOARD_SERVER_ORPHAN_GRACE_MS, clipboardServerOrphanWatchdogState };
 export { CACHE_TTL_MS, shouldReuseClipboardCache, buildImageMimeReadOrder, MAX_CLIPBOARD_TEXT_BYTES };
 export type { ClipboardPlatform };
 
@@ -71,7 +73,6 @@ const SERVER_VERSION = getServerHash();
 // === Constants ===
 // Paths resolve on every use: the ~/.ccc layout can migrate after this module loads
 // (doc/common/REQ__ccc-home-layout.md).
-export const CLIPBOARD_SERVER_ORPHAN_GRACE_MS = 15000;
 const CLIPBOARD_SERVER_ORPHAN_CHECK_INTERVAL_MS = 5000;
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
@@ -1188,19 +1189,6 @@ function gracefulShutdown(server: Server, idleTimer?: ReturnType<typeof setInter
         process.exit(0);
     });
     setTimeout(() => process.exit(0), 3000);
-}
-
-export function clipboardServerOrphanWatchdogState(
-    now: number,
-    noActiveSessionsSince: number | null,
-    hasActiveSessions: boolean,
-): { noActiveSessionsSince: number | null; shouldShutdown: boolean } {
-    if (hasActiveSessions) return { noActiveSessionsSince: null, shouldShutdown: false };
-    const since = noActiveSessionsSince ?? now;
-    return {
-        noActiveSessionsSince: since,
-        shouldShutdown: now - since >= CLIPBOARD_SERVER_ORPHAN_GRACE_MS,
-    };
 }
 
 // === HTTP Server ===
