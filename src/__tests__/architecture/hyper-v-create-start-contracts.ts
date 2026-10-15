@@ -1,6 +1,6 @@
 import { createHyperVCreateStartApplication, executeHyperVVmCreation, waitHyperVWindowsGuestReadiness } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.js";
 import type { WindowsReadinessOutcome, WindowsReadinessPorts, WindowsReadinessRequest, VmCreationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-create-start.js";
-import type { HyperVCreateRecovery, HyperVLinuxReadinessObservation, HyperVLifecycleOutcome, HyperVLifecycleRequest, HyperVNativeExecution, HyperVPowerObservation, VmCreationEffect, VmCreationObservation, VmCreationRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
+import type { HyperVCreateRecovery, HyperVLinuxReadinessObservation, HyperVLifecycleOutcome, HyperVLifecycleRequest, HyperVNativeExecution, HyperVPowerObservation, HyperVVmCreationResult, VmCreationEffect, VmCreationObservation, VmCreationRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
 
 function readinessCapabilities(request: WindowsReadinessRequest, ports: WindowsReadinessPorts): void {
     const result: Promise<WindowsReadinessOutcome> = waitHyperVWindowsGuestReadiness(request, ports);
@@ -59,7 +59,7 @@ type WorkflowPorts = Parameters<typeof createHyperVCreateStartApplication<Sessio
 
 function lifecycleCapabilities(ports: WorkflowPorts, request: HyperVLifecycleRequest, connection: Connection): void {
     const application = createHyperVCreateStartApplication(ports);
-    const created: Promise<HyperVNativeExecution<Receipt>> = application.createVmFromImage("owner", request, connection, 100000);
+    const created: Promise<HyperVVmCreationResult<Receipt>> = application.createVmFromImage("owner", request, connection, 100000);
     const recovered: Promise<HyperVCreateRecovery> = application.recoverCreateResidue("owner", "linux-vm", "owned", 100000, "incarnation");
     const invoked: Promise<HyperVLifecycleOutcome<Connection, Receipt>> = application.invoke("owner", {}, { ...request, command: "device_create" }, 100000, 100000);
     const { creationEffects, ...withoutNativeCreation } = ports;
@@ -143,3 +143,63 @@ function powerCapabilities(ports: WorkflowPorts, connection: Connection): void {
     void [powered, planned, omittedObservation, omittedSuccess, omittedExecution];
 }
 void powerCapabilities;
+
+function generalNativeCapabilities(ports: WorkflowPorts, connection: Connection): void {
+    const execution: HyperVNativeExecution<Receipt> = { mode: "exec", provider: "hyper-v", status: 0, receipt: { nativeEvidence: "opaque" } };
+    type DirectoryResult = Awaited<ReturnType<WorkflowPorts["prepareCreateDirectories"]>>;
+    type ProvisionResult = Awaited<ReturnType<WorkflowPorts["provision"]>>;
+    type SeedResult = Awaited<ReturnType<ReturnType<WorkflowPorts["prepareLinuxSeed"]>>>;
+    type FinalizeResult = Awaited<ReturnType<WorkflowPorts["finalizeLinuxNetwork"]>>;
+    type BootstrapResult = Awaited<ReturnType<WorkflowPorts["bootstrapProbe"]>>;
+    // @ts-expect-error Directory preparation requires semantic success and explicit facts/null.
+    createHyperVCreateStartApplication({ ...ports, prepareCreateDirectories: async () => execution });
+    // @ts-expect-error A missing directory observation is explicit null.
+    const missingDirectory: DirectoryResult = { ok: true, partial: null, execution };
+    // @ts-expect-error Failed directory preparation must explicitly qualify partial effects/null.
+    const missingPartial: DirectoryResult = { ok: false, observation: null, execution };
+    // @ts-expect-error Directory command success is independent of process evidence.
+    const missingDirectorySuccess: DirectoryResult = { observation: null, partial: null, execution };
+    // @ts-expect-error Directory facts cannot replace native diagnostic evidence.
+    const missingDirectoryEvidence: DirectoryResult = { ok: true, observation: null, partial: null };
+    // @ts-expect-error Provisioning requires semantic success, explicit observation/null and evidence.
+    createHyperVCreateStartApplication({ ...ports, provision: async () => execution });
+    // @ts-expect-error A missing provisioning observation must be explicit null.
+    const missingProvision: ProvisionResult = { ok: true, execution };
+    // @ts-expect-error Provision command success is independent of process evidence.
+    const missingProvisionSuccess: ProvisionResult = { observation: null, execution };
+    // @ts-expect-error Provision facts cannot replace native diagnostic evidence.
+    const missingProvisionEvidence: ProvisionResult = { ok: false, observation: null };
+    // @ts-expect-error Prepared seed execution is paired with semantic success and facts/null.
+    createHyperVCreateStartApplication({ ...ports, prepareLinuxSeed: () => async () => execution });
+    // @ts-expect-error Invalid seed output requires explicit null.
+    const missingSeed: SeedResult = { ok: true, execution };
+    // @ts-expect-error Seed success cannot be inferred from its receipt.
+    const missingSeedSuccess: SeedResult = { observation: null, execution };
+    // @ts-expect-error Seed facts cannot replace native diagnostic evidence.
+    const missingSeedEvidence: SeedResult = { ok: false, observation: null };
+    // @ts-expect-error Network finalization has independent semantic success.
+    createHyperVCreateStartApplication({ ...ports, finalizeLinuxNetwork: async () => execution });
+    // @ts-expect-error Finalization success requires its evidence.
+    const missingFinalizeEvidence: FinalizeResult = { ok: true };
+    // @ts-expect-error Native cleanup settles a Boolean, not a raw command receipt.
+    createHyperVCreateStartApplication({ ...ports, removeCreateArtifact: async () => execution });
+    // @ts-expect-error Native cleanup must settle asynchronously.
+    createHyperVCreateStartApplication({ ...ports, removeCreateArtifact: () => true });
+    // @ts-expect-error Bootstrap trace status must be normalized explicitly.
+    const missingBootstrapStatus: BootstrapResult = { observation: null, failureCode: null, execution };
+    // @ts-expect-error Bootstrap trace diagnostics cannot remain implicit in the receipt.
+    const missingBootstrapFailure: BootstrapResult = { status: 0, observation: null, execution };
+    // @ts-expect-error A missing bootstrap observation is explicit null.
+    const missingBootstrap: BootstrapResult = { status: 0, failureCode: null, execution };
+    // @ts-expect-error Bootstrap facts cannot replace native diagnostic evidence.
+    const missingBootstrapEvidence: BootstrapResult = { status: 0, failureCode: null, observation: null };
+    // @ts-expect-error VM creation requires semantic success and explicit observation/null.
+    const missingCreate: HyperVVmCreationResult<Receipt> = { ok: true, execution };
+    // @ts-expect-error VM creation success cannot be inferred from its evidence.
+    const missingCreateSuccess: HyperVVmCreationResult<Receipt> = { observation: null, execution };
+    // @ts-expect-error VM creation facts cannot replace native diagnostic evidence.
+    const missingCreateEvidence: HyperVVmCreationResult<Receipt> = { ok: true, observation: null };
+    const removed: Promise<boolean> = ports.removeCreateArtifact(connection, { deviceRoot: "root", diskPath: "disk", kind: "delete-file", path: "disk" }, 1000, 1024);
+    void [missingDirectory, missingPartial, missingDirectorySuccess, missingDirectoryEvidence, missingProvision, missingProvisionSuccess, missingProvisionEvidence, missingSeed, missingSeedSuccess, missingSeedEvidence, missingFinalizeEvidence, missingBootstrapStatus, missingBootstrapFailure, missingBootstrap, missingBootstrapEvidence, missingCreate, missingCreateSuccess, missingCreateEvidence, removed];
+}
+void generalNativeCapabilities;

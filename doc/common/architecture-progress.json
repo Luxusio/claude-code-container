@@ -2154,7 +2154,7 @@
       "coveredOperationIds": [],
       "title": "Desktop 제어·파일 전송",
       "workStatus": "partial",
-      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. General Hyper-V create/power/provision framing, 별도 audit mount/pure-wiring, 전수 범위·native·reliability 조건은 별도 남는다.",
+      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다. General Hyper-V 생성·prologue·프로비저닝·종료·bootstrap 및 컨테이너 생성 pure-wiring은 현재 후보 구현을 마쳤으며 통합 검증·독립 리뷰/QA가 남는다. 별도 mount audit·전수 범위·native·reliability 조건도 남는다.",
       "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다.",
       "confirmedAtCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
       "sourceTrace": {
@@ -3411,7 +3411,7 @@
       "id": "broker-semantic-observation-integration-current",
       "taskId": "TASK__architecture-broker-semantic-finish-20261015",
       "coveredOperationIds": [],
-      "status": "Source9b12312: actual independent DEEP Code/Security and final docs review PASS; independent Linux23whole948PASS/0FAIL/0SKIP, genuine shipping/CLI0/0/1 and four public behavior forms PASS. Actual qa-cli overall BLOCKED_ENV solely for required Windows. Task blocked; WBS15/23 unchanged. No attestation, native-provider, full-source or whole-Goal completion claim.",
+      "status": "Source9b12312: actual independent DEEP Code/Security and final docs review PASS; independent Linux23whole948PASS/0FAIL/0SKIP, genuine shipping/CLI0/0/1 and four public behavior forms PASS. Actual qa-cli overall BLOCKED_ENV solely for required Windows. Task blocked; WBS15/23 unchanged. No attestation, native-provider, full-source or whole-Goal completion claim. Additional power Sourcecabb56a2: actual independent reviews and local6whole435PASS/compiled170PASS plus shipping/CLI; required Windows BLOCKED_ENV. General lifecycle/container-native candidate follows in TASK__architecture-hyperv-create-provision-observations-20261015; independent review/QA pending, no new credit.",
       "currentWork": {
         "runId": "01a13cff-f82a-7f6a-8db2-f857e4ce685d",
         "sourceCommit": "9b12312ad25e66ad250742d75a29082ff44c57c5",
@@ -3453,7 +3453,26 @@
         "windows": "Actual status refused foreign owner3e9859a70ecbdf4f/PID32268 and all six health routes unavailable. Old driver8704 birth2026-10-14T17:24:45.0219719Z/target2860 terminal unknown; never restarted.",
         "formalDisposition": "Actual qa-cli BLOCKED_ENV published through task_blocked. No task_verify/close, fabricated receipt or receipt-only rerun. Linux/public results remain NON-ATTESTING wherever automatic receipts are absent.",
         "explicitProducers": 8,
-        "strictCompilations": 4
+        "strictCompilations": 4,
+        "additionalPowerQualification": {
+          "sourceCommit": "cabb56a25a2576bc36edf467dd0d40e7e596fbc0",
+          "taskId": "TASK__architecture-hyperv-power-observations-20261015",
+          "stage": "independent-local-pass-required-windows-blocked-env",
+          "independentReviews": "Code DEEP/Security/Docs actual PASS",
+          "sourceWholeFiles": 6,
+          "sourceDistinctPassed": 435,
+          "sourceFailed": 0,
+          "sourceSkipped": 0,
+          "compiledRepeatedPassed": 170,
+          "strictProducers": 8,
+          "shippingCli": "genuine npm archive/Unix public payload and CLI0/0/1 PASS",
+          "retainedFailure": "Original426PASS/9FAIL from private ESM package leakage into CJS fixtures; private TMP boundary and whole broker rerun corrected without product/test/config/emit change.",
+          "evidenceRoot": "results/native-hyperv-power-cabb56a2-20261015/independent-qa/",
+          "inventorySha256": "5286bdfb00931ab39e12d862e1058f5d7a08a0980e76cc9b4b24f0d1616644a0",
+          "groupCompletionCredit": false,
+          "formalClose": false,
+          "windows": "BLOCKED_ENV; owner-correct Device Lab unavailable; old driver8704/target2860 terminal UNKNOWN, never replaced."
+        }
       }
     }
   ],
@@ -3597,7 +3616,7 @@
     "pendingGroups": 0,
     "remainingGroups": 8,
     "sourceUniverseCertified": false,
-    "scope": "완료15/23(65.2%)·잔여8개(부분5·진행3). R08/R12/R13/R14/R16은 구현·독립 Code/Security·Linux QA2를 마쳤고, R17/R18/R19 추가 의미 관측은9b12312에 통합되어 독립 Code/Security 및 Linux23whole948PASS·네 실제 공개 배포 형태·shipping을 확인했다. 두 작업의 필수 Windows 검증은 연결 불가로 보류되어 완료 credit 없음. 원래71473106 공동 FAIL·QEMU QA1·root QA1 실패와 기존 완료 기여를 보존한다. General Hyper-V framing·별도 audit 후속·실기기/native 전체·reliability·전수 범위·formal 조건은 계속 미검증이다.",
+    "scope": "완료15/23(65.2%)·잔여8개(부분5·진행3). R08/R12/R13/R14/R16은 구현·독립 Code/Security·Linux QA2를 마쳤고, R17/R18/R19 추가 의미 관측은9b12312에 통합되어 독립 Code/Security 및 Linux23whole948PASS·네 실제 공개 배포 형태·shipping을 확인했다. 두 작업의 필수 Windows 검증은 연결 불가로 보류되어 완료 credit 없음. 원래71473106 공동 FAIL·QEMU QA1·root QA1 실패와 기존 완료 기여를 보존한다. 추가 전원 경계cabb56a2의 실제 독립 local435/compiled170 검증은 통과했다. General Hyper-V·컨테이너 pure-wiring 후속은 후보 구현 상태이며 현재 통합 검증·독립 리뷰/QA가 남는다. 별도 mount audit·실기기/native 전체·reliability·전수 범위·formal 조건도 계속 미검증이다.",
     "currentQualificationTask": "TASK__qemu-native-framing-recovery-20261014",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",

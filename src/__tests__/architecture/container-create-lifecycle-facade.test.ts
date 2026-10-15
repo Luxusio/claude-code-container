@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
 import { createNativeContainerCreateLifecycle } from "../../composition/container-create-lifecycle.js";
+import { createNativeContainerCreatePorts } from "../../adapters/container-create-lifecycle.js";
 import type { NativeContainerCreateLifecycleContext } from "../../composition/container-create-lifecycle.js";
 import {isAbsolute, resolve} from "node:path";
 
@@ -167,6 +168,28 @@ describe("actual creation application through native composition", () => {
         expect(f.context.explicitlyNotFound).not.toHaveBeenCalled();
         expect(f.ports.finish).not.toHaveBeenCalled();
         expect(f.ports.syncMcp).not.toHaveBeenCalled();
+    });
+
+    it("isolates create failure causes across interleaved native port instances", () => {
+        const context: NativeContainerCreateLifecycleContext = {
+            createCli: "captured-runtime", createFailureHint: "original-init-hint",
+            prepareRunArgs: () => ["run", "--detach", "fixture-image"],
+            labWarning: () => null, explicitlyNotFound: () => true,
+        };
+        const first = createNativeContainerCreatePorts(context);
+        const second = createNativeContainerCreatePorts(context);
+        const firstCause = new Error("first create timed out");
+        const secondCause = new Error("second create timed out");
+        native.spawn.mockReturnValueOnce({ ...result(null), error: firstCause })
+            .mockReturnValueOnce({ ...result(null), error: secondCause });
+        expect(first.create(first.prepareCreate())).toEqual({ kind: "failed", cause: firstCause });
+        expect(second.create(second.prepareCreate())).toEqual({ kind: "failed", cause: secondCause });
+        const secondFailure = thrown(() => second.failCreate({ kind: "create-failed" })) as Error;
+        const firstFailure = thrown(() => first.failCreate({ kind: "create-failed" })) as Error;
+        expect(secondFailure.message).toBe("Failed to create container");
+        expect(secondFailure.cause).toBe(secondCause);
+        expect(firstFailure.message).toBe("Failed to create container");
+        expect(firstFailure.cause).toBe(firstCause);
     });
 
     it.each([

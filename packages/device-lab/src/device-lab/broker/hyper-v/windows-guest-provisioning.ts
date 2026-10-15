@@ -1,7 +1,7 @@
 import { resolve, win32 } from "path";
 
 import { HyperVWindowsError, type HyperVWindowsExecutor } from "@ccc/hyper-v/index.js";
-import { parseHyperVGuestProvisionObservation, type HyperVProviderCommand } from "../../../host-control/hyper-v/index.js";
+import { parseHyperVGuestProvisionObservation, type HyperVGuestProvisionObservation, type HyperVProviderCommand } from "../../../host-control/hyper-v/index.js";
 import { createDeviceLabHyperVWindowsClient, type DeviceLabHyperVCommandResult, type DeviceLabHyperVCommandRunner } from "./lifecycle-adapter.js";
 
 export type DeviceLabHyperVWindowsGuestProvisioningOptions = {
@@ -28,10 +28,19 @@ export type DeviceLabHyperVWindowsGuestProvisioningExecution = DeviceLabHyperVCo
     readonly args: string[];
 };
 
-function failure(options: DeviceLabHyperVWindowsGuestProvisioningOptions, code: string): DeviceLabHyperVWindowsGuestProvisioningExecution {
+export type DeviceLabHyperVWindowsGuestProvisioningResult = {
+    readonly ok: boolean;
+    readonly observation: HyperVGuestProvisionObservation | null;
+    readonly execution: DeviceLabHyperVWindowsGuestProvisioningExecution;
+};
+
+function failure(options: DeviceLabHyperVWindowsGuestProvisioningOptions, code: string): DeviceLabHyperVWindowsGuestProvisioningResult {
     return {
-        mode: "exec", provider: "hyper-v", executable: options.executable, args: [],
-        status: 1, stdout: "", stderr: code,
+        ok: false, observation: null,
+        execution: {
+            mode: "exec", provider: "hyper-v", executable: options.executable, args: [],
+            status: 1, stdout: "", stderr: code,
+        },
     };
 }
 
@@ -62,7 +71,7 @@ function provisionFailureCode(cause: unknown, fallback: string): string {
 
 export async function provisionDeviceLabHyperVWindowsGuest(
     options: DeviceLabHyperVWindowsGuestProvisioningOptions,
-): Promise<DeviceLabHyperVWindowsGuestProvisioningExecution> {
+): Promise<DeviceLabHyperVWindowsGuestProvisioningResult> {
     const client = createDeviceLabHyperVWindowsClient({
         executable: options.executable,
         timeoutMilliseconds: options.timeoutMilliseconds,
@@ -100,15 +109,15 @@ export async function provisionDeviceLabHyperVWindowsGuest(
         mode: "exec", provider: "hyper-v", executable: options.mediaCommand.executable,
         args: options.mediaCommand.args,
     };
-    if (result.status !== 0 || result.error) return result;
+    if (result.status !== 0 || result.error) return { ok: false, observation: null, execution: result };
     if (result.timedOut || result.outputLimitExceeded) {
-        return { ...result, status: 1, error: "hyper-v-guest-provision-media-build-command-failed" };
+        return { ok: false, observation: null, execution: { ...result, status: 1, error: "hyper-v-guest-provision-media-build-command-failed" } };
     }
     const observation = parseHyperVGuestProvisionObservation(result.stdout || "");
     if (!observation || observation.vmId !== options.vmId.toLowerCase()
         || observation.vmName !== options.vmName || observation.guestUsername !== options.guestUsername
         || resolve(observation.credentialPath) !== resolve(options.credentialPath)
-        || resolve(observation.unattendPath) !== resolve(options.mediaPath)) return result;
+        || resolve(observation.unattendPath) !== resolve(options.mediaPath)) return { ok: true, observation: null, execution: result };
 
     try {
         await client.configureVMGuestBoot({
@@ -124,5 +133,5 @@ export async function provisionDeviceLabHyperVWindowsGuest(
     } catch (cause) {
         return failure(options, provisionFailureCode(cause, "hyper-v-guest-provision-media-attach-command-failed"));
     }
-    return result;
+    return { ok: true, observation, execution: result };
 }

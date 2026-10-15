@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { renderHyperVCreateRollback } from "@ccc/device-lab/device-lab/broker/hyper-v/lifecycle-outcomes.js";
 import { HYPER_V_ELEVATED_NETWORK_ERROR_CODES } from "@ccc/device-lab/device-lab/broker/hyper-v/elevated-network-session.js";
 import {
     boundedPowerShellErrorId,
@@ -584,5 +585,65 @@ describe("bounded native error diagnostics", () => {
         typed({ operation: "host secret", nativeHResult: -1, nativeErrorCategory: 5 }),
     ])("omits absent, untyped, out-of-range or non-native facts", (failure) => {
         expect(hyperVTypedNativeDiagnostics(failure)).toEqual({});
+    });
+});
+
+describe("Hyper-V create rollback public presentation", () => {
+    const recovered = { recoveredVm: true, removedDisk: true };
+    const result = {
+        mode: "exec", provider: "hyper-v", status: 0, stdoutPresent: true, stderrPresent: false,
+        outputRedacted: true, diagnosticCode: "hyper-v-rollback-command-failed",
+    };
+
+    it("preserves the complete successful recovery summary without exposing its internal pair", () => {
+        expect(renderHyperVCreateRollback({
+            attempted: true, ok: true, providerRecovery: recovered, observation: recovered,
+            allocation: { ok: true, released: true }, artifacts: { ok: true, removed: true },
+        })).toEqual({
+            attempted: true, ok: true, observation: recovered, result,
+            allocation: { ok: true, released: true }, artifacts: { ok: true, removed: true },
+        });
+    });
+
+    it("retains successful provider evidence after artifact cleanup fails without a success observation", () => {
+        expect(renderHyperVCreateRollback({
+            attempted: true, ok: false, providerRecovery: recovered,
+            allocation: { ok: true, released: true }, artifacts: { ok: false, removed: false, error: "hyper-v-artifact-cleanup-failed" },
+        })).toEqual({
+            attempted: true, ok: false, result,
+            allocation: { ok: true, released: true }, artifacts: { ok: false, removed: false, error: "hyper-v-artifact-cleanup-failed" },
+        });
+    });
+
+    it("retains successful provider evidence and unattempted artifacts after network release fails", () => {
+        expect(renderHyperVCreateRollback({
+            attempted: true, ok: false, stage: "network-release", providerRecovery: recovered,
+            allocation: { ok: false, released: false, error: "hyper-v-network-elevation-cancelled" },
+            artifacts: { ok: false, attempted: false, removed: false },
+        })).toEqual({
+            attempted: true, ok: false, stage: "network-release", result,
+            allocation: { ok: false, released: false, error: "hyper-v-network-elevation-cancelled" },
+            artifacts: { ok: false, attempted: false, removed: false },
+        });
+    });
+
+    it("renders caught failure evidence with current execution precedence and no private paths", () => {
+        const rendered = renderHyperVCreateRollback({
+            attempted: true, ok: false, reason: "hyper-v-rollback-command-failed", providerRecovery: recovered,
+            execution: {
+                mode: "exec", provider: "hyper-v", status: 1, error: "hyper-v-operation-deadline-exceeded", signal: "SIGTERM", timedOut: true,
+                stderr: "host failure at C:\\private\\credential.xml",
+                receipt: { mode: "exec", provider: "hyper-v", status: 0, error: "hyper-v-vm-create-failed", stdout: "C:\\private\\root.vhdx", stderr: "", input: "private credential" },
+            },
+        });
+        expect(rendered).toEqual({
+            attempted: true, ok: false, reason: "hyper-v-rollback-command-failed",
+            result: {
+                mode: "exec", provider: "hyper-v", status: 1, signal: "SIGTERM", timedOut: true,
+                stdoutPresent: true, stderrPresent: true, outputRedacted: true, inputConfigured: true,
+                diagnosticCode: "hyper-v-operation-deadline-exceeded",
+            },
+        });
+        expect(JSON.stringify(rendered)).not.toContain("private");
     });
 });

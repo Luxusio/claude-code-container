@@ -2848,6 +2848,8 @@ describe("device-lab Hyper-V broker", () => {
             expect(bootstrapSshFailed.status).toBe(502);
             const bootstrapSshReadiness = (await bootstrapSshFailed.json()).result.boot.readiness;
             expect(bootstrapSshReadiness).toEqual(expect.objectContaining({
+                bootstrapProbeLastStatus: 0,
+                bootstrapProbeLastError: null,
                 bootstrapAddressCount: 1,
                 networkFinalizeAttempts: 0,
                 networkFinalizeSucceeded: false,
@@ -2973,7 +2975,12 @@ describe("device-lab Hyper-V broker", () => {
             managedReadinessFailure = true;
             const started = await invoke({ backend: "linux-vm", command: "device_start", deviceId, waitForBoot: true });
             expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);
-            expect(await started.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", bootReady: true }), boot: expect.objectContaining({ provider: "hyper-v-ssh", ready: true }) }) }));
+            const startedBody = await started.json();
+            expect(startedBody).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", bootReady: true }), boot: expect.objectContaining({ provider: "hyper-v-ssh", ready: true }) }) }));
+            expect(startedBody.result.execution.command).not.toHaveProperty("observation");
+            expect(startedBody.result.execution.command).not.toHaveProperty("execution");
+            expect(startedBody.result.device).not.toHaveProperty("observation");
+            expect(startedBody.result.device).not.toHaveProperty("receipt");
             expect(guiProvisionCalls).toBe(1);
             expect(bootstrapNetworkFinalizations).toBe(1);
             expect(bootstrapNetworkCleanups).toBe(1);

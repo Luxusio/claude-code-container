@@ -111,14 +111,13 @@ function powerFixture(deviceInPlan = true) {
         outputLimit: 1024,
         deviceRoot: () => "owned-root",
         mediaRetained: () => false,
-        parseVm: vi.fn(() => { throw new Error("power policy must consume the captured VM observation"); }),
         timestamp: () => "2026-10-15T00:00:00.000Z",
         publish: vi.fn((_owner: string, _state: string, _id: string, expected: unknown, replace: (current: Record<string, unknown>) => unknown) => {
             expect(expected).toBe(device);
             return { found: true, matched: true, device: replace(device) };
         }),
         diagnosticCode: vi.fn((current: HyperVNativeExecution<PowerReceipt>, fallback?: string) => current.error || fallback),
-    } satisfies Pick<PowerPorts, "planning" | "forgetConsole" | "incarnation" | "power" | "observePlannedPower" | "deadlineExpired" | "remaining" | "outputLimit" | "deviceRoot" | "mediaRetained" | "parseVm" | "timestamp" | "publish" | "diagnosticCode">;
+    } satisfies Pick<PowerPorts, "planning" | "forgetConsole" | "incarnation" | "power" | "observePlannedPower" | "deadlineExpired" | "remaining" | "outputLimit" | "deviceRoot" | "mediaRetained" | "timestamp" | "publish" | "diagnosticCode">;
     // Only leaves reachable in this settled power path are supplied; an unexpected effect fails.
     const application = createHyperVCreateStartApplication(ports as unknown as PowerPorts);
     const request: HyperVCreateStartRequest = { ok: true, backend: "windows-vm", stateKey: "windows-vm", command: "device_start", deviceId: device.id, force: false, dryRun: false, waitForBoot: false };
@@ -133,7 +132,6 @@ describe("Hyper-V inward power observations", () => {
         expect(f.ports.power).toHaveBeenCalledWith({ providerId: "powershell" }, expect.objectContaining({ vmId: f.device.vmId, vmName: f.device.vmName }), command === "device_start" ? "start" : "reboot", 100000, 120000, expect.objectContaining({ memoryMb: 4096, cpus: 2 }));
         expect(outcome.device).toMatchObject({ status: "running", runtimeState: "Running", vmId: f.observation.vmId, vmName: f.observation.vmName, hyperVStatus: f.observation.status });
         expect(f.ports.publish).toHaveBeenCalledTimes(1);
-        expect(f.ports.parseVm).not.toHaveBeenCalled();
         expect(outcome.execution?.command).toEqual(f.execution);
         expect(outcome.execution?.command).not.toHaveProperty("observation");
         expect(outcome.device).not.toHaveProperty("execution");
@@ -145,7 +143,6 @@ describe("Hyper-V inward power observations", () => {
         const outcome = await f.application.execute("owner", f.request, {}, 100000, 130000);
         expect(outcome).toMatchObject({ kind: "operation-failed", error: "provider-command-failed", detail: "hyper-v-provider-command-failed" });
         expect(f.ports.publish).not.toHaveBeenCalled();
-        expect(f.ports.parseVm).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -158,7 +155,6 @@ describe("Hyper-V inward power observations", () => {
         const outcome = await f.application.execute("owner", f.request, {}, 100000, 130000);
         expect(outcome).toMatchObject({ kind: "operation-failed", error: "provider-command-failed" });
         expect(f.ports.publish).not.toHaveBeenCalled();
-        expect(f.ports.parseVm).not.toHaveBeenCalled();
     });
 
     it("uses the same normalized planned-power result without dispatching a second power operation", async () => {

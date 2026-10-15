@@ -309,10 +309,10 @@ export async function executeHyperVVmCreation(request: VmCreationRequest, ports:
     };
 }
 import { join } from 'path';
-import { hyperVCreateSucceeded, type HyperVPreparedSeed,type HyperVRollback,type HyperVBootDiagnosticFacts,type HyperVCreateStartRequest,type HyperVLifecycleRequest, type HyperVNativeExecution, type HyperVCreateRecovery } from '../../domain/lifecycle/hyper-v-create-start.js';
+import { type HyperVVmCreationResult, type HyperVPreparedSeed,type HyperVRollback,type HyperVBootDiagnosticFacts,type HyperVCreateStartRequest,type HyperVLifecycleRequest, type HyperVNativeExecution, type HyperVCreateRecovery } from '../../domain/lifecycle/hyper-v-create-start.js';
 import type { HyperVCreateStartPorts } from '../../ports/lifecycle/hyper-v-create-start.js';
 export function createHyperVCreateStartApplication<Session,Connection,Receipt,ProvisionMedia>(ports: HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedia>) {
-    async function createVmFromImage(ownerId: string, parsed: HyperVLifecycleRequest, connection: Connection, deadlineAt: number): Promise<HyperVNativeExecution<Receipt>> {
+    async function createVmFromImage(ownerId: string, parsed: HyperVLifecycleRequest, connection: Connection, deadlineAt: number): Promise<HyperVVmCreationResult<Receipt>> {
         const create = parsed.create || {};
         const effects: VmCreationEffect[] = [];
         let newVmAttempted = false;
@@ -361,8 +361,8 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             ports.hostCapacity(memoryMb, cpus);
             ports.assertDeadline(deadlineAt);
             const prologue = await ports.prepareCreateDirectories(connection,{imageRoot,imagePath,deviceRoot,diskPath},ports.remaining(deadlineAt,120000),ports.outputLimit);
-            if (!hyperVCreateSucceeded(prologue)) {
-                const partial = ports.parsePrologueFailure(prologue.stdout || "");
+            if (!prologue.ok) {
+                const partial = prologue.partial;
                 if (partial && ports.samePath(partial.deviceRoot, deviceRoot)
                     && ports.samePath(partial.diskDirectory, ports.directory(diskPath))) {
                     if (partial.deviceRootRemaining)
@@ -370,10 +370,10 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     if (partial.diskDirectoryRemaining)
                         effects.push({ kind: "directory-created", path: ports.directory(diskPath) });
                 }
-                throw new Error(ports.diagnosticCode(prologue, "hyper-v-vm-path-inspection-failed") || "hyper-v-vm-path-inspection-failed");
+                throw new Error(ports.diagnosticCode(prologue.execution, "hyper-v-vm-path-inspection-failed") || "hyper-v-vm-path-inspection-failed");
             }
             ports.assertDeadline(deadlineAt);
-            const prepared = ports.parsePrologue(prologue.stdout || "");
+            const prepared = prologue.observation;
             if (!prepared || !ports.samePath(prepared.deviceRoot, deviceRoot)
                 || !ports.samePath(prepared.diskDirectory, ports.directory(diskPath))) {
                 throw new Error("hyper-v-vm-path-inspection-failed");
@@ -437,7 +437,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 network,
             };
             const observation = await executeHyperVVmCreation(request, ports.creationEffects(session), effects, deadlineAt, () => { newVmAttempted = true; return undefined; });
-            return { mode: "exec", provider: "hyper-v", status: 0, stdout: JSON.stringify({ ok: true, ...observation }), stderr: "" };
+            return { ok: true, observation, execution: { mode: "exec", provider: "hyper-v", status: 0 } };
         }
         catch (error) {
             // Classify the triggering failure before cleanup performs further provider calls.
@@ -448,7 +448,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 await compensate(effects, {
                     removePath: async (compensation) => {
                         const result = await ports.removeCreateArtifact(connection,{deviceRoot,diskPath,kind:compensation.kind,path:compensation.path},ports.remaining(deadlineAt,30000),ports.outputLimit);
-                        if (!hyperVCreateSucceeded(result))
+                        if (!result)
                             throw new Error("hyper-v-create-compensation-failed");
                     },
                     removeVM: async (vmId) => {
@@ -487,9 +487,12 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     "hyper-v-bootstrap-network-adapter-unavailable",
                 ].includes(code);
             return {
-                mode: "exec", provider: "hyper-v", status: 1, stdout: "", stderr: "", error: code, typedCreateInvalidResult,
-                ...(typedCreateOperation ? { typedCreateOperation } : {}),
-                typedCreateNativeDiagnostics: ports.nativeDiagnostics(error),
+                ok: false, observation: null,
+                execution: {
+                    mode: "exec", provider: "hyper-v", status: 1, stdout: "", stderr: "", error: code, typedCreateInvalidResult,
+                    ...(typedCreateOperation ? { typedCreateOperation } : {}),
+                    typedCreateNativeDiagnostics: ports.nativeDiagnostics(error),
+                },
             };
         }
     }
@@ -897,10 +900,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 ],
             }, hyperVDeadlineAt);
             ports.assertDeadline(hyperVDeadlineAt);
-            const result: HyperVNativeExecution<Receipt> = {
-                mode: "exec", provider: "hyper-v", status: 0,
-                stdout: JSON.stringify({ ok: true, recoveredVm: observation.recoveredVm, removedDisk: observation.removedDisk }),
-            };
+            const providerRecovery = { recoveredVm: observation.recoveredVm, removedDisk: observation.removedDisk };
             // Compensation, not a delete request: keep the shared fabric so a failed create never
             // needs Administrator to tear it down.
             const allocation = await ports.releaseNetwork(String(device.ownerId), String(device.id), incarnationId, hyperVDeadlineAt, true);
@@ -911,7 +911,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     attempted: true,
                     ok: false,
                     stage: "network-release",
-                    execution: result,
+                    providerRecovery,
                     artifacts: { ok: false, attempted: false, removed: false },
                     allocation: {
                         ok: false,
@@ -928,7 +928,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 return {
                     attempted: true,
                     ok: false,
-                    execution: result,
+                    providerRecovery,
                     artifacts: { ok: false, removed: artifacts.removed, error: "hyper-v-artifact-cleanup-failed" },
                     allocation: { ok: true, released: allocation.released },
                 };
@@ -936,7 +936,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             return {
                 attempted: true,
                 ok: true,
-                execution: result,
+                providerRecovery,
                 observation: {
                     recoveredVm: observation.recoveredVm,
                     removedDisk: observation.removedDisk,
@@ -1020,6 +1020,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     plan: planned,};
         }
         let execution: HyperVNativeExecution<Receipt> = { mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" };
+        let creationObservation: VmCreationObservation | null = null;
         let hyperVProvisioningExecution: HyperVNativeExecution<Receipt> | null = null;
         if (availability.kind === 'available') {
             const createConnection = availability.connection;
@@ -1036,14 +1037,15 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                             detail: ports.boundedErrorCode(error, "hyper-v-private-root-invalid"),};
                 }
             }
-            execution =
-                await createVmFromImage(ownerId,parsed,createConnection,hyperVDeadlineAt);
+            const creation = await createVmFromImage(ownerId,parsed,createConnection,hyperVDeadlineAt);
+            execution = creation.execution;
+            creationObservation = creation.observation;
             if (ports.deadlineExpired(hyperVDeadlineAt)) {
                 const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, hyperVCleanupDeadlineAt, (typeof parsed.create?.incarnationId === "string" ? parsed.create.incarnationId : undefined));
                 return {
                     kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback};
             }
-            if (!hyperVCreateSucceeded(execution)) {
+            if (!creation.ok) {
                 const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, hyperVCleanupDeadlineAt, (typeof parsed.create?.incarnationId === "string" ? parsed.create.incarnationId : undefined));
                 return {
                     kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: execution.typedCreateInvalidResult === true
@@ -1070,7 +1072,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         const createConnection = availability.kind === 'available' ? availability.connection : null;
         let persistedParsed = parsed;
         if (parsed.backend === "linux-vm" && execution.mode !== "noop" && createConnection) {
-            const observation = ports.parseVm(execution.stdout || "");
+            const observation = creationObservation;
             const expectedVmName = ports.vmName(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || ""));
             const deviceRoot = ports.deviceRoot(ownerId, "linux-vm", parsed.deviceId);
             const privateRoot = ports.privateRoot(ownerId, "linux-vm", parsed.deviceId);
@@ -1155,12 +1157,12 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                         rollback,};
             }
             const seedExecution = await seedEffect(ports.remaining(seedDeadlineAt,180000),ports.outputLimit);
-            hyperVProvisioningExecution = seedExecution;
+            hyperVProvisioningExecution = seedExecution.execution;
             if (ports.deadlineExpired(seedDeadlineAt)) {
                 const rollback = await rollbackProvisioning();
                 return { kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback};
             }
-            if (!hyperVCreateSucceeded(seedExecution)) {
+            if (!seedExecution.ok) {
                 const rollback = await rollbackProvisioning();
                 return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-linux-seed-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback};
             }
@@ -1201,7 +1203,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             persistedParsed = { ...parsed, create: { ...(parsed.create || {}), vmId: observation.vmId, ...(observation.switchName ? { switchName: observation.switchName } : {}), guestUsername, guestProvisioned: true, sshHostKeyFingerprint } };
         }
         if (parsed.backend === "windows-vm" && execution.mode !== "noop" && createConnection) {
-            const observation = ports.parseVm(execution.stdout || "");
+            const observation = creationObservation;
             const expectedVmName = ports.vmName(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || ""));
             const expectedDiskPath = join(ports.deviceRoot(ownerId, "windows-vm", parsed.deviceId), "disks", "root.vhdx");
             if (!observation
@@ -1258,7 +1260,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                         rollback,};
             }
             const provisioningDeadlineAt = Math.min(hyperVDeadlineAt, ports.now() + 180000);
-            const rawProvisioningExecution = await ports.provision(createConnection, {
+            const provisionResult = await ports.provision(createConnection, {
                                 media: provisionMedia,
                 vmId: observation.vmId,
                 vmName: expectedVmName,
@@ -1270,7 +1272,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 guestUsername,
                 outputLimit: ports.outputLimit
             }, provisioningDeadlineAt);
-            hyperVProvisioningExecution = rawProvisioningExecution;
+            hyperVProvisioningExecution = provisionResult.execution;
             if (ports.deadlineExpired(hyperVDeadlineAt)) {
                 const rollback = await rollbackProvisioning();
                 return { kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback};
@@ -1279,11 +1281,11 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 const rollback = await rollbackProvisioning();
                 return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-guest-provision-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback};
             }
-            if (!hyperVCreateSucceeded(rawProvisioningExecution)) {
+            if (!provisionResult.ok) {
                 const rollback = await rollbackProvisioning();
                 return { kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: "hyper-v-guest-provision-failed", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback};
             }
-            const provisioned = ports.parseProvision(rawProvisioningExecution.stdout || "");
+            const provisioned = provisionResult.observation;
             let credentialAvailable = false;
             try {
                 credentialAvailable = ports.readable(credentialPath,"hyper-v-guest-credential",64*1024) === true;
@@ -1552,7 +1554,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     }
                     if (!bootstrapFinalizationAttempted && ports.now() < deadline) {
                         bootstrapProbeAttempts += 1;
-                        const { execution: bootstrapExecution, observation: bootstrap } = await ports.bootstrapProbe(powerConnection, {
+                        const { status: bootstrapStatus, failureCode: bootstrapFailureCode, observation: bootstrap } = await ports.bootstrapProbe(powerConnection, {
 
                             ownerId,
                             deviceId: parsed.deviceId,
@@ -1561,18 +1563,10 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                             vmId: hyperVCreateField(device, "vmId"),
                             deadlineAt: deadline,
                         });
-                        bootstrapProbeLastStatus = typeof bootstrapExecution.status === "number"
-                            ? bootstrapExecution.status
-                            : null;
+                        bootstrapProbeLastStatus = bootstrapStatus;
+                        bootstrapProbeLastError = bootstrapFailureCode;
                         if (bootstrap && !bootstrap.diagnosticCode) {
                             bootstrapProbeSuccesses += 1;
-                            bootstrapProbeLastError = null;
-                        }
-                        else {
-                            bootstrapProbeLastError = bootstrap?.diagnosticCode
-                                || (hyperVCreateSucceeded(bootstrapExecution)
-                                    ? "hyper-v-bootstrap-network-response-invalid"
-                                    : ports.diagnosticCode(bootstrapExecution, "hyper-v-bootstrap-network-probe-failed") || "hyper-v-bootstrap-network-probe-failed");
                         }
                         bootstrapAddressCount = Math.max(bootstrapAddressCount, bootstrap?.addresses.length || 0);
                         if ((bootstrap?.addresses.length || 0) > 0)
@@ -1611,7 +1605,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                             bootstrapHostKeyMatchesExpected = true;
                             bootstrapSshLastError = null;
                             networkFinalizeAttempts += 1;
-                            const finalizeExecution = await ports.finalizeLinuxNetwork(ssh, {
+                            const finalized = await ports.finalizeLinuxNetwork(ssh, {
                                 ...sshOptions,
                                 networkAddress: bootstrapAddress,
                                 hostKeyAlias: networkAddress,
@@ -1621,8 +1615,8 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                                 networkGateway,
                                 networkPrefixLength: Number(networkPrefix.split("/")[1]),
                             },ports.remaining(deadline,15000),ports.outputLimit);
-                            if (!hyperVCreateSucceeded(finalizeExecution)) {
-                                hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", "hyper-v-bootstrap-network-finalize-failed", {execution: finalizeExecution});
+                            if (!finalized.ok) {
+                                hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", "hyper-v-bootstrap-network-finalize-failed", {execution: finalized.execution});
                                 break;
                             }
                             bootstrapFinalizationAttempted = true;

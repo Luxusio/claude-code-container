@@ -1,5 +1,5 @@
 import type {HyperVWindowsGuestBootDiagnostic} from '@ccc/hyper-v/index.js';
-import type {HyperVPowerObservation,HyperVVmObservation,HyperVGuestProvisionObservation,HyperVWindowsReadinessObservation,HyperVLinuxReadinessObservation,HyperVGuestReadinessObservation,HyperVReadinessFailureSource,WindowsReadinessOutcome,HyperVLinuxSeedOptions,HyperVGuestProvisionOptions,HyperVLinuxSshOptions,HyperVLinuxNetworkFinalizeOptions,HyperVSeedTarget,HyperVProvisionTarget,HyperVPreparedSeed,HyperVPowerTarget,HyperVBootstrapTarget,HyperVBootstrapNetworkObservation,HyperVBootstrapNetworkCleanupObservation} from '../../domain/lifecycle/hyper-v-create-start.js';
+import type {HyperVPowerObservation,HyperVWindowsReadinessObservation,HyperVLinuxReadinessObservation,HyperVGuestReadinessObservation,HyperVReadinessFailureSource,WindowsReadinessOutcome,HyperVLinuxSeedOptions,HyperVGuestProvisionOptions,HyperVLinuxSshOptions,HyperVLinuxNetworkFinalizeOptions,HyperVSeedTarget,HyperVProvisionTarget,HyperVPreparedSeed,HyperVPowerTarget,HyperVBootstrapTarget,HyperVBootstrapNetworkCleanupObservation} from '../../domain/lifecycle/hyper-v-create-start.js';
 import type {HyperVWindowsOperation} from '@ccc/hyper-v/low-level/index.js';
 import type {HyperVImageVhd} from '../../domain/hyper-v-image-preparation.js';
 import type {WindowsReadinessIdentity,WindowsReadinessError} from '../../domain/lifecycle/hyper-v-create-start.js';
@@ -39,7 +39,7 @@ export interface VmCreationPorts {
  getVMFirmware(selector:VmSelector):Promise<{vmId:string;firstBootDevicePath:string|null}>;
  getVMBios(selector:VmSelector):Promise<{vmId:string;startupOrder:readonly VmBiosDevice[]}>;
 }
-import type {HyperVCreateStartRequest,HyperVLifecycleRequest,HyperVNativeExecution,VmCreationEffect} from '../../domain/lifecycle/hyper-v-create-start.js';
+import type {HyperVCreateStartRequest,HyperVLifecycleRequest,HyperVNativeExecution,VmCreationEffect,HyperVCreateDirectoryResult,HyperVGuestProvisionResult,HyperVLinuxNetworkFinalizeResult,HyperVBootstrapNetworkProbeResult} from '../../domain/lifecycle/hyper-v-create-start.js';
 export interface HyperVCreateNativePorts<Session,Connection,Receipt> {
  connection(provider:'powershell'|'ssh'):Connection|null;
  validIncarnation(value:unknown):value is string;
@@ -59,9 +59,7 @@ export interface HyperVCreateNativePorts<Session,Connection,Receipt> {
  vhdError(kind:'base'|'clone',error:unknown):Error;
  inspectVhd(request:{kind:'base';path:string}|{kind:'clone';path:string;expectedVirtualSizeBytes:number},observation:HyperVImageVhd):number;
  hostCapacity(memoryMb:number,cpus:number):undefined;
- prepareCreateDirectories(connection:Connection,paths:{imageRoot:string;imagePath:string;deviceRoot:string;diskPath:string},timeout:number,outputLimit:number):Promise<HyperVNativeExecution<Receipt>>;
- parsePrologue(stdout:string):{deviceRoot:string;diskDirectory:string;deviceRootExisted:boolean;diskDirectoryExisted:boolean}|null;
- parsePrologueFailure(stdout:string):{deviceRoot:string;diskDirectory:string;deviceRootRemaining:boolean;diskDirectoryRemaining:boolean}|null;
+ prepareCreateDirectories(connection:Connection,paths:{imageRoot:string;imagePath:string;deviceRoot:string;diskPath:string},timeout:number,outputLimit:number):Promise<HyperVCreateDirectoryResult<Receipt>>;
  samePath(left:string,right:string):boolean;
  directory(path:string):string;
  windowsDirectory(path:string):string;
@@ -77,7 +75,7 @@ export interface HyperVCreateNativePorts<Session,Connection,Receipt> {
  nativeDiagnostics(error:unknown):NonNullable<HyperVNativeExecution<Receipt>['typedCreateNativeDiagnostics']>;
  diagnosticCode(execution:HyperVNativeExecution<Receipt>,fallback?:string):string|undefined;
  boundedErrorCode(error:unknown,fallback:string):string;
- removeCreateArtifact(connection:Connection,target:{deviceRoot:string;diskPath:string;kind:'delete-file'|'delete-directory';path:string},timeout:number,outputLimit:number):Promise<HyperVNativeExecution<Receipt>>;
+ removeCreateArtifact(connection:Connection,target:{deviceRoot:string;diskPath:string;kind:'delete-file'|'delete-directory';path:string},timeout:number,outputLimit:number):Promise<boolean>;
  compensationOrder(effects:readonly VmCreationEffect[]):readonly ({kind:'remove-vm';vmId:string}|{kind:'delete-file'|'delete-directory';path:string})[];
  vms(session:Session,id:string):Promise<readonly VmObservation[]>;
  disks(session:Session,id:string):Promise<readonly VmDiskObservation[]>;
@@ -124,23 +122,21 @@ export interface HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedi
  assertPrivateRoot(owner:string,backend:string,id:string,root:string):undefined;
  readable(path:string,label:string,maxBytes:number):boolean;
  mediaRetained(path:string):boolean;
- parseVm(stdout:string):HyperVVmObservation|null;
- parseProvision(stdout:string):HyperVGuestProvisionObservation|null;
  observeWindowsReadiness(outcome:WindowsReadinessOutcome):HyperVWindowsReadinessObservation<Receipt>;
  readinessFailure(backend:'windows-vm'|'linux-vm',error:string,source?:HyperVReadinessFailureSource<Receipt>):HyperVGuestReadinessObservation<Receipt>;
  seedFailureCode(error:unknown,fallback:string):string;
  prepareLinuxSeed(connection:Connection,request:HyperVLinuxSeedOptions):HyperVPreparedSeed<Receipt>;
  prepareWindowsProvisionMedia(connection:Connection,request:HyperVGuestProvisionOptions):ProvisionMedia;
  probeLinuxReadiness(connection:Connection,request:HyperVLinuxSshOptions,timeout:number,outputLimit:number):Promise<HyperVLinuxReadinessObservation<Receipt>>;
- finalizeLinuxNetwork(connection:Connection,request:HyperVLinuxNetworkFinalizeOptions,timeout:number,outputLimit:number):Promise<HyperVNativeExecution<Receipt>>;
+ finalizeLinuxNetwork(connection:Connection,request:HyperVLinuxNetworkFinalizeOptions,timeout:number,outputLimit:number):Promise<HyperVLinuxNetworkFinalizeResult<Receipt>>;
  probeLinuxGui(connection:Connection,request:HyperVLinuxSshOptions,timeout:number,outputLimit:number):Promise<HyperVLinuxReadinessObservation<Receipt>>;
  prepareLinuxGui(connection:Connection,request:HyperVLinuxSshOptions,timeout:number,outputLimit:number):Promise<HyperVLinuxReadinessObservation<Receipt>>;
  inspectSeed(connection:Connection,request:HyperVSeedTarget,deadline:number):Promise<void>;
  attachSeed(connection:Connection,request:HyperVSeedTarget,deadline:number):Promise<void>;
- provision(connection:Connection,request:HyperVProvisionTarget<ProvisionMedia>,deadline:number):Promise<HyperVNativeExecution<Receipt>>;
+ provision(connection:Connection,request:HyperVProvisionTarget<ProvisionMedia>,deadline:number):Promise<HyperVGuestProvisionResult<Receipt>>;
  windowsReadiness(connection:Connection,root:string,mediaPath:string):WindowsReadinessPorts;
  power(connection:Connection,identity:HyperVPowerTarget,operation:'start'|'stop'|'reboot',deadline:number,cap:number,options:{force?:boolean;startIfStopped?:boolean;memoryMb?:number;cpus?:number}):Promise<HyperVPowerObservation<Receipt>>;
- bootstrapProbe(connection:Connection,request:HyperVBootstrapTarget):Promise<{execution:HyperVNativeExecution<Receipt>;observation:HyperVBootstrapNetworkObservation|null}>;
+ bootstrapProbe(connection:Connection,request:HyperVBootstrapTarget):Promise<HyperVBootstrapNetworkProbeResult<Receipt>>;
  bootstrapCleanup(connection:Connection,request:HyperVBootstrapTarget,managedMacAddress:string):Promise<{execution:HyperVNativeExecution<Receipt>;observation:HyperVBootstrapNetworkCleanupObservation|null}>;
  bootDiagnostic(connection:Connection,request:{vmId:string;vmName:string;ownershipNotes:string},deadline:number):Promise<HyperVWindowsGuestBootDiagnostic>;
  validateHostIdentity(owner:string,id:string,hostPublicKeyPath:string,knownHostsPath:string,address:string,fingerprint:string):boolean;

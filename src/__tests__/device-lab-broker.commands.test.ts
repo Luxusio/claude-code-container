@@ -2917,6 +2917,12 @@ describe("device-lab host broker lifecycle commands", () => {
                             : variant === "missing-credential" ? "hyper-v-guest-provision-invalid-result" : "hyper-v-guest-provision-failed",
                         rollback: expect.objectContaining({ ok: true }),
                     }));
+                    expect(body.rollback.result).toEqual({
+                        mode: "exec", provider: "hyper-v", status: 0, stdoutPresent: true, stderrPresent: false,
+                        outputRedacted: true, diagnosticCode: "hyper-v-rollback-command-failed",
+                    });
+                    expect(body.rollback).not.toHaveProperty("providerRecovery");
+                    expect(body.rollback).not.toHaveProperty("execution");
                     if (variant === "provision-failure" || variant === "provision-ownership-failure" || variant === "provision-untagged-failure") {
                         expect(JSON.stringify(body)).not.toContain(provisioningSecretEcho);
                         expect(body.provisioning).toEqual(expect.objectContaining({
@@ -3173,11 +3179,17 @@ describe("device-lab host broker lifecycle commands", () => {
                     attempted: true,
                     ok: false,
                     stage: "network-release",
-                    result: expect.objectContaining({ status: 0, outputRedacted: true }),
+                    result: {
+                        mode: "exec", provider: "hyper-v", status: 0, stdoutPresent: true, stderrPresent: false,
+                        outputRedacted: true, diagnosticCode: "hyper-v-rollback-command-failed",
+                    },
                     artifacts: { ok: false, attempted: false, removed: false },
                     allocation: { ok: false, released: false, error: "hyper-v-network-elevation-cancelled" },
                 });
             }
+            expect(body.rollback).not.toHaveProperty("providerRecovery");
+            expect(body.rollback).not.toHaveProperty("observation");
+            expect(body.rollback).not.toHaveProperty("execution");
             expect(existsSync(privateRoot)).toBe(true);
             expect(JSON.stringify(body)).not.toContain("host-secret");
             expect(JSON.stringify(body)).not.toContain("host detail");

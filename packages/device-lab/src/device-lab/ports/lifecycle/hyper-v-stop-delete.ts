@@ -1,6 +1,6 @@
 import type { SnapshotJournal } from "../../domain/lifecycle/hyper-v-snapshots.js";
 import type { AuxiliaryOutcome } from "../../domain/broker-owner-cleanup.js";
-import type { HyperVStopDeleteRequest, HyperVOperationEvidence, HyperVReplayObservation, HyperVCommandExecution, HyperVTerminalObservation, HyperVNetworkCleanupEvidence, HyperVArtifactEvidence, HyperVPublication, HyperVStateFailure, HyperVStopDeletePreparation } from "../../domain/lifecycle/hyper-v-stop-delete.js";
+import type { HyperVStopDeleteRequest, HyperVOperationEvidence, HyperVReplayObservation, HyperVCommandExecution, HyperVTerminalResult, HyperVNetworkCleanupEvidence, HyperVArtifactEvidence, HyperVPublication, HyperVStateFailure, HyperVStopDeletePreparation } from "../../domain/lifecycle/hyper-v-stop-delete.js";
 export interface HyperVStopDeletePorts<Connection,Receipt> {
     read(owner: string, state: string): unknown[];
     incarnation(device: Record<string, unknown>): string | null;
@@ -28,9 +28,8 @@ export interface HyperVStopDeletePorts<Connection,Receipt> {
     replayPublish(owner: string, backend: string, id: string, replacement: Record<string, unknown> | null): undefined;
     cleanupAuxiliary(owner: string, request: HyperVStopDeleteRequest, expected: unknown): AuxiliaryOutcome;
     clone(value: unknown): unknown;
-    executeStop(owner: string, request: HyperVStopDeleteRequest, device: Record<string, unknown>, connection:Connection, deadline: number): Promise<HyperVCommandExecution<Receipt>>;
-    executeDelete(owner: string, request: HyperVStopDeleteRequest, device: Record<string, unknown>, connection:Connection, deadline: number): Promise<HyperVCommandExecution<Receipt>>;
-    parseObservation(stdout: string, deleting: boolean): HyperVTerminalObservation | null;
+    executeStop(owner: string, request: HyperVStopDeleteRequest, device: Record<string, unknown>, connection:Connection, deadline: number): Promise<HyperVTerminalResult<Receipt>>;
+    executeDelete(owner: string, request: HyperVStopDeleteRequest, device: Record<string, unknown>, connection:Connection, deadline: number): Promise<HyperVTerminalResult<Receipt>>;
     samePath(left: string, right: string): boolean;
     releaseNetwork(owner: string, id: string, incarnation: string | null, deadline: number, preserve: boolean): Promise<HyperVNetworkCleanupEvidence>;
     cleanupArtifacts(owner: string, backend: string, id: string): HyperVArtifactEvidence;

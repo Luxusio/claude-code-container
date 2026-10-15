@@ -209,9 +209,10 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
         if(!auxiliary.result.ok) return {kind:'uncertain',reason:'provider-failed',journalDisposition:'retain',...base,error:'auxiliary-runtime-cleanup-failed',device:auxiliary.device,auxiliaryCleanup:auxiliary.result,invoked:false,dryRun:false,
             mutatesHost:auxiliary.result.changed || auxiliary.result.appium.cleared===true || auxiliary.result.recording.cleared===true || auxiliary.result.minimizeWatchdog.cleared===true};
         const deleting=parsed.command==='device_delete';
-        const execution=deleting ? await ports.executeDelete(ownerId,parsed,device,preparation.connection,deadlineAt) : await ports.executeStop(ownerId,parsed,device,preparation.connection,deadlineAt);
+        const result=deleting ? await ports.executeDelete(ownerId,parsed,device,preparation.connection,deadlineAt) : await ports.executeStop(ownerId,parsed,device,preparation.connection,deadlineAt);
+        const execution=result.execution;
         if(ports.deadlineExpired(deadlineAt)) return {kind:'uncertain',reason:'deadline',journalDisposition:'retain',error:'hyper-v-operation-deadline-exceeded',ownerId,backend,deviceId};
-        const observation=execution.status===0&&!execution.error ? ports.parseObservation(execution.stdout||'',deleting) : null;
+        const observation=result.ok ? result.observation : null;
         const expectedVmId=(hyperVField(device,'vmId')||'').toLowerCase();
         const success=Boolean(observation&&expectedVmId&&observation.vmId===expectedVmId&&observation.vmName===hyperVField(device,'vmName')&&(!deleting||ports.samePath(observation.diskPath||'',hyperVField(device,'diskPath')||'')));
         const network=success&&deleting ? await ports.releaseNetwork(ownerId,deviceId,ports.incarnation(device),cleanupDeadlineAt,parsed.preserveNetwork===true) : null;

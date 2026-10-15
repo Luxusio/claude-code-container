@@ -37,6 +37,11 @@ export interface HyperVTerminalObservation {
     status?: string;
     diskPath?: string;
 }
+export interface HyperVTerminalResult<Receipt> {
+    readonly ok: boolean;
+    readonly observation: HyperVTerminalObservation | null;
+    readonly execution: HyperVCommandExecution<Receipt>;
+}
 export type HyperVReplayObservation = {
     kind: "pending";
     action: "start" | "stop" | "remove" | "wait";

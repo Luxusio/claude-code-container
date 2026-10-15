@@ -120,10 +120,16 @@ function renderHyperVExecution(observation: HyperVNativeExecution<ProviderComman
 export function renderHyperVCreateRollback(rollback: HyperVRollback<ProviderCommandResult>) {
     if (!rollback.attempted)
         return rollback;
-    const { execution, artifacts, ...facts } = rollback;
+    const { execution, providerRecovery, artifacts, ...facts } = rollback;
     return {
         ...facts, ...(execution ? {
             result: renderHyperVExecution(execution, "hyper-v-rollback-command-failed")
+        } : providerRecovery ? {
+            result: {
+                mode: "exec", provider: "hyper-v", status: 0,
+                stdoutPresent: true, stderrPresent: false, outputRedacted: true,
+                diagnosticCode: "hyper-v-rollback-command-failed",
+            }
         } : {}), ...(artifacts ? {
             artifacts
         } : {})

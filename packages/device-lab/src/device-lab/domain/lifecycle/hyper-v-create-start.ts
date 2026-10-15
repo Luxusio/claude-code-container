@@ -67,7 +67,7 @@ export type HyperVLifecycleFailureReason='invalid'|'forbidden'|'missing'|'confli
 export type HyperVCreateRecovery={ok:true;recoveredVm:boolean;removedDisk:boolean;releasedAddress:boolean}|{ok:false;reason:HyperVLifecycleFailureReason;error:string;detail?:string;stage?:'network-release'};
 export type HyperVBootDiagnosticFacts=Pick<import('@ccc/hyper-v/index.js').HyperVWindowsGuestBootDiagnostic,'state'|'uptimeMs'|'generation'|'secureBootEnabled'|'heartbeatEnabled'|'heartbeatPrimaryStatus'|'heartbeatSecondaryStatus'|'integrationServices'|'hardDiskCount'|'dvdCount'|'hardDiskControllers'|'bootDeviceTypes'|'bootEntries'|'hardDisks'|'dvdDrives'|'diagnosticComplete'|'diagnosticErrors'>;
 export interface HyperVBootFacts {ready:boolean;provider:string;computerName?:string;attempts?:number;error?:string;errorDetail?:HyperVGuestReadinessFailureDetail;readiness?:HyperVLinuxGuestReadyTrace;diagnostic?:HyperVBootDiagnosticFacts;diagnosticAvailable?:boolean;diagnosticError?:string}
-export type HyperVRollback<Receipt> = {attempted:false;ok:boolean;reason:string} | {attempted:true;ok:boolean;reason?:string;stage?:'network-release';execution?:HyperVNativeExecution<Receipt>;observation?:{recoveredVm:boolean;removedDisk:boolean};artifacts?:{ok:boolean;attempted?:boolean;removed:boolean;error?:string};allocation?:{ok:boolean;released:boolean;error?:string}};
+export type HyperVRollback<Receipt> = {attempted:false;ok:boolean;reason:string} | {attempted:true;ok:boolean;reason?:string;stage?:'network-release';execution?:HyperVNativeExecution<Receipt>;providerRecovery?:{recoveredVm:boolean;removedDisk:boolean};observation?:{recoveredVm:boolean;removedDisk:boolean};artifacts?:{ok:boolean;attempted?:boolean;removed:boolean;error?:string};allocation?:{ok:boolean;released:boolean;error?:string}};
 export interface HyperVArtifactCleanup {ok:boolean;removed:boolean;error?:string;preserved?:boolean;reason?:string}
 export interface HyperVLifecycleFacts<Connection,Receipt> {
  ownerId?:string;backend?:string;stateKey?:string;command?:string;deviceId?:string;device?:unknown;create?:unknown;idempotent?:boolean;
@@ -100,13 +100,52 @@ export interface HyperVLinuxSeedObservation {
     guestUsername: string;
     networkAddress: string;
 }
-export interface HyperVSeedExecution<Receipt> extends HyperVNativeExecution<Receipt> {
-    observation: HyperVLinuxSeedObservation | null;
+export interface HyperVSeedExecution<Receipt> {
+    readonly ok: boolean;
+    readonly observation: HyperVLinuxSeedObservation | null;
+    readonly execution: HyperVNativeExecution<Receipt>;
+}
+export interface HyperVCreateDirectoryObservation {
+    readonly deviceRoot: string;
+    readonly diskDirectory: string;
+    readonly deviceRootExisted: boolean;
+    readonly diskDirectoryExisted: boolean;
+}
+export interface HyperVCreateRemainingDirectoryObservation {
+    readonly deviceRoot: string;
+    readonly diskDirectory: string;
+    readonly deviceRootRemaining: boolean;
+    readonly diskDirectoryRemaining: boolean;
+}
+export interface HyperVCreateDirectoryResult<Receipt> {
+    readonly ok: boolean;
+    readonly observation: HyperVCreateDirectoryObservation | null;
+    readonly partial: HyperVCreateRemainingDirectoryObservation | null;
+    readonly execution: HyperVNativeExecution<Receipt>;
+}
+export interface HyperVVmCreationResult<Receipt> {
+    readonly ok: boolean;
+    readonly observation: VmCreationObservation | null;
+    readonly execution: HyperVNativeExecution<Receipt>;
+}
+export interface HyperVGuestProvisionResult<Receipt> {
+    readonly ok: boolean;
+    readonly observation: HyperVGuestProvisionObservation | null;
+    readonly execution: HyperVNativeExecution<Receipt>;
+}
+export interface HyperVLinuxNetworkFinalizeResult<Receipt> {
+    readonly ok: boolean;
+    readonly execution: HyperVNativeExecution<Receipt>;
+}
+export interface HyperVBootstrapNetworkProbeResult<Receipt> {
+    readonly status: number | null;
+    readonly failureCode: string | null;
+    readonly observation: HyperVBootstrapNetworkObservation | null;
+    readonly execution: HyperVNativeExecution<Receipt>;
 }
 export type HyperVPreparedSeed<Receipt>=(timeout:number,outputLimit:number)=>Promise<HyperVSeedExecution<Receipt>>;
 export function hyperVCreateRecord(value:unknown):value is Record<string,unknown>{return Boolean(value)&&typeof value==='object'&&!Array.isArray(value);}
 export function hyperVCreateField(value:unknown,key:string):string|null{if(!hyperVCreateRecord(value))return null;const field=value[key];return typeof field==='string'&&field?field:null;}
-export function hyperVCreateSucceeded(value:{status?:number|null;error?:string}){return value.status===0&&!value.error;}
 
 export type HyperVQuotaUsage={definedVms:number;configuredMemoryMb:number;configuredCpus:number;configuredDiskBytes:number;runningVms:number;runningMemoryMb:number;runningCpus:number};
 export type HyperVQuota={maxDefinedVms:number;maxConfiguredMemoryMb:number;maxConfiguredCpus:number;maxConfiguredDiskBytes:number;maxRunningVms:number;maxRunningMemoryMb:number;maxRunningCpus:number};
