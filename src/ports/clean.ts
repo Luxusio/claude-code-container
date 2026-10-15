@@ -1,4 +1,4 @@
-import type { CleanInventoryResult, CleanMutationResult } from "../domain/clean.js";
+import type { CleanInventoryResult, CleanMutationResult, ContainerInfo, ImageInfo } from "../domain/clean.js";
 
 /** Private captured runtime authority; getters select each native callee lazily. */
 export interface CleanMutationPorts {
@@ -11,10 +11,10 @@ export interface CleanMutationPorts {
 /** Required semantic observations/effects, with no ambient native defaults. */
 export interface CleanPorts {
     readonly ensureRuntimeReady: () => undefined;
-    readonly observeContainers: () => CleanInventoryResult;
-    readonly observeImages: (repository: string) => CleanInventoryResult;
+    readonly observeContainers: () => CleanInventoryResult<ContainerInfo>;
+    readonly observeImages: (repository: string) => CleanInventoryResult<ImageInfo>;
     readonly registryImage: string;
-    readonly observeVolumes: () => CleanInventoryResult;
+    readonly observeVolumes: () => CleanInventoryResult<string>;
     readonly confirm: () => Promise<string>;
     readonly captureMutationRuntime: () => CleanMutationPorts;
     readonly withLifecycleLock: (prefix: string, operation: () => undefined) => undefined;

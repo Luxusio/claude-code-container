@@ -1,27 +1,19 @@
 import type { CleanInventoryResult, CleanOptions, ContainerInfo, ImageInfo } from "../domain/clean.js";
 import type { CleanPorts } from "../ports/clean.js";
 
-/** The only intentional behavior change: failed inventory never admits a plan. */
-function admitInventory(result: CleanInventoryResult, kind: "containers" | "images" | "volumes"): void {
-    if (result.error || result.status !== 0) {
+/** Incomplete observations never admit a cleanup plan. */
+function admitInventory<T>(result: CleanInventoryResult<T>, kind: "containers" | "images" | "volumes"): T[] {
+    if (result.kind === "unavailable") {
         throw new Error(`Failed to list ${kind}; cleanup aborted.`);
     }
+    return result.items;
 }
 
 /** Factory construction performs no native getter/observation or future capture. */
 export function createClean(ports: CleanPorts): (options: CleanOptions) => Promise<void> {
     function listContainers(): ContainerInfo[] {
-        const result = ports.observeContainers();
-        admitInventory(result, "containers");
-        const out = (result.stdout ?? "").trim();
-        if (!out) return [];
-        return out.split("\n").flatMap((line) => {
-            const [id, name, ...rest] = line.split("\t");
-            const normalizedId = (id ?? "").trim();
-            const normalizedName = (name ?? "").trim();
-            if (!/^[a-f0-9]{12,64}$/i.test(normalizedId) || !normalizedName.startsWith("ccc-")) return [];
-            return [{ id: normalizedId, name: normalizedName, status: rest.join("\t").trim() }];
-        });
+        return admitInventory(ports.observeContainers(), "containers").filter((container) =>
+            /^[a-f0-9]{12,64}$/i.test(container.id) && container.name.startsWith("ccc-"));
     }
 
     function listImages(): ImageInfo[] {
@@ -29,20 +21,10 @@ export function createClean(ports: CleanPorts): (options: CleanOptions) => Promi
         const images: ImageInfo[] = [];
 
         for (const repo of ["ccc", ports.registryImage]) {
-            const result = ports.observeImages(repo);
-            admitInventory(result, "images");
-            const out = (result.stdout ?? "").trim();
-            if (!out) continue;
-            for (const line of out.split("\n")) {
-                const parts = line.split("\t");
-                const id = (parts[1] ?? "").trim();
-                if (id && !seen.has(id)) {
-                    seen.add(id);
-                    images.push({
-                        repository: (parts[0] ?? "").trim(),
-                        id,
-                        size: (parts[2] ?? "").trim(),
-                    });
+            for (const image of admitInventory(ports.observeImages(repo), "images")) {
+                if (image.id && !seen.has(image.id)) {
+                    seen.add(image.id);
+                    images.push(image);
                 }
             }
         }
@@ -50,11 +32,7 @@ export function createClean(ports: CleanPorts): (options: CleanOptions) => Promi
     }
 
     function listVolumes(): string[] {
-        const result = ports.observeVolumes();
-        admitInventory(result, "volumes");
-        const out = (result.stdout ?? "").trim();
-        if (!out) return [];
-        return out.split("\n").map((v) => v.trim()).filter(Boolean);
+        return admitInventory(ports.observeVolumes(), "volumes");
     }
 
     return async function cleanContainers(options: CleanOptions): Promise<void> {
@@ -70,15 +48,11 @@ export function createClean(ports: CleanPorts): (options: CleanOptions) => Promi
 
         if (options.all) {
             // Remove everything including running containers
-            containersToStop = allContainers.filter((c) =>
-                c.status.toLowerCase().startsWith("up"),
-            );
+            containersToStop = allContainers.filter((c) => c.running);
             containersToRemove = allContainers;
         } else {
             // Default: only stopped containers
-            containersToRemove = allContainers.filter(
-                (c) => !c.status.toLowerCase().startsWith("up"),
-            );
+            containersToRemove = allContainers.filter((c) => !c.running);
         }
 
         const hasWork =
@@ -148,13 +122,13 @@ export function createClean(ports: CleanPorts): (options: CleanOptions) => Promi
                 if (stopNames.has(c.name)) {
                     ports.capturePublication()(`Stopping ${c.name}...`);
                     const stopped = mutations.stopContainer(c.id);
-                    if (stopped.error || stopped.status !== 0) {
+                    if (!stopped.ok) {
                         throw new Error(`Failed to stop container ${c.name}; cleanup aborted.`);
                     }
                 }
                 ports.capturePublication()(`Removing container ${c.name}...`);
                 const r = mutations.removeContainer(c.id);
-                if (r.error || r.status !== 0) {
+                if (!r.ok) {
                     throw new Error(`Failed to remove container ${c.name}; cleanup aborted.`);
                 }
                 removed++;
@@ -166,7 +140,7 @@ export function createClean(ports: CleanPorts): (options: CleanOptions) => Promi
         for (const img of images) {
             ports.capturePublication()(`Removing image ${img.repository} (${img.id})...`);
             const r = mutations.removeImage(img.id);
-            if (r.error || r.status !== 0) {
+            if (!r.ok) {
                 throw new Error(`Failed to remove image ${img.repository}; cleanup aborted.`);
             }
             removed++;
@@ -176,7 +150,7 @@ export function createClean(ports: CleanPorts): (options: CleanOptions) => Promi
         for (const v of volumes) {
             ports.capturePublication()(`Removing volume ${v}...`);
             const r = mutations.removeVolume(v);
-            if (r.error || r.status !== 0) {
+            if (!r.ok) {
                 throw new Error(`Failed to remove volume ${v}; cleanup aborted.`);
             }
             removed++;

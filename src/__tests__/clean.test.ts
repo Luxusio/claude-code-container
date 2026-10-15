@@ -83,7 +83,11 @@ describe("cleanContainers", () => {
         { stage: "local images", kind: "images", result: makeResult(2, "ccc\tsha256local\t500MB") },
         { stage: "registry images", kind: "images", result: makeResult(null, "registry/ccc\tsha256registry\t500MB") },
         { stage: "requested volumes", kind: "volumes", result: makeResult(1, "ccc-mise-cache") },
-    ])("aborts before confirmation or mutation when $stage inventory fails", async ({ stage, kind, result }) => {
+    ].flatMap(failure => [
+        { mode: "confirmation", options: {} },
+        { mode: "dry-run", options: { dryRun: true } },
+        { mode: "yes", options: { yes: true } },
+    ].map(mode => ({ ...failure, ...mode }))))("aborts before confirmation or mutation when $stage inventory fails in $mode mode", async ({ stage, kind, result, options }) => {
         let failureObserved = false;
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const command = args as string[];
@@ -101,10 +105,12 @@ describe("cleanContainers", () => {
         });
         promptMock.mockResolvedValue("yes");
 
-        await expect(cleanContainers({ all: true, volumes: true })).rejects.toThrow(`Failed to list ${kind}; cleanup aborted.`);
+        await expect(cleanContainers({ all: true, volumes: true, ...options })).rejects.toThrow(`Failed to list ${kind}; cleanup aborted.`);
 
         expect(failureObserved).toBe(true);
         expect(promptMock).not.toHaveBeenCalled();
+        expect(withContainerLifecycleLockMock).not.toHaveBeenCalled();
+        expect(getSessionLockClaimsForContainerMock).not.toHaveBeenCalled();
         const commands = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
         expect(commands.some(command => ["stop", "rm", "rmi"].includes(command[0])
             || command[0] === "volume" && command[1] === "rm")).toBe(false);
@@ -121,7 +127,7 @@ describe("cleanContainers", () => {
             if (argsArr[0] === "ps") {
                 return makeResult(
                     0,
-                    "111111111111\tccc-myproj-aabbcc112233\tExited (0) 2 days ago\n222222222222\tccc-other-ddeeff445566\tUp 5 minutes",
+                    "111111111111\tccc-myproj-aabbcc112233\tExited (0) 2 days ago\r\n222222222222\tccc-other-ddeeff445566\tUp 5 minutes\r\n",
                 );
             }
             if (argsArr[0] === "images") {
@@ -137,8 +143,8 @@ describe("cleanContainers", () => {
         // Should remove the stopped container
         expect(calls).toContain("rm 111111111111");
         // Should NOT stop/remove the running container
-        expect(calls.some((c) => c.startsWith("stop ccc-other"))).toBe(false);
-        expect(calls.some((c) => c.startsWith("rm ccc-other"))).toBe(false);
+        expect(calls).not.toContain("stop 222222222222");
+        expect(calls).not.toContain("rm 222222222222");
         // Should remove the image
         expect(calls.some((c) => c.startsWith("rmi sha256abcd1234"))).toBe(true);
     });
@@ -183,22 +189,33 @@ describe("cleanContainers", () => {
         // Should remove both containers
         expect(calls).toContain("rm 111111111111");
         expect(calls).toContain("rm 222222222222");
+        expect(calls.indexOf("stop 111111111111")).toBeLessThan(calls.indexOf("rm 111111111111"));
         expect(withContainerLifecycleLockMock).toHaveBeenCalledWith("running-aabb1122ccdd", expect.any(Function));
         expect(withContainerLifecycleLockMock).toHaveBeenCalledWith("stopped-eeff33445566", expect.any(Function));
     });
 
-    it("does not remove a running container when its pinned stop fails", async () => {
+    it.each([
+        { failure: "nonzero status", result: makeResult(1) },
+        { failure: "missing status", result: makeResult(null) },
+        { failure: "native error with zero status", result: { ...makeResult(0), error: new Error("stop unavailable") } },
+    ])("aborts all later cleanup when its pinned stop has $failure", async ({ result }) => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];
-            if (argsArr[0] === "ps") return makeResult(0, "111111111111\tccc-running-aabb1122ccdd\tUp 10 minutes");
-            if (argsArr[0] === "images") return makeResult(0, "");
-            if (argsArr[0] === "volume" && argsArr[1] === "ls") return makeResult(0, "");
-            if (argsArr[0] === "stop") return makeResult(1, "");
+            if (argsArr[0] === "ps") return makeResult(0,
+                "111111111111\tccc-running-aabb1122ccdd\tUp 10 minutes\n222222222222\tccc-stopped-eeff33445566\tExited (0) 1 day ago");
+            if (argsArr[0] === "images") return makeResult(0, "ccc\tsha256later\t500MB");
+            if (argsArr[0] === "volume" && argsArr[1] === "ls") return makeResult(0, "ccc-later-cache");
+            if (argsArr[0] === "stop") return result;
             return makeResult(0, "");
         });
 
-        await expect(cleanContainers({ all: true, yes: true })).rejects.toThrow("cleanup aborted");
-        expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "rm")).toBe(false);
+        await expect(cleanContainers({ all: true, volumes: true, yes: true })).rejects.toThrow("cleanup aborted");
+
+        const mutations = spawnSyncMock.mock.calls.map(call => call[1] as string[])
+            .filter(command => ["stop", "rm", "rmi"].includes(command[0])
+                || command[0] === "volume" && command[1] === "rm");
+        expect(mutations).toEqual([["stop", "111111111111"]]);
+        expect(process.exit).not.toHaveBeenCalled();
     });
 
     it("reports failure when removal of a pinned container ID fails", async () => {

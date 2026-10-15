@@ -6,6 +6,7 @@ import { prompt, DOCKER_REGISTRY_IMAGE } from "./utils.js";
 import { getSessionLockClaimsForContainer, withContainerLifecycleLock } from "./session.js";
 import { createClean } from "./application/clean.js";
 import type { CleanMutationPorts, CleanPorts } from "./ports/clean.js";
+import type { CleanInventoryResult, ContainerInfo, ImageInfo } from "./domain/clean.js";
 
 export type { CleanOptions } from "./domain/clean.js";
 
@@ -16,22 +17,59 @@ const nativePorts: CleanPorts = {
     },
     get observeContainers() {
         const observe = spawnSync;
-        return () => observe(runtimeCli(),
-            ["ps", "-a", "--no-trunc", "--filter", "name=^ccc-", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}"],
-            { encoding: "utf-8" });
+        return (): CleanInventoryResult<ContainerInfo> => {
+            const result = observe(runtimeCli(),
+                ["ps", "-a", "--no-trunc", "--filter", "name=^ccc-", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}"],
+                { encoding: "utf-8" });
+            if (result.error || result.status !== 0) return { kind: "unavailable" };
+            const out = (result.stdout ?? "").trim();
+            return {
+                kind: "observed",
+                items: out ? out.split("\n").map((line) => {
+                    const [id, name, ...rest] = line.split("\t");
+                    const status = rest.join("\t").trim();
+                    return {
+                        id: (id ?? "").trim(),
+                        name: (name ?? "").trim(),
+                        status,
+                        running: status.toLowerCase().startsWith("up"),
+                    };
+                }) : [],
+            };
+        };
     },
     get observeImages() {
         const observe = spawnSync;
-        return (repository: string) => observe(runtimeCli(),
-            ["images", "--format", "{{.Repository}}\t{{.ID}}\t{{.Size}}", repository],
-            { encoding: "utf-8" });
+        return (repository: string): CleanInventoryResult<ImageInfo> => {
+            const result = observe(runtimeCli(),
+                ["images", "--format", "{{.Repository}}\t{{.ID}}\t{{.Size}}", repository],
+                { encoding: "utf-8" });
+            if (result.error || result.status !== 0) return { kind: "unavailable" };
+            const out = (result.stdout ?? "").trim();
+            return {
+                kind: "observed",
+                items: out ? out.split("\n").map((line) => {
+                    const parts = line.split("\t");
+                    return {
+                        repository: (parts[0] ?? "").trim(),
+                        id: (parts[1] ?? "").trim(),
+                        size: (parts[2] ?? "").trim(),
+                    };
+                }) : [],
+            };
+        };
     },
     get registryImage() { return DOCKER_REGISTRY_IMAGE; },
     get observeVolumes() {
         const observe = spawnSync;
-        return () => observe(runtimeCli(),
-            ["volume", "ls", "--filter", "name=^ccc-", "--format", "{{.Name}}"],
-            { encoding: "utf-8" });
+        return (): CleanInventoryResult<string> => {
+            const result = observe(runtimeCli(),
+                ["volume", "ls", "--filter", "name=^ccc-", "--format", "{{.Name}}"],
+                { encoding: "utf-8" });
+            if (result.error || result.status !== 0) return { kind: "unavailable" };
+            const out = (result.stdout ?? "").trim();
+            return { kind: "observed", items: out ? out.split("\n").map((v) => v.trim()).filter(Boolean) : [] };
+        };
     },
     get confirm() {
         const request = prompt;
@@ -44,19 +82,31 @@ const nativePorts: CleanPorts = {
             return {
                 get stopContainer() {
                     const mutate = spawnSync;
-                    return (containerId: string) => mutate(cli, ["stop", containerId], { stdio: "inherit" });
+                    return (containerId: string) => {
+                        const result = mutate(cli, ["stop", containerId], { stdio: "inherit" });
+                        return { ok: !result.error && result.status === 0 };
+                    };
                 },
                 get removeContainer() {
                     const mutate = spawnSync;
-                    return (containerId: string) => mutate(cli, ["rm", containerId], { stdio: "inherit" });
+                    return (containerId: string) => {
+                        const result = mutate(cli, ["rm", containerId], { stdio: "inherit" });
+                        return { ok: !result.error && result.status === 0 };
+                    };
                 },
                 get removeImage() {
                     const mutate = spawnSync;
-                    return (imageId: string) => mutate(cli, ["rmi", imageId], { stdio: "inherit" });
+                    return (imageId: string) => {
+                        const result = mutate(cli, ["rmi", imageId], { stdio: "inherit" });
+                        return { ok: !result.error && result.status === 0 };
+                    };
                 },
                 get removeVolume() {
                     const mutate = spawnSync;
-                    return (volumeName: string) => mutate(cli, ["volume", "rm", volumeName], { stdio: "inherit" });
+                    return (volumeName: string) => {
+                        const result = mutate(cli, ["volume", "rm", volumeName], { stdio: "inherit" });
+                        return { ok: !result.error && result.status === 0 };
+                    };
                 },
             };
         };

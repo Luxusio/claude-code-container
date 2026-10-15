@@ -9,7 +9,9 @@ export interface CleanOptions {
 export interface ContainerInfo {
     id: string;
     name: string;
+    /** Native status text is retained only for display. */
     status: string;
+    running: boolean;
 }
 
 export interface ImageInfo {
@@ -18,12 +20,10 @@ export interface ImageInfo {
     size: string;
 }
 
-/** Native results stay raw so truthiness and lazy field reads remain visible. */
 export interface CleanMutationResult {
-    error?: unknown;
-    status: number | null;
+    ok: boolean;
 }
 
-export interface CleanInventoryResult extends CleanMutationResult {
-    stdout?: string | null;
-}
+export type CleanInventoryResult<T> =
+    | { kind: "observed"; items: T[] }
+    | { kind: "unavailable" };
