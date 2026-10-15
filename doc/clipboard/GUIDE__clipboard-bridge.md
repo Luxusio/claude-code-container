@@ -26,6 +26,14 @@ URI parsing and MIME decoding. Cache, coherence, generation replay and image
 file selection execute in application.
 Do not expose a whole old read/cache/write/ensure/retire flow as a port.
 
+The orphan-session grace rule lives in `src/domain/clipboard/server-lifecycle.ts`.
+`clipboardServerOrphanWatchdogState` starts the 15-second grace on the first
+empty-session observation, authorizes shutdown at the boundary, and clears
+the grace when an active session is observed. The native facade re-exports
+the existing function and constant; it still owns the timer, session facts
+and shutdown effects. The existing policy fingerprint already includes this
+domain module. No additional lifecycle workflow or port is needed.
+
 The facade creates one explicit snapshot state and supplies it to both snapshot
 and write bindings. Every HTTP server/platform instance shares that state and
 queue. Core factories have no host defaults or ambient global cache. Pure tests

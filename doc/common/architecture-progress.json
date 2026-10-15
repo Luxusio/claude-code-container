@@ -1584,7 +1584,7 @@
         "status": "bounded-current-source-qualified-group-partial",
         "scope": "Fresh combined current Main qualification of five Appium HTTP effects and native receipt presentation, plus existing recording/owner-repository safety suites. Actual Linux/native Windows private builds, strict types, assembly and source/built authenticated MCP passed. Broader R17/source-universe/reliability/attestation remain separate."
       },
-      "currentQualificationTask": "TASK__appium-boundary-recovery-20261014",
+      "currentQualificationTask": "TASK__architecture-broker-semantic-finish-20261015",
       "currentWork": {
         "taskId": "TASK__appium-boundary-recovery-20261014",
         "runId": "01a135dd-2341-72fc-a7aa-68f09a5fcf54",
@@ -1852,7 +1852,10 @@
         "taskId": "TASK__architecture-final-source-remediation",
         "status": "partial-awaiting-current-qualification",
         "scope": "797f5613의 Appium HTTP5개 의미 포트 분리(제품5·테스트4·문서3)는 실제 Code/Security/Docs 리뷰와 Linux 빌드·strict(skipLibCheck=false)·lint·CLI·shipping·MCP59 및7개 전체 파일120PASS0FAIL0SKIP 통과. Native QA는 CRLF 인증 불일치 후 빌드·테스트 전 중단; 실제 native QA와 기존 recording 후보의 공동 qualification·로컬 통합이 남음."
-      }
+      },
+      "historicalQualificationTasks": [
+        "TASK__appium-boundary-recovery-20261014"
+      ]
     },
     {
       "id": "hyper-v-lifecycle-results-native-recipes-structural",
@@ -1932,13 +1935,16 @@
         "status": "partial-awaiting-current-qualification",
         "scope": "Android/iOS/macOS 직접 수명주기 framing과 Android 접근 명령을 어댑터로 분리하고 리뷰·QA·통합한다. 기존 deadline 수정·provider routing의 공동 QA·통합도 남음. R17/R19와 공유하는 브로커·codec 파일 연결은 순차 처리한다."
       },
-      "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
+      "currentQualificationTask": "TASK__architecture-broker-semantic-finish-20261015",
       "currentSourceCheck": {
         "sourceCommit": "b06319e4ae37206a7f55de9ea7152658d13bedc0",
         "checkedAt": "2026-10-14",
         "kind": "read-only-remaining-seam-reconciliation",
         "completionCredit": false
-      }
+      },
+      "historicalQualificationTasks": [
+        "TASK__windows-native-termination-observation-budget"
+      ]
     },
     {
       "id": "shared-android-contract-cleanup-accepted",
@@ -2133,8 +2139,11 @@
         "status": "partial-awaiting-current-qualification",
         "scope": "원격 probe의 시간·응답 경계 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음."
       },
-      "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
-      "historicalRemainingWorkBeforeRootRecovery": "원격 probe의 시간·응답 경계 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음."
+      "currentQualificationTask": "TASK__root-native-framing-recovery-20261014",
+      "historicalRemainingWorkBeforeRootRecovery": "원격 probe의 시간·응답 경계 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음.",
+      "historicalQualificationTasks": [
+        "TASK__windows-native-termination-observation-budget"
+      ]
     },
     {
       "id": "tooling-doctor-native-boundaries-structural",
@@ -2189,7 +2198,13 @@
         "checkedAt": "2026-10-14",
         "kind": "read-only-remaining-seam-reconciliation",
         "completionCredit": false
-      }
+      },
+      "currentQualificationTask": "TASK__architecture-broker-semantic-finish-20261015",
+      "additionalQualificationTasks": [
+        "TASK__architecture-hyperv-power-observations-20261015",
+        "TASK__architecture-hyperv-create-provision-observations-20261015",
+        "TASK__architecture-container-mount-observations-20261015"
+      ]
     },
     {
       "id": "workspace-open-presentation-structural",
@@ -2328,8 +2343,11 @@
         "status": "partial-awaiting-current-qualification",
         "scope": "Python bootstrap framing 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음."
       },
-      "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
-      "historicalRemainingWorkBeforeRootRecovery": "Python bootstrap framing 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음."
+      "currentQualificationTask": "TASK__root-native-framing-recovery-20261014",
+      "historicalRemainingWorkBeforeRootRecovery": "Python bootstrap framing 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음.",
+      "historicalQualificationTasks": [
+        "TASK__windows-native-termination-observation-budget"
+      ]
     },
     {
       "id": "identity-digest-ownership-structural",
@@ -2616,10 +2634,13 @@
       },
       "status": "Current c2a1f54f implementation and final independent Code/Security reviews complete; independent Linux QA2 passed1176 cases in27 whole files with1existing skip plus genuine shipping/CLI/consumer evidence. Required Windows qualification is BLOCKED_ENV through unavailable owner-correct Device Lab MCP; original driver8704/target2860 terminal state unknown. Historical71473106 joint FAIL and root QA1 FAIL remain retained. No group completion credit or formal close.",
       "taskId": "TASK__architecture-final-source-remediation",
-      "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
+      "currentQualificationTask": "TASK__root-native-framing-recovery-20261014",
       "historicalRemainingWorkBeforeRootRecovery": "Credential runtime 의미 관측 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음. Runtime publication 수정은 계획 리뷰 후 uncommitted 작성했으나 /tmp 후보가 사라져 복구/재작성·제품 리뷰·QA 필요. managedBy 충돌·inode fixture 약점은 확인; 개별7147 실패 원인은 미입증.",
       "sourceRemediationTask": "TASK__architecture-windows-codex-recovery-20261015",
-      "additionalRecoveryQualificationTask": "TASK__architecture-windows-codex-recovery-20261015"
+      "additionalRecoveryQualificationTask": "TASK__architecture-windows-codex-recovery-20261015",
+      "historicalQualificationTasks": [
+        "TASK__windows-native-termination-observation-budget"
+      ]
     },
     {
       "id": "installer-presentation-materialization-structural",
@@ -2648,8 +2669,11 @@
       },
       "status": "Current c2a1f54f implementation and final independent Code/Security reviews complete; independent Linux QA2 passed1176 cases in27 whole files with1existing skip plus genuine shipping/CLI/consumer evidence. Required Windows qualification is BLOCKED_ENV through unavailable owner-correct Device Lab MCP; original driver8704/target2860 terminal state unknown. Historical71473106 joint FAIL and root QA1 FAIL remain retained. No group completion credit or formal close.",
       "taskId": "TASK__architecture-final-source-remediation",
-      "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
-      "historicalRemainingWorkBeforeRootRecovery": "Installer 네이티브 표현·파일 생성 분리 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음. 별도70b1b4de postinstall 수정은 Main 전달·빌드 및8개 파일528PASS; native npm-stub subprocess3건은 full Windows build나 timeout 원인 검증이 아님. 구조 완료 credit 없음."
+      "currentQualificationTask": "TASK__root-native-framing-recovery-20261014",
+      "historicalRemainingWorkBeforeRootRecovery": "Installer 네이티브 표현·파일 생성 분리 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음. 별도70b1b4de postinstall 수정은 Main 전달·빌드 및8개 파일528PASS; native npm-stub subprocess3건은 full Windows build나 timeout 원인 검증이 아님. 구조 완료 credit 없음.",
+      "historicalQualificationTasks": [
+        "TASK__windows-native-termination-observation-budget"
+      ]
     },
     {
       "id": "shared-mutation-lock-ownership-policy-structural",
@@ -2678,7 +2702,7 @@
       },
       "status": "Current c2a1f54f implementation and final independent Code/Security reviews complete; independent Linux QA2 passed1176 cases in27 whole files with1existing skip plus genuine shipping/CLI/consumer evidence. Required Windows qualification is BLOCKED_ENV through unavailable owner-correct Device Lab MCP; original driver8704/target2860 terminal state unknown. Historical71473106 joint FAIL and root QA1 FAIL remain retained. No group completion credit or formal close.",
       "taskId": "TASK__architecture-final-source-remediation",
-      "currentQualificationTask": "TASK__windows-native-termination-observation-budget",
+      "currentQualificationTask": "TASK__root-native-framing-recovery-20261014",
       "latestContribution": {
         "taskId": "TASK__linear-native-guard-integration-20261013",
         "runId": "01a13511-494b-7bc8-be3f-125e70d61575",
@@ -2820,7 +2844,10 @@
           "lateWorkerPreload": "confirmed and captured by committed native .cmd fixture in d39517ed; no production Worker change"
         }
       },
-      "historicalRemainingWorkBeforeRootRecovery": "Main의 publicationTimes 의미 포트·native codec과 legacy PID-reuse 회귀를c8ab5df4에 통합했다. 결합 변경의 독립 코드·보안 리뷰와 Linux 코어5개 파일183PASS/Windows177PASS(6개 platform skip), strict 타입 검사 통과; native host/provider cold-sync·async·warm identity 경로도 통과. 자동 attestation에 따른 formal close 및 기존7147 인증·브로커 E2E 공동 FAIL은 별도로 남으며 R14 완료 credit은 부여하지 않는다."
+      "historicalRemainingWorkBeforeRootRecovery": "Main의 publicationTimes 의미 포트·native codec과 legacy PID-reuse 회귀를c8ab5df4에 통합했다. 결합 변경의 독립 코드·보안 리뷰와 Linux 코어5개 파일183PASS/Windows177PASS(6개 platform skip), strict 타입 검사 통과; native host/provider cold-sync·async·warm identity 경로도 통과. 자동 attestation에 따른 formal close 및 기존7147 인증·브로커 E2E 공동 FAIL은 별도로 남으며 R14 완료 credit은 부여하지 않는다.",
+      "historicalQualificationTasks": [
+        "TASK__windows-native-termination-observation-budget"
+      ]
     },
     {
       "id": "release-workspace-version-synchronization-structural",
@@ -3741,6 +3768,61 @@
         "parallelDeliveryDecision": "User requested disjoint implementation/review/scopedQA in parallel, then one affected integration cycle. Recorded in existing migration plan; no generic framework, duplicate passing checks or hosted CI."
       },
       "authoredCandidateStatusBeforeIndependentQa": "All three product paths and three new suites authored; original user contributions and1723tracked/81untracked protected paths unchanged. Coordinator strict Root and architecture checks pass. Whole8reported144PASS/130SKIP; unchanged owner-probe wholefile separately executed5PASS, giving149 unique portable passes and125 actual-Windows cases still unexecuted. Original combined skip report retained, cause unconfirmed. Independent Code/Security/Docs and QA pending; no credit."
+    },
+    {
+      "id": "clipboard-orphan-policy-current",
+      "taskId": "TASK__architecture-clipboard-orphan-policy-20261015",
+      "coveredOperationIds": [],
+      "relatedOperationId": "OP-clipboard-server-retire",
+      "title": "Existing clipboard orphan grace rule domain ownership",
+      "status": "Source4b6f092d locally committed after actual independent Code PASS and first scoped QA PASS: four whole files272PASS/14existing unconditional --serve skips/0FAIL, parallel Root/architecture strict+lint, genuine emitted/materialized rule/export and authenticated HTTP fingerprint consumers. Existing native timer/session facts/shutdown and seven-file hash closure unchanged. Zero new operations/groups; wider native/reliability/formal gates remain open.",
+      "currentWork": {
+        "sourceCommit": "4b6f092d474ad4732bd66fcf966810557b83fc6e",
+        "domain": "src/domain/clipboard/server-lifecycle.ts",
+        "compatibilityFacade": "src/clipboard-server.ts",
+        "sourceQa": {
+          "wholeFiles": 4,
+          "passed": 272,
+          "failed": 0,
+          "existingSkipped": 14,
+          "skipReason": "Existing unconditional --serve block explains process.exit timer issue; no tests changed"
+        },
+        "parallelChecks": [
+          "Source whole4",
+          "Root strict emission to own outDir",
+          "architecture strict noEmit",
+          "scoped ESLint2products"
+        ],
+        "emittedConsumer": {
+          "ruleAndExportAssertions": 7,
+          "realLoopbackHttpRequests": 4,
+          "actualSevenFileFingerprint": "b871958cfa23"
+        },
+        "materializedConsumer": {
+          "ruleAndExportAssertions": 7,
+          "realLoopbackHttpRequests": 4,
+          "actualSevenFileFingerprint": "72c13a81ad4d",
+          "materializedDistFilesMatched": 1051
+        },
+        "unchangedWorkspaceQualification": {
+          "rawFiles": 316,
+          "assembledFiles": 535,
+          "rawAndAssembledComparedAgainstOwnProvenance": true
+        },
+        "commandGroupsJoined": 8,
+        "knownPidBirthIdentitiesGone": 13,
+        "newTests": 0,
+        "groupCompletionCredit": false,
+        "operationCredit": 0,
+        "nativeAcceptance": "No native desktop qualification follows from unchanged pure rule relocation; broader Windows gates remain open.",
+        "formalDisposition": "No formal close is claimed by these Source and QA records; actual task gates remain authoritative.",
+        "evidence": {
+          "root": "results/clipboard-orphan-01a13e14-20261015/independent-qa",
+          "files": 22,
+          "bytes": 757111,
+          "inventorySha256": "a671aeb69cb749b351b98bde543442ab21bcd20f91af27bdf276d4ea98ad6885"
+        }
+      }
     }
   ],
   "currentSourceQualificationAudit": {
