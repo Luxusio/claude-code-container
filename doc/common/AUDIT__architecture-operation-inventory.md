@@ -6,21 +6,46 @@ Historical composed source accepted: `f5a0ee8c7f6e056503ce3e854147ff9a2701dedd`.
 Original supported-binding retraction audit: `59c0190e3acd7d89cfa3a8c89ab24ed86b0c730f`.
 Data: [operation inventory](architecture-operation-inventory.json).
 
-Current confirmed structural scope: **19/19 groups completed, 0 remaining**
+Historical confirmed structural snapshot: **19/19 groups completed, 0 remaining**
 at `6ea57ca54aaa8531886e2947e2c4f258564e2a4b`, following the seven-group
 native-boundary delivery. Actual qualified portable QA records 28 whole files,
 913 passing cases and 9 existing platform skips, with independent required
 reviews, genuine build, strict architecture compilation and local shipping/CLI
 checks. Local delivery authenticates 57 source files and preserves all 97
-protected Main user paths, bytes, status and stage. Current group accounting is
-in the [WBS](GUIDE__architecture-work-breakdown.md).
+protected Main user paths, bytes, status and stage. This is the historical
+19-group snapshot; current accounting is **15/23 groups completed, eight
+remaining** in the [WBS](GUIDE__architecture-work-breakdown.md).
 
-This is an unweighted subtotal of confirmed structural groups, not a certified
-exhaustive source denominator or full Goal completion. It adds no operation IDs
+That historical snapshot is an unweighted subtotal of confirmed structural
+groups, not a certified exhaustive source denominator or full Goal completion. It adds no operation IDs
 or credit; whole-source, native-platform, reliability and formal completion
 remain unverified. The original source task remains truthfully blocked because
 automatic receipts were absent; actual results and local delivery are qualified
 under the recorded operator exception.
+
+The bounded **2026-10-15 M12 current Source check** records all sixteen existing
+operations and **39/40 required bindings** against HEAD `5d20a31694bd123acbe3f740e9b1f9d377b8a5db`
+and separately hashed dirty working bytes. Compact caller, inward owner, native
+effect, export and authority witnesses are under
+`planningLanes[id=final-inventory-reconciliation].currentSourceCheck` in the
+[progress overlay](architecture-progress.json). The retained
+`BIND-source-clipboard-server-retire` has no found production caller and remains
+explicitly unresolved; the actual orphan watchdog is a distinct trace. No new
+demonstrated Source boundary gap or operation/group credit is claimed.
+
+The [retained input inventory](../../results/architecture-m12-source-01a13e2f-20261015/input-inventory.json)
+(SHA-256 `b658f3c881001bb1f15c6761aa1014a011bf9537f7e1c26b493a3ce549bf638a`)
+links four complete reports and the
+[160-file Source-pin manifest](../../results/architecture-m12-source-01a13e2f-20261015/source-pins.json).
+This is static trace evidence, not behavior or clean-release proof. In particular,
+false remote heartbeat refresh warns and continues while native stop remains
+token/ID fenced; remote read-only claims are service-scoped; project-only Mutagen
+sync authority has an already documented ceiling; MCP field/raw-statement
+preservation is not universal byte identity; own-port no-probe is verifier-scoped.
+`ACC-M12-source` remains unverified with empty evidence, alongside the unchanged
+75 packet gates, 218 supported/219 inventoried operations and uncertified source
+denominator. Native, artifact, reliability, global source and formal acceptance
+remain separate.
 
 Status: **all 218 inventoried operation cutovers are source-qualified; the
 original architecture boundary and acceptance work is still incomplete**.

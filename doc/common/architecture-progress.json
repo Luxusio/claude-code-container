@@ -1461,8 +1461,324 @@
       "id": "final-inventory-reconciliation",
       "taskId": "TASK__architecture-final-inventory-reconciliation",
       "coveredOperationIds": [],
-      "status": "Recording three credits and accepted1877 accounting reconciled in accepted958c56c2 metadata after actual independent reviews/QA/delivery. Current operation-only218/218 is not overall migration completion. Known original structural groups and whole-source, final artifact, native, reliability and formal gates remain separate; no exhaustive certification.",
-      "historicalStatusBeforeRecordingAcceptance": "Nine bounded current reference corrections candidate-reconciled-awaiting-independent-current-review; historical source/proofs and existing provisional accounting retained. Broader direct physical/admin policy omissions await coordinator review; no whole-Goal/native/exhaustive certification."
+      "status": "Bounded current M12 static audit at HEAD5d20a316 with separately pinned dirty working bytes:16 existing operations,39/40 required bindings source-traced; retained clipboard-retire production caller unresolved. No new demonstrated Source boundary gap, operation/group credit or behavior acceptance. ACC-M12-source, global source/denominator, native, artifact, reliability and formal acceptance remain unverified; historical reconciliation retained.",
+      "historicalStatusBeforeRecordingAcceptance": "Nine bounded current reference corrections candidate-reconciled-awaiting-independent-current-review; historical source/proofs and existing provisional accounting retained. Broader direct physical/admin policy omissions await coordinator review; no whole-Goal/native/exhaustive certification.",
+      "historicalStatusBeforeM12CurrentSourceCheck": "Recording three credits and accepted1877 accounting reconciled in accepted958c56c2 metadata after actual independent reviews/QA/delivery. Current operation-only218/218 is not overall migration completion. Known original structural groups and whole-source, final artifact, native, reliability and formal gates remain separate; no exhaustive certification.",
+      "currentSourceCheck": {
+        "sourceCommit": "5d20a31694bd123acbe3f740e9b1f9d377b8a5db",
+        "checkedAt": "2026-10-15",
+        "taskId": "TASK__architecture-m12-current-source-reconciliation-20261015",
+        "kind": "bounded-read-only-current-m12-source-reconciliation",
+        "completionCredit": false,
+        "operationCredit": 0,
+        "structuralGroupCredit": 0,
+        "scope": "Sixteen existing ACC-M12-source operations only. Static current caller/owner/native-effect/export/authority traces and existing negative-test inspection; no test, build, provider, network, GUI, install or native execution.",
+        "workingTree": {
+          "clean": false,
+          "preservedTrackedInputs": 1732,
+          "preservedOriginalUntrackedInputs": 81,
+          "qualification": "HEAD is a baseline, not clean-release proof. The 160-entry source-pins manifest binds actual working bytes, including dirty contributions; source existence and historical PASS do not certify current behavior.",
+          "knownDirtyPinnedPaths": [
+            "src/composition/container-exec.ts",
+            "src/docker.ts",
+            "scripts/ccc-x11-bridge",
+            "Containerfile"
+          ]
+        },
+        "operationCount": 16,
+        "requiredBindingCount": 40,
+        "checkedBindingCount": 39,
+        "unresolvedBindings": [
+          {
+            "id": "BIND-source-clipboard-server-retire",
+            "operationId": "OP-clipboard-server-retire",
+            "status": "production-reachability-unverified",
+            "reason": "Retained exported stop/retire API has no found production invocation; deprecated migration option is supplied but unused. Actual orphan watchdog is separately traced; it does not satisfy this retained caller binding."
+          }
+        ],
+        "newDemonstratedSourceBoundaryGaps": 0,
+        "qualifications": [
+          "Remote heartbeat false refresh warns and continues (src/application/remote-services.ts:145); it does not establish the broader frozen negative wording that failure blocks cleanup. Native refresh/stop retain independent token/name/captured-ID fences (src/adapters/remote-shell.ts:112/:134). Interpretation remains unresolved, not a newly demonstrated product defect.",
+          "Remote setup/check no-mutation and no-lock claims are service-scoped. Shared CLI prelude (src/index.ts:934/:975/:978/:1046) may migrate home, create a built-in profile or prepare a worktree; it was not executed or exhaustively audited.",
+          "Mutagen session name is project-only (src/adapters/remote-services.ts:20), unlike user@host lifecycle/reservation scope. Concurrent same-project remote authorities may replace/pause/terminate one sync; doc/remote/GUIDE__remote-services.md:19 already documents this ceiling.",
+          "MCP config preservation is semantic for unrelated Claude object fields after JSON reserialization, and raw-statement preservation with final-whitespace normalization for unmanaged Codex TOML (src/domain/mcp-managed-toml.ts:264). Universal byte identity and cross-file atomic publication are not established.",
+          "Own-port no-probe refers to src/localhost-proxy-setup.ts:24 verifier socket-table observation, not the entire scripts/ccc-entrypoint.sh native path or its retained NAT/start/reach mechanisms.",
+          "Source exports, package declarations, bundle recipes and shipping assets are static witnesses only. Runtime/native/emitted/packed/installed behavior, reliability, full Goal, exhaustive source coverage and denominator certification remain unverified; ACC-M12-source stays unverified with empty evidence."
+        ],
+        "retainedEvidence": {
+          "path": "results/architecture-m12-source-01a13e2f-20261015",
+          "fileCount": 6,
+          "bytes": 311105,
+          "inventoryPath": "results/architecture-m12-source-01a13e2f-20261015/input-inventory.json",
+          "inventorySha256": "b658f3c881001bb1f15c6761aa1014a011bf9537f7e1c26b493a3ce549bf638a",
+          "sourcePinCount": 160,
+          "reports": [
+            {
+              "group": "clipboard",
+              "path": "results/architecture-m12-source-01a13e2f-20261015/clipboard-result.json",
+              "sha256": "38525c9d6f7360f9f884a8c649b161c7c182bb37de73740a70f0cec89393ba58",
+              "bytes": 52361
+            },
+            {
+              "group": "sessions",
+              "path": "results/architecture-m12-source-01a13e2f-20261015/sessions-result.json",
+              "sha256": "43f488d8ef998dc7f460cbb7db81cd2632b0cb50197d4cb2ac005f8a26275c3b",
+              "bytes": 72057
+            },
+            {
+              "group": "remote",
+              "path": "results/architecture-m12-source-01a13e2f-20261015/remote-result.json",
+              "sha256": "c99ba96d6722484f7c2ab4f01fdd5fc9ac2f211488e8e8acc9dd3d4ae74ab013",
+              "bytes": 68271
+            },
+            {
+              "group": "transports",
+              "path": "results/architecture-m12-source-01a13e2f-20261015/transports-result.json",
+              "sha256": "087a0df4c11bbdfc9e15358c10296334b9b4a3112e16520e2c2e3cce471f7aff",
+              "bytes": 79018
+            }
+          ],
+          "sourcePins": {
+            "path": "results/architecture-m12-source-01a13e2f-20261015/source-pins.json",
+            "sha256": "ab920ba5a6a54d3065307e0af7482ed8d7439cc7584e35f6781eaa4d5f1808e7",
+            "bytes": 38159
+          }
+        },
+        "operations": [
+          {
+            "id": "OP-clipboard-write",
+            "bindingIds": [
+              "BIND-source-clipboard-write",
+              "BIND-clipboard-write-darwin",
+              "BIND-clipboard-write-windows",
+              "BIND-clipboard-write-wsl",
+              "BIND-clipboard-write-linux-x11",
+              "BIND-clipboard-write-linux-wayland"
+            ],
+            "checkedBindingCount": 6,
+            "report": "clipboard",
+            "caller": "scripts/clipboard-shims/xclip:123 authenticated upload; scripts/clipboard-shims/wl-copy:64 _copy_text; scripts/ccc-x11-bridge:93 bridge_upload_local -> src/clipboard-server.ts:1236 POST /clipboard/text.",
+            "inwardOwner": "src/application/clipboard/text-write.ts:6 createClipboardTextWriter owns admission, generation invalidation and failure; src/domain/clipboard/text-write.ts:4 isValidClipboardText owns the UTF-8/NUL/1MiB rule.",
+            "nativeEffect": "src/clipboard-server.ts:159 prepareClipboardTextWriter selects pbcopy, xclip, wl-copy or shared Windows/WSL PowerShell; :201 executeClipboardTextWrite owns child/stdin and 5000ms failure bound.",
+            "exports": "src/clipboard-server.ts:1093 writeClipboardText retains the direct named source binding.",
+            "authority": "Bearer authentication precedes HTTP body/write dispatch; shared clipboardState generation invalidates stale reads. Native timeout attempts kill without proving kill success."
+          },
+          {
+            "id": "OP-clipboard-read",
+            "bindingIds": [
+              "BIND-clipboard-read-darwin-targets",
+              "BIND-clipboard-read-darwin-text",
+              "BIND-clipboard-read-darwin-png",
+              "BIND-clipboard-read-darwin-bmp",
+              "BIND-clipboard-read-windows-targets",
+              "BIND-clipboard-read-windows-text",
+              "BIND-clipboard-read-windows-png",
+              "BIND-clipboard-read-windows-bmp",
+              "BIND-clipboard-read-wsl-targets",
+              "BIND-clipboard-read-wsl-text",
+              "BIND-clipboard-read-wsl-png",
+              "BIND-clipboard-read-wsl-bmp",
+              "BIND-clipboard-read-linux-x11-targets",
+              "BIND-clipboard-read-linux-x11-text",
+              "BIND-clipboard-read-linux-x11-png",
+              "BIND-clipboard-read-linux-x11-bmp",
+              "BIND-clipboard-read-linux-wayland-targets",
+              "BIND-clipboard-read-linux-wayland-text",
+              "BIND-clipboard-read-linux-wayland-png",
+              "BIND-clipboard-read-linux-wayland-bmp"
+            ],
+            "checkedBindingCount": 20,
+            "report": "clipboard",
+            "caller": "scripts/clipboard-shims/xclip:94, scripts/clipboard-shims/wl-paste:72 and src/codex-clipboard-image.ts:10 readClipboardImagePng -> src/clipboard-server.ts:1264/:1276/:1288 authenticated targets/text/image routes.",
+            "inwardOwner": "src/application/clipboard/snapshot.ts:46 createClipboardSnapshotReader owns queue, coherent snapshot/cache and current-generation publication; src/domain/clipboard/snapshot.ts:19 shouldReuseClipboardCache owns reuse.",
+            "nativeEffect": "src/clipboard-server.ts:405 ensurePersistentDarwin, :506 ensurePersistentPS, :1039 captureNativeClipboard and :1099/:1127/:1145 Linux targets/text/image leaves cover all twenty platform-format bindings.",
+            "exports": "src/clipboard-server.ts:1196 createClipboardServer and :44 compatibility reexports remain source declarations.",
+            "authority": "One shared cache/generation/readQueue spans server contexts; native helpers own framed transactions and file effects. Windows helper prewarm occurs at construction, separate from per-request authentication."
+          },
+          {
+            "id": "OP-clipboard-server-ensure",
+            "bindingIds": [
+              "BIND-source-clipboard-server-ensure"
+            ],
+            "checkedBindingCount": 1,
+            "report": "clipboard",
+            "caller": "src/index.ts:353 containerExec composition -> src/application/container-exec.ts:94 ensureClipboard -> src/composition/container-exec.ts:142 ensureClipboardServer.",
+            "inwardOwner": "src/application/clipboard/server-lifecycle.ts:7 createClipboardServerLifecycle/:11 ensureClipboardServer owns reuse, startup wait, upgrade bind-user veto and version/health admission.",
+            "nativeEffect": "src/clipboard-server.ts:1458 native lifecycle composition delegates port files, authenticated health/shutdown and daemon launch; src/clipboard-startup-lock.ts:25/:44/:60 supplies claim/release/dead-owner recovery; src/clipboard-server.ts:1528 --serve publishes after listen.",
+            "exports": "src/clipboard-server.ts:1483 ensureClipboardServer remains the source facade.",
+            "authority": "Existing token/identity startup claim and bind-user check retained; container-exec catches unavailable ensure to null. Launch/poll existence is not runtime acceptance."
+          },
+          {
+            "id": "OP-clipboard-server-retire",
+            "bindingIds": [
+              "BIND-source-clipboard-server-retire"
+            ],
+            "checkedBindingCount": 0,
+            "report": "clipboard",
+            "caller": "No production invocation found for retained stop/retire exports. src/index.ts:925 supplies a deprecated migration option that current migration does not consume. Actual orphan path: src/clipboard-server.ts:1318 daemon watchdog -> :1488 hasAnyActiveSessionsExcept.",
+            "inwardOwner": "src/application/clipboard/server-lifecycle.ts:77 stopClipboardServerIfLast/:84 retireClipboardServerFromPortFile retain bind-user veto; src/domain/clipboard/server-lifecycle.ts:12 clipboardServerOrphanWatchdogState owns current watchdog decisions.",
+            "nativeEffect": "src/clipboard-server.ts:1395 shutdownServer -> :1229 authenticated /shutdown -> :1184 gracefulShutdown closes owned server/helpers; src/clipboard-bind-users.ts:7 clipboardPortMayHaveBindUsers supplies veto.",
+            "exports": "src/clipboard-server.ts:1483 stopClipboardServerIfLast / retireClipboardServerFromPortFile remain compatibility exports; reachability is unresolved.",
+            "authority": "Retained BIND-source-clipboard-server-retire is unresolved, not source-checked. Conservative session observation/watchdog is distinct from the uncalled API; no arbitrary process kill or session-teardown proof."
+          },
+          {
+            "id": "OP-codex-launch",
+            "bindingIds": [
+              "BIND-source-codex-launch"
+            ],
+            "checkedBindingCount": 1,
+            "report": "sessions",
+            "caller": "src/index.ts:1238/:1246/:1249 tool dispatch -> src/application/container-exec.ts:301 prepareCodexCommand -> src/composition/container-exec.ts:224 -> src/codex-launch.ts:77 prepareCodexLaunchSemantic.",
+            "inwardOwner": "src/domain/tool-session/codex-launch.ts:17 interactiveCommand owns argv selection; src/application/tool-session/codex-launch.ts:5 prepare owns positive-absence/support admission, profile refusal, one initialization and qualified fallback.",
+            "nativeEffect": "src/codex-launch.ts:83 native probes/initialization and :48 presentCodexLaunchPreparation; src/composition/container-exec.ts:230 launchCommand delegates to src/container-command.ts:3 runContainerCommand.",
+            "exports": "src/codex-launch.ts:68 prepareCodexLaunch is retained; :77 prepareCodexLaunchSemantic is current CLI route; :8 isInteractiveCodexCommand and :48 presenter remain exported.",
+            "authority": "Native Codex owns package/session state; outer container-exec retains session/config claim and prepared-artifact cleanup. Inconclusive probe preserves argv except recognized engine-unavailable refusal; fallback requires exact incomplete-installation evidence plus supported help."
+          },
+          {
+            "id": "OP-codex-resume",
+            "bindingIds": [
+              "BIND-source-codex-resume"
+            ],
+            "checkedBindingCount": 1,
+            "report": "sessions",
+            "caller": "src/application/container-exec.ts:307 terminal Codex gate -> src/composition/container-exec.ts:230 launchCommand -> src/codex-resume-recovery.ts:5 builder -> package.json:39 declared bundle entry -> src/codex-resume-recovery-entry.ts:18 main -> src/codex-resume-recovery-runtime.ts:31 runCodexResumeRecovery.",
+            "inwardOwner": "src/domain/tool-session/codex-resume.ts:45 selectCodexResumeRecovery owns supported prompt-free plans; src/application/tool-session/codex-resume-recovery.ts:9 runCodexResumeRecovery owns qualification, scoped metadata fallback, one retry and finally disposal.",
+            "nativeEffect": "src/codex-resume-diagnostics.ts:9 failedResumeRollout proves canonical path/UUID; src/codex-resume-recovery-runtime.ts:36 supplies target-only migration; src/codex-resume-metadata.ts:15 restoreResumeMetadata uses native app-server; src/codex-resume-process.ts:40 createResumeProcessRunner owns children/signals/capture.",
+            "exports": "src/codex-resume-recovery.ts:5 buildCodexResumeRecoveryCommand; src/codex-resume-recovery-runtime.ts:31 runCodexResumeRecovery and :7 CodexResumeRecoveryPlan remain source exports. package.json:39 is a bundle recipe, not artifact proof.",
+            "authority": "Native Codex owns rollout/SQLite/metadata writes; canonical home/path/UUID and native outcome gates precede retry. No direct database edit or new recovery lock/journal; missing bundle returns original command with warning."
+          },
+          {
+            "id": "OP-codex-clipboard-attachment",
+            "bindingIds": [
+              "BIND-codex-clipboard-attachment"
+            ],
+            "checkedBindingCount": 1,
+            "report": "sessions",
+            "caller": "src/application/container-exec.ts:265 -> :41 attachContainerExecClipboardImage -> src/composition/container-exec.ts:188 -> src/codex-clipboard-image.ts:48 maybeAttachCodexClipboardImage. src/index.ts:303 is retained delegating helper.",
+            "inwardOwner": "src/domain/tool-session/codex-clipboard-image.ts:58 injectCodexClipboardImageArgs owns eligibility/order; src/application/tool-session/codex-clipboard-image.ts:16 maybeAttachCodexClipboardImage owns prerequisite admission, plan-before-read and publication ordering.",
+            "nativeEffect": "src/codex-clipboard-image.ts:10 readClipboardImagePng performs bearer HTTP GET; :38 attachment supplies native time/path/mkdir/write for project .omx/clipboard-images artifact.",
+            "exports": "src/codex-clipboard-image.ts:48 maybeAttachCodexClipboardImage, :10 readClipboardImagePng, :47 buildCodexClipboardImageRelativePath and :7 argument helper/prompt remain; src/index.ts:303 helper is not the live CLI callsite.",
+            "authority": "Discovered URL/token is reused; unavailable image preserves argv. Filesystem errors propagate. No attachment-specific lock, cleanup, image validation, size cap or timeout is inferred."
+          },
+          {
+            "id": "OP-codex-harness-bootstrap",
+            "bindingIds": [
+              "BIND-codex-harness-bootstrap"
+            ],
+            "checkedBindingCount": 1,
+            "report": "sessions",
+            "caller": "src/application/container-exec.ts:241 Codex branch -> src/composition/container-exec.ts:184 -> src/codex-harness.ts:5 ensureCodexHarness -> src/adapters/codex-harness-bootstrap.ts:108 composed CODEX_HARNESS_BOOTSTRAP -> src/application/codex-harness-bootstrap.ts:55 run_bootstrap.",
+            "inwardOwner": "src/application/codex-harness.ts:8 ensure owns locked host workflow/finally restoration; src/application/codex-harness-bootstrap.ts:3 probe/:55 run_bootstrap and src/domain/codex-harness-bootstrap.ts:2 executed Python policy own readiness, trusted interpreter restoration and pinned-install admission.",
+            "nativeEffect": "src/adapters/codex-harness.ts:12 executeBootstrap supplies runtime/Python stdin and 135s host bound; src/adapters/codex-harness-bootstrap.ts:14 run owns 120s group deadline, :77 fetch_pinned_revision and :91 restore_interpreter retain Git/install/Mise mechanisms.",
+            "exports": "src/codex-harness.ts:5 ensureCodexHarness and :3 CODEX_HARNESS_BOOTSTRAP; src/application/codex-harness.ts:4 createCodexHarness remain source exports.",
+            "authority": "Existing Codex config lock encloses prepare/bootstrap/restore access. Disabled/custom/incomplete/trust-mismatched state is preserved; fetched revision checked before install. Ordinary failure warns/continues; throwing warning sink propagates. No install executed by this audit."
+          },
+          {
+            "id": "OP-remote-exec",
+            "bindingIds": [
+              "BIND-source-remote-exec"
+            ],
+            "checkedBindingCount": 1,
+            "report": "remote",
+            "caller": "src/index.ts:1157 remoteExec -> src/remote.ts:17 facade/:11 native composition -> src/application/remote-services.ts:49 remoteExec -> src/application/remote-sync.ts:5 ensureSync/:37 waitForSync.",
+            "inwardOwner": "src/application/remote-services.ts:49 remoteExec owns host/config/reservation/session/heartbeat/SSH/cleanup orchestration; src/application/remote-sync.ts:4 createRemoteSync owns captured-ID endpoint reuse and deadline decisions.",
+            "nativeEffect": "src/adapters/remote-services.ts:193 reserveContainer/:203 refreshReservation/:211 stopReservedContainer/:246 createSync/:282 startInteractiveSession; src/adapters/remote-shell.ts:12 remoteLifecycleShell/:64 remoteSessionReservationShell retain shell/file/SSH identity mechanisms.",
+            "exports": "src/remote.ts:17 remoteExec and :5 helpers; src/application/remote-services.ts:275 factory return remain source exports; package.json:6 declares ccc.",
+            "authority": "Local lifecycle/session claims plus remote token/name/captured-ID fences remain distinct. False heartbeat refresh warns and continues; native stop independently checks identity/peers. Project-only Mutagen name has documented cross-authority ceiling. No durable application journal."
+          },
+          {
+            "id": "OP-remote-setup",
+            "bindingIds": [
+              "BIND-source-remote-setup"
+            ],
+            "checkedBindingCount": 1,
+            "report": "remote",
+            "caller": "src/index.ts:1147 remoteSetup -> src/remote.ts:18 -> src/application/remote-services.ts:214 remoteSetup.",
+            "inwardOwner": "src/application/remote-services.ts:214 remoteSetup owns ordered tool observation, missing-tool early return and guide/status events.",
+            "nativeEffect": "src/adapters/remote-services.ts:184 observeTool runs tailscale/mutagen version; :37 report renders installation examples without executing installers.",
+            "exports": "src/remote.ts:18 remoteSetup and src/application/remote-services.ts:275 factory return remain source exports; package.json:6 declares ccc.",
+            "authority": "No service-local config/lease/container mutation or session lock. The shared CLI prelude may migrate home/create a built-in profile/prepare a worktree; service scope is not whole-invocation read-only."
+          },
+          {
+            "id": "OP-remote-check",
+            "bindingIds": [
+              "BIND-source-remote-check"
+            ],
+            "checkedBindingCount": 1,
+            "report": "remote",
+            "caller": "src/index.ts:1149 remoteCheck -> src/remote.ts:19 -> src/application/remote-services.ts:231 remoteCheck/:29 loadRemoteConfig.",
+            "inwardOwner": "src/application/remote-services.ts:231 remoteCheck owns conditional config/reach/sync observations and status events; :29 loadRemoteConfig chooses canonical map before decoded legacy fallback.",
+            "nativeEffect": "src/adapters/remote-services.ts:184 observeTool/:188 isHostReachable/:252 readRemoteConfigs/:256 prepareLegacyConfigReader/:222 observeSync retain version/ping/config/Mutagen observations.",
+            "exports": "src/remote.ts:19 remoteCheck and src/application/remote-services.ts:275 factory return remain source exports; package.json:6 declares ccc.",
+            "authority": "Read-only within the service: no claim, lease, sync mutation or container start. Shared CLI prelude effects remain separately qualified; diagnostic output is not native acceptance."
+          },
+          {
+            "id": "OP-remote-terminate",
+            "bindingIds": [
+              "BIND-source-remote-terminate"
+            ],
+            "checkedBindingCount": 1,
+            "report": "remote",
+            "caller": "src/index.ts:1151 remoteTerminate -> src/remote.ts:20 -> src/application/remote-services.ts:263 remoteTerminate.",
+            "inwardOwner": "src/application/remote-services.ts:263 remoteTerminate selects current-project sync, returns on unavailable observation and dispatches void termination; src/ports/remote-services.ts:24 terminateSync supplies no success receipt.",
+            "nativeEffect": "src/adapters/remote-services.ts:20 getMutagenSessionName/:222 observeSync/:237 terminateSync select project-only name, list and optionally terminate; returned native status/error is ignored while thrown failure propagates.",
+            "exports": "src/remote.ts:20 remoteTerminate and src/application/remote-services.ts:275 factory return remain source exports; package.json:6 declares ccc.",
+            "authority": "No container-stop, remote reservation or service-local lifecycle-lock authority. Project-only sync may be shared across remote authorities; rendered terminated notice is not a native success receipt."
+          },
+          {
+            "id": "OP-localhost-proxy",
+            "bindingIds": [
+              "BIND-source-localhost-proxy"
+            ],
+            "checkedBindingCount": 1,
+            "report": "transports",
+            "caller": "Production: scripts/ccc-entrypoint.sh:147 start_proxy_daemon -> scripts/localhost-proxy/main.go:98 main/:88 handleConn -> scripts/localhost-proxy/application.go:3 routeProxyConnection. Retained TS API: src/localhost-proxy.ts:56 startProxy/:47 proxyConnection.",
+            "inwardOwner": "scripts/localhost-proxy/application.go:3 routeProxyConnection and src/application/localhost-proxy.ts:7 proxyConnection own local-first/host-fallback routing and captured connection lifetime.",
+            "nativeEffect": "scripts/localhost-proxy/main.go:32 getOriginalDstPort/:69 tryConnect/:75 pipe; src/localhost-proxy.ts:19 tryConnect; scripts/ccc-entrypoint.sh:81 setup_iptables retains privileged NAT/start policy.",
+            "exports": "src/localhost-proxy.ts:13 PROXY_PORT/:19 tryConnect/:47 proxyConnection/:56 startProxy/:82 stopProxy retain TS source API; Go main is actual declared container executable path.",
+            "authority": "Loopback binding/original-destination/kernel UID exclusion, without per-connection app authentication. No operation lock/journal/generation guard; captured socket cleanup does not certify daemon/native reliability."
+          },
+          {
+            "id": "OP-localhost-proxy-setup",
+            "bindingIds": [
+              "BIND-source-localhost-proxy-setup"
+            ],
+            "checkedBindingCount": 1,
+            "report": "transports",
+            "caller": "src/application/container-exec.ts:201 fresh setupProxy -> src/composition/container-exec.ts:178 -> src/localhost-proxy-setup.ts:40 setupLocalhostProxy; reused container setup skips this verifier.",
+            "inwardOwner": "src/application/localhost-proxy-setup.ts:8 setup owns Linux-local early return, 1500ms direct-reach test, debug report and exact warning decisions.",
+            "nativeEffect": "src/network-reach.ts:41 detectHostNetworkReach probes host.docker.internal:53; src/localhost-proxy-setup.ts:24 observeProxyListener reads exact loopback:19999 LISTEN entry in /proc/net/tcp without connecting to that port.",
+            "exports": "src/localhost-proxy-setup.ts:40 setupLocalhostProxy and src/application/localhost-proxy-setup.ts:3 createLocalhostProxyVerifier remain source exports.",
+            "authority": "Own-port no-probe claim is verifier-scoped. scripts/ccc-entrypoint.sh:81 setup_iptables retains separate native entrypoint authority; socket-table observation does not prove daemon process identity."
+          },
+          {
+            "id": "OP-mcp-forward",
+            "bindingIds": [
+              "BIND-source-mcp-forward"
+            ],
+            "checkedBindingCount": 1,
+            "report": "transports",
+            "caller": "src/application/container-exec.ts:198 fresh/:215 reused buildMcpConfig -> src/composition/container-exec.ts:177 -> src/mcp-forward.ts:13 buildMcpConfig.",
+            "inwardOwner": "src/application/mcp-forward.ts:18 build owns lock/restore/prepare/render/publication order; src/domain/mcp-forward.ts:44 forwardHostMcpServers owns filter/rewrite; src/domain/mcp-managed-toml.ts:264 renderCodexManagedMcpConfig owns raw-statement selection/rendering.",
+            "nativeEffect": "src/adapters/mcp-forward.ts:33 createNativeMcpConfigPorts/:68 publishCodexProfile supply paths/direct writes; src/codex-config-lock.ts:9 withCodexConfigLock supplies existing profile mutation lock. Claude publication follows outside Codex lock.",
+            "exports": "src/mcp-forward.ts:5 rewriteLocalhostUrl/processServerForContainer reexports, :8 readHostMcpServers and :13 buildMcpConfig remain source exports.",
+            "authority": "Config generation does not execute forwarded commands/authenticate servers. Claude unrelated fields are preserved semantically then reserialized; Codex unmanaged raw statements retain content with final-whitespace normalization. No universal byte identity, cross-file atomicity, rollback or new authentication proof."
+          },
+          {
+            "id": "OP-clipboard-x11-sync",
+            "bindingIds": [
+              "BIND-source-clipboard-x11-sync"
+            ],
+            "checkedBindingCount": 1,
+            "report": "transports",
+            "caller": "src/application/container-exec.ts:247 syncClipboard/:269 startClipboardBridge -> src/composition/container-exec.ts:185/:194 -> src/docker.ts:1125 syncClipboardShims and scripts/ccc-x11-bridge:146 bridge_main/:103 bridge_cycle -> :17 sourced canonical library.",
+            "inwardOwner": "scripts/lib/clipboard-x11-sync.sh:2 clipboard_x11_sync_init/:8 clipboard_x11_sync_apply_host/:18 clipboard_x11_sync_cycle own host-first initialization, local priority, oversize refusal, retry/no-echo baselines and reread-before-overwrite.",
+            "nativeEffect": "scripts/ccc-x11-bridge:39 bridge_read_local/:59 bridge_http_get/:83 bridge_apply_host/:93 bridge_upload_local retain byte/X11/HTTP leaves; :146 bridge_main retains startup claim, generation/replacement and Xvfb; src/docker.ts:1125 stages both script and policy.",
+            "exports": "src/docker.ts:1125 syncClipboardShims; scripts/ccc-x11-bridge:19 bridge_init/:103 bridge_cycle/:146 bridge_main; canonical sourced functions at scripts/lib/clipboard-x11-sync.sh:2/:8/:18. package.json:28 and three container recipes declare assets only.",
+            "authority": "Startup flock plus PID/path/start-token/script+policy generation guards replacement; exit-record unlink is PID-only. Detached startup/final bridge move are unchecked, no explicit shell image-byte cap is inferred, and daemon/Xvfb/native/install reliability remains unexecuted."
+          }
+        ]
+      }
     },
     {
       "id": "mcp-request-selection-structural",
@@ -3965,7 +4281,7 @@
     "pendingGroups": 0,
     "remainingGroups": 8,
     "sourceUniverseCertified": false,
-    "scope": "완료15/23(65.2%)·잔여8개(부분5·진행3). R08/R12/R13/R14/R16은 구현·독립 Code/Security·Linux QA2를 마쳤고, R17/R18/R19 추가 의미 관측은9b12312에 통합되어 독립 Code/Security 및 Linux23whole948PASS·네 실제 공개 배포 형태·shipping을 확인했다. 두 작업의 필수 Windows 검증은 연결 불가로 보류되어 완료 credit 없음. 원래71473106 공동 FAIL·QEMU QA1·root QA1 실패와 기존 완료 기여를 보존한다. 추가 전원 경계cabb56a2의 실제 독립 local435/compiled170 검증은 통과했다. General 경계903ebab9는 실제 독립 리뷰·통합772PASS/3기존SKIP 및 compiled170+57·shipping/CLI를 통과했고 Windows는 보류 중이다. 실제 후속 Source 감사에서 mount·workspace 삭제·lab-state·macOS snapshot·mobile inventory/wireless 다섯 경계를 다음 병렬 작업으로 명시했다. 별도 mount audit·실기기/native 전체·reliability·전수 범위·formal 조건도 계속 미검증이다. Current five-seam Source827ba982 locally delivered with actual independent reviews and portable1244PASS/2existingSKIP plus compiled187, strict8 and shipping/CLI; required Windows remains BLOCKED_ENV. Original QA1 fixture failure is retained. Additional Windows Codex recovery authorization Source gap is explicitly pending in R12; no completion credit or exhaustive certification.",
+    "scope": "완료15/23(65.2%)·잔여8개(부분5·진행3). R08/R12/R13/R14/R16은 구현·독립 Code/Security·Linux QA2를 마쳤고, R17/R18/R19 추가 의미 관측은9b12312에 통합되어 독립 Code/Security 및 Linux23whole948PASS·네 실제 공개 배포 형태·shipping을 확인했다. 두 작업의 필수 Windows 검증은 연결 불가로 보류되어 완료 credit 없음. 원래71473106 공동 FAIL·QEMU QA1·root QA1 실패와 기존 완료 기여를 보존한다. 추가 전원 경계cabb56a2의 실제 독립 local435/compiled170 검증은 통과했다. General 경계903ebab9는 실제 독립 리뷰·통합772PASS/3기존SKIP 및 compiled170+57·shipping/CLI를 통과했고 Windows는 보류 중이다. 실제 후속 Source 감사에서 mount·workspace 삭제·lab-state·macOS snapshot·mobile inventory/wireless 다섯 경계를 다음 병렬 작업으로 명시했다. 별도 mount audit·실기기/native 전체·reliability·전수 범위·formal 조건도 계속 미검증이다. Current five-seam Source827ba982 locally delivered with actual independent reviews and portable1244PASS/2existingSKIP plus compiled187, strict8 and shipping/CLI; required Windows remains BLOCKED_ENV. Original QA1 fixture failure is retained. Windows Codex recovery authorization Source is locally committed at5eb8a0d9 with actual independent Code/Security and149 qualified portable Source cases;125 actual-Windows cases remain unexecuted/BLOCKED_ENV in R12. No completion credit or exhaustive certification.",
     "currentQualificationTask": "TASK__qemu-native-framing-recovery-20261014",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",
