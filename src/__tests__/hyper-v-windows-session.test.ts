@@ -343,7 +343,7 @@ describe("Hyper-V Windows PowerShell session", () => {
             expect(child.written).toHaveLength(2);
 
             let deliveredSettled = false;
-            const delivered = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 400 }).then((result) => {
+            const delivered = Promise.resolve(session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 400 })).then((result) => {
                 deliveredSettled = true;
                 return result;
             });
@@ -368,7 +368,7 @@ describe("Hyper-V Windows PowerShell session", () => {
             expect(child.killed()).toBe(false);
 
             let neverRanSettled = false;
-            const neverRan = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 400 }).then((result) => {
+            const neverRan = Promise.resolve(session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 400 })).then((result) => {
                 neverRanSettled = true;
                 return result;
             });
