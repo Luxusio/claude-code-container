@@ -52,11 +52,12 @@ describe("distinct canonical authenticated broker Android policy", () => {
         expect(f.trace).toEqual(["live"]); expect(f.publications).toEqual([]);
     });
     it("broker create keeps native error identity and raw diagnostics while compensating before claim", async () => {
-        const f = brokerLifecyclePorts(), failure = { mode: "exec", provider: "avdmanager", status: 17, error: "raw error", stderr: "raw stderr", stdout: "raw stdout" };
+        const native = { status: 17, error: "raw error", stderr: "raw stderr", stdout: "raw stdout" };
+        const f = brokerLifecyclePorts(), failure = { ok: false, mode: "exec", provider: "avdmanager", receipt: { sequence: 0, native } };
         f.ports.executePrepared = () => failure;
         const result = await createBrokerAndroidEmulatorLifecycle(f.ports).create(f.input("device_create", { create: { createAvd: true, systemImage: "system-images;android-35;google_apis;x86_64", avdName: "ccc-owner-unit" } }));
         expect(result).toMatchObject({ kind: "provider-failed", error: "provider-command-failed", rollback: { ok: true } });
-        expect(result.execution).toBe(failure);
+        expect(result.execution).toBe(failure); expect(result.execution?.receipt?.native).toBe(native);
         expect(f.trace).toContain("remove-avd"); expect(f.trace).not.toContain("claim"); expect(f.current()).toBeUndefined();
     });
     it("broker create loser preserves an external winner and removes only its inactive owned artifacts", async () => {
@@ -84,18 +85,24 @@ describe("distinct canonical authenticated broker Android policy", () => {
     });
     it("a broker start boot failure leaves the original record while reporting the completed provider effect", async () => {
         const original = brokerDevice(), f = brokerLifecyclePorts(original);
-        f.ports.prepareBootProbe = () => ({ kind: "unavailable", observation: { mode: "noop", provider: "adb", status: null, error: "missing-adb" } });
+        const unavailable = { ok: false, mode: "noop", provider: "adb", receipt: { sequence: 0, native: { status: null, error: "missing-adb" } } };
+        f.ports.prepareBootProbe = () => ({ kind: "unavailable", observation: unavailable });
         const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }));
         expect(result).toMatchObject({ kind: "provider-failed", error: "provider-command-failed", invoked: true, mutatesHost: false, boot: { ok: false } });
+        expect(result.boot).toMatchObject({ reason: "probe-unavailable", error: unavailable });
+        expect(result.boot && !result.boot.ok && result.boot.reason === "probe-unavailable" ? result.boot.error : null).toBe(unavailable);
         expect(f.current()).toBe(original); expect(f.publications).toEqual([]); expect(f.commands).toHaveLength(1);
     });
     it("stop inventory uncertainty refuses final publication; a successful native effect cannot replace a successor", async () => {
         const original = { ...brokerDevice(), status: "running" }, f = brokerLifecyclePorts(original), app = createBrokerAndroidEmulatorLifecycle(f.ports);
-        f.ports.executePrepared = effect => ({ mode: "exec", provider: "adb", status: 0, stdout: effect.action === "stop-inventory" ? "missing inventory header" : "", stderr: "" });
+        const inventory = f.ports.observeStopInventory;
+        f.ports.observeStopInventory = (...args) => ({ ...inventory(...args), available: false });
         const uncertain = await app.stop(f.input("device_stop"));
         expect(uncertain).toMatchObject({ kind: "stop-unconfirmed", error: "android-emulator-stop-unconfirmed" }); expect(f.current()).toBe(original); expect(f.publications).toEqual([]);
         const successor = { ...original, extra: { raw: "successor" } };
-        f.ports.executePrepared = effect => { if (effect.action === "stop") f.replace(successor); return { mode: "exec", provider: "adb", status: 0, stdout: effect.action === "stop-inventory" ? "List of devices attached\n" : "", stderr: "" }; };
+        f.ports.observeStopInventory = inventory;
+        const execute = f.ports.executePrepared;
+        f.ports.executePrepared = (effect, options) => { if (effect.action === "stop") f.replace(successor); return execute(effect, options); };
         const conflicted = await app.stop(f.input("device_stop"));
         expect(conflicted).toMatchObject({ kind: "publication-conflict", error: "owner-device-state-conflict" }); expect(f.current()).toBe(successor);
     });

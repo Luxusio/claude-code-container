@@ -37,7 +37,7 @@ cp.spawnSync=function(command,args=[],options){
   process.send?.('native-enter');
   if(mode==='first'){const deadline=Date.now()+10000;while(!fs.existsSync(blocked)&&Date.now()<deadline)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);assert.equal(fs.existsSync(blocked),true,'second process must actually observe the held long lock')}
   fs.appendFileSync(log,JSON.stringify({kind:'exit',actor:mode})+'\\n');
-  return {status:mode==='failure'?7:0,stdout:'',stderr:mode==='failure'?'native-stop-failed':''};
+  return {status:mode==='failure'?7:0,stdout:'',stderr:mode==='failure'?'native-stop-failed':'',...(mode==='status-zero-error'?{error:new Error('native-status-zero-error')}:{})};
  }
  if(/powershell|pwsh/i.test(String(command)))return nativeSpawn(command,args,options); // Read-only own-process identity adapter on Windows.
  throw Error('unexpected native command: '+command+' '+JSON.stringify(args));
@@ -70,13 +70,13 @@ if(mode==='seed'){
 function output(text: string): { device: Record<string, unknown>; result: { isError?: boolean; content?: { text: string }[] }; lockExists: boolean; cancelExists: boolean } { return JSON.parse(text.trim().split(/\r?\n/).at(-1)!); }
 
 describe("actual public Sandbox facade with private native/state adapters", () => {
-    it("retains native argv/budget, actual claim release and CURRENT auxiliary fields", () => {
+    it.each(["success", "status-zero-error"])("retains native argv/budget, actual claim release and CURRENT auxiliary fields (%s)", mode => {
         const f = fixture();
         try {
-            const execution = f.execute("success"); expect(execution.status, execution.stderr).toBe(0); const value = output(execution.stdout);
+            const execution = f.execute(mode); expect(execution.status, execution.stderr).toBe(0); const value = output(execution.stdout);
             expect(value.result.isError).not.toBe(true); expect(value.device).toMatchObject({ status: "stopped", sandboxId: guid, lifecycle: null, singletonClaimId: null, recording: { active: true, runtimeId: "recording" }, minimizeWatchdogLaunch: { pid: 17 }, helperSessionLaunch: { ok: true, minimizeWatchdogPid: null } });
             expect(value.lockExists).toBe(false); expect(value.cancelExists).toBe(true);
-            const trace = readFileSync(f.log, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line)); expect(trace.filter(row => row.kind === "enter" || row.kind === "exit")).toEqual([{ kind: "enter", actor: "success", args: ["stop", "--id", guid], timeout: 60000 }, { kind: "exit", actor: "success" }]);
+            const trace = readFileSync(f.log, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line)); expect(trace.filter(row => row.kind === "enter" || row.kind === "exit")).toEqual([{ kind: "enter", actor: mode, args: ["stop", "--id", guid], timeout: 60000 }, { kind: "exit", actor: mode }]);
         } finally { rmSync(f.home, { recursive: true, force: true }); }
     });
     it("preserves retry state and actual singleton on native failure", () => {

@@ -139,10 +139,9 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
             try {
                 const remaining = deadline - ports.now();
                 if (remaining <= 0) break;
-                const inventory = ports.executePrepared(preparation.effect, { timeoutMs: Math.min(10000, remaining), outputLimit: ports.outputLimit });
-                const lines = String(inventory.stdout || "").split(/\r?\n/).map(line => line.trim());
-                if (!brokerAndroidCommandSucceeded(inventory) || inventory.timedOut || inventory.outputLimitExceeded || !lines.includes("List of devices attached")) return "inventory-unavailable";
-                serialPresent = lines.some(line => line.split(/\s+/)[0] === serial);
+                const inventory = ports.observeStopInventory(preparation.effect, serial, { timeoutMs: Math.min(10000, remaining), outputLimit: ports.outputLimit });
+                if (!inventory.ok || !inventory.available) return "inventory-unavailable";
+                serialPresent = inventory.serialPresent;
             } catch { return "inventory-unavailable"; }
             const remaining = deadline - ports.now();
             if (remaining <= 0) break;
@@ -161,22 +160,17 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
         if (parsed.waitForBoot !== true) return {ok: true, ready: false, skipped: true};
         const serial = brokerAndroidSerial(device);
         const preparation = ports.prepareBootProbe(serial);
-        if (preparation.kind === "unavailable") return {ok: false, ready: false, error: preparation.observation};
+        if (preparation.kind === "unavailable") return {ok: false, ready: false, reason: "probe-unavailable", error: preparation.observation};
         const timeout = Number.isFinite(parsed.bootTimeoutMs) ? Math.min(600000, Math.max(1000, Number(parsed.bootTimeoutMs))) : 60000;
         const deadline = ports.now() + timeout;
         const attempts: BrokerAndroidProviderResult<Receipt>[] = [];
         while (ports.now() < deadline) {
-            const result = ports.executePrepared(preparation.effect, {timeoutMs: Math.min(ports.commandTimeoutMs, Math.max(1000, deadline - ports.now())), outputLimit: ports.outputLimit});
+            const result = ports.observeBootProbe(preparation.effect, {timeoutMs: Math.min(ports.commandTimeoutMs, Math.max(1000, deadline - ports.now())), outputLimit: ports.outputLimit});
             attempts.push(result);
-            if (brokerAndroidCommandSucceeded(result) && String(result.stdout || "").trim() === "1") return {ok: true, ready: true, result, attempts: attempts.slice(-4)};
+            if (result.ok && result.ready) return {ok: true, ready: true, result, attempts: attempts.slice(-4)};
             ports.sleep(Math.min(1000, Math.max(0, deadline - ports.now())));
         }
-        const last = attempts.at(-1);
-        return {ok: false, ready: false, error: {
-            mode: "exec", provider: "adb", receipt: last?.receipt,
-            status: last?.status ?? null, signal: last?.signal, stdout: last?.stdout, stderr: last?.stderr,
-            error: `Timed out waiting for Android emulator ${serial} to boot`,
-        }, attempts: attempts.slice(-8)};
+        return {ok: false, ready: false, reason: "deadline-exceeded", serial, last: attempts.at(-1), attempts: attempts.slice(-8)};
     }
 
     async function invoke(input: BrokerAndroidLifecycleInput<Effect>): Promise<BrokerAndroidLifecycleOutcome<Effect, Receipt>> {

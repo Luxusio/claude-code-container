@@ -90,10 +90,10 @@ export function createBrokerDeviceStatus<Connection, Receipt>(ports: BrokerDevic
             ownerId, deviceId: request.deviceId, incarnationId: ports.incarnation(device) || "", vmId: text("vmId"), vmName: text("vmName"),
         }, deadline) : hyperV ? await ports.observeHyperVFallback(availability.connection, deadline) : ports.observe(availability.connection);
         if (hyperV && ports.deadlineExpired(deadline)) return failure(ownerId, request, "deadline", "hyper-v-operation-deadline-exceeded");
-        let success = ports.succeeded(execution) || deviceStatusStoppedAndroid(request, plan.device, execution);
-        const observation = hyperV && success ? ports.parseVm(execution.stdout || "") : null;
+        let success = execution.ok || deviceStatusStoppedAndroid(request, plan.device, execution);
+        const observation = hyperV && success ? execution.vm : null;
         if (success && hyperV) success = Boolean(observation && text("vmId") && observation.vmId === text("vmId").toLowerCase() && observation.vmName === text("vmName"));
-        const projected = success ? projectDeviceStatus(ownerId, request, plan.device, execution, observation, ports.succeeded(execution), ports.timestamp) : plan.device;
+        const projected = success ? projectDeviceStatus(ownerId, request, plan.device, execution, observation, execution.ok, ports.timestamp) : plan.device;
         if (success) return {kind: "observed", plan, device: projected, execution};
         return {kind: "provider-failed", error: "provider-command-failed", plan, device: projected, execution,
             ...(hyperV ? {diagnostic: ports.diagnosticCode(execution, "hyper-v-provider-command-failed") || "hyper-v-provider-command-failed"} : {}),

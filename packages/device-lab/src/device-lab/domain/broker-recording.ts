@@ -1,4 +1,8 @@
-export type BrokerRecordingExecution = { status?: number | null; error?: string; pid?: number; processIdentity?: unknown; receipt: unknown };
+/** A settled native effect keeps process identity facts separate from its opaque receipt. */
+export type BrokerRecordingExecution = {
+    ok: boolean; refusal: "guard-refused" | null;
+    pid?: number; processIdentity?: unknown; receipt: unknown;
+};
 export type BrokerRecordingSignal = {attempted: boolean; ok: boolean; stale?: boolean; receipt: unknown};
 export type BrokerRecordingRefusal = {
     kind: "refused" | "uncertain";

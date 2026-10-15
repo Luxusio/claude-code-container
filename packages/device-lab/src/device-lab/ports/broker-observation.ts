@@ -1,4 +1,4 @@
-import type { DeviceStatusRequest, DeviceStatusOutcome, DeviceStatusPreparation, DeviceStatusPhysicalAdmission, DeviceStatusExecution, DeviceStatusVmObservation } from "../domain/broker-observation.js";
+import type { DeviceStatusRequest, DeviceStatusOutcome, DeviceStatusPreparation, DeviceStatusPhysicalAdmission, DeviceStatusExecution } from "../domain/broker-observation.js";
 import type { DiscoveryExecutable, DiscoveryImageCache, DiscoveryReadiness, LeaseDirectoryEntry, LeaseDirectoryInspection, LeaseDirectoryReader, OwnerInventory } from "../domain/broker-observation.js";
 import type { LifecyclePreviewRequest } from "../domain/broker-observation-command-plan.js";
 
@@ -111,8 +111,6 @@ export interface BrokerDeviceStatusPorts<Connection, Receipt> {
     observe(connection: Connection): DeviceStatusExecution<Receipt>;
     observeHyperVFallback(connection: Connection, deadline: number): Promise<DeviceStatusExecution<Receipt>>;
     typedStatus(connection: Connection, identity: {ownerId: string; deviceId: string; incarnationId: string; vmId: string; vmName: string}, deadline: number): Promise<DeviceStatusExecution<Receipt>>;
-    succeeded(execution: DeviceStatusExecution<Receipt>): boolean;
-    parseVm(stdout: string): DeviceStatusVmObservation | null;
     incarnation(device: Record<string, unknown>): string | null;
     validIncarnation(value: unknown): value is string;
     deadlineExpired(deadline: number): boolean;

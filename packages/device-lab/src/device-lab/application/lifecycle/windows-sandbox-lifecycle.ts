@@ -5,25 +5,25 @@ export function createBrokerWindowsSandboxLifecycle<Prepared, Receipt>(ports: Br
     type Ready = Extract<BrokerWindowsSandboxPrepared<Prepared>, {kind:'ready'}>;
     function runtimeSnapshot(effect: Ready): {ok:true;sandboxIds:string[]}|{ok:false;error:BrokerWindowsSandboxResult<Receipt>} {
         if (ports.platform !== 'win32') return {ok:true,sandboxIds:[]};
-        if (!effect.sandboxId) return {ok:false,error:{status:null,error:'windows-sandbox-start-missing-registration-metadata'}};
+        if (!effect.sandboxId) return {ok:false,error:{ok:false,error:'windows-sandbox-start-missing-registration-metadata',registrationFailure:'missing-metadata'}};
         const result = ports.listRuntime(effect.handle,{timeoutMs:10000,outputLimit:ports.outputLimit});
-        return succeeded(result) ? {ok:true,sandboxIds:ports.runtimeIds(result.stdout || '')} : {ok:false,error:{...result,error:result.error || 'windows-sandbox-runtime-snapshot-failed'}};
+        return succeeded(result) ? {ok:true,sandboxIds:result.ids} : {ok:false,error:result};
     }
     function registerRuntime(effect:Ready,baseline:string[]):{ok:true;sandboxId:string}|{ok:false;error:BrokerWindowsSandboxResult<Receipt>} {
         if (ports.platform !== 'win32') return {ok:true,sandboxId:effect.sandboxId || ''};
-        if (!effect.sandboxId) return {ok:false,error:{status:null,error:'windows-sandbox-start-missing-registration-metadata'}};
+        if (!effect.sandboxId) return {ok:false,error:{ok:false,error:'windows-sandbox-start-missing-registration-metadata',registrationFailure:'missing-metadata'}};
         const deadline=ports.now()+60000;
-        let last:BrokerWindowsSandboxResult<Receipt>|null=null;
+        let last:(BrokerWindowsSandboxResult<Receipt>&{ids:string[]})|null=null;
         while(ports.now()<=deadline) {
             last=ports.listRuntime(effect.handle,{timeoutMs:Math.min(10000,Math.max(1000,deadline-ports.now())),outputLimit:ports.outputLimit});
             if(succeeded(last)) {
-                const choice=brokerWindowsSandboxRuntimeChoice(ports.runtimeIds(last.stdout || ''),baseline,effect.sandboxId);
+                const choice=brokerWindowsSandboxRuntimeChoice(last.ids,baseline,effect.sandboxId);
                 if(choice.kind==='requested'||choice.kind==='single')return {ok:true,sandboxId:choice.id};
-                if(choice.kind==='ambiguous'||choice.kind==='preexisting')return {ok:false,error:{...last,error:choice.error}};
+                if(choice.kind==='ambiguous'||choice.kind==='preexisting')return {ok:false,error:{...last,ok:false,error:choice.error,registrationFailure:choice.kind}};
             }
             ports.sleep(500);
         }
-        return {ok:false,error:{status:last?.status??null,signal:last?.signal,stdout:last?.stdout,stderr:last?.stderr,timedOut:last?.timedOut,error:`No new Windows Sandbox runtime for ${effect.sandboxId} appeared in wsb list within 60000ms`}};
+        return {ok:false,error:{ok:false,receipt:last?.receipt,registrationFailure:'timeout',error:`No new Windows Sandbox runtime for ${effect.sandboxId} appeared in wsb list within 60000ms`}};
     }
     async function existing(input:BrokerWindowsSandboxInput<Prepared>):Promise<BrokerWindowsSandboxOutcome<Receipt>> {
         const {ownerId,parsed,device}=input;
@@ -55,7 +55,7 @@ export function createBrokerWindowsSandboxLifecycle<Prepared, Receipt>(ports: Br
         const startedAfter=helper?ports.timestampBefore(2000):null;
         const bounds={timeoutMs:ports.commandTimeoutMs,outputLimit:ports.outputLimit};
         const windowSnapshot=helper&&prepared.minimized&&ports.platform==='win32'?ports.snapshotWindows(bounds):null;
-        const handles=windowSnapshot&&succeeded(windowSnapshot)?ports.windowHandles(windowSnapshot.stdout||''):null;
+        const handles=windowSnapshot&&succeeded(windowSnapshot)?windowSnapshot.handles:null;
         const execution=ports.run(prepared.handle,bounds);
         let success=succeeded(execution);
         const mutatedHost=success||auxiliary?.result.changed===true||auxiliary?.result.appium.cleared===true||auxiliary?.result.recording.cleared===true||auxiliary?.result.minimizeWatchdog.cleared===true;
@@ -71,7 +71,7 @@ export function createBrokerWindowsSandboxLifecycle<Prepared, Receipt>(ports: Br
                 if(prepared.minimized&&ports.platform==='win32'&&helper&&startedAfter&&handles!==null) {
                     watchdog=ports.launchWatchdog(startedAfter,helper,handles,bounds);
                     if(!succeeded(watchdog))confirmation=watchdog;
-                }else if(prepared.minimized&&ports.platform==='win32'&&helper)confirmation={status:null,error:'windows-sandbox-window-baseline-unavailable'};
+                }else if(prepared.minimized&&ports.platform==='win32'&&helper)confirmation={ok:false,error:'windows-sandbox-window-baseline-unavailable',minimizeReason:'window-baseline-unavailable',minimizeWarning:'windows-sandbox-window-baseline-unavailable'};
                 if(prepared.minimized&&ports.platform==='win32'&&helper&&watchdog&&succeeded(watchdog))confirmation=ports.waitForMinimizeConfirmation(helper.minimizeWatchdogResultPath);
             }else {registration=registered.error;success=false;}
         }

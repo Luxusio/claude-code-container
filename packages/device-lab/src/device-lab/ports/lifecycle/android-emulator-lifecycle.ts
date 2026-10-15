@@ -1,4 +1,4 @@
-import type { BrokerAndroidClaim, BrokerAndroidLifecycleRequest, BrokerAndroidProviderResult, BrokerAndroidPublication, BrokerAndroidAuxiliaryCleanup, BrokerAndroidFailureReason, BrokerAndroidPreparation } from "../../domain/lifecycle/android-emulator-lifecycle.js";
+import type { BrokerAndroidClaim, BrokerAndroidLifecycleRequest, BrokerAndroidProviderResult, BrokerAndroidPublication, BrokerAndroidAuxiliaryCleanup, BrokerAndroidFailureReason, BrokerAndroidPreparation, BrokerAndroidStopInventoryObservation, BrokerAndroidBootProbeObservation } from "../../domain/lifecycle/android-emulator-lifecycle.js";
 
 export type BrokerAndroidLivePorts =
     | { ok: true; ports: Set<number> }
@@ -24,6 +24,8 @@ export type {BrokerAndroidAuxiliaryCleanup} from "../../domain/lifecycle/android
 /** Each port performs a native step; lifecycle ordering belongs to the application. */
 export interface BrokerAndroidEmulatorLifecyclePorts<Effect, Receipt> {
     readonly executePrepared: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidProviderResult<Receipt>;
+    readonly observeStopInventory: (effect: Effect, serial: string, options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidStopInventoryObservation<Receipt>;
+    readonly observeBootProbe: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidBootProbeObservation<Receipt>;
     readonly metadataObservation: (purpose: "create" | "delete-artifacts" | "delete-metadata", options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidProviderResult<Receipt>;
     readonly prepareStopInventory: () => {kind: "ready"; effect: Effect} | {kind: "unavailable"};
     readonly prepareBootProbe: (serial: string | null) => {kind: "ready"; effect: Effect} | {kind: "unavailable"; observation: BrokerAndroidProviderResult<Receipt>};

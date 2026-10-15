@@ -16,7 +16,7 @@ function recordingCapabilityContracts(ports: BrokerRecordingPorts, request: Brok
     // @ts-expect-error Android launch is a required finite native effect.
     createBrokerRecordingApplication(withoutAndroidLaunch);
     // @ts-expect-error Artifact pull must settle before publication.
-    createBrokerRecordingApplication({ ...ports, pullAndroidRecording: async () => ({ status: 0, receipt: {} }) });
+    createBrokerRecordingApplication({ ...ports, pullAndroidRecording: async () => ({ ok: true, refusal: null, receipt: {} }) });
     const context: BrokerRecordingArtifactContext = {
         ownerId: "owner", target: { stateKey: "android", backend: "android-emulator", device: { id: "pixel" } },
         recording: { active: false, runtimeId: "runtime", stoppedAt: "2026-10-13T00:00:00.000Z", artifactCopyPending: true, artifactCopied: true },

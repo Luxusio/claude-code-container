@@ -8,9 +8,14 @@ export interface BrokerWindowsSandboxRequest {
     dryRun: boolean;
     minimized?: boolean;
 }
+/** Settled native facts; receipt remains opaque to lifecycle policy. */
 export interface BrokerWindowsSandboxResult<Receipt = unknown> {
-    status?:number|null;signal?:string|null;stdout?:string;stderr?:string;error?:string;pid?:number;
-    timedOut?:boolean;outputLimitExceeded?:boolean;receipt?:Receipt;
+    ok:boolean;pid?:number;receipt?:Receipt;
+    /** Native-boundary or policy diagnostic override for outward presentation. */
+    error?:string;
+    registrationFailure?:'missing-metadata'|'ambiguous'|'preexisting'|'timeout';
+    minimizeReason?:'watchdog-launch-failed'|'not-confirmed'|'window-baseline-unavailable';
+    minimizeWarning?:string;
 }
 export type BrokerWindowsSandboxPrepared<Prepared> = {kind:'unavailable';error:string;missing:string[]} |
     {kind:'ready';handle:Prepared;operationKind:'runtime'|'metadata-only';sandboxId?:string;minimized:boolean};
@@ -45,7 +50,7 @@ export function brokerWindowsSandboxField(value: unknown, name: string): string 
     const field = (value as Record<string, unknown>)[name];
     return typeof field === 'string' && field ? field : null;
 }
-export function brokerWindowsSandboxCommandSucceeded(result: BrokerWindowsSandboxResult): boolean { return result.status === 0 && !result.error; }
+export function brokerWindowsSandboxCommandSucceeded(result: BrokerWindowsSandboxResult): boolean { return result.ok; }
 export function brokerWindowsSandboxRuntimeChoice(ids: string[], baseline: string[], expected: string): {
     kind: 'requested' | 'single';
     id: string;
@@ -77,7 +82,7 @@ export function brokerWindowsSandboxReplacement(candidate: unknown, change: Brok
             minimized: typeof change.minimized === 'boolean' ? change.minimized : device.minimized !== false,
             minimizeConfirmed: change.runtime.minimized && Boolean(change.confirmation && brokerWindowsSandboxCommandSucceeded(change.confirmation)),
             minimizeWarning: change.runtime.minimized && (!change.confirmation || !brokerWindowsSandboxCommandSucceeded(change.confirmation))
-                ? change.confirmation?.error || change.confirmation?.stderr || 'Windows Sandbox started, but window minimization was not confirmed' : null,
+                ? change.confirmation?.minimizeWarning || 'Windows Sandbox started, but window minimization was not confirmed' : null,
             ...(change.runtime.sandboxId ? { sandboxId: change.runtime.sandboxId } : {}),
             ...(change.runtime.requestedSandboxId ? { requestedSandboxId: change.runtime.requestedSandboxId } : {}),
             ...(typeof change.watchdog?.pid === 'number' ? { minimizeWatchdog: { pid: change.watchdog.pid, processOwner: 'host-broker', startedBy: 'broker.windows-sandbox.minimize-watchdog', timeoutMs: 180000, cancelPath: change.watchdogCancelPath } } : {}),

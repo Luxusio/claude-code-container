@@ -127,7 +127,9 @@ import {
 } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
 import { createDeviceLabHyperVWindowsNetworkClient, type DeviceLabHyperVAdministratorPurpose } from "./device-lab/broker/hyper-v/network-adapter.js";
 import { invokeDeviceLabHyperVGuestDirect } from "./device-lab/broker/hyper-v/guest-direct-adapter.js";
-import { deviceLabWindowsReadinessPorts } from "./device-lab/broker/hyper-v/guest-readiness-adapter.js";
+import { deviceLabWindowsReadinessPorts, deviceLabWindowsReadinessObservation, deviceLabHyperVReadinessFailure,
+    deviceLabHyperVLinuxReadinessObservation, deviceLabHyperVLinuxGuiReadinessObservation,
+    parseHyperVLinuxEd25519HostKeyFingerprints } from "./device-lab/broker/hyper-v/guest-readiness-adapter.js";
 import { provisionDeviceLabHyperVWindowsGuest } from "./device-lab/broker/hyper-v/windows-guest-provisioning.js";
 import { attachDeviceLabHyperVLinuxSeedMedia, inspectDeviceLabHyperVLinuxSeedTarget, linuxSeedFailureCode } from "./device-lab/broker/hyper-v/linux-seed-provisioning.js";
 import { readDeviceLabHyperVGuestBootDiagnostic } from "./device-lab/broker/hyper-v/guest-boot-diagnostic-adapter.js";
@@ -158,7 +160,7 @@ import {
     restoreDeviceLabHyperVSnapshot,
 } from "./device-lab/broker/hyper-v/snapshots.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
-import { decodeHyperVLinuxSeedObservation, hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
+import { decodeHyperVLinuxSeedObservation, hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVGuestProvisionObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "@ccc/device-lab/device-lab/providers/ios-simulator.js";
 import { DEVICE_LAB_VERSION } from "./version.js";
 
@@ -3512,7 +3514,12 @@ function observeBrokerRecordingProcess(identity: unknown, pid: number): {status:
 }
 
 function brokerRecordingApplication(normalized: NormalizedBrokerOptions) {
-    const observed = (receipt: ProviderCommandResult) => ({ status: receipt.status, error: receipt.error, pid: receipt.pid, processIdentity: receipt.processIdentity, receipt: new NativeBrokerExecutionReceipt(receipt) });
+    const observed = (receipt: ProviderCommandResult) => ({
+        ok: commandSucceeded(receipt),
+        refusal: ["recording-runtime-state-conflict", "physical-device-not-attached", "recording-process-identity-unavailable", "recording-process-not-broker-owned"].includes(receipt.error || "")
+            ? "guard-refused" as const : null,
+        pid: receipt.pid, processIdentity: receipt.processIdentity, receipt: new NativeBrokerExecutionReceipt(receipt),
+    });
     const launch = async (command: ProviderCommand, label: string) => observed(normalized.usesDefaultCommandRunner
         ? await startDetachedProviderCommand(command, normalized, label)
         : normalized.commandRunner(command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }));
@@ -6591,7 +6598,9 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         assertPrivateRoot:(owner,backend,id,root)=>{assertHyperVPrivateDeviceRoot(owner,backend,id,root);return undefined;},
         readable:(path,label,limit)=>withDeviceLabReadableFile(path,label,limit,()=>true)===true,
         mediaRetained:path=>{try{assertNoSymlinkPathComponents(path,"hyper-v-guest-provisioning-media");lstatSync(path);return true;}catch(error){return !error||typeof error!=="object"||!("code" in error)||error.code!=="ENOENT";}},
-        parseVm:parseHyperVVmObservation,parseProvision:parseHyperVGuestProvisionObservation,parseReady:parseHyperVGuestReadyObservation,parseReadyFailure:parseHyperVGuestReadyFailureObservation,
+        parseVm:parseHyperVVmObservation,parseProvision:parseHyperVGuestProvisionObservation,
+        observeWindowsReadiness: outcome => deviceLabWindowsReadinessObservation<ProviderCommandResult>(outcome),
+        readinessFailure: (backend, error, source) => deviceLabHyperVReadinessFailure<ProviderCommandResult>(backend, error, source),
         seedFailureCode:linuxSeedFailureCode,
         prepareLinuxSeed: (connection, request) => {
             const command = hyperVLinuxSeedCommand({executable: connection.executable, ...request});
@@ -6601,10 +6610,10 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
             };
         },
         prepareWindowsProvisionMedia: (connection, request) => hyperVGuestProvisionMediaCommand({executable: connection.executable, ...request}),
-        probeLinuxReadiness: async (connection, request, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
+        probeLinuxReadiness: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxReadinessObservation(nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit}))),
         finalizeLinuxNetwork: async (connection, request, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxNetworkFinalizeCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
-        probeLinuxGui: async (connection, request, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
-        prepareLinuxGui: async (connection, request, timeoutMs, outputLimit) => nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiPrepareCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
+        probeLinuxGui: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxGuiReadinessObservation(nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit}))),
+        prepareLinuxGui: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxGuiReadinessObservation(nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiPrepareCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit}))),
         inspectSeed:(connection,request,deadline)=>inspectDeviceLabHyperVLinuxSeedTarget({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
         attachSeed:(connection,request,deadline)=>attachDeviceLabHyperVLinuxSeedMedia({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
         provision: async (connection, request, deadline) => nativeHyperVObservation(await provisionDeviceLabHyperVWindowsGuest({executable: connection.executable, mediaCommand: request.media, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})})),
@@ -8306,7 +8315,7 @@ function providerFailureDetail(result: ProviderCommandResult): string {
 }
 
 export function hyperVLinuxGuestReadyTraceFailureCode(trace:HyperVLinuxGuestReadyTrace|null,fallback:string):string{return coreLinuxTraceFailure(trace,fallback);}
-export function compareHyperVLinuxEd25519HostKeyFingerprint(expectedFingerprint:string,sshDiagnostic:string):{observed:boolean;matchesExpected:boolean|null}{return coreLinuxFingerprint(expectedFingerprint,sshDiagnostic);}
+export function compareHyperVLinuxEd25519HostKeyFingerprint(expectedFingerprint:string,sshDiagnostic:string):{observed:boolean;matchesExpected:boolean|null}{return coreLinuxFingerprint(expectedFingerprint,parseHyperVLinuxEd25519HostKeyFingerprints(sshDiagnostic));}
 
 function commandToleratesMissingMacosVmDelete(parsed: CommandParamSuccess, result: ProviderCommandResult) {
     if (parsed.backend !== "macos-vm" || parsed.command !== "device_delete" || !parsed.force) return false;
@@ -8586,6 +8595,18 @@ function nativeAndroidFailureReason(status: number) {
 function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerAndroidEmulatorLifecyclePorts<NativeProviderLifecycleEffect, NativeBrokerExecutionReceipt> {
     return {
         executePrepared: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
+        observeStopInventory: (effect, serial, options) => {
+            const receipt = normalized.commandRunner(effect.command, options);
+            const lines = String(receipt.stdout || "").split(/\r?\n/).map(line => line.trim());
+            return { ...nativeLifecycleObservation(receipt),
+                available: !receipt.timedOut && !receipt.outputLimitExceeded && lines.includes("List of devices attached"),
+                serialPresent: lines.some(line => line.split(/\s+/)[0] === serial),
+            };
+        },
+        observeBootProbe: (effect, options) => {
+            const receipt = normalized.commandRunner(effect.command, options);
+            return { ...nativeLifecycleObservation(receipt), ready: String(receipt.stdout || "").trim() === "1" };
+        },
         metadataObservation: (purpose, options) => purpose === "create" ? nativeLifecycleObservation({ mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" })
             : nativeLifecycleObservation(normalized.commandRunner({ mode: "noop", provider: "host-broker-state", reason: purpose === "delete-metadata" ? "Android emulator deleteAvd=false deletes only owner broker metadata" : "Android AVD artifacts are removed by identity-fenced storage cleanup" }, options)),
         prepareStopInventory: () => { const adb = executableFor("adb", normalized); return adb ? { kind: "ready", effect: new NativeProviderLifecycleEffect({ mode: "exec", provider: "adb", executable: adb, args: ["devices", "-l"] }) } : { kind: "unavailable" }; },
@@ -8662,7 +8683,13 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
             return { kind: "ready", handle: new NativeProviderLifecycleEffect(command), operationKind: command.mode === "noop" ? "metadata-only" : "runtime", sandboxId: command.sandboxId, minimized: command.windowStyle === "minimized" };
         },
         run: (handle, options) => nativeLifecycleObservation(normalized.commandRunner(handle.command, options), handle.command),
-        listRuntime: (handle, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "exec", provider: "wsb", executable: handle.command.executable, args: ["list", "--raw"] }, options)),
+        listRuntime: (handle, options) => {
+            const receipt = normalized.commandRunner({ mode: "exec", provider: "wsb", executable: handle.command.executable, args: ["list", "--raw"] }, options);
+            const observed = nativeLifecycleObservation(receipt);
+            return { ...observed, ids: observed.ok ? windowsSandboxSessionIdsFromBrokerListOutput(receipt.stdout || "") : [],
+                ...(!observed.ok ? { error: receipt.error || "windows-sandbox-runtime-snapshot-failed" } : {}),
+            };
+        },
         isCanonicalConfig: (ownerId, deviceId, path) => resolve(path) === resolve(brokerWindowsConfigPath(ownerId, deviceId)),
         writeConfig: (ownerId, deviceId, device) => { writeBrokerWindowsConfig(ownerId, deviceId, device, normalized); return undefined; },
         claimSingleton: (ownerId, device, id) => claimBrokerWindowsSandboxLock(ownerId, device, id),
@@ -8670,11 +8697,23 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
         updateSingletonRuntimeId: (ownerId, device, claimed, runtime) => { updateBrokerWindowsSandboxLockRuntimeId(ownerId, device, claimed, runtime); return undefined; },
         helperPaths: (ownerId, deviceId) => brokerWindowsHelperPaths(ownerId, deviceId),
         removeMarker: path => { rmSync(path, { force: true }); return undefined; },
-        runtimeIds: output => windowsSandboxSessionIdsFromBrokerListOutput(output),
-        snapshotWindows: options => nativeLifecycleObservation(normalized.commandRunner({ mode: "exec", provider: "powershell", executable: "powershell.exe", args: windowsSandboxWindowHandleSnapshotArgs() }, options)),
-        windowHandles: output => windowsSandboxWindowHandlesFromOutput(output),
-        launchWatchdog: (startedAfter, paths, handles, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "detached", provider: "powershell", executable: "powershell.exe", args: windowsSandboxMinimizeWatchdogArgs(DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS, startedAfter, paths.minimizeWatchdogCancelPath, handles, paths.minimizeWatchdogResultPath) }, options)),
-        waitForMinimizeConfirmation: path => nativeLifecycleObservation(waitForBrokerWindowsMinimizeConfirmation(path)),
+        snapshotWindows: options => {
+            const receipt = normalized.commandRunner({ mode: "exec", provider: "powershell", executable: "powershell.exe", args: windowsSandboxWindowHandleSnapshotArgs() }, options);
+            const observed = nativeLifecycleObservation(receipt);
+            return { ...observed, handles: observed.ok ? windowsSandboxWindowHandlesFromOutput(receipt.stdout || "") : null };
+        },
+        launchWatchdog: (startedAfter, paths, handles, options) => {
+            const receipt = normalized.commandRunner({ mode: "detached", provider: "powershell", executable: "powershell.exe", args: windowsSandboxMinimizeWatchdogArgs(DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS, startedAfter, paths.minimizeWatchdogCancelPath, handles, paths.minimizeWatchdogResultPath) }, options);
+            const observed = nativeLifecycleObservation(receipt);
+            return { ...observed, ...(!observed.ok ? { minimizeReason: "watchdog-launch-failed" as const,
+                minimizeWarning: receipt.error || receipt.stderr || "Windows Sandbox started, but window minimization was not confirmed" } : {}) };
+        },
+        waitForMinimizeConfirmation: path => {
+            const receipt = waitForBrokerWindowsMinimizeConfirmation(path);
+            const observed = nativeLifecycleObservation(receipt);
+            return { ...observed, ...(!observed.ok ? { minimizeReason: "not-confirmed" as const,
+                minimizeWarning: receipt.error || receipt.stderr || "Windows Sandbox started, but window minimization was not confirmed" } : {}) };
+        },
         cancelWatchdog: (ownerId, deviceId) => cancelBrokerWindowsMinimizeWatchdog(ownerId, deviceId),
         cleanupAuxiliary: (ownerId, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(ownerId, parsed, normalized, expected),
         cleanArtifacts: (ownerId, deviceId) => normalized.windowsDeviceArtifactCleaner(ownerId, deviceId),
@@ -8701,14 +8740,19 @@ function brokerWindowsLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
 }
 
 function nativeLifecycleObservation(receipt: ProviderCommandResult, preparedCommand?: ProviderCommand) {
-    return { mode: receipt.mode, provider: receipt.provider, status: receipt.status, signal: receipt.signal, pid: receipt.pid,
-        stdout: receipt.stdout, stderr: receipt.stderr, error: receipt.error, timedOut: receipt.timedOut,
-        outputLimitExceeded: receipt.outputLimitExceeded, typedCreateInvalidResult: receipt.typedCreateInvalidResult,
+    return { mode: receipt.mode, provider: receipt.provider, ok: commandSucceeded(receipt), pid: receipt.pid,
+        typedCreateInvalidResult: receipt.typedCreateInvalidResult,
         receipt: new NativeBrokerExecutionReceipt(receipt, preparedCommand) };
 }
 function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIosSimulatorLifecyclePorts<NativeProviderLifecycleEffect> {
     return {
         execute: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
+        executeCreate: (effect, options) => {
+            const receipt = normalized.commandRunner(effect.command, options);
+            return { ...nativeLifecycleObservation(receipt),
+                createdUdid: commandSucceeded(receipt) && receipt.mode !== "noop" ? iosSimulatorCreatedUdid(receipt.stdout) : null,
+            };
+        },
         prepareCreate: input => {
             const executable = executableFor("xcrun", normalized);
             const command: NativeLifecycleCommand = iosSimulatorCreateCommand({ ...input, executable });
@@ -8723,7 +8767,7 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
             return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider: "xcrun", canCompensate: Boolean(executable), bootEligible: false };
         },
         prepareDelete: (effect, target) => new NativeProviderLifecycleEffect(iosSimulatorDeleteCommand(effect.command.executable || "", target)),
-        timestamp: () => new Date().toISOString(), createdUdid: iosSimulatorCreatedUdid,
+        timestamp: () => new Date().toISOString(),
         verifyOwnedTarget: (owner, device) => resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized),
         claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
         cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
@@ -8735,9 +8779,13 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
     };
 }
 function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerMacosVmLifecyclePorts<NativeProviderLifecycleEffect> {
+    const observed = (receipt: ProviderCommandResult) => {
+        const output = `${receipt.stderr || ""}\n${receipt.stdout || ""}`.toLowerCase();
+        return { ...nativeLifecycleObservation(receipt), resourceMissing: output.includes("does not exist") || output.includes("not found") };
+    };
     return {
-        executeMetadata: (purpose, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "noop", provider: "host-broker-state", reason: nativeMetadataDescription(purpose) }, options)),
-        execute: (effect, options) => nativeLifecycleObservation(normalized.commandRunner(effect.command, options)),
+        executeMetadata: (purpose, options) => observed(normalized.commandRunner({ mode: "noop", provider: "host-broker-state", reason: nativeMetadataDescription(purpose) }, options)),
+        execute: (effect, options) => observed(normalized.commandRunner(effect.command, options)),
         prepareCreate: ({ provider, image, instance }) => {
             const command: ProviderCommand = { mode: "exec", provider, executable: executableFor(provider, normalized), args: ["clone", image, instance] };
             return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider, canCompensate: Boolean(command.executable), bootEligible: false };
@@ -8750,7 +8798,10 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
             return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider, canCompensate: Boolean(executable), bootEligible: command.mode === "detached" && Boolean(executable) };
         },
         prepareDelete: (effect, target) => new NativeProviderLifecycleEffect({ mode: "exec", provider: effect.command.provider, executable: effect.command.executable, args: ["delete", target] }),
-        observeIp: (effect, instance, resolver, options) => nativeLifecycleObservation(normalized.commandRunner({ mode: "exec", provider: "tart", executable: effect.command.executable, args: resolver === "arp" ? ["ip", "--resolver=arp", instance] : ["ip", instance] }, options)),
+        observeIp: (effect, instance, resolver, options) => {
+            const receipt = normalized.commandRunner({ mode: "exec", provider: "tart", executable: effect.command.executable, args: resolver === "arp" ? ["ip", "--resolver=arp", instance] : ["ip", instance] }, options);
+            return { ...observed(receipt), address: String(receipt.stdout || "").trim() || null };
+        },
         timestamp: () => new Date().toISOString(), now: () => performance.now(), sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
         claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
         cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
@@ -8821,16 +8872,18 @@ function renderBrokerDeviceStatusWithDiagnostics(outcome: Parameters<typeof rend
 }
 
 function brokerDeviceStatusApplication(normalized: NormalizedBrokerOptions) {
-    const observed = (receipt: ProviderCommandResult) => ({mode: receipt.mode, provider: receipt.provider, status: receipt.status,
-        signal: receipt.signal, stdout: receipt.stdout, stderr: receipt.stderr, error: receipt.error,
-        timedOut: receipt.timedOut, outputLimitExceeded: receipt.outputLimitExceeded, receipt});
+    const observed = (receipt: ProviderCommandResult, hyperV = false) => ({
+        mode: receipt.mode, provider: receipt.provider, ok: commandSucceeded(receipt),
+        adbState: hyperV ? null : String(receipt.stdout || "").trim().toLowerCase(),
+        vm: hyperV && commandSucceeded(receipt) ? parseHyperVVmObservation(receipt.stdout || "") : null,
+        receipt,
+    });
     return createBrokerDeviceStatus<NativeStatusConnection, ProviderCommandResult>({
         preview: (owner, _request, params) => nativeStatusPreview(owner, params, normalized),
         refreshPhysicalLease: (owner, request, device) => nativePhysicalAdmission(owner, { stateKey: request.stateKey, backend: request.backend, device }, request.deviceId),
         observe: connection => { const receipt = normalized.commandRunner(connection.command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt); },
-        observeHyperVFallback: async (connection, deadline) => { const receipt = await hyperVProviderCommandRunner(normalized, connection.command, { timeoutMs: hyperVRemainingTimeout(deadline, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt); },
-        typedStatus: async (connection, identity, deadline) => { const receipt = await hyperVTypedStatusExecution(normalized, { ...identity, executable: connection.command.executable || "powershell.exe" }, deadline, 120000); return observed(receipt); },
-        succeeded: execution => commandSucceeded(execution), parseVm: parseHyperVVmObservation,
+        observeHyperVFallback: async (connection, deadline) => { const receipt = await hyperVProviderCommandRunner(normalized, connection.command, { timeoutMs: hyperVRemainingTimeout(deadline, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt, true); },
+        typedStatus: async (connection, identity, deadline) => { const receipt = await hyperVTypedStatusExecution(normalized, { ...identity, executable: connection.command.executable || "powershell.exe" }, deadline, 120000); return observed(receipt, true); },
         incarnation: hyperVDeviceIncarnationId, validIncarnation: validHyperVIncarnationId,
         deadlineExpired: hyperVOperationDeadlineExpired,
         assertDeadline: deadline => { assertHyperVOperationDeadline(deadline); return undefined; },

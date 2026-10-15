@@ -4,10 +4,13 @@ export interface BrokerIosLifecycleRequest {
     force: boolean; dryRun: boolean; headless?: boolean; waitForBoot?: boolean;
     bootTimeoutMs?: number; create?: Record<string, unknown>;
 }
+/** Settled native facts; command diagnostics remain in the opaque receipt. */
 export interface BrokerIosProviderResult {
-    mode: string; provider: string; status?: number | null; signal?: string | null;
-    stdout?: string; stderr?: string; error?: string; timedOut?: boolean;
-    outputLimitExceeded?: boolean; typedCreateInvalidResult?: boolean; receipt: unknown;
+    ok: boolean; mode: string; provider: string;
+    typedCreateInvalidResult?: boolean; receipt: unknown;
+}
+export interface BrokerIosCreateResult extends BrokerIosProviderResult {
+    createdUdid: string | null;
 }
 export type BrokerIosPlannedCommand<Effect> =
     {kind: "unavailable"; error: string; missing: string[]} |
@@ -39,7 +42,7 @@ export function brokerIosField(device: unknown, name: string): string | null {
     const value = (device as Record<string, unknown>)[name];
     return typeof value === "string" && value ? value : null;
 }
-export function brokerIosCommandSucceeded(result: BrokerIosProviderResult): boolean { return result.status === 0 && !result.error; }
+export function brokerIosCommandSucceeded(result: BrokerIosProviderResult): boolean { return result.ok; }
 function slug(value: unknown): string {
     return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0,48) || "device";
 }

@@ -74,6 +74,9 @@ describe("authenticated macOS broker lifecycle", () => {
             } },
         });
         expect(devices()[0]).not.toHaveProperty("lastBootCheck.result.receipt");
+        for (const field of ["ok", "createdUdid", "resourceMissing", "address"]) {
+            expect(devices()[0]).not.toHaveProperty(`lastBootCheck.result.${field}`);
+        }
         expect((await invoke(base, "device_stop", { deviceId })).status).toBe(200);
         expect(devices()[0]).toMatchObject({ status: "stopped", recording: null });
         expect((await invoke(base, "device_delete", { deviceId, confirmDestructive: true })).status).toBe(200);

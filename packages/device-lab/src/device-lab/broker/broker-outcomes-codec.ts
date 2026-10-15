@@ -41,7 +41,7 @@ export function renderBrokerDeviceStatus(outcome: DeviceStatusOutcome<NativeStat
         return { status: 200, payload: { ok: true, result: { ...publicPlan, invoked: false, dryRun: true,
                     execution: { mode: "dry-run", providerExecution: "available", mutatesHost: false } } } };
     const success = outcome.kind === "observed";
-    const execution = outcome.execution.receipt ?? outcome.execution;
+    const execution = outcome.execution.receipt;
     const descriptor = outcome.plan.availability.kind === "available" ? outcome.plan.availability.connection.command : null;
     return { status: success ? 200 : 502, payload: { ok: success,
             ...(success ? {} : { error: "provider-command-failed", detail: hyperV ? hyperVProviderDiagnosticCode(execution, "hyper-v-provider-command-failed") || "hyper-v-provider-command-failed" : failureDetail(execution) }),
@@ -84,7 +84,7 @@ export class NativeAppiumInstrumentationReceipt {
     }) { }
 }
 function recordingExecution(observation: BrokerRecordingExecution) {
-    const { receipt, ...facts } = observation;
+    const { receipt, ok: _ok, refusal: _refusal, ...facts } = observation;
     return receipt instanceof NativeBrokerExecutionReceipt ? receipt.value : facts;
 }
 function recordingSignal(observation: BrokerRecordingSignal) {
@@ -213,6 +213,18 @@ export type NativeLifecyclePresentation = {
 };
 type LifecycleObservation = {
     receipt?: unknown;
+    ok?: boolean;
+    available?: boolean;
+    serialPresent?: boolean;
+    ready?: boolean;
+    createdUdid?: string | null;
+    resourceMissing?: boolean;
+    address?: string | null;
+    ids?: unknown;
+    handles?: unknown;
+    registrationFailure?: unknown;
+    minimizeWarning?: unknown;
+    minimizeReason?: unknown;
     mode?: string;
     provider?: string;
     status?: number | null;
@@ -224,7 +236,16 @@ type LifecycleObservation = {
     outputLimitExceeded?: boolean;
 };
 export function renderBrokerLifecycleObservation(observed: LifecycleObservation): ProviderCommandResult {
-    const { receipt, ...facts } = observed;
+    const { receipt, ok: _ok, available: _available, serialPresent: _serialPresent, ready: _ready,
+        createdUdid: _createdUdid, resourceMissing: _resourceMissing, address: _address,
+        ids: _ids, handles: _handles, registrationFailure: _registrationFailure,
+        minimizeWarning: _minimizeWarning, minimizeReason: _minimizeReason, ...facts } = observed;
+    if (observed.minimizeReason === "window-baseline-unavailable")
+        return { mode: "exec", provider: "windows-sandbox-window", status: null, error: observed.error };
+    if (observed.registrationFailure === "missing-metadata")
+        return { mode: "exec", provider: "wsb", status: null, error: observed.error };
+    if (!(receipt instanceof NativeBrokerExecutionReceipt) && observed.mode === "noop" && observed.provider === "host-broker-state")
+        return { mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "", ...facts };
     return receipt instanceof NativeBrokerExecutionReceipt ? { ...receipt.value, ...facts, mode: observed.mode ?? receipt.value.mode, provider: observed.provider ?? receipt.value.provider }
         : { ...facts, mode: observed.mode ?? "exec", provider: observed.provider ?? "wsb" };
 }
@@ -239,20 +260,28 @@ export function renderBrokerProviderRollback(rollback: {
 export function renderBrokerMacosBoot(boot: BrokerMacosBoot, command: ProviderCommand) {
     if (boot.ok)
         return { ...boot, ...(boot.result ? { result: renderBrokerLifecycleObservation(boot.result) } : {}), ...(boot.attempts ? { attempts: boot.attempts.map(renderBrokerLifecycleObservation) } : {}) };
-    const observed = boot.last ? renderBrokerLifecycleObservation(boot.last) : {};
+    const observed: Partial<ProviderCommandResult> = boot.last ? renderBrokerLifecycleObservation(boot.last) : {};
     return { ok: false as const, error: { ...observed, mode: "exec", provider: "tart", executable: command.executable,
-            args: boot.instance ? ["ip", boot.instance] : ["ip"], status: boot.last?.status ?? null,
+            args: boot.instance ? ["ip", boot.instance] : ["ip"], status: observed.status ?? null,
             error: boot.reason === "missing-target" ? "missing-provider-metadata: providerInstance" : `Timed out waiting for Tart IP for ${boot.instance}` },
         ...(boot.attempts ? { attempts: boot.attempts.map(renderBrokerLifecycleObservation) } : {}) };
 }
+function androidBootFailure(boot: Extract<BrokerAndroidBoot<NativeBrokerExecutionReceipt>, { ok: false }>): ProviderCommandResult {
+    if (boot.reason === "probe-unavailable") return renderBrokerLifecycleObservation(boot.error);
+    const last: Partial<ProviderCommandResult> = boot.last ? renderBrokerLifecycleObservation(boot.last) : {};
+    return { ...last, mode: "exec", provider: "adb", status: last.status ?? null, signal: last.signal,
+        stdout: last.stdout, stderr: last.stderr, error: `Timed out waiting for Android emulator ${boot.serial} to boot` };
+}
 function androidBoot(boot: BrokerAndroidBoot<NativeBrokerExecutionReceipt>) {
     return boot.ok ? { ...boot, ...(boot.result ? { result: renderBrokerLifecycleObservation(boot.result) } : {}), ...(boot.attempts ? { attempts: boot.attempts.map(renderBrokerLifecycleObservation) } : {}) }
-        : { ...boot, error: renderBrokerLifecycleObservation(boot.error), ...(boot.attempts ? { attempts: boot.attempts.map(renderBrokerLifecycleObservation) } : {}) };
+        : { ok: false, ready: false, error: androidBootFailure(boot), ...(boot.attempts ? { attempts: boot.attempts.map(renderBrokerLifecycleObservation) } : {}) };
 }
 function lifecycleResult(context: NativeLifecyclePresentation, device: unknown, execution: LifecycleObservation | undefined, invoked: boolean, mutatesHost: boolean) {
-    return { ...context.plan, device, invoked, dryRun: false, execution: { mode: context.command === "device_create" && execution?.mode === "noop" ? "state" : execution?.mode,
-            providerExecution: invoked ? context.command === "device_create" && execution?.mode === "noop" ? "broker-state" : "executed" : "blocked", mutatesHost,
-            ...(execution && !(context.command === "device_create" && execution.mode === "noop") ? { command: renderBrokerLifecycleObservation(execution) } : {}) } };
+    const native = execution ? renderBrokerLifecycleObservation(execution) : undefined;
+    const metadataCreate = context.command === "device_create" && native?.mode === "noop";
+    return { ...context.plan, device, invoked, dryRun: false, execution: { mode: metadataCreate ? "state" : native?.mode,
+            providerExecution: invoked ? metadataCreate ? "broker-state" : "executed" : "blocked", mutatesHost,
+            ...(native && !metadataCreate ? { command: native } : {}) } };
 }
 export function renderBrokerAndroidLifecycle(outcome: BrokerAndroidLifecycleOutcome<NativeProviderLifecycleEffect, NativeBrokerExecutionReceipt>, context: NativeLifecyclePresentation, redactDevice: (device: unknown) => unknown, stateFailure: (cause: unknown, target: {
     backend: string;
@@ -275,7 +304,7 @@ export function renderBrokerAndroidLifecycle(outcome: BrokerAndroidLifecycleOutc
         }
         case "provider-failed": return { status: 502, payload: { ok: false, error: outcome.error,
                 detail: failureDetail(renderBrokerLifecycleObservation(outcome.execution)), ...(outcome.rollback ? { rollback: outcome.rollback } : {}), result: { ...lifecycleResult(context, redactDevice(outcome.device ?? outcome.plan?.device), outcome.execution, true, false),
-                    ...(outcome.boot ? { boot: outcome.boot.ok ? { ready: outcome.boot.ready, skipped: outcome.boot.skipped === true, provider: "adb", result: outcome.boot.result ? renderBrokerLifecycleObservation(outcome.boot.result) : null } : { ready: false, skipped: false, provider: "adb", error: renderBrokerLifecycleObservation(outcome.boot.error) } } : {}),
+                    ...(outcome.boot ? { boot: outcome.boot.ok ? { ready: outcome.boot.ready, skipped: outcome.boot.skipped === true, provider: "adb", result: outcome.boot.result ? renderBrokerLifecycleObservation(outcome.boot.result) : null } : { ready: false, skipped: false, provider: "adb", error: androidBootFailure(outcome.boot) } } : {}),
                     ...(outcome.boot && !outcome.boot.ok ? { execution: { mode: outcome.execution.mode, providerExecution: "executed", mutatesHost: false, command: { ...renderBrokerLifecycleObservation(outcome.execution), registration: null, macosBoot: null, androidBoot: androidBoot(outcome.boot) } } } : {}),
                     ...(outcome.auxiliaryCleanup ? { auxiliaryCleanup: outcome.auxiliaryCleanup } : {}) } } };
         case "auxiliary-failed": return { status: 502, payload: { ok: false, error: outcome.error,
@@ -284,12 +313,12 @@ export function renderBrokerAndroidLifecycle(outcome: BrokerAndroidLifecycleOutc
                 result: lifecycleResult(context, redactDevice(outcome.device), outcome.execution, true, true) } };
         case "publication-conflict": return { status: 409, payload: { ok: false, error: outcome.error, ...base, found: outcome.found,
                 result: { ...lifecycleResult(context, redactDevice(outcome.device), outcome.execution, true, outcome.mutatesHost),
-                    ...(outcome.boot ? { boot: outcome.boot.ok ? { ready: outcome.boot.ready, skipped: outcome.boot.skipped === true, provider: "adb", result: outcome.boot.result ? renderBrokerLifecycleObservation(outcome.boot.result) : null } : { ready: false, skipped: false, provider: "adb", error: renderBrokerLifecycleObservation(outcome.boot.error) } } : {}),
+                    ...(outcome.boot ? { boot: outcome.boot.ok ? { ready: outcome.boot.ready, skipped: outcome.boot.skipped === true, provider: "adb", result: outcome.boot.result ? renderBrokerLifecycleObservation(outcome.boot.result) : null } : { ready: false, skipped: false, provider: "adb", error: androidBootFailure(outcome.boot) } } : {}),
                     ...(outcome.auxiliaryCleanup ? { auxiliaryCleanup: outcome.auxiliaryCleanup } : {}) } } };
         case "created":
         case "completed": return { status: 200, payload: { ok: true, result: { ...lifecycleResult(context, redactDevice(outcome.device), outcome.execution, true, outcome.mutatesHost),
                     ...(context.command === "device_delete" && context.deleteAvd !== false ? { providerCommand: { mode: "noop", provider: "host-broker-state", reason: "Android AVD artifacts are removed by identity-fenced storage cleanup" } } : {}),
-                    ...(outcome.boot ? { boot: outcome.boot.ok ? { ready: outcome.boot.ready, skipped: outcome.boot.skipped === true, provider: "adb", result: outcome.boot.result ? renderBrokerLifecycleObservation(outcome.boot.result) : null } : { ready: false, skipped: false, provider: "adb", error: renderBrokerLifecycleObservation(outcome.boot.error) } } : {}), ...(outcome.auxiliaryCleanup ? { auxiliaryCleanup: outcome.auxiliaryCleanup } : {}) } } };
+                    ...(outcome.boot ? { boot: outcome.boot.ok ? { ready: outcome.boot.ready, skipped: outcome.boot.skipped === true, provider: "adb", result: outcome.boot.result ? renderBrokerLifecycleObservation(outcome.boot.result) : null } : { ready: false, skipped: false, provider: "adb", error: androidBootFailure(outcome.boot) } } : {}), ...(outcome.auxiliaryCleanup ? { auxiliaryCleanup: outcome.auxiliaryCleanup } : {}) } } };
     }
 }
 export function renderBrokerIosMacosLifecycle(outcome: BrokerIosLifecycleResponse<NativeProviderLifecycleEffect> | BrokerMacosLifecycleResponse<NativeProviderLifecycleEffect>, context: NativeLifecyclePresentation, redactDevice: (device: unknown) => unknown, stateFailure: (cause: unknown, target: {
@@ -326,9 +355,15 @@ function cleanupCommand(command: unknown): command is ProviderCommand {
     return command !== null && typeof command === "object" && "mode" in command && (command.mode === "exec" || command.mode === "detached" || command.mode === "noop") && "provider" in command && typeof command.provider === "string";
 }
 function sandboxRegistration(observation: LifecycleObservation, context: NativeLifecyclePresentation) {
+    const descriptor = context.plan && cleanupCommand(context.plan.providerCommand) ? context.plan.providerCommand : null;
+    if (observation.registrationFailure === "timeout") {
+        const last = observation.receipt instanceof NativeBrokerExecutionReceipt ? observation.receipt.value : undefined;
+        return { mode: "exec", provider: "wsb", status: last?.status ?? null, signal: last?.signal,
+            stdout: last?.stdout, stderr: last?.stderr, timedOut: last?.timedOut, error: observation.error,
+            executable: descriptor?.executable, args: ["list", "--raw"] };
+    }
     if (observation.receipt instanceof NativeBrokerExecutionReceipt)
         return renderBrokerLifecycleObservation(observation);
-    const descriptor = context.plan && cleanupCommand(context.plan.providerCommand) ? context.plan.providerCommand : null;
     return { ...renderBrokerLifecycleObservation(observation), executable: descriptor?.executable,
         args: observation.error === "windows-sandbox-start-missing-registration-metadata" ? descriptor?.args || [] : ["list", "--raw"] };
 }

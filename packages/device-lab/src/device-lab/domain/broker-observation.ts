@@ -148,11 +148,11 @@ export interface DeviceStatusRequest {
     command: "device_status";
     dryRun: boolean;
 }
-/** Native execution receipts are carried outward without interpreting their process recipe. */
+/** Settled native facts and presentation tags; the original receipt remains opaque to the core. */
 export type DeviceStatusExecution<Receipt> = {
-    mode: string; provider: string; receipt?: Receipt;
-    status?: number | null; signal?: string | null; stdout?: string; stderr?: string; error?: string;
-    timedOut?: boolean; outputLimitExceeded?: boolean;
+    mode: string; provider: string; ok: boolean; receipt: Receipt;
+    adbState: string | null;
+    vm: DeviceStatusVmObservation | null;
 };
 export interface DeviceStatusPlan<Connection> {
     ownerId: string; backend: string; stateKey?: string; command: string; deviceId: string;
@@ -189,7 +189,7 @@ export function deviceStatusStoppedAndroid(request: DeviceStatusRequest, device:
     return request.backend === "android-emulator" && deviceStatusRecord(device) && device.status === "stopped" && execution.provider === "adb";
 }
 export function projectDeviceStatus(ownerId: string, request: DeviceStatusRequest, device: unknown, execution: DeviceStatusExecution<unknown>,
-    observation: DeviceStatusVmObservation | null, succeeded: boolean, timestamp: () => string): unknown {
+    observation: DeviceStatusVmObservation | null, nativeSucceeded: boolean, timestamp: () => string): unknown {
     if (!deviceStatusRecord(device)) return device;
     if (deviceStatusHyperV(request.backend)) {
         if (!observation) return device;
@@ -205,10 +205,10 @@ export function projectDeviceStatus(ownerId: string, request: DeviceStatusReques
         };
     }
     if (request.backend !== "android-emulator" && request.backend !== "android-device") return device;
-    if (!succeeded && request.backend === "android-emulator" && device.status === "stopped") {
+    if (!nativeSucceeded && request.backend === "android-emulator" && device.status === "stopped") {
         return { ...device, runtimeState: "stopped", readiness: { state: "stopped", provider: "adb" } };
     }
-    const state = String(execution.stdout || "").trim().toLowerCase();
+    const state = execution.adbState;
     if (state !== "device") return { ...device, runtimeState: state || "unknown" };
     return { ...device, status: request.backend === "android-device" ? "attached" : "running", runtimeState: "running", readiness: { state: "ready", provider: "adb" } };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { parseWindowsReadinessProbe, waitForDeviceLabHyperVGuestReadiness } from "@ccc/device-lab/device-lab/broker/hyper-v/guest-readiness-adapter.js";
+import { deviceLabHyperVLinuxGuiReadinessObservation, deviceLabHyperVLinuxReadinessObservation, deviceLabHyperVReadinessFailure, deviceLabWindowsReadinessObservation, parseHyperVLinuxEd25519HostKeyFingerprints, parseWindowsReadinessProbe, waitForDeviceLabHyperVGuestReadiness } from "@ccc/device-lab/device-lab/broker/hyper-v/guest-readiness-adapter.js";
 import type { HyperVWindowsExecutionRequest } from "@ccc/hyper-v/index.js";
 
 const id = "12345678-1234-1234-1234-123456789abc";
@@ -33,6 +33,58 @@ function readinessClock() {
 }
 
 describe("Device Lab typed Hyper-V guest readiness", () => {
+    it.each([false, true])("carries typed Windows failure and scrub/media facts without reparsing native summary (detached=%s)", mediaDetached => {
+        const outcome = { ok: false as const, error: "hyper-v-guest-ready-failed" as const,
+            reason: "hyper-v-guest-provisioning-media-delete-failed", attempts: 2, scrubConfirmed: true, mediaDetached };
+        const observed = deviceLabWindowsReadinessObservation(outcome);
+        expect(observed.outcome).toBe(outcome);
+        expect(observed).toMatchObject({ backend: "windows-vm", ok: false, ready: false,
+            failureCode: outcome.reason, failureDetail: { structured: true, status: 1, timedOut: false, stderrBytes: 0 } });
+        expect(observed.execution).toEqual({ mode: "exec", provider: "hyper-v", status: 1, stdout: JSON.stringify(outcome), stderr: "" });
+        expect(observed.failureDetail.stdoutBytes).toBe(Buffer.byteLength(JSON.stringify(outcome), "utf8"));
+        const overridden = deviceLabHyperVReadinessFailure("windows-vm", "hyper-v-operation-deadline-exceeded", { previous: observed });
+        expect(overridden).toMatchObject({ ready: false, failureCode: outcome.reason, execution: { error: "hyper-v-operation-deadline-exceeded" } });
+        expect(overridden.backend === "windows-vm" ? overridden.outcome : null).toBe(outcome);
+    });
+
+    it("normalizes Linux substring readiness while preserving raw native evidence and success semantics", () => {
+        const receipt = { native: "unchanged" };
+        const execution = { mode: "exec", provider: "hyper-v-ssh", status: 0,
+            stdout: "prefix ccc-hyper-v-linux-ready suffix\n", stderr: "native diagnostic é", timedOut: true, outputLimitExceeded: true, receipt };
+        const observed = deviceLabHyperVLinuxReadinessObservation(execution);
+        expect(observed).toMatchObject({ backend: "linux-vm", ok: true, ready: true,
+            failureDetail: { status: 0, timedOut: true, stdoutBytes: Buffer.byteLength(execution.stdout), stderrBytes: Buffer.byteLength(execution.stderr) } });
+        expect(observed.execution).toBe(execution);
+        expect(observed.execution.receipt).toBe(receipt);
+        expect(observed.failureDetail).not.toHaveProperty("structured");
+        expect(deviceLabHyperVLinuxReadinessObservation({ ...execution, error: "native error" })).toMatchObject({ ok: false, ready: false });
+        expect(deviceLabHyperVLinuxReadinessObservation({ ...execution, stdout: "ccc-hyper-v-linux-not-ready" })).toMatchObject({ ok: true, ready: false });
+    });
+
+    it("settles GUI marker and native stage failures without changing the command success fact", () => {
+        const receipt = { native: "gui" };
+        const execution = { mode: "exec", provider: "hyper-v-ssh", status: 0, stdout: "prefix CCC_HYPER_V_GUI_READY suffix", stderr: "", receipt };
+        const ready = deviceLabHyperVLinuxGuiReadinessObservation(execution);
+        expect(ready).toMatchObject({ ok: true, ready: true });
+        expect(ready.execution).toBe(execution);
+        const missing = deviceLabHyperVLinuxGuiReadinessObservation({ ...execution, stdout: "no GUI marker", stderr: "native hyper-v-linux-gui-apt-install-failed detail" });
+        expect(missing).toMatchObject({ ok: true, ready: false, failureCode: "hyper-v-linux-gui-apt-install-failed", execution: { error: "hyper-v-linux-gui-apt-install-failed" } });
+        expect(missing.execution.receipt).toBe(receipt);
+        expect(execution).not.toHaveProperty("error");
+        expect(deviceLabHyperVLinuxGuiReadinessObservation({ ...execution, status: null, stdout: "", timedOut: true }))
+            .toMatchObject({ ok: false, ready: false, failureCode: "hyper-v-linux-gui-timeout" });
+    });
+
+    it("extracts bounded unique ED25519 evidence from both native SSH diagnostic forms", () => {
+        const expected = `SHA256:${"A".repeat(43)}`, other = `SHA256:${"B".repeat(43)}`;
+        const diagnostic = `debug1: SERVER HOST KEY: ssh-ed25519 ${expected}=\nThe fingerprint for the ED25519 key sent by the remote host is\n${expected}.\ndebug1: Server host key: ssh-ed25519 ${other}\n`;
+        expect(parseHyperVLinuxEd25519HostKeyFingerprints(diagnostic)).toEqual([expected, other]);
+        expect(parseHyperVLinuxEd25519HostKeyFingerprints(`${"x".repeat(64 * 1024)}${diagnostic}`)).toEqual([]);
+        const observed = deviceLabHyperVLinuxReadinessObservation({ mode: "exec", provider: "hyper-v-ssh", status: 255,
+            error: `The fingerprint for the ED25519 key sent by remote host is\n${expected}`, stderr: `debug1: Server host key: ssh-ed25519 ${other}\nHost key verification failed.` });
+        expect(observed).toMatchObject({ ok: false, ready: false, failureCode: "ssh-host-key-rejected", hostKeyFingerprints: [other, expected] });
+    });
+
     it("qualifies exact probe fields and strict IPv4, secret and marker facts", () => {
         expect(parseWindowsReadinessProbe(probe())).toEqual({ computerName: "CCC-WIN", addresses: ["172.29.0.10"], firstLogonCompleted: marker, provisioningSecretsPresent: false });
         const valid = JSON.parse(probe());

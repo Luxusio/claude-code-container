@@ -1,5 +1,5 @@
 import type {HyperVWindowsGuestBootDiagnostic} from '@ccc/hyper-v/index.js';
-import type {HyperVVmObservation,HyperVGuestProvisionObservation,HyperVGuestReadyObservation,HyperVGuestReadyFailureObservation,HyperVLinuxSeedOptions,HyperVGuestProvisionOptions,HyperVLinuxSshOptions,HyperVLinuxNetworkFinalizeOptions,HyperVSeedTarget,HyperVProvisionTarget,HyperVPreparedSeed,HyperVPowerTarget,HyperVBootstrapTarget,HyperVBootstrapNetworkObservation,HyperVBootstrapNetworkCleanupObservation} from '../../domain/lifecycle/hyper-v-create-start.js';
+import type {HyperVVmObservation,HyperVGuestProvisionObservation,HyperVWindowsReadinessObservation,HyperVLinuxReadinessObservation,HyperVGuestReadinessObservation,HyperVReadinessFailureSource,WindowsReadinessOutcome,HyperVLinuxSeedOptions,HyperVGuestProvisionOptions,HyperVLinuxSshOptions,HyperVLinuxNetworkFinalizeOptions,HyperVSeedTarget,HyperVProvisionTarget,HyperVPreparedSeed,HyperVPowerTarget,HyperVBootstrapTarget,HyperVBootstrapNetworkObservation,HyperVBootstrapNetworkCleanupObservation} from '../../domain/lifecycle/hyper-v-create-start.js';
 import type {HyperVWindowsOperation} from '@ccc/hyper-v/low-level/index.js';
 import type {HyperVImageVhd} from '../../domain/hyper-v-image-preparation.js';
 import type {WindowsReadinessIdentity,WindowsReadinessError} from '../../domain/lifecycle/hyper-v-create-start.js';
@@ -126,15 +126,15 @@ export interface HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedi
  mediaRetained(path:string):boolean;
  parseVm(stdout:string):HyperVVmObservation|null;
  parseProvision(stdout:string):HyperVGuestProvisionObservation|null;
- parseReady(stdout:string):HyperVGuestReadyObservation|null;
- parseReadyFailure(stdout:string):HyperVGuestReadyFailureObservation|null;
+ observeWindowsReadiness(outcome:WindowsReadinessOutcome):HyperVWindowsReadinessObservation<Receipt>;
+ readinessFailure(backend:'windows-vm'|'linux-vm',error:string,source?:HyperVReadinessFailureSource<Receipt>):HyperVGuestReadinessObservation<Receipt>;
  seedFailureCode(error:unknown,fallback:string):string;
  prepareLinuxSeed(connection:Connection,request:HyperVLinuxSeedOptions):HyperVPreparedSeed<Receipt>;
  prepareWindowsProvisionMedia(connection:Connection,request:HyperVGuestProvisionOptions):ProvisionMedia;
- probeLinuxReadiness(connection:Connection,request:HyperVLinuxSshOptions,timeout:number,outputLimit:number):Promise<HyperVNativeExecution<Receipt>>;
+ probeLinuxReadiness(connection:Connection,request:HyperVLinuxSshOptions,timeout:number,outputLimit:number):Promise<HyperVLinuxReadinessObservation<Receipt>>;
  finalizeLinuxNetwork(connection:Connection,request:HyperVLinuxNetworkFinalizeOptions,timeout:number,outputLimit:number):Promise<HyperVNativeExecution<Receipt>>;
- probeLinuxGui(connection:Connection,request:HyperVLinuxSshOptions,timeout:number,outputLimit:number):Promise<HyperVNativeExecution<Receipt>>;
- prepareLinuxGui(connection:Connection,request:HyperVLinuxSshOptions,timeout:number,outputLimit:number):Promise<HyperVNativeExecution<Receipt>>;
+ probeLinuxGui(connection:Connection,request:HyperVLinuxSshOptions,timeout:number,outputLimit:number):Promise<HyperVLinuxReadinessObservation<Receipt>>;
+ prepareLinuxGui(connection:Connection,request:HyperVLinuxSshOptions,timeout:number,outputLimit:number):Promise<HyperVLinuxReadinessObservation<Receipt>>;
  inspectSeed(connection:Connection,request:HyperVSeedTarget,deadline:number):Promise<void>;
  attachSeed(connection:Connection,request:HyperVSeedTarget,deadline:number):Promise<void>;
  provision(connection:Connection,request:HyperVProvisionTarget<ProvisionMedia>,deadline:number):Promise<HyperVNativeExecution<Receipt>>;

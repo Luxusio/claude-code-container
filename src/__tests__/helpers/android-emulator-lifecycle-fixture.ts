@@ -130,20 +130,22 @@ export function directLifecyclePorts(initial?: AndroidEmulatorDevice) {
 }
 
 export type BrokerAndroidTestEffect = { action: "create" | "start" | "stop" | "delete" | "stop-inventory" | "boot-probe" };
-export type BrokerAndroidTestReceipt = { sequence: number };
+export type BrokerAndroidTestReceipt = { sequence: number; native?: object };
 export type BrokerAndroidTestPorts = BrokerAndroidEmulatorLifecyclePorts<BrokerAndroidTestEffect, BrokerAndroidTestReceipt>;
 
 export function brokerLifecyclePorts(initial: Record<string, unknown> | undefined = undefined) {
     let current = initial, time = 0;
     const trace: string[] = [], publications: unknown[] = [], commands: Array<{ effect: BrokerAndroidTestEffect; timeoutMs: number }> = [];
+    const observeEffect: BrokerAndroidTestPorts["executePrepared"] = (effect, options) => {
+        const provider = effect.action === "create" || effect.action === "delete" ? "avdmanager" : effect.action === "start" ? "emulator" : "adb";
+        trace.push("execute:" + provider); commands.push({ effect, timeoutMs: options.timeoutMs });
+        return { ok: true, mode: effect.action === "start" ? "detached" : "exec", provider, receipt: { sequence: commands.length } };
+    };
     const ports: { -readonly [K in keyof BrokerAndroidTestPorts]: BrokerAndroidTestPorts[K] } = {
-        executePrepared: (effect, options) => {
-            const provider = effect.action === "create" || effect.action === "delete" ? "avdmanager" : effect.action === "start" ? "emulator" : "adb";
-            trace.push("execute:" + provider); commands.push({ effect, timeoutMs: options.timeoutMs });
-            return { mode: effect.action === "start" ? "detached" : "exec", provider, status: 0,
-                stdout: effect.action === "boot-probe" ? "1\n" : effect.action === "stop-inventory" ? "List of devices attached\n" : "raw native output", stderr: "", receipt: { sequence: commands.length } };
-        },
-        metadataObservation: () => ({ mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" }),
+        executePrepared: observeEffect,
+        observeStopInventory: (effect, _serial, options) => ({ ...observeEffect(effect, options), available: true, serialPresent: false }),
+        observeBootProbe: (effect, options) => ({ ...observeEffect(effect, options), ready: true }),
+        metadataObservation: () => ({ ok: true, mode: "noop", provider: "host-broker-state" }),
         prepareStopInventory: () => ({ kind: "ready", effect: { action: "stop-inventory" } }),
         prepareBootProbe: () => ({ kind: "ready", effect: { action: "boot-probe" } }),
         now: () => time,

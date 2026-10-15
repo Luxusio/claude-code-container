@@ -49,7 +49,7 @@ function stoppedFixture() {
         expect(context).toMatchObject({ ownerId: owner, target: { stateKey: "android", device: { id: "pixel" } }, recording: activeRecording });
         expect(serial).toBe("emulator-5580");
         effects.push("stop");
-        return { status: 0, receipt: {} };
+        return { ok: true, refusal: null, receipt: {} };
     };
     ports.waitForExit = async () => {
         effects.push("exit");
@@ -59,13 +59,13 @@ function stoppedFixture() {
         expect(context).toMatchObject({ ownerId: owner, recording: { ...activeRecording, active: false, artifactCopyPending: true } });
         expect({ serial, remotePath, localPath }).toEqual({ serial: "emulator-5580", remotePath: activeRecording.remotePath, localPath: activeRecording.localPath });
         effects.push("pull");
-        return { status: 0, receipt: {} };
+        return { ok: true, refusal: null, receipt: {} };
     };
     ports.removeAndroidRecording = (context, serial, remotePath) => {
         expect(context).toMatchObject({ ownerId: owner, recording: { ...activeRecording, active: false, artifactCopyPending: true, artifactCopied: true } });
         expect({ serial, remotePath }).toEqual({ serial: "emulator-5580", remotePath: activeRecording.remotePath });
         effects.push("remove");
-        return { status: 0, receipt: {} };
+        return { ok: true, refusal: null, receipt: {} };
     };
     ports.publish = (_owner, _state, _id, expected, replacement, target) => {
         expect(target).toEqual({ stateKey: "android", backend: "android-emulator", device });
@@ -93,7 +93,7 @@ describe("broker recording artifact recovery", () => {
         ports.pullAndroidRecording = context => {
             expect(context.recording).toMatchObject({ active: false, artifactCopyPending: true, runtimeId: activeRecording.runtimeId });
             effects.push("pull");
-            return { status: ++attempts < 3 ? 17 : 0, receipt: { attempt: attempts } };
+            return { ok: ++attempts >= 3, refusal: null, receipt: { attempt: attempts } };
         };
         const app = createBrokerRecordingApplication(ports);
         for (let attempt = 1; attempt <= 2; attempt++) {
@@ -192,7 +192,7 @@ describe("broker recording artifact recovery", () => {
         ports.removeAndroidRecording = context => {
             expect(context.recording).toMatchObject({ active: false, artifactCopyPending: true, artifactCopied: true });
             effects.push("remove");
-            return { status: ++attempts === 1 ? 17 : 0, receipt: {} };
+            return { ok: ++attempts !== 1, refusal: null, receipt: {} };
         };
         const app = createBrokerRecordingApplication(ports);
         expect(await app.stop(owner, request("device_record_video_stop"))).toMatchObject({ kind: "refused" });
@@ -283,7 +283,7 @@ describe("broker recording current policies", () => {
         ports.launchAndroidRecording = async (serial, remotePath, timeLimitSec, localPath) => {
             expect({ serial, remotePath, timeLimitSec, localPath }).toEqual({ serial: "emulator-5580",
                 remotePath: "/sdcard/ccc-pixel-recording.mp4", timeLimitSec: 180, localPath: "/private/new.mp4" });
-            return { status: 0, pid: 34567, processIdentity: identity, receipt: { launch: "controlled" } };
+            return { ok: true, refusal: null, pid: 34567, processIdentity: identity, receipt: { launch: "controlled" } };
         };
         expect(await createBrokerRecordingApplication(ports).start(owner, request("device_record_video_start"))).toMatchObject({ kind: "started" });
         expect(device.recording).toMatchObject({
@@ -294,7 +294,7 @@ describe("broker recording current policies", () => {
 
     it("does not publish a recording after launch failure", async () => {
         const { ports, device } = fixture();
-        const execution = { status: 17, error: "provider launch denied", receipt: { launch: "denied" } };
+        const execution = { ok: false, refusal: null, receipt: { launch: "denied", status: 17, error: "provider launch denied" } };
         ports.launchAndroidRecording = async () => execution;
         ports.publish = unexpected;
         expect(await createBrokerRecordingApplication(ports).start(owner, request("device_record_video_start"))).toMatchObject({
@@ -307,7 +307,7 @@ describe("broker recording current policies", () => {
         const { ports, device } = fixture();
         const successor = { ...activeRecording, runtimeId: "successor-runtime" };
         const rollback = { attempted: false, ok: false, receipt: { reason: "runtime-process-identity-unavailable" } };
-        ports.launchAndroidRecording = async () => ({ status: 0, pid: 34567, processIdentity: { incarnation: "new-process" }, receipt: {} });
+        ports.launchAndroidRecording = async () => ({ ok: true, refusal: null, pid: 34567, processIdentity: { incarnation: "new-process" }, receipt: {} });
         ports.publish = () => {
             device.recording = successor;
             return { found: true, matched: false, currentRecording: successor, device: null };
@@ -323,6 +323,25 @@ describe("broker recording current policies", () => {
         expect(device.recording).toEqual(successor);
     });
 
+    it.each([
+        { refusal: "guard-refused" as const, kind: "refused", retained: true, effects: ["signal", "stop"] },
+        { refusal: null, kind: "stopped", retained: false, effects: ["signal", "stop", "exit", "pending", "pull", "copied", "remove", "clear"] },
+    ])("preserves failed-stop policy for refusal=$refusal after a successful host signal", async ({ refusal, kind, retained, effects: expectedEffects }) => {
+        const { ports, device, effects } = stoppedFixture();
+        const execution = { ok: false, refusal, receipt: { stop: "denied" } };
+        ports.stopAndroidRecording = (context, serial) => {
+            expect(context.recording).toEqual(activeRecording);
+            expect(serial).toBe("emulator-5580");
+            effects.push("stop");
+            return execution;
+        };
+        const result = await createBrokerRecordingApplication(ports).stop(owner, request("device_record_video_stop"));
+        expect(result).toMatchObject({ kind, executions: expect.arrayContaining([execution]) });
+        if (retained) expect(result).toMatchObject({ reason: "provider-failed", error: "recording-stop-command-failed", recording: activeRecording });
+        expect(effects).toEqual(expectedEffects);
+        expect(device.recording).toEqual(retained ? activeRecording : null);
+    });
+
     it("retains active metadata and skips artifact copy when exit remains unconfirmed", async () => {
         const { ports, device } = fixture();
         device.recording = activeRecording;
@@ -331,7 +350,7 @@ describe("broker recording current policies", () => {
         ports.stopAndroidRecording = (context, serial) => {
             expect(context).toMatchObject({ ownerId: owner, recording: activeRecording });
             expect(serial).toBe("emulator-5580");
-            return { status: 0, receipt: {} };
+            return { ok: true, refusal: null, receipt: {} };
         };
         ports.waitForExit = async () => false;
         ports.publish = unexpected;

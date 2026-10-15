@@ -4,10 +4,13 @@ export interface BrokerMacosLifecycleRequest {
     force: boolean; dryRun: boolean; headless?: boolean; waitForBoot?: boolean;
     bootTimeoutMs?: number; create?: Record<string, unknown>;
 }
+/** Settled native facts; command diagnostics remain in the opaque receipt. */
 export interface BrokerMacosProviderResult {
-    mode: string; provider: string; status?: number | null; signal?: string | null;
-    stdout?: string; stderr?: string; error?: string; timedOut?: boolean;
-    outputLimitExceeded?: boolean; typedCreateInvalidResult?: boolean; receipt: unknown;
+    ok: boolean; mode: string; provider: string; resourceMissing: boolean;
+    typedCreateInvalidResult?: boolean; receipt: unknown;
+}
+export interface BrokerMacosIpObservation extends BrokerMacosProviderResult {
+    address: string | null;
 }
 export type BrokerMacosMetadataPurpose = "definition-only" | "image-unset" | "stopped-definition-delete";
 export type BrokerMacosPlannedCommand<Effect> =
@@ -40,7 +43,7 @@ export function brokerMacosField(device: unknown, name: string): string | null {
     const value = (device as Record<string, unknown>)[name];
     return typeof value === "string" && value ? value : null;
 }
-export function brokerMacosCommandSucceeded(result: BrokerMacosProviderResult): boolean { return result.status === 0 && !result.error; }
+export function brokerMacosCommandSucceeded(result: BrokerMacosProviderResult): boolean { return result.ok; }
 function slug(value: unknown): string {
     return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0,48) || "device";
 }
@@ -96,8 +99,8 @@ export function brokerMacosSshConfig(create: Record<string, unknown>) {
 
 
 export type BrokerMacosBoot =
-    {ok: true; ready: boolean; skipped?: boolean; sshHost?: string; result?: BrokerMacosProviderResult; attempts?: BrokerMacosProviderResult[]} |
-    {ok: false; reason: "missing-target" | "timed-out"; instance: string | null; last?: BrokerMacosProviderResult; attempts?: BrokerMacosProviderResult[]};
+    {ok: true; ready: boolean; skipped?: boolean; sshHost?: string; result?: BrokerMacosIpObservation; attempts?: BrokerMacosIpObservation[]} |
+    {ok: false; reason: "missing-target" | "timed-out"; instance: string | null; last?: BrokerMacosIpObservation; attempts?: BrokerMacosIpObservation[]};
 export type BrokerMacosPublicationChange = {kind: "start" | "stop" | "delete"; boot: BrokerMacosBoot | null};
 export function brokerMacosReplacement(candidate: Record<string, unknown>, change: BrokerMacosPublicationChange): Record<string, unknown> | null {
     if (change.kind === "delete") return null;
@@ -113,8 +116,7 @@ export function brokerMacosReplacement(candidate: Record<string, unknown>, chang
 export function brokerMacosToleratesMissingDelete(parsed: BrokerMacosLifecycleRequest, result: BrokerMacosProviderResult): boolean {
     if (parsed.backend !== "macos-vm" || parsed.command !== "device_delete" || !parsed.force) return false;
     if (result.provider !== "tart") return false;
-    const output = `${result.stderr || ""}\n${result.stdout || ""}`.toLowerCase();
-    return output.includes("does not exist") || output.includes("not found");
+    return result.resourceMissing;
 }
 export function brokerMacosInstance(ownerId: string, parsed: BrokerMacosLifecycleRequest, create: Record<string, unknown>): string {
     return typeof create.providerInstance === "string" && create.providerInstance ? create.providerInstance : `ccc-${ownerId}-${slug(parsed.deviceId)}`;

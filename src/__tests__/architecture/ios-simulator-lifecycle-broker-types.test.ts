@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { createBrokerIosSimulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.js";
-import { brokerIosReplacement, type BrokerIosLifecycleInput, type BrokerIosLifecycleResponse, type BrokerIosProviderResult } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
+import { brokerIosReplacement, type BrokerIosLifecycleInput, type BrokerIosLifecycleResponse, type BrokerIosProviderResult, type BrokerIosCreateResult } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerIosSimulatorLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
 
 type Effect = { readonly token: unique symbol };
@@ -18,13 +18,19 @@ function contracts(ports: BrokerIosSimulatorLifecyclePorts<Effect>, input: Broke
         prepared.args;
     }
     const deletion: Effect = ports.prepareDelete(effect, "owned");
+    const creation: BrokerIosCreateResult = ports.executeCreate(effect, { timeoutMs: 5000, outputLimit: 32768 });
+    const { executeCreate, ...withoutCreateObservation } = ports;
+    // @ts-expect-error create requires its settled native identity observation
+    createBrokerIosSimulatorLifecycle(withoutCreateObservation);
     const { prepareCreate, ...withoutPreparation } = ports;
     // @ts-expect-error finite native preparation is required
     createBrokerIosSimulatorLifecycle(withoutPreparation);
     // @ts-expect-error preparation settles synchronously before execution
     createBrokerIosSimulatorLifecycle({ ...ports, prepareExisting: async () => ({ kind: "metadata-only" }) });
     // @ts-expect-error native effect observations are synchronous
-    createBrokerIosSimulatorLifecycle({ ...ports, execute: async () => ({ mode: "exec", provider: "simctl", status: 0, receipt: null }) });
+    createBrokerIosSimulatorLifecycle({ ...ports, execute: async () => ({ ok: true, mode: "exec", provider: "simctl", receipt: null }) });
+    // @ts-expect-error create identity observations are synchronous
+    createBrokerIosSimulatorLifecycle({ ...ports, executeCreate: async () => ({ ok: true, mode: "exec", provider: "simctl", createdUdid: "created-udid", receipt: null }) });
     // @ts-expect-error publication reports found and matched independently
     createBrokerIosSimulatorLifecycle({ ...ports, publish: () => ({ matched: true, device: null }) });
     // @ts-expect-error complete-record publication is synchronous
@@ -37,7 +43,7 @@ function contracts(ports: BrokerIosSimulatorLifecyclePorts<Effect>, input: Broke
     outcome.payload;
     // @ts-expect-error owned target verification is synchronous
     createBrokerIosSimulatorLifecycle({ ...ports, verifyOwnedTarget: async () => ({ ok: true, target: "udid" }) });
-    void [outcomes, deletion, prepareCreate];
+    void [outcomes, deletion, creation, executeCreate, prepareCreate];
 }
 void contracts;
 

@@ -14,10 +14,19 @@ export interface BrokerAndroidLifecycleRequest {
     create?: Record<string, unknown>;
 }
 
+/** Settled command facts; native command evidence stays in the opaque receipt. */
 export interface BrokerAndroidProviderResult<Receipt> {
+    ok: boolean;
     mode: string; provider: string; receipt?: Receipt;
-    status?: number | null; signal?: string | null; stdout?: string; stderr?: string; error?: string;
-    timedOut?: boolean; outputLimitExceeded?: boolean; typedCreateInvalidResult?: boolean;
+    typedCreateInvalidResult?: boolean;
+}
+export interface BrokerAndroidStopInventoryObservation<Receipt> extends BrokerAndroidProviderResult<Receipt> {
+    /** Native inventory has the exact ADB header and is neither timed out nor truncated. */
+    available: boolean;
+    serialPresent: boolean;
+}
+export interface BrokerAndroidBootProbeObservation<Receipt> extends BrokerAndroidProviderResult<Receipt> {
+    ready: boolean;
 }
 export type BrokerAndroidPreparation<Effect> =
     | {kind: "ready"; effect: Effect; mode: string; provider: string}
@@ -25,7 +34,8 @@ export type BrokerAndroidPreparation<Effect> =
     | {kind: "unavailable"; error: string; missing: string[]};
 export type BrokerAndroidBoot<Receipt> =
     | {ok: true; ready: boolean; skipped?: boolean; result?: BrokerAndroidProviderResult<Receipt>; attempts?: BrokerAndroidProviderResult<Receipt>[]}
-    | {ok: false; ready: false; error: BrokerAndroidProviderResult<Receipt>; attempts?: BrokerAndroidProviderResult<Receipt>[]};
+    | {ok: false; ready: false; reason: "probe-unavailable"; error: BrokerAndroidProviderResult<Receipt>; attempts?: BrokerAndroidProviderResult<Receipt>[]}
+    | {ok: false; ready: false; reason: "deadline-exceeded"; serial: string | null; last?: BrokerAndroidProviderResult<Receipt>; attempts: BrokerAndroidProviderResult<Receipt>[]};
 export interface BrokerAndroidLifecyclePlan<Effect> {
     ownerId?: string; backend?: string; stateKey?: string; command?: string; deviceId?: string;
     force?: boolean; dryRun?: boolean; create?: unknown; device?: unknown; idempotent?: boolean;
@@ -90,7 +100,7 @@ export function brokerAndroidSerial(device: unknown): string | null {
 }
 
 export function brokerAndroidCommandSucceeded(result: BrokerAndroidProviderResult<unknown>): boolean {
-    return result.status === 0 && !result.error;
+    return result.ok;
 }
 
 export function brokerAndroidAvdName(ownerId: string, create: Record<string, unknown>, fallbackName: string): string {

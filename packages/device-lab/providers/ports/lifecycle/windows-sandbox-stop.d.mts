@@ -27,13 +27,14 @@ export interface WindowsSandboxStopPorts<Binding extends object, NativeResult ex
         evidence: NativeResult;
     };
 }
-export interface WindowsSandboxNativeResult {
-    status?: number | null;
-    stdout?: string;
-    stderr?: string;
-    error?: {
-        message?: string;
-    };
+/** Opaque native evidence, interpreted only by the composition binding/presenter. */
+export type WindowsSandboxNativeResult = object;
+export interface WindowsSandboxNativeObservation<NativeResult extends object> {
+    ok: boolean;
+    result: NativeResult;
+}
+export interface WindowsSandboxRuntimeObservation<NativeResult extends object> extends WindowsSandboxNativeObservation<NativeResult> {
+    ids: string[];
 }
 export interface WindowsSandboxHelperMetadata {
     minimizeWatchdogCancelPath: string;
@@ -52,27 +53,32 @@ export type WindowsSandboxRegistration<NativeResult extends object> = {
     ok: false;
     error: string;
     result: NativeResult | null;
+    lastObservationOk: boolean;
     observedIds: string[];
     newIds: string[];
 };
-export interface WindowsSandboxLifecyclePorts<Binding extends object, NativeResult extends WindowsSandboxNativeResult, Result> extends WindowsSandboxStopPorts<Binding, NativeResult> {
+export interface WindowsSandboxLifecyclePorts<Binding extends object, NativeResult extends object, Result> extends WindowsSandboxStopPorts<Binding, NativeResult> {
     readDevices(): Device[];
     helperMetadata(device: Device): WindowsSandboxHelperMetadata;
     writeConfig(device: Device): string;
     readConfig(path: string): string;
     resetHelperMarkers(helper: WindowsSandboxHelperMetadata): undefined;
-    listRuntime(binding: Binding, timeoutMs: number): NativeResult;
-    runtimeIds(stdout: string): string[];
-    stopRuntime(binding: Binding, id: string, timeoutMs: number): NativeResult;
+    listRuntime(binding: Binding, timeoutMs: number): WindowsSandboxRuntimeObservation<NativeResult>;
+    stopRuntime(binding: Binding, id: string, timeoutMs: number): WindowsSandboxNativeObservation<NativeResult>;
+    registrationDiagnostic(result: NativeResult | null): string;
     timestampBefore(milliseconds: number): string;
     windowHandles(): number[] | null;
-    launchConfig(path: string, minimized: boolean, timeoutMs: number): NativeResult;
-    launchRuntime(binding: Binding, id: string, config: string, minimized: boolean, timeoutMs: number): NativeResult;
-    launchWatchdog(startedAfter: string, cancelPath: string, timeoutMs: number, handles: number[] | null, resultPath: string): Exclude<Watchdog, null | false | 0 | ''>;
+    launchConfig(path: string, minimized: boolean, timeoutMs: number): WindowsSandboxNativeObservation<NativeResult>;
+    launchRuntime(binding: Binding, id: string, config: string, minimized: boolean, timeoutMs: number): WindowsSandboxNativeObservation<NativeResult>;
+    launchWatchdog(startedAfter: string, cancelPath: string, timeoutMs: number, handles: number[] | null, resultPath: string): {
+        ok: boolean;
+        launch: Exclude<Watchdog, null | false | 0 | ''>;
+        warning?: string;
+    };
     updateSingletonRuntimeId(device: Device, claimedId: string, runtimeId: string, claimId?: string | null): boolean;
     waitForMinimizeConfirmation(path: string): Promise<{
         ok: boolean;
-        error?: string;
+        warning?: string;
     }>;
     launchSession(binding: Binding, id: string, minimized: boolean): Session;
     scratchDirectory(device: Device): string;

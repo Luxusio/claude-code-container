@@ -2,7 +2,7 @@ import type {BrokerRecordingRequest, BrokerRecordingTarget, BrokerRecordingRefus
 export type {BrokerRecordingExecution, BrokerRecordingSignal} from "../domain/broker-recording.js";
 export type BrokerRecordingTransition = {found: boolean; matched: boolean; currentRecording: unknown; device: Record<string, unknown> | null};
 export type BrokerRecordingArtifactContext = {ownerId: string; target: BrokerRecordingTarget; recording: Record<string, unknown>};
-/** Individual guarded native effects; no recording workflow or command recipe enters the core. */
+/** Individual guarded native effects return settled success/refusal facts and opaque receipts. */
 export interface BrokerRecordingPorts {
     findTarget(ownerId: string, request: BrokerRecordingRequest): BrokerRecordingTarget | BrokerRecordingRefusal;
     heartbeat(ownerId: string, target: BrokerRecordingTarget, deviceId: string): BrokerRecordingRefusal | null;

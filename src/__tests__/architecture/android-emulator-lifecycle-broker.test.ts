@@ -123,6 +123,69 @@ describe("Android emulator lifecycle original authenticated broker witnesses", (
         });
     });
 
+    it.each([
+        ["missing header", { stdout: "emulator-5668 offline\n" }],
+        ["inexact header", { stdout: "List of devices attached extra\n" }],
+        ["timed out", { stdout: "List of devices attached\n", timedOut: true }],
+        ["output limited", { stdout: "List of devices attached\n", outputLimitExceeded: true }],
+        ["native error at status zero", { stdout: "List of devices attached\n", error: "inventory failed" }],
+    ] as const)("refuses %s native stop inventory before process observation and publication", async (_label, inventory) => {
+        await withBroker("broker-inventory-refusal", async c => {
+            const original = { id: "android-inventory-refusal", backend: "android-emulator", avdName: `ccc-${c.ownerId}-inventory-refusal`, port: 5668, status: "running" };
+            c.write([original]);
+            c.setRunner(command => ({ ...command, status: 0, stderr: "",
+                ...(command.args?.[0] === "devices" ? inventory : { stdout: "" }) }));
+            const result = await c.rpc({ command: "device_stop", deviceId: original.id });
+            expect(result).toMatchObject({ status: 502, body: { ok: false, error: "android-emulator-stop-unconfirmed", detail: "inventory-unavailable" } });
+            expect(c.calls.filter(row => row.command.args?.[0] === "devices")).toHaveLength(1);
+            expect(c.calls.some(row => row.command.provider === "process-inventory")).toBe(false);
+            expect(androidRawState(c.home, c.ownerId).devices).toEqual([original]);
+        });
+    });
+
+    it("keeps an offline serial present until a later complete exact-header inventory omits it", async () => {
+        await withBroker("broker-offline-inventory", async c => {
+            const original = { id: "android-offline-inventory", backend: "android-emulator", avdName: `ccc-${c.ownerId}-offline-inventory`, port: 5670, status: "running" };
+            let inventories = 0;
+            c.write([original]);
+            c.setRunner(command => ({ ...command, status: 0, stderr: "",
+                stdout: command.args?.[0] === "devices"
+                    ? ++inventories === 1 ? "  List of devices attached  \r\nemulator-5670 offline\r\n" : "List of devices attached\nemulator-5670-other offline\n"
+                    : "" }));
+            const result = await c.rpc({ command: "device_stop", deviceId: original.id });
+            expect(result).toMatchObject({ status: 200, body: { ok: true, result: { device: { status: "stopped" } } } });
+            expect(inventories).toBe(2);
+            expect(c.calls.filter(row => row.command.args?.[0] === "devices").map(row => row.options.timeoutMs)).toEqual([10000, 10000]);
+            expect(c.calls.filter(row => row.command.provider === "process-inventory")).toHaveLength(2);
+        });
+    });
+
+    it.each([undefined, true])("replays native boot deadline evidence without adding semantic fields (timedOut=%s)", async timedOut => {
+        await withBroker("broker-boot-deadline", async c => {
+            const original = { id: "android-boot-deadline", backend: "android-emulator", avdName: `ccc-${c.ownerId}-boot-deadline`, port: 5672, status: "stopped" };
+            c.write([original]);
+            c.setRunner(command => ({ ...command, status: 0, stderr: "native boot stderr",
+                stdout: command.args?.[0] === "devices" ? "List of devices attached\n" : command.args?.includes("sys.boot_completed") ? "0\n" : "",
+                ...(command.args?.includes("sys.boot_completed") ? { executable: "/native/adb", pid: 2718, signal: "SIGTERM", outputLimitExceeded: true,
+                    ...(timedOut === undefined ? {} : { timedOut }) } : {}) }));
+            const result = await c.rpc({ command: "device_start", deviceId: original.id, waitForBoot: true, bootTimeoutMs: 1000 });
+            const error = `Timed out waiting for Android emulator emulator-${original.port} to boot`;
+            expect(result).toMatchObject({ status: 502, body: { ok: false, result: {
+                boot: { ready: false, skipped: false, provider: "adb", error: { mode: "exec", provider: "adb", status: 0, stdout: "0\n", stderr: "native boot stderr", error, executable: "/native/adb", pid: 2718, signal: "SIGTERM", outputLimitExceeded: true } },
+                execution: { command: { androidBoot: { ok: false, ready: false, error: { error }, attempts: [{ status: 0, stdout: "0\n" }] } } },
+            } } });
+            const payload = result.body.result as { boot: { error: Record<string, unknown> }; execution: { command: { androidBoot: Record<string, unknown> & { attempts: Record<string, unknown>[] } } } };
+            for (const field of ["ok", "available", "serialPresent", "ready", "receipt"]) {
+                expect(payload.boot.error).not.toHaveProperty(field);
+                expect(payload.execution.command.androidBoot.attempts[0]).not.toHaveProperty(field);
+            }
+            for (const field of ["reason", "serial", "last"]) expect(payload.execution.command.androidBoot).not.toHaveProperty(field);
+            if (timedOut === undefined) expect(payload.boot.error).not.toHaveProperty("timedOut");
+            else expect(payload.boot.error.timedOut).toBe(true);
+            expect(androidRawState(c.home, c.ownerId).devices).toEqual([original]);
+        });
+    });
+
     it("create failure retains raw diagnostics and performs owned compensation before publication", async () => {
         await withBroker("broker-compensation", async c => {
             c.setRunner(command => ({ ...command, status: command.provider === "avdmanager" ? 17 : 0,
@@ -185,11 +248,14 @@ describe("Android emulator lifecycle original authenticated broker witnesses", (
                 if (command.provider === "emulator") c.write([successor]);
                 return { ...command, status: 0,
                     stdout: command.args?.[0] === "devices" ? "List of devices attached\n" : command.args?.includes("sys.boot_completed") ? "1\n" : "",
-                    stderr: "" };
+                    stderr: "", ...(command.args?.includes("sys.boot_completed") ? { timedOut: true, outputLimitExceeded: true, pid: 31337 } : {}) };
             });
             const result = await c.rpc({ command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(result).toMatchObject({ status: 409, body: { ok: false, error: "owner-device-state-conflict",
                 result: { device: successor, boot: { ready: true, provider: "adb", result: { status: 0, stdout: "1\n" } } } } });
+            const boot = (result.body.result as { boot: { result: Record<string, unknown> } }).boot.result;
+            expect(boot).toMatchObject({ status: 0, timedOut: true, outputLimitExceeded: true, pid: 31337 });
+            for (const field of ["ok", "available", "serialPresent", "ready", "receipt"]) expect(boot).not.toHaveProperty(field);
             expect(androidRawState(c.home, c.ownerId).devices).toEqual([successor]);
         });
     });

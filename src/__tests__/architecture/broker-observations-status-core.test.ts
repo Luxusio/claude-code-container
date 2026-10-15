@@ -1,21 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { createBrokerDeviceStatus, createBrokerService } from "@ccc/device-lab/device-lab/application/broker-observation-status.js";
 import type { BrokerDeviceStatusPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
-import type { DeviceStatusRequest } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
+import type { DeviceStatusExecution, DeviceStatusRequest } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
 
 function deviceStatusFixture(backend = "android-emulator") {
     const request: DeviceStatusRequest = { backend, stateKey: backend, deviceId: "device", command: "device_status", dryRun: false };
     const device = { id: "device", status: "stopped", vmId: "owned-vm", vmName: "owned-name" };
     const connection = { token: "controlled-status" };
+    const vmExecution: DeviceStatusExecution<object> = {
+        mode: "exec", provider: "hyper-v", ok: true, adbState: null,
+        vm: { vmId: "owned-vm", vmName: "owned-name", state: "Running", status: "OK" },
+        receipt: { status: 0, stdout: "observation" },
+    };
     const ports: BrokerDeviceStatusPorts<typeof connection, object> = {
         preview: () => ({ kind: "prepared", plan: { ownerId: "owner", backend, stateKey: backend, command: "device_status", deviceId: "device", device,
             availability: { kind: "available", connection, mode: "exec", provider: "adb" } } }),
         refreshPhysicalLease: () => ({ kind: "admitted" }),
-        observe: () => ({ mode: "exec", provider: "adb", status: 0, stdout: "device\n", stderr: "" }),
+        observe: () => ({ mode: "exec", provider: "adb", ok: true, adbState: "device", vm: null, receipt: { status: 0, stdout: "device\n", stderr: "" } }),
         observeHyperVFallback: async () => { throw new Error("record-qualified status must use the typed VM observation"); },
-        typedStatus: async () => ({ mode: "exec", provider: "hyper-v", status: 0, stdout: "observation" }),
-        succeeded: execution => execution.status === 0,
-        parseVm: () => ({ vmId: "owned-vm", vmName: "owned-name", state: "Running", status: "OK" }),
+        typedStatus: async () => vmExecution,
         incarnation: () => "a".repeat(32), validIncarnation: (value): value is string => typeof value === "string",
         deadlineExpired: () => false, assertDeadline: () => undefined, timestamp: () => "2026-10-11T00:00:00.000Z",
         diagnosticCode: (_execution, fallback) => fallback,
@@ -27,22 +30,22 @@ function deviceStatusFixture(backend = "android-emulator") {
         stateFailure: () => ({ reason: "conflict", error: "owner-device-state-read-failed" }), errorCode: (_error, fallback) => fallback,
         withHostLock: async (_deadline, operation) => operation(), lockTimedOut: () => false,
     };
-    return { request, device, ports };
+    return { request, device, ports, vmExecution };
 }
 
 describe("broker device status", () => {
     it("does not tolerate an absent physical ADB target as a stopped emulator", async () => {
         const f = deviceStatusFixture("android-device");
-        f.ports.observe = () => ({ mode: "exec", provider: "adb", status: 1, stdout: "", stderr: "target absent" });
+        f.ports.observe = () => ({ mode: "exec", provider: "adb", ok: false, adbState: null, vm: null, receipt: { status: 1, stdout: "", stderr: "target absent" } });
         expect(await createBrokerDeviceStatus(f.ports).execute("owner", f.request, {})).toMatchObject({
             kind: "provider-failed", error: "provider-command-failed", device: f.device,
-            execution: { status: 1, stderr: "target absent" },
+            execution: { ok: false, receipt: { status: 1, stderr: "target absent" } },
         });
     });
 
     it("reports offline ADB state without inventing readiness or changing the stored definition", async () => {
         const f = deviceStatusFixture();
-        f.ports.observe = () => ({ mode: "exec", provider: "adb", status: 0, stdout: "offline\n" });
+        f.ports.observe = () => ({ mode: "exec", provider: "adb", ok: true, adbState: "offline", vm: null, receipt: { status: 0, stdout: "offline\n" } });
         expect(await createBrokerDeviceStatus(f.ports).execute("owner", f.request, {})).toMatchObject({
             kind: "observed", device: { status: "stopped", runtimeState: "offline" },
         });
@@ -50,7 +53,7 @@ describe("broker device status", () => {
     });
 
     it("refuses a successful native command whose Hyper-V observation is malformed", async () => {
-        const f = deviceStatusFixture("windows-vm"); f.ports.parseVm = () => null;
+        const f = deviceStatusFixture("windows-vm"); f.vmExecution.vm = null;
         expect(await createBrokerDeviceStatus(f.ports).execute("owner", f.request, {})).toMatchObject({
             kind: "provider-failed", error: "provider-command-failed", diagnostic: "hyper-v-provider-command-failed", device: f.device,
         });
@@ -58,7 +61,7 @@ describe("broker device status", () => {
 
     it("reports deadline expiry after a native observation instead of publishing apparent success", async () => {
         const f = deviceStatusFixture("linux-vm");
-        f.ports.typedStatus = async () => { f.ports.deadlineExpired = () => true; return { mode: "exec", provider: "hyper-v", status: 0 }; };
+        f.ports.typedStatus = async () => { f.ports.deadlineExpired = () => true; return f.vmExecution; };
         expect(await createBrokerDeviceStatus(f.ports).execute("owner", f.request, {}, 10)).toMatchObject({
             kind: "refused", reason: "deadline", error: "hyper-v-operation-deadline-exceeded",
         });
@@ -67,7 +70,7 @@ describe("broker device status", () => {
 
     it("refuses a valid Hyper-V observation belonging to another VM", async () => {
         const f = deviceStatusFixture("windows-vm");
-        f.ports.parseVm = () => ({ vmId: "foreign-vm", vmName: "owned-name", state: "Running", status: "OK" });
+        f.vmExecution.vm = { vmId: "foreign-vm", vmName: "owned-name", state: "Running", status: "OK" };
         expect(await createBrokerDeviceStatus(f.ports).execute("owner", f.request, {})).toMatchObject({
             kind: "provider-failed", error: "provider-command-failed", device: f.device,
         });
@@ -88,10 +91,10 @@ describe("broker device status", () => {
 
     it("projects only this owner's live snapshots without modifying stored status", async () => {
         const f = deviceStatusFixture("windows-vm");
-        f.ports.parseVm = () => ({ vmId: "owned-vm", vmName: "owned-name", state: "Running", status: "OK", snapshots: [
+        f.vmExecution.vm = { vmId: "owned-vm", vmName: "owned-name", state: "Running", status: "OK", snapshots: [
             { snapshotId: "ABC", snapshotName: "ccc-owner-baseline", snapshotType: "Production" },
             { snapshotId: "DEF", snapshotName: "ccc-foreign-baseline" },
-        ] });
+        ] };
         expect(await createBrokerDeviceStatus(f.ports).execute("owner", f.request, {})).toMatchObject({
             kind: "observed", device: { status: "running", liveSnapshots: [
                 { id: "abc", providerName: "ccc-owner-baseline", snapshotType: "Production" },

@@ -35,7 +35,13 @@ function contracts(ports: BrokerWindowsSandboxLifecyclePorts<Prepared, Receipt>,
     // @ts-expect-error auxiliary cleanup and committed expected-record advancement are required
     createBrokerWindowsSandboxLifecycle(withoutCleanup);
     // @ts-expect-error native command results must settle synchronously
-    createBrokerWindowsSandboxLifecycle({ ...ports, run: async () => ({ status: 0 }) });
+    createBrokerWindowsSandboxLifecycle({ ...ports, run: async () => ({ ok: true }) });
+    // @ts-expect-error runtime inventory must carry settled IDs rather than native framing
+    createBrokerWindowsSandboxLifecycle({ ...ports, listRuntime: () => ({ ok: true, stdout: "[]" }) });
+    // @ts-expect-error window inventory must distinguish unavailable handles from an empty baseline
+    createBrokerWindowsSandboxLifecycle({ ...ports, snapshotWindows: () => ({ ok: true }) });
+    // @ts-expect-error process exit status alone is not a settled command observation
+    createBrokerWindowsSandboxLifecycle({ ...ports, run: () => ({ status: 0 }) });
     // @ts-expect-error artifact cleanup must settle before publication
     createBrokerWindowsSandboxLifecycle({ ...ports, cleanArtifacts: async () => ({ ok: true, removed: false, deviceRoot: "scratch" }) });
     // @ts-expect-error lifecycle callers must provide their expected record

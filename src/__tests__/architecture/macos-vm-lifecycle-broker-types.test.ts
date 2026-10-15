@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { createBrokerMacosVmLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.js";
-import { brokerMacosReplacement, type BrokerMacosLifecycleInput, type BrokerMacosLifecycleResponse, type BrokerMacosProviderResult } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
+import { brokerMacosReplacement, type BrokerMacosLifecycleInput, type BrokerMacosLifecycleResponse, type BrokerMacosProviderResult, type BrokerMacosIpObservation } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerMacosVmLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/macos-vm-lifecycle.js";
 
 type Effect = { readonly token: unique symbol };
@@ -24,7 +24,7 @@ function contracts(ports: BrokerMacosVmLifecyclePorts<Effect>, input: BrokerMaco
     // @ts-expect-error preparation settles synchronously before execution
     createBrokerMacosVmLifecycle({ ...ports, prepareExisting: async () => ({ kind: "metadata-only", purpose: "definition-only" }) });
     // @ts-expect-error native effect observations are synchronous
-    createBrokerMacosVmLifecycle({ ...ports, execute: async () => ({ mode: "exec", provider: "tart", status: 0, receipt: null }) });
+    createBrokerMacosVmLifecycle({ ...ports, execute: async () => ({ ok: true, mode: "exec", provider: "tart", resourceMissing: false, receipt: null }) });
     // @ts-expect-error publication reports found and matched independently
     createBrokerMacosVmLifecycle({ ...ports, publish: () => ({ matched: true, device: null }) });
     // @ts-expect-error complete-record publication is synchronous
@@ -35,12 +35,12 @@ function contracts(ports: BrokerMacosVmLifecyclePorts<Effect>, input: BrokerMaco
     outcome.status;
     // @ts-expect-error semantic outcomes have no HTTP payload
     outcome.payload;
-    const ip: BrokerMacosProviderResult = ports.observeIp(effect, "owned", "arp", { timeoutMs: 1500, outputLimit: 8192 });
+    const ip: BrokerMacosIpObservation = ports.observeIp(effect, "owned", "arp", { timeoutMs: 1500, outputLimit: 8192 });
     const { observeIp, ...withoutIp } = ports;
     // @ts-expect-error bounded native IP observation is required
     createBrokerMacosVmLifecycle(withoutIp);
     // @ts-expect-error IP probes finish synchronously before the boot decision
-    createBrokerMacosVmLifecycle({ ...ports, observeIp: async () => ({ mode: "exec", provider: "tart", status: 0, receipt: null }) });
+    createBrokerMacosVmLifecycle({ ...ports, observeIp: async () => ({ ok: true, mode: "exec", provider: "tart", resourceMissing: false, address: "192.0.2.4", receipt: null }) });
     // @ts-expect-error pacing cannot defer synchronous polling
     createBrokerMacosVmLifecycle({ ...ports, sleep: async () => undefined });
     void [ip, observeIp];

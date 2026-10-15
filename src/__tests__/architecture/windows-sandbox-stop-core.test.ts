@@ -165,13 +165,13 @@ function lifecycleFixture(device: Device = { id: "sandbox", status: "stopped", s
         readDevices: () => base.read() ? [base.read()!] : [],
         helperMetadata: () => ({ minimizeWatchdogCancelPath: "private-cancel", minimizeWatchdogResultPath: "private-result" }),
         writeConfig: () => "private-config", readConfig: () => "<Configuration/>", resetHelperMarkers: () => undefined,
-        listRuntime: () => ({ status: 0, stdout: JSON.stringify(launched ? [guid] : []) }),
-        runtimeIds: stdout => JSON.parse(stdout) as string[],
-        stopRuntime: (_binding, id, timeout) => { effects.push(`compensate:${id}:${timeout}`); return { status: 0 }; },
+        listRuntime: () => ({ ok: true, ids: launched ? [guid] : [], result: { status: 0 } }),
+        stopRuntime: (_binding, id, timeout) => { effects.push(`compensate:${id}:${timeout}`); return { ok: true, result: { status: 0 } }; },
+        registrationDiagnostic: () => " fixture-native-diagnostic",
         timestampBefore: () => "2026-10-10T00:00:00.000Z", windowHandles: () => [101],
-        launchConfig: (_path, _minimized, timeout) => { launched = true; effects.push(`launch:${timeout}`); return { status: 0 }; },
-        launchRuntime: () => { launched = true; effects.push("launch-cli"); return { status: 0 }; },
-        launchWatchdog: () => ({ ok: true, pid: 17 }),
+        launchConfig: (_path, _minimized, timeout) => { launched = true; effects.push(`launch:${timeout}`); return { ok: true, result: { status: 0 } }; },
+        launchRuntime: () => { launched = true; effects.push("launch-cli"); return { ok: true, result: { status: 0 } }; },
+        launchWatchdog: () => ({ ok: true, launch: { ok: true, pid: 17 } }),
         updateSingletonRuntimeId: (_item, _claimed, runtimeId, claimId) => { base.setSingleton({ deviceId: "sandbox", sandboxId: runtimeId, claimId }); return true; },
         waitForMinimizeConfirmation: async () => ({ ok: true }), launchSession: () => ({ ok: true }),
         scratchDirectory: () => "private-scratch", removeScratch: () => { effects.push("remove-scratch"); return undefined; },
@@ -199,9 +199,9 @@ describe("direct Sandbox lifecycle application", () => {
         const f = lifecycleFixture();
         const observed = ["22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"];
         let launched = false;
-        f.ports.launchConfig = () => { launched = true; return { status: 0 }; };
-        f.ports.listRuntime = () => ({ status: 0, stdout: JSON.stringify(launched ? observed : []) });
-        f.ports.stopRuntime = (_binding, id) => { f.effects.push(`cleanup-failed:${id}`); return { status: 7, stderr: "stop denied" }; };
+        f.ports.launchConfig = () => { launched = true; return { ok: true, result: { status: 0 } }; };
+        f.ports.listRuntime = () => ({ ok: true, ids: launched ? observed : [], result: { status: 0 } });
+        f.ports.stopRuntime = (_binding, id) => { f.effects.push(`cleanup-failed:${id}`); return { ok: false, result: { status: 7, stderr: "stop denied" } }; };
         const result = await f.lifecycle.start({ deviceId: "sandbox" });
         expect(result).toMatchObject({ ok: false });
         expect(result?.error).toContain("multiple new runtimes");
@@ -211,13 +211,38 @@ describe("direct Sandbox lifecycle application", () => {
         expect(f.singleton()).toMatchObject({ deviceId: "sandbox", claimId: "operation" });
         for (const id of observed) expect(result?.error).toContain(id);
     });
+    it("retains its claim when the last registration inventory is unavailable after an earlier empty inventory", async () => {
+        const f = lifecycleFixture(), native = { status: 9, stderr: "inventory unavailable" };
+        let lists = 0;
+        f.ports.listRuntime = () => ++lists <= 2
+            ? { ok: true, ids: [], result: { status: 0 } }
+            : { ok: false, ids: [], result: native };
+        f.ports.registrationDiagnostic = result => { expect(result).toBe(native); return " retained-native-diagnostic"; };
+        const result = await f.lifecycle.start({ deviceId: "sandbox" });
+        expect(result).toMatchObject({ ok: false });
+        expect(result?.error).toContain("within 60000ms");
+        expect(result?.error).toContain("retained-native-diagnostic");
+        expect(f.singleton()).toMatchObject({ deviceId: "sandbox", claimId: "operation" });
+        expect(f.read()).toMatchObject({ status: "starting", lifecycle: { operation: "start" } });
+        expect(f.effects.some(effect => effect.startsWith("compensate:"))).toBe(false);
+    });
+    it("keeps native watchdog metadata separate from its settled minimize warning", async () => {
+        const f = lifecycleFixture(), launch = { ok: false, pid: 17, error: "native watchdog error" };
+        f.ports.launchWatchdog = () => ({ ok: false, launch, warning: "settled minimize warning" });
+        f.ports.waitForMinimizeConfirmation = async () => { throw new Error("failed watchdog must not wait for confirmation"); };
+        expect(await f.lifecycle.start({ deviceId: "sandbox", minimized: true })).toMatchObject({ ok: true,
+            value: { device: { status: "running", minimizeConfirmed: false, minimizeWarning: "settled minimize warning" } } });
+        expect(f.read()?.minimizeWatchdogLaunch).toBe(launch);
+        expect(f.read()?.minimizeWatchdogLaunch).not.toHaveProperty("warning");
+        expect(f.singleton()).toMatchObject({ sandboxId: guid });
+    });
     it("never stops or cancels the watchdog of a same-GUID successor when start publication loses its CAS", async () => {
         const f = lifecycleFixture();
         let watchdogCancellations = 0;
         f.ports.cancelWatchdog = cancelPath => { watchdogCancellations++; return { attempted: true, ok: true, cancelPath }; };
         const successor: Device = { id: "sandbox", status: "running", sandboxId: guid, singletonClaimId: "successor", lifecycle: { runtimeId: "successor", operation: "start", claimedAt: "2026-10-10T00:00:00.000Z" } };
-        f.ports.launchConfig = () => { f.replace(successor); f.setSingleton({ deviceId: "sandbox", sandboxId: guid, claimId: "successor" }); return { status: 0 }; };
-        f.ports.listRuntime = () => ({ status: 0, stdout: JSON.stringify(f.read() === successor ? [guid] : []) });
+        f.ports.launchConfig = () => { f.replace(successor); f.setSingleton({ deviceId: "sandbox", sandboxId: guid, claimId: "successor" }); return { ok: true, result: { status: 0 } }; };
+        f.ports.listRuntime = () => ({ ok: true, ids: f.read() === successor ? [guid] : [], result: { status: 0 } });
         expect(await f.lifecycle.start({ deviceId: "sandbox" })).toMatchObject({ ok: false, error: "owner-device-state-conflict", operation: "start-complete" });
         expect(f.read()).toBe(successor);
         expect(f.singleton()).toMatchObject({ claimId: "successor", sandboxId: guid });

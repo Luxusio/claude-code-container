@@ -1,5 +1,5 @@
 import type {HyperVWindowsGuestBootDiagnostic} from '@ccc/hyper-v/index.js';
-import type {HyperVGuestReadyObservation,HyperVGuestReadinessFailureDetail,HyperVLinuxGuestReadyTrace} from '../../domain/lifecycle/hyper-v-create-start.js';
+import type {HyperVGuestReadyObservation,HyperVGuestReadinessFailureDetail,HyperVLinuxGuestReadyTrace,HyperVGuestReadinessObservation} from '../../domain/lifecycle/hyper-v-create-start.js';
 import type {HyperVPublication} from '../../domain/lifecycle/hyper-v-stop-delete.js';
 import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVCreateField,hyperVCreateNumber,hyperVLinuxGuestReadyTraceFailureCode,hyperVLinuxGuestSignalDeadlineAt,hyperVLinuxGuestSignalTimedOut,compareHyperVLinuxEd25519HostKeyFingerprint} from '../../domain/lifecycle/hyper-v-create-start.js';
 import type { SnapshotJournal } from '../../domain/lifecycle/hyper-v-snapshots.js';
@@ -873,43 +873,6 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     rollback,};
         }
     }
-function hyperVGuestReadinessFailureDetail(
-    backend: "windows-vm" | "linux-vm",
-    result: HyperVNativeExecution<Receipt>,
-): HyperVGuestReadinessFailureDetail {
-    const diagnosticCode = ports.diagnosticCode(result);
-    return {
-        ...(backend === "windows-vm"
-            ? { structured: Boolean(ports.parseReadyFailure(result.stdout || "")) }
-            : {}),
-        status: typeof result.status === "number" ? result.status : null,
-        timedOut: result.timedOut === true,
-        stdoutBytes: Buffer.byteLength(String(result.stdout || ""), "utf8"),
-        stderrBytes: Buffer.byteLength(String(result.stderr || ""), "utf8"),
-        ...(diagnosticCode ? { diagnosticCode } : {}),
-    };
-}
-
-function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", result: HyperVNativeExecution<Receipt>): string {
-    if (backend === "windows-vm") {
-        const observation = ports.parseReadyFailure(result.stdout || "");
-        if (observation) return observation.reason;
-        const error = String(result.error || "");
-        if (error.length <= 128 && /^hyper-v-[a-z0-9-]+$/.test(error)) return error;
-        return result.timedOut ? "powershell-direct-timeout" : "powershell-direct-unavailable";
-    }
-    const error = String(result.error || "");
-    if (/^hyper-v-linux-gui-(?:(?:privilege|apt-update|apt-install|configure|start|ready)-failed|timeout)$/.test(error)) return error;
-    const diagnostic = `${error}\n${result.stderr || ""}`.toLowerCase();
-    if (diagnostic.includes("connection refused")) return "ssh-connection-refused";
-    if (diagnostic.includes("connection timed out") || diagnostic.includes("operation timed out") || result.timedOut) return "ssh-connection-timeout";
-    if (diagnostic.includes("no route to host") || diagnostic.includes("host is down")) return "ssh-host-unreachable";
-    if (diagnostic.includes("host key verification failed") || diagnostic.includes("remote host identification has changed")) return "ssh-host-key-rejected";
-    if (diagnostic.includes("permission denied") || diagnostic.includes("authentication failed")) return "ssh-authentication-failed";
-    if (error.length <= 128 && /^hyper-v-[a-z0-9-]+$/.test(error)) return error;
-    return "ssh-unavailable";
-}
-
     function createRecord(ownerId:string,parsed:HyperVLifecycleRequest):Record<string,unknown>{const create=parsed.create||{};const timestamp=ports.timestamp();const name=String(create.name||parsed.deviceId);const incarnation=String(create.incarnationId||'');const vmName=ports.vmName(ownerId,parsed.deviceId,incarnation);const deviceRoot=ports.deviceRoot(ownerId,parsed.backend,parsed.deviceId);const privateRoot=ports.privateRoot(ownerId,parsed.backend,parsed.deviceId);return hyperVDeviceDefinition(ownerId,parsed,{name,timestamp,vmName,deviceRoot,privateRoot,validIncarnation:ports.validIncarnation(create.incarnationId)});}
 
     async function rollbackCreate(parsed: HyperVLifecycleRequest, device: Record<string, unknown>, existing: Record<string, unknown> | null, hyperVDeadlineAt: number):Promise<HyperVRollback<Receipt>> {
@@ -1432,7 +1395,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             && observation.vmName === expectedVmName
             && (true));
     }
-    let hyperVGuestReadyExecution: HyperVNativeExecution<Receipt> | null = null;
+    let hyperVGuestReadyExecution: HyperVGuestReadinessObservation<Receipt> | null = null;
     let hyperVGuestReady: HyperVGuestReadyObservation | null = null;
     let hyperVGuestBootDiagnostic: HyperVWindowsGuestBootDiagnostic | null = null;
     let hyperVGuestBootDiagnosticPublic: HyperVBootDiagnosticFacts | null = null;
@@ -1472,14 +1435,9 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 provisioningMediaPath,
                 expectedNetworkAddress: hyperVCreateField(device, "networkAddress") || ""
             }, ports.windowsReadiness(powerConnection, ports.deviceRoot(ownerId, "windows-vm", parsed.deviceId), provisioningMediaPath));
-            hyperVGuestReadyExecution = {
-                mode: "exec", provider: "hyper-v", status: readiness.ok ? 0 : 1,
-                stdout: JSON.stringify(readiness), stderr: "",
-            };
+            hyperVGuestReadyExecution = ports.observeWindowsReadiness(readiness);
             ports.assertDeadline(hyperVDeadlineAt);
-            hyperVGuestReady = hyperVCreateSucceeded(hyperVGuestReadyExecution)
-                ? ports.parseReady(hyperVGuestReadyExecution.stdout || "")
-                : null;
+            hyperVGuestReady = readiness.ok ? readiness : null;
             success = Boolean(hyperVGuestReady
                 && hyperVGuestReady.vmId === String(hyperVCreateField(device, "vmId") || "").toLowerCase()
                 && hyperVGuestReady.vmName === hyperVCreateField(device, "vmName")
@@ -1492,12 +1450,9 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             // hyper-v-operation-deadline-exceeded instead — containment switches on that reason,
             // so an un-scrubbed guest was left running and unreported at exactly the moment the
             // host was most contended.
-            hyperVGuestReadyExecution = hyperVGuestReadyExecution ?? {
-                mode: "exec",
-                provider: "hyper-v",
-                status: null,
-                error: ports.boundedErrorCode(error, "hyper-v-guest-ready-precondition-failed"),
-            };
+            hyperVGuestReadyExecution = hyperVGuestReadyExecution ?? ports.readinessFailure(
+                "windows-vm", ports.boundedErrorCode(error, "hyper-v-guest-ready-precondition-failed"),
+            );
             success = false;
         }
     }
@@ -1508,7 +1463,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             : 5 * 60 * 1000;
         const ssh = ports.connection('ssh');
         if (!ssh) {
-            hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: "missing-provider-command:ssh" };
+            hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", "missing-provider-command:ssh");
             success = false;
         }
         else {
@@ -1572,7 +1527,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                         networkAddress,
                         timeoutMs: Math.min(timeoutMs, 30000),
                     }, ports.remaining(deadline,35000),ports.outputLimit);
-                    if (hyperVCreateSucceeded(hyperVGuestReadyExecution) && String(hyperVGuestReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) {
+                    if (hyperVGuestReadyExecution.ready) {
                         guestSignalObserved = true;
                         break;
                     }
@@ -1612,17 +1567,14 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                                 verboseHostKeyDiagnostics: true,
                                 timeoutMs: Math.min(10000, Math.max(1000, deadline - ports.now())),
                             },ports.remaining(deadline,15000),ports.outputLimit);
-                            bootstrapSshLastStatus = typeof bootstrapReadyExecution.status === "number"
-                                ? bootstrapReadyExecution.status
-                                : null;
-                            let bootstrapAuthenticated = hyperVCreateSucceeded(bootstrapReadyExecution)
-                                && String(bootstrapReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready");
+                            bootstrapSshLastStatus = bootstrapReadyExecution.failureDetail.status;
+                            let bootstrapAuthenticated = bootstrapReadyExecution.ready;
                             if (!bootstrapAuthenticated) {
-                                bootstrapSshLastError = hyperVCreateSucceeded(bootstrapReadyExecution)
+                                bootstrapSshLastError = bootstrapReadyExecution.ok
                                     ? "ssh-readiness-marker-missing"
-                                    : hyperVGuestReadinessFailureCode("linux-vm", bootstrapReadyExecution);
+                                    : bootstrapReadyExecution.failureCode;
                                 if (bootstrapSshLastError === "ssh-host-key-rejected") {
-                                    const comparison = compareHyperVLinuxEd25519HostKeyFingerprint(fingerprint, `${bootstrapReadyExecution.error || ""}\n${bootstrapReadyExecution.stderr || ""}`);
+                                    const comparison = compareHyperVLinuxEd25519HostKeyFingerprint(fingerprint, bootstrapReadyExecution.hostKeyFingerprints);
                                     if (comparison.observed) {
                                         observedBootstrapHostKeyAddresses.add(bootstrapAddress);
                                         if (comparison.matchesExpected)
@@ -1651,10 +1603,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                                 networkPrefixLength: Number(networkPrefix.split("/")[1]),
                             },ports.remaining(deadline,15000),ports.outputLimit);
                             if (!hyperVCreateSucceeded(finalizeExecution)) {
-                                hyperVGuestReadyExecution = {
-                                    ...finalizeExecution,
-                                    error: "hyper-v-bootstrap-network-finalize-failed",
-                                };
+                                hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", "hyper-v-bootstrap-network-finalize-failed", {execution: finalizeExecution});
                                 break;
                             }
                             bootstrapFinalizationAttempted = true;
@@ -1668,13 +1617,11 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                     if (ports.now() < deadline)
                         await ports.sleep(Math.min(2000,Math.max(0,deadline-ports.now())));
                 } while (ports.now() < deadline && (guestSignalObserved || ports.now() < guestSignalDeadline));
-                success = Boolean(hyperVGuestReadyExecution && hyperVCreateSucceeded(hyperVGuestReadyExecution) && String(hyperVGuestReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready"));
+                success = Boolean(hyperVGuestReadyExecution?.ready);
                 if (!success && hyperVLinuxGuestSignalTimedOut(readinessStartedAt, ports.now(), guestSignalObserved)) {
-                    hyperVGuestReadyExecution = {
-                        ...(hyperVGuestReadyExecution || { mode: "exec", provider: "hyper-v-ssh", status: null }),
-                        error: "hyper-v-guest-boot-signal-timeout",
-                        timedOut: false,
-                    };
+                    hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", "hyper-v-guest-boot-signal-timeout", {
+                        previous: hyperVGuestReadyExecution, timedOut: false,
+                    });
                 }
                 hyperVGuestReady = success ? {
                     ok: true,
@@ -1695,10 +1642,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                         deadlineAt: hyperVDeadlineAt,
                     }, hyperVCreateField(device, "macAddress") || "");
                     if (!cleanupObservation) {
-                        hyperVGuestReadyExecution = {
-                            ...cleanupExecution,
-                            error: "hyper-v-bootstrap-network-cleanup-failed",
-                        };
+                        hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", "hyper-v-bootstrap-network-cleanup-failed", {execution: cleanupExecution});
                         hyperVGuestReady = null;
                         success = false;
                     }
@@ -1712,15 +1656,11 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                         timeoutMs: 30000,
                     };
                     let guiExecution = await ports.probeLinuxGui(ssh,guiOptions,ports.remaining(hyperVDeadlineAt,35000),ports.outputLimit);
-                    if (!hyperVCreateSucceeded(guiExecution) || !String(guiExecution.stdout || "").includes("CCC_HYPER_V_GUI_READY")) {
+                    if (!guiExecution.ready) {
                         guiExecution = await ports.prepareLinuxGui(ssh,{...guiOptions,timeoutMs:ports.linuxGuiTimeout},ports.remaining(hyperVDeadlineAt,ports.linuxGuiTimeout),ports.outputLimit);
                     }
-                    if (!hyperVCreateSucceeded(guiExecution) || !String(guiExecution.stdout || "").includes("CCC_HYPER_V_GUI_READY")) {
-                        const stage = /hyper-v-linux-gui-(?:privilege|apt-update|apt-install|configure|start|ready)-failed/.exec(String(guiExecution.stderr || ""))?.[0];
-                        hyperVGuestReadyExecution = {
-                            ...guiExecution,
-                            error: stage || (guiExecution.timedOut ? "hyper-v-linux-gui-timeout" : "hyper-v-linux-gui-ready-failed"),
-                        };
+                    if (!guiExecution.ready) {
+                        hyperVGuestReadyExecution = guiExecution;
                         hyperVGuestReady = null;
                         success = false;
                     }
@@ -1731,7 +1671,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 const readinessError = caughtError === "hyper-v-operation-deadline-exceeded"
                     ? bootstrapSshLastError || caughtError
                     : caughtError;
-                hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: readinessError };
+                hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", readinessError);
                 success = false;
             }
             finally {
@@ -1802,10 +1742,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
             }
         }
         if (!bootstrapContained) {
-            hyperVGuestReadyExecution = {
-                ...(hyperVGuestReadyExecution || { mode: "exec", provider: "hyper-v-ssh", status: null }),
-                error: "hyper-v-bootstrap-network-containment-failed",
-            };
+            hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", "hyper-v-bootstrap-network-containment-failed", {previous: hyperVGuestReadyExecution});
         }
     }
     const hyperVProvisioningMediaRetained = !success && parsed.backend === "windows-vm" && (parsed.command === "device_start" || parsed.command === "device_reboot") ? ports.mediaRetained(join(ports.deviceRoot(ownerId, "windows-vm", parsed.deviceId), "disks", "autounattend.iso")) : false;
@@ -1814,8 +1751,8 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         && true
         && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
         if (hyperVGuestReadyExecution) {
-            hyperVGuestReadyFailureCode = hyperVGuestReadinessFailureCode(parsed.backend === "linux-vm" ? "linux-vm" : "windows-vm", hyperVGuestReadyExecution);
-            hyperVGuestReadyFailureDetail = hyperVGuestReadinessFailureDetail(parsed.backend === "linux-vm" ? "linux-vm" : "windows-vm", hyperVGuestReadyExecution);
+            hyperVGuestReadyFailureCode = hyperVGuestReadyExecution.failureCode;
+            hyperVGuestReadyFailureDetail = hyperVGuestReadyExecution.failureDetail;
             if (parsed.backend === "linux-vm") {
                 hyperVGuestReadyFailureCode = hyperVLinuxGuestReadyTraceFailureCode(hyperVGuestReadyTrace, hyperVGuestReadyFailureCode);
             }
@@ -1923,8 +1860,9 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         // local Administrator password in plaintext for anything running there. The scrub does not
         // remove that account. Vetoing on scrubConfirmed alone stood containment down on exactly
         // that guest; the host-side-file argument only holds once the drive is actually gone.
-        const readyFailure = ports.parseReadyFailure(hyperVGuestReadyExecution?.stdout || "");
-        const scrubConfirmed = readyFailure?.scrubConfirmed === true && readyFailure?.mediaDetached === true;
+        const readyFailure = hyperVGuestReadyExecution?.backend === "windows-vm"
+            ? hyperVGuestReadyExecution.outcome : null;
+        const scrubConfirmed = readyFailure?.ok === false && readyFailure.scrubConfirmed && readyFailure.mediaDetached;
         // A guest already Off has nothing to contain, and stopping it would claim otherwise:
         // hyperVStopCommand is `if ($Vm.State -ne 'Off') { Stop-VM }` plus a re-query, so on an Off
         // VM it returns ok having done nothing, which then set hyperVContainedRuntimeState and
@@ -1980,12 +1918,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
                 // mounted, live autologon, containment attempted and failed, complete silence. The
                 // linux lane already does this; the windows one had no equivalent. Any existing
                 // execution is kept so a real readiness reason is never overwritten.
-                hyperVGuestReadyExecution = hyperVGuestReadyExecution ?? {
-                    mode: "exec",
-                    provider: "hyper-v",
-                    status: null,
-                    error: "hyper-v-guest-scrub-containment-failed",
-                };
+                hyperVGuestReadyExecution = hyperVGuestReadyExecution ?? ports.readinessFailure("windows-vm", "hyper-v-guest-scrub-containment-failed");
             }
         }
     }
@@ -2001,7 +1934,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         // had to remove one of those (the existsSync catch that could never fire).
         hyperVGuestReadyFailureDetail = {
             ...(hyperVGuestReadyFailureDetail
-                ?? hyperVGuestReadinessFailureDetail("windows-vm", hyperVGuestReadyExecution)),
+                ?? hyperVGuestReadyExecution.failureDetail),
             scrubContainmentFailed: true,
         };
     }

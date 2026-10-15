@@ -1,6 +1,6 @@
 import { createHyperVCreateStartApplication, executeHyperVVmCreation, waitHyperVWindowsGuestReadiness } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.js";
 import type { WindowsReadinessOutcome, WindowsReadinessPorts, WindowsReadinessRequest, VmCreationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-create-start.js";
-import type { HyperVCreateRecovery, HyperVLifecycleOutcome, HyperVLifecycleRequest, HyperVNativeExecution, VmCreationEffect, VmCreationObservation, VmCreationRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
+import type { HyperVCreateRecovery, HyperVLinuxReadinessObservation, HyperVLifecycleOutcome, HyperVLifecycleRequest, HyperVNativeExecution, VmCreationEffect, VmCreationObservation, VmCreationRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
 
 function readinessCapabilities(request: WindowsReadinessRequest, ports: WindowsReadinessPorts): void {
     const result: Promise<WindowsReadinessOutcome> = waitHyperVWindowsGuestReadiness(request, ports);
@@ -98,8 +98,23 @@ function finiteNativeCapabilities(ports: WorkflowPorts): void {
     const { prepareLinuxSeed, ...withoutSeedPreparation } = ports;
     // @ts-expect-error Linux seed preparation is required before the independently budgeted effect.
     createHyperVCreateStartApplication(withoutSeedPreparation);
-    // @ts-expect-error Readiness is a settled asynchronous native observation.
-    createHyperVCreateStartApplication({ ...ports, probeLinuxReadiness: () => ({ mode: "exec", provider: "hyper-v", status: 0 }) });
+    const linuxReadiness: HyperVLinuxReadinessObservation<Receipt> = {
+        backend: "linux-vm", ok: true, ready: true, execution: { mode: "exec", provider: "hyper-v-ssh", receipt: { nativeEvidence: "ready" } },
+        failureCode: "ssh-unavailable", failureDetail: { status: 0, timedOut: false, stdoutBytes: 0, stderrBytes: 0 }, hostKeyFingerprints: [],
+    };
+    // @ts-expect-error Readiness is a settled asynchronous observation.
+    createHyperVCreateStartApplication({ ...ports, probeLinuxReadiness: () => linuxReadiness });
+    const { observeWindowsReadiness, ...withoutWindowsReadiness } = ports;
+    // @ts-expect-error the arrived typed Windows result needs its native-boundary observation
+    createHyperVCreateStartApplication(withoutWindowsReadiness);
+    const { readinessFailure, ...withoutReadinessFailure } = ports;
+    // @ts-expect-error readiness failures require their finite native-boundary diagnostic authority
+    createHyperVCreateStartApplication(withoutReadinessFailure);
+    // @ts-expect-error a raw SSH process result is not a settled readiness observation
+    createHyperVCreateStartApplication({ ...ports, probeLinuxReadiness: async () => ({ mode: "exec", provider: "hyper-v-ssh", status: 0, stdout: "ccc-hyper-v-linux-ready" }) });
+    // @ts-expect-error GUI readiness requires normalized ready/failure facts and opaque evidence
+    createHyperVCreateStartApplication({ ...ports, probeLinuxGui: async () => ({ mode: "exec", provider: "hyper-v-ssh", status: 0, stdout: "CCC_HYPER_V_GUI_READY" }) });
+    void [observeWindowsReadiness, readinessFailure];
     // @ts-expect-error A prepared seed must return the completion of its native execution.
     createHyperVCreateStartApplication({ ...ports, prepareLinuxSeed: () => () => ({ mode: "exec", provider: "hyper-v", status: 0 }) });
     // @ts-expect-error Seed command preparation must fail synchronously inside the planning guard.

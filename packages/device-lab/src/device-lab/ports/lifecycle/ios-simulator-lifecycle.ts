@@ -1,8 +1,9 @@
-import type {BrokerIosLifecycleRequest, BrokerIosProviderResult, BrokerIosPlannedCommand, BrokerIosClaim, BrokerIosPublication, BrokerIosPublicationChange, BrokerIosAuxiliaryFacts} from "../../domain/lifecycle/ios-simulator-lifecycle.js";
+import type {BrokerIosLifecycleRequest, BrokerIosProviderResult, BrokerIosCreateResult, BrokerIosPlannedCommand, BrokerIosClaim, BrokerIosPublication, BrokerIosPublicationChange, BrokerIosAuxiliaryFacts} from "../../domain/lifecycle/ios-simulator-lifecycle.js";
 export interface BrokerIosAuxiliaryCleanup {result: BrokerIosAuxiliaryFacts; device: unknown; committed: boolean;}
 /** One prepared native effect at a time; eligibility, publication and recovery stay inward. */
 export interface BrokerIosSimulatorLifecyclePorts<Effect> {
     readonly execute: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerIosProviderResult;
+    readonly executeCreate: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerIosCreateResult;
     readonly prepareCreate: (input: {simulatorName: string; ownerPrefix: string; deviceType: unknown; runtime: unknown}) => BrokerIosPlannedCommand<Effect>;
     readonly prepareExisting: (input: {parsed: BrokerIosLifecycleRequest; target: string}) => BrokerIosPlannedCommand<Effect>;
     readonly prepareDelete: (effect: Effect, target: string) => Effect;
@@ -13,6 +14,5 @@ export interface BrokerIosSimulatorLifecyclePorts<Effect> {
     readonly stateErrorCode: (error: unknown) => string | null;
     readonly commandTimeoutMs: number;
     readonly outputLimit: number;
-    readonly createdUdid: (stdout: unknown) => string | null;
     readonly verifyOwnedTarget: (ownerId: string, device: unknown) => {ok: true; target: string} | {ok: false; error: string; missing: string[]};
 }

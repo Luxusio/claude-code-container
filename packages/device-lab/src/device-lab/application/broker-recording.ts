@@ -7,7 +7,6 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
     const findOwnerDeviceForTool = ports.findTarget;
     const transitionOwnerRecordingRuntime = ports.publish;
     const refreshPhysicalDeviceLeaseForOperation = ports.heartbeat;
-    function commandSucceeded(result: BrokerRecordingExecution) { return result.status === 0 && !result.error; }
     function invokeDeviceRecordingStatus(ownerId: string, parsed: BrokerRecordingRequest): BrokerRecordingStatusOutcome {
         const match = findOwnerDeviceForTool(ownerId, parsed);
         if ("kind" in match) return match;
@@ -79,7 +78,7 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
         const execution = match.stateKey === "android" || match.stateKey === "android-device"
             ? await ports.launchAndroidRecording(plan.providerTarget, plan.recording.remotePath || "", plan.recording.timeLimitSec || 180, plan.localPath, label)
             : await ports.launchIosRecording(plan.providerTarget, plan.localPath, label);
-        if (!commandSucceeded(execution)) {
+        if (!execution.ok) {
             return {kind: "refused", reason: "provider-failed", error: "recording-start-failed", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, execution};
         }
         const recording: Record<string, unknown> = {
@@ -137,9 +136,9 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
         if (android && serial && !alreadyStopped) {
             const stop = ports.stopAndroidRecording(context, serial);
             executions.push(stop);
-            if (!commandSucceeded(stop)) {
+            if (!stop.ok) {
                 // Guard refusals cannot be excused by a successful host signal.
-                if (["recording-runtime-state-conflict", "physical-device-not-attached", "recording-process-identity-unavailable", "recording-process-not-broker-owned"].includes(stop.error || "")) {
+                if (stop.refusal === "guard-refused") {
                     return {kind: "refused", reason: "provider-failed", error: "recording-stop-command-failed", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, signal, executions, recording};
                 }
                 stopCommandFailed = stop;
@@ -165,7 +164,7 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
                 ports.prepareOutput(localPath);
                 const artifactCopy = ports.pullAndroidRecording({ownerId, target: match, recording: stoppedRecording}, serial, String(stoppedRecording.remotePath), localPath);
                 executions.push(artifactCopy);
-                if (!commandSucceeded(artifactCopy)) {
+                if (!artifactCopy.ok) {
                     return {kind: "stopped-with-copy-failure", error: "recording-artifact-copy-failed", ownerId, tool: parsed.tool, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, provider, signal, executions, recording: stoppedRecording, device: retained.device};
                 }
                 const copiedRecording = {...stoppedRecording, artifactCopied: true};
@@ -177,7 +176,7 @@ export function createBrokerRecordingApplication(ports: BrokerRecordingPorts) {
             }
             const removal = ports.removeAndroidRecording({ownerId, target: match, recording: stoppedRecording}, serial, String(stoppedRecording.remotePath));
             executions.push(removal);
-            if (!commandSucceeded(removal)) {
+            if (!removal.ok) {
                 return {kind: "refused", reason: "provider-failed", error: "recording-artifact-remove-failed", ownerId, backend: match.backend, stateKey: match.stateKey, deviceId: parsed.deviceId, signal, executions, recording: stoppedRecording};
             }
             expectedRecording = stoppedRecording;

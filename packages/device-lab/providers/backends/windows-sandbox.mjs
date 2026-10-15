@@ -1467,16 +1467,37 @@ function windowsSandboxLifecyclePorts() {
         writeConfig: device => writeWsbConfig(device),
         readConfig: path => readWsbConfig(path),
         resetHelperMarkers: helper => {resetWindowsHelperSessionMarkers(helper); return undefined;},
-        listRuntime: (discovery, timeoutMs) => runWithTimeout(discovery.wsb, ["list", "--raw"], timeoutMs),
-        runtimeIds: output => windowsSandboxSessionIdsFromListOutput(output),
-        stopRuntime: (discovery, id, timeoutMs) => runWithTimeout(discovery.wsb, ["stop", "--id", id], timeoutMs),
+        listRuntime: (discovery, timeoutMs) => {
+            const result = runWithTimeout(discovery.wsb, ["list", "--raw"], timeoutMs);
+            const ok = result.status === 0;
+            return { ok, ids: ok ? windowsSandboxSessionIdsFromListOutput(result.stdout || "") : [], result };
+        },
+        stopRuntime: (discovery, id, timeoutMs) => {
+            const result = runWithTimeout(discovery.wsb, ["stop", "--id", id], timeoutMs);
+            return { ok: result.status === 0, result };
+        },
+        registrationDiagnostic: result => result
+            ? ` status=${result.status} stderr=${result.stderr || ""} stdout=${result.stdout || ""} error=${result.error?.message || ""}`
+            : "",
         timestampBefore: milliseconds => new Date(Date.now() - milliseconds).toISOString(),
         windowHandles: () => windowsSandboxWindowHandles(),
-        launchConfig: (path, minimized, timeoutMs) => runWithTimeout("powershell.exe",windowsWsbConfigLaunchArgs(path,minimized),timeoutMs),
-        launchRuntime: (discovery, id, config, minimized, timeoutMs) => runWindowsSandboxCommand(discovery.wsb,["start","--id",id,"--config",config],timeoutMs,minimized,false),
-        launchWatchdog: (startedAfter, cancelPath, timeoutMs, handles, resultPath) => launchWindowsSandboxMinimizeWatchdog(startedAfter,cancelPath,timeoutMs,handles,resultPath),
+        launchConfig: (path, minimized, timeoutMs) => {
+            const result = runWithTimeout("powershell.exe",windowsWsbConfigLaunchArgs(path,minimized),timeoutMs);
+            return { ok: result.status === 0, result };
+        },
+        launchRuntime: (discovery, id, config, minimized, timeoutMs) => {
+            const result = runWindowsSandboxCommand(discovery.wsb,["start","--id",id,"--config",config],timeoutMs,minimized,false);
+            return { ok: result.status === 0, result };
+        },
+        launchWatchdog: (startedAfter, cancelPath, timeoutMs, handles, resultPath) => {
+            const launch = launchWindowsSandboxMinimizeWatchdog(startedAfter,cancelPath,timeoutMs,handles,resultPath);
+            return { ok: launch.ok, launch, warning: launch.ok ? undefined : launch.error || "Windows Sandbox minimize watchdog failed to start" };
+        },
         updateSingletonRuntimeId: (device, claimedId, runtimeId, claimId) => updateWindowsSingletonRuntimeId(device,claimedId,runtimeId,claimId),
-        waitForMinimizeConfirmation: path => waitForWindowsSandboxMinimizeConfirmation(path),
+        waitForMinimizeConfirmation: async path => {
+            const confirmation = await waitForWindowsSandboxMinimizeConfirmation(path);
+            return { ok: confirmation.ok, warning: confirmation.error };
+        },
         launchSession: (discovery, id, minimized) => launchWindowsSandboxSession(discovery.wsb,id,minimized),
         scratchDirectory: device => windowsScratchDir(device),
         removeScratch: device => {removeWindowsScratch(device); return undefined;},

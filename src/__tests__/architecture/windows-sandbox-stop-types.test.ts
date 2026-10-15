@@ -63,7 +63,7 @@ function lifecycleContracts(required: WindowsSandboxLifecyclePorts<{ handle: "na
     // @ts-expect-error scratch removal authority is required
     createWindowsSandboxLifecycle(withoutRemoval);
     // @ts-expect-error native start command must settle synchronously
-    createWindowsSandboxLifecycle({ ...required, launchConfig: async () => ({ status: 0 }) });
+    createWindowsSandboxLifecycle({ ...required, launchConfig: async () => ({ ok: true, result: {} }) });
     // @ts-expect-error scratch deletion cannot defer settlement
     createWindowsSandboxLifecycle({ ...required, removeScratch: async () => undefined });
     // @ts-expect-error registration observation is asynchronous at the application boundary
@@ -72,6 +72,13 @@ function lifecycleContracts(required: WindowsSandboxLifecyclePorts<{ handle: "na
     const asynchronousStop: Promise<unknown> = app.stop({ deviceId: "sandbox" });
     // @ts-expect-error the public request requires a concrete device ID
     app.start({ deviceId: 7 });
-    void [started, stopped, deleted, writeConfig, listRuntime, removeScratch, synchronousStart, asynchronousStop];
+    const { registrationDiagnostic, ...withoutDiagnostic } = required;
+    // @ts-expect-error opaque registration evidence needs its native presentation authority
+    createWindowsSandboxLifecycle(withoutDiagnostic);
+    // @ts-expect-error raw process evidence is not a settled runtime inventory
+    createWindowsSandboxLifecycle({ ...required, listRuntime: () => ({ status: 0, stdout: "[]" }) });
+    // @ts-expect-error a watchdog observation must preserve its launch metadata separately
+    createWindowsSandboxLifecycle({ ...required, launchWatchdog: () => ({ ok: true, pid: 17 }) });
+    void [started, stopped, deleted, writeConfig, listRuntime, removeScratch, registrationDiagnostic, synchronousStart, asynchronousStop];
 }
 void lifecycleContracts;

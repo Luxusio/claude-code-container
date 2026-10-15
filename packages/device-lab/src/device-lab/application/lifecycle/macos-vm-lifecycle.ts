@@ -1,5 +1,5 @@
 import {brokerMacosRecord, brokerMacosCommandSucceeded, brokerMacosField, brokerMacosInstance, brokerMacosToleratesMissingDelete} from "../../domain/lifecycle/macos-vm-lifecycle.js";
-import type {BrokerMacosLifecycleRequest, BrokerMacosLifecycleInput, BrokerMacosLifecycleResponse, BrokerMacosProviderResult, BrokerMacosPlannedCommand, BrokerMacosRollback , BrokerMacosBoot} from "../../domain/lifecycle/macos-vm-lifecycle.js";
+import type {BrokerMacosLifecycleRequest, BrokerMacosLifecycleInput, BrokerMacosLifecycleResponse, BrokerMacosProviderResult, BrokerMacosIpObservation, BrokerMacosPlannedCommand, BrokerMacosRollback , BrokerMacosBoot} from "../../domain/lifecycle/macos-vm-lifecycle.js";
 import type {BrokerMacosVmLifecyclePorts} from "../../ports/lifecycle/macos-vm-lifecycle.js";
 
 export async function rollbackBrokerMacosCreate<Effect>(ports: BrokerMacosVmLifecyclePorts<Effect>, device: Record<string,unknown>, existing: Record<string,unknown> | null, command: BrokerMacosPlannedCommand<Effect> | null | undefined): Promise<BrokerMacosRollback> {
@@ -40,12 +40,12 @@ export function waitForBrokerMacosBoot<Effect>(parsed: BrokerMacosLifecycleReque
     if (!instance) return {ok: false, reason: "missing-target", instance: null};
     const timeout = Number.isFinite(parsed.bootTimeoutMs) ? Math.min(600000,Math.max(1000,Number(parsed.bootTimeoutMs))) : 300000;
     const deadline = ports.now() + timeout;
-    const attempts: BrokerMacosProviderResult[] = [];
+    const attempts: BrokerMacosIpObservation[] = [];
     while (ports.now() < deadline) {
         for (const resolver of ["default","arp"] as const) {
             const result = ports.observeIp(command.effect,instance,resolver,{timeoutMs: Math.min(ports.commandTimeoutMs,Math.max(1000,deadline - ports.now())),outputLimit: ports.outputLimit});
             attempts.push(result);
-            const address = String(result.stdout || "").trim();
+            const address = result.address;
             if (brokerMacosCommandSucceeded(result) && address) return {ok: true, ready: true, sshHost: address, result, attempts: attempts.slice(-4)};
         }
         ports.sleep(Math.min(5000,Math.max(0,deadline - ports.now())));
@@ -61,7 +61,7 @@ export function createBrokerMacosVmLifecycle<Effect>(ports: BrokerMacosVmLifecyc
         const {ownerId,parsed,plan} = input;
         const command = plan?.providerCommand;
         if (command?.kind === "unavailable") return {kind: "refused", error: command.error, missing: command.missing || [], plan: plan || null};
-        let execution: BrokerMacosProviderResult = {mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "", receipt: null};
+        let execution: BrokerMacosProviderResult = {ok: true, mode: "noop", provider: "host-broker-state", resourceMissing: false, receipt: null};
         if (command?.kind === "ready") {
             execution = ports.execute(command.effect,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
             if (!brokerMacosCommandSucceeded(execution)) return {kind: "provider-failed", error: execution.typedCreateInvalidResult === true ? "hyper-v-create-invalid-result" : "provider-command-failed", plan, execution};

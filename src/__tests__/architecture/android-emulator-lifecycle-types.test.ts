@@ -60,7 +60,7 @@ function brokerOperationContractNegatives(broker: BrokerAndroidEmulatorLifecycle
     // @ts-expect-error polling pacing must finish synchronously, not return a Promise
     const asyncSleep: BrokerAndroidEmulatorLifecyclePorts = { ...broker, sleep: async () => undefined };
     // @ts-expect-error provider command result is a synchronous native observation
-    const asyncExecution: BrokerAndroidEmulatorLifecyclePorts = { ...broker, executePrepared: async () => ({ mode: "exec", provider: "adb", status: 0 }) };
+    const asyncExecution: BrokerAndroidEmulatorLifecyclePorts = { ...broker, executePrepared: async () => ({ ok: true, mode: "exec", provider: "adb" }) };
     // @ts-expect-error committed auxiliary cleanup must carry its complete result/device observation
     const weakCleanup: BrokerAndroidEmulatorLifecyclePorts = { ...broker, cleanupAuxiliary: () => ({ committed: true }) };
     // @ts-expect-error complete-record conditional publication is synchronously observed
@@ -70,7 +70,19 @@ function brokerOperationContractNegatives(broker: BrokerAndroidEmulatorLifecycle
     const { now, ...withoutClock } = broker; void now;
     // @ts-expect-error native capacity clock is required even with every other step present
     const missingClock: BrokerAndroidEmulatorLifecyclePorts = withoutClock;
-    void asyncSleep; void asyncExecution; void weakCleanup; void asyncPublication; void weakInventory; void missingClock;
+    const { observeStopInventory, ...withoutStopInventory } = broker;
+    // @ts-expect-error stop requires a settled native inventory observation
+    createBrokerAndroidEmulatorLifecycle(withoutStopInventory);
+    const { observeBootProbe, ...withoutBootProbe } = broker;
+    // @ts-expect-error boot requires a settled native readiness observation
+    createBrokerAndroidEmulatorLifecycle(withoutBootProbe);
+    // @ts-expect-error a raw process result does not carry settled command success
+    const rawExecution: BrokerAndroidEmulatorLifecyclePorts = { ...broker, executePrepared: () => ({ mode: "exec", provider: "adb", status: 0 }) };
+    // @ts-expect-error stop inventory must distinguish availability from serial presence
+    const weakStopInventory: BrokerAndroidEmulatorLifecyclePorts = { ...broker, observeStopInventory: () => ({ ok: true, mode: "exec", provider: "adb", available: true }) };
+    // @ts-expect-error successful native execution alone is not a boot readiness observation
+    const weakBootProbe: BrokerAndroidEmulatorLifecyclePorts = { ...broker, observeBootProbe: () => ({ ok: true, mode: "exec", provider: "adb" }) };
+    void [asyncSleep, asyncExecution, weakCleanup, asyncPublication, weakInventory, missingClock, observeStopInventory, observeBootProbe, rawExecution, weakStopInventory, weakBootProbe];
 }
 void brokerOperationContractNegatives;
 

@@ -243,7 +243,7 @@ function createStopPolicy(ports) {
 export function createWindowsSandboxStop(ports) { return createStopPolicy(ports); }
 
 /** @template {object} Binding
- * @template {import('../../ports/lifecycle/windows-sandbox-stop.mjs').WindowsSandboxNativeResult} NativeResult
+ * @template {object} NativeResult
  * @template Result
  * @param {import('../../ports/lifecycle/windows-sandbox-stop.mjs').WindowsSandboxLifecyclePorts<Binding, NativeResult, Result>} ports */
 export function createWindowsSandboxLifecycle(ports) {
@@ -253,8 +253,7 @@ export function createWindowsSandboxLifecycle(ports) {
     function runtimeSandboxId(device) { return windowsSandboxStopGuidValid(device?.sandboxId) ? /** @type {string} */ (device.sandboxId) : ports.newRuntimeId(); }
     /** @param {Binding} binding */
     function listRuntimeIds(binding) {
-        const result = ports.listRuntime(binding, 10000);
-        return { ok: result.status === 0, ids: result.status === 0 ? ports.runtimeIds(result.stdout || "") : [], result };
+        return ports.listRuntime(binding, 10000);
     }
     /** @param {Binding} binding @param {Device} captured @param {string[]} ids @param {boolean} watchdogCleaned */
     function stopRuntimeIds(binding, captured, ids, watchdogCleaned) {
@@ -266,8 +265,8 @@ export function createWindowsSandboxLifecycle(ports) {
         }
         for (const id of ids) {
             if (!ports.singletonGenerationMatches(captured)) return {ok:false,stopped,failed,refused:true};
-            const result = ports.stopRuntime(binding, id, 60000);
-            if (result.status === 0) stopped.push(id); else failed.push({id,result});
+            const observation = ports.stopRuntime(binding, id, 60000);
+            if (observation.ok) stopped.push(id); else failed.push({id,result:observation.result});
         }
         return {ok:failed.length === 0,stopped,failed,refused:false};
     }
@@ -296,17 +295,20 @@ export function createWindowsSandboxLifecycle(ports) {
         const previous = new Set(options.previousIds.map(id => String(id).toLowerCase()));
         const deadline = ports.now() + Math.max(0,timeoutMs);
         /** @type {NativeResult|null} */ let lastResult=null;
+        let lastObservationOk=false;
         /** @type {string[]} */ let lastIds=[];
         /** @type {string[]} */ let lastNewIds=[];
         while (ports.now() <= deadline) {
-            lastResult = ports.listRuntime(binding,Math.min(10000,Math.max(1000,deadline - ports.now())));
-            if (lastResult.status === 0) {
-                const ids=ports.runtimeIds(lastResult.stdout || "");
+            const observation = ports.listRuntime(binding,Math.min(10000,Math.max(1000,deadline - ports.now())));
+            lastResult=observation.result;
+            lastObservationOk=observation.ok;
+            if (observation.ok) {
+                const ids=observation.ids;
                 lastIds=ids; lastNewIds=ids.map(id=>String(id).toLowerCase()).filter(id=>!previous.has(id));
                 if (options.requireNewRuntime) {
                     if(lastNewIds.includes(expected)) return {ok:true,sandboxId:expected,matchedRequested:true,result:lastResult,observedIds:ids,newIds:lastNewIds};
                     if(lastNewIds.length===1) return {ok:true,sandboxId:lastNewIds[0],requestedSandboxId:sandboxId,matchedRequested:false,result:lastResult,observedIds:ids,newIds:lastNewIds};
-                    if(lastNewIds.length>1) return {ok:false,result:lastResult,observedIds:ids,newIds:lastNewIds,error:`Windows Sandbox launch produced multiple new runtimes: ${lastNewIds.join(", ")}`};
+                    if(lastNewIds.length>1) return {ok:false,result:lastResult,lastObservationOk,observedIds:ids,newIds:lastNewIds,error:`Windows Sandbox launch produced multiple new runtimes: ${lastNewIds.join(", ")}`};
                     await ports.wait(500); continue;
                 }
                 if(ids.includes(expected)) return {ok:true,sandboxId:expected,matchedRequested:true,result:lastResult};
@@ -314,21 +316,26 @@ export function createWindowsSandboxLifecycle(ports) {
             }
             await ports.wait(500);
         }
-        return {ok:false,result:lastResult,observedIds:lastIds,newIds:lastNewIds,error:`Windows Sandbox runtime ${sandboxId} did not appear in wsb list within ${timeoutMs}ms`};
+        return {ok:false,result:lastResult,lastObservationOk,observedIds:lastIds,newIds:lastNewIds,error:`Windows Sandbox runtime ${sandboxId} did not appear in wsb list within ${timeoutMs}ms`};
     }
 
     /** @param {Binding} binding @param {string} id @param {string} configPath @param {string} config @param {boolean} minimized
      * @param {import('../../ports/lifecycle/windows-sandbox-stop.mjs').WindowsSandboxHelperMetadata} helper
-     * @returns {NativeResult & {launchMode:string,minimizeWatchdogLaunch?:{ok?:boolean,pid?:number|null,skipped?:boolean,error?:string,timeoutMs?:number}}} */
+     * @returns {{ok:boolean,result:NativeResult,launchMode:string,minimizeWatchdogLaunch?:Exclude<import('../../domain/lifecycle/windows-sandbox-stop.mjs').WindowsSandboxWatchdogLaunch,null|false|0|''>,minimizeWatchdogFailed:boolean,minimizeWatchdogWarning?:string}} */
     function launchRuntime(binding,id,configPath,config,minimized,helper) {
         if (ports.platform === "win32") {
             const startedAfter=ports.timestampBefore(2000);
             const handles=minimized ? ports.windowHandles() : null;
-            const result=ports.launchConfig(configPath,minimized,120000);
-            const minimizeWatchdogLaunch=minimized ? ports.launchWatchdog(startedAfter,helper.minimizeWatchdogCancelPath,180000,handles,helper.minimizeWatchdogResultPath) : {ok:true,skipped:true};
-            return {...result,launchMode:"wsb-file",minimizeWatchdogLaunch};
+            const observation=ports.launchConfig(configPath,minimized,120000);
+            const watchdog=minimized ? ports.launchWatchdog(startedAfter,helper.minimizeWatchdogCancelPath,180000,handles,helper.minimizeWatchdogResultPath) : null;
+            return {
+                ok:observation.ok,result:observation.result,launchMode:"wsb-file",
+                minimizeWatchdogLaunch:watchdog ? watchdog.launch : {ok:true,skipped:true},
+                minimizeWatchdogFailed:watchdog?.ok===false,minimizeWatchdogWarning:watchdog?.warning,
+            };
         }
-        return {...ports.launchRuntime(binding,id,config,minimized,120000),launchMode:"wsb-cli-start"};
+        const observation=ports.launchRuntime(binding,id,config,minimized,120000);
+        return {ok:observation.ok,result:observation.result,launchMode:"wsb-cli-start",minimizeWatchdogFailed:false};
     }
     /** @param {{deviceId:string,minimized?:boolean}} args @returns {Promise<Result|undefined>} */
     async function start(args) {
@@ -386,10 +393,10 @@ export function createWindowsSandboxLifecycle(ports) {
             previousRuntimeIds = beforeLaunch.ids;
         }
         const r = launchRuntime(discovery.binding, claimedSandboxId, configPath, config, minimized, helper);
-        if (r.status !== 0) {
+        if (!r.ok) {
             ports.releaseSingleton(starting, lock.lock.claimId);
             policy.abortLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-            return ports.fail(r);
+            return ports.fail(r.result);
         }
         const registered = await waitForRuntime(discovery.binding, claimedSandboxId, WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS, {
             previousIds: previousRuntimeIds,
@@ -401,7 +408,7 @@ export function createWindowsSandboxLifecycle(ports) {
             const {watchdogCleanup,cleanup} = compensateRuntime(discovery.binding, {
                 ...starting, minimizeWatchdogLaunch:r.minimizeWatchdogLaunch,
             }, cleanupIds);
-            let releaseLockAfterFailure = !ambiguous && cleanup.ok && cleanupIds.length === 0 && registered.result?.status === 0;
+            let releaseLockAfterFailure = !ambiguous && cleanup.ok && cleanupIds.length === 0 && registered.lastObservationOk;
             /** @type {ReturnType<typeof listRuntimeIds>|null} */ let cleanupVerify = null;
             if (cleanupIds.length > 0) {
                 if (cleanup.ok) {
@@ -427,9 +434,7 @@ export function createWindowsSandboxLifecycle(ports) {
                 ports.releaseSingleton(starting, lock.lock.claimId);
                 policy.abortLifecycle(deviceId, lifecycleClaim.lifecycle, device);
             }
-            const detail = registered.result
-                ? ` status=${registered.result.status} stderr=${registered.result.stderr || ""} stdout=${registered.result.stdout || ""} error=${registered.result.error?.message || ""}`
-                : "";
+            const detail = ports.registrationDiagnostic(registered.result);
             const cleanupDetail = cleanupIds.length > 0
                 ? ` cleanupStopped=${cleanup.stopped.join(",") || "<none>"} cleanupFailed=${cleanup.failed.map((item) => item.id).join(",") || "<none>"} cleanupVerifiedGone=${cleanupVerify ? runtimeGone : cleanup.ok} cleanupRefused=${cleanup.refused} lockRetained=${!releaseLockAfterFailure}`
                 : ambiguous ? " cleanupSkipped=ambiguous-runtime-ownership lockRetained=true" : " cleanupSkipped=no-new-runtime-observed";
@@ -455,11 +460,11 @@ export function createWindowsSandboxLifecycle(ports) {
                 }));
             }
         }
-        /** @type {{ok:boolean,error?:string}|null} */ let minimizeConfirmation = null;
-        if (r.minimizeWatchdogLaunch?.ok === false) {
+        /** @type {{ok:boolean,warning?:string}|null} */ let minimizeConfirmation = null;
+        if (r.minimizeWatchdogFailed) {
             minimizeConfirmation = {
                 ok: false,
-                error: r.minimizeWatchdogLaunch.error || "Windows Sandbox minimize watchdog failed to start",
+                warning: r.minimizeWatchdogWarning,
             };
         } else if (minimized && ports.platform === "win32") {
             minimizeConfirmation = await ports.waitForMinimizeConfirmation(helper.minimizeWatchdogResultPath);
@@ -478,7 +483,7 @@ export function createWindowsSandboxLifecycle(ports) {
             minimizeWatchdogLaunch: r.minimizeWatchdogLaunch,
             minimized,
             minimizeConfirmed: minimizeConfirmation?.ok === true,
-            minimizeWarning: minimizeConfirmation?.ok === false ? minimizeConfirmation.error : null,
+            minimizeWarning: minimizeConfirmation?.ok === false ? minimizeConfirmation.warning : null,
             helper: ports.helperMetadata(starting),
             helperSessionLaunch,
             updatedAt: ports.wallTimestamp(),

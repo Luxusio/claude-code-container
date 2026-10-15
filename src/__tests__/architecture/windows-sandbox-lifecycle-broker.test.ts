@@ -21,16 +21,16 @@ function fixture() {
         run: handle => {
             runs.push(handle);
             if (handle.operation === "device_start") launched = true;
-            return { status: 0, stdout: "", receipt: { native: "wsb" } };
+            return { ok: true, receipt: { native: "wsb" } };
         },
-        listRuntime: () => ({ status: 0, stdout: JSON.stringify(launched ? [registeredGuid] : []) }),
+        listRuntime: () => ({ ok: true, ids: launched ? [registeredGuid] : [] }),
         isCanonicalConfig: () => true, writeConfig: () => undefined,
         claimSingleton: () => { locked = true; return { ok: true }; },
         releaseSingleton: () => { locked = false; effects.push("release-singleton"); return undefined; },
         updateSingletonRuntimeId: (_owner, _item, _claimed, actual) => { effects.push(`registered:${actual}`); return undefined; },
         helperPaths: () => ({ minimizeWatchdogCancelPath: "cancel", minimizeWatchdogResultPath: "result" }), removeMarker: () => undefined,
-        runtimeIds: stdout => JSON.parse(stdout) as string[], snapshotWindows: () => ({ status: 0, stdout: "[101]" }), windowHandles: () => [101],
-        launchWatchdog: () => ({ status: 0 }), waitForMinimizeConfirmation: () => ({ status: 0 }),
+        snapshotWindows: () => ({ ok: true, handles: [101] }),
+        launchWatchdog: () => ({ ok: true }), waitForMinimizeConfirmation: () => ({ ok: true }),
         cancelWatchdog: () => ({ attempted: false, ok: true, cancelPath: "cancel" }),
         cleanupAuxiliary: (_owner, _parsed, expected) => ({ result: { ok: true, changed: false, appium: { cleared: false }, recording: { cleared: false }, minimizeWatchdog: { cleared: false } }, committed: false, device: expected }),
         inspectExpectedRecord: (_owner, _key, _id, expected) => ({ found: current !== null, matched: JSON.stringify(expected) === JSON.stringify(current), device: current }),
@@ -66,7 +66,7 @@ describe("broker Windows Sandbox lifecycle application", () => {
     });
     it("blocks a preexisting requested runtime before claiming or canceling markers", async () => {
         const f = fixture(), before = f.read();
-        f.ports.listRuntime = () => ({ status: 0, stdout: JSON.stringify([guid]) });
+        f.ports.listRuntime = () => ({ ok: true, ids: [guid] });
         f.ports.removeMarker = () => { f.effects.push("remove-marker"); return undefined; };
         expect(await f.app.start(f.input("device_start"))).toMatchObject({
             kind: "refused", category: "provider-failed", error: "windows-sandbox-runtime-already-present", facts: { invoked: false, mutatesHost: false },
@@ -80,8 +80,8 @@ describe("broker Windows Sandbox lifecycle application", () => {
         const f = fixture();
         let launched = false;
         const ids = [registeredGuid, "33333333-3333-4333-8333-333333333333"];
-        f.ports.run = handle => { f.runs.push(handle); launched = true; return { status: 0 }; };
-        f.ports.listRuntime = () => ({ status: 0, stdout: JSON.stringify(launched ? ids : []) });
+        f.ports.run = handle => { f.runs.push(handle); launched = true; return { ok: true }; };
+        f.ports.listRuntime = () => ({ ok: true, ids: launched ? ids : [] });
         const result = await f.app.start(f.input("device_start"));
         expect(result).toMatchObject({ kind: "indeterminate", success: false, facts: { mutatesHost: true, registration: { error: expect.stringContaining("ambiguous runtimes") } } });
         expect(f.read()).toMatchObject({ status: "stopped", sandboxId: guid });
@@ -113,7 +113,7 @@ describe("broker Windows Sandbox lifecycle application", () => {
     it("preserves a successor when native execution races publication", async () => {
         const f = fixture(), request = f.input("device_stop");
         const successor = { id: "sandbox", status: "running", sandboxId: registeredGuid, generation: "successor" };
-        f.ports.run = () => { f.replace(successor); return { status: 0 }; };
+        f.ports.run = () => { f.replace(successor); return { ok: true }; };
         f.ports.publish = (_owner, _key, _id, expected) => { expect(expected).toBe(request.expectedDevice); return { found: true, matched: false, device: successor }; };
         expect(await f.app.stop(request)).toMatchObject({ kind: "refused", category: "conflict", error: "owner-device-state-conflict" });
         expect(f.read()).toBe(successor);
@@ -140,8 +140,25 @@ describe("broker Windows Sandbox lifecycle application", () => {
         const f = fixture(), request = f.input("device_start");
         request.parsed.minimized = true;
         request.prepared = f.ports.prepare(request.ownerId, request.parsed, request.device);
-        f.ports.launchWatchdog = () => ({ status: null, error: "watchdog unavailable" });
-        expect(await f.app.start(request)).toMatchObject({ kind: "completed", success: true, facts: { device: { status: "running", minimizeConfirmed: false, minimizeWarning: "watchdog unavailable" }, watchdog: { error: "watchdog unavailable" } } });
+        const watchdog = { ok: false, minimizeReason: "watchdog-launch-failed" as const, minimizeWarning: "watchdog unavailable", receipt: { native: "wsb" as const } };
+        f.ports.launchWatchdog = () => watchdog;
+        const result = await f.app.start(request);
+        expect(result).toMatchObject({ kind: "completed", success: true, facts: { device: { status: "running", minimizeConfirmed: false, minimizeWarning: "watchdog unavailable" }, watchdog } });
+        expect(result.facts?.watchdog).toBe(watchdog);
+        expect(f.locked()).toBe(true);
+        expect(f.runs.some(handle => handle.operation === "device_stop")).toBe(false);
+    });
+    it("retains the running Sandbox and exact warning when the settled window baseline is unavailable", async () => {
+        const f = fixture(), request = f.input("device_start");
+        request.parsed.minimized = true;
+        request.prepared = f.ports.prepare(request.ownerId, request.parsed, request.device);
+        f.ports.snapshotWindows = () => ({ ok: true, handles: null });
+        f.ports.launchWatchdog = () => { throw new Error("unavailable baseline must not launch watchdog"); };
+        f.ports.waitForMinimizeConfirmation = () => { throw new Error("unavailable baseline must not wait for confirmation"); };
+        expect(await f.app.start(request)).toMatchObject({ kind: "completed", success: true, facts: {
+            device: { status: "running", minimizeConfirmed: false, minimizeWarning: "windows-sandbox-window-baseline-unavailable" },
+            confirmation: { ok: false, minimizeReason: "window-baseline-unavailable" },
+        } });
         expect(f.locked()).toBe(true);
         expect(f.runs.some(handle => handle.operation === "device_stop")).toBe(false);
     });

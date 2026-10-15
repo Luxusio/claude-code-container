@@ -4128,6 +4128,10 @@ describe("device-lab host broker lifecycle commands", () => {
                 status: 2,
                 stderr: expect.stringContaining("does not exist"),
             }));
+            expect(body.result.execution.command).toEqual({
+                mode: "exec", provider: "tart", executable: "/fake/tart", args: ["delete", "ccc-missing"],
+                status: 2, stdout: "", stderr: 'the specified VM "ccc-missing" does not exist\n',
+            });
             expect(readFileSync(join(backendRoot(ownerId, "macos"), "devices.json"), "utf8")).toContain("\"devices\": []");
         } finally {
             await close(server);
@@ -7007,7 +7011,13 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
                 }),
             });
             expect(start.status, JSON.stringify(await start.clone().json())).toBe(200);
-            expect(await start.json()).toEqual(expect.objectContaining({
+            const startBody = await start.json();
+            expect(startBody.result.execution).toEqual({
+                mode: "detached", provider: "adb", executable: "/fake/adb",
+                args: ["-s", "emulator-5580", "shell", "screenrecord", "--time-limit", "12", "/sdcard/owned.mp4"],
+                status: 0, pid: process.pid, processIdentity, stdout: "ok", stderr: "",
+            });
+            expect(startBody).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     ownerId: ownerA,
@@ -7054,7 +7064,8 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
                 }),
             });
             expect(stop.status).toBe(200);
-            expect(await stop.json()).toEqual(expect.objectContaining({
+            const stopBody = await stop.json();
+            expect(stopBody).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     stopped: true,
@@ -7069,6 +7080,9 @@ if (process.argv[1] === ${JSON.stringify(join(context.binDir, "xcrun"))}
                 expect.objectContaining({ args: ["-s", "emulator-5580", "pull", "/sdcard/owned.mp4", hostRecordingPath] }),
                 expect.objectContaining({ args: ["-s", "emulator-5580", "shell", "rm", "-f", "/sdcard/owned.mp4"] }),
             ]);
+            expect(stopBody.result.executions).toEqual(commands.slice(1).map(command => ({
+                ...(command as Record<string, unknown>), status: 0, stdout: "ok", stderr: "",
+            })));
             expect(JSON.parse(readFileSync(join(backendRoot(ownerA, "android"), "devices.json"), "utf8")).devices[0].recording).toBeNull();
             expect(JSON.parse(readFileSync(join(backendRoot(ownerB, "android"), "devices.json"), "utf8")).devices[0].recording).toEqual({ active: true, owner: "foreign" });
         } finally {
@@ -8251,7 +8265,21 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 }),
             });
             expect(realInvoke.status).toBe(200);
-            expect(await realInvoke.json()).toEqual(expect.objectContaining({
+            const realBody = await realInvoke.json();
+            const bootReceipt = {
+                mode: "exec", provider: "adb", executable: "/fake/adb",
+                args: ["-s", "emulator-5580", "shell", "getprop", "sys.boot_completed"],
+                status: 0, stdout: "1\n", stderr: "",
+            };
+            expect(realBody.result.boot.result).toEqual(bootReceipt);
+            const stored = JSON.parse(readFileSync(join(backendRoot(ownerId, "android"), "devices.json"), "utf8"));
+            expect(stored.devices[0].lastBootCheck.result).toEqual(bootReceipt);
+            expect(realBody.result.execution.command).toEqual({
+                mode: "detached", provider: "emulator", executable: "/fake/emulator",
+                args: ["-avd", "ccc-test-pixel", "-port", "5580", "-no-window", "-no-audio", "-netsim-args", "--no-cli-ui --no-web-ui"],
+                status: 0, pid: 12345, stdout: "started", stderr: "",
+            });
+            expect(realBody).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     invoked: true,
@@ -8292,6 +8320,48 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             await close(server);
             cleanupOwner(ownerId);
         }
+    });
+
+    it("preserves failed Android boot status, raw attempts and an omitted native signal", async () => {
+        const cwd = "/project/broker-android-boot-native-failure", ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "android-boot-native-failure", serial = "emulator-5580";
+        const root = writeBrokerDevices(ownerId, "android", [{
+            id: deviceId, backend: "android-emulator", status: "stopped", avdName: `ccc-${ownerId}-boot-native-failure`, port: 5580,
+        }]);
+        const before = readFileSync(join(root, "devices.json"), "utf8");
+        const nativeBoot = {
+            mode: "exec" as const, provider: "adb", executable: "/fake/adb",
+            args: ["-s", serial, "shell", "getprop", "sys.boot_completed"],
+            status: 17, stdout: "0\n", stderr: "native boot stderr", error: "native boot failure",
+            outputLimitExceeded: true, pid: 2718,
+        };
+        const realNow = performance.now.bind(performance);
+        let clockOffset = 0;
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => realNow() + clockOffset);
+        const commandRunner = vi.fn((command) => {
+            if (command.args?.includes("sys.boot_completed")) {
+                clockOffset += 1001;
+                return { ...command, ...nativeBoot };
+            }
+            return { ...command, status: 0, stdout: command.args?.[0] === "devices" ? "List of devices attached\n" : "", stderr: "" };
+        });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0,
+            providerPaths: { adb: "/fake/adb", emulator: "/fake/emulator" }, commandRunner });
+        try {
+            const base = await listen(server);
+            const response = await fetch(ownerRpcEndpoint(base, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.command.invoke", params: {
+                    backend: "android-emulator", command: "device_start", deviceId, waitForBoot: true, bootTimeoutMs: 1000,
+                } }) });
+            expect(response.status).toBe(502);
+            const body = await response.json(), result = body.result;
+            const error = { ...nativeBoot, error: `Timed out waiting for Android emulator ${serial} to boot` };
+            expect(result.boot.error).toEqual(error);
+            expect(result.boot.error).not.toHaveProperty("signal");
+            expect(result.execution.command.androidBoot).toEqual({ ok: false, ready: false, error, attempts: [nativeBoot] });
+            expect(readFileSync(join(root, "devices.json"), "utf8")).toBe(before);
+            expect(commandRunner.mock.calls.filter(([command]) => command.args?.includes("sys.boot_completed"))).toHaveLength(1);
+        } finally { clock.mockRestore(); await close(server); cleanupOwner(ownerId); }
     });
 
     it.each(["serial-delayed", "process-delayed", "both-delayed", "unrelated-offline", "serial-stays", "process-stays", "adb-fails", "process-fails", "budget-exhausted", "malformed-inventory"])(
@@ -8534,7 +8604,12 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 }),
             });
             expect(status.status).toBe(200);
-            expect(await status.json()).toEqual(expect.objectContaining({
+            const statusBody = await status.json();
+            expect(statusBody.result.execution.command).toEqual({
+                mode: "exec", provider: "adb", executable: "/fake/adb",
+                args: ["-s", "emulator-5586", "get-state"], status: 0, stdout: "device\n", stderr: "",
+            });
+            expect(statusBody).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     device: expect.objectContaining({
@@ -8852,7 +8927,12 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             });
 
             expect(response.status).toBe(200);
-            expect(await response.json()).toEqual(expect.objectContaining({
+            const body = await response.json();
+            expect(body.result.execution.command).toEqual({
+                mode: "noop", provider: "host-broker-state", status: 0,
+                stdout: "Android emulator deleteAvd=false deletes only owner broker metadata", stderr: "",
+            });
+            expect(body).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     device: null,
@@ -9256,6 +9336,10 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 }),
             });
             expect(started.status).toBe(200);
+            const startedBody = await started.json();
+            expect(startedBody.result.execution.command).toEqual({ mode: "exec", provider: "wsb", status: 0, stdout: "", stderr: "" });
+            expect(startedBody.result.minimizeWatchdog).toEqual({ mode: "detached", provider: "powershell", status: 0, pid: 99999995, stdout: "", stderr: "" });
+            expect(startedBody.result.minimizeConfirmation).toEqual({ mode: "exec", provider: "windows-sandbox-window", status: 0, stdout: "minimized", stderr: "" });
             expect(commandRunner).toHaveBeenNthCalledWith(1, expect.objectContaining({
                 provider: "wsb",
                 args: ["list", "--raw"],
@@ -9326,6 +9410,19 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             expect(stoppedState.devices[0]).toEqual(expect.objectContaining({ status: "stopped", minimizeWatchdog: null }));
             expect(existsSync(join(windowsRoot, "win-registered", "downloads", "ccc-minimize-watchdog.cancel"))).toBe(true);
             expect(existsSync(join(process.env.HOME!, ".ccc/devices/host-locks/windows-sandbox.json"))).toBe(false);
+            const deleted = await fetch(endpoint, {
+                method: "POST", headers,
+                body: JSON.stringify({ method: "broker.command.invoke", params: {
+                    backend: "windows-sandbox", command: "device_delete", deviceId: "win-registered", confirmDestructive: true,
+                } }),
+            });
+            expect(deleted.status).toBe(200);
+            const deletedBody = await deleted.json();
+            expect(deletedBody.result.device).toBeNull();
+            expect(deletedBody.result.execution).toEqual({
+                mode: "noop", providerExecution: "executed", mutatesHost: true,
+                command: { mode: "noop", provider: "wsb", status: 0, stdout: "", stderr: "" },
+            });
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -9509,7 +9606,11 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 }),
             });
             expect(started.status).toBe(200);
-            expect(await started.json()).toEqual(expect.objectContaining({
+            const body = await started.json();
+            const watchdogReceipt = { mode: "detached", provider: "powershell", status: null, error: "powershell unavailable", stdout: "", stderr: "" };
+            expect(body.result.minimizeWatchdog).toEqual(watchdogReceipt);
+            expect(body.result.minimizeConfirmation).toEqual(watchdogReceipt);
+            expect(body).toEqual(expect.objectContaining({
                 ok: true,
                 result: expect.objectContaining({
                     device: expect.objectContaining({
@@ -9556,12 +9657,64 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             expect(payload.ok).toBe(false);
             expect(JSON.stringify(payload)).toContain("ambiguous runtimes");
             for (const id of observedIds) expect(JSON.stringify(payload)).toContain(id);
+            expect(payload.result.execution.command.registration).toEqual({
+                mode: "exec", provider: "wsb", status: 0,
+                stdout: JSON.stringify({ WindowsSandboxEnvironments: observedIds.map(Id => ({ Id })) }), stderr: "",
+                error: `Windows Sandbox launch produced ambiguous runtimes: ${observedIds.join(", ")}`,
+            });
             expect(commandRunner.mock.calls.some(([command]) => command.provider === "wsb" && command.args?.[0] === "stop")).toBe(false);
             const state = JSON.parse(readFileSync(join(windowsRoot, "devices.json"), "utf8")) as { devices: Array<{ id: string; status: string; sandboxId: string }> };
             expect(state.devices[0]).toMatchObject({ id: deviceId, status: "stopped", sandboxId });
             const lock = JSON.parse(readFileSync(join(process.env.HOME!, ".ccc/devices/host-locks/windows-sandbox.json"), "utf8"));
             expect(lock).toMatchObject({ ownerId, deviceId, sandboxId });
         } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
+    it("reconstructs only the native registration timeout fields and retains the Sandbox claim", async () => {
+        const cwd = "/project/broker-windows-registration-timeout", ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "win-registration-timeout", sandboxId = "12345678-1234-4234-9234-1234567890af";
+        const root = backendRoot(ownerId, "windows"), configPath = join(root, "timeout.wsb");
+        mkdirSync(root, { recursive: true });
+        writeFileSync(configPath, "<Configuration>registration timeout</Configuration>");
+        writeBrokerDevices(ownerId, "windows", [{ id: deviceId, backend: "windows-sandbox", status: "stopped", configPath, sandboxId, minimized: false }]);
+        const before = readFileSync(join(root, "devices.json"), "utf8");
+        const realNow = performance.now.bind(performance);
+        let clockOffset = 0, lists = 0;
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => realNow() + clockOffset);
+        const commandRunner = vi.fn((command) => {
+            if (command.provider === "wsb" && command.args?.[0] === "list") {
+                if (++lists === 1) return { ...command, status: 0, stdout: "[]", stderr: "" };
+                clockOffset += 60001;
+                return { ...command, executable: "/native/wsb", args: ["native-argv"], status: 17, signal: "SIGTERM",
+                    stdout: "native list stdout", stderr: "native list stderr", timedOut: true, outputLimitExceeded: true,
+                    pid: 2718, input: "native list input", error: "native list error" };
+            }
+            return { ...command, status: 0, stdout: "native launch stdout", stderr: "" };
+        });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { wsb: "wsb" }, commandRunner });
+        try {
+            const base = await listen(server);
+            const response = await fetch(ownerRpcEndpoint(base, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.command.invoke", params: {
+                    backend: "windows-sandbox", command: "device_start", deviceId, dryRun: false,
+                } }) });
+            expect(response.status).toBe(502);
+            const body = await response.json();
+            expect(body).toMatchObject({ ok: false, error: "provider-command-failed", result: {
+                device: { status: "stopped" }, execution: { mode: "exec", providerExecution: "executed", mutatesHost: true },
+            } });
+            expect(body.result.execution.command.registration).toEqual({
+                mode: "exec", provider: "wsb", executable: "wsb", args: ["list", "--raw"],
+                status: 17, signal: "SIGTERM", stdout: "native list stdout", stderr: "native list stderr", timedOut: true,
+                error: `No new Windows Sandbox runtime for ${sandboxId} appeared in wsb list within 60000ms`,
+            });
+            expect(body.result.execution.command).toMatchObject({ macosBoot: null, androidBoot: null });
+            expect(lists).toBe(2);
+            expect(commandRunner.mock.calls.filter(([command]) => command.args?.[0] === "start")).toHaveLength(1);
+            expect(commandRunner.mock.calls.some(([command]) => command.args?.[0] === "stop" || command.provider === "powershell")).toBe(false);
+            expect(readFileSync(join(root, "devices.json"), "utf8")).toBe(before);
+            expect(JSON.parse(readFileSync(join(process.env.HOME!, ".ccc/devices/host-locks/windows-sandbox.json"), "utf8"))).toMatchObject({ ownerId, deviceId, sandboxId });
+        } finally { clock.mockRestore(); await close(server); cleanupOwner(ownerId); }
     });
 
     it.each(["device_stop", "device_delete"] as const)("preserves a Windows successor published during %s", async commandName => {
@@ -9881,6 +10034,9 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 mode: "noop",
                 provider: "host-broker-state",
             }));
+            expect(deleteMissingBody.result.execution.command).toEqual({
+                mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "",
+            });
 
             const unsafeProvider = await fetch(endpoint, {
                 method: "POST",

@@ -252,6 +252,12 @@ describe("device-lab Hyper-V broker", () => {
             .toEqual({ observed: false, matchesExpected: null });
         expect(compareHyperVLinuxEd25519HostKeyFingerprint("invalid", `debug1: Server host key: ssh-ed25519 ${expected}\n`))
             .toEqual({ observed: false, matchesExpected: null });
+        expect(compareHyperVLinuxEd25519HostKeyFingerprint(expected, `debug1: Server host key: ssh-ed25519 ${expected}=\ndebug1: Server host key: ssh-ed25519 ${expected}\n`))
+            .toEqual({ observed: true, matchesExpected: true });
+        expect(compareHyperVLinuxEd25519HostKeyFingerprint(expected, `debug1: Server host key: ssh-ed25519 ${expected}\ndebug1: Server host key: ssh-ed25519 SHA256:${"B".repeat(43)}\n`))
+            .toEqual({ observed: true, matchesExpected: false });
+        expect(compareHyperVLinuxEd25519HostKeyFingerprint(expected, `${"x".repeat(64 * 1024)}debug1: Server host key: ssh-ed25519 ${expected}\n`))
+            .toEqual({ observed: false, matchesExpected: null });
     });
 
     it("reserves containment time for Linux and Windows start and reboot deadlines", () => {

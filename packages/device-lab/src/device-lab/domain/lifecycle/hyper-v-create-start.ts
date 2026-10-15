@@ -201,21 +201,13 @@ export function hyperVLinuxGuestReadyTraceFailureCode(
     return fallback;
 }
 
-export function compareHyperVLinuxEd25519HostKeyFingerprint(expectedFingerprint: string, sshDiagnostic: string): {
+export function compareHyperVLinuxEd25519HostKeyFingerprint(expectedFingerprint: string, observedFingerprints: readonly string[]): {
     observed: boolean;
     matchesExpected: boolean | null;
 } {
     const expected = /^SHA256:[A-Za-z0-9+/]{43}$/.test(expectedFingerprint) ? expectedFingerprint : "";
     if (!expected) return { observed: false, matchesExpected: null };
-    const observed = new Set<string>();
-    const bounded = sshDiagnostic.slice(0, 64 * 1024);
-    const patterns = [
-        /server host key:\s+ssh-ed25519\s+(SHA256:[A-Za-z0-9+/]{43})=?/gi,
-        /fingerprint for the ED25519 key sent by (?:the )?remote host is\s+(SHA256:[A-Za-z0-9+/]{43})=?/gi,
-    ];
-    for (const pattern of patterns) {
-        for (const match of bounded.matchAll(pattern)) observed.add(match[1]);
-    }
+    const observed = new Set(observedFingerprints);
     if (observed.size === 0) return { observed: false, matchesExpected: null };
     return { observed: true, matchesExpected: observed.size === 1 && observed.has(expected) };
 }
@@ -224,9 +216,8 @@ export function hyperVLinuxGuestSignalDeadlineAt(startedAt:number){return starte
 export function hyperVLinuxGuestSignalTimedOut(startedAt:number,observedAt:number,guestSignalObserved:boolean){return !guestSignalObserved&&observedAt>=hyperVLinuxGuestSignalDeadlineAt(startedAt);}
 
 export type HyperVGuestReadinessFailureDetail = {
-    // windows-vm only: whether the readiness script's structured failure JSON parsed. There is no
-    // equivalent on the linux lane, and reporting a constant `false` there would read as "the
-    // readiness output failed to parse" in the one field whose job is to disambiguate.
+    // windows-vm only: the historical structured-failure field, now supplied from an arrived
+    // typed readiness failure. There is no equivalent on the linux lane; omit it there.
     readonly structured?: boolean;
     readonly status: number | null;
     readonly timedOut: boolean;
@@ -243,6 +234,30 @@ export type HyperVGuestReadinessFailureDetail = {
     readonly scrubContainmentFailed?: true;
 };
 
+
+interface HyperVReadinessFacts<Receipt> {
+    // Native command success before readiness marker/GUI failure projection.
+    readonly ok: boolean;
+    readonly ready: boolean;
+    // Opaque native evidence for presentation or forwarding to the readiness adapter.
+    readonly execution: HyperVNativeExecution<Receipt>;
+    readonly failureCode: string;
+    readonly failureDetail: HyperVGuestReadinessFailureDetail;
+}
+export interface HyperVWindowsReadinessObservation<Receipt> extends HyperVReadinessFacts<Receipt> {
+    readonly backend: 'windows-vm';
+    readonly outcome: WindowsReadinessOutcome | null;
+}
+export interface HyperVLinuxReadinessObservation<Receipt> extends HyperVReadinessFacts<Receipt> {
+    readonly backend: 'linux-vm';
+    readonly hostKeyFingerprints: readonly string[];
+}
+export type HyperVGuestReadinessObservation<Receipt> = HyperVWindowsReadinessObservation<Receipt> | HyperVLinuxReadinessObservation<Receipt>;
+export interface HyperVReadinessFailureSource<Receipt> {
+    readonly previous?: HyperVGuestReadinessObservation<Receipt> | null;
+    readonly execution?: HyperVNativeExecution<Receipt>;
+    readonly timedOut?: boolean;
+}
 
 export type HyperVVmObservation = {
     ok: boolean;

@@ -32,14 +32,17 @@ export function createBrokerIosSimulatorLifecycle<Effect>(ports: BrokerIosSimula
         const {ownerId,parsed,plan} = input;
         const command = plan?.providerCommand;
         if (command?.kind === "unavailable") return {kind: "refused", error: command.error, missing: command.missing || [], plan: plan || null};
-        let execution: BrokerIosProviderResult = {mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "", receipt: null};
+        let execution: BrokerIosProviderResult = {ok: true, mode: "noop", provider: "host-broker-state", receipt: null};
+        let createdUdid: string | null = null;
         if (command?.kind === "ready") {
-            execution = ports.execute(command.effect,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
+            const result = ports.executeCreate(command.effect,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
+            execution = result;
             if (!brokerIosCommandSucceeded(execution)) return {kind: "provider-failed", error: execution.typedCreateInvalidResult === true ? "hyper-v-create-invalid-result" : "provider-command-failed", plan, execution};
+            createdUdid = result.createdUdid;
         }
         let persistedParsed = parsed;
         if (parsed.create?.createSimulator === true && execution.mode !== "noop") {
-            const udid = ports.createdUdid(execution.stdout);
+            const udid = createdUdid;
             if (!udid) return {kind: "provider-failed", error: "ios-simulator-create-invalid-udid", plan, execution};
             persistedParsed = {...parsed, create: {...(parsed.create || {}),udid}};
         }
@@ -66,7 +69,7 @@ export function createBrokerIosSimulatorLifecycle<Effect>(ports: BrokerIosSimula
         if (auxiliary?.committed) expected = structuredClone(auxiliary.device);
         if (auxiliary?.result.ok === false) return {kind: "auxiliary-failed", plan, device: auxiliary.device, auxiliary: auxiliary.result};
         const execution: BrokerIosProviderResult = command.kind === "metadata-only"
-            ? {mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "", receipt: null}
+            ? {ok: true, mode: "noop", provider: "host-broker-state", receipt: null}
             : ports.execute(command.effect,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
         let success = brokerIosCommandSucceeded(execution) ;
 

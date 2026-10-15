@@ -14,7 +14,7 @@ function consumedDeviceStatus<Connection, Receipt>(ports: BrokerDeviceStatusPort
     // @ts-expect-error Exact typed VM observation is required for status.
     createBrokerDeviceStatus(withoutTypedObservation);
     // @ts-expect-error Non-Hyper-V command execution must return a settled result.
-    createBrokerDeviceStatus({ ...ports, observe: async () => ({ mode: "exec", provider: "adb", status: 0 }) });
+    createBrokerDeviceStatus({ ...ports, observe: async connection => ports.observe(connection) });
     // @ts-expect-error Deadline admission must complete before recovery effects.
     createBrokerDeviceStatus({ ...ports, assertDeadline: async () => undefined });
     // @ts-expect-error Device status does not expose a CCC HTTP response envelope.
