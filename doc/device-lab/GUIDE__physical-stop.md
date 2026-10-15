@@ -15,8 +15,9 @@ observation, command arguments, and the existing owned Appium workflow. Ports
 distinguish synchronous find/CAS/signal/ADB observations from asynchronous exit
 waits and Appium cleanup. Clock and runtime IDs are injected; status projection and response
 codecs remain native. Raw CAS results retain `device` and `currentDevice`; the
-ADB result describes the selected native command's default UTF-8 output without
-changing its values, extra fields or reference.
+ADB fallback exposes only `{ok,detail}` inward. The existing Android native
+binding classifies status0 and formats stderr, then stdout, then exit status
+into the existing failure detail; no process result fields cross this port.
 
 Android discovers ADB after a successful claim, including inactive recording.
 An active recording observes both owned SIGINT and the optional single ADB

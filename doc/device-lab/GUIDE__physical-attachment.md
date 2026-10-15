@@ -4,8 +4,11 @@ Android and iOS native facades compose `createPhysicalAttachmentApplication`
 through the checked `adapters/physical-attachment.mjs` producer. The application
 owns complete attach admission, duplicate checks, attachment data, owner
 publication, exact lease compensation and heartbeat activation. Android claims
-the Wi-Fi target lease before ADB connect; inventory must then confirm a usable
-physical device. iOS requires xctrace visibility and existing network pairing
+the Wi-Fi target lease before ADB connect. The native adapter reports semantic
+connect success with an opaque receipt and inventory attachability; the application
+uses those facts and retains the observed state only for refusal detail. Connect
+keeps the existing native status0-only success rule. Inventory must then confirm
+a usable physical device. iOS requires xctrace visibility and existing network pairing
 for Wi-Fi attachment. Neither path creates an emulator or powers hardware.
 
 Detach reuses the accepted physical-stop lifecycle/cleanup peer. It claims the

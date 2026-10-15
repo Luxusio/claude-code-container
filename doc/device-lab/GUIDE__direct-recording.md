@@ -16,8 +16,14 @@ An OK Sandbox helper response without a recording no longer dereferences missing
 
 All process exit callbacks call `exited`; identity match or unavailable observations preserve active state, while exited/mismatched observations conditionally publish pending state. Generation checks preserve same-ID successors. The application never claims universal rollback or verified local exit from a remote fallback.
 
-Native composition uses the discriminated `DirectRecordingNative` contract. Common inputs are guarded find/update, default local path and output-path validation. Process variants add recording-directory and concrete target resolution; Android/macOS add individual command receipts, macOS adds workspace preparation. Sandbox adds individual helper request, verified archive path and bounded copy receipts. No complete start/finalize/reconcile callback or application-port bag is accepted.
+Native composition uses the discriminated `DirectRecordingNative` contract. Common inputs are guarded find/update, default local path and output-path validation. Process variants add recording-directory and concrete target resolution; Android/macOS add finite command effects, macOS adds workspace preparation. Sandbox adds individual helper request, verified archive path and bounded copy receipts. No complete start/finalize/reconcile callback or application-port bag is accepted.
 
 Existing five-provider business journeys, macOS rollback/desktop-video suites and real authenticated default-child Sandbox/macOS journeys qualify the supported bindings. Small static contracts consume both actual factories; the strict architecture target checks real application and native producer bodies. Compiler/runtime/build/shipping and native-platform acceptance remain separate gates; this Guide grants no whole-operation or Goal certification.
 
-Fixed ADB/simctl/SSH/SCP arguments and POSIX shell quoting live only in the checked native producer. The application invokes individual `spawnRecorder`, `fallbackStop`, `copyRecording`, and `removeRecording` effects with admitted target facts and semantic paths. It selects deadlines, defaults, effect order and generation transitions; each remote command leaf returns the concrete command receipt. The external native configuration and `runCommand(command)` contract are unchanged.
+Fixed ADB/simctl/SSH/SCP arguments and POSIX shell quoting live only in the checked native producer. The application invokes individual `spawnRecorder`, `fallbackStop`, `copyRecording`, and `removeRecording` effects with admitted target facts and semantic paths. It selects deadlines, defaults, effect order and generation transitions; copy returns `{ok,detail,output}`. The native producer classifies the existing
+status0-only predicate, prepares failure detail and the finite public output
+fragment; the application consumes only `ok`/`detail` for its decisions. The
+opaque output preserves Android stdout/stderr/status and macOS stdout/stderr,
+and is carried outward only after successful stage commit and generation clear.
+Ignored command effects expose opaque receipts. Native process result types and
+command-output interpretation stay outside the application. The external native configuration and `runCommand(command)` contract are unchanged.

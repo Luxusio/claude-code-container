@@ -13,7 +13,10 @@ native-boundary delivery. Actual qualified portable QA records 28 whole files,
 reviews, genuine build, strict architecture compilation and local shipping/CLI
 checks. Local delivery authenticates 57 source files and preserves all 97
 protected Main user paths, bytes, status and stage. This is the historical
-19-group snapshot; current accounting is **15/23 groups completed, eight
+19-group snapshot; the later clean-boundary integration reached **16/24**.
+The current native-result audit reopens R04/R05/R06 and adds the original-scope
+shared-provider R21. At discovery the subtotal was13/25. After qualified
+local Source integration, current accounting is **17/25 groups completed, eight
 remaining** in the [WBS](GUIDE__architecture-work-breakdown.md).
 
 That historical snapshot is an unweighted subtotal of confirmed structural
@@ -62,6 +65,22 @@ preservation is not universal byte identity; own-port no-probe is verifier-scope
 75 packet gates, 218 supported/219 inventoried operations and uncertified source
 denominator. Native, artifact, reliability, global source and formal acceptance
 remain separate.
+
+The 2026-10-15 follow-up found six reached native-result seams in Codex Harness,
+container socket permissions, broker physical effects, Hyper-V snapshots, direct
+physical attachment/stop and direct recording copy finalization. Their finite
+normalization is locally integrated at `9c807d1e2b42af2a9ff42fb5886156007ac7a014`.
+Independent Code/Security and QA passed:278Source cases with1existing skip,
+263actual emitted/runtime cases, strict emitted contracts, genuine changed
+producers and ordinary npm/Unix shipping. Three reopened rows retain their
+historical contributions and now qualify this bounded correction; R21 records
+the shared provider work from original M07 with no new product operation.
+R08's Source contribution is qualified, but its original Windows condition remains
+unverified. [Actual QA evidence](../../results/native-observation-wave-01a13f01-20261015/independent-qa/qa-report.md)
+uses fake SDK/Tart/SSH/native runners, not real hardware. The original strict
+TS2345 failure and the corrected strict result remain recorded.
+These findings show why eight previously listed residual groups were not a
+certified exhaustive migration remainder.
 
 Status: **all 218 inventoried operation cutovers are source-qualified; the
 original architecture boundary and acceptance work is still incomplete**.

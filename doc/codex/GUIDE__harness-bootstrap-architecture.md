@@ -1,8 +1,8 @@
 # Codex Harness bootstrap policy
 
 This operation has two executable policy boundaries. The host application owns
-Codex-lock preparation, bootstrap transport, raw result/output handling,
-restoration in finally and the best-effort warning. Embedded Python domain and
+Codex-lock preparation, bootstrap sequencing, semantic completion handling,
+restoration in finally and the best-effort warning policy. Embedded Python domain and
 application chunks own registration, version, hook identity/digest/trust,
 install-only-if-absent, revision verification and post-install probe. Moving only
 the host wrapper does not complete this operation.
@@ -47,7 +47,11 @@ Host transport retains selected runtime, exact stdin/environment/workdir/default
 identity and 135000ms budget. Preparation precedes transport and restoration
 runs once after entered lock callback, even on prepare/output/result failure.
 Restore errors can mask earlier failures; failed lock acquisition does not restore.
-Nonempty stdout is trimmed and published before execution failure handling.
+The existing native adapter trims stdout and returns completed/failed with output
+and an opaque failure. It alone classifies native status/error, constructs failure
+detail and formats the warning. The host application publishes nonempty output
+before throwing a supplied failure; it does not inspect process fields.
+`publishUnavailable(error)` receives the original opaque failure.
 
 Native ports are ordinary synchronous functions, with output published through
 console.error and warnings through console.warn. Construction checks each required
