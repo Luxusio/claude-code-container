@@ -101,13 +101,29 @@ export interface SimulatorInventory {
         identifier?: string;
     }[];
 }
-export type SimulatorObservation = {
-    value: SimulatorInventory;
-    error?: undefined;
-} | {
-    error: ObservationCommand;
-    value?: undefined;
+/** Native SDK payload is carried only for backend identity lookup and presentation. */
+export interface SimulatorObservation {
+    ok: boolean;
+    detail: string;
+    evidence: object;
+}
+export type OwnedSimulatorTarget = { matched: false } | {
+    matched: true;
+    status: "booted" | "stopped" | "unknown";
+    name?: string;
 };
+export interface HostDevices<Device> {
+    available: boolean;
+    missing: string[];
+    devices: Device[];
+    error?: string;
+}
+export interface HostAvds {
+    available: boolean;
+    missing: string[];
+    avds: string[];
+    error?: string;
+}
 export interface AndroidHostDevice {
     serial: string;
     state: string;
@@ -174,29 +190,22 @@ export interface AndroidObservationPorts extends Common {
     readonly kind: "android-emulator";
     executable(name: "adb" | "emulator" | "avdmanager"): string | null;
     records(): ObservationRecord[];
-    avdResult(emulator: string): ObservationCommand;
+    hostAvds(emulator: string): HostAvds;
     creationFacts(facts: AndroidFacts): AndroidCreationFacts;
 }
 export interface AndroidPhysicalObservationPorts extends Common {
     readonly kind: "android-device";
     androidPrerequisites(): AndroidFacts;
     records(): ObservationRecord[];
-    hostResult(adb: string): {
-        available: boolean;
-        missing: string[];
-        devices: AndroidHostDevice[];
-        error?: string;
-    };
+    hostDevices(adb: string): HostDevices<AndroidHostDevice>;
 }
 export interface IosObservationPorts extends Common {
     readonly kind: "ios-simulator";
     executable(name: "xcrun"): string | null;
     records(): ObservationRecord[];
-    simulators(xcrun: string, args: string[]): SimulatorObservation;
-    ownedTarget(xcrun: string, device: ObservationRecord, inventory?: SimulatorObservation): {
-        error?: string;
-        simulator?: Simulator;
-    };
+    listOwnedSimulators(xcrun: string): SimulatorObservation;
+    simulatorCatalog(xcrun: string): SimulatorObservation;
+    ownedTarget(xcrun: string, device: ObservationRecord, inventory?: SimulatorObservation): OwnedSimulatorTarget;
     publishObserved(device: ObservationRecord, status: string, simulatorName: string | undefined): ObservationRecord | null | undefined;
 }
 export interface IosPhysicalObservationPorts extends Common {
@@ -204,9 +213,7 @@ export interface IosPhysicalObservationPorts extends Common {
     simulatorPrerequisites(): IosFacts;
     executable(name: "xcodebuild"): string | null;
     records(): ObservationRecord[];
-    hostResult(xcrun: string): ObservationCommand & {
-        devices: IosHostDevice[];
-    };
+    hostDevices(xcrun: string): HostDevices<IosHostDevice>;
 }
 export interface WindowsObservationPorts extends Common {
     readonly kind: "windows-sandbox";

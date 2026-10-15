@@ -1,22 +1,24 @@
 import type {
+    LabOwnershipApplication,
     LabOwnershipHelperScope,
-    LabStateCommandObservation,
+    LabPreviousPrincipal,
     LabStateOwnershipIntent,
-    LabStateOwnershipObservation,
     LabStatePrincipal,
+    LabVolumePresence,
+    LabVolumeUse,
 } from "../../domain/container/lab-state-ownership.js";
 
 export interface LabStateOwnershipPorts {
     normalizeImageId(imageId: string): string;
-    listVolumeNames(): LabStateCommandObservation;
-    observeVolumeUsers(volume: string): LabStateCommandObservation;
+    observeVolume(volume: string): LabVolumePresence;
+    observeVolumeUsers(volume: string): LabVolumeUse;
     captureHelperScope(): LabOwnershipHelperScope;
-    observePreviousAccount(scope: LabOwnershipHelperScope, imageId: string): LabStateCommandObservation;
+    observePreviousAccount(scope: LabOwnershipHelperScope, imageId: string): LabPreviousPrincipal;
     applyOwnership(
         scope: LabOwnershipHelperScope,
         volume: string,
         imageId: string,
         principal: LabStatePrincipal,
         intent: LabStateOwnershipIntent,
-    ): LabStateOwnershipObservation;
+    ): LabOwnershipApplication;
 }

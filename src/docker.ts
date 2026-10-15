@@ -17,13 +17,10 @@ import {
     mkdirSync,
     openSync,
     readFileSync,
-    realpathSync,
-    rmSync,
     statSync,
-    writeFileSync,
 } from "fs";
 import { homedir } from "os";
-import { dirname, join, normalize, posix, resolve } from "path";
+import { dirname, join, posix, resolve } from "path";
 import { fileURLToPath } from "url";
 import { createContainerSessionHandoff } from "./application/container-session-handoff.js";
 import { createContainerLaunchArguments } from "./application/container-launch-arguments.js";
@@ -60,7 +57,6 @@ import {
 } from "./utils.js";
 import {
     runtimeCli,
-    containerEngineFailureHint,
     containerManagerSocketPath,
     containerManagerSocketMountArgs,
     bindMountArgs,
@@ -71,7 +67,6 @@ import {
 import { ensureIdentityImage, getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName, normalizeImageId, resolveContainerIdentity, type ContainerIdentity as ContainerUserIdentity } from "./container-identity.js";
 import { withSharedMutationLock, withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
 import { codexConfigFileAclScript, codexConfigDirectoryAclScript } from "./codex-config-acl.js";
-import { proveWslBindSourceIdentity } from "./wsl-bind-source-proof.js";
 import { prepareLabStateOwnership } from "./lab-state-ownership.js";
 import { prepareCodexStateOwnership } from "./codex-state-ownership.js";
 import { createHostCredentialRefresh } from "./application/credentials/host-refresh.js";
@@ -87,15 +82,32 @@ import {
     withContainerLifecycleLock,
     withProjectFamilyLifecycleLock,
 } from "./session.js";
+import { createContainerMountVerification } from "./application/container-mount-verification.js";
+import type { StoppedMountPreflight } from "./ports/container-mount-verification.js";
 import {
-    validateObservedMountSet,
-    verifyMountSet,
-    type LiveSourceProof,
-    type MountEvidence,
-    type MountPresencePolicy,
-    type MountVerification,
-    type RequiredMountContract,
-} from "./bind-mount-verification.js";
+    assertBindMountSourceIdentity,
+    bindMountSourceIdentityDigest,
+    bindSourceIsTrustedFilesystemAlias,
+    canonicalHostPath,
+    captureBindMountSourceIdentity,
+    createNativeContainerMountObservations,
+    inspectContainerJsonOnce,
+    normalizedHostPath,
+    projectPathIdentityMatches,
+    sameFileIdentity,
+    type BindMountSourceIdentity,
+    type InspectedContainerMount,
+    type RequiredContainerMount,
+} from "./adapters/container-mount-observations.js";
+export {
+    captureBindMountSourceIdentity,
+    bindMountSourceIdentityDigest,
+    bindSourcePathsEquivalent,
+    readDirectoryMountMarker,
+    projectPathIdentityMatches,
+} from "./adapters/container-mount-observations.js";
+export type { BindMountSourceIdentity } from "./adapters/container-mount-observations.js";
+import type { MountPresencePolicy, MountVerification } from "./bind-mount-verification.js";
 
 const MANAGED_MCP_BUNDLES = ["device-lab-mcp"] as const;
 const MANAGED_MCP_BUNDLE_MAX_BYTES = 32 * 1024 * 1024;
@@ -133,58 +145,6 @@ type MountSourceIdentity = {
     ino: string;
 };
 
-type DirectoryMountChallenge = {
-    markerName: string;
-    markerPath: string;
-    markerContent: string;
-};
-
-type MountVerificationSession = {
-    directoryChallenges: Map<string, DirectoryMountChallenge>;
-    containerExecReady?: boolean;
-};
-
-function createMountVerificationSession(): MountVerificationSession {
-    return { directoryChallenges: new Map() };
-}
-
-function cleanupMountVerificationSession(session: MountVerificationSession): void {
-    let cleanupError: unknown;
-    for (const challenge of session.directoryChallenges.values()) {
-        try {
-            rmSync(challenge.markerPath, { force: true });
-        } catch (error) {
-            cleanupError ??= error;
-        }
-    }
-    session.directoryChallenges.clear();
-    if (cleanupError) throw cleanupError;
-}
-
-function getDirectoryMountChallenge(
-    session: MountVerificationSession,
-    expected: BindMountSourceIdentity,
-    containerPath: string,
-): DirectoryMountChallenge {
-    const existing = session.directoryChallenges.get(containerPath);
-    if (existing) return existing;
-    const markerName = `.ccc-mount-identity-${randomBytes(16).toString("hex")}`;
-    const challenge = {
-        markerName,
-        markerPath: join(expected.realpath, markerName),
-        markerContent: randomBytes(32).toString("hex"),
-    };
-    writeFileSync(challenge.markerPath, challenge.markerContent, { flag: "wx", mode: 0o600 });
-    session.directoryChallenges.set(containerPath, challenge);
-    return challenge;
-}
-
-export type BindMountSourceIdentity = {
-    realpath: string;
-    dev: string;
-    ino: string;
-};
-
 type PreparedDeviceLabMountSources = {
     stateRoot: MountSourceIdentity;
     ownerRoot: MountSourceIdentity;
@@ -192,386 +152,6 @@ type PreparedDeviceLabMountSources = {
     ownerAuthFile?: MountSourceIdentity;
     contractIdentity: string;
 };
-
-type RequiredContainerMount = {
-    hostPath: string;
-    containerPath: string;
-    readonly?: boolean;
-    type?: "bind" | "tmpfs" | "volume";
-    presence: "core" | "additive" | "optional";
-    sourceProof?:
-        | {
-            kind: "filesystem";
-            identity: BindMountSourceIdentity;
-        }
-        | {
-            kind: "path";
-            canonical: boolean;
-            equivalentSources?: string[];
-        }
-        | {
-            kind: "daemon";
-            equivalentSources?: string[];
-        };
-};
-
-function normalizedHostPath(path: string): string {
-    const normalized = normalize(resolve(path));
-    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
-}
-
-function canonicalHostPath(path: string): string {
-    return normalizedHostPath(realpathSync(path));
-}
-
-export function captureBindMountSourceIdentity(path: string): BindMountSourceIdentity {
-    const canonical = realpathSync(path);
-    const before = lstatSync(canonical, { bigint: true });
-    if (before.isSymbolicLink() || (!before.isDirectory() && !before.isFile())) {
-        throw new Error(`bind mount source must resolve to a real file or directory: ${path}`);
-    }
-    const after = lstatSync(canonical, { bigint: true });
-    if (after.isSymbolicLink()
-        || (!after.isDirectory() && !after.isFile())
-        || !sameFileIdentity(before, after)) {
-        throw new Error(`bind mount source changed while it was being validated: ${path}`);
-    }
-    return {
-        realpath: canonical,
-        dev: String(after.dev),
-        ino: String(after.ino),
-    };
-}
-
-function bindMountSourceIdentityMatches(
-    expected: BindMountSourceIdentity,
-    actual: BindMountSourceIdentity,
-): boolean {
-    return bindSourcePathsEquivalent(expected.realpath, actual.realpath)
-        && expected.dev === actual.dev
-        && expected.ino === actual.ino;
-}
-
-function assertBindMountSourceIdentity(
-    path: string,
-    expected: BindMountSourceIdentity,
-): void {
-    if (!bindMountSourceIdentityMatches(
-        expected,
-        captureBindMountSourceIdentity(path),
-    )) {
-        throw new Error(`bind mount source identity changed: ${path}`);
-    }
-}
-
-function observeBindMountSourceIdentity(
-    path: string,
-    expected: BindMountSourceIdentity,
-): LiveSourceProof {
-    let actual: BindMountSourceIdentity;
-    try {
-        actual = captureBindMountSourceIdentity(path);
-    } catch {
-        return { kind: "retryable", reason: `bind source identity is temporarily unavailable: ${path}` };
-    }
-    return bindMountSourceIdentityMatches(expected, actual)
-        ? { kind: "verified", via: "identity" }
-        : { kind: "mismatch", reason: `bind source identity changed: ${path}` };
-}
-
-function combineLiveSourceProof(
-    current: LiveSourceProof,
-    candidate: LiveSourceProof,
-): LiveSourceProof {
-    const priority: Record<LiveSourceProof["kind"], number> = {
-        verified: 0,
-        retryable: 1,
-        mismatch: 2,
-    };
-    return priority[candidate.kind] > priority[current.kind] ? candidate : current;
-}
-
-export function readDirectoryMountMarker(containerId: string, markerPath: string) {
-    const options = { encoding: "utf-8" as const, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" as const };
-    const result = spawnSync(runtimeCli(), ["exec", containerId, "cat", markerPath], options);
-    const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
-    if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
-    // Only this generated, non-secret challenge may need traversal through a
-    // host-owned 0700 SSH directory. Never read keys as part of mount proof.
-    if (!result.error && !result.signal && result.status !== null && result.status !== 0
-        && /^\/home\/ccc\/\.ssh\/\.ccc-mount-identity-[a-f0-9]{32}$/.test(markerPath)) {
-        const elevated = spawnSync(runtimeCli(), ["exec", "--user", "root", containerId, "cat", markerPath], options);
-        const engineFailure = elevated.status !== 0 ? containerEngineFailureHint(elevated.stderr) : undefined;
-        if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
-        return elevated;
-    }
-    return result;
-}
-
-function proveContainerSeesCurrentBindSource(
-    containerId: string,
-    hostPath: string,
-    containerPath: string,
-    expected: BindMountSourceIdentity,
-    session: MountVerificationSession,
-    finalProofAttempt = false,
-): LiveSourceProof {
-    let verification: LiveSourceProof = {
-        kind: "retryable",
-        reason: `bind source proof unavailable for ${containerPath}`,
-    };
-    try {
-        const initialIdentity = observeBindMountSourceIdentity(hostPath, expected);
-        if (initialIdentity.kind !== "verified") return initialIdentity;
-        const observed = lstatSync(expected.realpath);
-        if (observed.isSymbolicLink()) {
-            return { kind: "mismatch", reason: `bind source identity changed for ${containerPath}` };
-        }
-        if (typeof observed.isDirectory === "function" && observed.isDirectory()) {
-            const challenge = getDirectoryMountChallenge(session, expected, containerPath);
-            const markerIdentity = observeBindMountSourceIdentity(hostPath, expected);
-            if (markerIdentity.kind !== "verified") return markerIdentity;
-            const result = readDirectoryMountMarker(containerId, posix.join(containerPath, challenge.markerName));
-            let containerExecReady = false;
-            if (result.error || result.status !== 0) {
-                session.containerExecReady ??= canExecContainer(containerId, 200);
-                containerExecReady = session.containerExecReady;
-            }
-            if (result.error) {
-                verification = { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
-            } else if (result.status !== 0) {
-                verification = containerExecReady && finalProofAttempt
-                    ? { kind: "mismatch", reason: `bind marker is not visible for ${containerPath}` }
-                    : { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
-            } else if ((result.stdout ?? "") !== challenge.markerContent) {
-                verification = { kind: "mismatch", reason: `bind marker content changed for ${containerPath}` };
-            } else {
-                verification = { kind: "verified", via: "identity" };
-            }
-        } else if (typeof observed.isFile === "function" && observed.isFile()) {
-            if (observed.size > 1024 * 1024) {
-                return { kind: "mismatch", reason: `bind source file is too large to verify for ${containerPath}` };
-            }
-            const expectedContent = readFileSync(expected.realpath);
-            const fileIdentity = observeBindMountSourceIdentity(hostPath, expected);
-            if (fileIdentity.kind !== "verified") return fileIdentity;
-            let result = spawnSync(
-                runtimeCli(),
-                ["exec", containerId, "cat", containerPath],
-                {
-                    encoding: null,
-                    stdio: ["pipe", "pipe", "pipe"],
-                    maxBuffer: 1024 * 1024 + 1,
-                    timeout: 5000,
-                    killSignal: "SIGKILL",
-                },
-            );
-            const engineFailure = result.status !== 0 ? containerEngineFailureHint(Buffer.isBuffer(result.stderr) ? result.stderr.toString("utf8") : result.stderr) : undefined;
-            if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
-            let containerExecReady = false;
-            if (result.error || result.status !== 0) {
-                session.containerExecReady ??= canExecContainer(containerId, 200);
-                containerExecReady = session.containerExecReady;
-            }
-            if (result.error) {
-                verification = { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
-            } else if (result.status !== 0) {
-                verification = containerExecReady && finalProofAttempt
-                    ? { kind: "mismatch", reason: `bind file is not readable for ${containerPath}` }
-                    : { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
-            } else {
-                const currentContent = readFileSync(expected.realpath);
-                if (!currentContent.equals(expectedContent)) {
-                    verification = { kind: "retryable", reason: `bind source file changed during proof for ${containerPath}` };
-                } else if (!Buffer.isBuffer(result.stdout) || !result.stdout.equals(expectedContent)) {
-                    verification = { kind: "mismatch", reason: `bind file content changed for ${containerPath}` };
-                } else {
-                    verification = { kind: "verified", via: "identity" };
-                }
-            }
-        } else {
-            verification = { kind: "mismatch", reason: `bind source type changed for ${containerPath}` };
-        }
-    } catch (error) {
-        if (error instanceof ContainerEngineUnavailableError) throw error;
-        verification = {
-            kind: "retryable",
-            reason: `bind source proof failed for ${containerPath}`,
-        };
-    } finally {
-        const finalIdentity = observeBindMountSourceIdentity(hostPath, expected);
-        verification = combineLiveSourceProof(verification, finalIdentity.kind === "verified"
-            ? finalIdentity
-            : {
-                ...finalIdentity,
-                reason: finalIdentity.kind === "mismatch"
-                    ? `bind source identity changed for ${containerPath}`
-                    : `bind source identity is temporarily unavailable for ${containerPath}`,
-            });
-    }
-    return verification;
-}
-
-export function bindMountSourceIdentityDigest(
-    identity: BindMountSourceIdentity,
-): string {
-    return createHash("sha256")
-        .update(`${identity.realpath}\0${identity.dev}\0${identity.ino}`)
-        .digest("hex");
-}
-
-export function projectPathIdentityMatches(left: string, right: string): boolean {
-    if (normalizedHostPath(left) === normalizedHostPath(right)) return true;
-    try {
-        return projectPathsEquivalent(left, right);
-    } catch {
-        return false;
-    }
-}
-
-function windowsBindSourceIdentity(path: string): string | null {
-    const slashed = path.replace(/\\/g, "/").replace(/^\/\/\?\//, "");
-    const desktop = /^\/(?:run\/desktop\/mnt\/host|host_mnt)\/([a-z])\/(.+)$/i.exec(slashed);
-    if (desktop) return `${desktop[1].toLowerCase()}:/${desktop[2]}`.toLowerCase();
-    const drive = /^([a-z]):\/(.+)$/i.exec(slashed);
-    return drive ? `${drive[1].toLowerCase()}:/${drive[2]}`.toLowerCase() : null;
-}
-
-export function bindSourcePathsEquivalent(actual: string, expected: string): boolean {
-    const actualWindows = windowsBindSourceIdentity(actual);
-    const expectedWindows = windowsBindSourceIdentity(expected);
-    if (actualWindows || expectedWindows) return actualWindows === expectedWindows;
-    return normalizedHostPath(actual) === normalizedHostPath(expected);
-}
-
-type NativeMacDockerDesktopBindSource =
-    | { kind: "not-alias" }
-    | { kind: "candidate"; hostPath: string }
-    | { kind: "mismatch" };
-
-function pathHasTraversalSegments(path: string): boolean {
-    return path.replace(/\\/g, "/").split("/")
-        .some((segment) => segment === "." || segment === "..");
-}
-
-function nativeMacDockerDesktopBindSource(path: string): NativeMacDockerDesktopBindSource {
-    if (process.platform !== "darwin") return { kind: "not-alias" };
-    const prefixes = ["/host_mnt", "/run/desktop/mnt/host"];
-    const prefix = prefixes.find((candidate) => path.startsWith(`${candidate}/`));
-    if (!prefix) return { kind: "not-alias" };
-    const runtime = getRuntimeInfo();
-    if (runtime.runtime !== "docker"
-        || !runtime.dockerDesktop) {
-        return { kind: "mismatch" };
-    }
-    const hostPath = path.slice(prefix.length);
-    if (!hostPath.startsWith("/")
-        || hostPath.startsWith("//")
-        || pathHasTraversalSegments(hostPath)) {
-        return { kind: "mismatch" };
-    }
-    return { kind: "candidate", hostPath };
-}
-
-type FilesystemAliasVerification = "match" | "mismatch" | "retryable";
-
-function bindSourceIsTrustedFilesystemAlias(
-    observedSource: string,
-    hostPath: string,
-    expected: BindMountSourceIdentity,
-): FilesystemAliasVerification {
-    if (pathHasTraversalSegments(observedSource)) return "mismatch";
-    const nativeMacSource = nativeMacDockerDesktopBindSource(observedSource);
-    if (nativeMacSource.kind === "mismatch") return "mismatch";
-    const candidates = nativeMacSource.kind === "candidate"
-        ? [nativeMacSource.hostPath]
-        : [observedSource];
-    if (candidates.some((candidate) => (
-        bindSourcePathsEquivalent(candidate, hostPath)
-        || bindSourcePathsEquivalent(candidate, expected.realpath)
-    ))) {
-        return "match";
-    }
-    let canonicalizationUnavailable = false;
-    for (const candidate of candidates) {
-        try {
-            if (bindSourcePathsEquivalent(canonicalHostPath(candidate), expected.realpath)) {
-                return "match";
-            }
-        } catch (error) {
-            const code = (error as NodeJS.ErrnoException | undefined)?.code;
-            canonicalizationUnavailable ||= code !== "ENOENT" && code !== "ENOTDIR";
-        }
-    }
-    // Docker Desktop may retain an opaque WSL daemon path for an older bind.
-    // Resolve it by object identity, never by guessing a host path translation.
-    if (/^\/run\/desktop\/mnt\/host\/wsl\/docker-desktop-bind-mounts\//.test(observedSource)) {
-        const before = observeBindMountSourceIdentity(hostPath, expected);
-        if (before.kind !== "verified") return before.kind === "retryable" ? "retryable" : "mismatch";
-        const image = getCurrentImageId();
-        const proof = image ? proveWslBindSourceIdentity(observedSource, expected, image) : null;
-        const after = observeBindMountSourceIdentity(hostPath, expected);
-        if (after.kind !== "verified") return after.kind === "retryable" ? "retryable" : "mismatch";
-        return proof === true ? "match" : proof === false ? "mismatch" : "retryable";
-    }
-    return canonicalizationUnavailable ? "retryable" : "mismatch";
-}
-
-function dockerDaemonIdentity(result: ReturnType<typeof spawnSync>): string | null {
-    if (result.error || result.status !== 0) return null;
-    const identity = (result.stdout ?? "").toString().trim();
-    return /^[^\s]{1,512}$/.test(identity) ? identity : null;
-}
-
-function containerManagerSocketTargetsCurrentDockerDaemon(containerId: string): LiveSourceProof {
-    if (getRuntimeInfo().runtime !== "docker") {
-        return { kind: "mismatch", reason: "container manager socket runtime changed" };
-    }
-    const options = {
-        encoding: "utf-8" as const,
-        stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
-        timeout: 10_000,
-        killSignal: "SIGKILL" as const,
-        windowsHide: true,
-    };
-    const hostIdentity = dockerDaemonIdentity(spawnSync(
-        runtimeCli(),
-        ["info", "--format", "{{.ID}}"],
-        options,
-    ));
-    if (!hostIdentity) {
-        return { kind: "retryable", reason: "host container-manager daemon identity is unavailable" };
-    }
-    const mountedIdentity = dockerDaemonIdentity(spawnSync(
-        runtimeCli(),
-        [
-            "exec",
-            "--user",
-            "root",
-            containerId,
-            "/usr/bin/docker",
-            "--host",
-            "unix:///var/run/docker.sock",
-            "info",
-            "--format",
-            "{{.ID}}",
-        ],
-        options,
-    ));
-    if (!mountedIdentity) {
-        return { kind: "retryable", reason: "mounted container-manager daemon identity is unavailable" };
-    }
-    return mountedIdentity === hostIdentity
-        ? { kind: "verified", via: "daemon" }
-        : { kind: "mismatch", reason: "container manager socket targets a different daemon" };
-}
-
-function sameFileIdentity(
-    left: { dev?: number | bigint; ino?: number | bigint },
-    right: { dev?: number | bigint; ino?: number | bigint },
-): boolean {
-    return left.dev === right.dev && left.ino === right.ino;
-}
 
 function sourceIdentity(
     path: string,
@@ -1027,6 +607,7 @@ export function findManagedProjectNamespaceCollision(
                         projectMounts[0].Source!,
                         projectPath,
                         projectMountSourceIdentity,
+                        getCurrentImageId,
                     );
                     if (sourceMatch === "retryable") {
                         throw new Error(
@@ -1618,67 +1199,6 @@ function envMap(values: unknown): Map<string, string> {
     return map;
 }
 
-type InspectedContainerMount = {
-    Source: string;
-    Destination: string;
-    RW?: boolean;
-    Type?: string;
-    Name?: unknown;
-};
-
-/** Docker and Podman keep --tmpfs mounts in HostConfig.Tmpfs instead of Mounts. */
-function normalizeInspectedTmpfsMounts(inspected: Record<string, unknown>): boolean {
-    const hostConfig = inspected.HostConfig;
-    if (!hostConfig || typeof hostConfig !== "object" || Array.isArray(hostConfig)) return true;
-    const tmpfs = (hostConfig as Record<string, unknown>).Tmpfs;
-    if (tmpfs === undefined || tmpfs === null) return true;
-    if (typeof tmpfs !== "object" || Array.isArray(tmpfs)) return false;
-    if (!Array.isArray(inspected.Mounts)) return false;
-    const mounts = [...inspected.Mounts];
-    for (const [destination, options] of Object.entries(tmpfs)) {
-        if (!destination.startsWith("/") || posix.normalize(destination) !== destination
-            || typeof options !== "string") return false;
-        const tokens = options === "" ? [] : options.split(",");
-        // Podman 4.9.3 adds private propagation and tmpfs copy-up defaults.
-        // Accept only those exact spellings, preserving the other refusal gates.
-        if (tokens.some((token) => !/^(?:rw|ro|exec|noexec|suid|nosuid|dev|nodev|sync|async|dirsync|atime|noatime|diratime|nodiratime|relatime|strictatime|lazytime|nolazytime|rprivate|tmpcopyup|(?:size|nr_inodes|nr_blocks)=[0-9]+[kKmMgG%]?|mode=[0-7]{3,4}|(?:uid|gid)=[0-9]+)$/.test(token))) return false;
-        const access = tokens.filter((token) => token === "rw" || token === "ro");
-        if (access.length > 1) return false;
-        // Docker/kernel tmpfs defaults to writable when neither ro nor rw is given.
-        const writable = access[0] !== "ro";
-        const existing = mounts.filter((mount) => mount && typeof mount === "object"
-            && mount.Destination === destination);
-        if (existing.length > 0) {
-            // A second representation cannot hide a conflicting mount or access mode.
-            if (existing.length !== 1 || existing[0].Type !== "tmpfs"
-                || existing[0].RW !== writable) return false;
-        } else {
-            mounts.push({ Source: "", Destination: destination, Type: "tmpfs", RW: writable });
-        }
-    }
-    inspected.Mounts = mounts;
-    return true;
-}
-
-function inspectContainerJsonOnce(containerId: string): Record<string, unknown> | null {
-    const result = spawnSync(
-        runtimeCli(),
-        ["inspect", "-f", "{{json .}}", containerId],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
-    );
-    const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
-    if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
-    if (result.error || result.status !== 0) return null;
-    try {
-        const inspected = JSON.parse((result.stdout ?? "").trim()) as unknown;
-        if (!inspected || typeof inspected !== "object" || Array.isArray(inspected)) return null;
-        const record = inspected as Record<string, unknown>;
-        return normalizeInspectedTmpfsMounts(record) ? record : null;
-    } catch {
-        return null;
-    }
-}
-
 function inspectContainerJsonWithRetry(containerId: string): Record<string, unknown> | null {
     return withBoundedVerificationRetry(
         () => inspectContainerJsonOnce(containerId),
@@ -1686,187 +1206,28 @@ function inspectContainerJsonWithRetry(containerId: string): Record<string, unkn
     );
 }
 
-function namedVolumeMatches(
-    mount: InspectedContainerMount,
-    expectedName: string,
-): boolean {
-    if (Object.hasOwn(mount, "Name")) {
-        return typeof mount.Name === "string" && mount.Name === expectedName;
-    }
-    return mount.Source === expectedName;
-}
-
-function mountContract(required: RequiredContainerMount): RequiredMountContract {
+function mountVerification(containerId: string, requiredMounts: RequiredContainerMount[]) {
+    const native = createNativeContainerMountObservations({
+        containerId,
+        requiredMounts,
+        canExecContainer,
+        currentImageId: getCurrentImageId,
+        withRetry: withBoundedVerificationRetry,
+    });
     return {
-        containerPath: required.containerPath,
-        readonly: required.readonly,
-        type: required.type,
-        presence: required.presence,
-        sourceKind: required.type === "volume"
-            ? "volume"
-            : required.sourceProof?.kind ?? "none",
+        native,
+        application: createContainerMountVerification(native.requiredMounts, native.ports),
     };
 }
 
-function collectMountEvidence(
-    containerId: string,
-    required: RequiredContainerMount,
-    observed: InspectedContainerMount | undefined,
-    policy: MountPresencePolicy,
-    finalProofAttempt: boolean,
-    session: MountVerificationSession,
-): MountEvidence {
-    if (!observed) return {};
-    if (required.type === "volume") {
-        return { volumeSourceMatches: namedVolumeMatches(observed, required.hostPath) };
-    }
-    const proof = required.sourceProof;
-    if (!proof || typeof observed.Source !== "string") return {};
-    if (proof.kind === "filesystem") {
-        const hostIdentity = observeBindMountSourceIdentity(required.hostPath, proof.identity);
-        if (hostIdentity.kind === "mismatch") {
-            return { authoritativeMismatch: `bind source identity changed for ${required.containerPath}` };
-        }
-        const sourceAlias = bindSourceIsTrustedFilesystemAlias(
-            observed.Source,
-            required.hostPath,
-            proof.identity,
-        );
-        if (sourceAlias === "retryable") return { sourcePathUnavailable: true };
-        const sourcePathMatches = sourceAlias === "match";
-        const liveProof = hostIdentity.kind === "retryable"
-            ? hostIdentity
-            : sourcePathMatches
-                ? proveContainerSeesCurrentBindSource(
-                    containerId,
-                    required.hostPath,
-                    required.containerPath,
-                    proof.identity,
-                    session,
-                    finalProofAttempt,
-                )
-                : { kind: "mismatch", reason: `bind source changed for ${required.containerPath}` } as const;
-        return { sourcePathMatches, liveProof };
-    }
-    if (proof.kind === "daemon" && required.hostPath !== CONTAINER_MANAGER_SOCKET
-        && getRuntimeInfo().runtime === "docker") {
-        if ((required.type !== undefined && observed.Type !== required.type)
-            || (required.readonly !== undefined && observed.RW !== !required.readonly)) return {};
-        const sourcePathMatches = observed.Source === required.hostPath;
-        if (!sourcePathMatches) {
-            return { authoritativeMismatch: `bind source changed for ${required.containerPath}` };
-        }
-        return {
-            sourcePathMatches,
-            liveProof: containerManagerSocketTargetsCurrentDockerDaemon(containerId),
-        };
-    }
-    let primarySource: string;
-    try {
-        primarySource = proof.kind === "path" && proof.canonical
-            ? canonicalHostPath(required.hostPath)
-            : required.hostPath;
-    } catch {
-        return { sourcePathUnavailable: true };
-    }
-    const candidates = [primarySource, ...(proof.equivalentSources ?? [])];
-    const sourcePathMatches = candidates.some((candidate) => (
-        bindSourcePathsEquivalent(observed.Source, candidate)
-    ));
-    if (proof.kind === "daemon" && !sourcePathMatches) {
-        if (policy === "strict") {
-            return {
-                sourcePathMatches,
-                liveProof: {
-                    kind: "mismatch",
-                    reason: `bind source changed for ${required.containerPath}`,
-                },
-            };
-        }
-        return {
-            sourcePathMatches,
-            liveProof: containerManagerSocketTargetsCurrentDockerDaemon(containerId),
-        };
-    }
-    return { sourcePathMatches };
-}
-
-function verifyRequiredContainerMountsOnce(
-    containerId: string,
-    observedMounts: InspectedContainerMount[],
-    requiredMounts: RequiredContainerMount[],
-    policy: MountPresencePolicy,
-    session: MountVerificationSession,
-    allowUnexpected = false,
-    finalProofAttempt = false,
-): MountVerification {
-    session.containerExecReady = undefined;
-    const contracts = requiredMounts.map(mountContract);
-    const shape = validateObservedMountSet(contracts, observedMounts, allowUnexpected);
-    if (shape.kind === "mismatch") return shape;
-    const observedByPath = new Map(observedMounts.map((mount) => [mount.Destination, mount]));
-    const evidence = new Map<string, MountEvidence>();
-    for (const required of requiredMounts) {
-        evidence.set(
-            required.containerPath,
-            collectMountEvidence(
-                containerId,
-                required,
-                observedByPath.get(required.containerPath),
-                policy,
-                finalProofAttempt,
-                session,
-            ),
-        );
-    }
-    return verifyMountSet(contracts, observedMounts, evidence, { policy, allowUnexpected });
-}
-
-type StoppedMountPreflight =
-    | { kind: "preflight-verified" }
-    | { kind: "mismatch" | "retryable", reason: string };
-
 /** Static evidence permits starting a stopped container, never executing or joining it. */
 function preflightStoppedContainerMounts(
+    containerId: string,
     observedMounts: InspectedContainerMount[],
     requiredMounts: RequiredContainerMount[],
 ): StoppedMountPreflight {
-    const shape = validateObservedMountSet(requiredMounts.map(mountContract), observedMounts);
-    if (shape.kind === "mismatch") return shape;
-    const observedByPath = new Map(observedMounts.map(mount => [mount.Destination, mount]));
-    for (const required of requiredMounts) {
-        const observed = observedByPath.get(required.containerPath);
-        const mismatch = (reason: string): StoppedMountPreflight => ({ kind: "mismatch", reason: `${reason} for ${required.containerPath}` });
-        if (!observed) {
-            if (required.presence === "optional") continue;
-            return { kind: "mismatch", reason: `missing mount ${required.containerPath}` };
-        }
-        if (required.type !== undefined && observed.Type !== required.type) return mismatch("mount type changed");
-        if (required.readonly !== undefined && observed.RW !== !required.readonly) return mismatch("mount access changed");
-        if (required.type === "volume") {
-            if (!namedVolumeMatches(observed, required.hostPath)) return mismatch("volume source changed");
-            continue;
-        }
-        const proof = required.sourceProof;
-        if (!proof) continue;
-        if (observed.Type !== "bind" || !observed.Source) return mismatch("bind source missing");
-        if (proof.kind === "filesystem") {
-            const host = observeBindMountSourceIdentity(required.hostPath, proof.identity);
-            if (host.kind !== "verified") return { kind: host.kind, reason: `bind source identity ${host.kind === "mismatch" ? "changed" : "unavailable"} for ${required.containerPath}` };
-            const alias = bindSourceIsTrustedFilesystemAlias(observed.Source, required.hostPath, proof.identity);
-            if (alias === "retryable") return { kind: "retryable", reason: `bind source unreadable for ${required.containerPath}` };
-            if (alias !== "match") return mismatch("bind source changed");
-        } else {
-            let primary: string;
-            try {
-                primary = proof.kind === "path" && proof.canonical ? canonicalHostPath(required.hostPath) : required.hostPath;
-            } catch {
-                return { kind: "retryable", reason: `bind source unreadable for ${required.containerPath}` };
-            }
-            if (![primary, ...(proof.equivalentSources ?? [])].some(candidate => bindSourcePathsEquivalent(observed.Source, candidate))) return mismatch("bind source changed");
-        }
-    }
-    return { kind: "preflight-verified" };
+    const { native, application } = mountVerification(containerId, requiredMounts);
+    return application.preflightStopped(native.decodeObservedMounts(observedMounts));
 }
 
 function verifyRequiredContainerMounts(
@@ -1876,62 +1237,8 @@ function verifyRequiredContainerMounts(
     policy: MountPresencePolicy,
     allowUnexpected = false,
 ): MountVerification {
-    const session = createMountVerificationSession();
-    try {
-        return withBoundedVerificationRetry(
-            (finalAttempt) => verifyRequiredContainerMountsOnce(
-                containerId,
-                observedMounts,
-                requiredMounts,
-                policy,
-                session,
-                allowUnexpected,
-                finalAttempt,
-            ),
-            (verification) => verification.kind === "retryable",
-        );
-    } finally {
-        cleanupMountVerificationSession(session);
-    }
-}
-
-function inspectCreatedContainerMounts(
-    containerId: string,
-    requiredMounts: RequiredContainerMount[],
-    projectMountIdentity: string,
-    finalProofAttempt: boolean,
-    session: MountVerificationSession,
-): MountVerification {
-    const inspected = inspectContainerJsonOnce(containerId) as {
-        Id?: unknown;
-        Mounts?: InspectedContainerMount[];
-        Config?: { Labels?: Record<string, string> };
-    } | null;
-    if (!inspected) {
-        return { kind: "retryable", reason: "created container inspection is temporarily unavailable" };
-    }
-    if (inspected.Id !== containerId) {
-        return { kind: "mismatch", reason: "created container identity changed during inspection" };
-    }
-    if (inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL] !== projectMountIdentity) {
-        return { kind: "mismatch", reason: "created container project mount identity label changed" };
-    }
-    const verification = verifyRequiredContainerMountsOnce(
-        containerId,
-        inspected.Mounts ?? [],
-        requiredMounts,
-        "strict",
-        session,
-        false,
-        finalProofAttempt,
-    );
-    if (verification.kind !== "verified") return verification;
-    const defaultDaemonSocket = requiredMounts.some((mount) => (
-        mount.sourceProof?.kind === "daemon" && mount.hostPath === CONTAINER_MANAGER_SOCKET
-    ));
-    return defaultDaemonSocket && getRuntimeInfo().runtime === "docker"
-        ? containerManagerSocketTargetsCurrentDockerDaemon(containerId)
-        : verification;
+    const { native, application } = mountVerification(containerId, requiredMounts);
+    return application.verifyExisting(native.decodeObservedMounts(observedMounts), policy, allowUnexpected);
 }
 
 function verifyCreatedContainerMounts(
@@ -1939,21 +1246,8 @@ function verifyCreatedContainerMounts(
     requiredMounts: RequiredContainerMount[],
     projectMountIdentity: string,
 ): MountVerification {
-    const session = createMountVerificationSession();
-    try {
-        return withBoundedVerificationRetry(
-            (finalAttempt) => inspectCreatedContainerMounts(
-                containerId,
-                requiredMounts,
-                projectMountIdentity,
-                finalAttempt,
-                session,
-            ),
-            (verification) => verification.kind === "retryable",
-        );
-    } finally {
-        cleanupMountVerificationSession(session);
-    }
+    return mountVerification(containerId, requiredMounts)
+        .application.verifyCreated(containerId, projectMountIdentity);
 }
 
 function containerInspectExplicitlyNotFound(
@@ -2106,7 +1400,7 @@ function containerMatchesRunContract(
         }
         const staticStoppedPreflight = phase === "preflight" && inspected.State?.Running === false;
         const mountVerification = staticStoppedPreflight
-            ? preflightStoppedContainerMounts(mounts, requiredMounts)
+            ? preflightStoppedContainerMounts(inspected.Id, mounts, requiredMounts)
             : verifyRequiredContainerMounts(inspected.Id, mounts, requiredMounts, "strict");
         if (mountVerification.kind === "retryable") {
             reportMismatch(mountVerification.reason);
@@ -2635,7 +1929,7 @@ function startProjectContainerLocked(
             const codexRoot = getCodexDir(profile);
             const codexSource = captureBindMountSourceIdentity(codexRoot);
             prepareCodexStateOwnership(previousContainer, imageId, identity, profile,
-                (source) => bindSourceIsTrustedFilesystemAlias(source, codexRoot, codexSource) === "match");
+                (source) => bindSourceIsTrustedFilesystemAlias(source, codexRoot, codexSource, getCurrentImageId) === "match");
         }
         prepareLabStateOwnership(labRunner.stateVolumeName, imageId, identity,
             typeof previousContainer?.Image === "string" ? previousContainer.Image : undefined);

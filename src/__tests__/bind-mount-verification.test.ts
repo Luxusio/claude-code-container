@@ -4,6 +4,7 @@ import {
     verifyMountSet,
     type LiveSourceProof,
     type MountEvidence,
+    type ObservedMountContract,
     type RequiredMountContract,
 } from "../bind-mount-verification.js";
 
@@ -26,10 +27,10 @@ function verifyRegularBind(
     return verifyMountSet(
         [regularBind],
         [{
-            Source: "/Users/me/.claude",
-            Destination: regularBind.containerPath,
-            Type: "bind",
-            RW: true,
+            sourceState: "present" as const,
+            containerPath: regularBind.containerPath,
+            type: "bind",
+            writable: true,
         }],
         evidence,
         { policy: "strict" },
@@ -40,7 +41,7 @@ describe("bind mount verification", () => {
     it.each(["strict", "safe-defer"] as const)("honors mandatory daemon identity evidence even for an exact source under %s", policy => {
         const path = "/var/run/docker.sock";
         const contract: RequiredMountContract = { containerPath: path, readonly: false, type: "bind", presence: "core", sourceKind: "daemon" };
-        const observed = { Source: "/daemon-profile/docker.sock", Destination: path, Type: "bind", RW: true };
+        const observed = { sourceState: "present" as const, containerPath: path, type: "bind", writable: true };
         for (const proof of [
             { kind: "verified", via: "daemon" },
             { kind: "mismatch", reason: "foreign daemon" },
@@ -85,7 +86,7 @@ describe("bind mount verification", () => {
     it("does not let a live proof override changed host filesystem identity", () => {
         const result = verifyMountSet(
             [regularBind],
-            [{ Source: "/Users/me/.claude", Destination: regularBind.containerPath, Type: "bind", RW: true }],
+            [{ sourceState: "present" as const, containerPath: regularBind.containerPath, type: "bind", writable: true }],
             new Map([[regularBind.containerPath, {
                 authoritativeMismatch: `bind source identity changed for ${regularBind.containerPath}`,
                 sourcePathMatches: true,
@@ -101,12 +102,12 @@ describe("bind mount verification", () => {
     });
 
     it.each([
-        ["type", { Type: "volume", RW: true }, "mount type changed"],
-        ["access", { Type: "bind", RW: false }, "mount access changed"],
+        ["type", { type: "volume", writable: true }, "mount type changed"],
+        ["access", { type: "bind", writable: false }, "mount access changed"],
     ])("does not let identity proof override %s mismatch", (_name, shape, reason) => {
         const result = verifyMountSet(
             [regularBind],
-            [{ Source: "/Users/me/.claude", Destination: regularBind.containerPath, ...shape }],
+            [{ sourceState: "present" as const, containerPath: regularBind.containerPath, ...shape }],
             new Map([[regularBind.containerPath, {
                 sourcePathMatches: true,
                 liveProof: { kind: "verified", via: "identity" } as const,
@@ -121,7 +122,7 @@ describe("bind mount verification", () => {
         const missing = { ...regularBind, containerPath: "/home/ccc/.gemini" };
         const result = verifyMountSet(
             [missing, regularBind],
-            [{ Source: "/foreign/.claude", Destination: regularBind.containerPath, Type: "bind", RW: true }],
+            [{ sourceState: "present" as const, containerPath: regularBind.containerPath, type: "bind", writable: true }],
             new Map([[regularBind.containerPath, {
                 sourcePathMatches: true,
                 liveProof: { kind: "mismatch", reason: "bind marker content changed" },
@@ -129,6 +130,26 @@ describe("bind mount verification", () => {
             { policy: "safe-defer" },
         );
         expect(result.kind).toBe("mismatch");
+    });
+
+
+    it.each(["empty", "invalid"] as const)("keeps %s normalized source distinct from a valid filesystem bind", sourceState => {
+        const result = verifyMountSet(
+            [regularBind],
+            [{ sourceState, containerPath: regularBind.containerPath, type: "bind", writable: true }],
+            new Map([[regularBind.containerPath, {
+                sourcePathMatches: true,
+                liveProof: { kind: "verified", via: "identity" } as const,
+            }]]),
+            { policy: "strict" },
+        );
+        expect(result).toEqual({
+            kind: "mismatch",
+            reason: sourceState === "empty"
+                ? "bind source missing for " + regularBind.containerPath
+                : "unexpected mount <malformed:" + regularBind.containerPath + ">",
+            containerPath: regularBind.containerPath,
+        });
     });
 
     it("uses explicit aggregation precedence", () => {
@@ -150,7 +171,7 @@ describe("optional volume mounts", () => {
         sourceKind: "volume",
     };
     const verify = (
-        observed: Array<Record<string, unknown>>,
+        observed: ObservedMountContract[],
         volumeSourceMatches: boolean,
         policy: "strict" | "safe-defer",
     ) => verifyMountSet(
@@ -165,14 +186,14 @@ describe("optional volume mounts", () => {
     });
 
     it.each(["strict", "safe-defer"] as const)("accepts the exact optional volume when present under %s", (policy) => {
-        // Podman-shaped: Name carries the volume, Source is a host storage path.
-        expect(verify([{ Name: "ccc-p-lab-state", Source: "/var/lib/containers/storage/volumes/ccc-p-lab-state/_data", Destination: "/home/ccc/.ccc/labs", Type: "volume", RW: true }], true, policy))
+        // The native binding has already established the exact named volume match.
+        expect(verify([{ sourceState: "present" as const, containerPath: "/home/ccc/.ccc/labs", type: "volume", writable: true }], true, policy))
             .toEqual({ kind: "verified", via: "source" });
     });
 
     it.each(["strict", "safe-defer"] as const)("rejects a different volume, a bind, or read-only access at that path under %s", (policy) => {
-        expect(verify([{ Source: "foreign", Destination: "/home/ccc/.ccc/labs", Type: "volume", RW: true }], false, policy).kind).toBe("mismatch");
-        expect(verify([{ Source: "/host/labs", Destination: "/home/ccc/.ccc/labs", Type: "bind", RW: true }], false, policy).kind).toBe("mismatch");
-        expect(verify([{ Source: "ccc-p-lab-state", Destination: "/home/ccc/.ccc/labs", Type: "volume", RW: false }], true, policy).kind).toBe("mismatch");
+        expect(verify([{ sourceState: "present" as const, containerPath: "/home/ccc/.ccc/labs", type: "volume", writable: true }], false, policy).kind).toBe("mismatch");
+        expect(verify([{ sourceState: "present" as const, containerPath: "/home/ccc/.ccc/labs", type: "bind", writable: true }], false, policy).kind).toBe("mismatch");
+        expect(verify([{ sourceState: "present" as const, containerPath: "/home/ccc/.ccc/labs", type: "volume", writable: false }], true, policy).kind).toBe("mismatch");
     });
 });

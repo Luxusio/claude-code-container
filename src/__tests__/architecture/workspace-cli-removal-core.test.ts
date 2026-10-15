@@ -1,35 +1,153 @@
-import assert from "node:assert";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as core from "../../application/workspace/cli-removal.js";
+import type { WorkspaceCliContainerRuntime, WorkspaceCliRemovalPorts } from "../../ports/workspace/cli-removal.js";
 
-const checks = " function check(name,fn){fn();results.push(name);}\n check('raw-result-and-container-array-identity',()=>{const raw={errors:[],extra:{opaque:true}},removed=['a'];const r=context.removeWorkspaceThenContainers(()=>raw,()=>removed);assert.strictEqual(r.result,raw);assert.strictEqual(r.removedContainers,removed);});\n check('error-gate-no-cleanup',()=>{const r=context.removeWorkspaceThenContainers(()=>({errors:['refused']}),()=>{throw Error('CALLED');});assert.equal(r.removedContainers.length,0);});\n check('extra-data-no-enumeration',()=>{const raw=new Proxy({errors:[],extra:'opaque'},{ownKeys(){throw Error('enumerated');}});assert.strictEqual(context.removeWorkspaceThenContainers(()=>raw,()=>[]).result,raw);});\n check('captured-plan-raw-identity',()=>{const raw={containerId:'ID',running:true};const r=context.prepareWorkspaceContainerRemovalPlan('ws',()=>['name'],()=>raw);assert.strictEqual(r[0].identity,raw);assert.equal(r[0].containerName,'name');});\n check('duplicate-ID-refusal',()=>{const raw={containerId:'ID',running:true};assert.throws(()=>context.prepareWorkspaceContainerRemovalPlan('ws',()=>['one','two'],()=>raw),/duplicate identity/);});\n check('missing-does-not-remove',()=>{assert.equal(context.removeWorkspaceContainerByIdentity('name',()=>null,()=>{throw Error('CALLED');},'runtime',()=>false),false);});\n check('uninspectable-existing-refuses',()=>assert.throws(()=>context.removeWorkspaceContainerByIdentity('name',()=>null,()=>{},'runtime',()=>true),/identity inspection failed/));\n check('running-stop-plain-rm',()=>{const calls=[];assert.equal(context.removeWorkspaceContainerByIdentity('name',()=>({containerId:'ID',running:true}),(cli,args)=>{calls.push([cli,args.slice()]);return {status:0};},'runtime'),true);assert.deepEqual(calls,[['runtime',['stop','ID']],['runtime',['rm','ID']]]);});\n check('stopped-only-plain-rm',()=>{const calls=[];context.removeWorkspaceContainerByIdentity('name',()=>({containerId:'ID',running:false}),(cli,args)=>{calls.push(args.slice());return {status:0};},'runtime');assert.deepEqual(calls,[['rm','ID']]);});\n for(const operation of ['stop','rm'])check(operation+'-error-precedence',()=>assert.throws(()=>context.removeWorkspaceContainerByIdentity('name',()=>({containerId:'ID',running:true}),(cli,args)=>args[0]===operation?{error:Error('native'),status:0}:{status:0},'runtime'),operation==='stop'?/Failed to stop/:/Failed to remove/));\n check('default-defined-port-failure',()=>assert.throws(()=>context.removeWorkspaceContainerByIdentity('name',()=>({containerId:'ID',running:true}),()=>undefined,'runtime'),/Cannot read properties of undefined/));\n check('force-truthy-helper-claim-policy',()=>assert.equal(context.withWorkspaceRemovalLifecycleLock('project','truthy',()=>123,(id,op)=>op(),()=>['claim']),123));\n check('nonforced-helper-claims-veto',()=>assert.throws(()=>context.withWorkspaceRemovalLifecycleLock('project',false,()=>{throw Error('CALLED');},(id,op)=>op(),()=>['claim']),/1 session ownership claim/));\n check('list-prefix-and-duplicates',()=>assert.deepEqual(Array.from(context.listWorkspaceContainerNames('ws',()=>({status:0,stdout:' base\\nbase--p--profile\\nbase\\nbase-near\\n'}),'runtime')),['base','base--p--profile','base']));\n check('list-failure',()=>assert.throws(()=>context.listWorkspaceContainerNames('ws',()=>({status:2,stdout:''}),'runtime'),/Unable to list/));\n check('partial-force-advice',()=>assert.match(context.workspaceRemovalAdvice(true,['part']),/partly/));\n check('force-no-removal-advice',()=>assert.equal(context.workspaceRemovalAdvice(true,[]),'Workspace removal did not complete.'));\n check('ownership-classification-only-message',()=>assert.match(context.workspaceRemovalFailureNote({message:'Nested Git repository metadata is not owned by its parent'},true),/-f does not lift/));\n check('lookalike-name-no-message-match',()=>assert.equal(context.workspaceRemovalFailureNote({name:'OwnershipError',message:'unrelated'},true),null));\n check('raw-message-getter-failure',()=>{const error=Error('getter');assert.throws(()=>context.workspaceRemovalFailureNote({get message(){throw error;}},false),e=>e===error);});\n check('prepared-result-original-plan',()=>{const raw={containerId:'first',running:true};const plan=[{containerName:'name',identity:raw}],calls=[];const result=context.removePreparedWorkspaceContainers(plan,(cli,args)=>{calls.push(args.slice());raw.containerId='later';return {status:0};},'runtime');assert.deepEqual(Array.from(result),['name']);assert.deepEqual(calls,[['stop','first'],['rm','later']]);});";
-
-const additionalChecks = "\n check('managed-raw-forwarding-runner-options',()=>{const name={raw:'name'},workspace={raw:'workspace'},identity={containerId:'managed-ID',running:true},calls=[];const answer=context.removeManagedWorkspaceContainerByIdentity(name,workspace,(actualName,actualWorkspace)=>{assert.strictEqual(actualName,name);assert.strictEqual(actualWorkspace,workspace);calls.push('identity');return identity;},(cli,args,options)=>{calls.push([cli,args.slice(),options]);return {status:0};},'managed-runtime',()=>{throw Error('EXISTS CALLED');});assert.equal(answer,true);assert.deepEqual(calls,['identity',['managed-runtime',['stop','managed-ID'],{stdio:'ignore'}],['managed-runtime',['rm','managed-ID'],{stdio:'ignore'}]]);});\n check('managed-identity-callback-raw-failure',()=>{const raw=Error('identity');assert.throws(()=>context.removeManagedWorkspaceContainerByIdentity('name','workspace',()=>{throw raw;},()=>{throw Error('RUNNER CALLED');},'runtime',()=>false),error=>error===raw);});\n check('managed-runner-callback-raw-failure',()=>{const raw=Error('runner'),calls=[];assert.throws(()=>context.removeManagedWorkspaceContainerByIdentity('name','workspace',()=>({containerId:'ID',running:true}),(cli,args)=>{calls.push(args.slice());throw raw;},'runtime',()=>false),error=>error===raw);assert.deepEqual(calls,[['stop','ID']]);});\n check('managed-exists-callback-raw-failure',()=>{const raw=Error('exists');assert.throws(()=>context.removeManagedWorkspaceContainerByIdentity('name','workspace',()=>null,()=>{throw Error('RUNNER CALLED');},'runtime',()=>{throw raw;}),error=>error===raw);});\n check('bulk-order-false-skipping-raw-workspace',()=>{const workspace={raw:'workspace'},calls=[];const removed=context.removeWorkspaceContainers(workspace,actual=>{assert.strictEqual(actual,workspace);calls.push('list');return ['first','skip','last'];},(name,actual)=>{assert.strictEqual(actual,workspace);calls.push(name);return name!=='skip';});assert.deepEqual(calls,['list','first','skip','last']);assert.deepEqual(Array.from(removed),['first','last']);});\n check('bulk-remove-callback-raw-failure-stops-later',()=>{const raw=Error('remove'),calls=[];assert.throws(()=>context.removeWorkspaceContainers('workspace',()=>['first','fail','later'],name=>{calls.push(name);if(name==='fail')throw raw;return true;}),error=>error===raw);assert.deepEqual(calls,['first','fail']);});\n check('bulk-list-callback-raw-failure',()=>{const raw=Error('list');assert.throws(()=>context.removeWorkspaceContainers('workspace',()=>{throw raw;},()=>{throw Error('REMOVE CALLED');}),error=>error===raw);});\n";
-
-function checkHelpers(context: unknown): string[] {
-    const execute = new Function("context", "assert", "const results=[];" + checks + additionalChecks + "return results;") as (context: unknown, assertion: typeof assert) => string[];
-    return execute(context, assert);
-}
-describe("workspace CLI removal inward helper policy", () => {
-    it("validates container removal, ownership claims and partial-removal reporting", () => {
-        // The core requires the native name effect explicitly; the public facade
-        // supplies its unchanged default. All remaining checks pass explicit
-        // native effects or exercise pure policy and raw references directly.
-        const actual = checkHelpers({
-            ...core,
-            listWorkspaceContainerNames: (
-                workspacePath: string,
-                runner: Parameters<typeof core.listWorkspaceContainerNames>[1],
-                cli: string,
-            ) => core.listWorkspaceContainerNames(workspacePath, runner, cli, () => "base"),
-        });
-        expect(actual).toHaveLength(29);
+describe("workspace CLI removal inward policy", () => {
+    it("filters normalized names by exact base/profile prefix and retains duplicates", () => {
+        const listNames = vi.fn(() => ({ kind: "listed" as const, names: ["base", "base--p--work", "base", "base-near", "other"] }));
+        expect(core.listWorkspaceContainerNames("workspace", { listNames }, () => "base"))
+            .toEqual(["base", "base--p--work", "base"]);
+        expect(listNames).toHaveBeenCalledOnce();
+    });
+    it("refuses an unavailable inventory instead of treating it as empty", () => {
+        expect(() => core.listWorkspaceContainerNames("workspace", { listNames: () => ({ kind: "unavailable" }) }, () => "base"))
+            .toThrow("Unable to list workspace containers.");
+    });
+    it("retains the captured identity in a prepared removal plan", () => {
+        const identity = { containerId: "captured-id", running: true };
+        const plan = core.prepareWorkspaceContainerRemovalPlan("workspace", () => ["name"], () => identity, () => true);
+        expect(plan).toEqual([{ containerName: "name", identity }]);
+        expect(plan[0].identity).toBe(identity);
+    });
+    it("rejects duplicate captured IDs before any removal", () => {
+        expect(() => core.prepareWorkspaceContainerRemovalPlan(
+            "workspace", () => ["base", "base--p--work"], () => ({ containerId: "same-id", running: true }), () => true,
+        )).toThrow("duplicate identity");
+    });
+    it.each([false, true])("has no cleanup authority after an unknown identity, present=%s", present => {
+        const runtime = { stop: vi.fn(), remove: vi.fn() };
+        const operation = () => core.removeWorkspaceContainerByIdentity("name", () => null, runtime, () => present);
+        if (present) expect(operation).toThrow("identity inspection failed");
+        else expect(operation()).toBe(false);
+        expect(runtime.stop).not.toHaveBeenCalled();
+        expect(runtime.remove).not.toHaveBeenCalled();
+    });
+    it.each([false, true])("removes only the captured ID, running=%s", running => {
+        const calls: string[] = [];
+        const runtime = {
+            stop: (id: string): undefined => { calls.push(`stop:${id}`); },
+            remove: (id: string): undefined => { calls.push(`remove:${id}`); },
+        };
+        expect(core.removeWorkspaceContainerByIdentity("name", () => ({ containerId: "captured-id", running }), runtime, () => true)).toBe(true);
+        expect(calls).toEqual(running ? ["stop:captured-id", "remove:captured-id"] : ["remove:captured-id"]);
+    });
+    it("does not remove after stopping fails", () => {
+        const failure = new Error("stop failed");
+        const runtime = { stop: vi.fn((): undefined => { throw failure; }), remove: vi.fn() };
+        expect(() => core.removeWorkspaceContainerByIdentity("name", () => ({ containerId: "captured-id", running: true }), runtime, () => true))
+            .toThrow(failure);
+        expect(runtime.stop).toHaveBeenCalledExactlyOnceWith("captured-id");
+        expect(runtime.remove).not.toHaveBeenCalled();
+    });
+    it("stops the prepared batch after a removal fails", () => {
+        const failure = new Error("remove failed");
+        const runtime = { stop: vi.fn(), remove: vi.fn((): undefined => { throw failure; }) };
+        const plan = ["first", "later"].map(name => ({ containerName: name, identity: { containerId: `${name}-id`, running: false } }));
+        expect(() => core.removePreparedWorkspaceContainers(plan, runtime, () => true)).toThrow(failure);
+        expect(runtime.stop).not.toHaveBeenCalled();
+        expect(runtime.remove).toHaveBeenCalledExactlyOnceWith("first-id");
+    });
+    it("keeps the captured identity reference when stop updates it", () => {
+        const identity = { containerId: "before-stop", running: true };
+        const calls: string[] = [];
+        const removed = core.removePreparedWorkspaceContainers([{ containerName: "name", identity }], {
+            stop: (id): undefined => { calls.push(`stop:${id}`); identity.containerId = "after-stop"; },
+            remove: (id): undefined => { calls.push(`remove:${id}`); },
+        }, () => true);
+        expect(removed).toEqual(["name"]);
+        expect(calls).toEqual(["stop:before-stop", "remove:after-stop"]);
+    });
+    it("uses the workspace-scoped identity before cleanup", () => {
+        const identityProbe = vi.fn(() => ({ containerId: "managed-id", running: false }));
+        const runtime = { stop: vi.fn(), remove: vi.fn() };
+        expect(core.removeManagedWorkspaceContainerByIdentity("name", "workspace", identityProbe, runtime, () => true)).toBe(true);
+        expect(identityProbe).toHaveBeenCalledExactlyOnceWith("name", "workspace");
+        expect(runtime.remove).toHaveBeenCalledExactlyOnceWith("managed-id");
+    });
+    it("retains discovery order and excludes entries that were not removed", () => {
+        const remove = vi.fn((name: string, _workspace: string) => name !== "missing");
+        expect(core.removeWorkspaceContainers("workspace", () => ["first", "missing", "last"], remove)).toEqual(["first", "last"]);
+        expect(remove.mock.calls).toEqual([["first", "workspace"], ["missing", "workspace"], ["last", "workspace"]]);
+    });
+    it("cleans containers only after successful workspace removal", () => {
+        const calls: string[] = [];
+        const result = { errors: [], extra: { retained: true } };
+        const removed = ["name"];
+        const completed = core.removeWorkspaceThenContainers(
+            () => { calls.push("workspace"); return result; },
+            () => { calls.push("containers"); return removed; },
+        );
+        expect(calls).toEqual(["workspace", "containers"]);
+        expect(completed.result).toBe(result);
+        expect(completed.removedContainers).toBe(removed);
+    });
+    it("keeps containers after a partial workspace removal", () => {
+        const cleanup = vi.fn(() => ["name"]);
+        const result = { removed: ["nested"], errors: ["dirty workspace"] };
+        expect(core.removeWorkspaceThenContainers(() => result, cleanup)).toEqual({ result, removedContainers: [] });
+        expect(cleanup).not.toHaveBeenCalled();
     });
     it("retains the ownership admission option and empty stranded result", () => {
-        const trace: unknown[][] = [];
-        core.assertRemovableWorkspace("workspace", "branch", "source", (...args) => { trace.push(args); });
-        expect(trace).toEqual([["workspace", "branch", "source", { allowTrackedGitlinks: true }]]);
-        const forbidden = () => { throw new Error("Empty notice selected native formatting"); };
-        expect(core.strandedBranchNotice("branch", [], forbidden, forbidden)).toBe("");
+        const assertion = vi.fn((): undefined => undefined);
+        core.assertRemovableWorkspace("workspace", "branch", "source", assertion);
+        expect(assertion).toHaveBeenCalledExactlyOnceWith("workspace", "branch", "source", { allowTrackedGitlinks: true });
+        const formatting = vi.fn(() => (text: string) => text);
+        expect(core.strandedBranchNotice("branch", [], formatting, formatting)).toBe("");
+        expect(formatting).not.toHaveBeenCalled();
+    });
+    it("observes claims under the family guard but skips all container cleanup when forced workspace removal fails", () => {
+        const trace: string[] = [];
+        let locked = false;
+        const effect = (name: string): undefined => { expect(locked).toBe(true); trace.push(name); };
+        const exit = new Error("exit:1");
+        const runtime: WorkspaceCliContainerRuntime = {
+            listNames: () => { effect("list"); return { kind: "listed", names: ["base"] }; },
+            stop: vi.fn(), remove: vi.fn(),
+        };
+        const selectRuntime = vi.fn(() => { effect("runtime"); return runtime; });
+        const ports: WorkspaceCliRemovalPorts = {
+            selectWorkspacePath: () => () => "workspace",
+            selectProjectId: () => () => "project",
+            selectFamilyLock: () => (projectId, operation) => {
+                expect(projectId).toBe("project"); trace.push("lock"); locked = true;
+                try { return operation(); } finally { locked = false; trace.push("unlock"); }
+            },
+            selectClaims: () => projectId => { expect(projectId).toBe("project"); effect("claims"); return ["active-session"]; },
+            selectOwnershipAssertion: () => () => effect("ownership"),
+            selectRuntimeReadiness: () => () => effect("ready"),
+            selectContainerName: () => () => "base",
+            selectManagedIdentity: () => (name, workspace) => {
+                expect([name, workspace]).toEqual(["base", "workspace"]); effect("identity");
+                return { containerId: "captured-id", running: true };
+            },
+            selectExists: () => vi.fn(() => true),
+            selectContainerRuntime: selectRuntime,
+            selectRemoveWorkspace: () => (cwd, branch, options) => {
+                expect([cwd, branch, options]).toEqual(["source", "branch", { force: true }]); effect("workspace");
+                return { removed: ["nested"], errors: ["dirty workspace"] };
+            },
+            selectLog: () => () => undefined,
+            selectError: () => () => undefined,
+            selectExit: () => status => { expect(status).toBe(1); throw exit; },
+            selectStrandedRegistrations: () => () => [],
+            selectTerminalSafeLiteral: () => text => text,
+            selectPasteableArgument: () => text => text,
+        };
+        expect(() => core.createWorkspaceCliRemoval(ports)("source", "branch", true)).toThrow(exit);
+        expect(trace).toEqual(["lock", "claims", "ownership", "ready", "runtime", "list", "identity", "workspace", "unlock"]);
+        expect(selectRuntime).toHaveBeenCalledOnce();
+        expect(runtime.stop).not.toHaveBeenCalled();
+        expect(runtime.remove).not.toHaveBeenCalled();
+        expect(locked).toBe(false);
     });
 });

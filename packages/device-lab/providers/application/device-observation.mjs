@@ -1,4 +1,4 @@
-import { observationAvailability, simulatorObservationState, publicObservationAndroidDevice, publicObservationMacosDevice, observationMacosPlan, observationLeaseState, observationHardwareId, observationOwnedLease, observationTargetStatus } from "../domain/device-observation.mjs";
+import { observationAvailability, publicObservationAndroidDevice, publicObservationMacosDevice, observationMacosPlan, observationLeaseState, observationHardwareId, observationOwnedLease, observationTargetStatus } from "../domain/device-observation.mjs";
 import { publicLab } from "../domain/qemu-lifecycle.mjs";
 /** @typedef {import('../domain/device-observation.mjs').ObservationTarget} Target */
 /** @typedef {import('../domain/device-observation.mjs').ObservationLease} Lease */
@@ -110,20 +110,10 @@ export function createDeviceObservation(ports) {
                     const facts = discovery();
                     const owner = ports.ownerId();
                     const devices = owned();
-                    const result = facts.emulator ? ports.avdResult(facts.emulator) : null;
-                    const hostAvds = !result ? {
+                    const hostAvds = facts.emulator ? ports.hostAvds(facts.emulator) : {
                         available: false,
                         missing: ["emulator"],
                         avds: []
-                    } : result.status !== 0 ? {
-                        available: false,
-                        missing: [],
-                        avds: [],
-                        error: result.stderr || result.stdout || `exit ${result.status}`
-                    } : {
-                        available: true,
-                        missing: [],
-                        avds: result.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
                     };
                     return {
                         backend,
@@ -169,7 +159,7 @@ export function createDeviceObservation(ports) {
                         backend,
                         ownerId: ports.ownerId(),
                         devices: owned(),
-                        hostDevices: facts.adb ? ports.hostResult(facts.adb) : {
+                        hostDevices: facts.adb ? ports.hostDevices(facts.adb) : {
                             available: false,
                             missing: ["adb"],
                             devices: []
@@ -199,14 +189,13 @@ export function createDeviceObservation(ports) {
                     return device;
                 }
                 const resolved = ports.ownedTarget(facts.xcrun, device, inventory);
-                if (resolved.error || !resolved.simulator) {
+                if (!resolved.matched) {
                     return device;
                 }
-                const status = simulatorObservationState(resolved.simulator.state);
-                if (status === device.status && resolved.simulator.name === device.simulatorName) {
+                if (resolved.status === device.status && resolved.name === device.simulatorName) {
                     return device;
                 }
-                return ports.publishObserved(device, status, resolved.simulator.name) || device;
+                return ports.publishObserved(device, resolved.status, resolved.name) || device;
             };
             /** @param {import('../ports/device-observation.mjs').ObservationRecord[]} devices @param {import('../ports/device-observation.mjs').IosFacts} facts @param {import('../ports/device-observation.mjs').SimulatorObservation} [inventory] */
             const project = (devices, facts, inventory) => devices.map(device => target({
@@ -222,7 +211,7 @@ export function createDeviceObservation(ports) {
                     return [];
                 }
                 const facts = discovery();
-                const inventory = facts.available && facts.xcrun ? ports.simulators(facts.xcrun, ["list", "devices", "-j"]) : undefined;
+                const inventory = facts.available && facts.xcrun ? ports.listOwnedSimulators(facts.xcrun) : undefined;
                 return project(devices, facts, inventory);
             };
             return {
@@ -242,34 +231,14 @@ export function createDeviceObservation(ports) {
                         return undefined;
                     }
                     const facts = discovery();
-                    const inventory = facts.available && facts.xcrun ? ports.simulators(facts.xcrun, ["list", "-j"]) : undefined;
+                    const inventory = facts.available && facts.xcrun ? ports.simulatorCatalog(facts.xcrun) : undefined;
                     const owner = ports.ownerId();
                     const devices = project(ports.records(), facts, inventory);
-                    const hostSimulators = !facts.available ? {
-                        available: false,
-                        missing: facts.missing,
-                        devices: {},
-                        runtimes: [],
-                        deviceTypes: []
-                    } : inventory?.error ? {
-                        available: false,
-                        missing: [],
-                        devices: {},
-                        runtimes: [],
-                        deviceTypes: [],
-                        error: inventory.error.stderr || inventory.error.stdout || `exit ${inventory.error.status}`
-                    } : {
-                        available: true,
-                        missing: [],
-                        devices: inventory?.value.devices || {},
-                        runtimes: inventory?.value.runtimes || [],
-                        deviceTypes: inventory?.value.devicetypes || inventory?.value.deviceTypes || []
-                    };
                     return {
                         backend,
                         ownerId: owner,
                         devices,
-                        hostSimulators,
+                        catalog: inventory,
                         discovery: facts
                     };
                 }
@@ -310,20 +279,10 @@ export function createDeviceObservation(ports) {
                     const facts = discovery();
                     const owner = ports.ownerId();
                     const devices = owned();
-                    const result = facts.xcrun ? ports.hostResult(facts.xcrun) : null;
-                    const hostDevices = !result ? {
+                    const hostDevices = facts.xcrun ? ports.hostDevices(facts.xcrun) : {
                         available: false,
                         missing: ["xcrun"],
                         devices: []
-                    } : result.status !== 0 ? {
-                        available: false,
-                        missing: [],
-                        devices: [],
-                        error: result.stderr || result.stdout || `exit ${result.status}`
-                    } : {
-                        available: true,
-                        missing: [],
-                        devices: result.devices
                     };
                     return {
                         backend,

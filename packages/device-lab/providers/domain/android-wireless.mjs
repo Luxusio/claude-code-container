@@ -1,23 +1,3 @@
-/** @typedef {{status:number|null,stdout?:string,stderr?:string,signal?:string|null,error?:{message?:string}|null}} importReceipt */
-/** @param {unknown} text */
-export function parseAdbDevices(text) {
-    return String(text || "")
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line && !line.startsWith("List of devices"))
-        .map((line) => {
-            const [serial, state, ...detailParts] = line.split(/\s+/);
-            const details = Object.fromEntries(detailParts.map((part) => {
-                const index = part.indexOf(":");
-                return index > 0 ? [part.slice(0, index), part.slice(index + 1)] : [part, true];
-            }));
-            const emulator = serial?.startsWith("emulator-") || false;
-            const connection = !emulator && parseAndroidWifiEndpoint(serial) ? "wifi" : "usb";
-            return { serial, state: state || "unknown", details, emulator, connection };
-        })
-        .filter((device) => device.serial);
-}
-
 /** @param {unknown} value
  * @param {unknown} [fallbackPort] */
 export function parseAndroidWifiEndpoint(value, fallbackPort = null) {
@@ -77,17 +57,3 @@ export function androidWifiAttachNext(backend, target, fallbackPort = 5555) {
     return endpoint ? { tool: "device_attach", arguments: { backend, connection: "wifi", ...endpoint } } : null;
 }
 
-/** Project the existing raw untimed inventory outcome without normalizing it.
- * @param {importReceipt} r
- */
-export function androidWirelessDeviceList(r) {
-    if (r.status !== 0) {
-        return {
-            available: false,
-            missing: [],
-            devices: [],
-            error: r.stderr || r.stdout || `exit ${r.status}`,
-        };
-    }
-    return { available: true, missing: [], devices: parseAdbDevices(r.stdout) };
-}

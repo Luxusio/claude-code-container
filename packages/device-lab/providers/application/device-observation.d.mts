@@ -2,7 +2,7 @@ import type { ObservationTarget, ObservationLease } from "../domain/device-obser
 import { observationTargetStatus, observationMacosPlan } from "../domain/device-observation.mjs";
 import type { MacosVmDevice } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import type { QemuLab } from "../domain/qemu-lifecycle.mjs";
-import type { TargetObservationPorts, ObservationRecord, ObservationOptions, AndroidFacts, IosFacts, IosPhysicalFacts, WindowsFacts, MacosFacts, SimulatorObservation, SimulatorInventory, AndroidCreationFacts, AndroidHostDevice, IosHostDevice, LinuxProviderStatus, AndroidObservationPorts, AndroidPhysicalObservationPorts, IosObservationPorts, IosPhysicalObservationPorts, WindowsObservationPorts, WindowsVmObservationPorts, MacosObservationPorts, LinuxObservationPorts } from "../ports/device-observation.mjs";
+import type { TargetObservationPorts, ObservationRecord, ObservationOptions, AndroidFacts, IosFacts, IosPhysicalFacts, WindowsFacts, MacosFacts, SimulatorObservation, HostDevices, HostAvds, AndroidCreationFacts, AndroidHostDevice, IosHostDevice, LinuxProviderStatus, AndroidObservationPorts, AndroidPhysicalObservationPorts, IosObservationPorts, IosPhysicalObservationPorts, WindowsObservationPorts, WindowsVmObservationPorts, MacosObservationPorts, LinuxObservationPorts } from "../ports/device-observation.mjs";
 export type TargetOptions = NonNullable<Parameters<typeof observationTargetStatus>[2]>;
 export type TargetStatus = ReturnType<typeof observationTargetStatus>;
 export type PresentedTarget<Device extends ObservationTarget> = Device & TargetStatus & {
@@ -40,12 +40,7 @@ export interface DeviceBackendDescriptor {
         command: string;
     }[];
 }
-export interface HostDevices<Device> {
-    available: boolean;
-    missing: string[];
-    devices: Device[];
-    error?: string;
-}
+export type { HostDevices } from "../ports/device-observation.mjs";
 export interface OwnedInventory<Device, Facts> {
     backend: string;
     ownerId: string;
@@ -53,12 +48,7 @@ export interface OwnedInventory<Device, Facts> {
     discovery: Facts;
 }
 export type AndroidInventory = OwnedInventory<PresentedTarget<ObservationRecord>, AndroidFacts> & AndroidCreationFacts & {
-    hostAvds: {
-        available: boolean;
-        missing: string[];
-        avds: string[];
-        error?: string;
-    };
+    hostAvds: HostAvds;
 };
 export type AndroidPhysicalInventory = OwnedInventory<PresentedTarget<ObservationRecord>, {
     adb: string | null;
@@ -68,14 +58,7 @@ export type AndroidPhysicalInventory = OwnedInventory<PresentedTarget<Observatio
     hostDevices: HostDevices<AndroidHostDevice>;
 };
 export type IosInventory = OwnedInventory<PresentedTarget<ObservationRecord>, IosFacts> & {
-    hostSimulators: {
-        available: boolean;
-        missing: string[];
-        devices: NonNullable<SimulatorInventory["devices"]>;
-        runtimes: NonNullable<SimulatorInventory["runtimes"]>;
-        deviceTypes: NonNullable<SimulatorInventory["deviceTypes"]>;
-        error?: string;
-    };
+    catalog?: SimulatorObservation;
 };
 export type IosPhysicalInventory = OwnedInventory<PresentedTarget<ObservationRecord>, IosPhysicalFacts> & {
     hostDevices: HostDevices<IosHostDevice>;

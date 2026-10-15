@@ -66,7 +66,7 @@ export interface MacosVmRollback { ok: boolean; attempted?: boolean; [key: strin
 export interface MacosVmNativePlan {available:boolean;missing:string[];selectedProvider:string|null;providerInstance:string;stopAvailable:boolean;evidence:MacosVmProviderPlan}
 export interface MacosVmNativeObservation {ok:boolean;timedOut:boolean;detail:string;evidence:MacosVmCommandResult}
 export interface MacosNativeCloneFailureEvidence {target:string;command:MacosVmNativeObservation;cleanup:MacosVmNativeObservation|null}
-export type MacosVmLifecycleOutcome = {kind:'identity-conflict';field:string;value:unknown}|{kind:'refused';message:string}|{kind:'completed';value:object}|{kind:'problem';value:object}|{kind:'failed';evidence:MacosVmCommandResult}|{kind:'native';evidence:object}|{kind:'clone-failed';evidence:MacosNativeCloneFailureEvidence};
+export type MacosVmLifecycleOutcome = {kind:'identity-conflict';field:string;value:unknown}|{kind:'refused';message:string}|{kind:'completed';value:object}|{kind:'problem';value:object}|{kind:'failed';evidence:MacosVmCommandResult}|{kind:'native';evidence:object}|{kind:'clone-failed';evidence:MacosNativeCloneFailureEvidence}|{kind:'restore-failed';candidate:string;error:string;cloneEvidence:MacosNativeCloneFailureEvidence|null};
 /** Required finite native leaves; no callback performs an entire lifecycle. */
 export interface MacosVmLifecyclePorts<Child extends MacosVmProcessHandle = MacosVmProcessHandle> {
     read(): MacosVmDevice[];

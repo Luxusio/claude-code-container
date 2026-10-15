@@ -22,11 +22,10 @@ export interface RequiredMountContract {
 }
 
 export interface ObservedMountContract {
-    Source?: unknown;
-    Destination?: unknown;
-    RW?: unknown;
-    Type?: unknown;
-    Name?: unknown;
+    containerPath?: unknown;
+    type?: unknown;
+    writable?: unknown;
+    sourceState: "present" | "empty" | "invalid";
 }
 
 export interface MountEvidence {
@@ -79,10 +78,10 @@ export function classifyRequiredMount(
             ? { kind: "deferred", reason: `missing mount ${path}`, containerPath: path }
             : { kind: "mismatch", reason: `missing mount ${path}`, containerPath: path };
     }
-    if (required.readonly !== undefined && observed.RW !== !required.readonly) {
+    if (required.readonly !== undefined && observed.writable !== !required.readonly) {
         return { kind: "mismatch", reason: `mount access changed for ${path}`, containerPath: path };
     }
-    if (required.type !== undefined && observed.Type !== required.type) {
+    if (required.type !== undefined && observed.type !== required.type) {
         return { kind: "mismatch", reason: `mount type changed for ${path}`, containerPath: path };
     }
     if (required.sourceKind === "volume") {
@@ -91,7 +90,7 @@ export function classifyRequiredMount(
             : { kind: "mismatch", reason: `volume source changed for ${path}`, containerPath: path };
     }
     if (required.sourceKind === "none") return { kind: "verified", via: "shape" };
-    if (observed.Type !== "bind" || typeof observed.Source !== "string" || observed.Source.length === 0) {
+    if (observed.type !== "bind" || observed.sourceState !== "present") {
         return { kind: "mismatch", reason: `bind source missing for ${path}`, containerPath: path };
     }
     if (evidence.sourcePathUnavailable) {
@@ -128,7 +127,7 @@ export function verifyMountSet(
     if (shape.kind === "mismatch") return shape;
     const observedByPath = new Map<string, ObservedMountContract>();
     for (const mount of observedMounts) {
-        observedByPath.set(mount.Destination as string, mount);
+        observedByPath.set(mount.containerPath as string, mount);
     }
 
     let result: MountVerification = { kind: "verified", via: "shape" };
@@ -155,21 +154,21 @@ export function validateObservedMountSet(
     const destinations = new Set<string>();
     for (const mount of observedMounts) {
         if (!mount || typeof mount !== "object"
-            || typeof mount.Destination !== "string" || mount.Destination.length === 0) {
+            || typeof mount.containerPath !== "string" || mount.containerPath.length === 0) {
             return { kind: "mismatch", reason: "unexpected mount <malformed-destination>" };
         }
-        if (typeof mount.Source !== "string"
-            || typeof mount.Type !== "string" || mount.Type.length === 0
-            || typeof mount.RW !== "boolean") {
-            return { kind: "mismatch", reason: `unexpected mount <malformed:${mount.Destination}>`, containerPath: mount.Destination };
+        if ((mount.sourceState !== "present" && mount.sourceState !== "empty")
+            || typeof mount.type !== "string" || mount.type.length === 0
+            || typeof mount.writable !== "boolean") {
+            return { kind: "mismatch", reason: `unexpected mount <malformed:${mount.containerPath}>`, containerPath: mount.containerPath };
         }
-        if (destinations.has(mount.Destination)) {
-            return { kind: "mismatch", reason: `unexpected mount <duplicate:${mount.Destination}>`, containerPath: mount.Destination };
+        if (destinations.has(mount.containerPath)) {
+            return { kind: "mismatch", reason: `unexpected mount <duplicate:${mount.containerPath}>`, containerPath: mount.containerPath };
         }
-        if (!allowUnexpected && !requiredByPath.has(mount.Destination)) {
-            return { kind: "mismatch", reason: `unexpected mount ${mount.Destination}`, containerPath: mount.Destination };
+        if (!allowUnexpected && !requiredByPath.has(mount.containerPath)) {
+            return { kind: "mismatch", reason: `unexpected mount ${mount.containerPath}`, containerPath: mount.containerPath };
         }
-        destinations.add(mount.Destination);
+        destinations.add(mount.containerPath);
     }
     return { kind: "verified", via: "shape" };
 }

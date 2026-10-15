@@ -14,13 +14,12 @@ export type LabStateOwnershipIntent =
     | { kind: "verify" }
     | { kind: "migrate"; oldUid: number; oldGid: number };
 
-export interface LabStateCommandObservation {
-    error?: unknown;
-    status: number | null;
-    stdout: string;
-}
+export type LabVolumePresence = "present" | "absent" | "unavailable";
+export type LabVolumeUse = "idle" | "in-use" | "unavailable";
 
-export interface LabStateOwnershipObservation {
-    error?: unknown;
-    status: number | null;
-}
+export type LabPreviousPrincipal =
+    | { kind: "known"; principal: LabStatePrincipal }
+    | { kind: "unavailable" };
+
+/** Unconfirmed application may have changed ownership and does not permit replay. */
+export type LabOwnershipApplication = "applied" | "unconfirmed";

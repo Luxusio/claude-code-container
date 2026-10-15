@@ -6,6 +6,8 @@ import { createIosControlTransfer } from "../application/ios-control-transfer.mj
 import { createIosAppManagement } from "../application/ios-app-management.mjs";
 import { createIosEnvironment } from "../application/ios-environment.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
+import { simulatorObservation, presentSimulatorCatalog } from "../adapters/mobile-inventory.mjs";
+import { simulatorObservationState } from "../domain/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createIosSimulatorLifecycle } from "../application/lifecycle/ios-simulator-lifecycle.mjs";
 import { listContainedDirectory, validateListFilesArgs } from "../file-listing.mjs";
@@ -425,7 +427,12 @@ async function handleIosToolUnlocked(name, args) {
     const access = await createObservationAccess().request(name, args);
     if (access !== undefined) return access;
     switch (name) {
-        case "device_inventory": { const value=deviceObservation.inventory(args); return value === undefined ? undefined : jsonResult(value); }
+        case "device_inventory": {
+            const value = deviceObservation.inventory(args);
+            if (value === undefined) return undefined;
+            const { catalog, ...inventory } = value;
+            return jsonResult({ ...inventory, hostSimulators: presentSimulatorCatalog(inventory.discovery, catalog) });
+        }
 
         case "device_create":
             return presentIosNativeOutcome(await iosSimulatorLifecycle.create(args));
@@ -558,7 +565,13 @@ const deviceObservation = createDeviceObservation({ kind: "ios-simulator", owner
         "mobile_get_clipboard",
         "mobile_wait_for_text",
         "mobile_wait_for_app",
-    ], executable: name => commandPath(name), records: () => readIosDevices(), simulators: (xcrun, args) => simctlJson(xcrun, args), ownedTarget: (xcrun, device, inventory) => resolveOwnedSimulatorTarget(xcrun, device, inventory), publishObserved: (device, status, simulatorName) => updateIosDevice(device.id, item => item.updatedAt === device.updatedAt && item.status === device.status && item.udid === device.udid && item.simulatorName === device.simulatorName ? { ...item, simulatorName: simulatorName || item.simulatorName, status, updatedAt: now() } : item) });
+    ], executable: name => commandPath(name), records: () => readIosDevices(), listOwnedSimulators: xcrun => simulatorObservation(simctlJson(xcrun, ["list", "devices", "-j"])), simulatorCatalog: xcrun => simulatorObservation(simctlJson(xcrun, ["list", "-j"])), ownedTarget: (xcrun, device, inventory) => {
+        if (inventory && !inventory.ok) return { matched: false };
+        const resolved = resolveOwnedSimulatorTarget(xcrun, device, inventory?.evidence);
+        return resolved.error || !resolved.simulator ? { matched: false } : {
+            matched: true, status: simulatorObservationState(resolved.simulator.state), name: resolved.simulator.name,
+        };
+    }, publishObserved: (device, status, simulatorName) => updateIosDevice(device.id, item => item.updatedAt === device.updatedAt && item.status === device.status && item.udid === device.udid && item.simulatorName === device.simulatorName ? { ...item, simulatorName: simulatorName || item.simulatorName, status, updatedAt: now() } : item) });
 
 /**
  * Project the shared native stage observation without changing its allocated

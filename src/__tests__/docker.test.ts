@@ -4145,6 +4145,42 @@ describe("docker.ts module exports", () => {
             }
         });
 
+        it("starts a stopped custom socket with an equivalent source but refuses the live literal mismatch before setup", () => {
+            const source = "/daemon-profile/custom/docker.sock";
+            const equivalentSource = "/daemon-profile/custom//docker.sock";
+            _setRuntimeInfoForTest({ runtime: "docker", remote: true, dockerDesktop: false, socketPath: source });
+            const lab = buildLabRunnerRunConfig("lab-runner", getContainerName(projectPath))!;
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: lab.status, unsupportedReason: lab.unsupportedReason, kvmDevice: false, groupAdd: [],
+            }));
+            inspected.State = { Running: false };
+            inspected.Mounts.find((mount: { Destination: string }) => mount.Destination === "/var/run/docker.sock").Source = equivalentSource;
+            mockReplacementRuntime(JSON.stringify(inspected), { identityRunning: false, startTransitionsToRunning: true });
+            rejectStoppedExec = true;
+            existingRuntimeRunning = false;
+            const ready = vi.fn();
+            const started = vi.fn();
+
+            expect(() => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined,
+                () => false, ready, undefined, started)).toThrow("live verification failed");
+
+            expect(bindSourcePathsEquivalent(equivalentSource, source)).toBe(true);
+            expect(stoppedExecAttempts).toBe(0);
+            expect(spawnSyncMock.mock.calls.filter(call => (call[1] as string[])[0] === "start").map(call => call[1]))
+                .toEqual([["start", TEST_CONTAINER_SHORT_ID]]);
+            expect(started).toHaveBeenCalledExactlyOnceWith(TEST_CONTAINER_ID);
+            expect(ready).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
+            expect(spawnSyncMock.mock.calls.some(call => {
+                const args = call[1] as string[];
+                return args[0] === "info" || (args[0] === "exec" && args.includes("/usr/bin/docker"));
+            })).toBe(false);
+            expect(spawnSyncMock.mock.calls.some(call => {
+                const args = call[1] as string[];
+                return args[0] === "cp" || args.some(arg => arg.includes("chmod") || arg.includes("git config"));
+            })).toBe(false);
+        });
+
         it("keeps a configured daemon socket in actual creation args without a client existence fallback", () => {
             const source = "/daemon-profile/custom/docker.sock";
             _setRuntimeInfoForTest({ runtime: "docker", remote: true, dockerDesktop: false, socketPath: source });

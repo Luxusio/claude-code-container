@@ -448,7 +448,7 @@ describe('workspace profile container discovery', () => {
     const sibling = getContainerName('/projects/repo--other')
     const runner = vi.fn(() => ({
       status: 0,
-      stdout: `${base}\n${base}--p--work\n${base}--p--ci\n${sibling}\nccc-unrelated\n`,
+      stdout: ` ${base}\r\n${base}--p--work\r\n${base}--p--ci\r\n${base}\r\n${sibling}\r\nccc-unrelated\r\n${base}-near\r\n`,
       stderr: '',
     })) as any
 
@@ -456,11 +456,19 @@ describe('workspace profile container discovery', () => {
       base,
       `${base}--p--work`,
       `${base}--p--ci`,
+      base,
     ])
+    expect(runner).toHaveBeenCalledExactlyOnceWith('docker', ['ps', '-a', '--format', '{{.Names}}'], {
+      encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+    })
   })
 
-  it('fails closed when the runtime container inventory cannot be read', () => {
-    const runner = vi.fn(() => ({ status: 1, stdout: '', stderr: 'denied' })) as any
+  it.each([
+    { status: 1, stdout: '' },
+    { status: null, stdout: 'untrusted' },
+    { status: 0, error: new Error('denied'), stdout: 'untrusted' },
+  ])('fails closed when the runtime container inventory cannot be read: %j', result => {
+    const runner = vi.fn(() => result) as any
 
     expect(() => listWorkspaceContainerNames('/projects/repo--feature', runner, 'docker'))
       .toThrow('Unable to list workspace containers')

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createMacosVmLifecycleApplication } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
-import type { MacosVmLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
+import type { MacosVmLifecycle, MacosVmNativeLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
 import { createMacosImageSnapshots } from "../../../packages/device-lab/providers/application/macos-image-snapshots.mjs";
 import type { MacosImageSnapshotsPorts } from "../../../packages/device-lab/providers/ports/macos-image-snapshots.mjs";
 import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle, MacosNativeCloneFailureEvidence, MacosVmLifecycleOutcome } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
@@ -105,32 +105,59 @@ function negativeContracts(){
     void syncHelper;void asyncProvision;void weakSignal;void syncExit;void malformedDevice;void synchronousStart;void promisedCreate;
 }
 void negativeContracts;
-function imageContracts(imagePorts:MacosImageSnapshotsPorts<Result>,lifecycle:MacosVmLifecycle<Result>){
+function imageContracts(imagePorts:MacosImageSnapshotsPorts,lifecycle:MacosVmNativeLifecycle,outward:MacosVmLifecycle<Result>){
     const imageApp=createMacosImageSnapshots(imagePorts,lifecycle);
-    const {presentRestoreFailure,...missingRestorePresenter}=imagePorts;void presentRestoreFailure;
-    // @ts-expect-error restore failure presentation remains required by the unchanged consumer
-    createMacosImageSnapshots(missingRestorePresenter,lifecycle);
-    const cloned:Promise<Result|undefined>=imageApp.clone({sourceDeviceId:"unit",name:"Copy"});
-    const snapshot:Promise<Result|undefined>=imageApp.createSnapshot({deviceId:"unit",snapshotName:"Before"});
-    const restored:Promise<Result|undefined>=imageApp.restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
-    const deleted:Promise<Result|undefined>=imageApp.deleteSnapshot({deviceId:"unit",snapshotName:"Before"});
+    const imageLeavesRequired:[OptionalKeys<MacosImageSnapshotsPorts>]extends[never]?true:false=true;
+    const cloned:Promise<MacosVmLifecycleOutcome|undefined>=imageApp.clone({sourceDeviceId:"unit",name:"Copy"});
+    const snapshot:Promise<MacosVmLifecycleOutcome|undefined>=imageApp.createSnapshot({deviceId:"unit",snapshotName:"Before"});
+    const restored:Promise<MacosVmLifecycleOutcome|undefined>=imageApp.restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
+    const deleted:Promise<MacosVmLifecycleOutcome|undefined>=imageApp.deleteSnapshot({deviceId:"unit",snapshotName:"Before"});
+    const restoreFailure:MacosVmLifecycleOutcome={kind:"restore-failed",candidate:"owned-candidate",error:"exit 9",cloneEvidence:null};
     const {claim,...missingClaim}=imagePorts;void claim;
     // @ts-expect-error destination publication remains required
     createMacosImageSnapshots(missingClaim,lifecycle);
     const {transition,...missingTransition}=imagePorts;void transition;
     // @ts-expect-error source reservation and publication require complete-record CAS
     createMacosImageSnapshots(missingTransition,lifecycle);
+    const {stopInstance,...missingStop}=imagePorts;void stopInstance;
+    // @ts-expect-error forced image mutations require the immediate native stop observation
+    createMacosImageSnapshots(missingStop,lifecycle);
+    const {deleteInstance,...missingDelete}=imagePorts;void deleteInstance;
+    // @ts-expect-error image compensation and snapshot cleanup require their native delete leaf
+    createMacosImageSnapshots(missingDelete,lifecycle);
+    const {imageDiagnostic,...missingDiagnostic}=imagePorts;void imageDiagnostic;
+    // @ts-expect-error persisted image diagnostics require the finite outward fallback policy
+    createMacosImageSnapshots(missingDiagnostic,lifecycle);
     // @ts-expect-error lifecycle policy must be composed explicitly
     createMacosImageSnapshots(imagePorts);
-    // @ts-expect-error image consumer commands remain synchronous observations
-    const deferredCommand:typeof imagePorts={...imagePorts,providerCommand:async()=>({status:0,stdout:"",stderr:""})};
+    // @ts-expect-error a public wire-result lifecycle cannot replace the actual native policy peer
+    createMacosImageSnapshots(imagePorts,outward);
+    // @ts-expect-error native image stop observations remain synchronous
+    const deferredStop:typeof imagePorts={...imagePorts,stopInstance:async()=>observation};
+    // @ts-expect-error raw command receipts cannot replace semantic image observations
+    const rawDelete:typeof imagePorts={...imagePorts,deleteInstance:()=>({status:0,stdout:"",stderr:""})};
+    // @ts-expect-error provider admission takes finite native plan facts, not raw command plans
+    const rawPlan:typeof imagePorts={...imagePorts,providerPlan:()=>plan};
+    // @ts-expect-error raw provider-command execution is not an inward image port
+    const rawCommand:typeof imagePorts={...imagePorts,providerCommand:()=>({status:0,stdout:"",stderr:""})};
+    // @ts-expect-error wire-result presentation does not belong to the image application ports
+    const publisher:typeof imagePorts={...imagePorts,textResult:()=>({ok:true,value:null})};
+    // @ts-expect-error fallback diagnostics settle immediately before recovery publication
+    const deferredDiagnostic:typeof imagePorts={...imagePorts,imageDiagnostic:async()=>"exit 9"};
+    // @ts-expect-error diagnostic kinds cannot admit an unbounded arbitrary string
+    imagePorts.imageDiagnostic(observation,"native-error-message");
     // @ts-expect-error source lookup remains synchronous
     const deferredFind:typeof imagePorts={...imagePorts,find:async()=>device};
     // @ts-expect-error candidate publication reports its CAS outcome immediately
     const deferredTransition:typeof imagePorts={...imagePorts,transition:async()=>({matched:true,found:true,device})};
     // @ts-expect-error recording settlement is awaited
     const unawaitedRecording:typeof imagePorts={...imagePorts,waitRecordingExit:()=>true};
-    void [cloned,snapshot,restored,deleted,deferredCommand,deferredFind,deferredTransition,unawaitedRecording];
+    // @ts-expect-error restored failure always identifies the retained candidate
+    const unidentifiedRecovery:MacosVmLifecycleOutcome={kind:"restore-failed",error:"exit 9",cloneEvidence:null};
+    // @ts-expect-error clone cleanup evidence retains its semantic observation, not an unclassified raw receipt
+    const rawRecovery:MacosVmLifecycleOutcome={kind:"restore-failed",candidate:"owned-candidate",error:"exit 9",cloneEvidence:{target:"primary",command:{status:9,stdout:"",stderr:""},cleanup:null}};
+    void [imageLeavesRequired,cloned,snapshot,restored,deleted,restoreFailure,deferredStop,rawDelete,rawPlan,rawCommand,publisher,
+        deferredDiagnostic,deferredFind,deferredTransition,unawaitedRecording,unidentifiedRecovery,rawRecovery];
 }
 void imageContracts;
 describe("macOS strict required native contracts",()=>{

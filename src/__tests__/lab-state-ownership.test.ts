@@ -49,7 +49,7 @@ describe("retained lab volume ownership", () => {
             expect(spawn.mock.calls.some(call => call[1][0] === "run")).toBe(false);
         },
     );
-    it.each(["0:1001", "1001:0", "4294967295:1001", "1001:4294967295", "unknown", "1001:1001\nextra"])(
+    it.each(["0:1001", "1001:0", "4294967295:1001", "1001:4294967295", "4294967296:1", "1:4294967296", "-1:2", "1.5:2", "unknown", "1001:1001\nextra"])(
         "rejects unknown previous numeric owners %s", ids => {
             spawn.mockImplementation((_cli, args: string[]) => args[0] === "volume" ? ok(volume + "\n") : args.includes(previous) ? ok(ids) : ok());
             expect(() => prepareLabStateOwnership(volume, image, identity, previous)).toThrow(/previous lab state owner/);
@@ -65,5 +65,42 @@ describe("retained lab volume ownership", () => {
         spawn.mockImplementation((_cli, args: string[]) => args[0] === "volume" ? ok(volume + "\n") : args.includes(previous) ? ok("1001:1001") : args.includes("--mount") ? { status: 1 } : ok());
         expect(() => prepareLabStateOwnership(volume, image, identity, previous)).toThrow(/Existing data was retained/);
         expect(spawn.mock.calls.some(call => call[1].includes("rm") && call[1][0] !== "run")).toBe(false);
+    });
+    it.each(["before\n" + volume + "\nafter", volume, "\n" + volume + "\n"])("finds only the exact native listed volume in %j", names => {
+        spawn.mockReturnValueOnce(ok(names));
+        prepareLabStateOwnership(volume, image, identity);
+        expect(spawn).toHaveBeenCalledTimes(3);
+        expect(spawn.mock.calls[2][1]).toContain(`type=volume,source=${volume},target=/state`);
+    });
+    it.each([{ status: 0, stdout: volume + "\n", error: new Error("unavailable") }, { status: 1, stdout: volume + "\n" }, { status: null, stdout: volume + "\n" }])(
+        "does not treat failed listing as absent or trust its successful-looking output", result => {
+            spawn.mockReturnValueOnce(result);
+            expect(() => prepareLabStateOwnership(volume, image, identity)).toThrow("Unable to inspect lab state volumes.");
+            expect(spawn).toHaveBeenCalledTimes(1);
+        },
+    );
+    it("decodes whitespace-only users as idle before running the ownership helper", () => {
+        spawn.mockImplementation((_cli, args: string[]) => args[0] === "volume" ? ok(volume + "\n") : args[0] === "ps" ? ok(" \r\n\t") : ok());
+        prepareLabStateOwnership(volume, image, identity);
+        expect(spawn).toHaveBeenCalledTimes(3);
+        expect(spawn.mock.calls[2][1]).toContain("--mount");
+    });
+    it.each([" 00001:00002\n", "4294967294:4294967294", "2001:3001"])("decodes bounded prior principal %j before migration", ids => {
+        spawn.mockImplementation((_cli, args: string[]) => args[0] === "volume" ? ok(volume + "\n") : args.includes(previous) ? ok(ids) : ok());
+        prepareLabStateOwnership(volume, image, identity, previous);
+        const [uid, gid] = ids.trim().split(":").map(Number);
+        expect(spawn.mock.calls[3][1].at(-1)).toBe(`set -eu; find -P /state -xdev -uid ${uid} -exec chown -h 2001 {} +; find -P /state -xdev -gid ${gid} -exec chgrp -h 3001 {} +; chown 2001:3001 /state`);
+    });
+    it.each([{ status: 0, stdout: "1001:1002", error: new Error("unavailable") }, { status: 1, stdout: "1001:1002" }, { status: null, stdout: "1001:1002" }])(
+        "refuses prior principal output when its native observation is unavailable", result => {
+            spawn.mockImplementation((_cli, args: string[]) => args[0] === "volume" ? ok(volume + "\n") : args.includes(previous) ? result : ok());
+            expect(() => prepareLabStateOwnership(volume, image, identity, previous)).toThrow("Cannot establish previous lab state owner");
+            expect(spawn).toHaveBeenCalledTimes(3);
+        },
+    );
+    it("does not confirm or replay an ownership helper with an error and zero exit status", () => {
+        spawn.mockImplementation((_cli, args: string[]) => args[0] === "volume" ? ok(volume + "\n") : args.includes("--mount") ? { status: 0, error: new Error("unconfirmed") } : ok());
+        expect(() => prepareLabStateOwnership(volume, image, identity)).toThrow("Existing data was retained");
+        expect(spawn).toHaveBeenCalledTimes(3);
     });
 });

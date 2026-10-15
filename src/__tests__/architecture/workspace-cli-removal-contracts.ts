@@ -1,6 +1,6 @@
 // Checked by the normal strict architecture compiler; never invoked.
 import { createWorkspaceCliRemoval } from "../../application/workspace/cli-removal.js";
-import type { WorkspaceCliRemovalPorts, WorkspaceCliContainerIdentity } from "../../ports/workspace/cli-removal.js";
+import type { WorkspaceCliRemovalPorts, WorkspaceCliContainerIdentity, WorkspaceCliContainerRuntime } from "../../ports/workspace/cli-removal.js";
 import {removeWorkspaceThenContainers,prepareWorkspaceContainerRemovalPlan,removePreparedWorkspaceContainers,workspaceRemovalCompleted,withWorkspaceRemovalLifecycleLock} from "../../index.js";
 import type {WorkspaceContainerRemoval} from "../../index.js";
 
@@ -28,8 +28,29 @@ function contracts(ports: WorkspaceCliRemovalPorts) {
     createWorkspaceCliRemoval({ ...ports, selectRemoveWorkspace: () => async () => ({ removed: [], errors: [] }) });
     // @ts-expect-error Identity is inspected synchronously before workspace deletion.
     createWorkspaceCliRemoval({ ...ports, selectManagedIdentity: () => async () => null });
-    // @ts-expect-error Container runner selection cannot be asynchronous.
-    createWorkspaceCliRemoval({ ...ports, selectRunner: async () => ports.selectRunner() });
+    const runtime: WorkspaceCliContainerRuntime = ports.selectContainerRuntime();
+    // @ts-expect-error Runtime selection cannot settle asynchronously.
+    createWorkspaceCliRemoval({ ...ports, selectContainerRuntime: async () => runtime });
+    // @ts-expect-error Listing returns normalized facts synchronously, never a Promise.
+    createWorkspaceCliRemoval({ ...ports, selectContainerRuntime: () => ({ ...runtime, listNames: async () => ({ kind: "listed", names: [] }) }) });
+    // @ts-expect-error A stop effect must settle synchronously.
+    createWorkspaceCliRemoval({ ...ports, selectContainerRuntime: () => ({ ...runtime, stop: async () => undefined }) });
+    // @ts-expect-error A remove effect must settle synchronously.
+    createWorkspaceCliRemoval({ ...ports, selectContainerRuntime: () => ({ ...runtime, remove: async () => undefined }) });
+    // @ts-expect-error Native runners cannot replace semantic container operations.
+    createWorkspaceCliRemoval({ ...ports, selectContainerRuntime: () => (_command: string, _args: string[]) => ({ status: 0 }) });
+    // @ts-expect-error Native receipts cannot replace normalized inventory facts.
+    createWorkspaceCliRemoval({ ...ports, selectContainerRuntime: () => ({ ...runtime, listNames: () => ({ status: 0, stdout: "base" }) }) });
+    // @ts-expect-error Listing is required even when cleanup effects are supplied.
+    createWorkspaceCliRemoval({ ...ports, selectContainerRuntime: () => ({ stop: runtime.stop, remove: runtime.remove }) });
+    // @ts-expect-error Stop is required even if a particular plan contains stopped targets.
+    createWorkspaceCliRemoval({ ...ports, selectContainerRuntime: () => ({ listNames: runtime.listNames, remove: runtime.remove }) });
+    // @ts-expect-error Remove is required alongside listing and stop.
+    createWorkspaceCliRemoval({ ...ports, selectContainerRuntime: () => ({ listNames: runtime.listNames, stop: runtime.stop }) });
+    // @ts-expect-error A raw runner is no longer an inward port.
+    createWorkspaceCliRemoval({ ...ports, selectRunner: () => () => ({ status: 0 }) });
+    // @ts-expect-error Runtime command selection stays in native composition.
+    createWorkspaceCliRemoval({ ...ports, selectRuntimeCli: () => () => "docker" });
     // @ts-expect-error Console selection occurs synchronously before coercion.
     createWorkspaceCliRemoval({ ...ports, selectLog: async () => () => undefined });
     // @ts-expect-error Native exit must not become a returning function.

@@ -1,132 +1,79 @@
-import { androidWifiSerial, androidWifiTarget, androidWifiAttachNext, androidWirelessDeviceList } from "../domain/android-wireless.mjs";
+import { androidWifiSerial, androidWifiTarget, androidWifiAttachNext } from "../domain/android-wireless.mjs";
 
-/** @template Target @template Result
- * @param {import('../ports/android-wireless.mjs').AndroidWirelessPorts<Target,Result>} ports */
+/** @template Target
+ * @param {import('../ports/android-wireless.mjs').AndroidWirelessPorts<Target>} ports */
 export function createAndroidWirelessApplication(ports) {
-    /** @param {string} error @param {object} [detail] */
-    function wirelessFailure(error, detail = {}) {
-        return ports.textResult(false, JSON.stringify({ ok: false, error, ...detail }, null, 2));
+    /** @param {string} error @param {object} [detail]
+     * @param {import('../ports/android-wireless.mjs').AndroidWirelessPreparation} [preparation]
+     * @returns {import('../ports/android-wireless.mjs').AndroidWirelessOutcome} */
+    function refused(error, detail, preparation) {
+        return { kind: "refused", error, ...(detail ? { detail } : {}), ...(preparation ? { preparation } : {}) };
     }
-    /** @param {Target} target */
-    function hostDevices(target) { return androidWirelessDeviceList(ports.listDevices(target)); }
+    /** @param {string} error @param {import('../ports/android-wireless.mjs').AndroidWirelessEvidence} evidence
+     * @param {import('../ports/android-wireless.mjs').AndroidWirelessPreparation} [preparation]
+     * @returns {import('../ports/android-wireless.mjs').AndroidWirelessOutcome} */
+    function failed(error, evidence, preparation) {
+        return { kind: "command-failed", error, evidence, ...(preparation ? { preparation } : {}) };
+    }
 
-    /** @param {import('../ports/android-wireless.mjs').AndroidWirelessArguments} args */
+    /** @param {import('../ports/android-wireless.mjs').AndroidWirelessArguments} args
+     * @returns {import('../ports/android-wireless.mjs').AndroidWirelessOutcome|undefined} */
     function handle(args) {
         const { backend = "android-device", action = "status", serial, host, port = 5555, pairHost, pairPort, pairingCode, connect = false, timeoutMs = 15000 } = args;
         if (backend !== "android-device") return undefined;
         const discovery = ports.discover();
-        if (!discovery.available) return wirelessFailure("android-wireless-missing-adb", { missing: ["adb"] });
+        if (!discovery.available) return refused("android-wireless-missing-adb", { missing: ["adb"] });
 
         if (action === "status") {
-            return ports.jsonResult({
-                ok: true,
-                backend,
-                provider: "adb",
-                actions: ["status", "usb-tcpip", "pair", "connect"],
-                hostDevices: hostDevices(discovery.target),
-                notes: [
-                    "usb-tcpip requires a USB-connected Android device already trusted by adb",
-                    "pair requires an Android 11+ wireless debugging pairing host, port, and pairing code",
-                    "device_attach still claims the owner-scoped physical lease after the transport is visible",
-                ],
-            });
+            return { kind: "status", hostDevices: ports.listDevices(discovery.target) };
         }
-
         if (action === "usb-tcpip") {
-            if (!serial) return wirelessFailure("android-wireless-usb-tcpip-requires-serial");
+            if (!serial) return refused("android-wireless-usb-tcpip-requires-serial");
             const tcpip = ports.tcpip(discovery.target, serial, port || 5555, timeoutMs);
-            if (tcpip.status !== 0) {
-                return wirelessFailure("android-wireless-usb-tcpip-failed", { command: tcpip });
-            }
+            if (!tcpip.ok) return failed("android-wireless-usb-tcpip-failed", tcpip.evidence);
+            const preparation = { kind: /** @type {const} */ ("tcpip"), evidence: tcpip.evidence };
             const connectTarget = androidWifiTarget(host, port, "");
             if (connect || connectTarget) {
-                if (!connectTarget) return wirelessFailure("android-wireless-connect-requires-host", { tcpip });
+                if (!connectTarget) return refused("android-wireless-connect-requires-host", undefined, preparation);
                 const connected = ports.connect(discovery.target, connectTarget, timeoutMs);
-                if (connected.status !== 0) {
-                    return wirelessFailure("android-wireless-connect-failed", {
-                        tcpip,
-                        command: connected,
-                    });
-                }
-                return ports.jsonResult({
-                    ok: true,
-                    backend,
-                    action,
-                    serial,
-                    target: connectTarget,
-                    tcpip,
-                    connect: connected,
-                    stateMutated: false,
+                if (!connected.ok) return failed("android-wireless-connect-failed", connected.evidence, preparation);
+                return {
+                    kind: "completed", action, serial, target: connectTarget, preparation, connection: connected.evidence,
                     attachNext: androidWifiAttachNext(backend, connectTarget, port),
-                });
+                };
             }
-            return ports.jsonResult({
-                ok: true,
-                backend,
-                action,
-                serial,
-                tcpip,
-                stateMutated: false,
-            });
+            return { kind: "completed", action, serial, preparation };
         }
-
         if (action === "pair") {
-            if (!pairHost || !pairPort || !pairingCode) return wirelessFailure("android-wireless-pair-requires-host-port-code");
+            if (!pairHost || !pairPort || !pairingCode) return refused("android-wireless-pair-requires-host-port-code");
             const pairTarget = androidWifiSerial(pairHost, pairPort);
-            if (!pairTarget) return wirelessFailure("android-wireless-pair-requires-host-port-code");
+            if (!pairTarget) return refused("android-wireless-pair-requires-host-port-code");
             const paired = ports.pair(discovery.target, pairTarget, pairingCode, timeoutMs);
-            if (paired.status !== 0) {
-                return wirelessFailure("android-wireless-pair-failed", { command: paired });
-            }
+            if (!paired.ok) return failed("android-wireless-pair-failed", paired.evidence);
+            const preparation = { kind: /** @type {const} */ ("pair"), evidence: paired.evidence };
             const connectTarget = androidWifiTarget(host, port, serial);
             if (connect || connectTarget) {
-                if (!connectTarget) return wirelessFailure("android-wireless-connect-requires-host", { pair: paired });
+                if (!connectTarget) return refused("android-wireless-connect-requires-host", undefined, preparation);
                 const connected = ports.connect(discovery.target, connectTarget, timeoutMs);
-                if (connected.status !== 0) {
-                    return wirelessFailure("android-wireless-connect-failed", {
-                        pair: paired,
-                        command: connected,
-                    });
-                }
-                return ports.jsonResult({
-                    ok: true,
-                    backend,
-                    action,
-                    pairTarget,
-                    target: connectTarget,
-                    pair: paired,
-                    connect: connected,
-                    stateMutated: false,
+                if (!connected.ok) return failed("android-wireless-connect-failed", connected.evidence, preparation);
+                return {
+                    kind: "completed", action, pairTarget, target: connectTarget, preparation, connection: connected.evidence,
                     attachNext: androidWifiAttachNext(backend, connectTarget, port),
-                });
+                };
             }
-            return ports.jsonResult({
-                ok: true,
-                backend,
-                action,
-                pairTarget,
-                pair: paired,
-                stateMutated: false,
-            });
+            return { kind: "completed", action, pairTarget, preparation };
         }
-
         if (action === "connect") {
             const connectTarget = androidWifiTarget(host, port, serial);
-            if (!connectTarget) return wirelessFailure("android-wireless-connect-requires-host");
+            if (!connectTarget) return refused("android-wireless-connect-requires-host");
             const connected = ports.connect(discovery.target, connectTarget, timeoutMs);
-            if (connected.status !== 0) return wirelessFailure("android-wireless-connect-failed", { command: connected });
-            return ports.jsonResult({
-                ok: true,
-                backend,
-                action,
-                target: connectTarget,
-                connect: connected,
-                stateMutated: false,
+            if (!connected.ok) return failed("android-wireless-connect-failed", connected.evidence);
+            return {
+                kind: "completed", action, target: connectTarget, connection: connected.evidence,
                 attachNext: androidWifiAttachNext(backend, connectTarget, port),
-            });
+            };
         }
-
-        return wirelessFailure("unsupported-android-wireless-action", { action });
+        return refused("unsupported-android-wireless-action", { action });
     }
     return { handle };
 }

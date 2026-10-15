@@ -9,7 +9,8 @@ import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { createPhysicalStopApplication } from "../application/physical-stop.mjs";
 import { createAndroidWirelessApplication } from "../application/android-wireless.mjs";
-import { androidWifiSerial, androidWifiTransport, androidWirelessDeviceList } from "../domain/android-wireless.mjs";
+import { androidWifiSerial, androidWifiTransport } from "../domain/android-wireless.mjs";
+import { androidHostDevices } from "../adapters/mobile-inventory.mjs";
 import { createAndroidDeviceAccess } from "../application/android-device-access.mjs";
 import { createWaitBudget } from "../wait-budget.mjs";
 import { createHash, randomUUID } from "crypto";
@@ -46,38 +47,73 @@ function wirelessEvidence(args, result, pairingCode) {
         error: redact(result.error?.message) || null,
     };
 }
-/** @type {import('../ports/android-wireless.mjs').AndroidWirelessPorts<{adb:string},ReturnType<typeof jsonResult>|ReturnType<typeof textResult>>} */
+/** @type {import('../ports/android-wireless.mjs').AndroidWirelessPorts<{adb:string}>} */
 const androidWirelessPorts = {
     discover() {
         const discovery = androidDiscovery();
         return discovery.adb ? { available: true, target: { adb: discovery.adb } } : { available: false };
     },
-    listDevices: target => run(target.adb, ["devices", "-l"]),
+    listDevices: target => androidHostDevices(run(target.adb, ["devices", "-l"])),
     tcpip(target, serial, port, timeoutMs) {
         const args = ["-s", serial, "tcpip", String(port)];
-        return wirelessEvidence(args, runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))));
+        const result = runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000)));
+        return { ok: result.status === 0, evidence: wirelessEvidence(args, result) };
     },
     pair(target, endpoint, code, timeoutMs) {
         const pairingCode = String(code);
         const args = ["pair", endpoint, pairingCode];
         try {
-            return wirelessEvidence(args, runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))), pairingCode);
+            const result = runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000)));
+            return { ok: result.status === 0, evidence: wirelessEvidence(args, result, pairingCode) };
         } catch {
             // Argument-validation exceptions can include the credential in their stack.
-            return wirelessEvidence(args, {
+            return { ok: false, evidence: wirelessEvidence(args, {
                 status: null, stdout: "", stderr: "",
                 error: { message: "android-wireless-pair-command-failed" },
-            }, pairingCode);
+            }, pairingCode) };
         }
     },
     connect(target, endpoint, timeoutMs) {
         const args = ["connect", endpoint];
-        return wirelessEvidence(args, runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000))));
+        const result = runWithTimeout(target.adb, args, Math.max(1, Math.min(Number(timeoutMs || 15000), 30000)));
+        return { ok: result.status === 0, evidence: wirelessEvidence(args, result) };
     },
-    jsonResult: value => jsonResult(value),
-    textResult: (ok, text) => textResult(ok, text),
 };
 const androidWireless = createAndroidWirelessApplication(androidWirelessPorts);
+
+/** @param {import('../ports/android-wireless.mjs').AndroidWirelessOutcome|undefined} outcome */
+function presentWireless(outcome) {
+    if (!outcome) return undefined;
+    if (outcome.kind === "status") return jsonResult({
+        ok: true,
+        backend: "android-device",
+        provider: "adb",
+        actions: ["status", "usb-tcpip", "pair", "connect"],
+        hostDevices: outcome.hostDevices,
+        notes: [
+            "usb-tcpip requires a USB-connected Android device already trusted by adb",
+            "pair requires an Android 11+ wireless debugging pairing host, port, and pairing code",
+            "device_attach still claims the owner-scoped physical lease after the transport is visible",
+        ],
+    });
+    const preparation = outcome.preparation ? { [outcome.preparation.kind]: outcome.preparation.evidence } : {};
+    if (outcome.kind === "refused") return textResult(false, JSON.stringify({
+        ok: false, error: outcome.error, ...outcome.detail, ...preparation,
+    }, null, 2));
+    if (outcome.kind === "command-failed") return textResult(false, JSON.stringify({
+        ok: false, error: outcome.error, ...preparation, command: outcome.evidence,
+    }, null, 2));
+    return jsonResult({
+        ok: true, backend: "android-device", action: outcome.action,
+        ...(outcome.serial === undefined ? {} : { serial: outcome.serial }),
+        ...(outcome.pairTarget === undefined ? {} : { pairTarget: outcome.pairTarget }),
+        ...(outcome.target === undefined ? {} : { target: outcome.target }),
+        ...preparation,
+        ...(outcome.connection ? { connect: outcome.connection } : {}),
+        stateMutated: false,
+        ...(outcome.attachNext === undefined ? {} : { attachNext: outcome.attachNext }),
+    });
+}
 
 const ANDROID_SCREENSHOT_TIMEOUT_MS = 30_000;
 const ANDROID_SCREENSHOT_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -205,7 +241,7 @@ function androidRealRecordingLocalPath(device) {
 function hostAndroidDevices(discovery = androidDiscovery()) {
     if (!discovery.adb) return { available: false, missing: ["adb"], devices: [] };
     const r = run(discovery.adb, ["devices", "-l"]);
-    return androidWirelessDeviceList(r);
+    return androidHostDevices(r);
 }
 
 function targetSerial(device) {
@@ -502,7 +538,7 @@ async function handleAndroidRealToolUnlocked(name, args) {
 
 
         case "device_wireless": {
-            return androidWireless.handle(args);
+            return presentWireless(androidWireless.handle(args));
         }
 
         case "device_attach":
@@ -640,4 +676,4 @@ export async function handleAndroidRealTool(name, args) {
     }
 }
 
-const deviceObservation = createDeviceObservation({ kind: "android-device", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: ANDROID_REAL_CAPABILITIES, androidPrerequisites: () => androidDiscovery(), records: () => readAndroidRealDevices(), hostResult: adb => androidWirelessDeviceList(run(adb, ["devices", "-l"])) });
+const deviceObservation = createDeviceObservation({ kind: "android-device", ownerId: () => ownerId(), now: () => Date.now(), readPhysicalLeases: backend => observationPhysicalLeases(backend), capabilities: ANDROID_REAL_CAPABILITIES, androidPrerequisites: () => androidDiscovery(), records: () => readAndroidRealDevices(), hostDevices: adb => androidHostDevices(run(adb, ["devices", "-l"])) });

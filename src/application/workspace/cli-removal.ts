@@ -1,6 +1,6 @@
 import type { RemoveResult } from "../../domain/workspace/removal-result.js";
 import type {
-    WorkspaceCliRemovalPorts, WorkspaceCliRemovalRunner, WorkspaceCliFamilyLock,
+    WorkspaceCliRemovalPorts, WorkspaceCliContainerRuntime, WorkspaceCliFamilyLock,
     WorkspaceCliOwnershipAssertion, WorkspaceCliContainerIdentity, WorkspaceCliStrandedRegistration,
 } from "../../ports/workspace/cli-removal.js";
 
@@ -27,30 +27,22 @@ export function withWorkspaceRemovalLifecycleLock<T>(
 
 export function listWorkspaceContainerNames(
     workspacePath: string,
-    runner: WorkspaceCliRemovalRunner,
-    cli: string,
+    runtime: Pick<WorkspaceCliContainerRuntime, "listNames">,
     getContainerName: (workspacePath: string) => string,
 ): string[] {
     const baseName = getContainerName(workspacePath);
-    const result = runner(
-        cli,
-        ["ps", "-a", "--format", "{{.Names}}"],
-        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
-    );
-    if (result.error || result.status !== 0) {
+    const result = runtime.listNames();
+    if (result.kind === "unavailable") {
         throw new Error("Unable to list workspace containers.");
     }
-    return (result.stdout ?? "")
-        .split(/\r?\n/)
-        .map((name) => name.trim())
+    return result.names
         .filter((name) => name === baseName || name.startsWith(`${baseName}--p--`));
 }
 
 export function removeWorkspaceContainerByIdentity(
     containerName: string,
     identityProbe: (name: string) => WorkspaceCliContainerIdentity | null,
-    runner: WorkspaceCliRemovalRunner,
-    cli: string,
+    runtime: Pick<WorkspaceCliContainerRuntime, "stop" | "remove">,
     existsProbe: (name: string) => boolean,
 ): boolean {
     const identity = identityProbe(containerName);
@@ -60,12 +52,8 @@ export function removeWorkspaceContainerByIdentity(
         }
         return false;
     }
-    if (identity.running) {
-        const stopped = runner(cli, ["stop", identity.containerId], { stdio: "ignore" });
-        if (stopped.error || stopped.status !== 0) throw new Error("Failed to stop workspace container.");
-    }
-    const removed = runner(cli, ["rm", identity.containerId], { stdio: "ignore" });
-    if (removed.error || removed.status !== 0) throw new Error("Failed to remove workspace container.");
+    if (identity.running) runtime.stop(identity.containerId);
+    runtime.remove(identity.containerId);
     return true;
 }
 
@@ -73,15 +61,13 @@ export function removeManagedWorkspaceContainerByIdentity(
     containerName: string,
     workspacePath: string,
     identityProbe: (name: string, workspacePath: string) => WorkspaceCliContainerIdentity | null,
-    runner: WorkspaceCliRemovalRunner,
-    cli: string,
+    runtime: Pick<WorkspaceCliContainerRuntime, "stop" | "remove">,
     existsProbe: (name: string) => boolean,
 ): boolean {
     return removeWorkspaceContainerByIdentity(
         containerName,
         (name) => identityProbe(name, workspacePath),
-        runner,
-        cli,
+        runtime,
         existsProbe,
     );
 }
@@ -131,8 +117,7 @@ export function prepareWorkspaceContainerRemovalPlan(
 
 export function removePreparedWorkspaceContainers(
     plan: readonly WorkspaceContainerRemoval[],
-    runner: WorkspaceCliRemovalRunner,
-    cli: string,
+    runtime: Pick<WorkspaceCliContainerRuntime, "stop" | "remove">,
     existsProbe: (name: string) => boolean,
 ): string[] {
     const removed: string[] = [];
@@ -140,8 +125,7 @@ export function removePreparedWorkspaceContainers(
         if (!removeWorkspaceContainerByIdentity(
             entry.containerName,
             () => entry.identity,
-            runner,
-            cli,
+            runtime,
             existsProbe,
         )) {
             continue;
@@ -313,8 +297,7 @@ export function createWorkspaceCliRemoval(ports: WorkspaceCliRemovalPorts) {
                 const containerRemovalPlan = prepareWorkspaceContainerRemovalPlan(
                     wsPath,
                     (path) => listWorkspaceContainerNames(
-                        path, ports.selectRunner(), ports.selectRuntimeCli()(),
-                        ports.selectContainerName(),
+                        path, ports.selectContainerRuntime(), ports.selectContainerName(),
                     ),
                     (name, path) => ports.selectManagedIdentity()(name, path),
                     (name) => ports.selectExists()(name),
@@ -322,7 +305,7 @@ export function createWorkspaceCliRemoval(ports: WorkspaceCliRemovalPorts) {
                 const completed = removeWorkspaceThenContainers(
                     () => ports.selectRemoveWorkspace()(cwd, branch, { force }),
                     () => removePreparedWorkspaceContainers(
-                        containerRemovalPlan, ports.selectRunner(), ports.selectRuntimeCli()(),
+                        containerRemovalPlan, ports.selectContainerRuntime(),
                         (name) => ports.selectExists()(name),
                     ),
                 );

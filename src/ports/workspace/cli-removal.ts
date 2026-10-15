@@ -10,13 +10,14 @@ export interface WorkspaceCliStrandedRegistration {
     lockedPaths: string[];
 }
 
-export interface WorkspaceCliRemovalRunner {
-    (command: string, args: string[], options: { encoding: "utf-8"; stdio: ["ignore", "pipe", "pipe"] }): {
-        error?: unknown; status: number | null; stdout?: string | null;
-    };
-    (command: string, args: string[], options: { stdio: "ignore" }): {
-        error?: unknown; status: number | null;
-    };
+export type WorkspaceContainerNames =
+    | { kind: "listed"; names: readonly string[] }
+    | { kind: "unavailable" };
+
+export interface WorkspaceCliContainerRuntime {
+    listNames(): WorkspaceContainerNames;
+    stop(id: string): undefined;
+    remove(id: string): undefined;
 }
 
 export type WorkspaceCliFamilyLock = <T>(projectId: string, operation: () => T) => T;
@@ -35,8 +36,7 @@ export interface WorkspaceCliRemovalPorts {
     selectContainerName(): (workspacePath: string) => string;
     selectManagedIdentity(): (name: string, workspacePath: string) => WorkspaceCliContainerIdentity | null;
     selectExists(): (name: string) => boolean;
-    selectRunner(): WorkspaceCliRemovalRunner;
-    selectRuntimeCli(): () => string;
+    selectContainerRuntime(): WorkspaceCliContainerRuntime;
     selectRemoveWorkspace(): (cwd: string, branch: string, options: { force: boolean }) => RemoveResult;
     selectLog(): (message: string) => undefined;
     selectError(): (message: string) => undefined;

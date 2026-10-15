@@ -7,6 +7,7 @@ import type { ContainerExecOptions } from "./ports/container-exec.js";
 import { createWorkspaceOpen } from "./application/workspace/open.js";
 import { createWorkspaceOpenPresentation } from "./adapters/workspace/open-presentation.js";
 import * as workspaceCliRemoval from "./application/workspace/cli-removal.js";
+import { createNativeWorkspaceCliContainerRuntime } from "./adapters/workspace-cli-container-runtime.js";
 import { createWorkspaceContentRepairAdmission } from "./application/workspace/content-repair-admission.js";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { basename, dirname, join, relative } from "path";
@@ -582,7 +583,7 @@ export function listWorkspaceContainerNames(
     runner: typeof spawnSync = spawnSync,
     cli = runtimeCli(),
 ): string[] {
-    return workspaceCliRemoval.listWorkspaceContainerNames(workspacePath, runner, cli, getContainerName);
+    return workspaceCliRemoval.listWorkspaceContainerNames(workspacePath, createNativeWorkspaceCliContainerRuntime(runner, cli), getContainerName);
 }
 
 export function removeWorkspaceContainerByIdentity(
@@ -592,7 +593,7 @@ export function removeWorkspaceContainerByIdentity(
     cli = runtimeCli(),
     existsProbe: typeof isContainerExists = isContainerExists,
 ): boolean {
-    return workspaceCliRemoval.removeWorkspaceContainerByIdentity(containerName, identityProbe, runner, cli, existsProbe);
+    return workspaceCliRemoval.removeWorkspaceContainerByIdentity(containerName, identityProbe, createNativeWorkspaceCliContainerRuntime(runner, cli), existsProbe);
 }
 
 export function removeManagedWorkspaceContainerByIdentity(
@@ -603,7 +604,7 @@ export function removeManagedWorkspaceContainerByIdentity(
     cli = runtimeCli(),
     existsProbe: typeof isContainerExists = isContainerExists,
 ): boolean {
-    return workspaceCliRemoval.removeManagedWorkspaceContainerByIdentity(containerName, workspacePath, identityProbe, runner, cli, existsProbe);
+    return workspaceCliRemoval.removeManagedWorkspaceContainerByIdentity(containerName, workspacePath, identityProbe, createNativeWorkspaceCliContainerRuntime(runner, cli), existsProbe);
 }
 
 export function removeWorkspaceContainers(
@@ -636,7 +637,7 @@ export function removePreparedWorkspaceContainers(
     runner: typeof spawnSync = spawnSync,
     cli = runtimeCli(),
 ): string[] {
-    return workspaceCliRemoval.removePreparedWorkspaceContainers(plan, runner, cli, isContainerExists);
+    return workspaceCliRemoval.removePreparedWorkspaceContainers(plan, createNativeWorkspaceCliContainerRuntime(runner, cli), isContainerExists);
 }
 
 // Extracted so it can be tested. Inline, this branch was reachable only by running the CLI,
@@ -690,8 +691,7 @@ function handleWorktreeRemove(cwd: string, branch: string, force: boolean): void
         selectContainerName: () => getContainerName,
         selectManagedIdentity: () => getManagedProjectContainerIdentity,
         selectExists: () => isContainerExists,
-        selectRunner: () => spawnSync,
-        selectRuntimeCli: () => runtimeCli,
+        selectContainerRuntime: () => createNativeWorkspaceCliContainerRuntime(spawnSync, runtimeCli()),
         selectRemoveWorkspace: () => removeWorkspace,
         selectLog: () => {
             const receiver = console;

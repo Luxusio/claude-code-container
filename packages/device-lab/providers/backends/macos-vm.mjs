@@ -93,8 +93,8 @@ const macosVmNativeLifecycle = createMacosVmLifecycleApplication({
         return result.error ? {error:{kind:'native',evidence:result.error}} : {plan:macosNativePlan(result.plan)};
     },
     cloneInstance: (plan,source,target) => macosNativeObservation(runProviderCommand(plan.evidence.providerCommand,['clone',source,target],'clone')),
-    deleteInstance: (plan,instance) => macosNativeObservation(runProviderCommand(plan.evidence.providerCommand,['delete',instance],'delete')),
-    stopInstance: plan => macosNativeObservation(runProviderCommand(plan.evidence.stopCommand.command,plan.evidence.stopCommand.args,'stop')),
+    deleteInstance: macosDeleteInstance,
+    stopInstance: macosStopInstance,
     launchProvider: (plan,device) => {
         const native = plan.evidence;
         const startCommand = native.selectedProvider === 'tart' && native.providerCommand
@@ -143,6 +143,21 @@ function macosNativePlan(evidence) {
 function macosNativeObservation(evidence) {
     return {ok:evidence.status === 0,timedOut:providerCommandTimedOut(evidence),detail:evidence.stderr||evidence.stdout||evidence.error?.message||`exit ${evidence.status}`,evidence};
 }
+/** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmNativePlan} plan
+ * @param {string | undefined} instance */
+function macosDeleteInstance(plan, instance) {
+    return macosNativeObservation(runProviderCommand(plan.evidence.providerCommand, ['delete', instance], 'delete'));
+}
+/** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmNativePlan} plan */
+function macosStopInstance(plan) {
+    return macosNativeObservation(runProviderCommand(plan.evidence.stopCommand.command, plan.evidence.stopCommand.args, 'stop'));
+}
+/** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmNativeObservation} observation
+ * @param {"operation" | "cleanup" | "output"} kind */
+function macosImageDiagnostic(observation, kind) {
+    const result = observation.evidence;
+    return result.stderr || result.stdout || (kind === 'output' ? '' : `${kind === 'cleanup' ? 'cleanup exit' : 'exit'} ${result.status}`);
+}
 /** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycleOutcome|undefined} outcome */
 function presentMacosLifecycle(outcome) {
     if (!outcome) return undefined;
@@ -151,39 +166,43 @@ function presentMacosLifecycle(outcome) {
     if (outcome.kind === 'native') return outcome.evidence;
     if (outcome.kind === 'failed') return fail(outcome.evidence);
     if (outcome.kind === 'clone-failed') return presentMacosCloneFailure({target:outcome.evidence.target,command:outcome.evidence.command.evidence,cleanup:outcome.evidence.cleanup?.evidence||null});
-    const value = /** @type {{device?:import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice,native?:import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmCommandResult,rollback?:import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmRollback} & Record<string,unknown>} */ (outcome.value);
-    const {native,...payload} = value;
+    if (outcome.kind === 'restore-failed') {
+        const evidence = outcome.cloneEvidence;
+        const text = evidence ? macosCloneFailureText({target:evidence.target,command:evidence.command.evidence,cleanup:evidence.cleanup?.evidence||null}) : null;
+        return textResult(false, `${text || `Error: ${outcome.error}`}. Restore candidate preserved: ${outcome.candidate}`);
+    }
+    const value = /** @type {{device?:import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice,native?:import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmCommandResult,resumedActivation?:boolean,rollback?:import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmRollback} & Record<string,unknown>} */ (outcome.value);
+    const {native,resumedActivation,...payload} = value;
     if (payload.device) payload.device = deviceWithPlan(payload.device);
     if (payload.rollback?.evidence) {
         const {evidence,...rollback} = payload.rollback;
         payload.rollback = {...rollback,.../** @type {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmCommandResult} */ (evidence)};
     }
+    if (payload.rollback?.native) {
+        const {native,...rollback} = payload.rollback;
+        const result = /** @type {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmCommandResult} */ (native);
+        payload.rollback = {...rollback,status:result.status,stdout:result.stdout,stderr:result.stderr};
+    }
+    if (payload.rollback?.nativeStatus) {
+        const {nativeStatus,...rollback} = payload.rollback;
+        payload.rollback = {...rollback,status:/** @type {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmCommandResult} */ (nativeStatus).status};
+    }
     if (native) Object.assign(payload,{stdout:native.stdout,stderr:native.stderr,status:native.status});
+    else if (resumedActivation) Object.assign(payload,{stdout:'',stderr:'',status:0});
     return outcome.kind === 'problem' ? textResult(false,JSON.stringify(payload)) : jsonResult(payload);
 }
-// Existing image/snapshot policy consumes the original raw helper contract.
-// Adapt only at this native composition; the direct lifecycle stays finite.
-/** @type {import('../application/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycle<ReturnType<typeof textResult>>} */
+// Public direct lifecycle facade presents semantic outcomes at the native edge.
 const macosVmLifecycle = {
-    ...macosVmNativeLifecycle,
     create: (args, admittedDeviceId) => presentMacosLifecycle(macosVmNativeLifecycle.create(args, admittedDeviceId)),
     createImage: (args, admittedDeviceId) => presentMacosLifecycle(macosVmNativeLifecycle.createImage(args, admittedDeviceId)),
     start: async args => presentMacosLifecycle(await macosVmNativeLifecycle.start(args)),
     stop: async args => presentMacosLifecycle(await macosVmNativeLifecycle.stop(args)),
     delete: async args => presentMacosLifecycle(await macosVmNativeLifecycle.delete(args)),
-    conflict: (...args) => presentMacosLifecycle(macosVmNativeLifecycle.conflict(...args)),
     recoverStale: id => {
         const result = macosVmNativeLifecycle.recoverStale(id);
         return result.error ? {error:presentMacosLifecycle(result.error)} : result;
     },
     rollbackStarted: (id,claim,plan) => macosVmNativeLifecycle.rollbackStarted(id,claim,macosNativePlan(plan)),
-    rollbackCreated: (id,plan,instance) => macosVmNativeLifecycle.rollbackCreated(id,macosNativePlan(plan),instance),
-    clone: (plan,source,target) => {
-        const result = macosVmNativeLifecycle.clone(macosNativePlan(plan),source,target);
-        return {result:result.result.evidence,cleanup:result.cleanup?.evidence||null};
-    },
-    cloneFailure: (result,cleanup,target) => presentMacosLifecycle(macosVmNativeLifecycle.cloneFailure(macosNativeObservation(result),cleanup ? macosNativeObservation(cleanup) : null,target)),
-    cloneFailureEvidence: (command,cleanup,target) => ({command,cleanup,target}),
 };
 
 
@@ -1161,7 +1180,7 @@ async function handleMacosToolUnlocked(name, args, admittedDeviceId) {
 
         case "device_base_image_create": return macosVmLifecycle.createImage(args, admittedDeviceId);
 
-        case "device_base_image_clone": return macosImages.clone(args, admittedDeviceId);
+        case "device_base_image_clone": return presentMacosLifecycle(await macosImages.clone(args, admittedDeviceId));
 
         case "device_create": return macosVmLifecycle.create(args, admittedDeviceId);
 
@@ -1169,9 +1188,9 @@ async function handleMacosToolUnlocked(name, args, admittedDeviceId) {
 
         case "device_status": return macosAccessResult(await macosAccess.handle(name, args));
 
-        case "device_snapshot_create": return macosImages.createSnapshot(args);
-        case "device_snapshot_restore": return macosImages.restoreSnapshot(args);
-        case "device_snapshot_delete": return macosImages.deleteSnapshot(args);
+        case "device_snapshot_create": return presentMacosLifecycle(await macosImages.createSnapshot(args));
+        case "device_snapshot_restore": return presentMacosLifecycle(await macosImages.restoreSnapshot(args));
+        case "device_snapshot_delete": return presentMacosLifecycle(await macosImages.deleteSnapshot(args));
 
         case "device_start": return macosVmLifecycle.start(args);
 
@@ -1288,13 +1307,10 @@ const macosImages = createMacosImageSnapshots({
     runtimeId: () => randomUUID(),
     validateSshKey: path => validateMacosSshKeyPath(path),
     helperMetadata: device => macosHelperMetadata(device),
-    providerPlan: device => macosProviderPlan(device),
-    providerCommand: (command, args, kind) => runProviderCommand(command, args, kind),
-    publicDevice: device => deviceWithPlan(device),
+    providerPlan: device => macosNativePlan(macosProviderPlan(device)),
+    stopInstance: macosStopInstance,
+    deleteInstance: macosDeleteInstance,
+    imageDiagnostic: macosImageDiagnostic,
     signalRecording: (recording, signal) => signalOwnedRuntimeProcess(recording, signal),
     waitRecordingExit: (recording, timeoutMs) => waitForProcessExit(recording?.pid, timeoutMs),
-    textResult: (ok, message) => textResult(ok, message),
-    jsonResult: value => jsonResult(value),
-    fail: command => fail(command),
-    presentRestoreFailure: (evidence, fallbackError, candidate) => textResult(false, `${evidence ? macosCloneFailureText(evidence) || `Error: ${fallbackError}` : `Error: ${fallbackError}`}. Restore candidate preserved: ${candidate}`),
-}, macosVmLifecycle);
+}, macosVmNativeLifecycle);

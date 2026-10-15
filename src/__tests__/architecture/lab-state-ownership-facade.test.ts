@@ -13,10 +13,11 @@ vi.mock("child_process", async original => ({
 vi.mock("fs", async original => {
     const actual = await original<typeof import("node:fs")>();
     const blocked = () => { native.filesystem(); throw new Error("Forbidden fixture filesystem effect"); };
+    const manifest = new URL("../package.json", import.meta.resolve("@ccc/device-lab"));
     return {
         ...actual,
         readFileSync: (selected: unknown) => {
-            if (selected instanceof URL && selected.href === new URL("../../../packages/device-lab/package.json", import.meta.url).href) return JSON.stringify({ version: "0.0.0-fixture" });
+            if (selected instanceof URL && selected.href === manifest.href) return JSON.stringify({ version: "0.0.0-fixture" });
             return blocked();
         },
         existsSync: blocked, statSync: blocked, lstatSync: blocked, realpathSync: blocked,
@@ -67,9 +68,10 @@ describe("Lab ownership actual public facade and retained native bindings", () =
     it("keeps named arity four, synchronous undefined and actual inward composition", () => {
         const factory = vi.spyOn(application, "createLabStateOwnershipPreparation");
         expect(prepareLabStateOwnership.name).toBe("prepareLabStateOwnership");
+        expect(prepareLabStateOwnership).toHaveLength(4);
         expect(prepareLabStateOwnership(volume, image, identity, previous)).toBeUndefined();
         expect(factory).toHaveBeenCalledOnce();
-        expect(Object.keys(factory.mock.calls[0][0])).toEqual(["normalizeImageId", "listVolumeNames", "observeVolumeUsers", "captureHelperScope", "observePreviousAccount", "applyOwnership"]);
+        expect(Object.keys(factory.mock.calls[0][0])).toEqual(["normalizeImageId", "observeVolume", "observeVolumeUsers", "captureHelperScope", "observePreviousAccount", "applyOwnership"]);
     });
     it("preserves complete native argv/options and selective-owner shell bytes", () => {
         prepareLabStateOwnership(volume, image, identity, previous);
@@ -122,7 +124,7 @@ describe("Lab ownership actual public facade and retained native bindings", () =
         expect(native.spawn).toHaveBeenCalledTimes(4);
         expect(native.spawn.mock.calls.every(([, args]) => ["volume", "ps", "run"].includes(args[0]))).toBe(true);
     });
-    it.each(["", volume + "\r\n", " " + volume + "\n"])("stops after the list when exact volume is absent in %j", listed => {
+    it.each(["", volume + "\r\n", " " + volume + "\n", volume + "-other\n", volume.toUpperCase() + "\n"])("stops after the list when exact volume is absent in %j", listed => {
         native.spawn.mockReturnValueOnce(success(listed));
         expect(prepareLabStateOwnership(volume, image, identity, previous)).toBeUndefined();
         expect(native.spawn).toHaveBeenCalledTimes(1);

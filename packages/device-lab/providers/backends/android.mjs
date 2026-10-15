@@ -5,6 +5,7 @@ import { createAndroidEnvironment } from "../application/android-environment.mjs
 import { createAndroidAppManagement } from "../application/android-app-management.mjs";
 import { createAndroidControlTransfer } from "../application/android-control-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
+import { androidHostAvds } from "../adapters/mobile-inventory.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { publicObservationAndroidDevice } from "../domain/device-observation.mjs";
 import { createAndroidEmulatorLifecycle } from "../application/lifecycle/android-emulator-lifecycle.mjs";
@@ -1083,4 +1084,4 @@ const deviceObservation = createDeviceObservation({ kind: "android-emulator", ow
         "mobile_toggle_airplane_mode", "mobile_set_clipboard",
         "mobile_get_clipboard", "mobile_wait_for_text", "mobile_wait_for_app",
         "mobile_screenshot",
-    ], executable: name => findAndroidTool(name), records: () => readAndroidDevices(), avdResult: emulator => run(emulator, ["-list-avds"]), creationFacts: facts => androidCreationChoices(facts, androidSdkCandidates()) });
+    ], executable: name => findAndroidTool(name), records: () => readAndroidDevices(), hostAvds: emulator => androidHostAvds(run(emulator, ["-list-avds"])), creationFacts: facts => androidCreationChoices(facts, androidSdkCandidates()) });
