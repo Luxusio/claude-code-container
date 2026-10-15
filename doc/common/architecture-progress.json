@@ -1960,7 +1960,7 @@
       "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json",
       "title": "브로커 상태·녹화·Appium 결과",
       "workStatus": "partial",
-      "remainingWork": "기존 Appium 검증 기여를 유지하고 status/recording 의미 관측을 통합했다. owner-cleanup은 기존 의미 결과 경계의 회귀 검증으로 확인했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 추가 Source 잔여 CB-02/CB-03: cleanup은 signal delivery를 실제 종료로 간주하지 않고 alive/unknown 메타데이터·리스를 보존해야 하며, raw stop 명령의 별도 권한 대신 operation-specific stop과 정확히 한 lock owner를 조합해야 한다. 기존 Linux PASS는 이 미검증 분기의 통과 증거가 아니다.",
+      "remainingWork": "기존 Appium 검증 기여를 유지하고 status/recording 의미 관측을 통합했다. owner-cleanup은 기존 의미 결과 경계의 회귀 검증으로 확인했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. CB-02/CB-03의 한정된 종료 관측·canonical stop 조합·partial commit·publication deadline 수정은1a3dbf97에서 독립 Code·qualified Security carry·affected Linux/portable QA·로컬 통합을 확인했다. Darwin raw token은 동일하면 live로 관측하며 다른 live token은 locale/timezone 차이와 구분할 수 없어 unavailable로 보존한다. 실제 Windows/macOS·broader R17·native/reliability/formal 조건은 별도 미완료다. 아래 currentStopCleanupRepairQualification에 새 실행과 인증 재사용의 범위를 구분했다.",
       "completionCriteria": "상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at0cebcfe0: semantic owner resolution/device status, broker recording and Appium outcomes with finite native effects and outward HTTP presentation. Actual independent Code DEEP/Security/Docs and QA484 across13 whole files, genuine build1330, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Prior compiler/runtime failures corrected and retained. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -2270,7 +2270,7 @@
       "deliveryEvidence": "/tmp/ccc-remaining-boundaries-integration-20261012.json",
       "title": "Hyper-V 수명주기·네이티브 경계",
       "workStatus": "partial",
-      "remainingWork": "부분 완료:9c807d1e seed/snapshot 의미 관측의 실제 독립 검증·통합은 유지한다. 현재 감사 CB-01/CB-04에서 exact VM의 non-Off terminal observation도 stopped 공개·journal clear로 진행하는 경로와 create/start·stop/delete inward native execution 표현이 확인됐다. stop 완료 증거·journal 보존과 semantic facts/opaque receipt 경계를 수정하고 existing envelope·identity·CAS·보상 규칙을 qualified 검증한다. Native/전수/reliability/formal 조건도 별도 미완료다.",
+      "remainingWork": "부분 완료:9c807d1e seed/snapshot 의미 관측의 실제 독립 검증·통합은 유지한다. CB-01 ordinary stop은 semantic ok·exact VM·canonical Off 증거를 요구하도록 수정했고1a3dbf97에서 독립 Code·qualified Security carry·affected Linux/portable QA·로컬 통합을 확인했다. 남은 Source CB-04는 create/start·stop/delete inward native execution 표현을 semantic facts/opaque receipt 경계로 옮기는 작업이다. Native·전수·reliability·formal 조건은 별도 미완료다.",
       "completionCriteria": "어댑터가 seed 실행 결과를 정규화하고, 코어가 VM·키·네트워크 동일성·host trust·rollback을 판단한다. Native process/command grammar is decoded outward; inward admission/finalization consumes semantic facts. 현재 감사에서 확인한 inward native framing과 완료 증거 조건을 함께 충족해야 한다.",
       "confirmedAtCommit": "ca88c404d77d8885ab7d1123f19897c7eba5cff9",
       "sourceTrace": {
@@ -5302,6 +5302,27 @@
         "tsconfig.architecture.json": "b8983138897aaf9223d1db196fa4bf6480afaa63bd993b7a83ab64f6dda6f1d5"
       },
       "scopeLimit": "Five read-only scouts and Root adjudication; exact inspected/reached and uninspected families are documented. No exhaustive current universe/caller/export closure, native execution, reliability or Goal completion."
+    },
+    "currentStopCleanupRepairQualification": {
+      "taskId": "TASK__architecture-stop-completion-and-cleanup-proof-20261015",
+      "runId": "01a13f5a-f78b-7c01-b1bc-70314adf31f0",
+      "sourceReferenceCommit": "1a3dbf97296774a8877eed99fd518268381968e5",
+      "scope": "CB-01 terminal Hyper-V stop proof; CB-02 expected-birth auxiliary exit observation; CB-03 canonical owner cleanup stop/publication. CB-04 native-result migration and whole-group completion excluded.",
+      "codeReview": "Actual final Code r8 PASS after discovery budget exhausted; r7 reviewed final product Source and r8 independently reviewed the final test-only deletion against unchanged Source pins.",
+      "securityReview": "Actual Security r7 PASS on broker 2ae7fb76 and observer e3a8c789, qualified carry for final domain failure-count deduplication and fixture/accounting-only edits: no process, lease, publication or deadline authority changed; required refusal still counts as failure. Not a new Security review of identical final bytes.",
+      "actualQa": "Independent qa-cli retry3 actual PASS after final Code PASS and qualified Security carry. Fresh exact Hyper-V lifecycle journey: 1 PASS, 169 filtered, 170 total; ordinary offline shipping PASS (npm archive, Unix payload, packaged CLI, public exports/assets and MCP stdio). This is not a fresh whole-file170 run.",
+      "qualifiedEvidenceCarry": "Authenticated retained evidence: QA5 compiled cores163PASS, Source cleanup64PASS, two strict emitted consumers, Appium98PASS/2 native Windows SKIP, and169 byte-unchanged commands cases. Runtime67PASS retains exact six-input provenance; race176PASS retains380 unchanged reached-path inputs, not identical whole-package or fresh execution evidence.",
+      "genuineBuildAndResolution": "Genuine QA5 Device Lab/Root/MCP emissions and assembly were authenticated and reused because the sole later change removes22 accounting/comment lines from a build-excluded test. QA6 reauthenticated14 final pins,1744 Source inputs,7598 dependency files,1055 assembled artifacts and274/44 raw Device Lab/Hyper-V artifacts; zero production TypeScript fallback in2117 resolution events.",
+      "priorFailureDisposition": "QA4 actual FAIL17 and QA5 actual FAIL1 remain retained. Corrected product duplicate conflict counting, stale fixture expectations and private raw/assembled QA layout; final test-only change removes the obsolete whole-journey450-call cap while retaining exact operation/deadline/identity/receipt assertions.",
+      "darwinDisposition": "Darwin accepts an exact bounded raw ps birth-token match in the inherited locale. A different live token remains unavailable because locale/timezone formatting cannot prove birth replacement; only qualified absence/zombie evidence proves exit. Portable locale/timezone fixtures passed; real macOS acceptance is unverified.",
+      "localIntegration": "Source, tests and behavior docs committed together at1a3dbf97296774a8877eed99fd518268381968e5. Precommit preservation verified1733 tracked metadata entries, all unowned tracked bytes,81 original untracked inputs/link targets, the original semantic index and both PR merge ancestors.",
+      "evidenceDirectory": "/tmp/ccc-stop-proof-01a13f5a/qa6/evidence",
+      "nativeAcceptance": "Native Windows/macOS acceptance was not executed in this task. The previously recorded owner/access condition was not retried or resolved here; driver8704/target2860 termination remains unknown. No runtime metadata adoption, provider restart or native completion is claimed.",
+      "remaining": "CB-04; broader R17; original whole-source/callers/exports, distribution/native and reliability obligations. No whole-Goal completion.",
+      "formalClose": "Formal close is not claimed by this record. Required automatic ordered review/QA receipts remain a separate gate; direct finals are non-attesting when receipts are absent. The canonical task state records the final verification/park disposition.",
+      "structuralGroupCredit": 0,
+      "operationCredit": 0,
+      "sourceUniverseCertified": false
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
