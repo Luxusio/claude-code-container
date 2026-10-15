@@ -9,8 +9,15 @@ second root identity validation, and final fixed native helper dispatch.
 The domain contains structural facts and receipts. Ports expose synchronous
 observations and one fixed ownership effect; they have no Docker argv, filesystem
 API, runtime defaults, or asynchronous effects. Production binds those primitives
-in `src/codex-state-ownership.ts`. Raw prior mounts, identity, proof callback, and
-native directory objects keep their references and lazy getter behavior.
+in `src/codex-state-ownership.ts`. The public previous-container argument, identity and proof callback retain their
+original references. Only after supported host-mapping admission does native
+composition observe prior mounts/image and decode old UID:GID, active-container
+IDs and inspected mounts into semantic facts. Raw JSON and account text never
+reach the inward migration decision. Getter/native failures propagate unchanged.
+Incomplete prior mounts, including sparse array slots alone or beside a managed
+bind, refuse migration before ownership effects. Every index is decoded in
+ascending order; an explicitly valid empty mount list remains a no-op. Native directory objects and principal rechecks keep their
+existing identity and lazy getter behavior.
 
 `startProjectContainer` continues to own `codex-state.lock` with its existing
 600000 ms wait and no stale-holder reclaim, through preparation and container
@@ -37,7 +44,7 @@ Python fixtures in `src/__tests__/codex-state-ownership.test.ts`. Core traces co
 short circuits, source proof, account validation, trust and overlap refusal,
 replacement and raw failures; facade tests pin actual argv/options and the public
 entry. Strict contract tests reject missing, noncallable and asynchronous ports.
-The recursive architecture boundary guard covers all three inward files.
+The strict architecture TypeScript project checks these inward files and their contracts.
 
 The portable candidate checks on 2026-10-08 completed one full build and fresh
 assembly, 139 tests across those three suites, retained-state fixtures and the
@@ -49,6 +56,48 @@ Both consumed declarations with `skipLibCheck: false`; the original public
 facade declaration is byte-identical. Their runner is fenced and no live runtime
 or user credential store is accessed. Source checks are not an independent
 review, QA attestation or full migration completion claim.
+
+## Windows Desktop private-state and control-socket recovery
+
+This is a separate workflow from retained-state migration. The existing
+`repairWindowsCodexPrivateState(cli, target): void` remains the Windows-gated
+compatibility facade in `src/adapters/windows-credential-access.ts`. It creates
+fresh native bindings for `createWindowsCodexRecovery`; this one compatibility
+facade imports its application to preserve existing callers, rather than adding
+another composition file. Other native adapter code continues to depend outward.
+
+The application owns permission to perform the two fixed recovery effects.
+A healthy ownership probe proceeds directly to the socket phase. When repair is
+required, it accepts a qualified private-state context and compares each
+same-source peer's user with the target's literal decimal UID. Unknown or
+different users stop immediately. The private repair completes before the socket
+probe; a socket failure can therefore leave the earlier private repair applied.
+
+Only a recognized disconnected socket link enters recovery. That phase obtains
+its own fresh native mount/control-directory context, then checks other
+same-source containers in order. Any peer that may still serve preserves the
+socket and refuses quarantine. Private scans include the target; socket scans
+exclude either-direction target-ID prefixes before bulk inspection. Native peer
+facts are yielded in inspect order, so a first refusal occurs before later
+malformed records are examined. No phase retries or promises rollback.
+
+The port carries finite facts, synchronous iterables, separate opaque contexts
+and fixed effects returning `undefined`. Native bindings retain JSON decoding,
+Windows source aliases/case, SID and ancestor qualification, account parsing,
+commands/options/timeouts, diagnostics and native errors. Validated UID/GID
+strings retain leading zeros and their existing range behavior. Python access,
+private-state and socket programs remain native with descriptor, membership,
+identity, startup-lock, socket re-probe and exact-link quarantine guards.
+
+The new `windows-codex-recovery-core.test.ts`,
+`windows-codex-recovery-types.test.ts` and
+`windows-codex-recovery-facade.test.ts` under `src/__tests__/architecture/`
+cover policy, strict contracts and the retained facade. Existing credential,
+probe and retained-state suites stay unchanged. Native facade and outer
+`assertCodexStateAccessible` integration require actual Windows; Linux checks
+pure policy and the real platform no-op. Code authorship and a Linux pass do not
+establish Windows acceptance. This extraction's current review and QA status
+lives in the progress overlay and WBS.
 
 ## Known ceiling
 

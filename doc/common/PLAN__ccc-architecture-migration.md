@@ -41,6 +41,16 @@ entrypoints (`index.ts`, broker, server, shared manifests) have one integration
 owner. Never assign two workers overlapping edits to a legacy monolith. Split
 branch worktrees only after a common contract commit and record merge ownership.
 
+### Parallel implementation and verification (2026-10-15)
+
+Run dependency-ready work in parallel through implementation, independent review and scoped QA. Each writer owns literal disjoint paths; each verification command owns its output and cache directories. Shared entrypoints have one integration owner. A lane may start QA after its own required actual review PASS without waiting for unrelated lanes. Parallel workers may read the same qualified immutable inputs, but must not race producers or shared native resources.
+
+Run independent tests, typechecks and lint concurrently. Build a shared producer once and let dependent consumers use its completed output. Preserve passing evidence for unchanged inputs; rerun checks when a related change, failure or unresolved concern requires it. Do not repeat an unchanged lane's full checks solely because another lane finished or because automatic receipts are absent.
+
+After writers and their scoped verification join, integrate the shared connections and run one integration verification cycle for the combined candidate: changed call paths, contracts and affected distribution boundaries. Recheck those affected paths if integration reveals a defect. This is not permission to omit native acceptance or required independent review. Actual platform blockers stay explicitly unverified; they do not prevent unrelated portable work. Host singletons, shared brokers, device leases and shared output directories retain one owner; a polling timeout does not authorize restarting a live job.
+
+Use the existing PLAN/WBS to record ownership, dependencies and qualified results. No new verification framework, default full-suite/build run, hosted CI, push, branch or worktree is authorized by this scheduling change.
+
 ## Work packets
 
 All paths are repository-relative. In every packet, unrelated code and real user
