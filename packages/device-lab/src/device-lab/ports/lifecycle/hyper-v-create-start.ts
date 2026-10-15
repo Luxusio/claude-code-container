@@ -1,5 +1,5 @@
 import type {HyperVWindowsGuestBootDiagnostic} from '@ccc/hyper-v/index.js';
-import type {HyperVVmObservation,HyperVGuestProvisionObservation,HyperVWindowsReadinessObservation,HyperVLinuxReadinessObservation,HyperVGuestReadinessObservation,HyperVReadinessFailureSource,WindowsReadinessOutcome,HyperVLinuxSeedOptions,HyperVGuestProvisionOptions,HyperVLinuxSshOptions,HyperVLinuxNetworkFinalizeOptions,HyperVSeedTarget,HyperVProvisionTarget,HyperVPreparedSeed,HyperVPowerTarget,HyperVBootstrapTarget,HyperVBootstrapNetworkObservation,HyperVBootstrapNetworkCleanupObservation} from '../../domain/lifecycle/hyper-v-create-start.js';
+import type {HyperVPowerObservation,HyperVVmObservation,HyperVGuestProvisionObservation,HyperVWindowsReadinessObservation,HyperVLinuxReadinessObservation,HyperVGuestReadinessObservation,HyperVReadinessFailureSource,WindowsReadinessOutcome,HyperVLinuxSeedOptions,HyperVGuestProvisionOptions,HyperVLinuxSshOptions,HyperVLinuxNetworkFinalizeOptions,HyperVSeedTarget,HyperVProvisionTarget,HyperVPreparedSeed,HyperVPowerTarget,HyperVBootstrapTarget,HyperVBootstrapNetworkObservation,HyperVBootstrapNetworkCleanupObservation} from '../../domain/lifecycle/hyper-v-create-start.js';
 import type {HyperVWindowsOperation} from '@ccc/hyper-v/low-level/index.js';
 import type {HyperVImageVhd} from '../../domain/hyper-v-image-preparation.js';
 import type {WindowsReadinessIdentity,WindowsReadinessError} from '../../domain/lifecycle/hyper-v-create-start.js';
@@ -67,7 +67,7 @@ export interface HyperVCreateNativePorts<Session,Connection,Receipt> {
  windowsDirectory(path:string):string;
  sameWindowsPath(left:string|null,right:string):boolean;
  cloneDisk(request:{baseImageRoot:string;baseImagePath:string;expectedSha256:string;deviceRoot:string;diskPath:string;deadlineAt:number},created:(path:string)=>undefined):Promise<void>;
- observePlannedPower(connection:Connection,timeout:number,outputLimit:number):Promise<HyperVNativeExecution<Receipt>>;
+ observePlannedPower(connection:Connection,timeout:number,outputLimit:number):Promise<HyperVPowerObservation<Receipt>>;
  remaining(deadline:number,cap:number):number;
  assertDeadline(deadline:number):undefined;
  deadlineExpired(deadline:number):boolean;
@@ -139,7 +139,7 @@ export interface HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedi
  attachSeed(connection:Connection,request:HyperVSeedTarget,deadline:number):Promise<void>;
  provision(connection:Connection,request:HyperVProvisionTarget<ProvisionMedia>,deadline:number):Promise<HyperVNativeExecution<Receipt>>;
  windowsReadiness(connection:Connection,root:string,mediaPath:string):WindowsReadinessPorts;
- power(connection:Connection,identity:HyperVPowerTarget,operation:'start'|'stop'|'reboot',deadline:number,cap:number,options:{force?:boolean;startIfStopped?:boolean;memoryMb?:number;cpus?:number}):Promise<HyperVNativeExecution<Receipt>>;
+ power(connection:Connection,identity:HyperVPowerTarget,operation:'start'|'stop'|'reboot',deadline:number,cap:number,options:{force?:boolean;startIfStopped?:boolean;memoryMb?:number;cpus?:number}):Promise<HyperVPowerObservation<Receipt>>;
  bootstrapProbe(connection:Connection,request:HyperVBootstrapTarget):Promise<{execution:HyperVNativeExecution<Receipt>;observation:HyperVBootstrapNetworkObservation|null}>;
  bootstrapCleanup(connection:Connection,request:HyperVBootstrapTarget,managedMacAddress:string):Promise<{execution:HyperVNativeExecution<Receipt>;observation:HyperVBootstrapNetworkCleanupObservation|null}>;
  bootDiagnostic(connection:Connection,request:{vmId:string;vmName:string;ownershipNotes:string},deadline:number):Promise<HyperVWindowsGuestBootDiagnostic>;

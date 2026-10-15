@@ -24,7 +24,11 @@ Status adapters supply native success, normalized ADB state and parsed VM facts 
 
 Lifecycle adapters normalize Android inventory/boot, iOS created UDIDs, macOS missing-resource/address observations and Sandbox runtime/window/minimize facts. Direct Sandbox retains status-zero success while broker commands require status zero without an error. Core policy consumes these facts; the existing converter renders the native receipt, including historical timeout/noop shapes, without publishing observation-only fields. Owner cleanup already consumes semantic stop observations and needs no second workflow extraction.
 
-The Hyper-V readiness adapter retains typed Windows outcomes and normalizes Linux SSH/GUI markers, bounded diagnostics and ED25519 fingerprints. Core policy retains expected-identity comparison, scrub/media-detach containment, deadlines and polling. General Hyper-V create, power and provisioning framing is outside this readiness extraction and remains separately tracked architecture work. Source/built/package consumers and controlled native-platform QA qualify different surfaces; a source-alias test or prepared candidate is not distribution/native acceptance.
+The Hyper-V readiness adapter retains typed Windows outcomes and normalizes Linux SSH/GUI markers, bounded diagnostics and ED25519 fingerprints. Core policy retains expected-identity comparison, scrub/media-detach containment, deadlines and polling.
+
+Create/start power ports return settled success, the captured VM observation and native execution evidence. The application uses those facts for start/reboot admission, state publication and failure containment without reparsing synthesized stdout. A successful power transaction does not prove the VM is Off: containment still requires the same VM ID/name and an Off observation. Planned commands are decoded once at the native boundary. The current execution, including any post-dispatch deadline error, remains the diagnostic source; the original native receipt remains available to the existing public renderer. Stop/delete selects its previous execution projection.
+
+General Hyper-V create/provisioning, remaining stop/delete and bootstrap framing stay separately tracked architecture work. Source/built/package consumers and controlled native-platform QA qualify different surfaces; a source-alias test or prepared candidate is not distribution/native acceptance.
 
 ## Known ceiling
 

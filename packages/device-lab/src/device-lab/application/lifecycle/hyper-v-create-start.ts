@@ -1,5 +1,5 @@
 import type {HyperVWindowsGuestBootDiagnostic} from '@ccc/hyper-v/index.js';
-import type {HyperVGuestReadyObservation,HyperVGuestReadinessFailureDetail,HyperVLinuxGuestReadyTrace,HyperVGuestReadinessObservation} from '../../domain/lifecycle/hyper-v-create-start.js';
+import type {HyperVVmObservation,HyperVGuestReadyObservation,HyperVGuestReadinessFailureDetail,HyperVLinuxGuestReadyTrace,HyperVGuestReadinessObservation} from '../../domain/lifecycle/hyper-v-create-start.js';
 import type {HyperVPublication} from '../../domain/lifecycle/hyper-v-stop-delete.js';
 import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVCreateField,hyperVCreateNumber,hyperVLinuxGuestReadyTraceFailureCode,hyperVLinuxGuestSignalDeadlineAt,hyperVLinuxGuestSignalTimedOut,compareHyperVLinuxEd25519HostKeyFingerprint} from '../../domain/lifecycle/hyper-v-create-start.js';
 import type { SnapshotJournal } from '../../domain/lifecycle/hyper-v-snapshots.js';
@@ -961,7 +961,26 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         }
     }
 
-    function publishStarted(owner: string, request: HyperVLifecycleRequest, expected: unknown, execution: HyperVNativeExecution<Receipt>, ready: HyperVGuestReadyObservation | null) { return ports.publish(owner, request.stateKey, request.deviceId, expected, current => { const observation = ports.parseVm(execution.stdout || ''); return { ...current, status: 'running', ...(observation ? { vmId: observation.vmId, vmName: observation.vmName, runtimeState: observation.state, hyperVStatus: observation.status } : {}), bootReady: Boolean(ready), lastBootCheck: ready ? { ready: true, provider: request.backend === 'linux-vm' ? 'hyper-v-ssh' : 'hyper-v-powershell-direct', computerName: ready.computerName, attempts: ready.attempts } : null, updatedAt: ports.timestamp() }; }); }
+    function publishStarted(owner: string, request: HyperVLifecycleRequest, expected: unknown, observation: HyperVVmObservation | null, ready: HyperVGuestReadyObservation | null) {
+        return ports.publish(owner, request.stateKey, request.deviceId, expected, current => ({
+            ...current,
+            status: 'running',
+            ...(observation ? {
+                vmId: observation.vmId,
+                vmName: observation.vmName,
+                runtimeState: observation.state,
+                hyperVStatus: observation.status,
+            } : {}),
+            bootReady: Boolean(ready),
+            lastBootCheck: ready ? {
+                ready: true,
+                provider: request.backend === 'linux-vm' ? 'hyper-v-ssh' : 'hyper-v-powershell-direct',
+                computerName: ready.computerName,
+                attempts: ready.attempts,
+            } : null,
+            updatedAt: ports.timestamp(),
+        }));
+    }
     async function execute(ownerId: string, parsed: HyperVCreateStartRequest, params: unknown, hyperVDeadlineAt: number, hyperVCleanupDeadlineAt: number): Promise<HyperVLifecycleOutcome<Connection,Receipt>> {
         const expectedObservation: {
             device?: unknown;
@@ -1354,7 +1373,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         && hyperVCreateRecord(planned.device)
         ? planned.device
         : null;
-    let execution = hyperVPowerDevice
+    const powerObservation = hyperVPowerDevice
         ? await ports.power(powerConnection, {
 
             ownerId, deviceId: parsed.deviceId,
@@ -1369,6 +1388,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         })
         :
             await ports.observePlannedPower(powerConnection,ports.remaining(hyperVDeadlineAt,120000),ports.outputLimit);
+    let execution = powerObservation.execution;
     const hyperVProviderDeadlineExpired = ports.deadlineExpired(hyperVDeadlineAt);
     // windows-vm joins the carve-out for the same reason the name gives linux: the guest may
     // already be Running and need containing. Start-VM issues its start and only then re-queries,
@@ -1381,19 +1401,18 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         return {
             kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'required',error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId};
     }
-    let success = !hyperVProviderDeadlineExpired && (hyperVCreateSucceeded(execution));
+    let success = !hyperVProviderDeadlineExpired && powerObservation.ok;
     if (hyperVProviderDeadlineExpired && guestBootstrapMayNeedContainment) {
         execution = { ...execution, error: "hyper-v-operation-deadline-exceeded" };
     }
-    if (success && true) {
-        const observation = ports.parseVm(execution.stdout || "");
+    if (success) {
+        const observation = powerObservation.observation;
         const expectedVmId = String(hyperVCreateField(planned.device, "vmId") || "").toLowerCase();
         const expectedVmName = hyperVCreateField(planned.device, "vmName");
         success = Boolean(observation
             && expectedVmId
             && observation.vmId === expectedVmId
-            && observation.vmName === expectedVmName
-            && (true));
+            && observation.vmName === expectedVmName);
     }
     let hyperVGuestReadyExecution: HyperVGuestReadinessObservation<Receipt> | null = null;
     let hyperVGuestReady: HyperVGuestReadyObservation | null = null;
@@ -1719,7 +1738,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         }
         if (!bootstrapContained) {
             try {
-                const stopExecution = await ports.power(powerConnection, {
+                const stopResult = await ports.power(powerConnection, {
 
                     ownerId,
                     deviceId: parsed.deviceId,
@@ -1727,9 +1746,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     vmName: hyperVCreateField(device, "vmName") || "",
                     vmId: hyperVCreateField(device, "vmId") || "",
                 }, "stop", hyperVCleanupDeadlineAt, 30000, { force: true });
-                const stopObservation = hyperVCreateSucceeded(stopExecution)
-                    ? ports.parseVm(stopExecution.stdout || "")
-                    : null;
+                const stopObservation = stopResult.ok ? stopResult.observation : null;
                 bootstrapContained = Boolean(stopObservation
                     && stopObservation.state === "Off"
                     && stopObservation.vmId === String(hyperVCreateField(device, "vmId") || "").toLowerCase()
@@ -1885,7 +1902,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             const device = containedDevice;
             let scrubContained = false;
             try {
-                const stopExecution = await ports.power(powerConnection, {
+                const stopResult = await ports.power(powerConnection, {
 
                     ownerId,
                     deviceId: parsed.deviceId,
@@ -1893,9 +1910,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     vmName: hyperVCreateField(device, "vmName") || "",
                     vmId: hyperVCreateField(device, "vmId") || "",
                 }, "stop", hyperVCleanupDeadlineAt, 30000, { force: true });
-                const stopObservation = hyperVCreateSucceeded(stopExecution)
-                    ? ports.parseVm(stopExecution.stdout || "")
-                    : null;
+                const stopObservation = stopResult.ok ? stopResult.observation : null;
                 scrubContained = Boolean(stopObservation
                     && stopObservation.state === "Off"
                     && stopObservation.vmId === String(hyperVCreateField(device, "vmId") || "").toLowerCase()
@@ -1979,7 +1994,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         }
         updatedDevice = success
             ?
-                (publication = publishStarted(ownerId, parsed, expectedDevice, execution, hyperVGuestReady)).device
+                (publication = publishStarted(ownerId, parsed, expectedDevice, powerObservation.observation, hyperVGuestReady)).device
             : publication ? publication.device : updatedDevice || planned.device;
     }
     catch (error) {

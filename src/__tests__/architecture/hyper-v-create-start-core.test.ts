@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { waitHyperVWindowsGuestReadiness } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.js";
-import type { WindowsReadinessPorts, WindowsReadinessRequest } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-create-start.js";
+import { createHyperVCreateStartApplication, waitHyperVWindowsGuestReadiness } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.js";
+import type { HyperVCreateStartPorts, WindowsReadinessPorts, WindowsReadinessRequest } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-create-start.js";
+import type { HyperVCreateStartRequest, HyperVLifecyclePlan, HyperVNativeExecution, HyperVPowerObservation, HyperVVmObservation } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
 
 function readinessFixture() {
     const request = {
@@ -85,5 +86,107 @@ describe("Hyper-V inward create/start readiness policy", () => {
         });
         expect(f.attached()).toBe(false);
         expect(f.mediaExists()).toBe(true);
+    });
+});
+
+type PowerReceipt = { nativeEvidence: string; error?: string };
+type PowerPorts = HyperVCreateStartPorts<undefined, { providerId: string }, PowerReceipt, undefined>;
+
+function powerFixture(deviceInPlan = true) {
+    const device = { id: "owned", vmId: "12345678-1234-1234-1234-123456789abc", vmName: "owned-vm", incarnationId: "incarnation", status: "stopped", runtimeState: "Off", memoryMb: 4096, cpus: 2 };
+    const observation: HyperVVmObservation = { ok: true, vmId: device.vmId, vmName: device.vmName, state: "Running", status: "Operating normally" };
+    const execution: HyperVNativeExecution<PowerReceipt> = { mode: "exec", provider: "hyper-v", status: 0, stdout: "native evidence is intentionally not JSON", receipt: { nativeEvidence: "power" } };
+    const result: HyperVPowerObservation<PowerReceipt> = { ok: true, observation, execution };
+    const ports = {
+        planning: vi.fn((_owner: string, _params: unknown, expected?: { device?: unknown }): HyperVLifecyclePlan<{ providerId: string }, PowerReceipt> => {
+            if (expected) expected.device = device;
+            return { kind: "planned" as const, device: deviceInPlan ? device : undefined, availability: { kind: "available" as const, connection: { providerId: "powershell" } } };
+        }),
+        forgetConsole: vi.fn(() => undefined),
+        incarnation: () => device.incarnationId,
+        power: vi.fn(async () => result),
+        observePlannedPower: vi.fn(async () => result),
+        deadlineExpired: vi.fn(() => false),
+        remaining: () => 30000,
+        outputLimit: 1024,
+        deviceRoot: () => "owned-root",
+        mediaRetained: () => false,
+        parseVm: vi.fn(() => { throw new Error("power policy must consume the captured VM observation"); }),
+        timestamp: () => "2026-10-15T00:00:00.000Z",
+        publish: vi.fn((_owner: string, _state: string, _id: string, expected: unknown, replace: (current: Record<string, unknown>) => unknown) => {
+            expect(expected).toBe(device);
+            return { found: true, matched: true, device: replace(device) };
+        }),
+        diagnosticCode: vi.fn((current: HyperVNativeExecution<PowerReceipt>, fallback?: string) => current.error || fallback),
+    } satisfies Pick<PowerPorts, "planning" | "forgetConsole" | "incarnation" | "power" | "observePlannedPower" | "deadlineExpired" | "remaining" | "outputLimit" | "deviceRoot" | "mediaRetained" | "parseVm" | "timestamp" | "publish" | "diagnosticCode">;
+    // Only leaves reachable in this settled power path are supplied; an unexpected effect fails.
+    const application = createHyperVCreateStartApplication(ports as unknown as PowerPorts);
+    const request: HyperVCreateStartRequest = { ok: true, backend: "windows-vm", stateKey: "windows-vm", command: "device_start", deviceId: device.id, force: false, dryRun: false, waitForBoot: false };
+    return { device, observation, execution, result, ports, request, application };
+}
+
+describe("Hyper-V inward power observations", () => {
+    it.each(["device_start", "device_reboot"] as const)("publishes the captured same-VM observation for %s without parsing native stdout", async (command) => {
+        const f = powerFixture();
+        const outcome = await f.application.execute("owner", { ...f.request, command }, {}, 100000, 130000);
+        expect(outcome.kind).toBe(command === "device_start" ? "started" : "rebooted");
+        expect(f.ports.power).toHaveBeenCalledWith({ providerId: "powershell" }, expect.objectContaining({ vmId: f.device.vmId, vmName: f.device.vmName }), command === "device_start" ? "start" : "reboot", 100000, 120000, expect.objectContaining({ memoryMb: 4096, cpus: 2 }));
+        expect(outcome.device).toMatchObject({ status: "running", runtimeState: "Running", vmId: f.observation.vmId, vmName: f.observation.vmName, hyperVStatus: f.observation.status });
+        expect(f.ports.publish).toHaveBeenCalledTimes(1);
+        expect(f.ports.parseVm).not.toHaveBeenCalled();
+        expect(outcome.execution?.command).toEqual(f.execution);
+        expect(outcome.execution?.command).not.toHaveProperty("observation");
+        expect(outcome.device).not.toHaveProperty("execution");
+    });
+
+    it("refuses semantic failure even when native status and stdout look successful", async () => {
+        const f = powerFixture();
+        f.ports.power.mockResolvedValue({ ...f.result, ok: false, execution: { ...f.execution, stdout: JSON.stringify(f.observation) } });
+        const outcome = await f.application.execute("owner", f.request, {}, 100000, 130000);
+        expect(outcome).toMatchObject({ kind: "operation-failed", error: "provider-command-failed", detail: "hyper-v-provider-command-failed" });
+        expect(f.ports.publish).not.toHaveBeenCalled();
+        expect(f.ports.parseVm).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { name: "another VM id", observation: { vmId: "87654321-4321-4321-4321-cba987654321" } },
+        { name: "another VM name", observation: { vmName: "successor-vm" } },
+        { name: "missing observation", observation: null },
+    ])("rejects $name without publishing running state", async ({ observation }) => {
+        const f = powerFixture();
+        f.ports.power.mockResolvedValue({ ...f.result, observation: observation ? { ...f.observation, ...observation } : null });
+        const outcome = await f.application.execute("owner", f.request, {}, 100000, 130000);
+        expect(outcome).toMatchObject({ kind: "operation-failed", error: "provider-command-failed" });
+        expect(f.ports.publish).not.toHaveBeenCalled();
+        expect(f.ports.parseVm).not.toHaveBeenCalled();
+    });
+
+    it("uses the same normalized planned-power result without dispatching a second power operation", async () => {
+        const f = powerFixture(false);
+        const execution = { ...f.execution, error: "hyper-v-planned-power-refused", stdout: JSON.stringify(f.observation) };
+        f.ports.observePlannedPower.mockResolvedValue({ ok: false, observation: null, execution });
+        const outcome = await f.application.execute("owner", f.request, {}, 100000, 130000);
+        expect(outcome).toMatchObject({ kind: "operation-failed", detail: "hyper-v-planned-power-refused" });
+        expect(f.ports.observePlannedPower).toHaveBeenCalledWith({ providerId: "powershell" }, 30000, 1024);
+        expect(f.ports.power).not.toHaveBeenCalled();
+        expect(f.ports.publish).not.toHaveBeenCalled();
+        expect(f.ports.diagnosticCode).toHaveBeenCalledWith(execution, "hyper-v-provider-command-failed");
+    });
+
+    it("classifies the current post-dispatch deadline overlay instead of the original native receipt", async () => {
+        const f = powerFixture();
+        const receipt = { nativeEvidence: "original", error: "hyper-v-original-native-error" };
+        const execution = { ...f.execution, receipt };
+        f.ports.power.mockResolvedValue({ ...f.result, execution });
+        f.ports.deadlineExpired.mockReturnValue(true);
+        const outcome = await f.application.execute("owner", f.request, {}, 100000, 130000);
+        expect(outcome).toMatchObject({ kind: "operation-failed", detail: "hyper-v-operation-deadline-exceeded" });
+        expect(f.ports.diagnosticCode).toHaveBeenCalledOnce();
+        const classified = f.ports.diagnosticCode.mock.calls[0]?.[0];
+        expect(classified).toEqual({ ...execution, error: "hyper-v-operation-deadline-exceeded" });
+        expect(classified).not.toBe(receipt);
+        expect(classified?.receipt).toBe(receipt);
+        expect(receipt.error).toBe("hyper-v-original-native-error");
+        expect(f.ports.publish).not.toHaveBeenCalled();
     });
 });

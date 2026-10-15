@@ -15,7 +15,7 @@ import { normalizeAppleInventory, renderLeaseOutcome, renderLeaseFailure as leas
 import type { NativePhysicalReceipt } from './device-lab/broker/physical-outcomes.js';
 import {hyperVLinuxGuestReadyTraceFailureCode as coreLinuxTraceFailure,compareHyperVLinuxEd25519HostKeyFingerprint as coreLinuxFingerprint,hyperVLinuxGuestSignalDeadlineAt as coreLinuxSignalDeadline,hyperVLinuxGuestSignalTimedOut as coreLinuxSignalTimedOut,type HyperVLinuxGuestReadyTrace} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVSecureBootConfiguration} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
-import type {HyperVLifecycleOutcome, HyperVLifecyclePlan} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
+import type {HyperVLifecycleOutcome, HyperVLifecyclePlan, HyperVPowerObservation} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import { createHyperVStopDeleteApplication } from "./device-lab/application/lifecycle/hyper-v-stop-delete.js";
 import type { HyperVStopDeletePorts } from "./device-lab/ports/lifecycle/hyper-v-stop-delete.js";
 import type { HyperVOperationEvidence } from "./device-lab/domain/lifecycle/hyper-v-stop-delete.js";
@@ -6446,10 +6446,10 @@ function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) 
         clone: value => structuredClone(value),
         executeStop: async (owner,request,device,connection,deadline) => {
             forgetHyperVConsoleFrame(hyperVConsoleFrameKey(owner,request.backend,request.deviceId));
-            return nativeHyperVObservation(await hyperVTypedPowerExecution(normalized,{
+            return (await hyperVTypedPowerObservation(normalized,{
             executable: connection.executable,ownerId:owner,deviceId:request.deviceId,incarnationId:hyperVDeviceIncarnationId(device)||"",
             vmId:field(device,"vmId")||"",vmName:field(device,"vmName")||"",
-        },"stop",deadline,120000,{force:request.force,memoryMb:numberField(device,"memoryMb")||4096,cpus:numberField(device,"cpus")||2}));
+        },"stop",deadline,120000,{force:request.force,memoryMb:numberField(device,"memoryMb")||4096,cpus:numberField(device,"cpus")||2})).execution;
         },
         executeDelete: async (owner,request,device,connection,deadline) => {
             forgetHyperVConsoleFrame(hyperVConsoleFrameKey(owner,request.backend,request.deviceId));
@@ -6559,7 +6559,9 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         cloneDisk:async(request,created)=>{await cloneHyperVBaseImage({...request,onDestinationCreated:path=>{created(path);}});},
         observePlannedPower: async (connection, timeoutMs, outputLimit) => {
             if (!connection.plannedCommand) throw new Error("missing-provider-command");
-            return nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, connection.plannedCommand, {timeoutMs, outputLimit}));
+            const execution = nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, connection.plannedCommand, {timeoutMs, outputLimit}));
+            const ok = execution.status === 0 && !execution.error;
+            return {ok, observation: ok ? parseHyperVVmObservation(execution.stdout || "") : null, execution};
         },
         remaining:hyperVRemainingTimeout,assertDeadline:deadline=>{assertHyperVOperationDeadline(deadline);return undefined;},deadlineExpired:hyperVOperationDeadlineExpired,
         errorInfo:error=>error instanceof HyperVWindowsError?{code:error.code,category:error.category}:null,
@@ -6622,7 +6624,7 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
             try{const media=lstatSync(mediaPath);if(!media.isFile()||media.isSymbolicLink())throw new Error("hyper-v-guest-provisioning-media-invalid");}catch(error){if(error&&typeof error==="object"&&"code" in error&&error.code==="ENOENT")return;throw error;}
             rmSync(mediaPath);
         }}),
-        power: async (connection, identity, operation, deadline, cap, options) => nativeHyperVObservation(await hyperVTypedPowerExecution(normalized, {executable: connection.executable, ...identity}, operation, deadline, cap, options)),
+        power: (connection, identity, operation, deadline, cap, options) => hyperVTypedPowerObservation(normalized, {executable: connection.executable, ...identity}, operation, deadline, cap, options),
         bootstrapProbe: async (connection, request) => { const observed = await hyperVProbeBootstrapNetwork(normalized, {executable: connection.executable, ...request}); return {execution: nativeHyperVObservation(observed.execution), observation: observed.observation}; },
         bootstrapCleanup: async (connection, request, mac) => { const observed = await hyperVCleanupBootstrapNetwork(normalized, {executable: connection.executable, ...request}, mac); return {execution: nativeHyperVObservation(observed.execution), observation: observed.observation}; },
         bootDiagnostic:(connection,request,deadline)=>readDeviceLabHyperVGuestBootDiagnostic({executable: connection.executable, ...request,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,15000),run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
@@ -8152,14 +8154,14 @@ async function hyperVTypedStatusExecution(
     };
 }
 
-async function hyperVTypedPowerExecution(
+async function hyperVTypedPowerObservation(
     normalized: NormalizedBrokerOptions,
     identity: { executable: string; ownerId: string; deviceId: string; incarnationId: string; vmId: string; vmName: string },
     operation: DeviceLabHyperVPowerOptions["operation"],
     deadlineAt: number,
     timeoutCap: number,
     options: { force?: boolean; startIfStopped?: boolean; memoryMb?: number; cpus?: number } = {},
-): Promise<ProviderCommandResult> {
+): Promise<HyperVPowerObservation<ProviderCommandResult>> {
     const result = await executeDeviceLabHyperVPower({
         executable: identity.executable,
         run: (command, runOptions) => hyperVProviderCommandRunner(normalized, command, runOptions),
@@ -8171,13 +8173,18 @@ async function hyperVTypedPowerExecution(
         operation,
         ...options,
     });
-    return {
+    const receipt: ProviderCommandResult = {
         mode: "exec", provider: "hyper-v", executable: identity.executable, args: [],
         status: result.ok ? 0 : 1,
         stdout: result.ok ? JSON.stringify(result.observation) : "",
         ...(result.ok ? {} : { stderr: result.code, error: result.code,
             ...(result.capacity ? { capacity: result.capacity } : {}),
             ...(result.code === "hyper-v-lifecycle-timeout" ? { timedOut: true } : {}) }),
+    };
+    return {
+        ok: result.ok,
+        observation: result.ok ? result.observation : null,
+        execution: nativeHyperVObservation(receipt),
     };
 }
 

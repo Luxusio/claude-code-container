@@ -1,6 +1,6 @@
 import { createHyperVCreateStartApplication, executeHyperVVmCreation, waitHyperVWindowsGuestReadiness } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.js";
 import type { WindowsReadinessOutcome, WindowsReadinessPorts, WindowsReadinessRequest, VmCreationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-create-start.js";
-import type { HyperVCreateRecovery, HyperVLinuxReadinessObservation, HyperVLifecycleOutcome, HyperVLifecycleRequest, HyperVNativeExecution, VmCreationEffect, VmCreationObservation, VmCreationRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
+import type { HyperVCreateRecovery, HyperVLinuxReadinessObservation, HyperVLifecycleOutcome, HyperVLifecycleRequest, HyperVNativeExecution, HyperVPowerObservation, VmCreationEffect, VmCreationObservation, VmCreationRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
 
 function readinessCapabilities(request: WindowsReadinessRequest, ports: WindowsReadinessPorts): void {
     const result: Promise<WindowsReadinessOutcome> = waitHyperVWindowsGuestReadiness(request, ports);
@@ -124,3 +124,22 @@ function finiteNativeCapabilities(ports: WorkflowPorts): void {
     void [prepareCreateDirectories, removeCreateArtifact, prepareLinuxSeed];
 }
 void finiteNativeCapabilities;
+
+function powerCapabilities(ports: WorkflowPorts, connection: Connection): void {
+    const target = { ownerId: "owner", deviceId: "owned", incarnationId: "incarnation", vmId: "vm-id", vmName: "owned-vm" };
+    const powered: Promise<HyperVPowerObservation<Receipt>> = ports.power(connection, target, "start", 100000, 30000, {});
+    const planned: Promise<HyperVPowerObservation<Receipt>> = ports.observePlannedPower(connection, 30000, 1024);
+    const execution: HyperVNativeExecution<Receipt> = { mode: "exec", provider: "hyper-v", status: 0, receipt: { nativeEvidence: "raw" } };
+    // @ts-expect-error Power policy needs normalized success and VM identity, not only a process receipt.
+    createHyperVCreateStartApplication({ ...ports, power: async () => execution });
+    // @ts-expect-error Planned power has the same required semantic contract as native power.
+    createHyperVCreateStartApplication({ ...ports, observePlannedPower: async () => execution });
+    // @ts-expect-error Missing observation must be explicit null, not an omitted field.
+    const omittedObservation: HyperVPowerObservation<Receipt> = { ok: true, execution };
+    // @ts-expect-error Semantic command success is required independently of process status.
+    const omittedSuccess: HyperVPowerObservation<Receipt> = { observation: null, execution };
+    // @ts-expect-error Native diagnostic and presentation evidence remains required.
+    const omittedExecution: HyperVPowerObservation<Receipt> = { ok: false, observation: null };
+    void [powered, planned, omittedObservation, omittedSuccess, omittedExecution];
+}
+void powerCapabilities;

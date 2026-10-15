@@ -273,6 +273,12 @@ export type HyperVVmObservation = {
     snapshots?: HyperVSnapshotObservation[];
 };
 
+export interface HyperVPowerObservation<Receipt> {
+    readonly ok: boolean;
+    readonly observation: HyperVVmObservation | null;
+    readonly execution: HyperVNativeExecution<Receipt>;
+}
+
 export type HyperVGuestProvisionObservation = {
     ok: boolean;
     vmId: string;

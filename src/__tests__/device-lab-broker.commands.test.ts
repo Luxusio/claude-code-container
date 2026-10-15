@@ -1136,6 +1136,7 @@ describe("device-lab host broker lifecycle commands", () => {
         // vmState, which is what the containment skip-guard reads.
         let diagnosticStateOverride = "";
         let containmentStopFailure = false;
+        let containmentStopLeavesRunning = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
         let snapshotProviderFailure = false;
@@ -1222,7 +1223,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 if (nativeRequest.operation === "Stop-VM" && containmentStopFailure) {
                     return { ...command, status: 1, stdout: "", stderr: "simulated containment stop failure" };
                 }
-                if (nativeRequest.operation === "Stop-VM") vmState = "Off";
+                if (nativeRequest.operation === "Stop-VM" && !containmentStopLeavesRunning) vmState = "Off";
                 if (nativeRequest.operation === "Remove-VM" && !deleteConfirmationFailure) vmExists = false;
                 if (nativeRequest.operation === "Remove-HostFiles") {
                     if (typedVmCreateCalls === 0) orphanRecoveryCalls += 1;
@@ -1349,7 +1350,7 @@ describe("device-lab host broker lifecycle commands", () => {
             if (script.includes("Stop-VM") && containmentStopFailure) {
                 return { ...command, status: 1, stdout: "", stderr: "simulated containment stop failure" };
             }
-            if (script.includes("Stop-VM")) vmState = "Off";
+            if (script.includes("Stop-VM") && !containmentStopLeavesRunning) vmState = "Off";
             const deleting = script.includes("Remove-VM -VM $Vm");
             const snapshotCreate = script.includes("Checkpoint-VM") || script.includes("New-CccVmSnapshot");
             const snapshotRepair = script.includes("Repair-CccVmSnapshotState");
@@ -1929,6 +1930,43 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(persistedDevice?.lastBootCheck?.error).toBe("hyper-v-guest-provisioning-not-scrubbed");
             expect(vmState).toBe("Running");
             containmentStopFailure = false;
+
+            // Native Stop-VM success does not prove that its final owned VM observation is Off.
+            containmentStopLeavesRunning = true;
+            const unconfirmedStopsBefore = containmentStops().length;
+            const unconfirmedCallsBefore = commandRunner.mock.calls.length;
+            const unconfirmed = await (await invoke({ backend: "windows-vm", command: "device_start", deviceId, bootTimeoutMs: 1000 })).json();
+            const unconfirmedAddedCalls = commandRunner.mock.calls.length - unconfirmedCallsBefore;
+            const unconfirmedProbeCalls = readinessProbeCount(unconfirmedCallsBefore);
+            // Running journal recovery observes attachments (3), start reads before/after (2),
+            // diagnosis reads once, and containment reads/requests stop/reads (3).
+            const unconfirmedNonProbeOperations = commandRunner.mock.calls.slice(unconfirmedCallsBefore)
+                .map(([command]) => nativeLibraryRequest(command))
+                .filter((request) => !(request?.operation === "Invoke-Guest" && request.action === "job"))
+                .map((request) => request?.operation);
+            expect(unconfirmedNonProbeOperations).toEqual([
+                "Get-VM", "Get-VMHardDiskDrive", "Get-VMDvdDrive",
+                "Get-VM", "Get-VM", "Get-VMDiagnostic", "Get-VM", "Stop-VM", "Get-VM",
+            ]);
+            expect(unconfirmedAddedCalls - unconfirmedProbeCalls).toBe(9);
+            expect(unconfirmedProbeCalls).toBeGreaterThanOrEqual(1);
+            expect(unconfirmedProbeCalls).toBeLessThanOrEqual(2);
+            expect(unconfirmed?.result?.boot?.error).toBe("hyper-v-guest-provisioning-not-scrubbed");
+            expect(unconfirmed?.result?.boot?.errorDetail?.scrubContainmentFailed).toBe(true);
+            expect(unconfirmed?.result?.device?.runtimeState).toBe("Running");
+            const unconfirmedPersisted = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as {
+                devices: Array<{ id?: string; runtimeState?: string; lastBootCheck?: { error?: string; scrubContainmentFailed?: boolean } }>;
+            };
+            const unconfirmedDevice = unconfirmedPersisted.devices.find((entry) => entry.id === deviceId);
+            expect(unconfirmedDevice?.lastBootCheck?.error).toBe("hyper-v-guest-provisioning-not-scrubbed");
+            expect(unconfirmedDevice?.lastBootCheck?.scrubContainmentFailed).toBe(true);
+            expect(unconfirmedDevice?.runtimeState).toBe("Running");
+            expect(vmState).toBe("Running");
+            const unconfirmedStopIndex = commandRunner.mock.calls.findIndex(([command], index) => index >= unconfirmedCallsBefore && nativeLibraryRequest(command)?.operation === "Stop-VM");
+            expect(unconfirmedStopIndex).toBeGreaterThanOrEqual(unconfirmedCallsBefore);
+            expect(await commandRunner.mock.results[unconfirmedStopIndex]?.value).toMatchObject({ status: 0 });
+            expect(containmentStops().length - unconfirmedStopsBefore, "an unconfirmed stop must not be replayed").toBe(1);
+            containmentStopLeavesRunning = false;
 
             // And it is absent, not `false`, when containment worked — its presence always means
             // something needs attention.
@@ -2519,8 +2557,10 @@ describe("device-lab host broker lifecycle commands", () => {
             // per-case checks above pin containment costs; this range catches runaway traffic.
             expect(commandRunner.mock.calls.some(([command]) => nativeLibraryRequest(command)?.operation === "Get-VM")).toBe(true);
             expect(commandRunner.mock.calls.some(([command]) => providerScript(command).includes("$Snapshots = @(Get-VMSnapshot"))).toBe(false);
-            expect(commandRunner.mock.calls.length).toBeGreaterThanOrEqual(280);
-            expect(commandRunner.mock.calls.length).toBeLessThan(450);
+            // Keep the original journey's budget separate from the bounded scenario added above.
+            const originalJourneyCalls = commandRunner.mock.calls.length - unconfirmedAddedCalls;
+            expect(originalJourneyCalls).toBeGreaterThanOrEqual(280);
+            expect(originalJourneyCalls).toBeLessThan(450);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
