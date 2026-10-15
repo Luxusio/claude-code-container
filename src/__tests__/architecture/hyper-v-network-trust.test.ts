@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createHyperVHostNetworkSpec, parseHyperVNatName, parseHyperVVirtualSwitchName } from "@ccc/hyper-v/index.js";
 import { createHyperVNetworkTrust } from "../../../packages/device-lab/src/device-lab/application/hyper-v-network-trust.js";
 import type { HyperVNetworkState } from "../../../packages/device-lab/src/device-lab/domain/hyper-v-network-trust.js";
-import type { HyperVNetworkStatePorts } from "../../../packages/device-lab/src/device-lab/ports/hyper-v-network-trust.js";
+import type { HyperVHostNetworkPorts, HyperVNetworkStatePorts } from "../../../packages/device-lab/src/device-lab/ports/hyper-v-network-trust.js";
 
 const OWNER = "0123456789abcdef";
 const INCARNATION = "a".repeat(32);
@@ -36,6 +37,31 @@ function fixture() {
 }
 
 describe("Hyper-V network allocation and guest trust policy", () => {
+    it.each(["ensure", "cleanup"] as const)("refuses expired host %s before observation or elevation", async (operation) => {
+        const unexpected = vi.fn(async (): Promise<never> => { throw new Error("expired-host-effect-must-not-run"); });
+        const expired = new Error("hyper-v-operation-deadline-exceeded");
+        const ports: HyperVHostNetworkPorts = {
+            kind: "host",
+            standard: { observe: unexpected, execute: unexpected, exactVirtualMachines: unexpected },
+            withAdministrator: unexpected,
+            now: () => 42.5,
+            pause: unexpected,
+            mutationNeverStarted: () => false,
+            throwDeadline: () => { throw expired; },
+        };
+        const network = createHyperVHostNetworkSpec({
+            switchName: parseHyperVVirtualSwitchName("CCC Device Lab"),
+            natName: parseHyperVNatName("CCCDeviceLab"),
+            cidr: "172.29.0.0/24", gateway: "172.29.0.1",
+        });
+        const app = createHyperVNetworkTrust(ports);
+        const result = operation === "ensure"
+            ? app.ensureHost({ network, provenance: { kind: "fresh", expectedSwitchNotes: "ccc-device-lab:hyper-v-network:v1" }, deadlineAt: 42.5, confirmed: () => undefined })
+            : app.cleanupHost({ network, provenance: { switch: { kind: "unmanaged" }, gateway: { kind: "unmanaged" }, nat: { kind: "unmanaged" } }, deadlineAt: 42.5, confirmed: () => undefined });
+        await expect(result).rejects.toBe(expired);
+        expect(unexpected).not.toHaveBeenCalled();
+    });
+
     it("retains the final managed allocation until destructive cleanup confirms it", () => {
         const f = fixture();
         const before = structuredClone(f.state());

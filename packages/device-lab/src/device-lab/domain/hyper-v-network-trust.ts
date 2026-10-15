@@ -300,7 +300,9 @@ export type HyperVNetworkEnsureRequest = {
     expectedSwitchId?: string; expectedNatInstanceId?: string;
 };
 export type HyperVNetworkCleanupRequest = HyperVNetworkEnsureRequest & {removeNat?: boolean; removeSwitch?: boolean; removeGateway?: boolean};
-export type HyperVNetworkNativeAttempt = {privilege: "standard" | "administrator"; timeoutMs: number; deadlineUnixMs?: number};
+export type HyperVNetworkNativeAttempt =
+    | {privilege: "standard"; timeoutMs: number}
+    | {privilege: "administrator"; timeoutMs: number; terminationGraceMs: number};
 export type HyperVNetworkNativeObservation<T> =
     | {kind: "completed"; observation: T | null; receipt: unknown}
     | {kind: "failed"; diagnostic: string | undefined; access: "administrator-required" | "unspecified"; receipt: unknown}

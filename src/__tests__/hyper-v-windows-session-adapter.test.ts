@@ -361,7 +361,7 @@ describe("Device Lab Hyper-V session transport", () => {
         expect(Object.keys(session).sort()).toEqual(Object.keys(oneShot).sort());
     });
 
-    it("charges the one-shot retry for what the session already spent", async () => {
+    it.each([-3_600_000, 3_600_000])("charges elapsed session time to fallback despite a %i ms wall jump", async (wallJump) => {
         // The session attempt and its retry together must stay inside the caller's deadline. A floor
         // of half the budget was measured overrunning it by 41%: a 1000ms caller whose session spent
         // 900ms still got 500ms for the retry.
@@ -370,26 +370,64 @@ describe("Device Lab Hyper-V session transport", () => {
         // never bites. 2000ms with 1200ms spent puts them on either side — remainder ~800, floor
         // 1000, no-subtraction 2000 — and stays above the 500ms guard, below which the retry is
         // suppressed entirely and this would measure nothing at all.
+        let wallNow = 1_000_000;
+        let elapsedNow = 100;
+        const wall = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
         const seen: number[] = [];
         const client = createDeviceLabHyperVWindowsClient({
             executable: "powershell.exe",
             timeoutMilliseconds: 2000,
+            now: () => elapsedNow,
             run: async (_command, options) => {
                 seen.push(options.timeoutMs);
                 return { status: 0, stdout: envelope([machine]) };
             },
             session: {
-                execute: async () => {
-                    await new Promise((resolve) => setTimeout(resolve, 1200));
+                execute: () => {
+                    wallNow += wallJump;
+                    elapsedNow += 1200;
                     return { status: null, stdout: "", error: "hyper-v-windows-session-unavailable" };
                 },
             },
         });
 
-        await client.getVM({ kind: "id", id: VM_ID });
-        expect(seen).toHaveLength(1);
-        expect(seen[0]).toBeGreaterThan(500);
-        expect(seen[0]).toBeLessThan(900);
+        try {
+            await client.getVM({ kind: "id", id: VM_ID });
+            expect(seen).toEqual([800]);
+        } finally {
+            wall.mockRestore();
+        }
+    });
+
+    it("does not gain fallback allowance when the wall clock moves backward", async () => {
+        let wallNow = 1_000_000;
+        let elapsedNow = 100;
+        const wall = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const run = vi.fn();
+        const recorded: unknown[] = [];
+        const client = createDeviceLabHyperVWindowsClient({
+            executable: "powershell.exe",
+            timeoutMilliseconds: 2000,
+            now: () => elapsedNow,
+            run,
+            record: (result) => { recorded.push(result); },
+            session: {
+                execute: () => {
+                    wallNow -= 3_600_000;
+                    elapsedNow += 1600;
+                    return { status: null, stdout: "", error: "hyper-v-windows-session-unavailable" };
+                },
+            },
+        });
+
+        try {
+            await expect(client.getVM({ kind: "id", id: VM_ID })).rejects.toThrow(/hyper-v-windows-transport/);
+            expect(run).not.toHaveBeenCalled();
+            expect(recorded).toHaveLength(1);
+            expect(recorded[0]).toMatchObject({ error: "hyper-v-windows-session-unavailable" });
+        } finally {
+            wall.mockRestore();
+        }
     });
 
     it("does not spawn a retry it has no time to run, but still records the failure", async () => {

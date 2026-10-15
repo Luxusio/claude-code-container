@@ -14,6 +14,7 @@ function fixture(variant: "typescript" | "provider") {
     let activeFile = "";
     let archiveNumber = 0;
     let token = 0;
+    const observationWaits: { milliseconds: number; signal: AbortSignal; pending: boolean; wake(): void }[] = [];
     const file = `/identity-${++fixtureNumber}.lock`;
     const ports: SharedMutationLockPorts<[]> = {
         variant, key: value => value, ownerContext: () => [], runOwnerContext: (_key, _token, operation) => operation(),
@@ -21,7 +22,24 @@ function fixture(variant: "typescript" | "provider") {
         token: () => (++token).toString(16).padStart(32, "0"), pid: () => identity.pid,
         host: () => "test-host", boot: () => "test-boot", platform: () => "win32", timestamp: () => new Date(now).toISOString(),
         now: () => now, monotonic: () => now,
-        pauseSync: ms => { now += ms; }, pause: async ms => { now += ms; return undefined; },
+        pauseSync: ms => { now += ms; },
+        pause: (milliseconds, signal?: AbortSignal) => {
+            if (!signal) { now += milliseconds; return Promise.resolve(undefined); }
+            return new Promise<undefined>((resolve, reject) => {
+                const settle = (aborted: boolean): void => {
+                    if (!wait.pending) return;
+                    wait.pending = false;
+                    signal.removeEventListener("abort", abort);
+                    if (aborted) reject(Object.assign(new Error("observation wait aborted"), { name: "AbortError" }));
+                    else resolve(undefined);
+                };
+                const abort = () => settle(true);
+                const wait = { milliseconds, signal, pending: true, wake: () => settle(false) };
+                observationWaits.push(wait);
+                if (signal.aborted) abort();
+                else signal.addEventListener("abort", abort, { once: true });
+            });
+        },
         openClaim: path => { if (records.has(path)) throw Object.assign(new Error("occupied"), { code: "EEXIST" }); records.set(path, { kind: "malformed" }); descriptors.set(++descriptor, path); return descriptor; },
         writeClaim: (fd, text) => { activeFile = descriptors.get(fd)!; records.set(activeFile, { kind: "value", value: JSON.parse(text) }); }, closeClaim: () => undefined,
         readRaw: path => records.get(path) ?? { kind: "missing" },
@@ -38,7 +56,7 @@ function fixture(variant: "typescript" | "provider") {
     };
     function archive(raw: LockReadObservation) { const path = `${file}.${(++archiveNumber).toString(16).padStart(16, "0")}.stale`; records.set(path, raw); return path; }
     function displace() { const raw = records.get(file); if (!raw) throw new Error("no candidate to displace"); records.delete(file); return archive(raw); }
-    return { ports, app: createSharedMutationLock(ports), file, records, archive, displace,
+    return { ports, app: createSharedMutationLock(ports), file, records, archive, displace, observationWaits,
         record: () => { const raw = records.get(activeFile || file); return raw?.kind === "value" ? { ...(raw.value as Record<string, unknown>) } : {}; },
         advance: (ms: number) => { now += ms; }, seed: (value: Record<string, unknown>) => { activeFile = file; records.set(file, { kind: "value", value }); } };
 }
@@ -135,29 +153,110 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
 
     it.each([
         ["sync", "cold"], ["async", "cold"], ["sync", "warm"], ["async", "warm"],
-    ] as const)("bounds contended %s acquisition with a %s explicit budget without fresh observations", async (mode, warmth) => {
+    ] as const)("bounds contended %s acquisition with a %s budget while preserving async legacy-owner verification", async (mode, warmth) => {
         const f = fixture(variant);
         if (warmth === "warm") await f.app.withLockAsync(f.file, f.record);
         vi.mocked(f.ports.identitySync).mockClear();
         vi.mocked(f.ports.identityAsync).mockClear();
         const legacy = { token: "f".repeat(32), pid: 456, host: "test-host", createdAt: "2026-10-12T14:51:20.492Z", processIdentityStatus: "unavailable" };
+        const current = { ...identity, pid: legacy.pid, startToken: "windows:2026-10-12T14:52:34.0000000Z" };
+        vi.mocked(f.ports.identityAsync).mockImplementation(async pid => pid === legacy.pid ? current : identity);
         f.seed(legacy);
         f.ports.openClaim = vi.fn(f.ports.openClaim);
-        vi.mocked(f.ports.publicationTimes).mockReturnValue({ kind: "known", processStartedAtMs: 51_001, claimCreatedAtMs: 50_000 });
         const deadline = f.ports.now() + 30;
         const options = { waitMs: 30, waitBudget: { remaining: () => deadline - f.ports.now() } };
-        const operation = vi.fn();
+        const operation = vi.fn(() => "recovered asynchronously");
         if (mode === "sync") {
             expect(() => f.app.withLock(f.file, operation, options)).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+            expect(operation).not.toHaveBeenCalled();
+            expect(f.record()).toEqual(legacy);
+            expect(f.ports.identityAsync).not.toHaveBeenCalled();
+            expect(f.ports.publicationTimes).not.toHaveBeenCalled();
         } else {
-            await expect(f.app.withLockAsync(f.file, operation, options)).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            await expect(f.app.withLockAsync(f.file, operation, options)).resolves.toBe("recovered asynchronously");
+            expect(operation).toHaveBeenCalledOnce();
+            expect(f.ports.readRaw(f.file)).toEqual({ kind: "missing" });
+            expect(f.ports.now()).toBeLessThan(deadline);
+            expect(f.ports.identityAsync).toHaveBeenCalledExactlyOnceWith(legacy.pid);
+            expect(f.ports.publicationTimes).toHaveBeenCalledWith(current, legacy.createdAt);
         }
         expect(f.ports.openClaim).toHaveBeenCalled();
-        expect(operation).not.toHaveBeenCalled();
-        expect(f.record()).toEqual(legacy);
         expect(f.ports.identitySync).not.toHaveBeenCalled();
-        expect(f.ports.identityAsync).not.toHaveBeenCalled();
-        expect(f.ports.publicationTimes).not.toHaveBeenCalled();
+        expect(f.ports.observe).not.toHaveBeenCalled();
+    });
+
+    it.each(["success", "failure", "timeout"] as const)("cancels the concurrent owner-observation wait after %s without late reclamation", async outcome => {
+        const f = fixture(variant);
+        const savedIdentity = { ...identity, pid: 456, startToken: "original-generation" };
+        const owner = { token: "f".repeat(32), pid: savedIdentity.pid, host: "test-host", processIdentity: savedIdentity };
+        f.seed(owner);
+        let finishProbe!: (value: LockProcessIdentity) => void;
+        let failProbe!: (error: Error) => void;
+        let probeStarted!: () => void;
+        const started = new Promise<void>(resolve => { probeStarted = resolve; });
+        const probe = new Promise<LockProcessIdentity>((resolve, reject) => { finishProbe = resolve; failProbe = reject; });
+        const replacement = { ...savedIdentity, startToken: "replacement-generation" };
+        const probeFailure = new Error("owner-identity-observation-failed");
+        vi.mocked(f.ports.identityAsync).mockImplementation(async () => { probeStarted(); return probe; });
+        const startedAt = f.ports.now();
+        const deadline = startedAt + 47;
+        const operation = vi.fn(() => "recovered");
+        const pending = f.app.withLockAsync(f.file, operation, {
+            waitMs: 1000, waitBudget: { remaining: () => deadline - f.ports.now() },
+        }).then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
+        try {
+            await started;
+            expect(f.ports.now()).toBe(startedAt);
+            expect(f.observationWaits).toHaveLength(1);
+            const firstWait = f.observationWaits[0]!;
+            expect(firstWait).toMatchObject({ milliseconds: 47, pending: true });
+            if (outcome === "success") finishProbe(replacement);
+            else if (outcome === "failure") failProbe(probeFailure);
+            else {
+                f.advance(20);
+                firstWait.wake();
+                await Promise.resolve();
+                expect(f.observationWaits).toHaveLength(2);
+                const remainingWait = f.observationWaits[1]!;
+                expect(remainingWait).toMatchObject({ milliseconds: 27, pending: true });
+                expect(operation).not.toHaveBeenCalled();
+                expect(f.record()).toEqual(owner);
+                f.advance(27);
+                remainingWait.wake();
+            }
+            const result = await pending;
+            expect(f.observationWaits.every(wait => !wait.pending && wait.signal.aborted)).toBe(true);
+            if (outcome === "success") {
+                expect(result).toEqual({ ok: true, value: "recovered" });
+                expect(operation).toHaveBeenCalledOnce();
+                expect(f.records.size).toBe(0);
+            } else {
+                expect(result.ok).toBe(false);
+                if (!result.ok) {
+                    if (outcome === "failure") expect(result.error).toBe(probeFailure);
+                    else expect(result.error).toMatchObject({ code: "shared-mutation-lock-timeout" });
+                }
+                expect(operation).not.toHaveBeenCalled();
+                expect(f.record()).toEqual(owner);
+                if (outcome === "timeout") {
+                    expect(f.ports.now()).toBe(deadline);
+                    finishProbe(replacement);
+                    await probe;
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                    expect(operation).not.toHaveBeenCalled();
+                    expect(f.record()).toEqual(owner);
+                    expect(f.observationWaits.every(wait => !wait.pending && wait.signal.aborted)).toBe(true);
+                }
+            }
+            expect(f.ports.identityAsync).toHaveBeenCalledExactlyOnceWith(owner.pid);
+            expect(f.ports.identitySync).not.toHaveBeenCalled();
+            expect(f.ports.observe).not.toHaveBeenCalled();
+        } finally {
+            f.advance(Math.max(0, deadline - f.ports.now()));
+            finishProbe(replacement);
+            for (const wait of f.observationWaits) if (wait.pending) wait.wake();
+            await pending;
+        }
     });
 
     it("finishes a slow cold identity probe before exposing an empty claimed guard", () => {
@@ -401,9 +500,10 @@ describe.each(["typescript", "provider"] as const)("%s archived claim admission"
             let displaced: string | undefined;
             f.ports.closeClaim = () => { if (!displaced) { displaced = f.displace(); f.seed(successor); } };
             const originalPause = f.ports.pauseSync;
+            const originalAsyncPause = f.ports.pause;
             const started = f.ports.now();
             if (mode === "sync") f.ports.pauseSync = ms => { originalPause(ms); if (f.ports.now() - started >= 30) f.records.delete(f.file); };
-            else f.ports.pause = async ms => { await f.ports.pauseSync(ms); if (f.ports.now() - started >= 30) f.records.delete(f.file); return undefined; };
+            else f.ports.pause = async (ms, signal?: AbortSignal) => { if (signal) return originalAsyncPause(ms, signal); await f.ports.pauseSync(ms); if (f.ports.now() - started >= 30) f.records.delete(f.file); return undefined; };
             f.ports.openClaim = vi.fn(f.ports.openClaim);
             const operation = vi.fn(() => f.record());
             const admitted = await acquire(f, operation, { waitMs: 1000, waitBudget: { remaining: () => 47 - (f.ports.now() - started) } });

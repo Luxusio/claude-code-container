@@ -1,5 +1,8 @@
 import { createHash } from "crypto";
+import nativeFs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
+import { promises as fsPromises } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +19,7 @@ afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSy
 function hash(bytes: string): string { return createHash("sha256").update(bytes).digest("hex"); }
 function marker(value: unknown): string { return `CCC_HYPER_V_RESULT_B64:${Buffer.from(JSON.stringify(value)).toString("base64")}`; }
 
-function fixture(profile: Profile, variant: Variant = "normal", acquireTimeoutMs = 60_000, advancePastAcquireDeadline: () => void = () => {}) {
+function fixture(profile: Profile, variant: Variant = "normal", acquireTimeoutMs = 60_000, advancePastAcquireDeadline: () => void = () => {}, now?: () => number) {
     const root = mkdtempSync(join(tmpdir(), "hyper-v-auto-"));
     roots.push(root);
     const privateRoot = join(root, "private");
@@ -39,6 +42,7 @@ function fixture(profile: Profile, variant: Variant = "normal", acquireTimeoutMs
     let partialVirtualSize = sourceSize;
     const runtime: HyperVImageStoreRuntime = {
         cwd: root, privateRoot,
+        ...(now ? { now } : {}),
         resolveExecutable: () => "/fake/powershell.exe",
         limits: { acquireTimeoutMs, prepareTimeoutMs: 60_000, lockWaitMs: 60_000, commandOutputBytes: 64 * 1024 },
         async run(command) {
@@ -127,10 +131,61 @@ function fixture(profile: Profile, variant: Variant = "normal", acquireTimeoutMs
     const prepare = () => resolveHyperVImageForCreate("owner", {
         backend: profile === "ubuntu-lts" ? "linux-vm" : "windows-vm", dryRun: false, create: { profile },
     }, {}, runtime);
-    return { profileRoot, imagePath, partialPath, operations, prepare };
+    return { profileRoot, imagePath, partialPath, sourceVhdPath, operations, prepare, runtime };
 }
 
 describe("automatic Hyper-V image typed VHD transaction", () => {
+    it("waits for the held profile lock across a forward wall jump within the caller's local budget", async () => {
+        const wallStartedAt = Date.now();
+        let wallNow = wallStartedAt;
+        const monotonicNow = 1000;
+        vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        vi.resetModules();
+        const { withSharedMutationLockAsync } = await import("@ccc/device-lab/device-lab-shared-state.js");
+        const { resolveHyperVImageForCreate: resolveImage } = await import("@ccc/device-lab/device-lab/broker/hyper-v/image-store.js");
+        const test = fixture("ubuntu-lts", "normal", 1000, () => {}, () => monotonicNow);
+        const lockPath = join(test.profileRoot, "prepare.lock");
+        mkdirSync(test.profileRoot, { recursive: true });
+        let release!: () => void;
+        let entered!: () => void;
+        let contended!: () => void;
+        const heldUntilReleased = new Promise<void>((resolve) => { release = resolve; });
+        const ownerEntered = new Promise<void>((resolve) => { entered = resolve; });
+        const claimContended = new Promise<void>((resolve) => { contended = resolve; });
+        const owner = withSharedMutationLockAsync(lockPath, async () => { entered(); await heldUntilReleased; });
+        try {
+            await ownerEntered;
+            const realOpen = nativeFs.openSync;
+            vi.spyOn(nativeFs, "openSync").mockImplementation((path, flags, mode) => {
+                try { return realOpen(path, flags, mode); }
+                catch (error) {
+                    if (String(path) === lockPath && (error as NodeJS.ErrnoException).code === "EEXIST") {
+                        wallNow = wallStartedAt + 60_001;
+                        contended();
+                    }
+                    throw error;
+                }
+            });
+            syncBuiltinESMExports();
+            const preparation = resolveImage("owner", {
+                backend: "linux-vm", dryRun: false, create: { profile: "ubuntu-lts" },
+            }, {}, test.runtime, 2000).then((value) => ({ value }), (error: unknown) => ({ error }));
+            await claimContended;
+            expect(test.operations).toEqual([]);
+            release();
+            await owner;
+            const result = await preparation;
+
+            expect(result).toEqual({ value: expect.objectContaining({ ok: true, prepared: true, imagePath: test.imagePath }) });
+            expect(readFileSync(test.imagePath, "utf8")).toBe("converted-dynamic-vhdx");
+            expect(existsSync(join(test.profileRoot, "manifest.json"))).toBe(true);
+        } finally {
+            release();
+            try { await owner; }
+            finally { vi.restoreAllMocks(); syncBuiltinESMExports(); vi.resetModules(); }
+        }
+    });
+
     it("uses typed Get/Convert/Resize for Ubuntu and publishes only after final readback", async () => {
         const test = fixture("ubuntu-lts");
         const result = await test.prepare();
@@ -240,6 +295,70 @@ describe("automatic Hyper-V image typed VHD transaction", () => {
         expect(postInspectionClockReads).toBeGreaterThanOrEqual(2);
         expect(existsSync(test.imagePath)).toBe(true);
         expect(existsSync(join(test.profileRoot, "manifest.json"))).toBe(false);
+    });
+
+    it("withholds the manifest after local final-hash expiry despite a backward wall jump", async () => {
+        let wallNow = 1000;
+        let monotonicNow = 1000;
+        let finalReads = 0;
+        vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const test = fixture("ubuntu-lts", "normal", 1000, () => {}, () => monotonicNow);
+        const realOpen = fsPromises.open.bind(fsPromises);
+        vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+            const handle = await realOpen(...args);
+            if (args[0] === test.imagePath) {
+                const read = handle.read.bind(handle);
+                vi.spyOn(handle, "read").mockImplementation(async (...readArgs: Parameters<typeof handle.read>) => {
+                    const result = await read(...readArgs);
+                    finalReads += 1;
+                    wallNow = 500;
+                    monotonicNow = 2001;
+                    return result;
+                });
+            }
+            return handle;
+        });
+
+        await expect(test.prepare()).rejects.toThrow("hyper-v-operation-deadline-exceeded");
+
+        expect(finalReads).toBeGreaterThan(0);
+        expect(test.operations.at(-1)).toBe("Get-VHD");
+        expect(readFileSync(test.imagePath, "utf8")).toBe("converted-dynamic-vhdx");
+        expect(existsSync(join(test.profileRoot, "manifest.json"))).toBe(false);
+        expect(existsSync(test.partialPath)).toBe(false);
+    });
+
+    it("completes source hashing and publication across a forward wall jump within the local budget", async () => {
+        let wallNow = 1000;
+        let monotonicNow = 1000;
+        let sourceReads = 0;
+        vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const test = fixture("ubuntu-lts", "normal", 1000, () => {}, () => monotonicNow);
+        const realOpen = fsPromises.open.bind(fsPromises);
+        vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+            const handle = await realOpen(...args);
+            if (args[0] === test.sourceVhdPath) {
+                const read = handle.read.bind(handle);
+                vi.spyOn(handle, "read").mockImplementation(async (...readArgs: Parameters<typeof handle.read>) => {
+                    const result = await read(...readArgs);
+                    sourceReads += 1;
+                    wallNow = 10_000;
+                    monotonicNow += 1;
+                    return result;
+                });
+            }
+            return handle;
+        });
+        const beforePreparedAt = new Date().getTime();
+
+        await expect(test.prepare()).resolves.toEqual(expect.objectContaining({ ok: true, prepared: true, imagePath: test.imagePath }));
+
+        expect(sourceReads).toBeGreaterThan(0);
+        expect(test.operations).toEqual(["prepare", "Get-VHD", "Convert-VHD", "Get-VHD", "Resize-VHD", "Get-VHD", "finalize", "Get-VHD"]);
+        const manifest = JSON.parse(readFileSync(join(test.profileRoot, "manifest.json"), "utf8"));
+        expect(manifest.sha256).toBe(hash("converted-dynamic-vhdx"));
+        expect(Date.parse(manifest.preparedAt)).toBeGreaterThanOrEqual(beforePreparedAt);
+        expect(Date.parse(manifest.preparedAt)).toBeLessThanOrEqual(new Date().getTime());
     });
 
     it("maps a typed conversion timeout at the acquisition deadline to the deadline error", async () => {

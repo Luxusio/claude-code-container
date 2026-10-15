@@ -155,6 +155,7 @@ export type HyperVWindowsSessionSpawn = (
 
 export type HyperVWindowsSessionOptions = {
     readonly spawn: HyperVWindowsSessionSpawn;
+    readonly now?: () => number;
     readonly operationAsset?: HyperVWindowsPowerShellOperationAsset;
     // Bounded so a host that cannot start PowerShell fails fast instead of respawning forever.
     readonly maximumStarts?: number;
@@ -187,6 +188,7 @@ export type HyperVWindowsSession = HyperVWindowsExecutor & {
 
 type Pending = {
     readonly operation: HyperVWindowsExecutionRequest["operation"];
+    readonly expiresAt: number;
     readonly resolve: (result: HyperVWindowsExecutionResult) => void;
     // Cancels both of this request's timers. A request outlives its caller — the caller's deadline
     // settles the call, but the entry stays until the child answers or the health floor declares the
@@ -212,6 +214,7 @@ function frameError(code: HyperVWindowsSessionErrorCode): HyperVWindowsExecution
 export function createHyperVWindowsPowerShellSession(
     options: HyperVWindowsSessionOptions,
 ): HyperVWindowsSession {
+    const now = options.now ?? (() => performance.now());
     const maximumStarts = Math.max(1, Math.trunc(options.maximumStarts ?? DEFAULT_MAX_STARTS));
     const healthTimeoutMilliseconds = Math.max(
         1,
@@ -331,7 +334,10 @@ export function createHyperVWindowsPowerShellSession(
         // The asset reports a native failure as exit code 1, and the one-shot transport turns that
         // into the process exit status. Carrying it here is what makes the two transports produce
         // identical HyperVWindowsExecutionResults for identical host conditions.
-        entry.resolve({ status: reply.code as number, stdout: reply.stdout as string });
+        // A correlated late reply frees the pipe, but timer delivery cannot extend the caller's target.
+        entry.resolve(now() >= entry.expiresAt
+            ? frameError("hyper-v-windows-session-timeout")
+            : { status: reply.code as number, stdout: reply.stdout as string });
     }
 
     async function ensureChild(): Promise<HyperVWindowsSessionProcess | null> {
@@ -341,11 +347,11 @@ export function createHyperVWindowsPowerShellSession(
         // Expire the record before consulting it. Once the cap is reached no start is attempted, so
         // handleLine can never run to reset the counter — without expiry the budget is an absorbing
         // state and a healthy host stays demoted forever.
-        if (Date.now() - lastUnproductiveStartAt > startBudgetWindowMilliseconds) unansweredStarts = 0;
+        if (now() - lastUnproductiveStartAt > startBudgetWindowMilliseconds) unansweredStarts = 0;
         if (unansweredStarts >= maximumStarts) return null;
         starts += 1;
         unansweredStarts += 1;
-        lastUnproductiveStartAt = Date.now();
+        lastUnproductiveStartAt = now();
         starting = (async () => {
             const asset = verifiedOperationAsset(options.operationAsset);
             const spawned = await options.spawn(HYPER_V_WINDOWS_SESSION_BOOTSTRAP);
@@ -398,6 +404,20 @@ export function createHyperVWindowsPowerShellSession(
         }
     }
 
+    // Timer delivery is only a wake-up: an early callback must keep the original local target.
+    function deadlineTimer(deadlineAt: number, expire: () => void): () => void {
+        let timer: ReturnType<typeof setTimeout>;
+        const schedule = () => {
+            timer = setTimeout(() => {
+                if (now() < deadlineAt) schedule();
+                else expire();
+            }, Math.max(1, Math.ceil(deadlineAt - now())));
+            if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
+        };
+        schedule();
+        return () => clearTimeout(timer);
+    }
+
     // One stdin and one stdout mean one request at a time. Callers are queued rather than rejected:
     // the adapters issue dependent chains, so a concurrent caller is a different flow, not a bug.
     //
@@ -424,8 +444,12 @@ export function createHyperVWindowsPowerShellSession(
         let owned = false;
         try {
             if (context.signal?.aborted) return frameError("hyper-v-windows-session-cancelled");
+            if (now() >= expiresAt) return frameError("hyper-v-windows-session-queue-timeout");
             const active = await ensureChild();
             if (!active) return frameError("hyper-v-windows-session-unavailable");
+            if (context.signal?.aborted) return frameError("hyper-v-windows-session-cancelled");
+            // A spawn can settle after this caller's allowance; no request frame reached the host.
+            if (now() >= expiresAt) return frameError("hyper-v-windows-session-queue-timeout");
 
             const payload = JSON.stringify(request);
             if (Buffer.byteLength(payload, "utf8") > MAX_REQUEST_BYTES) {
@@ -444,8 +468,8 @@ export function createHyperVWindowsPowerShellSession(
                 const clear = () => {
                     if (cleared) return;
                     cleared = true;
-                    clearTimeout(callerTimer);
-                    clearTimeout(healthTimer);
+                    clearCallerTimer();
+                    clearHealthTimer();
                     // The pipe is free only now — this is what the next caller waits on.
                     release();
                 };
@@ -462,19 +486,19 @@ export function createHyperVWindowsPowerShellSession(
                 // leaves the request pending; if the child later answers, the reply still clears the
                 // entry and still counts as a productive session. Only the health floor below
                 // concludes the child is wedged.
-                const callerTimer = setTimeout(() => {
+                const clearCallerTimer = deadlineTimer(expiresAt, () => {
                     settle(frameError("hyper-v-windows-session-timeout"));
-                }, Math.max(1, expiresAt - Date.now()));
-                const healthTimer = setTimeout(() => {
-                    pending.delete(id);
-                    clear();
-                    discard("hyper-v-windows-session-timeout");
-                    settle(frameError("hyper-v-windows-session-timeout"));
-                }, Math.max(1, context.timeoutMilliseconds, healthTimeoutMilliseconds));
-                for (const timer of [callerTimer, healthTimer]) {
-                    if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
-                }
-                const entry: Pending = { resolve: settle, clear, delivered: false, operation: request.operation };
+                });
+                const clearHealthTimer = deadlineTimer(
+                    now() + Math.max(1, context.timeoutMilliseconds, healthTimeoutMilliseconds),
+                    () => {
+                        pending.delete(id);
+                        clear();
+                        discard("hyper-v-windows-session-timeout");
+                        settle(frameError("hyper-v-windows-session-timeout"));
+                    },
+                );
+                const entry: Pending = { resolve: settle, clear, delivered: false, operation: request.operation, expiresAt };
                 pending.set(id, entry);
                 // From here a timer guarantees the entry is cleared, so the pipe is owned rather than
                 // leaked no matter what happens next.
@@ -563,22 +587,23 @@ export function createHyperVWindowsPowerShellSession(
             // Timing it from inside send() gave a queued caller no deadline at all: it waited out the
             // health floor, which is exactly the "a primitive with 2.5s of budget must not run
             // against the 120s ceiling" failure the clamp exists to prevent, reappearing one layer up.
-            const expiresAt = Date.now() + Math.max(1, context.timeoutMilliseconds);
+            const admittedAt = now();
+            const expiresAt = admittedAt + Math.max(1, context.timeoutMilliseconds);
+            const queueExpiresAt = admittedAt + Math.max(1, Math.floor(context.timeoutMilliseconds * queueWaitFraction));
             let dequeued = false;
             let expiredInQueue = false;
             let expire = (_result: HyperVWindowsExecutionResult) => undefined as void;
             const queueExpiry = new Promise<HyperVWindowsExecutionResult>((resolve) => { expire = resolve; });
-            const queueTimer = setTimeout(() => {
+            const clearQueueTimer = deadlineTimer(queueExpiresAt, () => {
                 if (dequeued) return;
                 expiredInQueue = true;
                 expire(frameError("hyper-v-windows-session-queue-timeout"));
-            }, Math.max(1, Math.floor(context.timeoutMilliseconds * queueWaitFraction)));
-            if (typeof queueTimer === "object" && queueTimer && "unref" in queueTimer) queueTimer.unref();
+            });
 
             const run = queue.then(() => {
                 dequeued = true;
-                clearTimeout(queueTimer);
-                if (expiredInQueue) {
+                clearQueueTimer();
+                if (expiredInQueue || now() >= queueExpiresAt) {
                     // Its frame was never written, so nothing reached the host. That is a distinct
                     // code from a timeout on a request the child actually received, because it is
                     // the one case where re-issuing provably cannot apply a mutation twice.

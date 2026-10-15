@@ -289,13 +289,27 @@ export function isoWriterLines(fileSystems: 3 | 7 = 7): string[] {
     ];
 }
 
-function elevatedPowerShellCommand(executable: string, networkScript: string, deadlineUnixMs: number): HyperVProviderCommand {
+function elevatedPowerShellCommand(
+    executable: string,
+    networkScript: string,
+    deadlineUnixMs: number,
+    maximumDurationMs?: number,
+): HyperVProviderCommand {
     if (!Number.isSafeInteger(deadlineUnixMs) || deadlineUnixMs <= 0) throw new Error("hyper-v-network-deadline-invalid");
+    if (maximumDurationMs !== undefined && (!Number.isInteger(maximumDurationMs)
+        || maximumDurationMs <= 0 || maximumDurationMs > 2_147_483_647)) {
+        throw new Error("hyper-v-network-deadline-invalid");
+    }
+    const preparationStartedAt = maximumDurationMs === undefined ? undefined : performance.now();
     const programEncoded = Buffer.from(networkScript, "utf8").toString("base64");
     const innerScript = [
         "$ErrorActionPreference = 'Stop'",
         "$PipeName = '__CCC_HYPER_V_NETWORK_PIPE_NAME__'",
         `$DeadlineUnixMs = [long]${deadlineUnixMs}`,
+        `$MaximumDurationMs = [long]${maximumDurationMs ?? -1}`,
+        "$BudgetWatch = [Diagnostics.Stopwatch]::StartNew()",
+        "$BudgetMs = if ($MaximumDurationMs -ge 0) { $MaximumDurationMs } else { $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }",
+        "function Get-NetworkRemaining { $Remaining = $BudgetMs - $BudgetWatch.ElapsedMilliseconds; if ($Remaining -le 0) { throw 'hyper-v-network-operation-deadline-exceeded' }; return [long]$Remaining }",
         "$Envelope = $null",
         "$Watchdog = $null",
         "$WatchdogStartTicks = $null",
@@ -303,24 +317,27 @@ function elevatedPowerShellCommand(executable: string, networkScript: string, de
         "$env:PSModulePath = $TrustedModuleRoot",
         "if ($PipeName -notmatch '^ccc-hyper-v-network-[a-f0-9]{32}$') { throw 'hyper-v-network-pipe-name-invalid' }",
         "$Pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut)",
-        "$Pipe.Connect(5000)",
+        "$Pipe.Connect([int][Math]::Min([long]5000, (Get-NetworkRemaining)))",
         "$Reader = [IO.StreamReader]::new($Pipe, [Text.UTF8Encoding]::new($false), $false, 4096, $true)",
         "$Writer = [IO.StreamWriter]::new($Pipe, [Text.UTF8Encoding]::new($false), 4096, $true)",
         "try {",
-        "  $RemainingMs = $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()",
-        "  if ($RemainingMs -le 0) { throw 'hyper-v-network-operation-deadline-exceeded' }",
         "  $SelfStartTicks = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime().Ticks",
-        "  $WatchdogDelayMs = [int][Math]::Min([long][int]::MaxValue, [Math]::Max([long]1, $RemainingMs))",
+        "  $ProgramRead = $Reader.ReadLineAsync()",
+        "  if (-not $ProgramRead.Wait([int][Math]::Min([long][int]::MaxValue, (Get-NetworkRemaining)))) { throw 'hyper-v-network-operation-deadline-exceeded' }",
+        "  $ProgramEncoded = $ProgramRead.Result",
+        "  if (-not $ProgramEncoded -or $ProgramEncoded.Length -gt 16777227) { throw 'hyper-v-network-program-invalid' }",
+        "  if ($MaximumDurationMs -ge 0) { $Parts = $ProgramEncoded.Split(':', 2); if ($Parts.Count -ne 2 -or $Parts[0] -notmatch '^[0-9]{1,10}$') { throw 'hyper-v-network-program-invalid' }; $ReceivedMs = [long]$Parts[0]; if ($ReceivedMs -le 0 -or $ReceivedMs -gt [int]::MaxValue) { throw 'hyper-v-network-program-invalid' }; $BudgetMs = [Math]::Min((Get-NetworkRemaining), $ReceivedMs); $BudgetWatch.Restart(); $ProgramEncoded = $Parts[1] }",
+        "  if ($ProgramEncoded.Length -gt 16777216 -or $ProgramEncoded -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'hyper-v-network-program-invalid' }",
+        "  $WatchdogDelayMs = [int][Math]::Min([long][int]::MaxValue, (Get-NetworkRemaining))",
         "  $WatchdogSource = \"Start-Sleep -Milliseconds $WatchdogDelayMs; `$Target = Get-Process -Id $PID -ErrorAction SilentlyContinue; if (`$Target -and `$Target.StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks) { Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue }\"",
         "  $WatchdogEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($WatchdogSource))",
         "  $Watchdog = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',$WatchdogEncoded) -WindowStyle Hidden -PassThru -ErrorAction Stop",
         "  $WatchdogStartTicks = $Watchdog.StartTime.ToUniversalTime().Ticks",
-        "  if ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -ge $DeadlineUnixMs) { throw 'hyper-v-network-operation-deadline-exceeded' }",
-        "  $ProgramEncoded = $Reader.ReadLine()",
-        "  if (-not $ProgramEncoded -or $ProgramEncoded.Length -gt 16777216 -or $ProgramEncoded -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'hyper-v-network-program-invalid' }",
         "  $Program = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ProgramEncoded))",
         "  if (-not $Program -or $Program.Length -gt 12582912) { throw 'hyper-v-network-program-invalid' }",
+        "  [void](Get-NetworkRemaining)",
         "  $Output = @(& ([ScriptBlock]::Create($Program)))",
+        "  [void](Get-NetworkRemaining)",
         "  $OutputText = ($Output | Out-String -Width 4096).Trim()",
         "  if ($OutputText.Length -gt 65536) { throw 'hyper-v-network-result-too-large' }",
         "  $Envelope = [ordered]@{ ok = $true; output = $OutputText }",
@@ -337,11 +354,15 @@ function elevatedPowerShellCommand(executable: string, networkScript: string, de
         "if (-not $Envelope.ok) { exit 1 }",
     ].join("\n");
     const innerEncoded = encodedPowerShell(innerScript);
-    const outerScript = [
+    let outerScript = [
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference = 'SilentlyContinue'",
         `$Executable = ${psQuote(executable)}`,
         `$DeadlineUnixMs = [long]${deadlineUnixMs}`,
+        `$MaximumDurationMs = [long]${maximumDurationMs ?? -1}`,
+        "$BudgetWatch = [Diagnostics.Stopwatch]::StartNew()",
+        "$BudgetMs = if ($MaximumDurationMs -ge 0) { $MaximumDurationMs } else { $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }",
+        "function Get-NetworkRemaining { $Remaining = $BudgetMs - $BudgetWatch.ElapsedMilliseconds; if ($Remaining -le 0) { throw 'hyper-v-network-operation-deadline-exceeded' }; return [long]$Remaining }",
         `$InnerEncodedTemplate = ${psQuote(innerEncoded)}`,
         `$ProgramEncoded = ${psQuote(programEncoded)}`,
         "$PipeName = 'ccc-hyper-v-network-' + [Guid]::NewGuid().ToString('N')",
@@ -366,18 +387,19 @@ function elevatedPowerShellCommand(executable: string, networkScript: string, de
         "$ChildStartTicks = $null",
         "$OperationCompleted = $false",
         "try {",
-        "  $HandshakeRemainingMs = $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()",
-        "  if ($HandshakeRemainingMs -le 0) { throw 'hyper-v-network-operation-deadline-exceeded' }",
+        "  [void](Get-NetworkRemaining)",
         "  $Wait = $Pipe.BeginWaitForConnection($null, $null)",
         "  try { $Child = Start-Process -FilePath $Executable -Verb RunAs -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$InnerEncoded) -WindowStyle Hidden -PassThru -ErrorAction Stop } catch { if ($_.Exception -is [ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 1223) { throw 'hyper-v-network-elevation-cancelled' }; $ElevationHResult = [Math]::Abs([long]$_.Exception.HResult); throw ('hyper-v-network-elevation-failed:' + $ElevationHResult) }",
         "  $ChildStartTicks = $Child.StartTime.ToUniversalTime().Ticks",
-        "  $HandshakeWaitMs = [int][Math]::Min([long]120000, [Math]::Max([long]1, $HandshakeRemainingMs))",
+        "  $HandshakeRemainingMs = Get-NetworkRemaining",
+        "  $HandshakeWaitMs = [int][Math]::Min([long]120000, $HandshakeRemainingMs)",
         "  if (-not $Wait.AsyncWaitHandle.WaitOne($HandshakeWaitMs)) { throw 'hyper-v-network-pipe-handshake-timeout' }",
         "  $Pipe.EndWaitForConnection($Wait)",
         "  [uint32]$ClientProcessId = 0",
         "  if (-not [CccHyperVNetworkPipeNative]::GetNamedPipeClientProcessId($Pipe.SafePipeHandle.DangerousGetHandle(), [ref]$ClientProcessId) -or $ClientProcessId -ne [uint32]$Child.Id) { throw 'hyper-v-network-pipe-client-mismatch' }",
         "  $Writer = [IO.StreamWriter]::new($Pipe, [Text.UTF8Encoding]::new($false), 4096, $true)",
-        "  $Writer.WriteLine($ProgramEncoded)",
+        "  $ProgramRemainingMs = Get-NetworkRemaining",
+        "  if ($MaximumDurationMs -ge 0) { $Writer.WriteLine(([string]$ProgramRemainingMs) + ':' + $ProgramEncoded) } else { $Writer.WriteLine($ProgramEncoded) }",
         "  $Writer.Flush()",
         "  $Writer.Dispose()",
         "  $Reader = [IO.StreamReader]::new($Pipe, [Text.UTF8Encoding]::new($false), $false, 4096, $true)",
@@ -386,21 +408,36 @@ function elevatedPowerShellCommand(executable: string, networkScript: string, de
         "  if (-not $EnvelopeJson -or $EnvelopeJson.Length -gt 131072) { throw 'hyper-v-network-result-invalid' }",
         "  $Envelope = $EnvelopeJson | ConvertFrom-Json -ErrorAction Stop",
         "  if (-not $Envelope.ok) { $ChildError = [string]$Envelope.error; if ($ChildError -notmatch '^hyper-v-[a-z0-9:-]+$') { $ChildError = 'hyper-v-network-elevated-operation-failed' }; throw $ChildError }",
-        "  if (-not $Child.WaitForExit(10000) -or $Child.ExitCode -ne 0) { throw 'hyper-v-network-elevated-operation-failed' }",
+        "  if (-not $Child.WaitForExit([int][Math]::Min([long]10000, (Get-NetworkRemaining))) -or $Child.ExitCode -ne 0) { throw 'hyper-v-network-elevated-operation-failed' }",
+        "  [void](Get-NetworkRemaining)",
         "  $OperationCompleted = $true",
         "  Write-Output ([string]$Envelope.output)",
         "} finally {",
+        "  $CleanupWatch = [Diagnostics.Stopwatch]::StartNew()",
         "  if ($Wait) { $Wait.AsyncWaitHandle.Dispose() }",
         "  if ($Pipe) { $Pipe.Dispose() }",
         "  if (-not $OperationCompleted -and $Child -and $ChildStartTicks) { $ObservedChild = Get-Process -Id $Child.Id -ErrorAction SilentlyContinue; if ($ObservedChild -and $ObservedChild.StartTime.ToUniversalTime().Ticks -eq $ChildStartTicks) { Stop-Process -Id $Child.Id -Force -ErrorAction SilentlyContinue } }",
-        "  if (-not $OperationCompleted -and $Child) { try { if (-not $Child.WaitForExit(5000)) { throw 'hyper-v-network-elevated-child-termination-unconfirmed' } } catch { if ([string]$_.Exception.Message -eq 'hyper-v-network-elevated-child-termination-unconfirmed') { throw } } }",
+        "  if (-not $OperationCompleted -and $Child) { try { if (-not $Child.WaitForExit([int][Math]::Max([long]0, 5000 - $CleanupWatch.ElapsedMilliseconds))) { throw 'hyper-v-network-elevated-child-termination-unconfirmed' } } catch { if ([string]$_.Exception.Message -eq 'hyper-v-network-elevated-child-termination-unconfirmed') { throw } } }",
         "}",
     ].join("\n");
+    if (maximumDurationMs !== undefined && preparationStartedAt !== undefined) {
+        const remaining = Math.floor(maximumDurationMs - (performance.now() - preparationStartedAt));
+        if (remaining <= 0) throw new Error("hyper-v-network-elevation-deadline-exceeded");
+        outerScript = outerScript.replace(
+            `$MaximumDurationMs = [long]${maximumDurationMs}`,
+            `$MaximumDurationMs = [long]${remaining}`,
+        );
+    }
     return command(executable, outerScript);
 }
 
-export function elevatedNetworkCommand(executable: string, networkScript: string, deadlineUnixMs: number): HyperVProviderCommand {
-    return elevatedPowerShellCommand(executable, networkScript, deadlineUnixMs);
+export function elevatedNetworkCommand(
+    executable: string,
+    networkScript: string,
+    deadlineUnixMs: number,
+    maximumDurationMs?: number,
+): HyperVProviderCommand {
+    return elevatedPowerShellCommand(executable, networkScript, deadlineUnixMs, maximumDurationMs);
 }
 
 export function ownedVmPrelude(options: HyperVCommandOptions): string[] {

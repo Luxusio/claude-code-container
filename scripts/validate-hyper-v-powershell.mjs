@@ -229,10 +229,23 @@ async function elevatedRelayBootstrapSource() {
 // fails before it reaches the pipe is indistinguishable from a handshake timeout on a Windows host.
 async function elevatedChildSources() {
     const module = pathToFileURL(join(repoRoot, "packages", "device-lab", "src", "device-lab", "broker", "hyper-v", "elevated-network-session.ts")).href;
-    const probe = spawnSync(process.execPath, [
-        "--import", "tsx",
-        "-e", `import(${JSON.stringify(module)}).then((m) => process.stdout.write(JSON.stringify(m.hyperVElevatedNetworkChildPrograms())))`,
-    ], { cwd: repoRoot, encoding: "utf8", timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true });
+    const legacyModule = pathToFileURL(join(repoRoot, "packages", "device-lab", "src", "host-control", "hyper-v", "core.ts")).href;
+    const collect = `Promise.all([import(${JSON.stringify(module)}),import(${JSON.stringify(legacyModule)})]).then(([m,c]) => {
+        const programs = [m.hyperVElevatedNetworkChildPrograms(),m.hyperVElevatedNetworkChildPrograms(2147483647)]
+            .flatMap((p) => [p.loader,p.child]);
+        for (const duration of [undefined,2147483647]) {
+            const command = c.elevatedNetworkCommand('C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe', 'Write-Output 1', 2000000000000, duration);
+            const outer = command.input ? Buffer.from(command.input,'base64').toString('utf8')
+                : Buffer.from(command.args[command.args.indexOf('-EncodedCommand')+1],'base64').toString('utf16le');
+            const inner = /\\$InnerEncodedTemplate = '([^']+)'/.exec(outer)?.[1];
+            if (!inner) throw new Error('legacy elevated child unavailable');
+            programs.push(outer,Buffer.from(inner,'base64').toString('utf16le'));
+        }
+        process.stdout.write(JSON.stringify(programs));
+    })`;
+    const probe = spawnSync(process.execPath, ["--import", "tsx", "-e", collect], {
+        cwd: repoRoot, encoding: "utf8", timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true,
+    });
     if (probe.error || probe.status !== 0) return null;
     let programs;
     try {
@@ -240,16 +253,14 @@ async function elevatedChildSources() {
     } catch {
         return null;
     }
-    if (!programs || typeof programs.loader !== "string" || !programs.loader
-        || typeof programs.child !== "string" || !programs.child) {
-        return null;
-    }
+    if (!Array.isArray(programs) || programs.length !== 8
+        || programs.some((source) => typeof source !== "string" || !source)) return null;
     const directory = mkdtempSync(join(tmpdir(), "ccc-hyper-v-elevated-child-"));
-    const loaderPath = join(directory, "elevated-network-child-loader.ps1");
-    const childPath = join(directory, "elevated-network-child.ps1");
-    writeFileSync(loaderPath, programs.loader, "utf8");
-    writeFileSync(childPath, programs.child, "utf8");
-    return [loaderPath, childPath];
+    return programs.map((source, index) => {
+        const path = join(directory, `elevated-network-child-${index}.ps1`);
+        writeFileSync(path, source, "utf8");
+        return path;
+    });
 }
 
 // The Windows Setup diagnostics module emits three PowerShell programs the same way the session

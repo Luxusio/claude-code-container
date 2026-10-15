@@ -454,6 +454,7 @@ export type HyperVNetworkOptions = {
     expectedNatInstanceId?: string;
     elevated?: boolean;
     elevatedDeadlineUnixMs?: number;
+    elevatedMaximumDurationMs?: number;
 };
 
 export type HyperVNetworkCleanupOptions = HyperVNetworkOptions & {

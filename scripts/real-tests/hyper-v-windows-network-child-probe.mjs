@@ -21,12 +21,12 @@ function encodedPowerShell(source) {
     return Buffer.from(source, "utf16le").toString("base64");
 }
 
-function loadChildPrograms() {
+function loadChildPrograms(maximumDurationMilliseconds) {
     const module = fileURLToPath(import.meta.resolve("#device-lab/device-lab/broker/hyper-v/elevated-network-session.js"));
     const moduleUrl = `file:///${module.replace(/\\/g, "/")}`;
     const probe = spawnSync(process.execPath, [
         "--import", "tsx",
-        "-e", `import(${JSON.stringify(moduleUrl)}).then((m) => process.stdout.write(JSON.stringify(m.hyperVElevatedNetworkChildPrograms())))`,
+        "-e", `import(${JSON.stringify(moduleUrl)}).then((m) => process.stdout.write(JSON.stringify(m.hyperVElevatedNetworkChildPrograms(${maximumDurationMilliseconds === undefined ? "" : maximumDurationMilliseconds}))))`,
     ], { cwd: repositoryRoot, encoding: "utf8", timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true });
     if (probe.error || probe.status !== 0) {
         throw new Error(`unable to load the child programs: ${probe.stderr || probe.error?.message || "unknown"}`);
@@ -38,7 +38,7 @@ function loadChildPrograms() {
     return programs;
 }
 
-function serverSource(pipeName) {
+function serverSource(pipeName, maximumDurationMilliseconds) {
     return [
         "$ErrorActionPreference='Stop'",
         `$P='${pipeName}'`,
@@ -53,7 +53,8 @@ function serverSource(pipeName) {
         "if($AL-and $AL.StartsWith('AUTH:')){$AJ=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($AL.Substring(5)));[Console]::Out.WriteLine('PROBE:AUTH='+$AJ)}else{[Console]::Out.WriteLine('PROBE:AUTH-INVALID='+[string]$AL)}",
         "[Console]::Out.Flush()",
         "$B=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(\"[Console]::Out.WriteLine('PROBE-BOOTSTRAP-RAN')\"))",
-        "$W.WriteLine($B);$W.Flush()",
+        maximumDurationMilliseconds === undefined ? "$W.WriteLine($B);$W.Flush()"
+            : `$W.WriteLine('${maximumDurationMilliseconds}:'+$B);$W.Flush()`,
         "$V=$R.ReadLine();[Console]::Out.WriteLine('PROBE:CHILD-SAID='+[string]$V);[Console]::Out.Flush()",
         "$Q.Dispose();exit 0",
     ].join(";");
@@ -71,12 +72,12 @@ function waitForExit(child, label) {
     });
 }
 
-async function run() {
+async function run(maximumDurationMilliseconds) {
     if (process.platform !== "win32") {
         process.stdout.write("SKIP child probe: Windows host required\n");
         return 0;
     }
-    const programs = loadChildPrograms();
+    const programs = loadChildPrograms(maximumDurationMilliseconds);
     const pipeName = /\$P='([^']+)'/.exec(programs.child)?.[1];
     if (!pipeName) throw new Error("child program has no pipe name");
     const childEncoded = encodedPowerShell(programs.loader);
@@ -87,7 +88,7 @@ async function run() {
     const serverLines = [];
     const server = spawn(executable, [
         "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-        "-EncodedCommand", encodedPowerShell(serverSource(pipeName)),
+        "-EncodedCommand", encodedPowerShell(serverSource(pipeName, maximumDurationMilliseconds)),
     ], { stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
     const serverExit = waitForExit(server, "server");
     let serverBuffer = "";
@@ -148,3 +149,4 @@ async function run() {
 }
 
 process.exitCode = await run();
+if (process.exitCode === 0 && process.platform === "win32") process.exitCode = await run(60_000);

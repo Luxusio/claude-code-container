@@ -1,7 +1,8 @@
 import type { HyperVWindowsExecutor } from "@ccc/hyper-v/index.js";
-import type {
-    HyperVElevatedNetworkAcquisitionSettlement,
-    HyperVElevatedNetworkErrorCode,
+import {
+    HyperVElevatedNetworkSessionError,
+    type HyperVElevatedNetworkAcquisitionSettlement,
+    type HyperVElevatedNetworkErrorCode,
 } from "./elevated-network-session.js";
 
 // Codes that settle an acquisition before Windows can have shown a consent prompt: the caller's
@@ -65,6 +66,7 @@ export async function withHyperVElevationGate<T>(
         onAcquisitionSettled: (settlement: HyperVElevatedNetworkAcquisitionSettlement) => void,
     ) => Promise<T>,
     operation: (executor: HyperVWindowsExecutor) => T | Promise<T>,
+    options?: { readonly remainingMilliseconds?: () => number },
 ): Promise<T> {
     let releaseTurn = () => undefined as void;
     const turn = new Promise<void>((resolve) => {
@@ -72,8 +74,39 @@ export async function withHyperVElevationGate<T>(
     });
     const previous = turns;
     turns = previous.then(() => turn);
-    await previous;
     try {
+        if (options?.remainingMilliseconds) {
+            const remainingMilliseconds = options.remainingMilliseconds;
+            await new Promise<void>((resolve, reject) => {
+                let timer: ReturnType<typeof setTimeout> | null = null;
+                let settled = false;
+                const finish = (expired: boolean) => {
+                    if (settled) return;
+                    settled = true;
+                    if (timer) clearTimeout(timer);
+                    if (expired) reject(new HyperVElevatedNetworkSessionError(
+                        "hyper-v-network-elevation-deadline-exceeded",
+                    ));
+                    else resolve();
+                };
+                const expire = () => {
+                    const remaining = remainingMilliseconds();
+                    if (remaining <= 0) {
+                        finish(true);
+                        return;
+                    }
+                    if (Number.isFinite(remaining)) timer = setTimeout(expire,
+                        Math.max(1, Math.min(2_147_483_647, remaining)));
+                };
+                expire();
+                previous.then(() => finish(remainingMilliseconds() <= 0), () => finish(true));
+            });
+        } else {
+            await previous;
+        }
+        if (options?.remainingMilliseconds && options.remainingMilliseconds() <= 0) {
+            throw new HyperVElevatedNetworkSessionError("hyper-v-network-elevation-deadline-exceeded");
+        }
         if (refusal) {
             releaseTurn();
             return await operation(HYPER_V_ELEVATION_SUPPRESSED_EXECUTOR);

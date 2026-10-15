@@ -1,7 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { createHyperVNetworkTrust } from "../../../packages/device-lab/src/device-lab/application/hyper-v-network-trust.js";
-import type { HyperVNetworkRelease, HyperVNetworkAllocationResult, HyperVNetworkFabricResult } from "../../../packages/device-lab/src/device-lab/domain/hyper-v-network-trust.js";
-import type { HyperVNetworkStatePorts, HyperVHostNetworkPorts, HyperVHostEnsureRequest, HyperVNetworkPorts, HyperVFabricEffects } from "../../../packages/device-lab/src/device-lab/ports/hyper-v-network-trust.js";
+import type { HyperVNetworkRelease, HyperVNetworkAllocationResult, HyperVNetworkFabricResult, HyperVNetworkNativeAttempt } from "../../../packages/device-lab/src/device-lab/domain/hyper-v-network-trust.js";
+import type { HyperVNetworkStatePorts, HyperVHostNetworkPorts, HyperVHostEnsureRequest, HyperVHostCleanupRequest, HyperVNetworkPorts, HyperVFabricEffects } from "../../../packages/device-lab/src/device-lab/ports/hyper-v-network-trust.js";
+
+type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
+    (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+const NATIVE_ATTEMPT_IS_SEMANTIC: Equal<HyperVNetworkNativeAttempt,
+    | { privilege: "standard"; timeoutMs: number }
+    | { privilege: "administrator"; timeoutMs: number; terminationGraceMs: number }
+> = true;
+const CLEANUP_REQUIRES_CALLER_DEADLINE: {} extends Pick<HyperVHostCleanupRequest, "deadlineAt"> ? true : false = false;
+
+function nativeAttemptContracts(): void {
+    const standard: HyperVNetworkNativeAttempt = { privilege: "standard", timeoutMs: 120_000 };
+    const administrator: HyperVNetworkNativeAttempt = { privilege: "administrator", timeoutMs: 180_000, terminationGraceMs: 10_000 };
+    // @ts-expect-error An administrator attempt cannot silently lose its termination reserve.
+    const withoutReserve: HyperVNetworkNativeAttempt = { privilege: "administrator", timeoutMs: 180_000 };
+    // @ts-expect-error Process-local policy cannot construct a native Unix deadline.
+    const inwardUnix: HyperVNetworkNativeAttempt = { privilege: "administrator", timeoutMs: 180_000, terminationGraceMs: 10_000, deadlineUnixMs: 1_000_000 };
+    void [standard, administrator, withoutReserve, inwardUnix];
+}
+void nativeAttemptContracts;
 
 function stateContracts(ports: HyperVNetworkStatePorts) {
     const result: HyperVNetworkRelease = createHyperVNetworkTrust(ports).release("owner", "guest", "incarnation");
@@ -33,9 +52,12 @@ function hostContracts(ports: HyperVHostNetworkPorts, request: HyperVHostEnsureR
     const { execute, ...withoutExecution } = ports.standard;
     // @ts-expect-error prepared native action execution is required
     createHyperVNetworkTrust({ ...ports, standard: withoutExecution });
+    const { throwDeadline, ...withoutDeadlineError } = ports;
+    // @ts-expect-error The host port preserves the native deadline error capability.
+    createHyperVNetworkTrust(withoutDeadlineError);
     // @ts-expect-error deadline clock observations cannot be deferred
     createHyperVNetworkTrust({ ...ports, now: async () => 0 });
-    void [pending, withAdministrator, execute];
+    void [pending, withAdministrator, execute, throwDeadline];
 }
 void [stateContracts, hostContracts];
 
@@ -59,6 +81,11 @@ void allocationContracts;
 
 
 describe("Hyper-V network trust typed state consumer", () => {
+    it("keeps native attempts as durations and requires an internal cleanup deadline", () => {
+        expect(NATIVE_ATTEMPT_IS_SEMANTIC).toBe(true);
+        expect(CLEANUP_REQUIRES_CALLER_DEADLINE).toBe(false);
+    });
+
     it("reports an absent allocation state without publishing or removing storage", () => {
         const unexpected = (): never => { throw new Error("absent-state-must-not-mutate"); };
         const ports: HyperVNetworkStatePorts = {

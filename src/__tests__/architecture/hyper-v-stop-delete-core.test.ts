@@ -71,7 +71,7 @@ function terminalFixture(command: TerminalCommand) {
         stateFailure: (_error: unknown, target: { backend: string; stateKey: string }) => ({ reason: "state-write-failed" as const, error: "state-write-failed", ...target }),
         errorCode: (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback,
         diagnosticCode: vi.fn((evidence: HyperVCommandExecution<Receipt>, fallback: string) => evidence.failureCode || fallback),
-        assertDeadline: vi.fn((): undefined => undefined),
+        assertDeadline: vi.fn((_deadline: number): undefined => undefined),
         deadlineExpired: vi.fn(() => false),
         timestamp: () => "2026-10-15T00:01:00.000Z",
     } satisfies HyperVStopDeletePorts<Connection, Receipt>;
@@ -85,6 +85,64 @@ function terminalFixture(command: TerminalCommand) {
 }
 
 describe("Hyper-V inward terminal observations", () => {
+    it.each([
+        { command: "device_stop", reconcile: false }, { command: "device_delete", reconcile: false },
+        { command: "device_stop", reconcile: true }, { command: "device_delete", reconcile: true },
+    ] as const)("retains $command state and journal after a matched publication wait (reconcile=$reconcile)", async ({ command, reconcile }) => {
+        const f = terminalFixture(command), before = structuredClone(f.device);
+        let now = 17.25, enteredAt: number | undefined, replacementAttempts = 0;
+        const deadline = now + 5000, expired = new Error("hyper-v-operation-deadline-exceeded");
+        f.ports.assertDeadline.mockImplementation(target => {
+            if (now >= target) throw expired;
+            return undefined;
+        });
+        const publish = f.ports.publish.getMockImplementation()!;
+        f.ports.publish.mockImplementation((owner, key, id, expected, replace) => {
+            enteredAt = now;
+            return publish(owner, key, id, expected, current => {
+                replacementAttempts += 1; now = deadline + 0.25;
+                return replace(current);
+            });
+        });
+        const replayObservation = vi.fn<HyperVStopDeletePorts<Connection, Receipt>["replayObservation"]>(async () =>
+            command === "device_delete" ? { kind: "absent", satisfiesIntent: true }
+                : { kind: "settled", virtualMachine: { state: "Off", status: "Stopped" } });
+        const removeHostFiles = vi.fn<HyperVStopDeletePorts<Connection, Receipt>["removeHostFiles"]>(async () => undefined);
+        if (reconcile) {
+            f.ports.writeJournal();
+            Object.assign(f.ports, { replayObservation, removeHostFiles });
+        }
+        let outcome: unknown, failure: unknown;
+        try {
+            outcome = reconcile
+                ? await f.application.reconcile("owner", "windows-vm", f.device.id, deadline)
+                : await f.application.invoke("owner", f.request, deadline, deadline + 30_000);
+        } catch (error) { failure = error; }
+
+        expect(enteredAt).toBe(17.25);
+        expect(replacementAttempts).toBe(1);
+        if (failure !== undefined) expect(failure).toMatchObject({ message: expired.message });
+        else {
+            expect(outcome).toMatchObject({ journalDisposition: "retain" });
+            expect(JSON.stringify(outcome)).toContain(expired.message);
+        }
+        expect(f.current()).toBe(f.device);
+        expect(f.current()).toEqual(before);
+        expect(f.journal()).toMatchObject({ command, vmId: f.device.vmId, incarnationId: f.device.incarnationId });
+        expect(f.ports.clearJournal).not.toHaveBeenCalled();
+        expect(f.execution.receipt).toMatchObject({ nativeEvidence: "terminal receipt", status: 0 });
+        expect(f.ports.executeStop).toHaveBeenCalledTimes(!reconcile && command === "device_stop" ? 1 : 0);
+        expect(f.ports.executeDelete).toHaveBeenCalledTimes(!reconcile && command === "device_delete" ? 1 : 0);
+        if (command === "device_delete") {
+            expect(f.ports.releaseNetwork).toHaveBeenCalledOnce();
+            expect(f.ports.cleanupArtifacts).toHaveBeenCalledOnce();
+        }
+        if (reconcile) {
+            expect(replayObservation).toHaveBeenCalledOnce();
+            expect(removeHostFiles).toHaveBeenCalledTimes(command === "device_delete" ? 2 : 0);
+        }
+    });
+
     it.each(["Running", "Stopping", "Unknown", "", "off", " Off "])("retains ordinary stop state and recovery evidence for noncanonical state %j", async (state) => {
         const f = terminalFixture("device_stop");
         const predecessor = structuredClone(f.device);

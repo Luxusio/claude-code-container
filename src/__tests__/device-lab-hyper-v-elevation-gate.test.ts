@@ -16,6 +16,7 @@ import {
     HyperVElevatedNetworkSessionError,
     withElevatedHyperVNetworkExecutor,
     type HyperVElevatedNetworkErrorCode,
+    type HyperVElevatedNetworkAcquisitionSettlement,
     type HyperVElevatedNetworkRelayCompletion,
     type HyperVElevatedNetworkRelayProcess,
     type HyperVElevatedNetworkRelaySpawn,
@@ -311,6 +312,50 @@ describe("Hyper-V elevation gate", () => {
         expect(request).toHaveBeenCalledTimes(1);
     });
 
+    it.each([-86_400_000, 86_400_000])("expires only a waiting transaction's turn despite a %i ms wall jump", async (wallJump) => {
+        vi.useFakeTimers();
+        let releaseFirst = () => undefined as void;
+        const held = new Promise<void>((resolve) => { releaseFirst = resolve; });
+        let settleFirst = (_settlement: HyperVElevatedNetworkAcquisitionSettlement) => undefined as void;
+        const firstElevate = vi.fn(async (settled: (settlement: HyperVElevatedNetworkAcquisitionSettlement) => void) => {
+            settleFirst = settled;
+            await held;
+            return "first";
+        });
+        const secondElevate = vi.fn(async () => "expired transaction elevated");
+        const thirdElevate = vi.fn(async (settled: (settlement: HyperVElevatedNetworkAcquisitionSettlement) => void) => {
+            settled({ prompted: false, ready: false, code: null });
+            return "third";
+        });
+        let remaining = 100;
+        let secondOutcome: unknown;
+        const first = withHyperVElevationGate(firstElevate, () => "unused");
+        const second = withHyperVElevationGate(secondElevate, () => "unused", {
+            remainingMilliseconds: () => remaining,
+        }).then((value) => { secondOutcome = value; }, (error: unknown) => { secondOutcome = error; });
+        const third = withHyperVElevationGate(thirdElevate, () => "unused");
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(firstElevate).toHaveBeenCalledTimes(1);
+            vi.setSystemTime(Date.now() + wallJump);
+            remaining = 0;
+            await vi.advanceTimersByTimeAsync(100);
+            expect(secondOutcome).toMatchObject({ code: "hyper-v-network-elevation-deadline-exceeded" });
+            expect(secondElevate).not.toHaveBeenCalled();
+            expect(thirdElevate).not.toHaveBeenCalled();
+            settleFirst({ prompted: false, ready: false, code: null });
+            releaseFirst();
+            await expect(first).resolves.toBe("first");
+            await expect(third).resolves.toBe("third");
+            expect(secondElevate).not.toHaveBeenCalled();
+            expect(hyperVElevationGateStatus()).toEqual({ state: "never-asked" });
+        } finally {
+            releaseFirst();
+            await Promise.all([first, second, third]);
+            vi.useRealTimers();
+        }
+    });
+
     it("refuses when a prompt was raised and the scope closed before the relay answered", async () => {
         const relay = scriptedRelay();
         const controller = new AbortController();
@@ -361,19 +406,24 @@ describe("Hyper-V elevation gate", () => {
         const second = administratorTransaction({ spawnRelay, onBeforeElevation: request }, listSwitches)
             .then(() => null, (error: unknown) => error);
         controller.abort();
-
-        await expect(first).resolves.toMatchObject({ error: "hyper-v-network-elevation-cancelled" });
-        await flush();
-        expect(spawnRelay).toHaveBeenCalledTimes(1);
-        releaseSpawn();
-        expect(await second).toMatchObject({ code: "hyper-v-network-elevation-suppressed" });
-        await flush();
-        expect(spawnRelay).toHaveBeenCalledTimes(1);
-        expect(request).toHaveBeenCalledTimes(1);
-        expect(hyperVElevationGateStatus()).toMatchObject({
-            state: "refused",
-            code: "hyper-v-network-elevation-scope-closed",
-        });
+        try {
+            await flush();
+            expect(await second).toMatchObject({ code: "hyper-v-network-elevation-suppressed" });
+            expect(spawnRelay).toHaveBeenCalledTimes(1);
+            expect(request).toHaveBeenCalledTimes(1);
+            expect(hyperVElevationGateStatus()).toMatchObject({
+                state: "refused",
+                code: "hyper-v-network-elevation-scope-closed",
+            });
+            releaseSpawn();
+            await flush();
+            await expect(first).resolves.toMatchObject({ error: "hyper-v-network-elevation-cancelled" });
+            expect(spawnRelay).toHaveBeenCalledTimes(1);
+            expect(request).toHaveBeenCalledTimes(1);
+        } finally {
+            releaseSpawn();
+            await Promise.allSettled([first, second]);
+        }
     });
 
     it("fails every call on the suppressed executor without starting anything", async () => {
@@ -401,7 +451,11 @@ describe("Hyper-V elevation gate", () => {
 
         expect(start).toBeGreaterThanOrEqual(0);
         expect(composition).toContain("purpose?: DeviceLabHyperVAdministratorPurpose) => normalized.usesDefaultCommandRunner");
-        expect(composition).toContain("withHyperVAdministratorExecutor(purpose, () => ({");
+        expect(composition).toContain("withHyperVAdministratorExecutor(purpose, () => {");
+        expect(composition).toContain("Math.floor(deadlineAt - normalized.hyperVMonotonicNow())");
+        expect(composition).toContain("deadlineUnixMilliseconds: Date.now() + maximumDurationMilliseconds");
+        expect(composition).toContain("remainingMilliseconds: () => deadlineAt - normalized.hyperVMonotonicNow()");
+        expect(composition).toContain("monotonicNow: normalized.hyperVMonotonicNow");
         // The forwarded `purpose` can only be the adapter's own argument: nothing else in the
         // runtime binds or uses that name, so a rename cannot leave the log line unspecified.
         expect(runtimeStart).toBeGreaterThanOrEqual(0);
@@ -421,10 +475,12 @@ describe("Hyper-V elevation log lines", () => {
     const iso = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z";
     const requestSentence = "Windows is asking for Administrator permission via UAC to configure Hyper-V host networking";
     let written: string[] = [];
+    let monotonic = 0;
 
     beforeEach(() => {
         resetHyperVElevationGateForTest();
         written = [];
+        monotonic = 0;
         vi.useFakeTimers({ toFake: ["Date"] });
         vi.setSystemTime(new Date("2026-09-27T09:15:00.000Z"));
         vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
@@ -448,17 +504,19 @@ describe("Hyper-V elevation log lines", () => {
             executable,
             deadlineUnixMilliseconds: Date.now() + 180_000,
             spawnRelay,
-        }), operation);
+        }), operation, { monotonicNow: () => monotonic });
     }
 
     // A relay that takes 750 ms to ask, then `waitMs` of the person's time before it settles.
     function timedSpawn(waitMs: number, settle: (relay: ScriptedRelay) => void) {
         return vi.fn<HyperVElevatedNetworkRelaySpawn>(async (request) => {
             vi.setSystemTime(Date.now() + 750);
+            monotonic += 750;
             request.onBeforeElevation();
             const relay = scriptedRelay();
             queueMicrotask(() => {
                 vi.setSystemTime(Date.now() + waitMs);
+                monotonic += waitMs;
                 settle(relay);
             });
             return relay.process;
@@ -497,6 +555,7 @@ describe("Hyper-V elevation log lines", () => {
     it("writes only the outcome, timed from the attempt, when the relay could not be started", async () => {
         const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>(async () => {
             vi.setSystemTime(Date.now() + 300);
+            monotonic += 300;
             throw new Error("spawn EACCES C:\\Users\\someone\\secret");
         });
 
@@ -511,6 +570,75 @@ describe("Hyper-V elevation log lines", () => {
         await expect(brokerTransaction("ensure", timedSpawn(0, (relay) => relay.approve()), () => "no-op"))
             .resolves.toBe("no-op");
         expect(written).toEqual([]);
+    });
+
+    it.each([-86_400_000, 86_400_000])("keeps elapsed logging local and audit timestamps wall based across a %i ms jump", async (wallJump) => {
+        const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>(async (request) => {
+            monotonic = 25;
+            request.onBeforeElevation();
+            const relay = scriptedRelay();
+            queueMicrotask(() => {
+                monotonic = 150;
+                vi.setSystemTime(Date.now() + wallJump);
+                relay.approve();
+            });
+            return relay.process;
+        });
+        await expect(withHyperVAdministratorExecutorForTest("ensure", () => ({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 1_000,
+            maximumDurationMilliseconds: 1_000,
+            spawnRelay,
+        }), listSwitches, { monotonicNow: () => monotonic, remainingMilliseconds: () => 1_000 - monotonic }))
+            .resolves.toEqual([]);
+        expect(written).toEqual([
+            `REQUEST 2026-09-27T09:15:00.000Z pid=${process.pid} purpose=ensure ${requestSentence}\n`,
+            `ELEVATION ${new Date(Date.parse("2026-09-27T09:15:00.000Z") + wallJump).toISOString()} outcome=ready elapsedMs=125\n`,
+        ]);
+    });
+
+    it("materializes the current remaining allowance only after the gate admits the broker's lazy elevation options", async () => {
+        let releaseFirst = () => undefined as void;
+        const held = new Promise<void>((resolve) => { releaseFirst = resolve; });
+        const first = withHyperVElevationGate(async (settled) => {
+            await held;
+            settled({ prompted: false, ready: false, code: null });
+            return "first";
+        }, () => "unused");
+        let remaining = 1_000;
+        const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>(async (request) => {
+            expect(request.maximumDurationMilliseconds).toBe(250);
+            request.onBeforeElevation();
+            const relay = scriptedRelay();
+            queueMicrotask(() => relay.approve());
+            return relay.process;
+        });
+        const elevation = vi.fn(() => ({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + remaining,
+            maximumDurationMilliseconds: remaining,
+            spawnRelay,
+        }));
+        const second = withHyperVAdministratorExecutorForTest("ensure", elevation, listSwitches, {
+            remainingMilliseconds: () => remaining,
+            monotonicNow: () => monotonic,
+        });
+        try {
+            await flush();
+            expect(elevation).not.toHaveBeenCalled();
+            expect(spawnRelay).not.toHaveBeenCalled();
+            remaining = 250;
+            monotonic = 750;
+            vi.setSystemTime(Date.now() - 86_400_000);
+            releaseFirst();
+            await expect(first).resolves.toBe("first");
+            await expect(second).resolves.toEqual([]);
+            expect(elevation).toHaveBeenCalledTimes(1);
+            expect(spawnRelay).toHaveBeenCalledTimes(1);
+        } finally {
+            releaseFirst();
+            await Promise.all([first, second]);
+        }
     });
 
     it("bounds every line to fixed words, times and enums, whatever the caller passes", async () => {

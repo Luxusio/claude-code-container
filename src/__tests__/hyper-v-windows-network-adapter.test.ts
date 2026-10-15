@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
     createHyperVHostNetworkSpec,
@@ -29,6 +29,7 @@ import {
     ensureDeviceLabHyperVHostNetwork,
     inspectDeviceLabHyperVHostNetwork,
     type DeviceLabHyperVHostNetworkCleanupTransactionResult,
+    type DeviceLabHyperVHostNetworkCleanupOptions,
     type DeviceLabHyperVHostNetworkEnsureTransactionResult,
     type WithAdministratorHyperVWindowsNetworkClient,
 } from "@ccc/device-lab/device-lab/broker/hyper-v/network-adapter.js";
@@ -53,6 +54,13 @@ const FRESH: HyperVHostNetworkEnsureProvenance = {
 };
 
 type IsAssignable<From, To> = From extends To ? true : false;
+type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
+    (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+const CLEANUP_BUDGET_OPTIONS_ARE_ADDITIVE: [
+    Equal<DeviceLabHyperVHostNetworkCleanupOptions["deadlineAt"], number | undefined>,
+    Equal<DeviceLabHyperVHostNetworkCleanupOptions["now"], (() => number) | undefined>,
+    {} extends Pick<DeviceLabHyperVHostNetworkCleanupOptions, "deadlineAt" | "now"> ? true : false,
+] = [true, true, true];
 type CleanupAcceptsEnsureOnlyIndeterminateReason = IsAssignable<
     { kind: "indeterminate"; operation: "cleanup"; reason: "host-adapter-missing" },
     HyperVHostNetworkIndeterminateOutcome<"cleanup">
@@ -317,9 +325,96 @@ function managedCleanup(): HyperVHostNetworkCleanupProvenance {
     };
 }
 
+afterEach(() => vi.restoreAllMocks());
+
 describe("Device Lab Hyper-V network adapter", () => {
     it("keeps ensure and cleanup transaction types mutually exclusive", () => {
         expect(TRANSACTION_OPERATION_TYPES_ARE_CORRELATED).toEqual([false, false, false, false]);
+        expect(CLEANUP_BUDGET_OPTIONS_ARE_ADDITIVE).toEqual([true, true, true]);
+    });
+
+    it.each(["ensure", "cleanup"] as const)("deducts administrator acquisition time before any %s mutation", async (operation) => {
+        const state = emptyState();
+        if (operation === "cleanup") addSettledHostFabric(state);
+        let monotonic = 100.25;
+        const wall = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+        const administrator = administratorScope(memoryClient(state), () => {
+            monotonic = 1_100.25;
+            wall.mockReturnValue(900_000);
+        });
+        const common = {
+            client: memoryClient(state), network: NETWORK,
+            withAdministratorClient: administrator.scope,
+            deadlineAt: 1_100.25, now: () => monotonic,
+        };
+        const result = operation === "ensure"
+            ? ensureDeviceLabHyperVHostNetwork({ ...common, provenance: FRESH })
+            : cleanupDeviceLabHyperVHostNetwork({ ...common, provenance: managedCleanup() });
+
+        await expect(result).rejects.toThrow("hyper-v-operation-deadline-exceeded");
+        expect(administrator.count()).toBe(1);
+        expect(state.actions).toEqual([]);
+    });
+
+    it.each(["ensure", "cleanup"] as const)("refuses a settled %s observation received after its local deadline", async (operation) => {
+        const state = emptyState();
+        addSettledHostFabric(state);
+        let monotonic = 100.25;
+        const wall = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+        const base = memoryClient(state);
+        const client: HyperVWindowsNetworkClient = {
+            ...base,
+            async getAllVMNetworkAdapters() {
+                const observed = await base.getAllVMNetworkAdapters();
+                monotonic = 1_100.25;
+                wall.mockReturnValue(2_000_000);
+                return observed;
+            },
+        };
+        const administrator = administratorScope(memoryClient(state));
+        const common = {
+            client, network: NETWORK, withAdministratorClient: administrator.scope,
+            deadlineAt: 1_100.25, now: () => monotonic,
+        };
+        const result = operation === "ensure"
+            ? ensureDeviceLabHyperVHostNetwork({ ...common, provenance: FRESH })
+            : cleanupDeviceLabHyperVHostNetwork({ ...common, provenance: {
+                switch: { kind: "unmanaged" }, gateway: { kind: "unmanaged" }, nat: { kind: "unmanaged" },
+            } });
+
+        await expect(result).rejects.toThrow("hyper-v-operation-deadline-exceeded");
+        expect(administrator.count()).toBe(0);
+        expect(state.actions).toEqual([]);
+    });
+
+    it("confirms an already-applied cleanup removal after expiry and refuses the next effect", async () => {
+        const state = emptyState();
+        addSettledHostFabric(state);
+        let monotonic = 100.25;
+        const wall = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+        const base = memoryClient(state);
+        const administrator = administratorScope({
+            ...base,
+            async removeNetNat(request) {
+                await base.removeNetNat(request);
+                monotonic = 1_100.25;
+                wall.mockReturnValue(900_000);
+            },
+        });
+        const confirmed: string[] = [];
+
+        await expect(cleanupDeviceLabHyperVHostNetwork({
+            client: memoryClient(state), network: NETWORK, provenance: managedCleanup(),
+            withAdministratorClient: administrator.scope,
+            deadlineAt: 1_100.25, now: () => monotonic,
+            onConfirmedAction: (action) => { confirmed.push(action.actionKind); },
+        })).rejects.toThrow("hyper-v-operation-deadline-exceeded");
+
+        expect(confirmed).toEqual(["remove-nat"]);
+        expect(state.actions).toEqual(["remove-nat"]);
+        expect(state.nats).toEqual([]);
+        expect(state.ipv4Addresses).toHaveLength(1);
+        expect(state.virtualSwitches).toHaveLength(1);
     });
     it("inspects only the exact switch/host-adapter target plus bounded host collections", async () => {
         const state = emptyState();

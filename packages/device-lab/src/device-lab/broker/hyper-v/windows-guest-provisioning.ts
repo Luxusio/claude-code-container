@@ -9,6 +9,7 @@ export type DeviceLabHyperVWindowsGuestProvisioningOptions = {
     readonly mediaCommand: HyperVProviderCommand;
     readonly run: DeviceLabHyperVCommandRunner;
     readonly timeoutMilliseconds: () => number;
+    readonly now?: () => number;
     readonly session?: HyperVWindowsExecutor;
     readonly vmId: string;
     readonly vmName: string;
@@ -77,6 +78,7 @@ export async function provisionDeviceLabHyperVWindowsGuest(
         timeoutMilliseconds: options.timeoutMilliseconds,
         run: options.run,
         ...(options.session ? { session: options.session } : {}),
+        ...(options.now ? { now: options.now } : {}),
     });
     try {
         const machines = await client.getVM({ kind: "id", id: options.vmId });

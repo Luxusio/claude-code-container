@@ -109,6 +109,7 @@ type HyperVNetworkHostFabric = {
     readonly kind: "unavailable";
 };
 export type HyperVNetworkRuntime = HyperVNetworkStateRuntime & {
+    now?: () => number;
     resolveExecutable(name: string): string | null;
     resolveElevationExecutable(standardExecutable: string): string;
     run(command: HyperVProviderCommand, options: {
@@ -204,6 +205,7 @@ function statePorts(runtime: HyperVNetworkStateRuntime): HyperVNetworkStatePorts
     };
 }
 function networkPorts(runtime: HyperVNetworkRuntime): HyperVNetworkPorts {
+    const now = runtime.now ?? Date.now;
     const hostFabric = runtime.hostFabric;
     const allocationReferenced = runtime.allocationReferenced;
     let executable: string | null = null;
@@ -212,12 +214,36 @@ function networkPorts(runtime: HyperVNetworkRuntime): HyperVNetworkPorts {
         return executable;
     };
     const legacy = hostFabric.kind === "legacy-compatibility" ? hostFabric : null;
-    async function runNative<T>(build: () => HyperVProviderCommand, attempt: HyperVNetworkNativeAttempt, observe: (stdout: string) => T | null, fallback: string): Promise<HyperVNetworkNativeObservation<T>> {
+    function nativeCommandOptions<Options>(options: Options, attempt: HyperVNetworkNativeAttempt, budget: () => { deadlineUnixMs: number; maximumDurationMs: number }) {
+        const executable = attempt.privilege === "administrator" ? runtime.resolveElevationExecutable(capturedExecutable()) : capturedExecutable();
+        // The command generators read these fields after preparing the network script.
+        return attempt.privilege === "administrator" ? {
+            ...options, executable, elevated: true,
+            get elevatedDeadlineUnixMs() { return budget().deadlineUnixMs; },
+            get elevatedMaximumDurationMs() { return budget().maximumDurationMs; },
+        } : { ...options, executable };
+    }
+    async function runNative<T>(build: (budget: () => { deadlineUnixMs: number; maximumDurationMs: number }) => HyperVProviderCommand, attempt: HyperVNetworkNativeAttempt, observe: (stdout: string) => T | null, fallback: string): Promise<HyperVNetworkNativeObservation<T>> {
+        const startedAt = now();
+        const remaining = () => {
+            const milliseconds = Math.floor(attempt.timeoutMs - (now() - startedAt));
+            if (milliseconds <= 0) throw new HyperVOperationDeadlineError();
+            return milliseconds;
+        };
+        let nativeBudget: { deadlineUnixMs: number; maximumDurationMs: number } | undefined;
+        const materializeNativeBudget = () => {
+            if (!nativeBudget) {
+                const maximumDurationMs = Math.max(1, remaining() - (attempt.privilege === "administrator" ? attempt.terminationGraceMs : 0));
+                nativeBudget = { deadlineUnixMs: Date.now() + maximumDurationMs, maximumDurationMs };
+            }
+            return nativeBudget;
+        };
         let command: HyperVProviderCommand;
+        let timeoutMs: number;
         if (attempt.privilege === "administrator") {
-            try { command = build(); } catch (cause) { return {kind: "preparation-failed", cause}; }
-        } else command = build();
-        const execution = await runtime.run(command, {timeoutMs: attempt.timeoutMs, outputLimit: runtime.commandOutputBytes});
+            try { command = build(materializeNativeBudget); timeoutMs = remaining(); } catch (cause) { return {kind: "preparation-failed", cause}; }
+        } else { command = build(materializeNativeBudget); timeoutMs = remaining(); }
+        const execution = await runtime.run(command, {timeoutMs, outputLimit: runtime.commandOutputBytes});
         return networkNativeObservation(execution, () => observe(execution.stdout || ""), fallback);
     }
     return {
@@ -229,17 +255,11 @@ function networkPorts(runtime: HyperVNetworkRuntime): HyperVNetworkPorts {
         marker: HYPER_V_NETWORK_MARKER,
         natName: HYPER_V_NETWORK_NAT,
         hostFabric: hostFabric.kind === "typed"
-            ? { kind: "typed", host: createDeviceLabHyperVHostNetworkPorts(hostFabric.client, hostFabric.withAdministratorClient, Date.now, milliseconds => new Promise<void>(resolve => setTimeout(resolve, milliseconds))) }
+            ? { kind: "typed", host: createDeviceLabHyperVHostNetworkPorts(hostFabric.client, hostFabric.withAdministratorClient, now, milliseconds => new Promise<void>(resolve => setTimeout(resolve, milliseconds))) }
             : legacy ? {
                 kind: "legacy-compatibility",
-                ensure: (options, attempt) => runNative(() => legacy.ensureCommand({...options,
-                    executable: attempt.privilege === "administrator" ? runtime.resolveElevationExecutable(capturedExecutable()) : capturedExecutable(),
-                    ...(attempt.privilege === "administrator" ? {elevated: true, elevatedDeadlineUnixMs: attempt.deadlineUnixMs} : {}),
-                }), attempt, parseHyperVNetworkObservation, "hyper-v-network-setup-failed"),
-                cleanup: (options, attempt) => runNative(() => legacy.cleanupCommand({...options,
-                    executable: attempt.privilege === "administrator" ? runtime.resolveElevationExecutable(capturedExecutable()) : capturedExecutable(),
-                    ...(attempt.privilege === "administrator" ? {elevated: true, elevatedDeadlineUnixMs: attempt.deadlineUnixMs} : {}),
-                }), attempt, parseHyperVNetworkCleanupObservation, "hyper-v-network-cleanup-failed"),
+                ensure: (options, attempt) => runNative(budget => legacy.ensureCommand(nativeCommandOptions(options, attempt, budget)), attempt, parseHyperVNetworkObservation, "hyper-v-network-setup-failed"),
+                cleanup: (options, attempt) => runNative(budget => legacy.cleanupCommand(nativeCommandOptions(options, attempt, budget)), attempt, parseHyperVNetworkCleanupObservation, "hyper-v-network-cleanup-failed"),
                 inspectAllocation: (allocations, timeoutMs) => runNative(() => legacy.inspectAllocationsCommand({executable: capturedExecutable(), allocations}), {privilege: "standard", timeoutMs}, parseHyperVNetworkAllocationsObservation, "hyper-v-network-allocation-inspection-failed"),
             } : {kind: "unavailable"},
         references: allocationReferenced
@@ -251,7 +271,7 @@ function networkPorts(runtime: HyperVNetworkRuntime): HyperVNetworkPorts {
             const execution = {...previous.execution, status: 1, error: cause instanceof Error ? cause.message : String(cause)};
             return {kind: "failed", diagnostic: hyperVProviderDiagnosticCode(execution, operation === "ensure" ? "hyper-v-network-setup-failed" : "hyper-v-network-cleanup-failed"), access: "unspecified", receipt: new HyperVNetworkDiagnosticReceipt(execution)};
         },
-        now: Date.now,
+        now,
         timestamp: () => new Date().toISOString(),
         token: () => randomBytes(12).toString("hex"),
         throwDeadline: () => { throw new HyperVOperationDeadlineError(); },

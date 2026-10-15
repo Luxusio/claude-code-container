@@ -293,7 +293,6 @@ describe("callback-scoped elevated Hyper-V network session", () => {
     it.each([
         "hyper-v-network-elevation-handshake-timeout",
         "hyper-v-network-elevation-administrator-required",
-        "hyper-v-network-elevation-deadline-exceeded",
         "hyper-v-network-elevation-relay-failed",
     ] satisfies HyperVElevatedNetworkErrorCode[])("preserves the bounded relay failure %s", async (code) => {
         const relay = fakeRelay();
@@ -308,6 +307,50 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         }, (executor) => executor.execute(getVmRequest(), executorContext()));
 
         expect(result).toEqual({ status: null, stdout: "", error: code });
+    });
+
+    it("keeps a session refusal conservative when the relay declares its deadline before any request is delivered", async () => {
+        const relay = fakeRelay();
+        const result = await withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            spawnRelay: async (request) => {
+                request.onBeforeElevation();
+                queueMicrotask(() => relay.fail("hyper-v-network-elevation-deadline-exceeded"));
+                return relay.process;
+            },
+        }, (executor) => executor.execute(getVmRequest(), executorContext()));
+        expect(result).toEqual({ status: null, stdout: "", error: "hyper-v-windows-session-unavailable" });
+        expect(relay.requests).toHaveLength(0);
+    });
+
+    it("retains a session timeout after a delivered frame when the relay also reports its deadline", async () => {
+        const relay = fakeRelay();
+        let delivered = 0;
+        const result = await withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            spawnRelay: async (request) => {
+                request.onBeforeElevation();
+                return {
+                    ...relay.process,
+                    write(line: string, settled?: (error?: unknown) => void) {
+                        if (!line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) {
+                            relay.process.write(line, settled);
+                            return;
+                        }
+                        delivered += 1;
+                        settled?.();
+                        queueMicrotask(() => relay.fail(
+                            "hyper-v-network-elevation-deadline-exceeded",
+                            "hyper-v-windows-session-timeout",
+                        ));
+                    },
+                };
+            },
+        }, (executor) => executor.execute(getVmRequest(), executorContext()));
+        expect(result).toEqual({ status: null, stdout: "", error: "hyper-v-windows-session-timeout" });
+        expect(delivered).toBe(1);
     });
 
     it("honors pre-aborted cancellation without spawning or prompting", async () => {
@@ -817,6 +860,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
     it("separates caller-active work from a delivered request still pending at scope close", async () => {
         vi.useFakeTimers();
         try {
+            let monotonic = 0;
             let resolveCompletion = (_value: HyperVElevatedNetworkRelayCompletion) => undefined as void;
             const completion = new Promise<HyperVElevatedNetworkRelayCompletion>((resolve) => {
                 resolveCompletion = resolve;
@@ -854,6 +898,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const result = withElevatedHyperVNetworkExecutor({
                 executable,
                 deadlineUnixMilliseconds: Date.now() + 30_000,
+                maximumDurationMilliseconds: 1_000,
+                monotonicNow: () => monotonic,
                 spawnRelay: async (request) => {
                     request.onBeforeElevation();
                     return process;
@@ -869,6 +915,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const settled = result.then(() => null, (error: unknown) => error);
 
             await vi.advanceTimersByTimeAsync(0);
+            vi.setSystemTime(Date.now() - 86_400_000);
+            monotonic = 100;
             await vi.advanceTimersByTimeAsync(100);
             expect(await settled).toMatchObject({
                 code: "hyper-v-network-elevation-termination-unconfirmed",
@@ -966,6 +1014,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             const start = Date.now();
             const clock = vi.spyOn(Date, "now").mockReturnValue(start);
             const deadline = start + 1_000;
+            let monotonic = start;
             const controller = new AbortController();
             const process: HyperVElevatedNetworkRelayProcess = {
                 ...relay.process,
@@ -978,6 +1027,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 const result = withElevatedHyperVNetworkExecutor({
                     executable,
                     deadlineUnixMilliseconds: deadline,
+                    monotonicNow: () => monotonic,
                     spawnRelay: async (request) => {
                         request.onBeforeElevation();
                         return process;
@@ -985,7 +1035,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                 }, async (executor) => {
                     expect(await executor.execute(getVmRequest(), executorContext())).toMatchObject({ status: 0 });
                     if (earlyOutcome === "cancelled") controller.abort();
-                    else clock.mockReturnValue(deadline + 1);
+                    else {
+                        clock.mockReturnValue(start - 86_400_000);
+                        monotonic = deadline + 1;
+                    }
                     return executor.execute(getVmSwitchRequest(), {
                         ...executorContext(),
                         signal: controller.signal,
@@ -1097,6 +1150,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             });
             let input = "";
             let terminalToken = "";
+            let launchMaximumDuration = 0;
             let launchObserved = false;
             let closeObserved = false;
             let stdinEndedAfterCloseWrite = false;
@@ -1120,13 +1174,23 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                         const childEncoded = Reflect.get(envelope, "childEncoded");
                         expect(typeof childEncoded).toBe("string");
                         expect(childEncoded.length).toBeLessThanOrEqual(8_000);
-                        const expectedChild = hyperVElevatedNetworkChildPrograms().child
-                            .replace(`$P='ccc-hyper-v-network-${"0".repeat(32)}'`, `$P='${Reflect.get(envelope, "pipeName")}'`)
-                            .replace(`$N='${"0".repeat(64)}'`, `$N='${Reflect.get(envelope, "nonce")}'`)
-                            .replace("$D=[long]2000000000000", `$D=[long]${Reflect.get(envelope, "deadlineUnixMilliseconds")}`);
-                        expect(Buffer.from(childEncoded, "base64").toString("utf16le")).toBe(expectedChild);
+                        const duration = Reflect.get(envelope, "maximumDurationMilliseconds");
+                        const childSource = Buffer.from(childEncoded, "base64").toString("utf16le");
+                        const childInitialDuration = Number(childSource.match(/\$U=\[long\]([0-9]+);/)?.[1]);
+                        expect(Number.isSafeInteger(childInitialDuration)).toBe(true);
+                        expect(childInitialDuration).toBeGreaterThan(0);
+                        expect(childInitialDuration).toBeLessThanOrEqual(30_000);
+                        launchMaximumDuration = Number(duration);
+                        expect(Number.isSafeInteger(launchMaximumDuration)).toBe(true);
+                        expect(launchMaximumDuration).toBeGreaterThan(0);
+                        expect(launchMaximumDuration).toBeLessThanOrEqual(childInitialDuration);
+                        expect(childSource).toContain(`$P='${Reflect.get(envelope, "pipeName")}'`);
+                        expect(childSource).toContain(`$N='${Reflect.get(envelope, "nonce")}'`);
+                        expect(childSource).toContain(`$D=[long]${Reflect.get(envelope, "deadlineUnixMilliseconds")}`);
+                        expect(childSource).toContain("nonce=$N;pid=$PID;startTicks=$S;administrator=[bool]$A");
                         const observedToken = Reflect.get(envelope, "terminalToken");
                         if (typeof observedToken !== "string") throw new Error("missing terminal token");
+                        expect(childSource).not.toContain(observedToken);
                         terminalToken = observedToken;
                         launchObserved = true;
                         queueMicrotask(() => stdout.emit(
@@ -1136,7 +1200,12 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                                 : "")
                                 + "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST\n",
                         ));
-                    } else if (line === "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE") {
+                    } else if (line === "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE"
+                        || line.startsWith("CCC_HYPER_V_ELEVATED_NETWORK_APPROVE:")) {
+                        const approvalDuration = Number(line.slice("CCC_HYPER_V_ELEVATED_NETWORK_APPROVE:".length));
+                        expect(Number.isSafeInteger(approvalDuration)).toBe(true);
+                        expect(approvalDuration).toBeGreaterThan(0);
+                        expect(approvalDuration).toBeLessThanOrEqual(launchMaximumDuration);
                         queueMicrotask(() => {
                             if (order === "premature-ack") {
                                 stdout.emit(
@@ -1218,10 +1287,12 @@ describe("callback-scoped elevated Hyper-V network session", () => {
                             }
                         });
                     } else if (line.startsWith(`${elevationClosePrefix}${terminalToken}:`)) {
-                        const closeDeadline = line.slice(`${elevationClosePrefix}${terminalToken}:`.length);
+                        const [closeDeadline, closeDuration] = line.slice(`${elevationClosePrefix}${terminalToken}:`.length).split(":");
                         expect(closeDeadline).toMatch(/^[0-9]{13}$/);
                         expect(Number(closeDeadline)).toBeGreaterThanOrEqual(Date.now());
                         expect(Number(closeDeadline)).toBeLessThanOrEqual(Date.now() + 5_000);
+                        expect(Number(closeDuration)).toBeGreaterThan(0);
+                        expect(Number(closeDuration)).toBeLessThanOrEqual(5_000);
                         closeObserved = true;
                         expect(stdinEndedAfterCloseWrite).toBe(false);
                         const completeRelay = () => {
@@ -2072,9 +2143,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
             "CCC_HYPER_V_ELEVATED_NETWORK_PROGRESS:",
         );
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("Send-Progress 'close-received'");
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("Send-Progress 'finalizer-entered'");
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("Send-Progress 'terminal-write-entered'");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toMatch(/\b[A-Za-z][A-Za-z0-9-]* 'close-received'/);
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toMatch(/\b[A-Za-z][A-Za-z0-9-]* 'finalizer-entered'/);
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toMatch(/\b[A-Za-z][A-Za-z0-9-]* 'terminal-write-entered'/);
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
             "CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:",
         );
@@ -2094,7 +2165,7 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         const clientProcessCheck = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
             "GetNamedPipeClientProcessId",
         );
-        const authenticationRead = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$AL=$R.ReadLine()");
+        const authenticationRead = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("StartsWith('AUTH:')");
         expect(pipeConstruction, "the pipe must exist before anything can connect to it")
             .toBeGreaterThanOrEqual(0);
         expect(pipeConstruction, "and must be created before UAC launches the child")
@@ -2112,8 +2183,9 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             "[IO.Pipes.NamedPipeServerStream]::new($P,[IO.Pipes.PipeDirection]::InOut,1,",
         );
         const assetForward = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
-            "$W.WriteLine($L);$W.Flush();Send-Progress 'operation-asset-forwarded';$V=$R.ReadLine()",
+            "$W.WriteLine($L);$W.Flush()",
         );
+        const assetProgress = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("'operation-asset-forwarded'");
         const requestValidation = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
             `if(-not $L.StartsWith('${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}'))`,
         );
@@ -2124,25 +2196,27 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             `$K='${elevationClosePrefix}'+$Z+':'`,
         );
         const childCloseForward = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf(
-            `$W.WriteLine('${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}');$W.Flush();`
-            + "Send-Progress 'child-close-forwarded';$CL=$true;break",
+            `$W.WriteLine('${HYPER_V_WINDOWS_SESSION_CLOSE_MARKER}')`,
         );
+        const childCloseFlushed = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$W.Flush()", childCloseForward);
         const childExitWait = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$C.WaitForExit($M)");
         const pipeDisposal = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("$Q.Dispose()");
         const terminalOutput = HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP.indexOf("if($CL-and $Z-match");
         expect(assetForward).toBeGreaterThanOrEqual(0);
-        expect(assetForward).toBeLessThan(requestValidation);
+        expect(assetProgress).toBeGreaterThan(assetForward);
+        expect(assetProgress).toBeLessThan(requestValidation);
         expect(requestValidation).toBeLessThan(responseForward);
         expect(closeForward).toBeGreaterThanOrEqual(0);
         expect(closeForward).toBeLessThan(childCloseForward);
-        expect(childCloseForward).toBeLessThan(childExitWait);
+        expect(childCloseForward).toBeLessThan(childCloseFlushed);
+        expect(childCloseFlushed).toBeLessThan(childExitWait);
         expect(childExitWait).toBeLessThan(pipeDisposal);
         expect(pipeDisposal).toBeLessThan(terminalOutput);
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$null-eq $L){throw 'input'}");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("$null-eq $V-or $V.Length-gt");
-        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("[long]::TryParse($V,[ref]$G)");
+        expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain("[long]::TryParse(");
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).toContain(
-            "$G-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-500",
+            "[Diagnostics.Stopwatch]::StartNew()",
         );
         expect(HYPER_V_ELEVATED_NETWORK_RELAY_BOOTSTRAP).not.toContain(
             "$G=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+5000",
@@ -2186,8 +2260,8 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(relayCatch).not.toContain("$_.Exception-is [ComponentModel.Win32Exception]");
     });
 
-    it("encodes the elevated child directly within the launch limit and exposes it for parsing", () => {
-        const { loader, child } = hyperVElevatedNetworkChildPrograms();
+    it.each([undefined, 2_147_483_647])("encodes the elevated child directly within the launch limit and exposes it for parsing (duration %s)", (maximumDurationMilliseconds) => {
+        const { loader, child } = hyperVElevatedNetworkChildPrograms(maximumDurationMilliseconds);
 
         expect(loader).toBe(child);
         expect(child).not.toContain("GzipStream");
@@ -2206,23 +2280,37 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         expect(child).not.toContain("[Console]::Out.AutoFlush");
     });
 
-    it.for([32, 8192])("preserves %i buffered asset bytes during the generated child handoff", async (assetSize, context) => {
+    it.for([
+        { assetSize: 32, maximumDurationMilliseconds: undefined, receivedDuration: undefined },
+        { assetSize: 8192, maximumDurationMilliseconds: undefined, receivedDuration: undefined },
+        { assetSize: 32, maximumDurationMilliseconds: 10_000, receivedDuration: 1_000 },
+        { assetSize: 8192, maximumDurationMilliseconds: 10_000, receivedDuration: 20_000 },
+    ])("preserves $assetSize buffered asset bytes and clamps duration $receivedDuration during the generated child handoff", async ({ assetSize, maximumDurationMilliseconds, receivedDuration }, context) => {
         const { spawnSync } = await vi.importActual<typeof import("child_process")>("child_process");
-        const { child } = hyperVElevatedNetworkChildPrograms();
-        const handoffStart = child.indexOf("$L=$R.ReadLine()");
-        const handoffEnd = child.indexOf(";}finally", handoffStart);
+        const { child } = hyperVElevatedNetworkChildPrograms(maximumDurationMilliseconds);
+        const intakeRead = child.indexOf("$H=$R.ReadLineAsync()");
+        const handoffStart = child.lastIndexOf("$Z=$X-$T.ElapsedMilliseconds", intakeRead);
+        const watchdogStart = child.indexOf("$Z=$X-$T.ElapsedMilliseconds", intakeRead);
+        const readerHandoffStart = child.indexOf("$W.AutoFlush=$true;[Console]::SetIn($R);[Console]::SetOut($W)", watchdogStart);
+        const handoffEnd = child.indexOf(";}finally", readerHandoffStart);
         expect(handoffStart).toBeGreaterThan(0);
-        expect(handoffEnd).toBeGreaterThan(handoffStart);
-        const handoff = child.slice(handoffStart, handoffEnd);
+        expect(intakeRead).toBeGreaterThan(handoffStart);
+        expect(watchdogStart).toBeGreaterThan(handoffStart);
+        expect(readerHandoffStart).toBeGreaterThan(watchdogStart);
+        expect(handoffEnd).toBeGreaterThan(readerHandoffStart);
+        // Execute the actual intake/clamp and reader handoff, omitting only native watchdog launch.
+        const handoff = child.slice(handoffStart, watchdogStart) + child.slice(readerHandoffStart, handoffEnd);
         const bootstrap = [
             "$global:ObservedAsset=[Console]::In.ReadLine()",
             "$global:ObservedRequest=[Console]::In.ReadLine()",
             "[Console]::Out.WriteLine('handoff-ok')",
         ].join(";");
         const asset = "A".repeat(assetSize);
-        const input = `${Buffer.from(bootstrap).toString("base64")}\n${asset}\nrequest-after-asset\n`;
+        const durationPrefix = receivedDuration === undefined ? "" : `${receivedDuration}:`;
+        const input = `${durationPrefix}${Buffer.from(bootstrap).toString("base64")}\n${asset}\nrequest-after-asset\n`;
         const script = [
             "$ErrorActionPreference='Stop'",
+            `$X=10000;$T=[Diagnostics.Stopwatch]::StartNew();$U=${maximumDurationMilliseconds ?? -1}`,
             `$Bytes=[Convert]::FromBase64String('${Buffer.from(input).toString("base64")}')`,
             "$Q=[IO.MemoryStream]::new()",
             "$Q.Write($Bytes,0,$Bytes.Length);$Q.Position=0",
@@ -2230,9 +2318,18 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             "$W=[IO.StreamWriter]::new($Q,[Text.UTF8Encoding]::new($false),4096,$true)",
             "$OriginalIn=[Console]::In;$OriginalOut=[Console]::Out",
             `try{${handoff}}finally{[Console]::SetIn($OriginalIn);[Console]::SetOut($OriginalOut)}`,
-            "[ordered]@{asset=$global:ObservedAsset;request=$global:ObservedRequest;flushed=([Text.Encoding]::UTF8.GetString($Q.ToArray()).Contains('handoff-ok'))}|ConvertTo-Json -Compress",
+            "[ordered]@{asset=$global:ObservedAsset;request=$global:ObservedRequest;flushed=([Text.Encoding]::UTF8.GetString($Q.ToArray()).Contains('handoff-ok'));remaining=($X-$T.ElapsedMilliseconds)}|ConvertTo-Json -Compress",
         ].join(";");
-        const result = spawnSync(process.platform === "win32" ? "powershell.exe" : "pwsh", [
+        const interpreter = process.platform === "win32" ? "powershell.exe" : "pwsh";
+        const availability = spawnSync(interpreter, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"], {
+            encoding: "utf8", windowsHide: true, timeout: 5_000,
+        });
+        if ((availability.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+            context.skip("PowerShell interpreter unavailable for generated handoff fixture");
+            return;
+        }
+        expect(availability.status, availability.stderr || String(availability.error || "")).toBe(0);
+        const result = spawnSync(interpreter, [
             "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script,
         ], { encoding: "utf8", windowsHide: true, timeout: 15_000 });
         if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
@@ -2240,7 +2337,10 @@ describe("callback-scoped elevated Hyper-V network session", () => {
             return;
         }
         expect(result.status, result.stderr || String(result.error || "")).toBe(0);
-        expect(JSON.parse(result.stdout)).toEqual({ asset, request: "request-after-asset", flushed: true });
+        const observed = JSON.parse(result.stdout) as { asset: string; request: string; flushed: boolean; remaining: number };
+        expect(observed).toMatchObject({ asset, request: "request-after-asset", flushed: true });
+        expect(observed.remaining).toBeGreaterThan(0);
+        expect(observed.remaining).toBeLessThanOrEqual(Math.min(10_000, receivedDuration ?? 10_000));
     });
 
     it("materializes the generated relay without native TypeScript stripping", async () => {
@@ -2287,10 +2387,13 @@ describe("callback-scoped elevated Hyper-V network session", () => {
         const supportsStripTypesFlag = process.allowedNodeEnvironmentFlags.has("--no-experimental-strip-types");
         const source = `
 const nativeSetTimeout = globalThis.setTimeout;
+let monotonic = 0;
 globalThis.setTimeout = (callback, delay, ...args) => nativeSetTimeout(
-    callback,
+    () => {
+        if (delay === 15000) monotonic += 15000;
+        callback(...args);
+    },
     delay === 15000 ? 25 : delay,
-    ...args,
 );
 const library = await import(${JSON.stringify(module)});
 const listeners = [];
@@ -2320,6 +2423,7 @@ try {
     await library.withElevatedHyperVNetworkExecutor({
         executable: "powershell.exe",
         deadlineUnixMilliseconds: Date.now() + 1000,
+        monotonicNow: () => monotonic,
         spawnRelay: async () => relay,
     }, (executor) => executor.execute({
         schemaVersion: 1,
@@ -2397,7 +2501,7 @@ try {
         expect(closeStart).toBeGreaterThanOrEqual(0);
         expect(closeEnd).toBeGreaterThan(closeStart);
         expect(closeSource).toContain("const finalizationDeadline = Date.now()");
-        expect(closeSource).toContain("child.stdin?.write(`${ELEVATION_CLOSE_PREFIX}${terminalToken}:${finalizationDeadline}\\n`");
+        expect(closeSource).toContain("child.stdin?.write(`${ELEVATION_CLOSE_PREFIX}${terminalToken}:${finalizationDeadline}");
         expect(closeSource).toContain("endRelayInput()");
         const clearDeadline = closeSource.indexOf("clearTimeout(deadlineTimer)");
         const writeClose = closeSource.indexOf("child.stdin?.write");
@@ -2465,11 +2569,255 @@ try {
     });
 });
 
+describe("elevated network monotonic parent allowance", () => {
+    it.each([-86_400_000, 86_400_000])(
+        "keeps a transmitted duration authoritative over a %i ms wall jump before intake",
+        async (wallJump) => {
+            const wall = 2_000_000_000_000;
+            const clock = vi.spyOn(Date, "now").mockReturnValue(wall + wallJump);
+            let monotonic = 12.5;
+            const relay = fakeRelay();
+            const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>(async (request) => {
+                expect(request.deadlineUnixMilliseconds).toBe(wall + 1_000);
+                expect(request.maximumDurationMilliseconds).toBe(875);
+                expect(request).not.toHaveProperty("monotonicNow");
+                request.onBeforeElevation();
+                return relay.process;
+            });
+            try {
+                await expect(withElevatedHyperVNetworkExecutor({
+                    executable,
+                    deadlineUnixMilliseconds: wall + 1_000,
+                    maximumDurationMilliseconds: 1_000,
+                    monotonicNow: () => monotonic,
+                    spawnRelay,
+                }, async (executor) => {
+                    monotonic += 125;
+                    return executor.execute(getVmRequest(), executorContext());
+                })).resolves.toMatchObject({ status: 0 });
+                expect(spawnRelay).toHaveBeenCalledTimes(1);
+                expect(relay.requests).toHaveLength(1);
+            } finally {
+                clock.mockRestore();
+            }
+        },
+    );
+
+    it.each([-86_400_000, 86_400_000])(
+        "captures an omitted legacy Unix remainder once before a %i ms wall jump",
+        async (wallJump) => {
+            const wall = 2_000_000_000_000;
+            const clock = vi.spyOn(Date, "now").mockReturnValue(wall);
+            let monotonic = 0;
+            const relay = fakeRelay();
+            const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>(async (request) => {
+                expect(request.maximumDurationMilliseconds).toBe(800);
+                request.onBeforeElevation();
+                return relay.process;
+            });
+            try {
+                await expect(withElevatedHyperVNetworkExecutor({
+                    executable,
+                    deadlineUnixMilliseconds: wall + 1_000,
+                    monotonicNow: () => monotonic,
+                    spawnRelay,
+                }, async (executor) => {
+                    clock.mockReturnValue(wall + wallJump);
+                    monotonic = 200;
+                    expect(await executor.execute(getVmRequest(), executorContext())).toMatchObject({ status: 0 });
+                    monotonic = 1_000;
+                    expect(await executor.execute(getVmRequest(), executorContext()))
+                        .toMatchObject({ error: "hyper-v-network-elevation-deadline-exceeded" });
+                })).rejects.toMatchObject({ code: "hyper-v-network-elevation-deadline-exceeded" });
+                expect(spawnRelay).toHaveBeenCalledTimes(1);
+                expect(relay.requests).toHaveLength(1);
+            } finally {
+                clock.mockRestore();
+            }
+        },
+    );
+
+    it.each([0, -1, 0.5, NaN, Infinity, 2_147_483_648, "1000", null, undefined])(
+        "refuses present malformed duration %s before the callback or native spawn",
+        async (maximumDurationMilliseconds) => {
+            const operation = vi.fn();
+            const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>();
+            await expect(withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: Date.now() + 30_000,
+                maximumDurationMilliseconds: maximumDurationMilliseconds as number,
+                spawnRelay,
+            }, operation)).rejects.toBeInstanceOf(HyperVElevatedNetworkSessionError);
+            expect(operation).not.toHaveBeenCalled();
+            expect(spawnRelay).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each([NaN, Infinity, 1.5])("still structurally validates Unix metadata in duration mode: %s", async (deadlineUnixMilliseconds) => {
+        const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>();
+        await expect(withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds,
+            maximumDurationMilliseconds: 1_000,
+            monotonicNow: () => 0,
+            spawnRelay,
+        }, () => "no-op")).rejects.toBeInstanceOf(HyperVElevatedNetworkSessionError);
+        expect(spawnRelay).not.toHaveBeenCalled();
+    });
+
+    it.each([NaN, Infinity, -Infinity])("refuses a non-finite local clock %s before acquisition", async (now) => {
+        const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>();
+        await expect(withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            maximumDurationMilliseconds: 1_000,
+            monotonicNow: () => now,
+            spawnRelay,
+        }, (executor) => executor.execute(getVmRequest(), executorContext())))
+            .rejects.toBeInstanceOf(HyperVElevatedNetworkSessionError);
+        expect(spawnRelay).not.toHaveBeenCalled();
+    });
+
+    it("refuses an expired legacy Unix caller without starting a relay", async () => {
+        const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>();
+        await expect(withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() - 1,
+            spawnRelay,
+        }, () => "no-op")).rejects.toMatchObject({ code: "hyper-v-network-elevation-deadline-exceeded" });
+        expect(spawnRelay).not.toHaveBeenCalled();
+    });
+
+    it("does not start acquisition after the original local allowance expired in the callback", async () => {
+        let monotonic = 0;
+        const spawnRelay = vi.fn<HyperVElevatedNetworkRelaySpawn>();
+        const result = await withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            maximumDurationMilliseconds: 100,
+            monotonicNow: () => monotonic,
+            spawnRelay,
+        }, (executor) => {
+            monotonic = 100;
+            return executor.execute(getVmRequest(), executorContext());
+        });
+        expect(result).toMatchObject({ error: "hyper-v-network-elevation-deadline-exceeded" });
+        expect(spawnRelay).not.toHaveBeenCalled();
+    });
+
+    it("refuses an approval that arrives after the original allowance expired", async () => {
+        let monotonic = 0;
+        const beforeElevation = vi.fn();
+        const result = await withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            maximumDurationMilliseconds: 100,
+            monotonicNow: () => monotonic,
+            onBeforeElevation: beforeElevation,
+            spawnRelay: async (request) => {
+                monotonic = 100;
+                request.onBeforeElevation();
+                throw new Error("an expired request must never approve elevation");
+            },
+        }, (executor) => executor.execute(getVmRequest(), executorContext()));
+        expect(result).toMatchObject({ error: "hyper-v-network-elevation-deadline-exceeded" });
+        expect(beforeElevation).not.toHaveBeenCalled();
+    });
+
+    it("observes and kills a spawn that completes after parent expiry without approving its later request", async () => {
+        vi.useFakeTimers();
+        let releaseSpawn = () => undefined as void;
+        const spawned = new Promise<void>((resolve) => { releaseSpawn = resolve; });
+        const relay = fakeRelay();
+        const beforeElevation = vi.fn();
+        const settled = vi.fn();
+        let monotonic = 0;
+        let observed: unknown;
+        let lateApproval: unknown;
+        const attempt = withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            maximumDurationMilliseconds: 100,
+            monotonicNow: () => monotonic,
+            onBeforeElevation: beforeElevation,
+            onAcquisitionSettled: settled,
+            spawnRelay: async (request) => {
+                await spawned;
+                try { request.onBeforeElevation(); } catch (error) { lateApproval = error; }
+                return relay.process;
+            },
+        }, (executor) => executor.execute(getVmRequest(), executorContext()))
+            .then((value) => { observed = value; }, (error: unknown) => { observed = error; });
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            monotonic = 100;
+            await vi.advanceTimersByTimeAsync(100);
+            expect(observed).toBeUndefined();
+            expect(beforeElevation).not.toHaveBeenCalled();
+            expect(relay.requests).toHaveLength(0);
+            releaseSpawn();
+            await vi.advanceTimersByTimeAsync(0);
+            await attempt;
+            expect(observed).toMatchObject({ error: "hyper-v-network-elevation-deadline-exceeded" });
+            expect(lateApproval).toMatchObject({ code: "hyper-v-network-elevation-scope-closed" });
+            expect(beforeElevation).not.toHaveBeenCalled();
+            expect(relay.requests).toHaveLength(0);
+            expect(relay.forceKilled()).toBe(true);
+            expect(settled).toHaveBeenCalledTimes(1);
+            expect(settled.mock.calls[0]?.[0]).toMatchObject({ prompted: false, ready: false });
+        } finally {
+            releaseSpawn();
+            await attempt;
+            vi.useRealTimers();
+        }
+    });
+
+    it.each([-86_400_000, 86_400_000])("expires readiness against the original allowance despite a %i ms wall jump", async (wallJump) => {
+        vi.useFakeTimers();
+        let releaseReady = () => undefined as void;
+        const ready = new Promise<void>((resolve) => { releaseReady = resolve; });
+        const relay = fakeRelay();
+        let monotonic = 0;
+        let observed: unknown;
+        const attempt = withElevatedHyperVNetworkExecutor({
+            executable,
+            deadlineUnixMilliseconds: Date.now() + 30_000,
+            maximumDurationMilliseconds: 100,
+            monotonicNow: () => monotonic,
+            spawnRelay: async (request) => {
+                request.onBeforeElevation();
+                return { ...relay.process, ready };
+            },
+        }, (executor) => executor.execute(getVmRequest(), executorContext()))
+            .then((value) => { observed = value; }, (error: unknown) => { observed = error; });
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            vi.setSystemTime(Date.now() + wallJump);
+            monotonic = 100;
+            await vi.advanceTimersByTimeAsync(100);
+            expect(observed).toMatchObject({ error: "hyper-v-network-elevation-deadline-exceeded" });
+            expect(relay.requests).toHaveLength(0);
+            releaseReady();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(relay.requests).toHaveLength(0);
+        } finally {
+            releaseReady();
+            await attempt;
+            vi.useRealTimers();
+        }
+    });
+});
+
 // The broker's elevation gate decides from this callback whether a scope used up the one prompt
 // it allows. `prompted` and `ready` have to mean what the real relay did, not what a fake says,
 // so the declined and approved cases run the relay's own control-line handling.
 describe("elevated network acquisition settlement", () => {
-    function scriptedRelayChild(outcome: "approve" | string) {
+    function scriptedRelayChild(outcome: "approve" | string, observe: {
+        readonly launch?: (envelope: Record<string, unknown>) => void;
+        readonly approval?: (maximumDurationMilliseconds: number | undefined) => void;
+        readonly response?: () => void;
+        readonly close?: (line: string) => void;
+    } = {}) {
         const events = new EventEmitter();
         const stdoutEvents = new EventEmitter();
         const stdout = Object.assign(stdoutEvents, { setEncoding: () => stdout });
@@ -2487,8 +2835,12 @@ describe("elevated network acquisition settlement", () => {
                 launched = true;
                 const envelope: unknown = JSON.parse(Buffer.from(line, "base64").toString("utf8"));
                 terminalToken = String(Reflect.get(Object(envelope), "terminalToken"));
+                observe.launch?.(Object(envelope) as Record<string, unknown>);
                 queueMicrotask(() => stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_REQUEST\n"));
-            } else if (line === "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE") {
+            } else if (line === "CCC_HYPER_V_ELEVATED_NETWORK_APPROVE"
+                || line.startsWith("CCC_HYPER_V_ELEVATED_NETWORK_APPROVE:")) {
+                const duration = line.slice("CCC_HYPER_V_ELEVATED_NETWORK_APPROVE".length);
+                observe.approval?.(duration ? Number(duration.slice(1)) : undefined);
                 queueMicrotask(() => {
                     if (outcome === "approve") {
                         stdout.emit("data", "CCC_HYPER_V_ELEVATED_NETWORK_RELAY_READY\n");
@@ -2507,8 +2859,10 @@ describe("elevated network acquisition settlement", () => {
                     code: 0,
                     stdout: successEnvelope("Get-VM"),
                 }), "utf8").toString("base64");
+                observe.response?.();
                 queueMicrotask(() => stdout.emit("data", `${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}${reply}\n`));
             } else if (line.startsWith(elevationClosePrefix)) {
+                observe.close?.(line);
                 queueMicrotask(() => {
                     stdout.emit("data", `CCC_HYPER_V_ELEVATED_NETWORK_TERMINAL:${terminalToken}\n`);
                     exit();
@@ -2534,6 +2888,56 @@ describe("elevated network acquisition settlement", () => {
         });
         return Object.assign(events, { stdin, stdout, stderr, kill: vi.fn(() => true) });
     }
+
+    it.each([-86_400_000, 86_400_000])("refreshes approval from the original duration after a %i ms launch transport wall jump", async (wallJump) => {
+        const wall = 2_000_000_000_000;
+        const clock = vi.spyOn(Date, "now").mockReturnValue(wall);
+        let monotonic = 0;
+        const approvalDurations: Array<number | undefined> = [];
+        const closeFrames: string[] = [];
+        const envelopes: Record<string, unknown>[] = [];
+        childProcessMocks.spawn.mockReset();
+        childProcessMocks.spawn.mockReturnValueOnce(scriptedRelayChild("approve", {
+            launch(envelope) {
+                envelopes.push(envelope);
+                monotonic = 125;
+                clock.mockReturnValue(wall + wallJump);
+            },
+            approval: (duration) => { approvalDurations.push(duration); },
+            response() {
+                monotonic = 200;
+                clock.mockReturnValue(wall + 2 * wallJump);
+            },
+            close: (line) => { closeFrames.push(line); },
+        }));
+        try {
+            await expect(withElevatedHyperVNetworkExecutor({
+                executable,
+                deadlineUnixMilliseconds: wall + 1_000,
+                maximumDurationMilliseconds: 1_000,
+                monotonicNow: () => monotonic,
+            }, (executor) => executor.execute(getVmRequest(), executorContext())))
+                .resolves.toMatchObject({ status: 0 });
+            expect(envelopes).toHaveLength(1);
+            expect(envelopes[0]).toMatchObject({
+                deadlineUnixMilliseconds: wall + 1_000,
+                maximumDurationMilliseconds: 1_000,
+            });
+            expect(envelopes[0]).not.toHaveProperty("monotonicNow");
+            expect(approvalDurations).toEqual([875]);
+            const envelope = envelopes[0]!;
+            const child = Buffer.from(String(envelope.childEncoded), "base64").toString("utf16le");
+            expect(String(envelope.childEncoded).length).toBeLessThanOrEqual(8_000);
+            expect(child).toContain(String(envelope.pipeName));
+            expect(child).toContain(String(envelope.nonce));
+            expect(child).not.toContain(String(envelope.terminalToken));
+            expect(closeFrames).toEqual([
+                `${elevationClosePrefix}${String(envelope.terminalToken)}:${wall + 2 * wallJump + 5_000}:5000`,
+            ]);
+        } finally {
+            clock.mockRestore();
+        }
+    });
 
     it("reports an approved relay once as prompted and ready, however many primitives run", async () => {
         childProcessMocks.spawn.mockReset();
@@ -2685,9 +3089,10 @@ describe("elevated network acquisition settlement", () => {
         }, (executor) => executor.execute(getVmRequest(), executorContext()));
         await new Promise<void>((resolve) => setImmediate(resolve));
         controller.abort();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        releaseSpawn();
         await expect(result).resolves.toMatchObject({ error: "hyper-v-network-elevation-cancelled" });
 
-        releaseSpawn();
         for (let turn = 0; turn < 3; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve));
         expect(settled.mock.calls).toEqual([[{ prompted: true, ready: false, code: null }]]);
         expect(relay.forceKilled()).toBe(true);
@@ -2722,10 +3127,11 @@ describe("elevated network acquisition settlement", () => {
         }, (executor) => executor.execute(getVmRequest(), executorContext()));
         await new Promise<void>((resolve) => setImmediate(resolve));
         controller.abort();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        releaseSpawn();
         await expect(result).resolves.toMatchObject({ error: "hyper-v-network-elevation-cancelled" });
         expect(settled.mock.calls).toEqual([[{ prompted: false, ready: false, code: null }]]);
 
-        releaseSpawn();
         for (let turn = 0; turn < 3; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve));
         expect(lateRequest).toMatchObject({ code: "hyper-v-network-elevation-scope-closed" });
         expect(beforeElevation).not.toHaveBeenCalled();

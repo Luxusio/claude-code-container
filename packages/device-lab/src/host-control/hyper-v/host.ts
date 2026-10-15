@@ -453,7 +453,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
 export function hyperVEnsureNetworkCommand(options: HyperVNetworkOptions): HyperVProviderCommand {
     const script = hyperVEnsureNetworkScript(options);
     return options.elevated
-        ? elevatedNetworkCommand(options.executable, script, Number(options.elevatedDeadlineUnixMs))
+        ? elevatedNetworkCommand(options.executable, script, Number(options.elevatedDeadlineUnixMs), options.elevatedMaximumDurationMs)
         : command(options.executable, script);
 }
 
@@ -525,6 +525,6 @@ export function hyperVCleanupNetworkCommand(options: HyperVNetworkCleanupOptions
         "$Result | ConvertTo-Json -Compress -Depth 5",
     ]);
     return options.elevated
-        ? elevatedNetworkCommand(options.executable, script, Number(options.elevatedDeadlineUnixMs))
+        ? elevatedNetworkCommand(options.executable, script, Number(options.elevatedDeadlineUnixMs), options.elevatedMaximumDurationMs)
         : command(options.executable, script);
 }

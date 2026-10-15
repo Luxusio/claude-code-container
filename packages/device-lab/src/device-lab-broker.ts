@@ -642,6 +642,7 @@ export interface DeviceBrokerOptions {
     providerPaths?: Record<string, string>;
     commandTimeoutMs?: number;
     requestBodyTimeoutMs?: number;
+    hyperVMonotonicNow?: () => number;
     commandRunner?: ProviderCommandRunner;
     deviceToolRunner?: BrokerDeviceToolRunner;
     windowsDeviceArtifactCleaner?: (ownerId: string, deviceId: string) => WindowsSandboxDeviceArtifactCleanup;
@@ -661,6 +662,7 @@ type NormalizedBrokerOptions = {
     providerPaths: Record<string, string>;
     commandTimeoutMs: number;
     requestBodyTimeoutMs: number;
+    hyperVMonotonicNow: () => number;
     commandRunner: ProviderCommandRunner;
     deviceToolRunner: BrokerDeviceToolRunner;
     windowsDeviceArtifactCleaner: (ownerId: string, deviceId: string) => WindowsSandboxDeviceArtifactCleanup;
@@ -1400,6 +1402,7 @@ function normalizeBrokerOptions(options: DeviceBrokerOptions = {}): NormalizedBr
         providerPaths: options.providerPaths || {},
         commandTimeoutMs,
         requestBodyTimeoutMs,
+        hyperVMonotonicNow: options.hyperVMonotonicNow || (() => performance.now()),
         commandRunner: options.commandRunner || defaultProviderCommandRunner,
         deviceToolRunner: options.deviceToolRunner || defaultBrokerDeviceToolRunner,
         windowsDeviceArtifactCleaner: options.windowsDeviceArtifactCleaner || cleanupBrokerWindowsDeviceArtifacts,
@@ -5924,7 +5927,7 @@ function signalBrokerOwnedRecording(recording: Record<string, unknown>, normaliz
 
 
 function cleanupExitBudget(normalized: NormalizedBrokerOptions, cap: number) {
-    return Math.max(0, Math.min(cap, (normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY) - Date.now()));
+    return Math.max(0, Math.min(cap, (normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY) - normalized.hyperVMonotonicNow()));
 }
 
 class CleanupOperationDeadlineError extends Error {
@@ -6084,9 +6087,9 @@ function brokerOwnerCleanupApplication(normalized: NormalizedBrokerOptions) {
         equal: isDeepStrictEqual,
         publish: (ownerId, stateKey, deviceId, expected, replacement) => publishLifecycleDevice(deviceOptions, ownerId, stateKey, deviceId, expected, () => replacement),
         withDeviceOperation: (ownerId, stateKey, deviceId, operation) => withOwnerDeviceOperation(ownerId, stateKey, deviceId, () => {
-            deviceOptions = { ...normalized, cleanupDeadlineAt: Math.min(normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + normalized.commandTimeoutMs) };
+            deviceOptions = { ...normalized, cleanupDeadlineAt: Math.min(normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY, normalized.hyperVMonotonicNow() + normalized.commandTimeoutMs) };
             return operation();
-        }),
+        }, { remaining: () => (normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY) - normalized.hyperVMonotonicNow() }),
         withLeaseGuard: (ownerId, stateKey, record, operation) => withOwnerPhysicalLeaseReleaseGuard(ownerId, stateKey, record, guard => {
             const observed = cleanupLeaseGuard(guard);
             return operation(cleanupExitBudget(deviceOptions, 1) > 0 ? observed : {
@@ -6215,6 +6218,7 @@ function resolveHyperVImageForCreate(
     return resolveHyperVImageForCreateFromStore(ownerId, parsed, params, {
         cwd: normalized.cwd,
         privateRoot: brokerPrivateRoot(),
+        now: normalized.hyperVMonotonicNow,
         resolveExecutable: (name) => providerExecutable(name, normalized),
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         limits: {
@@ -6248,43 +6252,46 @@ function writeHyperVElevationLogLine(line: string): void {
  * Run one broker administrator transaction. The gate decides whether it may prompt at all, and
  * `withElevatedHyperVNetworkExecutor` stays the only way a prompt starts. `elevation` is read
  * only once the gate admits the attempt, so a suppressed transaction never resolves the elevated
- * PowerShell and a queued one does not start its deadline while it waits.
+ * PowerShell and a queued one does not materialize its native allowance while it waits.
  */
 function withHyperVAdministratorExecutor<Result>(
     purpose: DeviceLabHyperVAdministratorPurpose | undefined,
-    elevation: () => Pick<WithElevatedHyperVNetworkExecutorOptions, "executable" | "deadlineUnixMilliseconds" | "spawnRelay">,
+    elevation: () => Pick<WithElevatedHyperVNetworkExecutorOptions, "executable" | "deadlineUnixMilliseconds" | "spawnRelay" | "maximumDurationMilliseconds">,
     operation: (executor: HyperVWindowsExecutor) => Result | Promise<Result>,
+    bounds?: { remainingMilliseconds?: () => number; monotonicNow?: () => number },
 ): Promise<Result> {
     const purposeLabel = purpose === "ensure" || purpose === "cleanup" ? purpose : "unspecified";
+    const monotonicNow = bounds?.monotonicNow ?? (() => performance.now());
     // After a declined or unanswered prompt the gate runs the transaction against
     // an executor that fails every call: no relay, no REQUEST line, no second UAC.
     return withHyperVElevationGate((onAcquisitionSettled) => {
-        const attemptStartedAt = Date.now();
+        const attemptStartedAt = monotonicNow();
         let requestedAt: number | null = null;
         return withElevatedHyperVNetworkExecutor({
             ...elevation(),
+            monotonicNow,
             // Unguarded on purpose: if this line cannot be written the relay reports request-failed
             // and never reaches RunAs, so no prompt goes unlogged. The sentence stays at the end of
             // the line so an existing search for it still matches.
             onBeforeElevation: () => {
-                const now = Date.now();
+                const now = new Date().toISOString();
                 process.stderr.write(
-                    `REQUEST ${new Date(now).toISOString()} pid=${process.pid} purpose=${purposeLabel} `
+                    `REQUEST ${now} pid=${process.pid} purpose=${purposeLabel} `
                     + "Windows is asking for Administrator permission via UAC to configure Hyper-V host networking\n",
                 );
-                requestedAt = now;
+                requestedAt = monotonicNow();
             },
             onAcquisitionSettled: (settlement) => {
                 // Timed from the REQUEST line, or from the start of the attempt when the relay
                 // settled before it asked. A null code on an unready relay means the scope closed
                 // before the relay reported anything.
-                const settledAt = Date.now();
+                const settledAt = monotonicNow();
                 const outcome = settlement.ready
                     ? "ready"
                     : settlement.code ?? "hyper-v-network-elevation-scope-closed";
-                const elapsedMs = Math.max(0, settledAt - (requestedAt ?? attemptStartedAt));
+                const elapsedMs = Math.max(0, Math.floor(settledAt - (requestedAt ?? attemptStartedAt)));
                 writeHyperVElevationLogLine(
-                    `ELEVATION ${new Date(settledAt).toISOString()} outcome=${outcome} elapsedMs=${elapsedMs}`,
+                    `ELEVATION ${new Date().toISOString()} outcome=${outcome} elapsedMs=${elapsedMs}`,
                 );
                 onAcquisitionSettled(settlement);
             },
@@ -6294,7 +6301,7 @@ function withHyperVAdministratorExecutor<Result>(
             `SUPPRESSED ${new Date().toISOString()} purpose=${purposeLabel} code=hyper-v-network-elevation-suppressed`,
         );
         return operation(executor);
-    });
+    }, bounds?.remainingMilliseconds ? { remainingMilliseconds: bounds.remainingMilliseconds } : undefined);
 }
 
 export const withHyperVAdministratorExecutorForTest = withHyperVAdministratorExecutor;
@@ -6307,11 +6314,9 @@ function hyperVNetworkRuntime(
     const powershell = providerExecutable("powershell.exe", normalized)
         || providerExecutable("pwsh", normalized)
         || providerExecutable("powershell", normalized);
-    const typedDeadline = () => Number.isSafeInteger(deadlineAt)
-        ? deadlineAt
-        : Date.now() + 180_000;
     return {
         ...hyperVNetworkStateRuntime(),
+        now: normalized.hyperVMonotonicNow,
         resolveExecutable: (name) => providerExecutable(name, normalized),
         resolveElevationExecutable: hyperVElevationExecutable,
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
@@ -6322,7 +6327,8 @@ function hyperVNetworkRuntime(
                 kind: "typed",
                 client: createDeviceLabHyperVWindowsNetworkClient({
                     executable: powershell,
-                    timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120_000),
+                    timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120_000, normalized.hyperVMonotonicNow),
+                    now: normalized.hyperVMonotonicNow,
                     run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
                     ...(normalized.usesDefaultCommandRunner
                         ? { session: brokerHyperVWindowsSession(powershell) }
@@ -6331,13 +6337,21 @@ function hyperVNetworkRuntime(
                 withAdministratorClient: async <Result>(operation: (
                     client: ReturnType<typeof createHyperVWindowsNetworkClient>,
                 ) => Result | Promise<Result>, purpose?: DeviceLabHyperVAdministratorPurpose) => normalized.usesDefaultCommandRunner
-                    ? withHyperVAdministratorExecutor(purpose, () => ({
-                        executable: hyperVElevationExecutable(powershell),
-                        deadlineUnixMilliseconds: typedDeadline(),
-                    }), (executor) => operation(createHyperVWindowsNetworkClient(executor)))
+                    ? withHyperVAdministratorExecutor(purpose, () => {
+                        const executable = hyperVElevationExecutable(powershell);
+                        const maximumDurationMilliseconds = deadlineAt === Number.POSITIVE_INFINITY
+                            ? 180_000
+                            : Math.floor(deadlineAt - normalized.hyperVMonotonicNow());
+                        if (maximumDurationMilliseconds <= 0) throw new HyperVOperationDeadlineError();
+                        return { executable, deadlineUnixMilliseconds: Date.now() + maximumDurationMilliseconds, maximumDurationMilliseconds };
+                    }, (executor) => operation(createHyperVWindowsNetworkClient(executor)), {
+                        remainingMilliseconds: () => deadlineAt - normalized.hyperVMonotonicNow(),
+                        monotonicNow: normalized.hyperVMonotonicNow,
+                    })
                     : operation(createDeviceLabHyperVWindowsNetworkClient({
                         executable: powershell,
-                        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120_000),
+                        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120_000, normalized.hyperVMonotonicNow),
+                        now: normalized.hyperVMonotonicNow,
                         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
                     })),
             }
@@ -6362,7 +6376,10 @@ export async function ensureHyperVHostNetworkForSetup(
     deadlineAt = Number.POSITIVE_INFINITY,
 ): Promise<HyperVNetworkFabricResult> {
     const normalized = normalizeBrokerOptions(options);
-    return ensureHyperVHostNetworkFabricWithRuntime(hyperVNetworkRuntime(normalized, deadlineAt), deadlineAt);
+    const localDeadlineAt = Number.isFinite(deadlineAt)
+        ? normalized.hyperVMonotonicNow() + Math.max(0, deadlineAt - Date.now())
+        : deadlineAt;
+    return ensureHyperVHostNetworkFabricWithRuntime(hyperVNetworkRuntime(normalized, localDeadlineAt), localDeadlineAt);
 }
 
 function ensureHyperVNetworkAllocation(
@@ -6526,7 +6543,7 @@ function clearHyperVOperationJournal(ownerId: string, backend: string, deviceId:
 
 function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) {
     const client = (executable: string, deadlineAt: number, timeoutCap: number) => createDeviceLabHyperVWindowsClient({
-        executable, timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, timeoutCap),
+        executable, now: normalized.hyperVMonotonicNow,timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, timeoutCap, normalized.hyperVMonotonicNow),
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(executable) } : {}),
     });
@@ -6589,7 +6606,7 @@ function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) 
         publish: (...args) => publishLifecycleDevice(normalized, ...args),
         stateErrorCode: ownerDeviceStateErrorCode, stateFailure: nativeHyperVStateFailure,
         errorCode: hyperVBoundedErrorCode, diagnosticCode: (execution, fallback) => hyperVProviderDiagnosticCode(nativeHyperVExecutionReceipt(execution), fallback),
-        assertDeadline: deadline=>{assertHyperVOperationDeadline(deadline);return undefined;}, deadlineExpired:hyperVOperationDeadlineExpired,
+        assertDeadline: deadline=>{assertHyperVOperationDeadline(deadline, normalized.hyperVMonotonicNow);return undefined;}, deadlineExpired:deadline=>hyperVOperationDeadlineExpired(deadline, normalized.hyperVMonotonicNow),
         timestamp:()=>new Date().toISOString(),
     };
     return createHyperVStopDeleteApplication(ports);
@@ -6599,7 +6616,7 @@ function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) 
  * dry-run artifact; no generated New-VM program is executed on this path. */
 function brokerHyperVCreateSession(normalized:NormalizedBrokerOptions,executable:string,deadlineAt:number) {
     let failed=false;
-    const options={executable,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadlineAt,30000),
+    const options={executable,now: normalized.hyperVMonotonicNow,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadlineAt, 30000, normalized.hyperVMonotonicNow),
         run:async(command:ProviderCommand,limits:ProviderCommandRunnerOptions)=>{const result=await hyperVProviderCommandRunner(normalized,command,limits);if(!commandSucceeded(result))failed=true;return result;},
         record:(result:{status?:number|null;error?:string;timedOut?:boolean;outputLimitExceeded?:boolean})=>{if(result.status!==0||result.error||result.timedOut||result.outputLimitExceeded)failed=true;},
         ...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(executable)}:{}),
@@ -6672,7 +6689,7 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         assertImagePath:(root,path)=>{assertDeviceLabPathWithinRoot(root,path,"hyper-v-base-image");return undefined;},exists:existsSync,
         incarnationRecord:readHyperVIncarnationRecord,vmName:hyperVVmName,marker:ownershipMarker,
         createSession:(connection,deadline)=>brokerHyperVCreateSession(normalized,connection.executable,deadline),
-        creationEffects:session=>deviceLabVmCreationPorts(session),executionFailed:session=>session.failed(),
+        creationEffects:session=>deviceLabVmCreationPorts({...session,now:normalized.hyperVMonotonicNow}),executionFailed:session=>session.failed(),
         vhd:(session,path)=>session.client.getVHD(path),vhdError:hyperVCreateVhdReadError,inspectVhd:inspectHyperVCreateVhd,
         hostCapacity:(memoryMb,cpus)=>{assertHyperVHostCapacity({memoryMb,cpus});return undefined;},
         prepareCreateDirectories: async (connection, paths, timeoutMs, outputLimit) => {
@@ -6686,21 +6703,21 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         },
         samePath:(left,right)=>resolve(left)===resolve(right),directory:dirname,windowsDirectory:win32.dirname,
         sameWindowsPath:(left,right)=>left!==null&&win32.normalize(left).toLowerCase()===win32.normalize(right).toLowerCase(),
-        cloneDisk:async(request,created)=>{await cloneHyperVBaseImage({...request,onDestinationCreated:path=>{created(path);}});},
+        cloneDisk:async(request,created)=>{await cloneHyperVBaseImage({...request,now:normalized.hyperVMonotonicNow,onDestinationCreated:path=>{created(path);}});},
         observePlannedPower: async (connection, timeoutMs, outputLimit) => {
             if (!connection.plannedCommand) throw new Error("missing-provider-command");
             const receipt = await hyperVProviderCommandRunner(normalized, connection.plannedCommand, {timeoutMs, outputLimit});
             const ok = commandSucceeded(receipt);
             return {ok, observation: ok ? parseHyperVVmObservation(receipt.stdout || "") : null, execution: nativeHyperVObservation(receipt)};
         },
-        remaining:hyperVRemainingTimeout,assertDeadline:deadline=>{assertHyperVOperationDeadline(deadline);return undefined;},deadlineExpired:hyperVOperationDeadlineExpired,
+        remaining:(deadline,maximum)=>hyperVRemainingTimeout(deadline,maximum,normalized.hyperVMonotonicNow),assertDeadline:deadline=>{assertHyperVOperationDeadline(deadline, normalized.hyperVMonotonicNow);return undefined;},deadlineExpired:deadline=>hyperVOperationDeadlineExpired(deadline, normalized.hyperVMonotonicNow),
         errorInfo:error=>error instanceof HyperVWindowsError?{code:error.code,category:error.category}:null,
         typedErrorCode:hyperVTypedErrorCode,typedErrorOperation:error=>hyperVTypedErrorOperation(error)??null,nativeDiagnostics:hyperVTypedNativeDiagnostics,
         diagnosticCode:(execution,fallback)=>hyperVProviderDiagnosticCode(nativeHyperVExecutionReceipt(execution),fallback),boundedErrorCode:hyperVBoundedErrorCode,
         removeCreateArtifact: async (connection, target, timeoutMs, outputLimit) => commandSucceeded(await hyperVProviderCommandRunner(normalized, hyperVCreateCompensationCommand({executable: connection.executable, ...target}), {timeoutMs, outputLimit})),
         compensationOrder:planHyperVVirtualMachineCreationCompensation,vms:(session,id)=>session.client.getVM({kind:"id",id}),disks:(session,id)=>session.client.getVMHardDiskDrives({kind:"id",id}),
         removeVM:(session,request)=>session.client.removeVM(request),
-        recoverVM:async(connection,request,deadline)=>{const executable = connection.executable; const client=createDeviceLabHyperVWindowsClient({executable,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,120000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(executable)}:{})});return deleteDeviceLabHyperVVm(client,request);},
+        recoverVM:async(connection,request,deadline)=>{const executable = connection.executable; const client=createDeviceLabHyperVWindowsClient({executable,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),now: normalized.hyperVMonotonicNow,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline, 120000, normalized.hyperVMonotonicNow),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(executable)}:{})});return deleteDeviceLabHyperVVm(client,request);},
         releaseNetwork:(owner,id,incarnation,deadline,preserve)=>releaseHyperVNetworkAllocationAndCleanup(owner,id,incarnation,normalized,deadline,{preserveManagedFabric:preserve}),
         read:readOwnerDevices,incarnation:hyperVDeviceIncarnationId,stateErrorCode:ownerDeviceStateErrorCode,stateFailure:nativeHyperVStateFailure,
         hasNetworkAllocation: (owner, id) => Boolean(readDeviceLabStateFile(
@@ -6725,7 +6742,7 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         writeIncarnation:(owner,backend,id,incarnation)=>{writeHyperVIncarnationRecord(owner,backend,id,incarnation);return undefined;},
         newIncarnation:()=>randomBytes(16).toString("hex"),deadlineError:error=>error instanceof HyperVOperationDeadlineError?error.code:null,
         imageProfile:hyperVImageProfile,imageVirtualSize:profile=>readHyperVImageManifestMetadata(profile).virtualSizeBytes,quota:DEVICE_BROKER_HYPER_V_OWNER_QUOTA,
-        now:()=>Date.now(),timestamp:()=>new Date().toISOString(),sleep,passwordEntropy:()=>randomBytes(24).toString("base64url"),
+        now:normalized.hyperVMonotonicNow,timestamp:()=>new Date().toISOString(),sleep,passwordEntropy:()=>randomBytes(24).toString("base64url"),
         ensurePrivateRoot:(owner,backend,id)=>{ensureHyperVPrivateDeviceRoot(owner,backend,id);return undefined;},
         assertPrivateRoot:(owner,backend,id,root)=>{assertHyperVPrivateDeviceRoot(owner,backend,id,root);return undefined;},
         readable:(path,label,limit)=>withDeviceLabReadableFile(path,label,limit,()=>true)===true,
@@ -6748,13 +6765,13 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         },
         probeLinuxGui: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxGuiReadinessObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
         prepareLinuxGui: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxGuiReadinessObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiPrepareCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
-        inspectSeed:(connection,request,deadline)=>inspectDeviceLabHyperVLinuxSeedTarget({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
-        attachSeed:(connection,request,deadline)=>attachDeviceLabHyperVLinuxSeedMedia({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
+        inspectSeed:(connection,request,deadline)=>inspectDeviceLabHyperVLinuxSeedTarget({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),now: normalized.hyperVMonotonicNow,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline, 180000, normalized.hyperVMonotonicNow),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
+        attachSeed:(connection,request,deadline)=>attachDeviceLabHyperVLinuxSeedMedia({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),now: normalized.hyperVMonotonicNow,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline, 180000, normalized.hyperVMonotonicNow),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
         provision: async (connection, request, deadline) => {
-            const result = await provisionDeviceLabHyperVWindowsGuest({executable: connection.executable, mediaCommand: request.media, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})});
+            const result = await provisionDeviceLabHyperVWindowsGuest({executable: connection.executable, mediaCommand: request.media, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),now: normalized.hyperVMonotonicNow,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline, 180000, normalized.hyperVMonotonicNow),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})});
             return {ok: result.ok, observation: result.observation, execution: nativeHyperVObservation(result.execution)};
         },
-        windowsReadiness:(connection,root,mediaPath)=>deviceLabWindowsReadinessPorts({executable: connection.executable,timeoutMilliseconds:1,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),removeProvisioningMedia:()=>{
+        windowsReadiness:(connection,root,mediaPath)=>deviceLabWindowsReadinessPorts({executable: connection.executable,now: normalized.hyperVMonotonicNow,timeoutMilliseconds:1,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),removeProvisioningMedia:()=>{
             assertDeviceLabPathWithinRoot(root,mediaPath,"hyper-v-guest-provisioning-media");assertNoSymlinkPathComponents(mediaPath,"hyper-v-guest-provisioning-media");
             try{const media=lstatSync(mediaPath);if(!media.isFile()||media.isSymbolicLink())throw new Error("hyper-v-guest-provisioning-media-invalid");}catch(error){if(error&&typeof error==="object"&&"code" in error&&error.code==="ENOENT")return;throw error;}
             rmSync(mediaPath);
@@ -6772,10 +6789,13 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
             };
         },
         bootstrapCleanup: async (connection, request, mac) => { const observed = await hyperVCleanupBootstrapNetwork(normalized, {executable: connection.executable, ...request}, mac); return {execution: nativeHyperVObservation(observed.execution), observation: observed.observation}; },
-        bootDiagnostic:(connection,request,deadline)=>readDeviceLabHyperVGuestBootDiagnostic({executable: connection.executable, ...request,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,15000),run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
+        bootDiagnostic:(connection,request,deadline)=>readDeviceLabHyperVGuestBootDiagnostic({executable: connection.executable, ...request,now: normalized.hyperVMonotonicNow,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline, 15000, normalized.hyperVMonotonicNow),run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
         validateHostIdentity:validateHyperVLinuxSshHostIdentity,
         reconcileHostIdentity:(owner,state,id,hostPath,knownPath,address,expected)=>{const publication:{expected:unknown;committed?:unknown}={expected};const identity=reconcileHyperVLinuxSshHostIdentity(owner,state,id,hostPath,knownPath,address,publication);return {identity,...(publication.committed!==undefined?{committed:publication.committed}:{})};},
-        claim:claimOwnerDevice,
+        claim:(owner,state,device,fields,deadline)=>ownerRepository.claim(owner,state,device,fields,()=>{
+            assertHyperVOperationDeadline(deadline,normalized.hyperVMonotonicNow);
+            return undefined;
+        }),
         publish:(owner,state,id,expected,replace)=>transitionOwnerLifecycleDevice(owner,state,id,expected,current=>{
             const replacement=replace(current);
             if(!replacement||typeof replacement!=="object"||!("lastBootCheck" in replacement))return replacement;
@@ -8288,11 +8308,12 @@ async function hyperVTypedStatusExecution(
     deadlineAt: number,
     timeoutCap: number,
     requireCompleteVhdChain = false,
+    now: () => number = () => Date.now(),
 ): Promise<ProviderCommandResult> {
     const result = await observeDeviceLabHyperVStatus({
         executable: identity.executable,
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, timeoutCap),
+        now: normalized.hyperVMonotonicNow,timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, timeoutCap, now),
         ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(identity.executable) } : {}),
         vmId: identity.vmId,
         vmName: identity.vmName,
@@ -8319,7 +8340,7 @@ async function hyperVTypedPowerObservation(
     const result = await executeDeviceLabHyperVPower({
         executable: identity.executable,
         run: (command, runOptions) => hyperVProviderCommandRunner(normalized, command, runOptions),
-        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, timeoutCap),
+        now: normalized.hyperVMonotonicNow,timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, timeoutCap, normalized.hyperVMonotonicNow),
         ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(identity.executable) } : {}),
         vmId: identity.vmId,
         vmName: identity.vmName,
@@ -8352,7 +8373,7 @@ async function hyperVTypedDeleteObservation(
         const client = createDeviceLabHyperVWindowsClient({
             executable: identity.executable,
             run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-            timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120000),
+            now: normalized.hyperVMonotonicNow,timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 120000, normalized.hyperVMonotonicNow),
             ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(identity.executable) } : {}),
         });
         const outcome = await deleteDeviceLabHyperVVm(client, {
@@ -8363,7 +8384,7 @@ async function hyperVTypedDeleteObservation(
             diskPath: identity.diskPath,
             auxiliaryMediaPaths: [join(deviceRoot, "disks", identity.backend === "linux-vm" ? "cidata.iso" : "autounattend.iso")],
         });
-        assertHyperVOperationDeadline(deadlineAt);
+        assertHyperVOperationDeadline(deadlineAt, normalized.hyperVMonotonicNow);
         const receipt: ProviderCommandResult = {
             mode: "exec", provider: "hyper-v", executable: identity.executable, args: [],
             status: 0,
@@ -8387,7 +8408,7 @@ async function hyperVTypedDeleteObservation(
             execution: nativeHyperVObservation({
                 mode: "exec", provider: "hyper-v", executable: identity.executable, args: [],
                 status: 1, error: code, stderr: code,
-                ...(hyperVOperationDeadlineExpired(deadlineAt) ? { timedOut: true } : {}),
+                ...(hyperVOperationDeadlineExpired(deadlineAt, normalized.hyperVMonotonicNow) ? { timedOut: true } : {}),
             }),
         };
     }
@@ -8405,7 +8426,7 @@ function hyperVBootstrapNetworkSeam(
     if (!executable) throw new Error("hyper-v-provider-executable-missing");
     return createDeviceLabHyperVWindowsNetworkClient({
         executable,
-        timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 30_000),
+        now: normalized.hyperVMonotonicNow,timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 30_000, normalized.hyperVMonotonicNow),
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         // An injected runner owns execution; only the default runner uses a broker session.
         ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(executable) } : {}),
@@ -9058,11 +9079,11 @@ function brokerDeviceStatusApplication(normalized: NormalizedBrokerOptions) {
         preview: (owner, _request, params) => nativeStatusPreview(owner, params, normalized),
         refreshPhysicalLease: (owner, request, device) => nativePhysicalAdmission(owner, { stateKey: request.stateKey, backend: request.backend, device }, request.deviceId),
         observe: connection => { const receipt = normalized.commandRunner(connection.command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt); },
-        observeHyperVFallback: async (connection, deadline) => { const receipt = await hyperVProviderCommandRunner(normalized, connection.command, { timeoutMs: hyperVRemainingTimeout(deadline, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt, true); },
-        typedStatus: async (connection, identity, deadline) => { const receipt = await hyperVTypedStatusExecution(normalized, { ...identity, executable: connection.command.executable || "powershell.exe" }, deadline, 120000); return observed(receipt, true); },
+        observeHyperVFallback: async (connection, deadline) => { const receipt = await hyperVProviderCommandRunner(normalized, connection.command, { timeoutMs: hyperVRemainingTimeout(deadline, 120000, normalized.hyperVMonotonicNow), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt, true); },
+        typedStatus: async (connection, identity, deadline) => { const receipt = await hyperVTypedStatusExecution(normalized, { ...identity, executable: connection.command.executable || "powershell.exe" }, deadline, 120000, false, normalized.hyperVMonotonicNow); return observed(receipt, true); },
         incarnation: hyperVDeviceIncarnationId, validIncarnation: validHyperVIncarnationId,
-        deadlineExpired: hyperVOperationDeadlineExpired,
-        assertDeadline: deadline => { assertHyperVOperationDeadline(deadline); return undefined; },
+        deadlineExpired: deadline => hyperVOperationDeadlineExpired(deadline, normalized.hyperVMonotonicNow),
+        assertDeadline: deadline => { assertHyperVOperationDeadline(deadline, normalized.hyperVMonotonicNow); return undefined; },
         timestamp: () => new Date().toISOString(), diagnosticCode: (execution, fallback) => hyperVProviderDiagnosticCode(execution.receipt ?? execution, fallback),
         operationPending: (owner, backend, id) => existsSync(hyperVOperationJournalPath(owner, backend, id)),
         snapshotPending: (owner, backend, id) => existsSync(hyperVSnapshotJournalPath(owner, backend, id)),
@@ -9071,7 +9092,7 @@ function brokerDeviceStatusApplication(normalized: NormalizedBrokerOptions) {
         repairSnapshots: (owner, backend, id, device, connection) => observeHyperVSnapshotJournal(owner, backend, id, device, connection.command.executable || "powershell.exe", normalized),
         recoveryConnection: () => { const native = nativeHyperVConnection(normalized, "powershell"); return native ? { command: { mode: "exec", provider: "hyper-v", executable: native.executable, args: [] } } : null; },
         stateErrorCode: ownerDeviceStateErrorCode, stateFailure: nativeHyperVStateFailure, errorCode: hyperVBoundedErrorCode,
-        withHostLock: (deadline, operation) => withSharedMutationLockAsync(brokerHyperVMutationLockPath(), operation, { waitMs: hyperVRemainingTimeout(deadline, DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS), staleMs: DEVICE_BROKER_HYPER_V_HOST_LOCK_STALE_MS }),
+        withHostLock: (deadline, operation) => withSharedMutationLockAsync(brokerHyperVMutationLockPath(), operation, { waitMs: hyperVRemainingTimeout(deadline, DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS, normalized.hyperVMonotonicNow), waitBudget: { remaining: () => deadline - normalized.hyperVMonotonicNow() }, staleMs: DEVICE_BROKER_HYPER_V_HOST_LOCK_STALE_MS }),
         lockTimedOut: isDeviceOperationLockTimeout,
     });
 }
@@ -9432,14 +9453,14 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
     let execution =
             isHyperVBackend(parsed.backend)
                 ? await hyperVProviderCommandRunner(normalized, effectiveProviderCommand, {
-                    timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 120000),
+                    timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 120000, normalized.hyperVMonotonicNow),
                     outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
                 })
                 : normalized.commandRunner(effectiveProviderCommand, {
                     timeoutMs: normalized.commandTimeoutMs,
                     outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
                 });
-    const hyperVProviderDeadlineExpired = isHyperVBackend(parsed.backend) && hyperVOperationDeadlineExpired(hyperVDeadlineAt);
+    const hyperVProviderDeadlineExpired = isHyperVBackend(parsed.backend) && hyperVOperationDeadlineExpired(hyperVDeadlineAt, normalized.hyperVMonotonicNow);
     if (hyperVProviderDeadlineExpired) {
         return {
             status: 504,
@@ -9596,7 +9617,7 @@ async function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, 
 
 async function lifecycleHyperVCommandInvokeLocked(ownerId:string,params:unknown,parsed:CommandParamSuccess,normalized:NormalizedBrokerOptions,deadlineAt=Number.POSITIVE_INFINITY,cleanupDeadlineAt=deadlineAt):Promise<BrokerRpcResult>{
     if(parsed.command==="device_create"||parsed.command==="device_start"||parsed.command==="device_reboot")return renderHyperVCreateStart(await brokerHyperVCreateStartApplication(normalized).invoke(ownerId,params,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt));
-    assertHyperVOperationDeadline(deadlineAt);
+    assertHyperVOperationDeadline(deadlineAt, normalized.hyperVMonotonicNow);
     if(parsed.command==="device_stop"||parsed.command==="device_delete")return renderHyperVStopDelete(await brokerHyperVStopDeleteApplication(normalized).invoke(ownerId,{...parsed,command:parsed.command},deadlineAt,cleanupDeadlineAt));
     if (parsed.command === "device_status") return renderBrokerDeviceStatusWithDiagnostics(await brokerDeviceStatusApplication(normalized).invoke(ownerId, { ...parsed, command: "device_status" }, params, deadlineAt), params);
     return lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, deadlineAt, cleanupDeadlineAt, parsed.deviceId);
@@ -9610,7 +9631,7 @@ async function lifecycleCommandInvokeDeviceLocked(ownerId: string, params: unkno
             return await withSharedMutationLockAsync(
                 brokerHyperVMutationLockPath(),
                 () => lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt),
-                { waitMs: hyperVRemainingTimeout(hyperVDeadlineAt, DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS), staleMs: DEVICE_BROKER_HYPER_V_HOST_LOCK_STALE_MS },
+                { waitMs: hyperVRemainingTimeout(hyperVDeadlineAt, DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS, normalized.hyperVMonotonicNow), waitBudget: { remaining: () => hyperVDeadlineAt - normalized.hyperVMonotonicNow() }, staleMs: DEVICE_BROKER_HYPER_V_HOST_LOCK_STALE_MS },
             );
         } catch (error) {
             if (!isDeviceOperationLockTimeout(error)) throw error;
@@ -9688,7 +9709,7 @@ async function cleanupVirtualStopLocked(ownerId: string, target: { backend: stri
     const parsed = admitCommandParams(params);
     if (!parsed.ok) return { attempted: false, ok: false, error: parsed.error, changed: false };
     const cleanupObservation: NonNullable<NormalizedBrokerOptions["cleanupObservation"]> = { changed: false };
-    const deadline = Math.min(normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + normalized.commandTimeoutMs);
+    const deadline = Math.min(normalized.cleanupDeadlineAt ?? Number.POSITIVE_INFINITY, normalized.hyperVMonotonicNow() + normalized.commandTimeoutMs);
     let response: BrokerRpcResult;
     const options: NormalizedBrokerOptions = { ...normalized, cleanupObservation, cleanupDeadlineAt: deadline,
         commandRunner: (command, settings) => {
@@ -9722,7 +9743,7 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
     const parsed = admitCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
     const hyperVCleanupDeadlineAt = isHyperVBackend(parsed.backend) && !parsed.dryRun
-        ? Date.now() + (parsed.command === "device_create"
+        ? normalized.hyperVMonotonicNow() + (parsed.command === "device_create"
             ? DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS
             : hyperVLifecycleCleanupTimeoutMs(parsed.backend, parsed.command, hyperVLifecycleOperationTimeoutMs(parsed)))
         : Number.POSITIVE_INFINITY;
@@ -9732,7 +9753,8 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
     }
     try {
         return await withOwnerDeviceOperation(ownerId, parsed.stateKey, parsed.deviceId, () =>
-            lifecycleCommandInvokeDeviceLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt));
+            lifecycleCommandInvokeDeviceLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt),
+            isHyperVBackend(parsed.backend) ? { remaining: () => hyperVDeadlineAt - normalized.hyperVMonotonicNow() } : undefined);
     } catch (error) {
         if (error instanceof HyperVOperationDeadlineError) {
             return {

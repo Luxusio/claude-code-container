@@ -2,10 +2,33 @@ import type {
     HyperVElevatedNetworkRelayCompletion,
     HyperVElevatedNetworkRelayFailureEvent,
     HyperVElevatedNetworkRelayProcess,
+    HyperVElevatedNetworkRelaySpawnRequest,
     HyperVElevatedNetworkTerminationDiagnostic,
+    WithElevatedHyperVNetworkExecutorOptions,
 } from "@ccc/device-lab/device-lab/broker/hyper-v/elevated-network-session.js";
 
 declare const relayCompletion: Promise<HyperVElevatedNetworkRelayCompletion>;
+
+const legacyOptions: WithElevatedHyperVNetworkExecutorOptions = {
+    executable: "powershell.exe",
+    deadlineUnixMilliseconds: 2_000_000_000_000,
+};
+const durationOptions: WithElevatedHyperVNetworkExecutorOptions = {
+    ...legacyOptions,
+    maximumDurationMilliseconds: 1_000,
+    monotonicNow: () => 12.5,
+};
+const legacySpawnRequest: HyperVElevatedNetworkRelaySpawnRequest = {
+    executable: legacyOptions.executable,
+    deadlineUnixMilliseconds: legacyOptions.deadlineUnixMilliseconds,
+    sessionBootstrap: "bootstrap",
+    onBeforeElevation: () => undefined,
+};
+const durationSpawnRequest: HyperVElevatedNetworkRelaySpawnRequest = {
+    ...legacySpawnRequest,
+    maximumDurationMilliseconds: 1_000,
+};
+const optionalDuration: number | undefined = legacySpawnRequest.maximumDurationMilliseconds;
 
 const relayWithoutDiagnostics: HyperVElevatedNetworkRelayProcess = {
     completion: relayCompletion,
@@ -25,6 +48,24 @@ const relayWithReadiness: HyperVElevatedNetworkRelayProcess = {
 };
 
 if (false) {
+    const invalidClock: WithElevatedHyperVNetworkExecutorOptions = {
+        ...legacyOptions,
+        // @ts-expect-error a local elapsed clock returns numbers
+        monotonicNow: () => "12.5",
+    };
+    const invalidSpawnClock: HyperVElevatedNetworkRelaySpawnRequest = {
+        ...legacySpawnRequest,
+        // @ts-expect-error a process-local clock never crosses the native spawn boundary
+        monotonicNow: () => 12.5,
+    };
+    const invalidDuration: WithElevatedHyperVNetworkExecutorOptions = {
+        ...legacyOptions,
+        // @ts-expect-error duration metadata is numeric, never a wire-selected string
+        maximumDurationMilliseconds: "1000",
+    };
+    void invalidClock;
+    void invalidSpawnClock;
+    void invalidDuration;
     const readinessIsNotAProvider: HyperVElevatedNetworkRelayProcess = {
         ...relayWithoutDiagnostics,
         // @ts-expect-error readiness is awaited as a promise, never polled through a callback
@@ -83,3 +124,6 @@ if (false) {
 
 void relayWithoutDiagnostics;
 void relayWithReadiness;
+void durationOptions;
+void durationSpawnRequest;
+void optionalDuration;

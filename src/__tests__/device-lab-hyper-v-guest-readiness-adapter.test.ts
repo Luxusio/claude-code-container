@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { deviceLabHyperVLinuxGuiReadinessObservation, deviceLabHyperVLinuxReadinessObservation, deviceLabHyperVReadinessFailure, deviceLabWindowsReadinessObservation, parseHyperVLinuxEd25519HostKeyFingerprints, parseWindowsReadinessProbe, waitForDeviceLabHyperVGuestReadiness } from "@ccc/device-lab/device-lab/broker/hyper-v/guest-readiness-adapter.js";
+import { deviceLabHyperVLinuxGuiReadinessObservation, deviceLabHyperVLinuxReadinessObservation, deviceLabHyperVReadinessFailure, deviceLabWindowsReadinessObservation, deviceLabWindowsReadinessPorts, parseHyperVLinuxEd25519HostKeyFingerprints, parseWindowsReadinessProbe, waitForDeviceLabHyperVGuestReadiness } from "@ccc/device-lab/device-lab/broker/hyper-v/guest-readiness-adapter.js";
 import type { HyperVWindowsExecutionRequest } from "@ccc/hyper-v/index.js";
 
 const id = "12345678-1234-1234-1234-123456789abc";
@@ -141,6 +141,45 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
         const job = requestOf(run.mock.calls[0][0]);
         expect(job).toMatchObject({ operation: "Invoke-Guest", action: "job" });
         if (job.operation === "Invoke-Guest" && job.action === "job") expect(job.command).toContain("FirstLogonCompleted");
+    });
+
+    it("floors fractional caller allowances only at actual typed guest and DVD dispatch", async () => {
+        const run = vi.fn((command: { input?: string }, _options: { timeoutMs: number }) => {
+            const request = requestOf(command);
+            return envelope(request, request.operation === "Invoke-Guest" ? [{ action: "job", output: probe() }] : []);
+        });
+        const ports = deviceLabWindowsReadinessPorts({
+            executable: "powershell.exe", run, timeoutMilliseconds: 1,
+            now: () => 17.25, removeProvisioningMedia: vi.fn(),
+        });
+
+        expect(await ports.probe(identity, 4999.5)).toEqual({ kind: "valid", probe: {
+            computerName: "CCC-WIN", addresses: ["172.29.0.10"], firstLogonCompleted: marker, provisioningSecretsPresent: false,
+        } });
+        await ports.detachMedia(identity, mediaPath, 1234.75);
+
+        expect(run.mock.calls.map(([command]) => requestOf(command))).toEqual([
+            expect.objectContaining({ operation: "Invoke-Guest", action: "job", ...identity }),
+            expect.objectContaining({ operation: "Remove-VMDvdDrive", selector: identity.selector,
+                expectedName: identity.expectedName, expectedNotes: marker, path: mediaPath }),
+        ]);
+        expect(run.mock.calls.map(([, options]) => options.timeoutMs)).toEqual([4999, 1234]);
+        expect(ports.now()).toBe(17.25);
+    });
+
+    it("refuses sub-millisecond guest and DVD allowances without provider dispatch", async () => {
+        const run = vi.fn((command: { input?: string }, _options: { timeoutMs: number }) => {
+            const request = requestOf(command);
+            return envelope(request, request.operation === "Invoke-Guest" ? [{ action: "job", output: probe() }] : []);
+        });
+        const ports = deviceLabWindowsReadinessPorts({
+            executable: "powershell.exe", run, timeoutMilliseconds: 1000,
+            now: () => 17.25, removeProvisioningMedia: vi.fn(),
+        });
+
+        await expect(ports.probe(identity, 0.75)).rejects.toBeInstanceOf(Error);
+        await expect(ports.detachMedia(identity, mediaPath, 0.75)).rejects.toBeInstanceOf(Error);
+        expect(run).not.toHaveBeenCalled();
     });
 
     it("never detaches media when the incarnation marker or secrets gate fails", async () => {

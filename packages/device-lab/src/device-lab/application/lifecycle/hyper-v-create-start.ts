@@ -43,7 +43,9 @@ export async function waitHyperVWindowsGuestReadiness(options: WindowsReadinessR
     let stableObservationDeadline: number | null = null;
     const remainingTimeout = () => {
         const observedAt = now();
-        return Math.max(1, Math.min(15000, deadline - observedAt, stableObservationDeadline === null ? Number.POSITIVE_INFINITY : stableObservationDeadline - observedAt));
+        const remaining = Math.min(15000, deadline - observedAt, stableObservationDeadline === null ? Number.POSITIVE_INFINITY : stableObservationDeadline - observedAt);
+        if (remaining <= 0) throw new ReadinessRetry("hyper-v-guest-ready-deadline-exceeded");
+        return remaining;
     };
     let attempts = 0;
     let reason = "powershell-direct-unavailable";
@@ -84,6 +86,7 @@ export async function waitHyperVWindowsGuestReadiness(options: WindowsReadinessR
                     mediaDetached = true;
                 }
                 catch (error) {
+                    if (error instanceof ReadinessRetry) throw error;
                     mediaDetached = await inspectDetached(ports, options.identity, options.provisioningMediaPath, deadline, now, remainingTimeout);
                     if (!mediaDetached) {
                         return {
@@ -113,6 +116,8 @@ export async function waitHyperVWindowsGuestReadiness(options: WindowsReadinessR
         }
         catch (error) {
             reason = error instanceof ReadinessRetry ? error.reason : windowsReadinessReason(ports.errorInfo(error));
+            if (error instanceof ReadinessRetry && error.reason === "hyper-v-guest-ready-deadline-exceeded")
+                break;
             if (ports.errorInfo(error) !== null)
                 currentObservationFingerprint = `transport:${reason}`;
         }
@@ -961,25 +966,28 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         }
     }
 
-    function publishStarted(owner: string, request: HyperVLifecycleRequest, expected: unknown, observation: HyperVVmObservation | null, ready: HyperVGuestReadyObservation | null) {
-        return ports.publish(owner, request.stateKey, request.deviceId, expected, current => ({
-            ...current,
-            status: 'running',
-            ...(observation ? {
-                vmId: observation.vmId,
-                vmName: observation.vmName,
-                runtimeState: observation.state,
-                hyperVStatus: observation.status,
-            } : {}),
-            bootReady: Boolean(ready),
-            lastBootCheck: ready ? {
-                ready: true,
-                provider: request.backend === 'linux-vm' ? 'hyper-v-ssh' : 'hyper-v-powershell-direct',
-                computerName: ready.computerName,
-                attempts: ready.attempts,
-            } : null,
-            updatedAt: ports.timestamp(),
-        }));
+    function publishStarted(owner: string, request: HyperVLifecycleRequest, expected: unknown, observation: HyperVVmObservation | null, ready: HyperVGuestReadyObservation | null, deadlineAt: number) {
+        return ports.publish(owner, request.stateKey, request.deviceId, expected, current => {
+            ports.assertDeadline(deadlineAt);
+            return {
+                ...current,
+                status: 'running',
+                ...(observation ? {
+                    vmId: observation.vmId,
+                    vmName: observation.vmName,
+                    runtimeState: observation.state,
+                    hyperVStatus: observation.status,
+                } : {}),
+                bootReady: Boolean(ready),
+                lastBootCheck: ready ? {
+                    ready: true,
+                    provider: request.backend === 'linux-vm' ? 'hyper-v-ssh' : 'hyper-v-powershell-direct',
+                    computerName: ready.computerName,
+                    attempts: ready.attempts,
+                } : null,
+                updatedAt: ports.timestamp(),
+            };
+        });
     }
     async function execute(ownerId: string, parsed: HyperVCreateStartRequest, params: unknown, hyperVDeadlineAt: number, hyperVCleanupDeadlineAt: number): Promise<HyperVLifecycleOutcome<Connection,Receipt>> {
         const expectedObservation: {
@@ -1317,7 +1325,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         {
             let claim;
             try {
-                claim = ports.claim(ownerId, parsed.stateKey, device, hyperVCreateUniqueFields());
+                claim = ports.claim(ownerId, parsed.stateKey, device, hyperVCreateUniqueFields(), hyperVDeadlineAt);
             }
             catch (error) {
                 const rollback = await rollbackCreate(persistedParsed, device, null, hyperVCleanupDeadlineAt);
@@ -1330,6 +1338,14 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                             stateError: ports.stateErrorCode(error) || "owner-state-write-failed",
                             rollback,};
                 }
+                const deadlineError = ports.deadlineError(error);
+                if (deadlineError) return {
+                    kind:'operation-failed',reason:'deadline',journalDisposition:'retain',recoveryDisposition:'already-handled',error: deadlineError,
+                    ownerId,
+                    backend: parsed.backend,
+                    deviceId: parsed.deviceId,
+                    rollback,
+                };
                 const failure = ports.stateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
                 return {
                     ...failure,
@@ -1436,7 +1452,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 throw new Error("hyper-v-guest-metadata-invalid");
             }
             ports.assertPrivateRoot(ownerId, "windows-vm", parsed.deviceId, privateRoot);
-            const readinessTimeoutMilliseconds = Math.max(0, Math.min(timeoutMs, hyperVDeadlineAt - ports.now() - 15000));
+            const readinessTimeoutMilliseconds = Math.floor(Math.max(0, Math.min(timeoutMs, hyperVDeadlineAt - ports.now() - 15000)));
             const readiness = await waitHyperVWindowsGuestReadiness({
                 timeoutMilliseconds: readinessTimeoutMilliseconds,
                 noProgressTimeoutMilliseconds: Math.min(ports.windowsNoProgressTimeout, readinessTimeoutMilliseconds),
@@ -1501,6 +1517,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             let networkFinalizeAttempts = 0;
             let networkFinalizeSucceeded = false;
             let guestSignalObserved = false;
+            let guiExecution: HyperVGuestReadinessObservation<Receipt> | null = null;
             try {
                 const privateRoot = hyperVCreateField(device, "privateRoot") || "";
                 const expectedPrivateRoot = ports.privateRoot(ownerId, "linux-vm", parsed.deviceId);
@@ -1661,9 +1678,11 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                         networkAddress,
                         timeoutMs: 30000,
                     };
-                    let guiExecution = await ports.probeLinuxGui(ssh,guiOptions,ports.remaining(hyperVDeadlineAt,35000),ports.outputLimit);
+                    guiExecution = await ports.probeLinuxGui(ssh,guiOptions,ports.remaining(hyperVDeadlineAt,35000),ports.outputLimit);
+                    ports.assertDeadline(hyperVDeadlineAt);
                     if (!guiExecution.ready) {
                         guiExecution = await ports.prepareLinuxGui(ssh,{...guiOptions,timeoutMs:ports.linuxGuiTimeout},ports.remaining(hyperVDeadlineAt,ports.linuxGuiTimeout),ports.outputLimit);
+                        ports.assertDeadline(hyperVDeadlineAt);
                     }
                     if (!guiExecution.ready) {
                         hyperVGuestReadyExecution = guiExecution;
@@ -1677,7 +1696,8 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 const readinessError = caughtError === "hyper-v-operation-deadline-exceeded"
                     ? bootstrapSshLastError || caughtError
                     : caughtError;
-                hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", readinessError);
+                hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", readinessError, guiExecution ? {previous: guiExecution} : undefined);
+                hyperVGuestReady = null;
                 success = false;
             }
             finally {
@@ -1979,9 +1999,10 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 return updatedDevice;
             });
         }
+        if (success) ports.assertDeadline(hyperVDeadlineAt);
         updatedDevice = success
             ?
-                (publication = publishStarted(ownerId, parsed, expectedDevice, powerObservation.observation, hyperVGuestReady)).device
+                (publication = publishStarted(ownerId, parsed, expectedDevice, powerObservation.observation, hyperVGuestReady, hyperVDeadlineAt)).device
             : publication ? publication.device : updatedDevice || planned.device;
     }
     catch (error) {

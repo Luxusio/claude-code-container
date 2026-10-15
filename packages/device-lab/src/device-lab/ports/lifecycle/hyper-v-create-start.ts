@@ -141,7 +141,7 @@ export interface HyperVCreateStartPorts<Session,Connection,Receipt,ProvisionMedi
  bootDiagnostic(connection:Connection,request:{vmId:string;vmName:string;ownershipNotes:string},deadline:number):Promise<HyperVWindowsGuestBootDiagnostic>;
  validateHostIdentity(owner:string,id:string,hostPublicKeyPath:string,knownHostsPath:string,address:string,fingerprint:string):boolean;
  reconcileHostIdentity(owner:string,state:string,id:string,hostPublicKeyPath:string,knownHostsPath:string,address:string,expected:unknown):{identity:{fingerprint:string}|null;committed?:unknown};
- claim(owner:string,state:string,record:Record<string,unknown>,uniqueFields:Array<string|string[]>):{ok:true;device:unknown}|{ok:false;error:string;field:string;value:unknown;existing:Record<string,unknown>};
+ claim(owner:string,state:string,record:Record<string,unknown>,uniqueFields:Array<string|string[]>,deadline:number):{ok:true;device:unknown}|{ok:false;error:string;field:string;value:unknown;existing:Record<string,unknown>};
  publish:HyperVStopDeletePorts<Connection,Receipt>['publish'];
  maxBootTimeout:number;
  windowsNoProgressTimeout:number;

@@ -43,6 +43,7 @@ export type HyperVHostNetworkPorts = {
     readonly standard: HyperVHostNetworkEffects;
     withAdministrator<Result>(operation: (effects: HyperVHostNetworkEffects) => Result | Promise<Result>, purpose: "ensure" | "cleanup"): Promise<Result>;
     now(): number;
+    throwDeadline(): never;
     pause(milliseconds: number): Promise<void>;
     mutationNeverStarted(cause: unknown): boolean;
 };
@@ -58,6 +59,7 @@ export type HyperVHostEnsureRequest = {
 export type HyperVHostCleanupRequest = {
     readonly network: HyperVHostNetworkSpec;
     readonly provenance: HyperVHostNetworkCleanupProvenance;
+    readonly deadlineAt: number;
     confirmed(action: Extract<HyperVHostNetworkExecutionResult, {
         readonly kind: "mutation-completed";
         readonly operation: "cleanup";

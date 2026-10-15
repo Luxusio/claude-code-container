@@ -14,6 +14,7 @@ export type DeviceLabHyperVPowerOptions = {
     readonly executable: string;
     readonly run: DeviceLabHyperVCommandRunner;
     readonly timeoutMilliseconds: () => number;
+    readonly now?: () => number;
     readonly session?: HyperVWindowsExecutor;
     readonly vmId: string;
     readonly vmName: string;
@@ -99,6 +100,7 @@ export async function executeDeviceLabHyperVPower(
             run: options.run,
             timeoutMilliseconds: options.timeoutMilliseconds,
             ...(options.session ? { session: options.session } : {}),
+            ...(options.now ? { now: options.now } : {}),
         });
     } catch (cause) {
         return failure(errorCode(cause, options, "hyper-v-lifecycle-vm-lookup-command-failed"));

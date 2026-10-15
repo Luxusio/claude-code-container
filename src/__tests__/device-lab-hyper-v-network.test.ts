@@ -48,6 +48,13 @@ const INCARNATION_ID = "a".repeat(32);
 const SWITCH_ID = "11111111-2222-3333-4444-555555555555";
 const NAT_INSTANCE_ID = "ccc-network-instance-1";
 
+type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
+    (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+const NATIVE_CLOCK_REMAINS_OPTIONAL: [
+    Equal<HyperVNetworkRuntime["now"], (() => number) | undefined>,
+    {} extends Pick<HyperVNetworkRuntime, "now"> ? true : false,
+] = [true, true];
+
 const roots: string[] = [];
 
 afterEach(() => {
@@ -419,6 +426,167 @@ function scriptOf(command: { args: string[]; input?: string }): string {
 }
 
 describe("Hyper-V network module", () => {
+    it("keeps the native clock additive for existing runtime callers", () => {
+        expect(NATIVE_CLOCK_REMAINS_OPTIONAL).toEqual([true, true]);
+    });
+
+    it.each([1, -1])("deducts command preparation before standard dispatch across a %s wall jump", async (wallDirection) => {
+        const root = privateRoot();
+        let monotonic = 100.25;
+        const wall = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+        const run = vi.fn<HyperVNetworkRuntime["run"]>(async () => setupObservation(root));
+        const network = runtime(root, run);
+        const legacy = network.hostFabric;
+        if (legacy.kind !== "legacy-compatibility") throw new Error("legacy host fabric expected");
+        network.now = () => monotonic;
+        network.hostFabric = {
+            ...legacy,
+            ensureCommand: (options) => {
+                monotonic = 350.25;
+                wall.mockReturnValue(1_000_000 + wallDirection * 100_000);
+                return legacy.ensureCommand(options);
+            },
+        };
+
+        expect(await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID, 1_100.25))
+            .toMatchObject({ ok: true });
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(run.mock.calls[0]?.[1]).toMatchObject({ timeoutMs: 750, outputLimit: network.commandOutputBytes });
+    });
+
+    it.each(["ensure", "cleanup"] as const)("refuses legacy %s dispatch when preparation consumes its allowance", async (operation) => {
+        const root = privateRoot();
+        if (operation === "cleanup") writeNetworkState(root, {
+            managedSwitch: true, managedGateway: true, managedNat: true,
+            allocations: [{ ownerId: OWNER_ID, deviceId: DEVICE_ID, incarnationId: INCARNATION_ID,
+                address: "172.29.0.10", macAddress: "02:11:22:33:44:55", allocatedAt: new Date().toISOString() }],
+        });
+        let monotonic = 100.25;
+        const wall = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+        const run = vi.fn<HyperVNetworkRuntime["run"]>(async () => setupObservation(root));
+        const network = runtime(root, run);
+        const legacy = network.hostFabric;
+        if (legacy.kind !== "legacy-compatibility") throw new Error("legacy host fabric expected");
+        network.now = () => monotonic;
+        const prepare = vi.fn(() => { monotonic = 1_100.25; wall.mockReturnValue(900_000); });
+        network.hostFabric = {
+            ...legacy,
+            ensureCommand: (options) => { prepare(); return legacy.ensureCommand(options); },
+            cleanupCommand: (options) => { prepare(); return legacy.cleanupCommand(options); },
+        };
+
+        const result = operation === "ensure"
+            ? ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID, 1_100.25)
+            : releaseHyperVNetworkAllocationAndCleanup(network, OWNER_ID, DEVICE_ID, INCARNATION_ID, 1_100.25);
+        await expect(result).rejects.toThrow("hyper-v-operation-deadline-exceeded");
+        expect(prepare).toHaveBeenCalledTimes(1);
+        expect(run).not.toHaveBeenCalled();
+        if (operation === "cleanup") expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")))
+            .toMatchObject({ managedSwitch: true, managedGateway: true, managedNat: true,
+                allocations: [{ ownerId: OWNER_ID, deviceId: DEVICE_ID, incarnationId: INCARNATION_ID }] });
+    });
+
+    it.each([
+        { operation: "ensure", deadlineAt: 40_100.25, timeoutMs: 39_100, durationMs: 29_100 },
+        { operation: "cleanup", deadlineAt: 40_100.25, timeoutMs: 39_100, durationMs: 29_100 },
+        { operation: "ensure", deadlineAt: Number.POSITIVE_INFINITY, timeoutMs: 179_500, durationMs: 169_500 },
+    ] as const)("materializes elevated $operation duration after preparation with deadline $deadlineAt", async ({ operation, deadlineAt, timeoutMs, durationMs }) => {
+        const root = privateRoot();
+        if (operation === "cleanup") writeNetworkState(root, {
+            managedSwitch: true, managedGateway: true, managedNat: true,
+            allocations: [{ ownerId: OWNER_ID, deviceId: DEVICE_ID, incarnationId: INCARNATION_ID,
+                address: "172.29.0.10", macAddress: "02:11:22:33:44:55", allocatedAt: new Date().toISOString() }],
+        });
+        let monotonic = 100.25;
+        const wall = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+        const elevatedOptions: { deadlineUnixMs: number | undefined; maximumDurationMs: number | undefined }[] = [];
+        const run = vi.fn<HyperVNetworkRuntime["run"]>()
+            .mockImplementationOnce(async () => {
+                monotonic = 500.25;
+                wall.mockReturnValue(900_000);
+                return { mode: "exec", provider: "hyper-v", status: 1,
+                    stderr: "PermissionDenied: Windows System Error 5" };
+            })
+            .mockImplementationOnce(async () => operation === "ensure" ? setupObservation(root) : {
+                mode: "exec", provider: "hyper-v", status: 0,
+                stdout: JSON.stringify({ ok: true, removedSwitch: true, removedNat: true, removedGateway: true, alreadyMissing: false }),
+            });
+        const network = runtime(root, run);
+        const legacy = network.hostFabric;
+        if (legacy.kind !== "legacy-compatibility") throw new Error("legacy host fabric expected");
+        network.now = () => monotonic;
+        network.resolveElevationExecutable = () => { monotonic = 750.25; return "elevated-powershell.exe"; };
+        network.hostFabric = {
+            ...legacy,
+            ensureCommand: (options) => {
+                if (options.elevated) {
+                    monotonic = 1_000.25;
+                    wall.mockReturnValue(2_000_000);
+                }
+                const command = legacy.ensureCommand(options);
+                if (options.elevated) {
+                    elevatedOptions.push({ deadlineUnixMs: options.elevatedDeadlineUnixMs, maximumDurationMs: options.elevatedMaximumDurationMs });
+                }
+                return command;
+            },
+            cleanupCommand: (options) => {
+                if (options.elevated) {
+                    monotonic = 1_000.25;
+                    wall.mockReturnValue(2_000_000);
+                }
+                const command = legacy.cleanupCommand(options);
+                if (options.elevated) {
+                    elevatedOptions.push({ deadlineUnixMs: options.elevatedDeadlineUnixMs, maximumDurationMs: options.elevatedMaximumDurationMs });
+                }
+                return command;
+            },
+        };
+
+        const result = operation === "ensure"
+            ? await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID, deadlineAt)
+            : await releaseHyperVNetworkAllocationAndCleanup(network, OWNER_ID, DEVICE_ID, INCARNATION_ID, deadlineAt);
+
+        expect(result).toMatchObject({ ok: true });
+        expect(run).toHaveBeenCalledTimes(2);
+        expect(run.mock.calls[1]?.[1]).toMatchObject({ timeoutMs });
+        expect(elevatedOptions.at(-1)).toEqual({ deadlineUnixMs: 2_000_000 + durationMs, maximumDurationMs: durationMs });
+        expect(run.mock.calls[1]?.[0].executable).toBe("elevated-powershell.exe");
+    });
+
+    it.each(["remove-nat", "remove-switch"] as const)("keeps the %s checkpoint after cleanup expiry without publishing success", async (delayedAction) => {
+        const root = privateRoot();
+        let monotonic = 100.25;
+        const wall = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+        const { network, mutations, legacyRun } = typedHostFabricRuntime(root, {
+            beforeMutation: (action) => {
+                if (action !== delayedAction) return;
+                monotonic = 1_100.25;
+                wall.mockReturnValue(900_000);
+            },
+        });
+        network.now = () => monotonic;
+        expect((await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID, 1_100.25)).ok).toBe(true);
+
+        expect(await releaseHyperVNetworkAllocationAndCleanup(network, OWNER_ID, DEVICE_ID, INCARNATION_ID, 1_100.25))
+            .toMatchObject({ ok: false, error: "hyper-v-operation-deadline-exceeded" });
+        const path = join(root, "network", "hyper-v.json");
+        if (delayedAction === "remove-nat") {
+            expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
+                managedSwitch: true, managedGateway: true, managedNat: false,
+                allocations: [{ ownerId: OWNER_ID, deviceId: DEVICE_ID, incarnationId: INCARNATION_ID }],
+            });
+            expect(mutations.filter((action) => action.startsWith("remove-"))).toEqual(["remove-nat"]);
+        } else {
+            expect(existsSync(path)).toBe(false);
+            expect(mutations.filter((action) => action.startsWith("remove-")))
+                .toEqual(["remove-nat", "remove-gateway", "remove-switch"]);
+        }
+        await expect(releaseHyperVNetworkAllocationAndCleanup(network, OWNER_ID, DEVICE_ID, INCARNATION_ID, 2_100.25))
+            .resolves.toMatchObject({ ok: true, remaining: 0 });
+        expect(mutations.filter((action) => action === delayedAction)).toHaveLength(1);
+        expect(legacyRun).not.toHaveBeenCalled();
+    });
+
     it("checks exact owner-state incarnation across both Hyper-V backends", () => {
         const allocation = {
             ownerId: OWNER_ID,

@@ -147,6 +147,40 @@ describe("Device Lab Hyper-V lifecycle adapter", () => {
         });
     });
 
+    it.each([-3_600_000, 3_600_000])("keeps local invocation allowances across a %i ms wall jump", async (wallJump) => {
+        let wallNow = 1_000_000;
+        let elapsedNow = 100.5;
+        const deadlineAt = elapsedNow + 1000;
+        const wall = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const observedTimeouts: number[] = [];
+        const client = createDeviceLabHyperVWindowsClient({
+            executable: "powershell.exe",
+            now: () => elapsedNow,
+            timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 30_000, () => elapsedNow),
+            run: (command, options) => {
+                observedTimeouts.push(options.timeoutMs);
+                wallNow += wallJump;
+                elapsedNow += 900;
+                return success(operationRequest(command).operation);
+            },
+        });
+
+        try {
+            await client.getVM({ kind: "id", id: vmId });
+            await client.getVM({ kind: "id", id: vmId });
+            expect(observedTimeouts).toEqual([1000, 100]);
+            await expect(client.getVM({ kind: "id", id: vmId })).rejects.toMatchObject({
+                name: "HyperVWindowsError",
+                category: "transport",
+                operation: "Get-VM",
+                code: "executor-failed",
+            });
+            expect(observedTimeouts).toEqual([1000, 100]);
+        } finally {
+            wall.mockRestore();
+        }
+    });
+
     it("fences an absent ID when the managed name belongs to another VM", async () => {
         const replacementVmId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
         const run = vi.fn((command) => {

@@ -120,6 +120,7 @@ export type HyperVDiskCloneRequest = {
     readonly deviceRoot: string;
     readonly diskPath: string;
     readonly deadlineAt?: number;
+    readonly now?: () => number;
     // The caller records the file-created effect at the only unambiguous point: after
     // O_EXCL succeeds and before a copy, hash, or read-back can fail.
     readonly onDestinationCreated?: (path: string) => void;
@@ -171,12 +172,13 @@ export async function assertClonedDiskMatches(
     expectedBytes: number,
     expectedSha256: string,
     deadlineAt: number = Number.POSITIVE_INFINITY,
+    now: () => number = () => Date.now(),
 ): Promise<void> {
     const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
     const clonedHash = createHash("sha256");
     let verified = 0;
     while (verified < expectedBytes) {
-        assertHyperVOperationDeadline(deadlineAt);
+        assertHyperVOperationDeadline(deadlineAt, now);
         const { bytesRead } = await target.read(buffer, 0, Math.min(buffer.length, expectedBytes - verified), verified);
         if (bytesRead <= 0) throw new Error("hyper-v-created-disk-short-read");
         clonedHash.update(buffer.subarray(0, bytesRead));
@@ -185,6 +187,7 @@ export async function assertClonedDiskMatches(
     if (clonedHash.digest("hex") !== expectedSha256) throw new Error("hyper-v-created-disk-hash-mismatch");
     const finalTarget = await target.stat({ bigint: true });
     if (finalTarget.size !== BigInt(expectedBytes)) throw new Error("hyper-v-created-disk-length-mismatch");
+    assertHyperVOperationDeadline(deadlineAt, now);
 }
 
 /**
@@ -207,6 +210,7 @@ export async function assertClonedDiskMatches(
  */
 export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Promise<HyperVDiskCloneResult> {
     const deadlineAt = request.deadlineAt ?? Number.POSITIVE_INFINITY;
+    const now = request.now ?? (() => Date.now());
     const label = "hyper-v-base-image";
     assertNoSymlinkPathComponents(request.baseImageRoot, label);
     assertNoSymlinkPathComponents(request.baseImagePath, label);
@@ -243,7 +247,7 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
         // A dynamic disk's virtual capacity is not preallocated. Check the exact bytes
         // read from this validated handle before creating a destination or recording effects.
         await assertHyperVDiskCapacity(request.diskPath, Number(openedSource.size));
-        assertHyperVOperationDeadline(deadlineAt);
+        assertHyperVOperationDeadline(deadlineAt, now);
 
         // O_EXCL, so a disk that is already there is a refusal rather than an overwrite. The
         // legacy used FileMode::CreateNew for the same reason.
@@ -266,13 +270,14 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
         const sourceHash = createHash("sha256");
         let copied = 0;
         while (copied < Number(openedSource.size)) {
-            assertHyperVOperationDeadline(deadlineAt);
+            assertHyperVOperationDeadline(deadlineAt, now);
             const { bytesRead } = await source.read(buffer, 0, Math.min(buffer.length, Number(openedSource.size) - copied), null);
             if (bytesRead <= 0) throw new Error("hyper-v-base-image-copy-short-read");
             const chunk = buffer.subarray(0, bytesRead);
             sourceHash.update(chunk);
             let offset = 0;
             while (offset < bytesRead) {
+                assertHyperVOperationDeadline(deadlineAt, now);
                 const { bytesWritten } = await target.write(buffer, offset, bytesRead - offset, null);
                 if (bytesWritten <= 0) throw new Error("hyper-v-base-image-copy-short-write");
                 offset += bytesWritten;
@@ -292,7 +297,7 @@ export async function cloneHyperVBaseImage(request: HyperVDiskCloneRequest): Pro
         if (identityRefusal !== null) throw new Error(identityRefusal);
 
         // Read back what landed rather than trusting what was written.
-        await assertClonedDiskMatches(target, Number(openedSource.size), request.expectedSha256, deadlineAt);
+        await assertClonedDiskMatches(target, Number(openedSource.size), request.expectedSha256, deadlineAt, now);
 
         return { bytes: Number(openedSource.size) };
     } finally {

@@ -412,6 +412,43 @@ describe("cloning the base image", () => {
         expect(statSync(diskPath).size).toBeLessThan(bytes.length);
     });
 
+    it("stops an expired local copy budget despite the wall clock moving backward", async () => {
+        const bytes = Buffer.alloc(3 * 1024 * 1024 + 17, 4);
+        const { imageRoot, imagePath, sha256 } = writeBaseImage(bytes);
+        const { deviceRoot, diskPath } = devicePaths();
+        let wallNow = 1000;
+        let monotonicNow = 1000;
+        let sourceReads = 0;
+        const created = vi.fn();
+        vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const realOpen = fsPromises.open.bind(fsPromises);
+        vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+            const handle = await realOpen(...args);
+            if (args[0] === imagePath) {
+                const read = handle.read.bind(handle);
+                vi.spyOn(handle, "read").mockImplementation(async (...readArgs: Parameters<typeof handle.read>) => {
+                    const result = await read(...readArgs);
+                    sourceReads += 1;
+                    wallNow = 500;
+                    monotonicNow = 1002;
+                    return result;
+                });
+            }
+            return handle;
+        });
+
+        await expect(cloneHyperVBaseImage({
+            baseImageRoot: imageRoot, baseImagePath: imagePath, expectedSha256: sha256,
+            deviceRoot, diskPath, deadlineAt: 1001, now: () => monotonicNow,
+            onDestinationCreated: created,
+        })).rejects.toThrow("hyper-v-operation-deadline-exceeded");
+
+        expect(sourceReads).toBeGreaterThan(0);
+        expect(created).toHaveBeenCalledWith(diskPath);
+        expect(statSync(diskPath).size).toBeLessThan(bytes.length);
+        expect(readFileSync(imagePath)).toEqual(bytes);
+    });
+
     // A swap the hash cannot see: same bytes, different file. Only the handle identity check
     // catches it, and it is the case the check exists for -- the bytes that were read came
     // from a file nobody verified.
@@ -450,6 +487,28 @@ describe("proving what landed on disk", () => {
         const bytes = Buffer.alloc(2 * 1024 * 1024 + 11, 6);
         await withOpenFile(bytes, async (handle) => {
             await expect(assertClonedDiskMatches(handle, bytes.length, sha256Of(bytes))).resolves.toBeUndefined();
+        });
+    });
+
+    it("verifies actual disk bytes while the wall clock moves forward within a local budget", async () => {
+        const bytes = Buffer.alloc(2 * 1024 * 1024 + 11, 6);
+        let wallNow = 1000;
+        let monotonicNow = 1000;
+        vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        await withOpenFile(bytes, async (handle) => {
+            const read = handle.read.bind(handle);
+            let reads = 0;
+            vi.spyOn(handle, "read").mockImplementation(async (...args: Parameters<typeof handle.read>) => {
+                const result = await read(...args);
+                reads += 1;
+                wallNow = 10_000;
+                monotonicNow += 1;
+                return result;
+            });
+
+            await expect(assertClonedDiskMatches(handle, bytes.length, sha256Of(bytes), 2000, () => monotonicNow))
+                .resolves.toBeUndefined();
+            expect(reads).toBeGreaterThan(0);
         });
     });
 

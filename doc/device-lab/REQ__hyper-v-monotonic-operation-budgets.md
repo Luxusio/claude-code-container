@@ -1,0 +1,17 @@
+# Hyper-V monotonic operation budgets
+
+The [architecture contract](../common/SPEC__ccc-architecture-contracts.md) requires operation-local monotonic budgets. The selected broker lifecycle, image, copy, network and canonical owner-cleanup paths use one local clock for each absolute deadline. Moving the host wall clock backward cannot increase their remaining allowance; moving it forward cannot prematurely expire that allowance. Existing timeouts, suboperation caps and cleanup reserves retain their values.
+
+Existing exported helpers and setup entrypoints accepting absolute Unix deadlines keep that meaning when no local clock is supplied. Native elapsed-only sessions use a monotonic clock and accept an injected local clock for deterministic verification. Shared sessions receive relative durations and use their own local clock; a request cannot replace the shared session clock.
+
+Network policy returns duration and termination reserve. Native adapters alone create Unix fields and native commands. No process-local absolute monotonic value crosses a worker, relay or PowerShell boundary. New elevation callers supply a finite integral remaining duration alongside the existing genuine Unix field; present invalid durations refuse, while omitted legacy durations capture their Unix remainder once. In duration mode the captured countdown governs expiry, including wall jumps between materialization and receipt.
+
+Approval, consent, launch, authentication and bootstrap consume the original allowance. Each native receiver clamps a refreshed remaining duration to its existing countdown; transport must not grant a fresh full budget. Late acquisition cannot approve or dispatch a new operation after expiry. Keep existing executable, PID/start-token, nonce, administrator and terminal/close correlation checks.
+
+Expiry prevents new dispatch and successful final publication. A previously delivered command may still have effects: preserve delivered-pending accounting, already-applied effect checkpoints, generation/CAS fences, journal evidence and exact compensation rules. Timeout does not prove cancellation, absence or permission to replay. Missing correlated child/relay termination proof retains the existing termination-unconfirmed result and precedence.
+
+All shared owner-cleanup deadline producers and consumers use the same clock, including mixed-backend cleanup and canonical Hyper-V stop. Preserve the existing child-confirmation, relay-force and wrapper-completion shutdown ladder and its bounded total countdown. Audit/lease/journal ISO timestamps stay wall time; elapsed diagnostics use monotonic time.
+
+Verification independently moves wall and local clocks during acquisition, queued execution, fallback, copy/hash, network publication and shutdown. It checks actual request allowances, effects, state and error precedence, plus existing legacy calls and genuine emitted consumers. Portable fixtures do not certify actual Windows/macOS or real-provider behavior.
+
+Independent snapshot/guest-direct budgets, lifecycle-triggered snapshot-journal repair and the general provider-worker startup/grace transport accounting remain explicit original architecture obligations outside this selected change. Qualification of these seams does not certify the entire Hyper-V graph, full source universe, reliability or whole migration.

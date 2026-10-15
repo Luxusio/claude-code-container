@@ -29,6 +29,7 @@ export type DeviceLabHyperVVmCreationOptions = {
     readonly networkClient: CreateNetworkClient;
     readonly effects: HyperVCreateEffect[];
     readonly deadlineAt: number;
+    readonly now?: () => number;
     readonly onNewVmAttempt?: () => void;
 };
 
@@ -41,11 +42,11 @@ export type DeviceLabHyperVVmCreationResult = {
     readonly switchName: string | null;
 };
 
-export function deviceLabVmCreationPorts(options:{client:CreateVmClient;networkClient:CreateNetworkClient}):VmCreationPorts {
+export function deviceLabVmCreationPorts(options:{client:CreateVmClient;networkClient:CreateNetworkClient;now?:()=>number}):VmCreationPorts {
  const {client,networkClient}=options;
  return {
   plan:planHyperVVirtualMachineCreation,
-  assertDeadline:deadline=>{assertHyperVOperationDeadline(deadline);return undefined;},
+  assertDeadline:deadline=>{assertHyperVOperationDeadline(deadline,options.now);return undefined;},
   sameWindowsPath:(left,right)=>left!==null&&win32.normalize(left).toLowerCase()===win32.normalize(right).toLowerCase(),
   switchName:parseHyperVVirtualSwitchName,macAddress:parseHyperVMacAddress,
   getVM:selector=>client.getVM(selector),getVMHardDiskDrives:selector=>client.getVMHardDiskDrives(selector),

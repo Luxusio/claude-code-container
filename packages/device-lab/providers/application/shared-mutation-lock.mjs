@@ -85,12 +85,14 @@ export function createSharedMutationLock(ports) {
         const status = ports.observe(lock.processIdentity,lock.pid);
         cacheStatus(key,status); return status;
     }
-    /** @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord & {processIdentity:import('../ports/shared-mutation-lock.mjs').LockProcessIdentity}} lock */
-    async function observationAsync(lock) {
+    /** @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord & {processIdentity:import('../ports/shared-mutation-lock.mjs').LockProcessIdentity}} lock @param {boolean} [allowQueue] */
+    async function observationAsync(lock,allowQueue = true) {
         const key = JSON.stringify([lock.pid,lock.processIdentity]);
         const cached = cache.get(key);
         if (cached && ports.now()-cached.checkedAt < (cached.status === 'unavailable' ? 30000 : 1000)) return cached.status;
         const existing = pending.get(key); if (existing) return existing;
+        // A budgeted caller must not leave a new native probe queued after expiry.
+        if (!allowQueue && active >= 4) return 'unavailable';
         if (pending.size >= 128) { cacheStatus(key,'unavailable'); return 'unavailable'; }
         const promise = (async () => {
             const current = await slot(() => ports.identityAsync(lock.pid));
@@ -121,10 +123,11 @@ export function createSharedMutationLock(ports) {
     }
     /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs */
     function stale(file,lock,staleMs) { const facts = staleFacts(file,lock,staleMs,false); if (!facts.probe) return facts.stale; const status = observation(facts.probe); return status === 'mismatch' || status === 'exited'; }
-    /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs */
-    async function staleAsync(file,lock,staleMs) {
+    /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs @param {boolean} [allowQueue] */
+    async function staleAsync(file,lock,staleMs,allowQueue = true) {
         const facts = staleFacts(file,lock,staleMs,true);
         if (facts.legacyProbe) {
+            if (!allowQueue && active >= 4) return false;
             const current = await slot(() => ports.identityAsync(facts.legacyProbe.pid));
             if (!current) return !ports.alive(facts.legacyProbe.pid);
             // A process born after publication cannot own this claim, even when
@@ -133,7 +136,7 @@ export function createSharedMutationLock(ports) {
             return times.kind === 'known' && times.processStartedAtMs > times.claimCreatedAtMs + 1000;
         }
         if (!facts.probe) return facts.stale;
-        const status = await observationAsync(facts.probe);
+        const status = await observationAsync(facts.probe,allowQueue);
         return status === 'mismatch' || status === 'exited';
     }
     /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockOptions} options */
@@ -147,6 +150,22 @@ export function createSharedMutationLock(ports) {
             : Math.min(deadline-clock(),options.waitBudget?.remaining() ?? Infinity);
         function check() { if (options.waitBudget && remaining() <= 0) throw ports.timeout(file); }
         return {remaining,check,expired:() => clock() >= deadline};
+    }
+    /** @template T @param {ReturnType<typeof waitFor>} wait @param {()=>Promise<T>} observe @returns {Promise<T>} */
+    async function waitForObservation(wait,observe) {
+        wait.check();
+        const cancellation = new AbortController();
+        /** @returns {Promise<never>} */
+        async function expire() {
+            while (true) {
+                await ports.pause(Math.max(1,Math.min(2147483647,Math.ceil(wait.remaining()))),cancellation.signal);
+                wait.check();
+            }
+        }
+        // Observation is read-only and may settle after this caller has expired.
+        try {
+            const result = await Promise.race([observe(),expire()]); wait.check(); return result;
+        } finally { cancellation.abort(); }
     }
     /** @param {unknown[]} failures @param {string} [codeOverride] */
     function throwFailures(failures,codeOverride) {
@@ -203,14 +222,22 @@ export function createSharedMutationLock(ports) {
         ports.check(fence);
         return true;
     }
-    /** @param {string} file @param {string} token @param {number} staleMs @param {boolean} budgeted @param {Fence} fence */
-    async function admitArchivesAsync(file,token,staleMs,budgeted,fence) {
+    /** @param {string} file @param {string} token @param {number} staleMs @param {ReturnType<typeof waitFor>|null} wait @param {Fence} fence */
+    async function admitArchivesAsync(file,token,staleMs,wait,fence) {
+        wait?.check();
         for (const archive of ports.archives(file,fence)) {
             const observed = readObservation(archive);
             if (observed.kind === 'missing' || observed.kind === 'value' && observed.value.token === token) continue;
             if (observed.kind === 'unavailable') return false;
             const lock = observed.kind === 'value' ? observed.value : null;
-            if (!(budgeted ? stale(archive,lock,staleMs) : await staleAsync(archive,lock,staleMs))) return false;
+            if (!(wait ? await waitForObservation(wait,() => staleAsync(archive,lock,staleMs,false)) : await staleAsync(archive,lock,staleMs))) return false;
+            if (wait) {
+                ports.check(fence); wait.check();
+                const current = readObservation(archive);
+                if (lock ? current.kind !== 'value' || current.value.token !== lock.token : current.kind !== 'malformed') return false;
+                if (readLock(file)?.token !== token) return false;
+                ports.check(fence); wait.check();
+            }
             if (!ports.removeArchive(file,archive,lock?.token ?? null,fence) && readObservation(archive).kind !== 'missing') return false;
         }
         ports.check(fence);
@@ -305,7 +332,7 @@ export function createSharedMutationLock(ports) {
             while (true) {
                 wait.check();
                 if (!claimed) try {
-                    check(); const fd = ports.openClaim(file);
+                    check(); wait.check(); const fd = ports.openClaim(file);
                     claimed = true; own(key,token);
                     publish(fd,() => JSON.stringify(value),failures);
                     check();
@@ -314,16 +341,30 @@ export function createSharedMutationLock(ports) {
                     if (ports.variant === 'typescript') wait.check();
                     const observed = readObservation(file), staleMs = options.staleMs ?? 30000;
                     const existing = observed.kind === 'value' ? observed.value : null;
-                    if (existing && (options.waitBudget ? stale(file,existing,staleMs) : await staleAsync(file,existing,staleMs)) && ports.moveQualified(file,existing.token,'stale',fence)) continue;
-                    if (observed.kind === 'malformed' && (options.waitBudget ? stale(file,null,staleMs) : await staleAsync(file,null,staleMs)) && ports.moveMalformed(file,token,fence)) continue;
+                    if (existing && (options.waitBudget ? await waitForObservation(wait,() => staleAsync(file,existing,staleMs,false)) : await staleAsync(file,existing,staleMs))) {
+                        if (options.waitBudget) {
+                            check(); wait.check();
+                            if (readLock(file)?.token !== existing.token) continue;
+                            check(); wait.check();
+                        }
+                        if (ports.moveQualified(file,existing.token,'stale',fence)) continue;
+                    }
+                    if (observed.kind === 'malformed' && (options.waitBudget ? await waitForObservation(wait,() => staleAsync(file,null,staleMs,false)) : await staleAsync(file,null,staleMs))) {
+                        if (options.waitBudget) {
+                            check(); wait.check();
+                            if (readObservation(file).kind !== 'malformed') continue;
+                            check(); wait.check();
+                        }
+                        if (ports.moveMalformed(file,token,fence)) continue;
+                    }
                     if (ports.variant === 'provider' ? wait.expired() : wait.remaining() <= 0) throw ports.timeout(file);
                     wait.check(); await ports.pause(options.waitBudget ? Math.max(0,Math.min(10,wait.remaining())) : 10);
                     continue;
                 }
                 check();
-                const admitted = await admitArchivesAsync(file,token,options.staleMs ?? 30000,!!options.waitBudget,fence);
+                const admitted = await admitArchivesAsync(file,token,options.staleMs ?? 30000,options.waitBudget ? wait : null,fence);
                 const current = readObservation(file);
-                check();
+                check(); wait.check();
                 if (current.kind === 'value' && current.value.token === token && admitted) break;
                 if (current.kind !== 'unavailable' && !(current.kind === 'value' && current.value.token === token)) {
                     releaseArchives(file,token,fence);

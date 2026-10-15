@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
     executeDeviceLabHyperVVmCreation,
@@ -17,6 +17,8 @@ const VM_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const DISK_PATH = "C:\\ccc\\device-1\\disks\\root.vhdx";
 const MANAGED_MAC = "02:15:5D:01:1A:2C";
 const BOOTSTRAP_MAC = parseHyperVMacAddress("06:15:5D:01:1A:2C");
+
+afterEach(() => { vi.restoreAllMocks(); });
 
 function request(overrides: Partial<HyperVCreateVirtualMachineRequest> = {}): HyperVCreateVirtualMachineRequest {
     return {
@@ -242,5 +244,53 @@ describe("typed Hyper-V creation mutation phase", () => {
         await expect(executeDeviceLabHyperVVmCreation({ request: createRequest, ...host, deadlineAt: Date.now() - 1 }))
             .rejects.toThrow("hyper-v-operation-deadline-exceeded");
         expect(host.operations).toEqual([]);
+    });
+
+    it("stops further mutations after local expiry and retains a VM created across a backward wall jump", async () => {
+        const createRequest = request();
+        const host = fixture(createRequest);
+        let wallNow = 1000;
+        let monotonicNow = 1000;
+        vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const newVM = host.client.newVM;
+        host.client.newVM = vi.fn(async (...args: Parameters<typeof newVM>) => {
+            const result = await newVM(...args);
+            wallNow = 500;
+            monotonicNow = 1002;
+            return result;
+        });
+
+        await expect(executeDeviceLabHyperVVmCreation({
+            request: createRequest, ...host, deadlineAt: 1001, now: () => monotonicNow,
+        })).rejects.toThrow("hyper-v-operation-deadline-exceeded");
+
+        expect(host.operations).toEqual(["Get-VM", "New-VM"]);
+        expect(host.effects).toEqual([{ kind: "file-created", path: DISK_PATH }, { kind: "vm-created", vmId: VM_ID }]);
+        expect(host.client.setVMProcessor).not.toHaveBeenCalled();
+    });
+
+    it("finishes creation within its local budget when the wall clock moves forward", async () => {
+        const createRequest = request();
+        const host = fixture(createRequest);
+        let wallNow = 1000;
+        let monotonicNow = 1000;
+        vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const getVM = host.client.getVM;
+        host.client.getVM = vi.fn(async (...args: Parameters<typeof getVM>) => {
+            const result = await getVM(...args);
+            wallNow = 10_000;
+            monotonicNow += 1;
+            return result;
+        });
+
+        await expect(executeDeviceLabHyperVVmCreation({
+            request: createRequest, ...host, deadlineAt: 2000, now: () => monotonicNow,
+        })).resolves.toEqual(expect.objectContaining({ vmId: VM_ID, diskPath: DISK_PATH }));
+
+        expect(host.operations).toEqual([
+            "Get-VM", "New-VM", "Set-VMProcessor", "Set-VMMemory", "Set-VM", "Set-VMFirmware",
+            "Get-VM", "Get-VMHardDiskDrive", "Get-VMFirmware",
+        ]);
+        expect(host.effects.at(-1)).toEqual({ kind: "vm-created", vmId: VM_ID });
     });
 });

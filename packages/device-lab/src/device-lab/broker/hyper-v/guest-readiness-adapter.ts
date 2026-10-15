@@ -13,6 +13,7 @@ import type {
 import {hyperVProviderDiagnosticCode} from './public-response.js';
 import type {ProviderCommandResult} from '../../../device-lab-broker.js';
 import {nativeHyperVExecutionReceipt} from './lifecycle-outcomes.js';
+import {HyperVOperationDeadlineError} from "./deadline.js";
 export type DeviceLabHyperVGuestReadinessOutcome = WindowsReadinessOutcome;
 import {
     createHyperVGuestDirectClient,
@@ -61,16 +62,17 @@ type Options = Omit<DeviceLabHyperVWindowsClientOptions, "session" | "record"> &
 
 export function deviceLabWindowsReadinessPorts(options:Pick<Options,"executable"|"timeoutMilliseconds"|"run"|"removeProvisioningMedia"|"now"|"sleep">):WindowsReadinessPorts {
  let timeout=options.timeoutMilliseconds;
+ const setBudget=(budget:number)=>{timeout=Math.floor(budget);if(Number.isFinite(timeout)&&timeout<1)throw new HyperVOperationDeadlineError();};
  let native: {guest:ReturnType<typeof createHyperVGuestDirectClient>;host:ReturnType<typeof createDeviceLabHyperVWindowsClient>}|undefined;
  const clients=()=>{
-  if(!native){const transport={executable:options.executable,timeoutMilliseconds:()=>timeout,run:options.run}; native={guest:createHyperVGuestDirectClient(createDeviceLabHyperVWindowsExecutor(transport)),host:createDeviceLabHyperVWindowsClient(transport)};}
+  if(!native){const transport={executable:options.executable,timeoutMilliseconds:()=>timeout,run:options.run,...(options.now?{now:options.now}:{})}; native={guest:createHyperVGuestDirectClient(createDeviceLabHyperVWindowsExecutor(transport)),host:createDeviceLabHyperVWindowsClient(transport)};}
   return native;
  };
  return {
-  probe:async(identity,budget)=>{timeout=budget;const output=await clients().guest.invoke({...identity,action:'job',command:PROBE_SOURCE},budget);if(output.action!=='job')return {kind:'unexpected'}; const probe=parseWindowsReadinessProbe(output.output); return probe?{kind:'valid',probe}:{kind:'invalid'};},
-  detachMedia:async(identity,path,budget)=>{timeout=budget;await clients().host.removeVMDvdDrive({selector:identity.selector,expectedName:identity.expectedName,expectedNotes:identity.expectedNotes,path});return undefined;},
-  machines:async(identity,budget)=>{timeout=budget;return clients().host.getVM(identity.selector);},
-  media:async(identity,budget)=>{timeout=budget;return clients().host.getVMDvdDrives(identity.selector);},
+  probe:async(identity,budget)=>{setBudget(budget);const output=await clients().guest.invoke({...identity,action:'job',command:PROBE_SOURCE},timeout);if(output.action!=='job')return {kind:'unexpected'}; const probe=parseWindowsReadinessProbe(output.output); return probe?{kind:'valid',probe}:{kind:'invalid'};},
+  detachMedia:async(identity,path,budget)=>{setBudget(budget);await clients().host.removeVMDvdDrive({selector:identity.selector,expectedName:identity.expectedName,expectedNotes:identity.expectedNotes,path});return undefined;},
+  machines:async(identity,budget)=>{setBudget(budget);return clients().host.getVM(identity.selector);},
+  media:async(identity,budget)=>{setBudget(budget);return clients().host.getVMDvdDrives(identity.selector);},
   removeMedia:async()=>{await options.removeProvisioningMedia();return undefined;},
   errorInfo:error=>error instanceof HyperVWindowsError?{code:error.code,category:error.category}:null,
   now:options.now??Date.now,

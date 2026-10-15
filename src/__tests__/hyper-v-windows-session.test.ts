@@ -323,6 +323,122 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect(session.starts()).toBe(1);
     });
 
+    it.each([-3_600_000, 3_600_000])("retains queue and delivered-work budgets across a %i ms wall jump", async (wallJump) => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let wallNow = 1_000_000;
+        let elapsedNow = 100.5;
+        const wall = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const child = fakeChild();
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            now: () => elapsedNow,
+            healthTimeoutMilliseconds: 1000,
+            queueWaitFraction: 0.25,
+            spawn: () => child,
+        });
+
+        try {
+            const held = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 1000 });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(child.written).toHaveLength(2);
+
+            let deliveredSettled = false;
+            const delivered = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 400 }).then((result) => {
+                deliveredSettled = true;
+                return result;
+            });
+            wallNow += wallJump;
+            elapsedNow += 60;
+            await vi.advanceTimersByTimeAsync(60);
+            child.reply(child.written[1]!, "released after queue wait");
+            await vi.advanceTimersByTimeAsync(0);
+            expect((await held).stdout).toBe("released after queue wait");
+            expect(child.written).toHaveLength(3);
+
+            // Sixty milliseconds were spent queued: the delivered caller has 340 left.
+            // An early timer callback must keep its original target and wait the final millisecond.
+            elapsedNow += 339;
+            await vi.advanceTimersByTimeAsync(340);
+            expect(deliveredSettled).toBe(false);
+            elapsedNow += 1;
+            await vi.advanceTimersByTimeAsync(1);
+            expect(deliveredSettled).toBe(true);
+            expect((await delivered).error).toBe("hyper-v-windows-session-timeout");
+            expect(session.outstanding().pendingRequests).toBe(1);
+            expect(child.killed()).toBe(false);
+
+            let neverRanSettled = false;
+            const neverRan = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 400 }).then((result) => {
+                neverRanSettled = true;
+                return result;
+            });
+            elapsedNow += 99;
+            await vi.advanceTimersByTimeAsync(100);
+            expect(neverRanSettled).toBe(false);
+            elapsedNow += 1;
+            await vi.advanceTimersByTimeAsync(1);
+            expect(neverRanSettled).toBe(true);
+            expect((await neverRan).error).toBe("hyper-v-windows-session-queue-timeout");
+            expect(child.written).toHaveLength(3);
+            expect(session.outstanding().pendingRequests).toBe(1);
+
+            // Caller expiry did not free a delivered request's pipe or permit the expired queue
+            // entry to write. A correlated late reply releases both without replaying either.
+            child.reply(child.written[2]!, "late but correlated");
+            await vi.advanceTimersByTimeAsync(0);
+            expect(session.outstanding()).toEqual({ pendingRequests: 0, queueDepth: 0 });
+            expect(child.written).toHaveLength(3);
+            expect(session.starts()).toBe(1);
+            expect(child.killed()).toBe(false);
+        } finally {
+            session.close();
+            wall.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it("times out a delivered primitive when its late correlated success arrives before the timeout callback", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let elapsedNow = 100.5;
+        const child = fakeChild();
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            now: () => elapsedNow,
+            healthTimeoutMilliseconds: 1000,
+            spawn: () => child,
+        });
+
+        try {
+            const delivered = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 40 });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(child.written).toHaveLength(2);
+            expect(session.outstanding()).toEqual({ pendingRequests: 1, queueDepth: 1 });
+
+            // Advance the request clock without servicing its timer: the reply wins the event loop,
+            // but arrives after the caller's allowance has already expired.
+            elapsedNow += 41;
+            child.reply(child.written[1]!, "late success");
+
+            expect((await delivered).error).toBe("hyper-v-windows-session-timeout");
+            expect(session.outstanding()).toEqual({ pendingRequests: 0, queueDepth: 0 });
+            expect(child.written).toHaveLength(2);
+            expect(child.killed()).toBe(false);
+
+            // The actual correlated reply clears delivered work and leaves this child usable.
+            const next = session.execute(REQUEST, CONTEXT);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(child.written).toHaveLength(3);
+            child.reply(child.written[2]!, "served after late reply");
+            expect((await next).stdout).toBe("served after late reply");
+            expect(session.starts()).toBe(1);
+            expect(session.outstanding()).toEqual({ pendingRequests: 0, queueDepth: 0 });
+            expect(child.killed()).toBe(false);
+        } finally {
+            session.close();
+            vi.useRealTimers();
+        }
+    });
+
     it("expires a queued caller on its own deadline, and says its request never ran", async () => {
         // A queued caller's deadline runs from when it called execute, not from when it reaches the
         // head of the queue. Timing it from inside the write meant a queued caller had no deadline
@@ -560,15 +676,18 @@ describe("Hyper-V Windows PowerShell session", () => {
         // counter — without expiry the budget is an absorbing state. Three stalls spread over a
         // broker's lifetime would then leave a perfectly healthy host on the one-shot transport
         // permanently, which is the same class of defect the lifetime counter had.
-        // Only Date is faked. The 5 ms request timers still run normally, while unrelated
-        // scheduler/file-system delays cannot age the 300 ms start window mid-assertion.
+        // Request timers use real elapsed time. The local offset ages the start window explicitly,
+        // while Date can move independently of the session's elapsed clock.
         vi.useFakeTimers({ toFake: ["Date"] });
         try {
             const startedAt = Date.now();
+            const elapsedStartedAt = performance.now();
+            let elapsedOffset = 0;
             let spawns = 0;
             let wedged = true;
             const session = createHyperVWindowsPowerShellSession({
                 operationAsset: ASSET,
+                now: () => performance.now() - elapsedStartedAt + elapsedOffset,
                 maximumStarts: 2,
                 healthTimeoutMilliseconds: 5,
                 startBudgetWindowMilliseconds: 300,
@@ -590,6 +709,7 @@ describe("Hyper-V Windows PowerShell session", () => {
 
             // The host is healthy again and enough time has passed that the old stalls no longer count.
             wedged = false;
+            elapsedOffset += 400;
             vi.setSystemTime(startedAt + 400);
             expect((await session.execute(REQUEST, CONTEXT)).stdout).toBe("recovered");
             expect(spawns).toBe(3);

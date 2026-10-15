@@ -8,6 +8,7 @@ export type DeviceLabHyperVStatusOptions = {
     readonly executable: string;
     readonly run: DeviceLabHyperVCommandRunner;
     readonly timeoutMilliseconds: () => number;
+    readonly now?: () => number;
     readonly vmId: string;
     readonly vmName: string;
     readonly expectedNotes: string;
@@ -62,6 +63,7 @@ export async function observeDeviceLabHyperVStatus(
             run: options.run,
             timeoutMilliseconds: options.timeoutMilliseconds,
             ...(options.session ? { session: options.session } : {}),
+            ...(options.now ? { now: options.now } : {}),
         });
     } catch (cause) {
         return readFailure(cause, "hyper-v-status-vm-lookup-command-failed", remaining);

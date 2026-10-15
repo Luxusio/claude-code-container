@@ -16,6 +16,7 @@ import {
     type HyperVWindowsNetworkClient,
 } from "@ccc/hyper-v/index.js";
 import { createDeviceLabHyperVWindowsExecutor, type DeviceLabHyperVWindowsClientOptions, } from "./lifecycle-adapter.js";
+import { HyperVOperationDeadlineError } from "./deadline.js";
 // Why an administrator transaction was opened. The broker writes it on its elevation log lines
 // so a UAC prompt can be attributed; it never changes what the transaction may do.
 export type DeviceLabHyperVAdministratorPurpose = "ensure" | "cleanup";
@@ -44,6 +45,9 @@ export type DeviceLabHyperVHostNetworkCleanupOptions = {
     readonly network: HyperVHostNetworkSpec;
     readonly provenance: HyperVHostNetworkCleanupProvenance;
     readonly withAdministratorClient: WithAdministratorHyperVWindowsNetworkClient;
+    readonly deadlineAt?: number;
+    readonly now?: () => number;
+    readonly sleep?: (milliseconds: number) => Promise<void>;
     readonly onConfirmedAction?: (action: DeviceLabHyperVHostNetworkCleanupCompletedAction, observation: HyperVHostNetworkCleanupObservation) => void | Promise<void>;
 };
 export type DeviceLabHyperVHostNetworkCompletedAction = Extract<HyperVHostNetworkExecutionResult, {
@@ -125,6 +129,7 @@ export function createDeviceLabHyperVHostNetworkPorts(
         standard: createDeviceLabHyperVHostNetworkEffects(client),
         withAdministrator: (operation, purpose) => withAdministratorClient(scopedClient => operation(createDeviceLabHyperVHostNetworkEffects(scopedClient)), purpose),
         now,
+        throwDeadline: () => { throw new HyperVOperationDeadlineError(); },
         pause: sleep,
         mutationNeverStarted: cause => cause instanceof HyperVWindowsError
             && cause.category === "transport" && ELEVATED_MUTATION_PROVEN_NOT_STARTED.has(cause.code),
@@ -140,10 +145,11 @@ export function ensureDeviceLabHyperVHostNetwork(options: DeviceLabHyperVHostNet
     });
 }
 export function cleanupDeviceLabHyperVHostNetwork(options: DeviceLabHyperVHostNetworkCleanupOptions): Promise<DeviceLabHyperVHostNetworkCleanupTransactionResult> {
-    const application = createHyperVNetworkTrust(createDeviceLabHyperVHostNetworkPorts(options.client, options.withAdministratorClient, Date.now, milliseconds => new Promise<void>(resolve => setTimeout(resolve, milliseconds))));
+    const application = createHyperVNetworkTrust(createDeviceLabHyperVHostNetworkPorts(options.client, options.withAdministratorClient, options.now ?? Date.now, options.sleep ?? (milliseconds => new Promise<void>(resolve => setTimeout(resolve, milliseconds)))));
     return application.cleanupHost({
         network: options.network,
         provenance: options.provenance,
+        deadlineAt: options.deadlineAt ?? Number.POSITIVE_INFINITY,
         confirmed: async (action, observation) => { await options.onConfirmedAction?.(action, observation); },
     });
 }

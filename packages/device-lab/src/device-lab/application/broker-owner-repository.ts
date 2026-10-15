@@ -33,11 +33,12 @@ export function createBrokerOwnerRepository(ports: BrokerOwnerRepositoryPorts) {
             return { found: true, matched: true, device: replacement };
         });
     }
-    function claim(owner: string, key: string, device: Record<string, unknown>, fields: Array<string | string[]>) {
+    function claim(owner: string, key: string, device: Record<string, unknown>, fields: Array<string | string[]>, beforePublish?: () => undefined) {
         return ports.withLock(owner, key, () => {
             const devices = ports.read(owner, key);
             const conflict = ownerIdentityConflict(devices, device, fields);
             if (conflict) return conflict;
+            beforePublish?.();
             publish(owner, key, [...devices, device]);
             return { ok: true as const, device };
         });

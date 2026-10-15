@@ -2,16 +2,16 @@ import { createHash } from "crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { hyperVOwnerImageProfileRoot, readHyperVImageManifestMetadata, resolveHyperVImageForCreate, type HyperVImageStoreRuntime } from "@ccc/device-lab/device-lab/broker/hyper-v/image-store.js";
 import { HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP } from "@ccc/hyper-v/low-level/powershell-transport.js";
 
-type Variant = "normal" | "fixed" | "mbr" | "mount-response-lost" | "dismount-malformed" | "detach-unconfirmed" | "readback-failed" | "hash-changed" | "unsupported-partition" | "invalid-vhd" | "unsupported-vhd-type" | "deadline-expire" | "manifest-created-race";
+type Variant = "normal" | "fixed" | "mbr" | "mount-response-lost" | "dismount-malformed" | "detach-unconfirmed" | "readback-failed" | "hash-changed" | "unsupported-partition" | "invalid-vhd" | "unsupported-vhd-type" | "deadline-expire" | "manifest-created-race" | "final-clock-change";
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function fixture(variant: Variant = "normal") {
+function fixture(variant: Variant = "normal", now?: () => number, finalInspection: () => void = () => {}) {
     const root = mkdtempSync(join(tmpdir(), "hyper-v-import-"));
     roots.push(root);
     const cwd = join(root, "project");
@@ -27,6 +27,7 @@ function fixture(variant: Variant = "normal") {
     let storageReads = 0;
     const runtime: HyperVImageStoreRuntime = {
         cwd, privateRoot,
+        ...(now ? { now } : {}),
         resolveExecutable: () => "/fake/powershell.exe",
         limits: { acquireTimeoutMs: 30_000, prepareTimeoutMs: 30_000, lockWaitMs: 30_000, commandOutputBytes: 64 * 1024 },
         async run(command) {
@@ -50,6 +51,7 @@ function fixture(variant: Variant = "normal") {
                 const success = (items: unknown[] = []) => ({ mode: "exec", provider: "hyper-v", status: 0,
                     stdout: JSON.stringify({ schemaVersion: 1, operation: request.operation, ok: true, items }) });
                 if (request.operation === "Get-VHD") {
+                    if (variant === "final-clock-change" && request.path === imagePath) finalInspection();
                     if (variant === "manifest-created-race" && request.path === imagePath) {
                         writeFileSync(manifestPath, "foreign-manifest");
                     }
@@ -188,6 +190,44 @@ describe("imported Hyper-V image transaction", () => {
         expect(existsSync(test.imagePath)).toBe(false);
         expect(existsSync(test.manifestPath)).toBe(false);
     }, 10_000);
+
+    it("refuses late import publication despite a backward wall jump during final VHD inspection", async () => {
+        let wallNow = 1000;
+        let monotonicNow = 1000;
+        vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const test = fixture("final-clock-change", () => monotonicNow, () => {
+            wallNow = 500;
+            monotonicNow = 2001;
+        });
+
+        await expect(test.prepare(2000)).rejects.toThrow("hyper-v-operation-deadline-exceeded");
+
+        expect(test.operations.at(-1)).toEqual(expect.objectContaining({ operation: "Get-VHD", path: test.imagePath }));
+        expect(existsSync(test.imagePath)).toBe(false);
+        expect(existsSync(test.manifestPath)).toBe(false);
+        expect(readFileSync(test.sourceImage, "utf8")).toBe("source-vhdx-bytes");
+    });
+
+    it("publishes a detached verified import when only the wall clock passes its local deadline", async () => {
+        let wallNow = 1000;
+        let monotonicNow = 1000;
+        vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const test = fixture("final-clock-change", () => monotonicNow, () => {
+            wallNow = 10_000;
+            monotonicNow = 1001;
+        });
+
+        await expect(test.prepare(2000)).resolves.toEqual(expect.objectContaining({ ok: true, prepared: true, imagePath: test.imagePath }));
+
+        expect(readFileSync(test.imagePath, "utf8")).toBe("source-vhdx-bytes");
+        expect(JSON.parse(readFileSync(test.manifestPath, "utf8"))).toEqual(expect.objectContaining({
+            sha256: createHash("sha256").update("source-vhdx-bytes").digest("hex"),
+        }));
+        expect(test.operations.map(({ operation }) => operation)).toEqual([
+            "Get-VHD", "Mount-VHD", "Dismount-VHD", "Get-VHD", "Get-VHD",
+        ]);
+        expect(readdirSync(test.profileRoot).filter((name) => name.startsWith(".source-"))).toEqual([]);
+    });
 
     it("never overwrites a manifest created while the staged image is being inspected", async () => {
         const test = fixture("manifest-created-race");

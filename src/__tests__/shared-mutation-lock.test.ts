@@ -18,6 +18,7 @@ import {
 } from "@ccc/device-lab/device-lab-shared-state.js";
 import { readDeviceRuntimeProcessIdentity } from "@ccc/device-lab/device-lab-process-identity.js";
 import { readProcessIdentity } from "@ccc/device-lab/providers/state/process-identity.mjs";
+import type { LockProcessIdentity } from "../../packages/device-lab/providers/ports/shared-mutation-lock.mjs";
 
 const withSharedMutationLock = withNestedSharedMutationLock;
 let tokenCounter = 0;
@@ -177,6 +178,111 @@ describe("device-lab shared mutation lock", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-shared-mutation-lock-"));
         roots.push(root);
         return join(root, "state.mutation.lock");
+    }
+
+    async function windowsBudgetedFacade(implementation: "host" | "provider", identityAsync: (pid: number) => Promise<LockProcessIdentity | null>) {
+        const identitySync = vi.fn((): never => { throw new Error("budgeted-windows-owner-must-use-async-identity"); });
+        const observe = vi.fn((): never => { throw new Error("budgeted-windows-owner-must-not-use-sync-observation"); });
+        vi.resetModules();
+        vi.doMock("@ccc/device-lab/providers/application/shared-mutation-lock.mjs", async importOriginal => {
+            const actual = await importOriginal<typeof import("@ccc/device-lab/providers/application/shared-mutation-lock.mjs")>();
+            return { ...actual, createSharedMutationLock(ports: Parameters<typeof actual.createSharedMutationLock>[0]) {
+                return actual.createSharedMutationLock({ ...ports,
+                    platform: () => "win32", alive: () => true,
+                    identitySync, identityAsync, observe,
+                });
+            } };
+        });
+        const api = implementation === "host"
+            ? await import("@ccc/device-lab/device-lab-shared-state.js?windows-budgeted-owner")
+            : await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?windows-budgeted-owner");
+        return { acquire: api.withSharedMutationLockAsync, identitySync, observe };
+    }
+
+    for (const implementation of ["host", "provider"] as const) {
+        for (const location of ["active", "archived"] as const) {
+            it.each(["mismatch", "match", "unavailable"] as const)(`${implementation} budgeted Windows ${location} claim admits only an async identity %s`, async status => {
+                const file = lockPath();
+                const claim = location === "active" ? file : `${file}.0123456789abcdef.stale`;
+                const ownerIdentity = { pid: 424242, startToken: "windows:original-generation", commandHash: "a".repeat(64) };
+                const owner = { token: testToken(), pid: ownerIdentity.pid, host: hostname(),
+                    processIdentityStatus: "recorded", processIdentity: ownerIdentity };
+                const bytes = JSON.stringify(owner);
+                writeFileSync(claim, bytes);
+                const old = new Date(Date.now() - 5000);
+                utimesSync(claim, old, old);
+                const identityAsync = vi.fn(async (pid: number) => status === "unavailable" ? null : {
+                    ...ownerIdentity, pid, startToken: status === "mismatch" ? "windows:replacement-generation" : ownerIdentity.startToken,
+                });
+                try {
+                    const facade = await windowsBudgetedFacade(implementation, identityAsync);
+                    const deadline = performance.now() + (status === "mismatch" ? 1000 : 40);
+                    const operation = vi.fn(() => "recovered asynchronously");
+                    const pending = facade.acquire(file, operation, {
+                        waitMs: 2000, staleMs: 1, waitBudget: { remaining: () => deadline - performance.now() },
+                    });
+                    if (status === "mismatch") {
+                        await expect(pending).resolves.toBe("recovered asynchronously");
+                        expect(operation).toHaveBeenCalledOnce();
+                        expect(readdirSync(dirname(file))).toEqual([]);
+                    } else {
+                        await expect(pending).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                        expect(operation).not.toHaveBeenCalled();
+                        expect(readFileSync(claim, "utf8")).toBe(bytes);
+                        expect(readdirSync(dirname(file))).toEqual([claim.slice(dirname(file).length + 1)]);
+                    }
+                    expect(identityAsync).toHaveBeenCalledWith(ownerIdentity.pid);
+                    expect(identityAsync.mock.calls.every(([pid]) => pid === ownerIdentity.pid)).toBe(true);
+                    expect(facade.identitySync).not.toHaveBeenCalled();
+                    expect(facade.observe).not.toHaveBeenCalled();
+                } finally {
+                    vi.doUnmock("@ccc/device-lab/providers/application/shared-mutation-lock.mjs");
+                    vi.resetModules();
+                }
+            });
+
+            it(`${implementation} budgeted Windows ${location} claim refuses reclamation after a late async identity result`, async () => {
+                const file = lockPath();
+                const claim = location === "active" ? file : `${file}.0123456789abcdef.stale`;
+                const ownerIdentity = { pid: 424242, startToken: "windows:original-generation", commandHash: "a".repeat(64) };
+                const bytes = JSON.stringify({ token: testToken(), pid: ownerIdentity.pid, host: hostname(),
+                    processIdentityStatus: "recorded", processIdentity: ownerIdentity });
+                writeFileSync(claim, bytes);
+                const old = new Date(Date.now() - 5000);
+                utimesSync(claim, old, old);
+                let finishProbe!: (identity: LockProcessIdentity) => void;
+                const probe = new Promise<LockProcessIdentity>(resolve => { finishProbe = resolve; });
+                let settled = false;
+                const identityAsync = vi.fn(async (_pid: number) => { const identity = await probe; settled = true; return identity; });
+                try {
+                    const facade = await windowsBudgetedFacade(implementation, identityAsync);
+                    const deadline = performance.now() + 40;
+                    const operation = vi.fn();
+                    await expect(facade.acquire(file, operation, {
+                        waitMs: 2000, staleMs: 1, waitBudget: { remaining: () => deadline - performance.now() },
+                    })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                    expect(identityAsync).toHaveBeenCalledExactlyOnceWith(ownerIdentity.pid);
+                    expect(settled).toBe(false);
+                    expect(operation).not.toHaveBeenCalled();
+                    expect(readFileSync(claim, "utf8")).toBe(bytes);
+
+                    finishProbe({ ...ownerIdentity, startToken: "windows:replacement-generation" });
+                    await probe;
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                    expect(settled).toBe(true);
+                    expect(operation).not.toHaveBeenCalled();
+                    expect(readFileSync(claim, "utf8")).toBe(bytes);
+                    expect(readdirSync(dirname(file))).toEqual([claim.slice(dirname(file).length + 1)]);
+                    expect(facade.identitySync).not.toHaveBeenCalled();
+                    expect(facade.observe).not.toHaveBeenCalled();
+                } finally {
+                    finishProbe({ ...ownerIdentity, startToken: "windows:replacement-generation" });
+                    await probe;
+                    vi.doUnmock("@ccc/device-lab/providers/application/shared-mutation-lock.mjs");
+                    vi.resetModules();
+                }
+            });
+        }
     }
 
     async function runNativeDisplacement(modulePath: string, mode: "sync" | "async", scenario: "stale" | "malformed", death?: "reclaimer" | "owner") {

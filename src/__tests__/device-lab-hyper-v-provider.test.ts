@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
     HYPER_V_FIRST_LOGON_COMMAND_LINE_LIMIT,
     HYPER_V_FIRST_LOGON_LAUNCHER,
@@ -62,7 +62,8 @@ import {
     decodeHyperVLinuxSeedObservation,
 } from "@ccc/device-lab/host-control/hyper-v/index.js";
 import { hyperVProviderDiagnosticCode } from "@ccc/device-lab/device-lab/broker/hyper-v/public-response.js";
-import { isoWriterLines, jsonScript } from "@ccc/device-lab/host-control/hyper-v/core.js";
+import { elevatedNetworkCommand, isoWriterLines, jsonScript } from "@ccc/device-lab/host-control/hyper-v/core.js";
+import type { HyperVNetworkOptions } from "@ccc/device-lab/host-control/hyper-v/contracts.js";
 import { HYPER_V_QEMU_IMG_SIGNATURE_STATUSES } from "@ccc/device-lab/host-control/hyper-v/contracts.js";
 import { hyperVPowerShellAssetPath } from "@ccc/device-lab/host-control/hyper-v/powershell-assets.js";
 
@@ -143,6 +144,78 @@ function loaderOf(command: { args: string[] }): string {
 // Windows PowerShell 5.1 lacks these accelerators; use [UInt64]/[UInt32]/[UInt16] instead.
 const WINDOWS_POWERSHELL_UNSUPPORTED_ACCELERATOR = /\[(?:ulong|uint|ushort|sbyte|semver)\]/i;
 describe("Hyper-V provider adapter", () => {
+    it("keeps legacy network duration optional and forwards it through both elevated recipes", () => {
+        expectTypeOf<Pick<HyperVNetworkOptions, "elevatedMaximumDurationMs">>()
+            .toEqualTypeOf<{ elevatedMaximumDurationMs?: number }>();
+        const options: HyperVNetworkOptions = {
+            executable: "powershell.exe",
+            switchName: "CCC Device Lab",
+            natName: "CCCDeviceLab",
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            prefixLength: 24,
+        };
+        const builders = [
+            (network: HyperVNetworkOptions) => hyperVEnsureNetworkCommand(network),
+            (network: HyperVNetworkOptions) => hyperVCleanupNetworkCommand({ ...network, expectedSwitchId: vmId }),
+        ];
+        const deadlineUnixMs = 2_000_000_000_000;
+        const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+        try {
+            for (const build of builders) {
+                const program = scriptOf(build(options));
+                const legacy = scriptOf(build({ ...options, elevated: true, elevatedDeadlineUnixMs: deadlineUnixMs }));
+                expect(legacy).toBe(scriptOf(elevatedNetworkCommand(options.executable, program, deadlineUnixMs)));
+                expect(legacy).toBe(scriptOf(elevatedNetworkCommand(options.executable, program, deadlineUnixMs, undefined)));
+                const bounded = scriptOf(build({
+                    ...options,
+                    elevated: true,
+                    elevatedDeadlineUnixMs: deadlineUnixMs,
+                    elevatedMaximumDurationMs: 1_234,
+                }));
+                expect(bounded).toBe(scriptOf(elevatedNetworkCommand(options.executable, program, deadlineUnixMs, 1_234)));
+                expect(bounded).not.toBe(legacy);
+                expect(bounded).not.toBe(scriptOf(elevatedNetworkCommand(options.executable, program, deadlineUnixMs, 4_321)));
+            }
+        } finally {
+            clock.mockRestore();
+        }
+    });
+
+    it("refuses a finite elevated recipe when local program preparation consumed its whole allowance", () => {
+        const clock = vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValue(1_000);
+        try {
+            expect(() => elevatedNetworkCommand("powershell.exe", "'no effect'", 2_000_000_000_000, 1_000))
+                .toThrow(/deadline/);
+            clock.mockClear();
+            expect(() => elevatedNetworkCommand("powershell.exe", "'legacy'", 2_000_000_000_000)).not.toThrow();
+            expect(clock).not.toHaveBeenCalled();
+        } finally {
+            clock.mockRestore();
+        }
+    });
+
+    it.each([0, -1, 0.5, NaN, Infinity, 2_147_483_648, "1000", null])(
+        "refuses a present malformed legacy recipe duration %s without falling back to Unix-only mode",
+        (maximumDurationMs) => {
+            expect(() => elevatedNetworkCommand("powershell.exe", "'no effect'", 2_000_000_000_000, maximumDurationMs as number))
+                .toThrow();
+            expect(() => hyperVEnsureNetworkCommand({
+                executable: "powershell.exe",
+                switchName: "CCC Device Lab",
+                natName: "CCCDeviceLab",
+                marker: "ccc-device-lab:hyper-v-network:v1",
+                prefix: "172.29.0.0/24",
+                gateway: "172.29.0.1",
+                prefixLength: 24,
+                elevated: true,
+                elevatedDeadlineUnixMs: 2_000_000_000_000,
+                elevatedMaximumDurationMs: maximumDurationMs as number,
+            })).toThrow();
+        },
+    );
+
     it("decodes only the final Linux seed output line and preserves normalized fields", () => {
         const seed = { ok: true, vmId: vmId.toUpperCase(), vmName: "owned", seedDiskPath: "seed.iso", sshPrivateKeyPath: "private", sshPublicKeyPath: "public", sshHostPublicKeyPath: "host", sshHostKeyFingerprint: "SHA256:host", knownHostsPath: "known", guestUsername: "guest", networkAddress: "172.29.0.10" };
         expect(decodeHyperVLinuxSeedObservation(`progress\r\n${JSON.stringify(seed)}\r\n  `)).toEqual(seed);
@@ -1994,7 +2067,9 @@ describe("Hyper-V provider adapter", () => {
         expect(elevated).toContain("$ChildStartTicks = $Child.StartTime.ToUniversalTime().Ticks");
         expect(elevated).toContain("-not $OperationCompleted");
         expect(elevated).toContain("$ObservedChild.StartTime.ToUniversalTime().Ticks -eq $ChildStartTicks");
-        expect(elevated).toContain("$Child.WaitForExit(5000)");
+        const cleanupCountdown = elevated.match(/\$Child\.WaitForExit\(\[int\]\[Math\]::Max\(\[long\]0, ([0-9]+) - \$CleanupWatch\.ElapsedMilliseconds\)\)/);
+        expect(Number(cleanupCountdown?.[1])).toBe(5_000);
+        expect(elevated.match(/\$CleanupWatch = \[Diagnostics\.Stopwatch\]::StartNew\(\)/g)).toHaveLength(1);
         expect(elevated).toContain("hyper-v-network-elevated-child-termination-unconfirmed");
         expect(elevated).toContain("S-1-5-32-544");
         expect(elevated).toContain("hyper-v-network-pipe-handshake-timeout");
@@ -2008,7 +2083,9 @@ describe("Hyper-V provider adapter", () => {
         expect(elevatedInner).toContain("$Stage = [string]$env:CCC_HYPER_V_STAGE");
         expect(elevatedInner).toContain("elseif ($Stage -match '^hyper-v-[a-z0-9-]{3,128}$') { $Stage }");
         expect(elevatedInner).toContain("[IO.Pipes.PipeDirection]::InOut");
-        expect(elevatedInner).toContain("$ProgramEncoded = $Reader.ReadLine()");
+        expect(elevatedInner).toContain("$ProgramRead = $Reader.ReadLineAsync()");
+        expect(elevatedInner).toContain("$ProgramRead.Wait([int][Math]::Min([long][int]::MaxValue, (Get-NetworkRemaining)))");
+        expect(elevatedInner).toContain("$ProgramEncoded = $ProgramRead.Result");
         expect(elevatedInner).toContain("hyper-v-network-program-invalid");
         expect(elevatedInner).not.toContain("New-NetIPAddress");
         expect(elevatedInnerEncoded!.length).toBeLessThan(24_000);
@@ -2016,7 +2093,8 @@ describe("Hyper-V provider adapter", () => {
         expect(elevated).toContain("$Writer.WriteLine($ProgramEncoded)");
         expect(elevated).toContain("$Writer.Flush()");
         expect(elevated.indexOf("$ClientProcessId -ne [uint32]$Child.Id")).toBeLessThan(elevated.indexOf("$Writer.WriteLine($ProgramEncoded)"));
-        expect(elevatedInner).toContain("$RemainingMs = $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()");
+        expect(elevatedInner).toContain("$BudgetMs = if ($MaximumDurationMs -ge 0) { $MaximumDurationMs } else { $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }");
+        expect(elevatedInner).toContain("$Remaining = $BudgetMs - $BudgetWatch.ElapsedMilliseconds");
         expect(elevatedInner).toContain("Start-Sleep -Milliseconds $WatchdogDelayMs");
         expect(elevatedInner).toContain("hyper-v-network-operation-deadline-exceeded");
         expect(elevatedInner).toContain("StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks");

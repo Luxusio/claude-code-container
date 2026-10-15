@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createBrokerOwnerRepository } from "@ccc/device-lab/device-lab/application/broker-owner-repository.js";
 import type { BrokerOwnerRepositoryPorts } from "@ccc/device-lab/device-lab/ports/broker-owner-repository.js";
 
@@ -16,6 +16,42 @@ function repository(initial: unknown[] = []) {
 }
 
 describe("broker owner repository publication", () => {
+    it("refuses an expired claim after acquiring the inventory lock without publishing", () => {
+        const existing = { id: "retained", revision: 1 }, claimed = { id: "new", vmId: "owned-vm" };
+        const f = repository([existing]);
+        let now = 17.25, locked = false, qualified = false;
+        const deadline = now + 5000, expired = new Error("hyper-v-operation-deadline-exceeded");
+        const read = f.ports.read;
+        f.ports.withLock = (_owner, _state, operation) => {
+            locked = true; now = deadline + 0.25;
+            try { return operation(); } finally { locked = false; }
+        };
+        f.ports.read = (...args) => { expect(locked).toBe(true); qualified = true; return read(...args); };
+        const beforePublish = vi.fn(() => {
+            expect(locked).toBe(true); expect(qualified).toBe(true);
+            if (now >= deadline) throw expired;
+            return undefined;
+        });
+
+        expect(() => f.app.claim("owner", "windows-vm", claimed, ["id", "vmId"], beforePublish)).toThrow(expired);
+        expect(beforePublish).toHaveBeenCalledOnce();
+        expect(f.published()).toBeUndefined();
+        expect(f.stored()).toEqual([existing]);
+    });
+
+    it.each(["id", "vmId"])("qualifies a claim %s conflict before consulting the optional publication guard", field => {
+        const existing = { id: "owned", vmId: "original-vm" };
+        const claimed = { id: field === "id" ? existing.id : "new", vmId: field === "vmId" ? existing.vmId : "new-vm" };
+        const f = repository([existing]);
+        const beforePublish = vi.fn((): undefined => { throw new Error("guard must not supersede an identity conflict"); });
+        expect(f.app.claim("owner", "windows-vm", claimed, ["id", "vmId"], beforePublish)).toMatchObject({
+            ok: false, field, existing,
+        });
+        expect(beforePublish).not.toHaveBeenCalled();
+        expect(f.published()).toBeUndefined();
+        expect(f.stored()).toEqual([existing]);
+    });
+
     it("publishes an unchanged owner list, including an empty list", () => {
         const empty = repository();
         expect(empty.app.mutate("owner", "android", devices => devices)).toEqual([]);

@@ -12,7 +12,9 @@ export interface SharedMutationLockPorts<Fence extends readonly PublicationDirec
     runOwnerContext<T>(key:string,token:string,operation:()=>T):T;
     capture(file:string):Fence;check(fence:Fence):undefined;
     token():string;pid():number;host():string;boot():string;platform():string;timestamp():string;
-    now():number;monotonic():number;pauseSync(ms:number):undefined;pause(ms:number):Promise<undefined>;
+    now():number;monotonic():number;pauseSync(ms:number):undefined;
+    /** Aborting cancels the pending wait and rejects its promise. */
+    pause(ms:number,signal?:AbortSignal):Promise<undefined>;
     openClaim(file:string):number;writeClaim(descriptor:number,text:string):undefined;closeClaim(descriptor:number):undefined;
     readRaw(file:string):LockReadObservation;
     mtime(file:string):number|null;alive(pid:number):boolean;

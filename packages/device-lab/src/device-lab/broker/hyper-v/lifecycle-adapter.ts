@@ -42,6 +42,7 @@ export type DeviceLabHyperVCommandRunner = (
 export type DeviceLabHyperVWindowsClientOptions = {
     readonly executable: string;
     readonly timeoutMilliseconds: number | (() => number);
+    readonly now?: () => number;
     readonly run: DeviceLabHyperVCommandRunner;
     // When supplied, primitives go through one reused PowerShell process instead of one process
     // each. Optional so the real-test scenario and any caller without a session keep the one-shot
@@ -202,6 +203,7 @@ export function createDeviceLabHyperVWindowsExecutor(
     });
     const session = options.session;
     if (!session) return oneShot;
+    const now = options.now ?? (() => performance.now());
     return {
         async execute(request, context) {
             // The same clamp the one-shot branch applies. options.timeoutMilliseconds is passed as a
@@ -212,7 +214,7 @@ export function createDeviceLabHyperVWindowsExecutor(
                 ? options.timeoutMilliseconds()
                 : options.timeoutMilliseconds;
             const bounded = { ...context, timeoutMilliseconds: Math.min(context.timeoutMilliseconds, budget) };
-            const startedAt = Date.now();
+            const startedAt = now();
             const result = await session.execute(request, bounded);
             if (!result.error || !SESSION_NEVER_RAN_ERRORS.has(result.error)) {
                 // The session bypasses options.run, so this is the only place a recorder can see the
@@ -248,7 +250,7 @@ export function createDeviceLabHyperVWindowsExecutor(
             // the queue wait to a fraction of it now. A caller that queued out arrives here with
             // most of its deadline; a caller that lost its budget to a genuinely slow spawn has
             // honestly spent it, and a sliver is the truthful amount left to retry with.
-            const remaining = bounded.timeoutMilliseconds - (Date.now() - startedAt);
+            const remaining = bounded.timeoutMilliseconds - (now() - startedAt);
             if (remaining < MINIMUM_ONE_SHOT_BUDGET_MILLISECONDS) {
                 // Not enough left to start PowerShell, let alone run anything. Spawning anyway would
                 // pay a full cold start on the host to be killed immediately, and would overrun the

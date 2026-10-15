@@ -6,6 +6,7 @@ import { readLockPublicationTimes } from "../adapters/lock-publication-times.mjs
 import { chmodSync, closeSync, constants as fsConstants, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { hostname, uptime } from "os";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "path";
+import { setTimeout as delay } from "node:timers/promises";
 import { inspectProcessIdentity, processIdentityMatches, readProcessIdentity, readProcessIdentityAsync } from "./process-identity.mjs";
 import { DeviceLabStateFileError, readDeviceLabBinaryFile, withDeviceLabReadableFile } from "./state-file.mjs";
 
@@ -97,11 +98,6 @@ function secureStateParentDirectory(file) {
 /** @param {number} ms @returns {undefined} */
 function sleepSync(ms) {
     Atomics.wait(sleeper, 0, 0, ms);
-}
-
-/** @param {number} ms @returns {Promise<void>} */
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** @param {string} source @param {string} destination @param {()=>undefined} [validateDirectories] @returns {undefined} */
@@ -305,7 +301,7 @@ const lockPorts = {
     now: Date.now,
     monotonic: () => performance.now(),
     pauseSync: ms => { sleepSync(ms); return undefined; },
-    pause: ms => sleep(ms).then(() => undefined),
+    pause: (ms, signal) => delay(ms, undefined, signal ? { signal } : {}),
     openClaim: file => openSync(file, "wx", 0o600),
     writeClaim: (descriptor, text) => { writeFileSync(descriptor, text); return undefined; },
     closeClaim: descriptor => { closeSync(descriptor); return undefined; },

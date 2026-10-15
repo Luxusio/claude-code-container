@@ -64,6 +64,7 @@ const HYPER_V_IMAGE_OWNER_ID_PATTERN = /^[a-f0-9]{16}$/;
 export interface HyperVImageStoreRuntime {
     cwd: string;
     privateRoot: string;
+    now?: () => number;
     resolveExecutable(name: string): string | null;
     run(
         command: HyperVProviderCommand,
@@ -212,6 +213,7 @@ async function isKnownPriorAutomaticImage(
     profile: "windows-server" | "ubuntu-lts",
     profileRoot: string,
     deadlineAt: number,
+    now: () => number,
     manifestPath = join(profileRoot, "manifest.json"),
     imageFile = join(profileRoot, "base.vhdx"),
 ): Promise<{ manifestBytes: Buffer; imageSha256: string; imageSize: number } | null> {
@@ -221,7 +223,7 @@ async function isKnownPriorAutomaticImage(
         if (!prior) return null;
         const image = inspectLargeRegularFile(profileRoot, imageFile, "hyper-v-base-image-prior");
         if (image.size !== prior.sizeBytes
-            || await sha256LargeRegularFile(profileRoot, imageFile, "hyper-v-base-image-prior", deadlineAt) !== prior.sha256) return null;
+            || await sha256LargeRegularFile(profileRoot, imageFile, "hyper-v-base-image-prior", deadlineAt, now) !== prior.sha256) return null;
         return { manifestBytes: readFileSync(manifestPath), imageSha256: prior.sha256, imageSize: image.size };
     } catch (error) {
         if (error instanceof HyperVOperationDeadlineError) throw error;
@@ -236,7 +238,7 @@ function priorRecoveryPaths(profileRoot: string): { manifest: string; image: str
     };
 }
 
-async function recoverPriorAutomaticImage(profileRoot: string, deadlineAt: number): Promise<void> {
+async function recoverPriorAutomaticImage(profileRoot: string, deadlineAt: number, now: () => number): Promise<void> {
     const backup = priorRecoveryPaths(profileRoot);
     if (!existsSync(backup.manifest) && !existsSync(backup.image)) return;
     const manifestPath = join(profileRoot, "manifest.json");
@@ -246,13 +248,14 @@ async function recoverPriorAutomaticImage(profileRoot: string, deadlineAt: numbe
     if (existsSync(manifestPath) && existsSync(imagePath)) return;
     const manifestFile = existsSync(backup.manifest) ? backup.manifest : manifestPath;
     const imageFile = existsSync(backup.image) ? backup.image : imagePath;
-    const prior = await isKnownPriorAutomaticImage("ubuntu-lts", profileRoot, deadlineAt, manifestFile, imageFile);
+    const prior = await isKnownPriorAutomaticImage("ubuntu-lts", profileRoot, deadlineAt, now, manifestFile, imageFile);
     if (!prior || (manifestFile !== backup.manifest && existsSync(backup.manifest))
         || (imageFile !== backup.image && existsSync(backup.image))
         || (manifestFile === backup.manifest && existsSync(manifestPath))
         || (imageFile === backup.image && existsSync(imagePath) && existsSync(manifestPath))) {
         throw new Error("hyper-v-base-image-profile-conflict");
     }
+    assertHyperVOperationDeadline(deadlineAt, now);
     if (imageFile === backup.image && existsSync(imagePath)) {
         quarantineUncertainAutomaticArtifact(profileRoot, imagePath, "base-uncertain");
     }
@@ -262,7 +265,7 @@ async function recoverPriorAutomaticImage(profileRoot: string, deadlineAt: numbe
 
 async function retireKnownPriorAutomaticImage(profileRoot: string, prior: {
     manifestBytes: Buffer; imageSha256: string; imageSize: number;
-}, deadlineAt: number): Promise<{ manifest: AutomaticArtifactIdentity; image: AutomaticArtifactIdentity }> {
+}, deadlineAt: number, now: () => number): Promise<{ manifest: AutomaticArtifactIdentity; image: AutomaticArtifactIdentity }> {
     const manifestPath = join(profileRoot, "manifest.json");
     const imagePath = join(profileRoot, "base.vhdx");
     const { manifest: retiredManifest, image: retiredImage } = priorRecoveryPaths(profileRoot);
@@ -270,6 +273,7 @@ async function retireKnownPriorAutomaticImage(profileRoot: string, prior: {
     let manifestMoved = false;
     let imageMoved = false;
     try {
+        assertHyperVOperationDeadline(deadlineAt, now);
         renameSync(manifestPath, retiredManifest);
         manifestMoved = true;
         if (!readFileSync(retiredManifest).equals(prior.manifestBytes)) throw new Error("hyper-v-base-image-prior-changed");
@@ -277,13 +281,14 @@ async function retireKnownPriorAutomaticImage(profileRoot: string, prior: {
         imageMoved = true;
         const retired = inspectLargeRegularFile(profileRoot, retiredImage, "hyper-v-base-image-prior");
         if (retired.size !== prior.imageSize
-            || await sha256LargeRegularFile(profileRoot, retiredImage, "hyper-v-base-image-prior", deadlineAt) !== prior.imageSha256) {
+            || await sha256LargeRegularFile(profileRoot, retiredImage, "hyper-v-base-image-prior", deadlineAt, now) !== prior.imageSha256) {
             throw new Error("hyper-v-base-image-prior-changed");
         }
         // Keep the validated pair recoverable until the replacement manifest commits.
         const manifestIdentity = automaticArtifactIdentity(retiredManifest);
         const imageIdentity = automaticArtifactIdentity(retiredImage);
         if (!manifestIdentity || !imageIdentity) throw new Error("hyper-v-base-image-prior-changed");
+        assertHyperVOperationDeadline(deadlineAt, now);
         return { manifest: manifestIdentity, image: imageIdentity };
     } catch (error) {
         if (imageMoved && !existsSync(imagePath)) renameSync(retiredImage, imagePath);
@@ -297,9 +302,10 @@ async function discardRetiredPriorAutomaticImage(
     prior: { manifestBytes: Buffer; imageSha256: string; imageSize: number },
     identities: { manifest: AutomaticArtifactIdentity; image: AutomaticArtifactIdentity },
     deadlineAt: number,
+    now: () => number,
 ): Promise<void> {
     const backup = priorRecoveryPaths(profileRoot);
-    const checked = await isKnownPriorAutomaticImage("ubuntu-lts", profileRoot, deadlineAt, backup.manifest, backup.image);
+    const checked = await isKnownPriorAutomaticImage("ubuntu-lts", profileRoot, deadlineAt, now, backup.manifest, backup.image);
     if (!checked || !checked.manifestBytes.equals(prior.manifestBytes)
         || checked.imageSha256 !== prior.imageSha256 || checked.imageSize !== prior.imageSize) return;
     const manifestIdentity = automaticArtifactIdentity(backup.manifest);
@@ -307,6 +313,7 @@ async function discardRetiredPriorAutomaticImage(
     if (!manifestIdentity || !imageIdentity
         || manifestIdentity.dev !== identities.manifest.dev || manifestIdentity.ino !== identities.manifest.ino
         || imageIdentity.dev !== identities.image.dev || imageIdentity.ino !== identities.image.ino) return;
+    assertHyperVOperationDeadline(deadlineAt, now);
     rmSync(backup.image);
     rmSync(backup.manifest);
 }
@@ -361,6 +368,7 @@ export async function stageLargeRegularFileFromProject(
     targetRoot: string,
     label: string,
     deadlineAt = Number.POSITIVE_INFINITY,
+    now: () => number = () => Date.now(),
 ): Promise<string> {
     const absolute = resolve(file);
     if (dirname(absolute) !== resolve(root)) throw new Error(`${label}-must-be-project-root-file`);
@@ -386,9 +394,11 @@ export async function stageLargeRegularFileFromProject(
             || currentSource.isSymbolicLink() || currentSource.nlink !== 1n || currentSource.dev !== openedSource.dev || currentSource.ino !== openedSource.ino || currentSource.size !== openedSource.size) {
             throw new Error(`${label}-identity-changed`);
         }
+        assertHyperVOperationDeadline(deadlineAt, now);
         await fsPromises.mkdir(targetRoot, { recursive: true, mode: 0o700 });
         assertNoSymlinkPathComponents(targetRoot, `${label}-staging`);
         assertDeviceLabPathWithinRoot(targetRoot, stagingPath, `${label}-staging`);
+        assertHyperVOperationDeadline(deadlineAt, now);
         targetDescriptor = await fsPromises.open(stagingPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow, 0o600);
         const openedTarget = await targetDescriptor.stat({ bigint: true });
         const targetPathStat = await readDeviceLabFileIdentityAsync(stagingPath, `${label}-staging`, openedTarget);
@@ -399,11 +409,12 @@ export async function stageLargeRegularFileFromProject(
         const buffer = Buffer.allocUnsafe(1024 * 1024);
         let copied = 0;
         while (copied < Number(openedSource.size)) {
-            assertHyperVOperationDeadline(deadlineAt);
+            assertHyperVOperationDeadline(deadlineAt, now);
             const { bytesRead: count } = await sourceDescriptor.read(buffer, 0, Math.min(buffer.length, Number(openedSource.size) - copied), null);
             if (count <= 0) throw new Error(`${label}-copy-short-read`);
             let offset = 0;
             while (offset < count) {
+                assertHyperVOperationDeadline(deadlineAt, now);
                 const { bytesWritten: written } = await targetDescriptor.write(buffer, offset, count - offset, null);
                 if (written <= 0) throw new Error(`${label}-copy-short-write`);
                 offset += written;
@@ -419,6 +430,7 @@ export async function stageLargeRegularFileFromProject(
             || finalTarget.dev !== openedTarget.dev || finalTarget.ino !== openedTarget.ino || finalTarget.size !== openedSource.size) {
             throw new Error(`${label}-identity-changed`);
         }
+        assertHyperVOperationDeadline(deadlineAt, now);
         return stagingPath;
     } catch (error) {
         if (targetDescriptor !== null) { await targetDescriptor.close(); targetDescriptor = null; }
@@ -436,6 +448,7 @@ export async function sha256LargeRegularFile(
     file: string,
     label: string,
     deadlineAt = Number.POSITIVE_INFINITY,
+    now: () => number = () => Date.now(),
 ): Promise<string> {
     const absolute = resolve(file);
     assertNoSymlinkPathComponents(root, label);
@@ -458,7 +471,7 @@ export async function sha256LargeRegularFile(
             throw new Error(`${label}-identity-changed`);
         }
         while (true) {
-            assertHyperVOperationDeadline(deadlineAt);
+            assertHyperVOperationDeadline(deadlineAt, now);
             const { bytesRead: count } = await descriptor.read(buffer, 0, buffer.length, null);
             if (count === 0) break;
             hash.update(buffer.subarray(0, count));
@@ -478,6 +491,7 @@ export async function sha256LargeRegularFile(
             || finalPathStat.size !== openedStat.size) {
             throw new Error(`${label}-identity-changed`);
         }
+        assertHyperVOperationDeadline(deadlineAt, now);
         return hash.digest("hex");
     } finally {
         await descriptor.close();
@@ -552,11 +566,13 @@ async function readHyperVImageManifest(
     profileRoot = hyperVImageProfileRoot(privateRoot, profile),
     allowUserProvided = false,
     deadlineAt = Number.POSITIVE_INFINITY,
+    now: () => number = () => Date.now(),
 ): Promise<HyperVImageManifest> {
     const manifest = readHyperVImageManifestMetadata(privateRoot, profile, profileRoot, allowUserProvided);
-    if (await sha256LargeRegularFile(profileRoot, manifest.imagePath, "hyper-v-base-image", deadlineAt) !== manifest.sha256) {
+    if (await sha256LargeRegularFile(profileRoot, manifest.imagePath, "hyper-v-base-image", deadlineAt, now) !== manifest.sha256) {
         throw new Error("hyper-v-base-image-hash-mismatch");
     }
+    assertHyperVOperationDeadline(deadlineAt, now);
     return manifest;
 }
 
@@ -661,13 +677,14 @@ export async function resolveHyperVImageForCreateOutcome(
     runtime: HyperVImageStoreRuntime,
     deadlineAt = Number.POSITIVE_INFINITY,
 ): Promise<HyperVImageResolutionOutcome> {
+    const now = runtime.now ?? (() => Date.now());
     const client = (executable: string, timeoutMilliseconds: number | (() => number)) => createDeviceLabHyperVWindowsClient({
-        executable, timeoutMilliseconds, run: runtime.run,
+        executable, timeoutMilliseconds, run: runtime.run, now,
     });
     const ports: HyperVImagePreparationPorts = {
         cwd: runtime.cwd, privateRoot: runtime.privateRoot, limits: runtime.limits,
         catalog: HYPER_V_IMAGE_CATALOG,
-        now: () => Date.now(), preparedAt: () => new Date().toISOString(),
+        now, preparedAt: () => new Date().toISOString(),
         resolvePath: resolve,
         capturePreparation: () => {
             const executable = runtime.resolveExecutable("powershell.exe") || runtime.resolveExecutable("pwsh") || runtime.resolveExecutable("powershell");
@@ -692,8 +709,9 @@ export async function resolveHyperVImageForCreateOutcome(
                 },
             };
         },
-        assertDeadline: (deadline) => { assertHyperVOperationDeadline(deadline); return undefined; },
-        remainingTimeout: hyperVRemainingTimeout, deadlineExpired: hyperVOperationDeadlineExpired,
+        assertDeadline: (deadline) => { assertHyperVOperationDeadline(deadline, now); return undefined; },
+        remainingTimeout: (deadline, maximum) => hyperVRemainingTimeout(deadline, maximum, now),
+        deadlineExpired: (deadline) => hyperVOperationDeadlineExpired(deadline, now),
         isDeadlineError: (error) => error instanceof HyperVOperationDeadlineError,
         deadlineError: () => new HyperVOperationDeadlineError(),
         boundedErrorCode: hyperVBoundedErrorCode, boundedErrorDetail: hyperVBoundedErrorDetail,
@@ -702,7 +720,9 @@ export async function resolveHyperVImageForCreateOutcome(
             try { lstatSync(path); return true; }
             catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false; throw error; }
         },
-        inspectFile: inspectLargeRegularFile, hashFile: sha256LargeRegularFile, stageFile: stageLargeRegularFileFromProject,
+        inspectFile: inspectLargeRegularFile,
+        hashFile: (root, path, label, deadline) => sha256LargeRegularFile(root, path, label, deadline, now),
+        stageFile: (root, path, destination, label, deadline) => stageLargeRegularFileFromProject(root, path, destination, label, deadline, now),
         fileIdentity: async (path) => { const stat = await fsPromises.lstat(path); return { dev: stat.dev, ino: stat.ino }; },
         linkFile: (source, destination) => fsPromises.link(source, destination),
         unlinkFile: (path) => fsPromises.unlink(path),
@@ -721,7 +741,7 @@ export async function resolveHyperVImageForCreateOutcome(
             } finally { await descriptor.close(); }
         },
         publishManifest: (path, manifest) => { writeJsonFileAtomically(path, manifest); return undefined; },
-        readManifest: readHyperVImageManifest, readManifestMetadata: readHyperVImageManifestMetadata,
+        readManifest: (root, profile, path, allowUserProvided, deadline) => readHyperVImageManifest(root, profile, path, allowUserProvided, deadline, now), readManifestMetadata: readHyperVImageManifestMetadata,
         ensurePreparationRoot: (root) => {
             mkdirSync(root, { recursive: true, mode: 0o700 });
             assertNoSymlinkPathComponents(root, "hyper-v-base-image-preparation");
@@ -730,14 +750,19 @@ export async function resolveHyperVImageForCreateOutcome(
             return undefined;
         },
         assertSafePath: (path, label) => { assertNoSymlinkPathComponents(path, label); return undefined; },
-        withPreparationLock: withSharedMutationLockAsync,
+        withPreparationLock: (path, action, options) => withSharedMutationLockAsync(path, action, {
+            ...options,
+            waitBudget: { remaining: () => Number.isFinite(deadlineAt) ? Math.max(0, deadlineAt - now()) : Number.POSITIVE_INFINITY },
+        }),
         licenseAccepted: (root) => Boolean(readHyperVWindowsEvaluationReceipt(root)),
         artifactIdentity: automaticArtifactIdentity,
         assertFileIdentity: (path, expected, label) => { assertAutomaticFileIdentity(path, expected, label); return undefined; },
         cleanupOwnedArtifacts: (root, owned) => { cleanupOwnedAutomaticArtifacts(root, owned); return undefined; },
         quarantineUncertainArtifact: quarantineUncertainAutomaticArtifact,
-        knownPriorImage: isKnownPriorAutomaticImage, recoverPriorImage: recoverPriorAutomaticImage,
-        retirePriorImage: retireKnownPriorAutomaticImage, discardPriorImage: discardRetiredPriorAutomaticImage,
+        knownPriorImage: (profile, root, deadline) => isKnownPriorAutomaticImage(profile, root, deadline, now),
+        recoverPriorImage: (root, deadline) => recoverPriorAutomaticImage(root, deadline, now),
+        retirePriorImage: (root, prior, deadline) => retireKnownPriorAutomaticImage(root, prior, deadline, now),
+        discardPriorImage: (root, prior, identities, deadline) => discardRetiredPriorAutomaticImage(root, prior, identities, deadline, now),
     };
     return createHyperVImagePreparation(ports).resolveForCreate(ownerId, request, params, deadlineAt);
 }

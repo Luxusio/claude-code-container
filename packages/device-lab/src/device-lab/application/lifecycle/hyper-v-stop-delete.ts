@@ -84,7 +84,10 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
                     detail: [artifacts.ok ? null : `artifacts:${artifacts.error}`, allocation.ok ? null : `allocation:${allocation.error}`].filter(Boolean).join("; "),
                 };
             }
-            const publication = ports.publish(ownerId, backend, deviceId, expectedDevice, () => null);
+            const publication = ports.publish(ownerId, backend, deviceId, expectedDevice, () => {
+                ports.assertDeadline(deadlineAt);
+                return null;
+            });
             if (publication.found && !publication.matched) return { ok: false, reason:'conflict',journalDisposition:'retain', error: "owner-device-state-conflict" };
             ports.clearJournal(ownerId, backend, deviceId);
             return {
@@ -126,9 +129,12 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
         }
         const observation = outcome.virtualMachine;
         const state = observation.state.toLowerCase();
-        const publication = ports.publish(ownerId, backend, deviceId, expectedDevice, current => ({
-            ...current, status: state === "running" ? "running" : "stopped", runtimeState: observation.state, hyperVStatus: observation.status, updatedAt: ports.timestamp()
-        }));
+        const publication = ports.publish(ownerId, backend, deviceId, expectedDevice, current => {
+            ports.assertDeadline(deadlineAt);
+            return {
+                ...current, status: state === "running" ? "running" : "stopped", runtimeState: observation.state, hyperVStatus: observation.status, updatedAt: ports.timestamp()
+            };
+        });
         if (publication.found && !publication.matched) return { ok: false, reason:'conflict',journalDisposition:'retain', error: "owner-device-state-conflict" };
         ports.clearJournal(ownerId, backend, deviceId);
         return { ok: true, reconciled: true };
@@ -218,7 +224,7 @@ export function createHyperVStopDeleteApplication<Connection,Receipt>(ports: Hyp
         const network=success&&deleting ? await ports.releaseNetwork(ownerId,deviceId,ports.incarnation(device),cleanupDeadlineAt,parsed.preserveNetwork===true) : null;
         const artifacts=success&&deleting&&network?.ok===true ? ports.cleanupArtifacts(ownerId,backend,deviceId) : null;
         if(artifacts?.ok===false||network?.ok===false) return {kind:'uncertain',reason:'provider-failed',journalDisposition:'retain',...base,error:'hyper-v-device-cleanup-failed',device,artifactCleanup:artifacts,networkCleanup:network,invoked:true,dryRun:false,execution,mutatesHost:true};
-        const publication:HyperVPublication|undefined=success ? ports.publish(ownerId,stateKey,deviceId,expected,current=>deleting ? null : hyperVStopReplacement(current,observation,ports.timestamp())) : undefined;
+        const publication:HyperVPublication|undefined=success ? ports.publish(ownerId,stateKey,deviceId,expected,current=>{ports.assertDeadline(deadlineAt);return deleting ? null : hyperVStopReplacement(current,observation,ports.timestamp());}) : undefined;
         const observed={...base,device:publication ? publication.device : device,auxiliaryCleanup:auxiliary.result,artifactCleanup:artifacts,networkCleanup:network,invoked:true as const,dryRun:false as const,execution,mutatesHost:success};
         if(publication&&!publication.matched) return {kind:'refused',reason:'conflict',journalDisposition:'clear',...observed,error:'owner-device-state-conflict',found:publication.found};
         if(!success) return {kind:'uncertain',reason:'provider-failed',journalDisposition:'retain',...observed,error:'provider-command-failed',detail:ports.diagnosticCode(execution,'hyper-v-provider-command-failed')||'hyper-v-provider-command-failed'};

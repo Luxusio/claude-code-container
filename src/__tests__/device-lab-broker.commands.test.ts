@@ -26,7 +26,7 @@ import { hostname, tmpdir, uptime } from "os";
 import { delimiter, dirname, join, resolve } from "path";
 import { runInNewContext } from "vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeviceBrokerServer as createRawDeviceBrokerServer, hiddenChildProcessOptions, hiddenProviderCommandEnv, providerCommandSpawn, redactProviderCommandInput, registerDeviceBrokerOwner, waitForBrokerWindowsMinimizeConfirmation, windowsHiddenChildProcessPreloadScript, windowsHiddenVbsLauncherInvocation, windowsHiddenVbsLauncherScript, windowsProcessTreeOutcome, windowsSandboxMinimizeWatchdogArgs, windowsSandboxSessionIdsFromBrokerListOutput, windowsSandboxWindowHandleSnapshotArgs, windowsSandboxWindowHandlesFromOutput } from "@ccc/device-lab/device-lab-broker.js";
+import { createDeviceBrokerServer as createRawDeviceBrokerServer, ensureHyperVHostNetworkForSetup, hiddenChildProcessOptions, hiddenProviderCommandEnv, providerCommandSpawn, redactProviderCommandInput, registerDeviceBrokerOwner, waitForBrokerWindowsMinimizeConfirmation, windowsHiddenChildProcessPreloadScript, windowsHiddenVbsLauncherInvocation, windowsHiddenVbsLauncherScript, windowsProcessTreeOutcome, windowsSandboxMinimizeWatchdogArgs, windowsSandboxSessionIdsFromBrokerListOutput, windowsSandboxWindowHandleSnapshotArgs, windowsSandboxWindowHandlesFromOutput } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId, deviceLabProjectMountPath } from "@ccc/device-lab/device-lab-owner.js";
 import { readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess } from "@ccc/device-lab/device-lab-process-identity.js";
 import { withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
@@ -1066,6 +1066,62 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
+    it.each([-1, 1] as const)("captures a legacy setup Unix deadline once while wall time jumps %s", async direction => {
+        let wallNow = Date.now();
+        let monotonicNow = 41.25;
+        const wallClock = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+        const fallback = vi.fn<FixtureCommandRunner>(() => { throw new Error("unexpected setup native operation"); });
+        const operations: string[] = [];
+        const simulated = withTypedHyperVNetworkOperations(fallback, {
+            stateFile: join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json"),
+            onOperation(request) {
+                operations.push(request.operation);
+                monotonicNow += 0.5;
+                wallNow += direction * 86_400_000;
+            },
+        });
+        const allowances: number[] = [];
+        const commandRunner = vi.fn<FixtureCommandRunner>((command, options) => {
+            allowances.push(options.timeoutMs);
+            return simulated(command, options);
+        });
+        try {
+            expect(await ensureHyperVHostNetworkForSetup({
+                platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+                commandRunner, hyperVMonotonicNow: () => monotonicNow,
+            }, wallNow + 5000)).toMatchObject({ ok: true, switchName: "CCC Device Lab" });
+            expect(operations.length).toBeGreaterThan(1);
+            expect(allowances).toHaveLength(operations.length);
+            expect(allowances[0]).toBe(5000);
+            expect(allowances.at(-1)).toBeLessThan(allowances[0]!);
+            for (const allowance of allowances) {
+                expect(Number.isInteger(allowance)).toBe(true);
+                expect(allowance).toBeGreaterThan(0);
+                expect(allowance).toBeLessThanOrEqual(5000);
+            }
+            expect(fallback).not.toHaveBeenCalled();
+        } finally { wallClock.mockRestore(); }
+    });
+
+    it("preserves an unbounded legacy setup deadline and the existing primitive cap", async () => {
+        const fallback = vi.fn<FixtureCommandRunner>(() => { throw new Error("unexpected setup native operation"); });
+        const simulated = withTypedHyperVNetworkOperations(fallback, {
+            stateFile: join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json"),
+        });
+        const allowances: number[] = [];
+        const commandRunner = vi.fn<FixtureCommandRunner>((command, options) => {
+            allowances.push(options.timeoutMs);
+            return simulated(command, options);
+        });
+        expect(await ensureHyperVHostNetworkForSetup({
+            platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+            commandRunner, hyperVMonotonicNow: () => 41.25,
+        }, Number.POSITIVE_INFINITY)).toMatchObject({ ok: true, switchName: "CCC Device Lab" });
+        expect(allowances.length).toBeGreaterThan(1);
+        expect(allowances).toEqual(allowances.map(() => 120_000));
+        expect(fallback).not.toHaveBeenCalled();
+    });
+
     it("runs an owner-fenced Hyper-V Windows VM lifecycle through the host broker", async () => {
         const cwd = join(process.env.HOME!, "broker-hyper-v-lifecycle-test");
         mkdirSync(cwd, { recursive: true });
@@ -1102,6 +1158,22 @@ describe("device-lab host broker lifecycle commands", () => {
             incarnationId: staleIncarnationId,
             createdAt: new Date().toISOString(),
         }));
+        // A fractional local tick cannot be mistaken for an absolute Unix deadline.
+        const monotonicOrigin = performance.now();
+        let monotonicOffset = 0;
+        const monotonicNow = () => 123.25 + performance.now() - monotonicOrigin + monotonicOffset;
+        let advanceLifecycleClocks: (() => void) | null = null;
+        const withWallJump = async <Result,>(direction: -1 | 1, operation: () => Promise<Result>): Promise<Result> => {
+            let wallNow = Date.now();
+            const wallClock = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+            let observations = 0;
+            advanceLifecycleClocks = () => { monotonicOffset += 0.125; wallNow += direction * 86_400_000; observations += 1; };
+            try {
+                const result = await operation();
+                expect(observations, "the wall jump occurs inside actual provider dispatch").toBeGreaterThan(0);
+                return result;
+            } finally { advanceLifecycleClocks = null; wallClock.mockRestore(); }
+        };
         let vmState = "Off";
         let vmExists = false;
         let createdVmNotes = "";
@@ -1161,6 +1233,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let guestDownloadLostResponse = false;
         let checkpointPolicy: "Disabled" | "ProductionOnly" = "ProductionOnly";
         const commandRunner = vi.fn((command) => {
+            advanceLifecycleClocks?.();
             const script = providerScript(command);
             const nativeRequest = nativeLibraryRequest(command);
             if (nativeRequest) {
@@ -1600,6 +1673,7 @@ describe("device-lab host broker lifecycle commands", () => {
             port: 0,
             platform: "win32",
             providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+            hyperVMonotonicNow: monotonicNow,
             commandRunner,
         });
         const baseUrl = await listen(server);
@@ -1617,7 +1691,7 @@ describe("device-lab host broker lifecycle commands", () => {
             body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "windows-vm", deviceId, ...params } }),
         });
         try {
-            const created = await invoke({ backend: "windows-vm", command: "device_create", name: "Windows 한글 VM", profile: "windows-11", sourceImage: sourceImagePath, memoryMb: 4096, cpus: 2 });
+            const created = await withWallJump(1, () => invoke({ backend: "windows-vm", command: "device_create", name: "Windows 한글 VM", profile: "windows-11", sourceImage: sourceImagePath, memoryMb: 4096, cpus: 2 }));
             const createdBody = await created.json();
             expect(created.status, JSON.stringify(createdBody)).toBe(200);
             expect(existsSync(staleMarkerPath)).toBe(true);
@@ -1669,7 +1743,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(await conflictingCreate.json()).toMatchObject({ error: "vm-create-device-id-not-supported" });
             expect(commandRunner).toHaveBeenCalledTimes(callsAfterCreate);
 
-            const started = await invoke({ backend: "windows-vm", command: "device_start", deviceId });
+            const started = await withWallJump(-1, () => invoke({ backend: "windows-vm", command: "device_start", deviceId }));
             expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);
             expect(await started.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", runtimeState: "Running", bootReady: true }), boot: expect.objectContaining({ ready: true, provider: "hyper-v-powershell-direct" }) }) }));
 
@@ -2030,7 +2104,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(existsSync(operationPath)).toBe(true);
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeStaleLifecycle);
             writeFileSync(operationPath, validOperationBytes);
-            const status = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
+            const status = await withWallJump(1, () => invoke({ backend: "windows-vm", command: "device_status", deviceId }));
             expect(status.status, JSON.stringify(await status.clone().json())).toBe(200);
             expect(await status.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ vmId, runtimeState: "Off" }) }) }));
             expect(commandRunner.mock.calls.slice(callsBeforeStaleLifecycle).some(([command]) => {
@@ -2212,9 +2286,9 @@ describe("device-lab host broker lifecycle commands", () => {
             writeFileSync(lateStateFile, JSON.stringify(lateState));
             vmState = "Running";
             const lateBeforeState = readFileSync(lateStateFile, "utf8"), lateBeforeCalls = commandRunner.mock.calls.length;
-            let lateNow = Date.now();
-            const lateClock = vi.spyOn(Date, "now").mockImplementation(() => lateNow);
-            afterNativeStopEffect = () => {lateNow += 60_000;};
+            let lateWallNow = Date.now();
+            const lateClock = vi.spyOn(Date, "now").mockImplementation(() => lateWallNow);
+            afterNativeStopEffect = () => {monotonicOffset += 60_000; lateWallNow -= 86_400_000;};
             try {
                 const lateCleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
                     body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "windows-vm"}})});
@@ -2298,7 +2372,41 @@ describe("device-lab host broker lifecycle commands", () => {
                 expect(existsSync(operationPath)).toBe(false);
             }
 
-            const stopped = await invoke({ backend: "windows-vm", command: "device_stop", deviceId });
+            // The same normalized cleanup clock also guards a physical lease in a mixed
+            // request; comparing its local deadline with Unix time would refuse release.
+            const mixedPhysicalId = "mixed-cleanup-physical", mixedSerial = "USB-MIXED-CLEANUP";
+            const mixedPhysicalRoot = writeBrokerDevices(ownerId, "android-device", [{
+                id: mixedPhysicalId, backend: "android-device", physical: true, serial: mixedSerial,
+                status: "attached", leaseClaimId: "mixed-claim", leaseClaimNonce: "mixed-nonce",
+            }]);
+            const mixedLeaseFile = join(process.env.HOME!, ".ccc", "devices", "physical-leases", "android-device", "locks", `${mixedSerial}.json`);
+            mkdirSync(dirname(mixedLeaseFile), { recursive: true });
+            writeFileSync(mixedLeaseFile, JSON.stringify({ backend: "android-device", hardwareId: mixedSerial,
+                ownerId, deviceId: mixedPhysicalId, claimId: "mixed-claim", claimNonce: "mixed-nonce",
+                expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+            const mixedStateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
+            const mixedState = JSON.parse(readFileSync(mixedStateFile, "utf8"));
+            Object.assign(mixedState.devices.find((device: { id: string }) => device.id === deviceId), { status: "running", runtimeState: "Running" });
+            writeFileSync(mixedStateFile, JSON.stringify(mixedState));
+            vmState = "Running";
+            const mixedCleanup = await withWallJump(1, () => fetch(endpoint, { method: "POST", headers,
+                body: JSON.stringify({ method: "broker.cleanup.owner", params: {} }) }));
+            const mixedCleanupBody = await mixedCleanup.json();
+            expect(mixedCleanup.status, JSON.stringify(mixedCleanupBody)).toBe(200);
+            expect(mixedCleanupBody).toMatchObject({ ok: true, result: { changedDevices: 2, failed: 0,
+                results: expect.arrayContaining([
+                    expect.objectContaining({ stateKey: "android-device", devices: [expect.objectContaining({
+                        deviceId: mixedPhysicalId, changed: true, physical: { detached: true, poweredOff: false, disconnected: false,
+                            lease: expect.objectContaining({ attempted: true, ok: true }) },
+                    })] }),
+                    expect.objectContaining({ stateKey: "windows-vm", devices: [expect.objectContaining({ deviceId, stop: expect.objectContaining({ attempted: true, ok: true }) })] }),
+                ]) } });
+            expect(existsSync(mixedLeaseFile)).toBe(false);
+            expect(JSON.parse(readFileSync(join(mixedPhysicalRoot, "devices.json"), "utf8")).devices[0]).toMatchObject({ status: "detached" });
+            expect(JSON.parse(readFileSync(mixedStateFile, "utf8")).devices.find((device: { id: string }) => device.id === deviceId)).toMatchObject({ status: "stopped", runtimeState: "Off" });
+            expect(existsSync(operationPath)).toBe(false);
+
+            const stopped = await withWallJump(-1, () => invoke({ backend: "windows-vm", command: "device_stop", deviceId }));
             expect(stopped.status).toBe(200);
             expect(await stopped.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "stopped", runtimeState: "Off" }) }) }));
 

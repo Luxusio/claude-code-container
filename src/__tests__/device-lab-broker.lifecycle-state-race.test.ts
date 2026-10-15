@@ -7,9 +7,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
-type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean; detach?: boolean};
+type Scenario = {name: string; backend: "macos-vm" | "windows-vm" | "linux-vm" | "android-device"; command: "device_start" | "device_stop" | "device_delete" | "device_reboot" | "device_status"; race?: "created" | "runtime" | "incarnation" | "nested" | "secret" | "missing" | "unrelated"; phase?: "provider" | "plan" | "before-cleanup" | "cleanup-commit" | "before-ssh" | "ssh-commit" | "after-ssh" | "physical-release"; cleanup?: boolean; guestFailure?: boolean; auth?: "missing" | "wrong"; writeFault?: boolean; dryRun?: boolean; planOnly?: boolean; detach?: boolean; wallJump?: -1 | 1};
 type StateSnapshot = {bytes: string; dev: string; ino: string; mtime: string; mode: string; nlink: string};
-type Receipt = {outcome: {status: number; body: {ok: boolean; error?: string; found?: boolean; providerFailure?: string; result?: {device?: Record<string, unknown> | null; invoked?: boolean; execution?: {providerExecution?: string; command?: unknown}; auxiliaryCleanup?: {ok: boolean; changed: boolean; stateConflict?: boolean; minimizeWatchdog?: {cleared: boolean}}; boot?: unknown; leaseRollback?: {attempted: boolean; ok: boolean}}}}; denied: unknown[]; ownIdentityObservations: number; initial: Record<string, unknown>; expected: Record<string, unknown>[]; unrelated: Record<string, unknown>; after: StateSnapshot; protectedSnapshot: StateSnapshot; injected: boolean; calls: {provider: string; args: string[]; operation?: string}[]; ownerPublicationsAfterRace: number; temporaryOwnerWritesAfterRace: number; cancellationWrites: number; lease?: Record<string, unknown>; initialExpiry?: string; storageFaults: number; modules: string[]; reconciledRecordAtSsh?: Record<string, unknown>; fingerprint?: string; publicationBuilderClockReads: number};
+type Receipt = {outcome: {status: number; body: {ok: boolean; error?: string; found?: boolean; providerFailure?: string; result?: {device?: Record<string, unknown> | null; invoked?: boolean; execution?: {providerExecution?: string; command?: unknown}; auxiliaryCleanup?: {ok: boolean; changed: boolean; stateConflict?: boolean; minimizeWatchdog?: {cleared: boolean}}; boot?: unknown; leaseRollback?: {attempted: boolean; ok: boolean}}}}; denied: unknown[]; ownIdentityObservations: number; initial: Record<string, unknown>; expected: Record<string, unknown>[]; unrelated: Record<string, unknown>; after: StateSnapshot; protectedSnapshot: StateSnapshot; injected: boolean; calls: {provider: string; args: string[]; operation?: string; timeoutMs?: number}[]; ownerPublicationsAfterRace: number; temporaryOwnerWritesAfterRace: number; cancellationWrites: number; lease?: Record<string, unknown>; initialExpiry?: string; storageFaults: number; modules: string[]; reconciledRecordAtSsh?: Record<string, unknown>; fingerprint?: string; publicationBuilderClockReads: number; monotonicReads: number; wallJumps: number};
 
 const project = fileURLToPath(new URL("../../", import.meta.url));
 const sourceFiles = new Map<string, string>();
@@ -89,6 +89,8 @@ const {syncBuiltinESMExports}=require('node:module'),{pathToFileURL}=require('no
 const settings=JSON.parse(fs.readFileSync(process.env.CCC_LIFECYCLE_FIXTURE_FILE,'utf8')),scenario=settings.scenario,home=settings.home;
 const raw=Object.fromEntries(Object.entries(fs).filter(([,value])=>typeof value==='function'));
 const rawSpawnSync=cp.spawnSync;
+let monotonicNow=37.25,wallNow=Date.now(),monotonicReads=0,wallJumps=0;
+if(scenario.wallJump)Date.now=()=>wallNow;
 let ownIdentityProbe=null,ownIdentityObservations=0;
 const ownIdentityOptions=Object.freeze({encoding:'utf8',timeout:5000,killSignal:'SIGKILL',windowsHide:true});
 const denied=[],calls=[],mutations=[],ownedDescriptors=new Map();let port,server,ownerFile,actor=0,rpcActive=false,ownerReads=0,afterCancellation=false,afterHostKeyWrite=false,afterPhysicalRelease=false,injected=false,protectedSnapshot,expected,initial,other,ownerPublicationsAfterRace=0,temporaryOwnerWritesAfterRace=0,cancellationWrites=0,storageFaults=0,reconciledRecordAtSsh;
@@ -210,7 +212,8 @@ function rpc(base,owner,token,params){return new Promise((resolve,reject)=>{cons
  const runner=(command,runnerOptions)=>{
   let native=null;try{const envelope=JSON.parse(Buffer.from(command.input||'','base64').toString('utf8'));if(typeof envelope.script==='string')native=JSON.parse(envelope.input);}catch{}
   if(!native&&command.input){try{const value=JSON.parse(command.input);if(value.operation)native=value;}catch{}}
-  calls.push({provider:command.provider,args:command.args||[],...(native?{operation:native.operation}:{})});
+  calls.push({provider:command.provider,args:command.args||[],...(native?{operation:native.operation}:{}),timeoutMs:runnerOptions?.timeoutMs});
+  if(scenario.wallJump){monotonicNow+=0.125;wallNow+=scenario.wallJump*86400000;wallJumps++;}
   if(scenario.phase==='provider'||!scenario.phase)race();
   if(command.provider==='hyper-v-ssh'){
    if(reconciledRecordAtSsh===undefined)reconciledRecordAtSsh=controller(()=>JSON.parse(raw.readFileSync(ownerFile,'utf8')).devices.find(item=>item.id===id));
@@ -241,13 +244,13 @@ function rpc(base,owner,token,params){return new Promise((resolve,reject)=>{cons
   }
   return{...command,status:0,stdout:JSON.stringify({schemaVersion:1,operation:native.operation,ok:true,items}),stderr:''};
  };
- server=broker.createDeviceBrokerServer({cwd,host:'127.0.0.1',port:0,platform:hv?'win32':'linux',providerPaths:fixtureProviderPaths,commandRunner:runner});
+ server=broker.createDeviceBrokerServer({cwd,host:'127.0.0.1',port:0,platform:hv?'win32':'linux',providerPaths:fixtureProviderPaths,commandRunner:runner,...(scenario.wallJump?{hyperVMonotonicNow:()=>{monotonicReads++;return monotonicNow;}}:{})});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));port=server.address().port;
  const token=broker.deviceBrokerOwnerToken(owner);protectedSnapshot=snapshot();expected=[structuredClone(initial),structuredClone(other)];rpcActive=true;
  let outcome;try{outcome=await rpc('http://127.0.0.1:'+port,owner,scenario.auth==='missing'?undefined:scenario.auth==='wrong'?'not-the-owner-token':token,{backend:scenario.backend,command:scenario.command,deviceId:id,force:true,...(scenario.dryRun?{dryRun:true}:{}),...(hv?{bootTimeoutMs:1000}:physical?{}:{waitForBoot:false})});}finally{rpcActive=false;await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
  const after=snapshot(),lease=leaseFile&&raw.existsSync(leaseFile)?JSON.parse(raw.readFileSync(leaseFile,'utf8')):undefined;
  stableHome();if(ownedDescriptors.size)throw Error('fixture-owned file descriptors leaked');
- console.log(JSON.stringify({outcome,denied,ownIdentityObservations,initial,expected,unrelated:other,after,protectedSnapshot,injected,calls,ownerPublicationsAfterRace,temporaryOwnerWritesAfterRace,cancellationWrites,storageFaults,lease,initialExpiry,reconciledRecordAtSsh,fingerprint,publicationBuilderClockReads,modules:[directory]}));
+ console.log(JSON.stringify({outcome,denied,ownIdentityObservations,initial,expected,unrelated:other,after,protectedSnapshot,injected,calls,ownerPublicationsAfterRace,temporaryOwnerWritesAfterRace,cancellationWrites,storageFaults,lease,initialExpiry,reconciledRecordAtSsh,fingerprint,publicationBuilderClockReads,monotonicReads,wallJumps,modules:[directory]}));
 })().catch(error=>{console.log(JSON.stringify({fatal:String(error),stack:error.stack,denied,calls,mutations}));process.exitCode=1;});
 `;
 
@@ -288,6 +291,25 @@ const macRaces: Scenario[] = ["device_start", "device_stop", "device_delete"].fl
 const hyperVRaces: Scenario[] = ["device_start", "device_reboot"].flatMap(command => [false, true].flatMap(guestFailure => ["created", "runtime", "incarnation", "missing"].map(race => ({name: `HyperV ${command} guestFailure=${guestFailure} ${race}`, backend: "windows-vm", command, race, guestFailure, phase: "provider"} as Scenario))));
 
 describe.each(["source", "emitted"] as const)("actual authenticated %s broker lifecycle state transitions", lens => {
+    it.each([-1, 1] as const)("preserves the successor generation through actual start/readiness with wall jump %s", wallJump => {
+        const observed = executeCurrent(lens, {name: "monotonic generation fence", backend: "windows-vm", command: "device_start", phase: "provider", race: "incarnation", wallJump});
+        expect(observed.monotonicReads).toBeGreaterThan(0);
+        expect(observed.wallJumps).toBeGreaterThan(1);
+        expect(observed.calls.some(call => call.operation === "Start-VM")).toBe(true);
+        expect(observed.calls.some(call => call.operation === "Invoke-Guest")).toBe(true);
+        expect(observed.outcome).toMatchObject({status: 409, body: {ok: false, error: "owner-device-state-conflict", found: true}});
+        expect(observed.after).toEqual(observed.protectedSnapshot);
+        expect(JSON.parse(observed.after.bytes).devices).toEqual(observed.expected);
+        expect(observed.ownerPublicationsAfterRace).toBe(0);
+        expect(observed.temporaryOwnerWritesAfterRace).toBe(0);
+        expect(observed.publicationBuilderClockReads).toBe(0);
+        for (const call of observed.calls.filter(call => call.operation)) {
+            expect(Number.isInteger(call.timeoutMs)).toBe(true);
+            expect(call.timeoutMs).toBeGreaterThan(0);
+            expect(call.timeoutMs).toBeLessThanOrEqual(120_000);
+        }
+    });
+
     it.each(["plan", "dry-run", "status"] as const)("keeps readonly %s paths outside lifecycle publication", mode => {
         const observed = executeCurrent(lens, {name: "readonly gate", backend: "macos-vm", command: mode === "status" ? "device_status" : "device_start", planOnly: mode === "plan", dryRun: mode === "dry-run"});
         expect(observed.outcome.status).toBe(200); expect(observed.after).toEqual(observed.protectedSnapshot);

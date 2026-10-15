@@ -9,6 +9,7 @@ import { chmodSync, closeSync, constants as fsConstants, fchmodSync, lstatSync, 
 import type { Stats } from "fs";
 import { hostname, uptime } from "os";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
     deviceRuntimeProcessIdentityMatches,
     inspectDeviceRuntimeProcessIdentity,
@@ -108,10 +109,6 @@ export function assertStateDirectoriesUnchanged(identities: DirectoryIdentity[])
 
 function sleepSync(ms: number): void {
     Atomics.wait(sleeper, 0, 0, ms);
-}
-
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function renameReplacingFileSync(source: string, destination: string, validateDirectories: () => void = () => {}): void {
@@ -303,7 +300,7 @@ const lockPorts: SharedMutationLockPorts<DirectoryIdentity[]> = {
     now: Date.now,
     monotonic: () => performance.now(),
     pauseSync: ms => { sleepSync(ms); return undefined; },
-    pause: ms => sleep(ms).then(() => undefined),
+    pause: (ms, signal) => delay(ms, undefined, signal ? { signal } : {}),
     openClaim: file => openSync(file, "wx", 0o600),
     writeClaim: (descriptor, text) => { writeFileSync(descriptor, text); return undefined; },
     closeClaim: descriptor => { closeSync(descriptor); return undefined; },

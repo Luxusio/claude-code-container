@@ -64,6 +64,10 @@ type HostCleanupOptions = HyperVHostCleanupRequest & {
     onConfirmedAction: HyperVHostCleanupRequest["confirmed"];
 };
 function createHostApplication(ports: HyperVHostNetworkPorts) {
+    function assertDeadline(deadlineAt: number): void {
+        if (Number.isFinite(deadlineAt) && ports.now() >= deadlineAt)
+            ports.throwDeadline();
+    }
     async function waitForNextTransientObservation(options: Pick<HostEnsureOptions, "deadlineAt">): Promise<boolean> {
         if (Number.isFinite(options.deadlineAt) && options.deadlineAt - ports.now() <= TRANSIENT_OBSERVATION_INTERVAL_MILLISECONDS)
             return false;
@@ -85,12 +89,15 @@ function createHostApplication(ports: HyperVHostNetworkPorts) {
     }
     async function reconcileEnsureWithoutMutation(client: HyperVHostNetworkEffects, options: Pick<HostEnsureOptions, "network" | "provenance" | "deadlineAt">): Promise<DeviceLabHyperVHostNetworkEnsureOutcome> {
         for (let observationCount = 1; observationCount <= MAXIMUM_TRANSIENT_OBSERVATIONS; observationCount += 1) {
+            assertDeadline(options.deadlineAt);
             const observation = await inspectDeviceLabHyperVHostNetwork(client, {
                 network: options.network,
                 provenance: options.provenance,
                 privilege: "standard",
             });
             const outcome = assertStandardDecision(reconcileHyperVHostNetwork(observation, options.network));
+            if (outcome.kind === "settled")
+                assertDeadline(options.deadlineAt);
             if (!isRetryableEnsureObservation(outcome)
                 || observationCount === MAXIMUM_TRANSIENT_OBSERVATIONS
                 || !await waitForNextTransientObservation(options)) {
@@ -115,6 +122,9 @@ function createHostApplication(ports: HyperVHostNetworkPorts) {
         let confirmedActions = 0;
         const completedActions: DeviceLabHyperVHostNetworkEnsureCompletedAction[] = [];
         while (true) {
+            // Retain receipt reconciliation for a mutation that has already completed.
+            if (confirmedActions === completedActions.length)
+                assertDeadline(options.deadlineAt);
             const observation = await inspectDeviceLabHyperVHostNetwork(client, {
                 network: options.network,
                 provenance: options.provenance,
@@ -133,11 +143,15 @@ function createHostApplication(ports: HyperVHostNetworkPorts) {
             }
             const outcome = reconcileHyperVHostNetwork(observationWithConfirmedEnsureReceipts(observation, completedActions), options.network);
             switch (outcome.kind) {
-                case "settled":
+                case "settled": {
+                    const confirmed = confirmedEnsureOutcome(outcome, completedActions);
+                    if (confirmed.kind === "settled")
+                        assertDeadline(options.deadlineAt);
                     return {
-                        outcome: confirmedEnsureOutcome(outcome, completedActions),
+                        outcome: confirmed,
                         completedActions: [...completedActions],
                     };
+                }
                 case "conflict":
                     return { outcome, completedActions: [...completedActions] };
                 case "indeterminate":
@@ -151,6 +165,7 @@ function createHostApplication(ports: HyperVHostNetworkPorts) {
                 case "needs-administrator":
                     throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-administrator-plan-needs-administrator");
                 case "execute": {
+                    assertDeadline(options.deadlineAt);
                     if (mutations >= MAXIMUM_ENSURE_MUTATIONS) {
                         throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-mutation-bound-exceeded");
                     }
@@ -175,13 +190,20 @@ function createHostApplication(ports: HyperVHostNetworkPorts) {
         const outcome = await reconcileEnsureWithoutMutation(options.effects, options);
         if (outcome.kind !== "needs-administrator")
             return { outcome, completedActions: [] };
-        return ports.withAdministrator((client) => reconcileEnsureAsAdministrator(client, options), "ensure");
+        assertDeadline(options.deadlineAt);
+        const result = await ports.withAdministrator((client) => reconcileEnsureAsAdministrator(client, options), "ensure");
+        if (result.outcome.kind === "settled")
+            assertDeadline(options.deadlineAt);
+        return result;
     }
-    async function reconcileCleanupAsAdministrator(client: HyperVHostNetworkEffects, options: Pick<HostCleanupOptions, "network" | "provenance" | "onConfirmedAction">): Promise<DeviceLabHyperVHostNetworkCleanupTransactionResult> {
+    async function reconcileCleanupAsAdministrator(client: HyperVHostNetworkEffects, options: Pick<HostCleanupOptions, "network" | "provenance" | "onConfirmedAction" | "deadlineAt">): Promise<DeviceLabHyperVHostNetworkCleanupTransactionResult> {
         let mutations = 0;
         let confirmedActions = 0;
         const completedActions: DeviceLabHyperVHostNetworkCleanupCompletedAction[] = [];
         while (true) {
+            // Retain receipt reconciliation for a mutation that has already completed.
+            if (confirmedActions === completedActions.length)
+                assertDeadline(options.deadlineAt);
             const observation = await inspectDeviceLabHyperVHostNetworkCleanup(client, {
                 network: options.network,
                 privilege: "administrator",
@@ -200,12 +222,15 @@ function createHostApplication(ports: HyperVHostNetworkPorts) {
             const outcome = planHyperVHostNetworkCleanup(observation, options.network, options.provenance);
             switch (outcome.kind) {
                 case "settled":
+                    assertDeadline(options.deadlineAt);
+                    return { outcome, completedActions: [...completedActions] };
                 case "conflict":
                 case "indeterminate":
                     return { outcome, completedActions: [...completedActions] };
                 case "needs-administrator":
                     throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-administrator-plan-needs-administrator");
                 case "execute": {
+                    assertDeadline(options.deadlineAt);
                     if (mutations >= MAXIMUM_CLEANUP_MUTATIONS) {
                         throw new DeviceLabHyperVNetworkAdapterError("hyper-v-network-adapter-mutation-bound-exceeded");
                     }
@@ -226,14 +251,21 @@ function createHostApplication(ports: HyperVHostNetworkPorts) {
         }
     }
     async function cleanupHost(options: HostCleanupOptions): Promise<DeviceLabHyperVHostNetworkCleanupTransactionResult> {
+        assertDeadline(options.deadlineAt);
         const observation = await inspectDeviceLabHyperVHostNetworkCleanup(options.effects, {
             network: options.network,
             privilege: "standard",
         });
         const outcome = assertStandardDecision(planHyperVHostNetworkCleanup(observation, options.network, options.provenance));
+        if (outcome.kind === "settled")
+            assertDeadline(options.deadlineAt);
         if (outcome.kind !== "needs-administrator")
             return { outcome, completedActions: [] };
-        return ports.withAdministrator((client) => reconcileCleanupAsAdministrator(client, options), "cleanup");
+        assertDeadline(options.deadlineAt);
+        const result = await ports.withAdministrator((client) => reconcileCleanupAsAdministrator(client, options), "cleanup");
+        if (result.outcome.kind === "settled")
+            assertDeadline(options.deadlineAt);
+        return result;
     }
     return {
         ensureHost: (request: HyperVHostEnsureRequest) => ensureHost({ ...request, effects: ports.standard, onConfirmedAction: request.confirmed }),
@@ -794,7 +826,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
     }
     function elevatedAttempt(deadlineAt: number): HyperVNetworkNativeAttempt {
         const timeoutMs = hyperVRemainingTimeout(deadlineAt, 180000);
-        return {privilege: "administrator", timeoutMs, deadlineUnixMs: ports.now() + Math.max(1, timeoutMs - HYPER_V_ELEVATED_TERMINATION_GRACE_MS)};
+        return {privilege: "administrator", timeoutMs, terminationGraceMs: HYPER_V_ELEVATED_TERMINATION_GRACE_MS};
     }
     async function ensureWithElevation(runtime: HyperVNetworkPorts, request: HyperVNetworkEnsureRequest, deadlineAt: number): Promise<HyperVNetworkNativeObservation<HyperVNetworkObservation>> {
         const native = legacyHostFabricCompatibility(runtime);
@@ -877,7 +909,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
             || (isTokenCccNetworkIdentity(currentMarker, currentNatName)
                 && isStableCccNetworkIdentity(observedMarker, observedNatName));
     }
-    async function typedEnsureProvenance(runtime: HyperVNetworkPorts, client: HyperVHostNetworkEffects, current: HyperVNetworkState | null, intent: HyperVNetworkIntent | null): Promise<{
+    async function typedEnsureProvenance(runtime: HyperVNetworkPorts, client: HyperVHostNetworkEffects, current: HyperVNetworkState | null, intent: HyperVNetworkIntent | null, deadlineAt: number): Promise<{
         readonly network: HyperVHostNetworkSpec;
         readonly provenance: HyperVHostNetworkEnsureProvenance;
         readonly current: HyperVNetworkState | null;
@@ -888,6 +920,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
             const currentNetwork = typedHostNetworkSpec(current.switchName, current.natName);
             const currentProvenance = persistedNetworkProvenance(current);
             if (current.natInstanceId) {
+                assertHyperVOperationDeadline(deadlineAt);
                 const inspection = await inspectOwnerHost(client, {
                     network: currentNetwork,
                     provenance: currentProvenance,
@@ -901,6 +934,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                     const exactNat = exactNats[0];
                     if (exactSwitch && exactNat
                         && isAllowedPersistedCccIdentityTransition(current.marker, current.natName, exactSwitch.notes, String(exactNat.name))) {
+                        assertHyperVOperationDeadline(deadlineAt);
                         const transitionedCurrent = persistTypedCurrentStateIdentityTransition(runtime, current, exactSwitch.notes, String(exactNat.name), String(exactNat.instanceId));
                         return {
                             network: typedHostNetworkSpec(current.switchName, String(exactNat.name)),
@@ -962,6 +996,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
             kind: "fresh",
             expectedSwitchNotes: intent.marker,
         };
+        assertHyperVOperationDeadline(deadlineAt);
         const inspection = await inspectOwnerHost(client, {
             network: intendedNetwork,
             provenance: fresh,
@@ -982,6 +1017,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         if (matchingNats.length > 1)
             throw new Error("hyper-v-network-nat-ambiguous");
         const adoptedNat = matchingNats[0];
+        assertHyperVOperationDeadline(deadlineAt);
         const transitionedIntent = persistTypedIntentIdentityTransition(runtime, intent, virtualSwitch.notes, adoptedNatName);
         return {
             network: typedHostNetworkSpec(transitionedIntent.switchName, transitionedIntent.natName),
@@ -1015,7 +1051,8 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         const typed = typedHostFabric(runtime);
         if (!typed)
             throw new Error("hyper-v-network-typed-runtime-missing");
-        const request = await typedEnsureProvenance(runtime, typed.host.standard, current, intent);
+        assertHyperVOperationDeadline(deadlineAt);
+        const request = await typedEnsureProvenance(runtime, typed.host.standard, current, intent, deadlineAt);
         let checkpointedCurrent = request.current;
         let checkpointedIntent = request.intent;
         const transaction = await createHostApplication(typed.host).ensureHost({
@@ -1100,7 +1137,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                 : { kind: "unmanaged" },
         };
     }
-    async function cleanupTypedHyperVHostNetwork(runtime: HyperVNetworkPorts, release: HyperVNetworkRelease) {
+    async function cleanupTypedHyperVHostNetwork(runtime: HyperVNetworkPorts, release: HyperVNetworkRelease, deadlineAt: number) {
         const typed = typedHostFabric(runtime);
         if (!typed || !release.switchName || !release.natName) {
             throw new Error("hyper-v-network-typed-runtime-missing");
@@ -1116,6 +1153,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         const transaction = await createHostApplication(typed.host).cleanupHost({
             network,
             provenance: typedCleanupProvenance(release),
+            deadlineAt,
             confirmed: (action) => {
                 if (!checkpointedState)
                     throw new Error("hyper-v-network-state-missing");
@@ -1217,6 +1255,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         prefix: string;
         outboundPolicy: "nat";
     } | HyperVNetworkEnsureFailure> {
+        assertHyperVOperationDeadline(deadlineAt);
         if (!runtime.available())
             return { kind: "refused", reason: "missing-provider", error: "missing-provider-command", detail: "powershell" };
         if (allocationRequest && !validHyperVIncarnationId(allocationRequest.incarnationId)) {
@@ -1243,8 +1282,10 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
             }
             else {
                 intent = runtime.readIntent();
-                if (!intent)
+                if (!intent) {
+                    assertHyperVOperationDeadline(deadlineAt);
                     intent = createIntent(runtime);
+                }
             }
         }
         catch (error) {
@@ -1396,6 +1437,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                     throw new Error("hyper-v-network-allocation-incarnation-conflict");
                 if (current && (current.marker !== observedMarker || current.natName !== observation.natName)) {
                     runtime.ensureStateRoot();
+                    assertHyperVOperationDeadline(deadlineAt);
                     runtime.writeState({
                         ...current,
                         switchId: observation.switchId.toLowerCase(),
@@ -1404,6 +1446,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                         natInstanceId: observation.natInstanceId,
                     });
                 }
+                assertHyperVOperationDeadline(deadlineAt);
                 return {
                     kind: "network-ready",
                     switchName: observation.switchName,
@@ -1483,8 +1526,10 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
                     : allocations,
             };
             runtime.ensureStateRoot();
+            assertHyperVOperationDeadline(deadlineAt);
             runtime.writeState(next);
             removeIntentBestEffort(runtime);
+            assertHyperVOperationDeadline(deadlineAt);
             return {
                 kind: "network-ready",
                 switchName: observation.switchName,
@@ -1603,7 +1648,10 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         deadlineAt = Number.POSITIVE_INFINITY,
         options: HyperVNetworkReleaseOptions = {},
     ) {
+        assertHyperVOperationDeadline(deadlineAt);
         const release = state.release(ownerId, deviceId, incarnationId, options);
+        if (release.ok)
+            assertHyperVOperationDeadline(deadlineAt);
         if (!release.ok || !release.statePresent || !release.released || release.remaining !== 0) {
             return { ...release, networkCleanup: null };
         }
@@ -1644,7 +1692,7 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
         let cleanupStateRevision = release.stateRevision;
         if (typedHostFabric(runtime)) {
             try {
-                const typedResult = await cleanupTypedHyperVHostNetwork(runtime, release);
+                const typedResult = await cleanupTypedHyperVHostNetwork(runtime, release, deadlineAt);
                 observation = typedResult.observation;
                 cleanupStateRevision = typedResult.stateRevision;
             }
@@ -1674,9 +1722,17 @@ function createNetworkApplication(ports: HyperVNetworkPorts) {
             if (!committed.ok) {
                 return { ...release, ok: false, error: committed.error, networkCleanup: null };
             }
+            assertHyperVOperationDeadline(deadlineAt);
             return { ...release, ok: true, remaining: committed.remaining, networkCleanup: observation };
         }
-        runtime.removeState();
+        const current = runtime.readState();
+        if ((current && (!cleanupStateRevision || ports.revision(current) !== cleanupStateRevision))
+            || (!current && cleanupStateRevision)) {
+            return { ...release, ok: false, error: "hyper-v-network-state-revision-conflict", networkCleanup: null };
+        }
+        if (current)
+            runtime.removeState();
+        assertHyperVOperationDeadline(deadlineAt);
         return { ...release, ok: true, networkCleanup: observation };
     }
     return {
