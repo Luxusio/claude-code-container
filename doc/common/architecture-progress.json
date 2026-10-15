@@ -2709,7 +2709,7 @@
       "coveredOperationIds": [],
       "title": "Desktop 제어·파일 전송",
       "workStatus": "partial",
-      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다. General Hyper-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음. 별도 mount audit·전수 범위·native·reliability 조건도 남는다. CB-06 Android control/transfer/orientation 경계는 f57b0923에서 의미 관측·의도로 전환하고 두 native backend가 판정·매핑·응답을 구성하도록 로컬 통합했다. 독립 리뷰와 실제 portable 산출물·공개 경로·패키지 QA를 확인했으며 상세 근거는 currentSemanticControlProcessOwnerQualification에 있다. CB-04 Hyper-V readiness native diagnostics 정리는0211995a에서 독립 리뷰·portable QA·로컬 통합했다. 기존 Windows/native 조건과 전체 범위·reliability·formal 조건은 여전히 미완료다.",
+      "remainingWork": "기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다. General Hyper-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음. 별도 mount audit·전수 범위·native·reliability 조건도 남는다. CB-06 Android control/transfer/orientation 경계는 f57b0923에서 의미 관측·의도로 전환하고 두 native backend가 판정·매핑·응답을 구성하도록 로컬 통합했다. 독립 리뷰와 실제 portable 산출물·공개 경로·패키지 QA를 확인했으며 상세 근거는 currentSemanticControlProcessOwnerQualification에 있다. CB-04 Hyper-V readiness native diagnostics 정리는0211995a에서 독립 리뷰·portable QA·로컬 통합했다. 기존 Windows/native 조건과 전체 범위·reliability·formal 조건은 여전히 미완료다. 선택한 Hyper-V monotonic budget·readiness 진단·budgeted lock 기여는 currentHyperVMonotonicBudgetQualification에 기록하며 Source a27521e9·독립 Code/Security 및 portable/artifact QA PASS(24whole,1286PASS/24기존nativeSKIP,배포CLI/MCP 확인) 상태로 기존 부분 완료와 native·전수 범위·reliability·formal 조건을 유지한다.",
       "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다.",
       "confirmedAtCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
       "sourceTrace": {
@@ -5219,7 +5219,7 @@
       "remainingGroups": 10,
       "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음."
     },
-    "currentQualificationScope": "Latest bounded Source qualification is currentSemanticNativeResultsWorkspaceQualification. Earlier currentQualification remains historical71473106 FAIL; retained stop/cleanup and other accepted contributions keep their original scope. No fresh native or full-Goal verdict.",
+    "currentQualificationScope": "Latest selected portable Source/artifact qualification is currentHyperVMonotonicBudgetQualification. Earlier qualification records, including the original71473106 joint failure and accepted contributions, retain their exact historical scope. No wholeSource/native/reliability/formal or whole-Goal verdict follows.",
     "historicalStructuralAccountingBeforeQemuRecovery": {
       "sourceCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
       "completedGroups": 14,
@@ -5483,6 +5483,116 @@
       "structuralGroupCredit": 0,
       "operationCredit": 0,
       "sourceUniverseCertified": false
+    },
+    "currentHyperVMonotonicBudgetQualification": {
+      "taskId": "TASK__architecture-hyperv-monotonic-budget-reconciliation-20261016",
+      "runId": "01a140b0-98fc-739b-936e-b301f30632b1",
+      "sourceReference": "Selected Source locally committed at a27521e9bf1c82e6687a5a43f7730a7b7c75d496, after ebf91929/d251542f/a548ab7a. Eight final Source/Test/REQ correction paths and all57 reviewed Git blob pins matched the Source candidate at that commit; qualification uses the current working Source, including preserved original pending user contributions, and does not certify a clean HEAD.",
+      "reviewInput": "Final57 pins (31 Source /25 Tests /1 REQ), manifest ec1da6ed06b57c784b664ef26b6fd2859115a1b43e7c442d0b6a448e18565748; full baseline patch 6a8b88b4e01058a6e81f579702dfbcccf11dc195ccc14f13ff18194091571311.",
+      "scopeAndBehavior": "Selected Hyper-V lifecycle, canonical owner cleanup, image copy/hash, network and Windows readiness share an operation-local clock. Shared lock/session/elevation waits consume the original allowance; native boundaries receive reduced finite durations plus genuine Unix fields. Public wall-default deadlines, audit/lease timestamps, caps/reserves and fractional core clocks retain their contracts; integer-only native requests floor durations.",
+      "safety": "Expiry refuses new dispatch/successful publication, including successful inventory commits after lock/identity qualification, while preserving delivered-pending effects, exact identity/generation/CAS fences, journals, termination uncertainty and single successful create compensation evidence. Readiness retains an observed unsafe reason on native or core local expiry, including absent host ISO, and preserves first-attempt/partial-effect semantics. Budgeted async Windows lock recovery retains a live identity-less owner despite wall order; recorded mismatch/exited and recognized reboot proof retain recovery authority.",
+      "codeReview": "Actual independent Code r11 DEEP PASS0; no hunters under exhausted discovery budget; final57 pins and full baseline patch authenticated; all reads released.",
+      "securityReview": "Actual independent Security r9 PASS0 on final57 pins;54 unchanged prior-review pins qualified by hash identity and current budgeted lock correction independently inspected; all reads released.",
+      "retainedFailures": "Independent Code r1 FAIL2 /r2 FAIL5 /r3 FAIL1 /r4 FAIL1 /r5 FAIL1 and failed corrections remain retained. Actual Q1 DeviceLab TS2345 profile failure, Q2 session-test TS2339/7006 typing failure and Q3 public readiness reason-clobber failure remain original evidence. Code r9/Security r7 native/core-expiry findings and Code r10/Security r8 budgeted wall-order findings were corrected; their actual FAIL finals remain retained.",
+      "developmentOnly": "Readiness old Source RED3, then R2 RED2; corrected two whole files62 PASS and two-Source lint exit0. Budgeted lock RED4 then two whole files265 PASS and one-Source lint exit0. These are Root development checks, never fresh independent QA counts.",
+      "actualQa": {
+        "verdict": "PASS, selected portable runtime/artifact phase",
+        "commandVerificationDepth": "executed-command",
+        "coreWholeFiles": 22,
+        "corePassed": 933,
+        "coreExistingNativeSkips": 24,
+        "publicBrokerWholePassed": 173,
+        "explicitDualPassed": 180,
+        "explicitDualSourcePassed": 90,
+        "explicitDualEmittedPassed": 90,
+        "distinctWholeFiles": 24,
+        "passingExecutions": 1286,
+        "failed": 0,
+        "priorRuntimeCountedAsFresh": 0,
+        "freshProducerAndCheckCommands": [
+          "device-lab-emission-r5",
+          "mcp-bundle-r5",
+          "workspace-assembly-r5",
+          "strict-tsconfig.architecture-r5",
+          "strict-tsconfig.tests-r5",
+          "scoped-eslint-r5"
+        ],
+        "shipping": "Ordinary offline npm archive and Unix payload: public exports/assets, CLI help/version0/0, bundled MCP initialize/list/ping/graceful EOF passed. Separate actual assembled CLI invalid runtime refused before provider dispatch with actionable stderr/empty stdout/exit1; existing shipping checker did not contain that invalid case.",
+        "artifacts": {
+          "freshDeviceLabRaw": 274,
+          "qualifiedHyperVRaw": 44,
+          "preAssemblyMixedDist": 1057,
+          "currentFinalAssembledDist": 1057,
+          "historicalOriginalPreAssemblyRoot": 518,
+          "historicalRoot518IsCurrentFinal": false,
+          "unchangedDeviceLabDeclarations": 137,
+          "changedRawDeviceLabBodies": [
+            "device-lab/application/lifecycle/hyper-v-create-start.js",
+            "device-lab/broker/hyper-v/guest-readiness-adapter.js"
+          ],
+          "changedFinalAssembled": [
+            "device-lab-mcp/server.mjs",
+            "packages/device-lab/dist/device-lab/application/lifecycle/hyper-v-create-start.js",
+            "packages/device-lab/dist/device-lab/broker/hyper-v/guest-readiness-adapter.js",
+            "packages/device-lab/providers/application/shared-mutation-lock.mjs"
+          ],
+          "layoutFiles": 1667,
+          "layoutChangedFiles": 11,
+          "frozenSourceTextFiles": 23,
+          "freshChildProgramBindings": 2
+        },
+        "preservation": {
+          "MainAndPrivateInputFiles": 1754,
+          "reviewedGitBlobPins": 57,
+          "trackedOriginalMetadata": 1744,
+          "originalDirtyBinaryDiffPaths": 105,
+          "originalUntracked": 81,
+          "bothPRAncestors": true,
+          "semanticAndPhysicalIndexUnchanged": true,
+          "twoPhysicalPrivateDependencyFilesEach": 7598,
+          "mainDependencyProof": "Actual predecessor Main7598 proof carried without fresh Main scan",
+          "oldQ1Q2Q3EvidenceAndRecipeFiles": 205,
+          "networkAndFixtureLogPrefixesUnchanged": true
+        },
+        "processProof": {
+          "observedIdentities": 618,
+          "identityDispositions": {
+            "gone": 618
+          },
+          "liveSurvivors": [],
+          "processGroupSurvivors": [],
+          "cleanupActions": "none; original owned handles settled naturally"
+        },
+        "auditedCompiledRoutes": {
+          "coreEvents": 14859,
+          "publicEvents": 21609,
+          "productionTsFallback": 0,
+          "MainTargets": 0,
+          "loadedHashMismatches": 0,
+          "unresolvedEvents": 0,
+          "testInfrastructure": "Authenticated broker-api-client.ts and owning tests/helpers/config remain explicit test support; the separate dual witness intentionally executes Source and emitted modes."
+        },
+        "containment": "Five optional PowerShell availability probes and one npm registry attempt were refused before dispatch; no external/native execution.",
+        "evidence": "/tmp/ccc-hyperv-monotonic-01a140b0/qa1/evidence/q4-final-auth-facts.json",
+        "evidenceSha256": "c72d8e7d0854098ce3e78e90611be48d169a9b2313b086cc96dc573b60f13d5e",
+        "artifactInventorySha256": "b5f6d1a77a1ea47500e82e7e0a2b0b45de02aa455e1f87b924d8f38d422b848a",
+        "scope": "Qualified working Source includes protected original pending user contributions. No clean-HEAD, native Windows/macOS/provider, native PowerShell parser, wholeSource/reliability/global/formal/wholeGoal certification."
+      },
+      "carryQualification": "Only unchanged genuine Hyper-V44, Root/version output,137 DeviceLab declarations, resume8 inputs/bundle, Hyper-V strict and generated-program/static results may carry after independent current-input/dependency authentication and declaration/output parity. Original parser evidence is limited: native PowerShell parsing remains UNVERIFIED.",
+      "knownCeiling": "Unbudgeted legacy wall-order reclamation remains explicit original-Goal work, alongside snapshot-journal parent-budget propagation and independent snapshot/guest-direct desktop budgets. Retained hyperVGuestReadyCommand export, general provider-worker startup/cleanup grace, broader capability/lock-owner/CLI composition, whole Source/caller/export closure, native Windows/macOS/real providers, reliability and global acceptance remain unqualified. Historical native owner/access and unknown driver-terminal evidence is unchanged; no clean-HEAD certification.",
+      "formalClose": "No formal close or whole-Goal completion is claimed. Actual independent finals do not themselves establish automatic ordered attestation; the canonical task verification/disposition remains authoritative.",
+      "accounting": "17/25 complete (68%), five partial, three in progress, eight remaining;218 cutovers /219 inventoried operations /75 gates unchanged. sourceDenominatorCertified:false; no new operation, group or gate credit.",
+      "structuralGroupCredit": 0,
+      "operationCredit": 0,
+      "deliveryGateCredit": 0,
+      "sourceUniverseCertified": false,
+      "relatedStructuralGroups": [
+        "R06",
+        "R14",
+        "R19"
+      ],
+      "historicalQualificationScopeBeforeHyperVMonotonicBudget": "Latest bounded Source qualification is currentSemanticNativeResultsWorkspaceQualification. Earlier currentQualification remains historical71473106 FAIL; retained stop/cleanup and other accepted contributions keep their original scope. No fresh native or full-Goal verdict.",
+      "postQaDocumentation": "Final Doc review identified one missing readiness precedence paragraph. The REQ now explicitly records already implemented and independently verified native/core expiry diagnosis, partial facts, absent-ISO containment and first/zero-attempt behavior, linked to the existing containment contract. This is documentation-only after QA: all56 Source/Test pins remain unchanged; the original Code/QA57-pin snapshot retains its original REQ hash. The initial Doc FAIL is retained; no runtime replay or new Source credit."
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
