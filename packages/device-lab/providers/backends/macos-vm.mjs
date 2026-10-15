@@ -3,7 +3,8 @@ import { macosImageProviderRefusal } from "../domain/macos-image-snapshots.mjs";
 import { createMacosImageSnapshots } from "../application/macos-image-snapshots.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
-import { observationMacosHelper, observationMacosStartArgs } from "../domain/device-observation.mjs";
+import { observationMacosHelper } from "../domain/device-observation.mjs";
+import { materializeMacosObservationPlan, observationMacosStartArgs } from "../adapters/macos-observation-plan.mjs";
 import { createMacosVmLifecycleApplication } from "../application/lifecycle/macos-vm-lifecycle.mjs";
 import { macosProviderInstanceReferenced, managedProviderResource, snapshotProviderInstances, restoreRecoveryProviderInstances } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { MACOS_WINDOW_JXA } from "./macos-window-focus.mjs";
@@ -1278,7 +1279,7 @@ const deviceObservation = createDeviceObservation({ kind: "macos-vm", ownerId: (
         "device_record_video_status",
         "device_upload",
         "device_download",
-    ], platform: () => process.platform, providerNames: PROVIDERS.map(provider => provider.name), executable: name => commandPath(name), records: () => readMacosDevices(), helperPaths: device => macosObservationHelperPaths(device) });
+    ], platform: () => process.platform, providerNames: PROVIDERS.map(provider => provider.name), executable: name => commandPath(name), records: () => readMacosDevices(), helperPaths: device => macosObservationHelperPaths(device), materializePlan: materializeMacosObservationPlan });
 
 /** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosCloneFailureEvidence} evidence */
 function macosCloneFailureText(evidence) {

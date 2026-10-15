@@ -1,5 +1,5 @@
 import { createAndroidControlTransfer } from "../../../packages/device-lab/providers/application/android-control-transfer.mjs";
-import type { AndroidControlArguments, AndroidControlOutcome, AndroidControlTransferPorts } from "../../../packages/device-lab/providers/ports/android-control-transfer.d.mts";
+import type { AndroidControlArguments, AndroidControlOutcome, AndroidControlTransferPorts, AndroidControlObservation } from "../../../packages/device-lab/providers/ports/android-control-transfer.d.mts";
 
 type Target = { serial: string };
 type InputStage = { input: string };
@@ -17,8 +17,20 @@ function requiredCapabilities(ports: Ports): void {
     const { tap: tap, ...withoutTap } = ports;
     // @ts-expect-error Target-bound native command execution is required.
     createAndroidControlTransfer(withoutTap);
-    // @ts-expect-error Native tap observations settle synchronously.
-    createAndroidControlTransfer({ ...ports, tap: async () => ({ status: 0 }) });
+    // @ts-expect-error Semantic tap observations settle synchronously.
+    createAndroidControlTransfer({ ...ports, tap: async () => ({ ok: true, evidence: {} }) });
+    // @ts-expect-error Native process records cannot replace normalized control completion.
+    createAndroidControlTransfer({ ...ports, tap: () => ({ status: 0, stdout: "success" }) });
+    const { navigate, ...withoutNavigation } = ports;
+    // @ts-expect-error Navigation requires a semantic target-bound capability.
+    createAndroidControlTransfer(withoutNavigation);
+    const { setOrientation, ...withoutOrientation } = ports;
+    // @ts-expect-error Orientation requires a semantic target-bound capability.
+    createAndroidControlTransfer(withoutOrientation);
+    // @ts-expect-error The inward orientation capability does not accept native numeric rotation codes.
+    ports.setOrientation({ serial: "owned" }, "1");
+    const observation: AndroidControlObservation = { ok: true, evidence: { status: 17 } };
+    const opaque: unknown = observation.evidence;
     const { commitOutput: commit, ...withoutCommit } = ports;
     // @ts-expect-error Successful downloads require owned atomic publication authority.
     createAndroidControlTransfer(withoutCommit);
@@ -30,6 +42,6 @@ function requiredCapabilities(ports: Ports): void {
     createAndroidControlTransfer({ ...ports, commitOutput: async () => ({ ok: true, path: "/local/file" }) });
     // @ts-expect-error Disposal cannot leave an asynchronous stage lifetime behind.
     createAndroidControlTransfer({ ...ports, disposeOutput: async () => undefined });
-    void [result, oriented, left, right, tap, commit];
+    void [result, oriented, left, right, tap, commit, navigate, setOrientation, opaque];
 }
 void requiredCapabilities;

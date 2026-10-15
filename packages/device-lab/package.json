@@ -7,7 +7,9 @@
     ".": "./dist/index.js",
     "./*.js": "./dist/*.js",
     "./providers/*": "./providers/*",
-    "./appium-runtime/*": "./appium-runtime/*"
+    "./appium-runtime/*": "./appium-runtime/*",
+    "./providers/domain/android-control-transfer.mjs": "./providers/adapters/android-control-transfer.mjs",
+    "./providers/domain/device-observation.mjs": "./providers/adapters/macos-observation-plan.mjs"
   },
   "bin": {
     "ccc-device-broker": "./dist/broker-entry.js"

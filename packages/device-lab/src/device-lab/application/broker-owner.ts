@@ -52,6 +52,9 @@ export function createBrokerOwnerApplication(ports: BrokerOwnerPorts) {
         }
     }
     function resolve(request: unknown): BrokerOwnerResolution {
+        if (request === null || typeof request !== "object" || Array.isArray(request)) {
+            return {kind: "invalid-request", projectMountPath: "", profile: null};
+        }
         const input = request as {projectMountPath?: unknown; profile?: unknown};
         const projectMountPath = typeof input.projectMountPath === "string" ? input.projectMountPath : "";
         const profile = input.profile === null || input.profile === undefined ? undefined : typeof input.profile === "string" ? input.profile : null;

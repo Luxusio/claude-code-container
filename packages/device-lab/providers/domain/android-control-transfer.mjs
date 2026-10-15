@@ -18,51 +18,46 @@
  */
 /** @typedef {{ x: unknown; y: unknown }} Point */
 /** @typedef {{ x1: unknown; y1: unknown; x2: unknown; y2: unknown; durationMs: unknown }} Swipe */
-/** @typedef {{orientation:unknown,rotation:"0"|"1"|"2"|"3",provider:"adb"}} OrientationPayload */
-/** @typedef {{ provider: 'adb' } & (
- * { tapped: Point } | { doubleTapped: Point } | { longPressed: Point & {durationMs:unknown} }
- * | { swiped: Swipe } | { dragged: Swipe } | { typed: true } | { key: unknown }
- * | { back: true } | { home: true } | { forward: true } | { recents: true }
- * | { power: true } | { locked: true } | { unlocked: true } | OrientationPayload
- * )} Payload */
-/** @typedef {{kind:"tap",point:Point}|{kind:"swipe",swipe:Swipe}|{kind:"text",text:unknown}|{kind:"key",key:unknown}} Intent */
-/** @typedef {{ok:false;message:string}|{ok:true;intent:Intent;payload:Payload;doubleTap:boolean}} Plan */
+/** @typedef {'back'|'home'|'forward'|'recents'|'power'|'lock'|'unlock'} Navigation */
+/** @typedef {'portrait'|'landscape'|'reverse-portrait'|'reverse-landscape'} Orientation */
+/** @typedef {{kind:'tapped'|'double-tapped';point:Point}|{kind:'long-pressed';point:Point;durationMs:unknown}
+ * |{kind:'swiped'|'dragged';swipe:Swipe}|{kind:'typed'}|{kind:'key';key:unknown}|{kind:'navigation';navigation:Navigation}} ActionCompletion */
+/** @typedef {ActionCompletion|{kind:'oriented';orientation:Orientation}
+ * |{kind:'uploaded';localPath:string;remotePath:string}|{kind:'downloaded';remotePath:string;localPath:string}} Completion */
+/** @typedef {{kind:"tap",point:Point}|{kind:"swipe",swipe:Swipe}|{kind:"text",text:unknown}|{kind:"key",key:unknown}|{kind:'navigation';navigation:Navigation}} Intent */
+/** @typedef {{ok:false;message:string}|{ok:true;intent:Intent;completion:ActionCompletion;doubleTap:boolean}} Plan */
 
-/** @param {Operation} operation @param {Arguments} input @param {Variant} variant
+/** @param {Operation} operation @param {Arguments} input
  * @returns {Plan | undefined} */
-export function androidActionPlan(operation, input, variant) {
+export function androidActionPlan(operation, input) {
     const { x, y, x1, y1, x2, y2 } = input;
     switch (operation) {
         case "mobile_tap":
         case "mobile_double_tap":
             return { ok: true, intent: {kind:"tap",point:{x,y}},
-                payload: operation === "mobile_double_tap"
-                    ? { doubleTapped: { x, y }, provider: "adb" }
-                    : { tapped: { x, y }, provider: "adb" },
+                completion: {kind:operation === "mobile_double_tap" ? 'double-tapped' : 'tapped',point:{x,y}},
                 doubleTap: operation === "mobile_double_tap" };
         case "mobile_long_press": {
             const { durationMs = 700 } = input;
             return { ok: true, intent: {kind:"swipe",swipe:{x1:x,y1:y,x2:x,y2:y,durationMs}},
-                payload: { longPressed: { x, y, durationMs }, provider: "adb" }, doubleTap: false };
+                completion: {kind:'long-pressed',point:{x,y},durationMs}, doubleTap: false };
         }
         case "mobile_swipe":
         case "mobile_drag": {
             const { durationMs = operation === "mobile_drag" ? 700 : 300 } = input;
             return { ok: true, intent: {kind:"swipe",swipe:{x1,y1,x2,y2,durationMs}},
-                payload: operation === "mobile_drag"
-                    ? { dragged: { x1, y1, x2, y2, durationMs }, provider: "adb" }
-                    : { swiped: { x1, y1, x2, y2, durationMs }, provider: "adb" }, doubleTap: false };
+                completion: {kind:operation === "mobile_drag" ? 'dragged' : 'swiped',swipe:{x1,y1,x2,y2,durationMs}}, doubleTap: false };
         }
         case "mobile_type_text":
             return { ok: true, intent: {kind:"text",text:input.text},
-                payload: { typed: true, provider: "adb" }, doubleTap: false };
+                completion: {kind:'typed'}, doubleTap: false };
         case "mobile_key": {
             const key = input.keyCode ?? input.key;
             if (key === undefined || key === null || key === "") {
                 return { ok: false, message: "mobile_key requires key or keyCode" };
             }
             return { ok: true, intent: {kind:"key",key},
-                payload: { key, provider: "adb" }, doubleTap: false };
+                completion: {kind:'key',key}, doubleTap: false };
         }
         case "mobile_back":
         case "mobile_home":
@@ -71,9 +66,9 @@ export function androidActionPlan(operation, input, variant) {
         case "mobile_power":
         case "mobile_lock":
         case "mobile_unlock": {
-            const navigation = androidNavigation(operation);
-            return { ok: true, intent: {kind:"key",key:navigation.key},
-                payload: variant === "physical" ? { key: navigation.key, provider: "adb" } : navigation.payload,
+            const navigation = /** @type {Navigation} */ (operation.slice("mobile_".length));
+            return { ok: true, intent: {kind:'navigation',navigation},
+                completion: {kind:'navigation',navigation},
                 doubleTap: false };
         }
         default:
@@ -81,37 +76,17 @@ export function androidActionPlan(operation, input, variant) {
     }
 }
 
-/** @param {'mobile_back'|'mobile_home'|'mobile_forward'|'mobile_recents'|'mobile_power'|'mobile_lock'|'mobile_unlock'} operation
- * @returns {{ key: number; payload: Payload }} */
-function androidNavigation(operation) {
-    switch (operation) {
-        case "mobile_back": return { key: 4, payload: { back: true, provider: "adb" } };
-        case "mobile_home": return { key: 3, payload: { home: true, provider: "adb" } };
-        case "mobile_forward": return { key: 125, payload: { forward: true, provider: "adb" } };
-        case "mobile_recents": return { key: 187, payload: { recents: true, provider: "adb" } };
-        case "mobile_power": return { key: 26, payload: { power: true, provider: "adb" } };
-        case "mobile_lock": return { key: 223, payload: { locked: true, provider: "adb" } };
-        case "mobile_unlock": return { key: 224, payload: { unlocked: true, provider: "adb" } };
-    }
-}
-
 /** @param {Operation} operation @param {Arguments} input
- * @returns {{ok:false,message:string}|{ok:true,rotation:"0"|"1"|"2"|"3",payload:OrientationPayload}} */
+ * @returns {{ok:false,message:string}|{ok:true,orientation:Orientation}} */
 export function androidOrientationPlan(operation, input) {
     const orientation = operation === "mobile_rotate_left" ? "landscape"
         : operation === "mobile_rotate_right" ? "reverse-landscape" : input.orientation;
-    /** @type {"0"|"1"|"2"|"3"} */
-    let rotation;
     switch (orientation) {
-        case "portrait": rotation = "0"; break;
-        case "landscape": rotation = "1"; break;
-        case "reverse-portrait": rotation = "2"; break;
-        case "reverse-landscape": rotation = "3"; break;
+        case "portrait":
+        case "landscape":
+        case "reverse-portrait":
+        case "reverse-landscape":
+            return {ok:true,orientation};
         default: return { ok: false, message: `Unsupported Android orientation: ${orientation}` };
     }
-    return {
-        ok: true,
-        rotation,
-        payload: { orientation, rotation, provider: "adb" },
-    };
 }

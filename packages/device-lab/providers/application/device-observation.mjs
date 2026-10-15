@@ -1,4 +1,4 @@
-import { observationAvailability, publicObservationAndroidDevice, publicObservationMacosDevice, observationMacosPlan, observationLeaseState, observationHardwareId, observationOwnedLease, observationTargetStatus } from "../domain/device-observation.mjs";
+import { observationAvailability, publicObservationAndroidDevice, publicObservationMacosDevice, observationMacosSelection, observationLeaseState, observationHardwareId, observationOwnedLease, observationTargetStatus } from "../domain/device-observation.mjs";
 import { publicLab } from "../domain/qemu-lifecycle.mjs";
 /** @typedef {import('../domain/device-observation.mjs').ObservationTarget} Target */
 /** @typedef {import('../domain/device-observation.mjs').ObservationLease} Lease */
@@ -396,7 +396,13 @@ export function createDeviceObservation(ports) {
                 };
             };
             /** @param {import('../domain/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice} device @param {import('../ports/device-observation.mjs').MacosFacts} [facts] */
-            const plan = (device, facts = discovery()) => observationMacosPlan(device, facts, ports.ownerId(), ports.helperPaths(device));
+            const plan = (device, facts = discovery()) => {
+                const selection = observationMacosSelection(device, {
+                    ...facts,
+                    providers: facts.providers.map(provider => ({ name: provider.name, available: Boolean(provider.command) }))
+                }, ports.ownerId());
+                return ports.materializePlan(device, selection, facts, ports.helperPaths(device)).evidence;
+            };
             /** @param {import('../domain/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice} device @param {import('../ports/device-observation.mjs').MacosFacts} [facts] */
             const project = (device, facts = discovery()) => {
                 const presented = publicObservationMacosDevice(device);

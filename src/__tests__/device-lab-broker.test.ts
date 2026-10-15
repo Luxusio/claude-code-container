@@ -3337,15 +3337,27 @@ try {
         }
     });
 
-    it("rejects malformed cross-project owner resolve requests without provisioning auth", async () => {
-        const server = createDeviceBrokerServer({ cwd: "/host/projects/broker-launch-project", host: "127.0.0.1", port: 0 });
+    it("rejects malformed owner resolve shapes and fields without changing registration or provisioning auth", async () => {
+        const cwd = "/host/projects/broker-launch-project";
+        const ownerId = deviceLabOwnerId(cwd);
+        const registrationFile = deviceBrokerOwnerRegistrationFile(ownerId);
+        const authDirectory = dirname(deviceBrokerAuthSecretFile(ownerId));
+        const foreignMountPath = deviceLabProjectMountPath("/host/projects/foreign");
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
         const baseUrl = await listen(server);
         try {
-            for (const payload of [
-                { projectMountPath: "/project/../foreign" },
-                { projectMountPath: "/project/not-canonical" },
-                { projectMountPath: deviceLabProjectMountPath("/host/projects/foreign"), profile: "INVALID PROFILE" },
-                { projectMountPath: deviceLabProjectMountPath("/host/projects/foreign"), profile: 42 },
+            const registration = readFileSync(registrationFile);
+            const registrationEntries = readdirSync(dirname(registrationFile)).sort();
+            expect(existsSync(authDirectory)).toBe(false);
+            for (const { payload, projectMountPath, profile } of [
+                ...[null, [], [{ projectMountPath: foreignMountPath, profile: "work" }], "", foreignMountPath, 0, 42, false, true]
+                    .map(payload => ({ payload, projectMountPath: "", profile: null })),
+                { payload: { projectMountPath: "/project/../foreign" }, projectMountPath: "/project/../foreign", profile: null },
+                { payload: { projectMountPath: "/project/not-canonical" }, projectMountPath: "/project/not-canonical", profile: null },
+                { payload: { projectMountPath: foreignMountPath, profile: "INVALID PROFILE" }, projectMountPath: foreignMountPath, profile: "INVALID PROFILE" },
+                { payload: { projectMountPath: foreignMountPath, profile: 42 }, projectMountPath: foreignMountPath, profile: 42 },
+                { payload: { projectMountPath: foreignMountPath, profile: { name: "work" } }, projectMountPath: foreignMountPath, profile: { name: "work" } },
+                { payload: { projectMountPath: 42, profile: "work" }, projectMountPath: "", profile: "work" },
             ]) {
                 const response = await fetch(`${baseUrl}/v1/owner/resolve`, {
                     method: "POST",
@@ -3353,11 +3365,34 @@ try {
                     body: JSON.stringify(payload),
                 });
                 expect(response.status).toBe(400);
-                expect(await response.json()).toEqual(expect.objectContaining({
-                    ok: false,
-                    error: "invalid-project-owner-request",
-                }));
+                expect(await response.json()).toEqual({ ok: false, error: "invalid-project-owner-request", projectMountPath, profile });
+                expect(readFileSync(registrationFile)).toEqual(registration);
+                expect(readdirSync(dirname(registrationFile)).sort()).toEqual(registrationEntries);
+                expect(existsSync(authDirectory)).toBe(false);
             }
+        } finally {
+            await close(server);
+        }
+    });
+
+    it("keeps owner auth provisioning failure as 503 after a valid registered request", async () => {
+        const cwd = "/host/projects/broker-auth-provision-refusal";
+        const ownerId = deviceLabOwnerId(cwd);
+        const projectMountPath = deviceLabProjectMountPath(cwd);
+        const authDirectory = dirname(deviceBrokerAuthSecretFile(ownerId));
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        try {
+            mkdirSync(dirname(authDirectory), { recursive: true });
+            writeFileSync(authDirectory, "preserve invalid auth directory entry");
+            const response = await fetch(`${baseUrl}/v1/owner/resolve`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ projectMountPath }),
+            });
+            expect(response.status).toBe(503);
+            expect(await response.json()).toEqual({ ok: false, error: "owner-auth-provisioning-failed" });
+            expect(readFileSync(authDirectory, "utf8")).toBe("preserve invalid auth directory entry");
         } finally {
             await close(server);
         }

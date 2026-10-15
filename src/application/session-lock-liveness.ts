@@ -11,7 +11,7 @@ export function createSessionLockLiveness(
     for (const name of [
         "getPlatform",
         "observeProcessStart",
-        "probeLegacyProcess",
+        "observeLegacyProcess",
     ] as const) {
         if (typeof ports?.[name] !== "function") {
             throw new TypeError(`Session lock liveness requires a callable ${name} port.`);
@@ -36,15 +36,7 @@ export function createSessionLockLiveness(
                 ? "active"
                 : observation.status === "missing" ? "stale" : "unknown";
         }
-        try {
-            ports.probeLegacyProcess(pid);
-            return "active";
-        } catch (error) {
-            const code = (error as { code?: string }).code;
-            if (code === "ESRCH") return "stale";
-            if (code === "EPERM") return "active";
-            return "unknown";
-        }
+        return ports.observeLegacyProcess(pid);
     }
 
     return (content, observed) => {

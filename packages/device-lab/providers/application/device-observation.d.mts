@@ -1,5 +1,5 @@
 import type { ObservationTarget, ObservationLease } from "../domain/device-observation.mjs";
-import { observationTargetStatus, observationMacosPlan } from "../domain/device-observation.mjs";
+import { observationTargetStatus } from "../domain/device-observation.mjs";
 import type { MacosVmDevice } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import type { QemuLab } from "../domain/qemu-lifecycle.mjs";
 import type { TargetObservationPorts, ObservationRecord, ObservationOptions, AndroidFacts, IosFacts, IosPhysicalFacts, WindowsFacts, MacosFacts, SimulatorObservation, HostDevices, HostAvds, AndroidCreationFacts, AndroidHostDevice, IosHostDevice, LinuxProviderStatus, AndroidObservationPorts, AndroidPhysicalObservationPorts, IosObservationPorts, IosPhysicalObservationPorts, WindowsObservationPorts, WindowsVmObservationPorts, MacosObservationPorts, LinuxObservationPorts } from "../ports/device-observation.mjs";
@@ -127,7 +127,7 @@ export function createDeviceObservation(ports: WindowsVmObservationPorts): Devic
     available: boolean;
 }, ObservationRecord, never>;
 export function createDeviceObservation(ports: MacosObservationPorts): DeviceObservation<MacosFacts, MacosVmDevice | PresentedTarget<MacosVmDevice>, MacosInventory> & {
-    plan(device: MacosVmDevice, facts?: MacosFacts): ReturnType<typeof observationMacosPlan>;
+    plan(device: MacosVmDevice, facts?: MacosFacts): ReturnType<MacosObservationPorts["materializePlan"]>["evidence"];
     project(device: MacosVmDevice, facts?: MacosFacts): PresentedTarget<MacosVmDevice>;
 };
 export function createDeviceObservation(ports: LinuxObservationPorts): DeviceObservation<LinuxProviderStatus, LinuxDevice, LinuxInventory> & {

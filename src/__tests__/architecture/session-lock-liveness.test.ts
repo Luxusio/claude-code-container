@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-    parseProcessStartObservations, sessionLockOwner,
+    sessionLockOwner,
     type ProcessStartObservation, type SessionLockLiveness,
 } from "../../domain/session-lock.js";
 import { createSessionLockLiveness } from "../../application/session-lock-liveness.js";
@@ -36,34 +36,11 @@ describe("session lock record domain contract", () => {
     });
 });
 
-describe("batch observation domain contract", () => {
-    it("trims CRLF rows, prefixes Windows tokens, and keeps the first accepted row", () => {
-        const result = parseProcessStartObservations([
-            " 42 UNKNOWN \r", "42 FOUND:123", "43 MISSING\r", "43 UNKNOWN", "44 FOUND:000123\r", "44 MISSING",
-        ].join("\n"), [42, 43, 44]);
-        expect([...result]).toEqual([
-            [42, { status: "unknown" }], [43, { status: "missing" }], [44, { status: "found", token: "windows:000123" }],
-        ]);
-    });
-    it("ignores malformed, unsolicited and empty rows without reserving their PID", () => {
-        const stdout = ["", "42 PRESENT", "42 FOUND:", "42 FOUND:-1", "42 FOUND:abc", "42  MISSING", "42\tMISSING",
-            "+42 MISSING", "42 UNKNOWN extra", "999 MISSING", "42 FOUND:7", "43 missing", "43 MISSING"].join("\n");
-        expect([...parseProcessStartObservations(stdout, [42, 43])]).toEqual([
-            [42, { status: "found", token: "windows:7" }], [43, { status: "missing" }],
-        ]);
-        expect([...parseProcessStartObservations(stdout, [])]).toEqual([]);
-    });
-    it("uses Number conversion and requested-set membership without new PID validation", () => {
-        expect([...parseProcessStartObservations("00042 FOUND:9\n42 MISSING\n0 UNKNOWN\n9007199254740993 MISSING", [42, 0, 9007199254740992])])
-            .toEqual([[42, { status: "found", token: "windows:9" }], [0, { status: "unknown" }], [9007199254740992, { status: "missing" }]]);
-    });
-});
-
 function ports(): SessionLockLivenessPorts {
     return {
         getPlatform: vi.fn(() => "linux"),
         observeProcessStart: vi.fn(() => ({ status: "unknown" } as const)),
-        probeLegacyProcess: vi.fn(() => undefined),
+        observeLegacyProcess: vi.fn(() => "active" as const),
     };
 }
 
@@ -79,7 +56,7 @@ describe("explicit synchronous session lock liveness", () => {
     it.each([undefined, null])("rejects absent ports %s", value => {
         expect(() => createSessionLockLiveness(value as unknown as SessionLockLivenessPorts)).toThrow(TypeError);
     });
-    for (const member of ["getPlatform", "observeProcessStart", "probeLegacyProcess"] as const) {
+    for (const member of ["getPlatform", "observeProcessStart", "observeLegacyProcess"] as const) {
         it.each([undefined, null, false, 1, "callback", {}])(`rejects noncallable ${member} %j before effects`, value => {
             const callbacks = ports();
             expect(() => createSessionLockLiveness({ ...callbacks, [member]: value } as unknown as SessionLockLivenessPorts)).toThrow(TypeError);
@@ -113,7 +90,7 @@ describe("explicit synchronous session lock liveness", () => {
                 const callbacks = ports();
                 const trace: string[] = [];
                 callbacks.getPlatform = () => { throw new Error("v2 must not read platform"); };
-                callbacks.probeLegacyProcess = () => { throw new Error("v2 must not probe legacy"); };
+                callbacks.observeLegacyProcess = () => { throw new Error("v2 must not observe legacy"); };
                 callbacks.observeProcessStart = ownerPid => { trace.push(`observe:${ownerPid}`); return observation; };
                 const observed = new Map<number, ProcessStartObservation>(cache === "unknown" ? [[pid, { status: "unknown" }]] : []);
                 vi.spyOn(observed, "get").mockImplementation(ownerPid => { trace.push(`map:${ownerPid}`); return cache === "unknown" ? { status: "unknown" } : undefined; });
@@ -127,7 +104,7 @@ describe("explicit synchronous session lock liveness", () => {
                 const classify = createSessionLockLiveness({
                     getPlatform: () => { trace.push("platform"); return "win32"; },
                     observeProcessStart: ownerPid => { trace.push(`observe:${ownerPid}`); return observation; },
-                    probeLegacyProcess: () => { throw new Error("Windows must not probe legacy"); },
+                    observeLegacyProcess: () => { throw new Error("Windows must not observe POSIX legacy"); },
                 });
                 expect(classify(" 42\n", cache === "omitted" ? undefined : observed)).toBe(legacyResult);
                 expect(trace).toEqual(cache === "omitted" ? ["platform", "observe:42"] : ["platform", "map:42", "observe:42"]);
@@ -142,7 +119,7 @@ describe("explicit synchronous session lock liveness", () => {
                     const classify = createSessionLockLiveness({
                         getPlatform: () => { trace.push("platform"); return "win32"; },
                         observeProcessStart: () => { throw new Error("cached result is authoritative"); },
-                        probeLegacyProcess: () => { throw new Error("must not probe legacy"); },
+                        observeLegacyProcess: () => { throw new Error("must not observe POSIX legacy"); },
                     });
                     expect(classify(legacy ? "42" : versioned(), observed)).toBe(legacy ? legacyResult : v2Result);
                     expect(trace).toEqual(legacy ? ["platform", "map:42"] : ["map:42"]);
@@ -152,20 +129,17 @@ describe("explicit synchronous session lock liveness", () => {
     }
 
     for (const platform of ["linux", "darwin", "freebsd", "other"]) {
-        it.each([
-            [undefined, "active"], [{ code: "ESRCH" }, "stale"], [{ code: "EPERM" }, "active"],
-            [{ code: "EACCES" }, "unknown"], [{ code: "EINVAL" }, "unknown"], [{}, "unknown"], ["ESRCH", "unknown"],
-        ] as const)(`${platform} legacy probe %j classifies as %s and ignores conflicting map`, (exception, expected) => {
+        it.each(["active", "stale", "unknown"] as const)(`${platform} legacy observation %s ignores conflicting process facts`, expected => {
             const trace: string[] = [];
             const observed = new Map<number, ProcessStartObservation>([[pid, { status: "missing" }]]);
             const get = vi.spyOn(observed, "get").mockImplementation(() => { throw new Error("POSIX map unread"); });
             const classify = createSessionLockLiveness({
                 getPlatform: () => { trace.push("platform"); return platform; },
                 observeProcessStart: () => { throw new Error("POSIX observation unread"); },
-                probeLegacyProcess: ownerPid => { trace.push(`probe:${ownerPid}`); if (exception !== undefined) throw exception; return undefined; },
+                observeLegacyProcess: ownerPid => { trace.push(`legacy:${ownerPid}`); return expected; },
             });
             expect(classify("42", observed)).toBe(expected);
-            expect(trace).toEqual(["platform", "probe:42"]);
+            expect(trace).toEqual(["platform", "legacy:42"]);
             expect(get).not.toHaveBeenCalled();
         });
     }
@@ -178,7 +152,7 @@ describe("explicit synchronous session lock liveness", () => {
         const classify = createSessionLockLiveness({
             getPlatform: () => { trace.push("platform"); if (failing === "platform") throw exception; return "win32"; },
             observeProcessStart: () => { trace.push("observe"); throw exception; },
-            probeLegacyProcess: () => { throw new Error("probe must remain unread"); },
+            observeLegacyProcess: () => { throw new Error("legacy observation must remain unread"); },
         });
         let caught: unknown;
         try { classify(failing.endsWith("v2") ? versioned() : "42", observed); } catch (error) { caught = error; }
@@ -188,9 +162,27 @@ describe("explicit synchronous session lock liveness", () => {
         ]);
     });
 
-    it.each([null, undefined])("preserves TypeError when the probe throws %s", exception => {
-        const classify = createSessionLockLiveness({ ...ports(), probeLegacyProcess: () => { throw exception; } });
-        expect(() => classify("42")).toThrow(TypeError);
+    it.each([null, undefined, { code: "ESRCH" }, { code: "EPERM" }, "ESRCH", new Error("semantic observation failed")])("propagates semantic legacy exception identity %j", exception => {
+        const callbacks = ports();
+        callbacks.observeLegacyProcess = () => { throw exception; };
+        const classify = createSessionLockLiveness(callbacks);
+        let caught: unknown = Symbol("not thrown");
+        try { classify("42", new Map([[pid, { status: "missing" }]])); } catch (error) { caught = error; }
+        expect(caught).toBe(exception);
+        expect(callbacks.observeProcessStart).not.toHaveBeenCalled();
+    });
+
+    it("uses semantic process facts despite conflicting opaque native fields", () => {
+        const receipt = Object.freeze({ status: 1, stdout: "MISSING", stderr: "native failure", error: { code: "ESRCH" } });
+        const found = { status: "found" as const, token, receipt };
+        const missing = { status: "missing" as const, token, receipt: Object.freeze({ status: 0, stdout: `FOUND:${token}`, error: { code: "EPERM" } }) };
+        const callbacks = ports();
+        callbacks.observeProcessStart = () => found;
+        expect(createSessionLockLiveness(callbacks)(versioned())).toBe("active");
+        expect(createSessionLockLiveness(callbacks)(versioned(pid, `${token}-successor`))).toBe("stale");
+        callbacks.observeProcessStart = () => missing;
+        expect(createSessionLockLiveness(callbacks)(versioned())).toBe("stale");
+        expect(receipt).toEqual({ status: 1, stdout: "MISSING", stderr: "native failure", error: { code: "ESRCH" } });
     });
 
 });

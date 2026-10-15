@@ -2,10 +2,36 @@ import { spawnSync } from "child_process";
 import { readFileSync } from "fs";
 import { canonicalWindowsPowerShellPath, canonicalWindowsTasklistPath, hiddenWindowsPowerShellArgs } from "@ccc/device-lab/windows-system-powershell.js";
 import { createSessionLockLiveness } from "./application/session-lock-liveness.js";
-import { parseProcessStartObservations, type ProcessStartObservation, type SessionLockLiveness } from "./domain/session-lock.js";
+import type { ProcessStartObservation, SessionLockLiveness } from "./domain/session-lock.js";
 
-export { parseProcessStartObservations, sessionLockOwner } from "./domain/session-lock.js";
+export { sessionLockOwner } from "./domain/session-lock.js";
 export type { SessionLockLiveness, SessionLockOwner } from "./domain/session-lock.js";
+
+/**
+ * The batch script's stdout, as observations. Exported because the script itself only runs on
+ * Windows, so this is the only part of the batch a test on any other host can reach — the same
+ * split `parseWindowsBrokerNetstatListenerForTest` already uses for netstat in this codebase.
+ *
+ * Anything unrecognised is simply absent from the map, which the caller reads as "ask the
+ * single-pid probe" — the batch is never the authority on whether a lock may be deleted.
+ */
+export function parseProcessStartObservations(
+    stdout: string,
+    pids: readonly number[],
+): Map<number, ProcessStartObservation> {
+    const observations = new Map<number, ProcessStartObservation>();
+    const wanted = new Set(pids);
+    for (const line of stdout.split(/\r?\n/)) {
+        const row = /^([0-9]+) (MISSING|UNKNOWN|FOUND:[0-9]+)$/.exec(line.trim());
+        if (!row) continue;
+        const pid = Number(row[1]);
+        if (!wanted.has(pid) || observations.has(pid)) continue;
+        if (row[2] === "MISSING") observations.set(pid, { status: "missing" });
+        else if (row[2] === "UNKNOWN") observations.set(pid, { status: "unknown" });
+        else observations.set(pid, { status: "found", token: `windows:${row[2].slice("FOUND:".length)}` });
+    }
+    return observations;
+}
 
 function observeWindowsProcessPresence(pid: number): ProcessStartObservation {
     const tasklist = canonicalWindowsTasklistPath();
@@ -174,12 +200,19 @@ export function sessionLockLiveness(
     return createSessionLockLiveness({
         getPlatform: () => process.platform,
         observeProcessStart: (pid) => observeProcessStart(pid),
-        probeLegacyProcess: (pid) => {
-            if (process.platform === "linux" && observeProcessStart(pid).status === "missing") {
-                throw Object.assign(new Error("Session owner has exited."), { code: "ESRCH" });
+        observeLegacyProcess: (pid) => {
+            try {
+                if (process.platform === "linux" && observeProcessStart(pid).status === "missing") {
+                    return "stale";
+                }
+                process.kill(pid, 0);
+                return "active";
+            } catch (error) {
+                const code = (error as { code?: string }).code;
+                if (code === "ESRCH") return "stale";
+                if (code === "EPERM") return "active";
+                return "unknown";
             }
-            process.kill(pid, 0);
-            return undefined;
         },
     })(content, observed);
 }

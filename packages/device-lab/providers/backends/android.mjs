@@ -4,6 +4,7 @@ import { recordingInputError } from "../domain/direct-recording.mjs";
 import { createAndroidEnvironment } from "../application/android-environment.mjs";
 import { createAndroidAppManagement } from "../application/android-app-management.mjs";
 import { createAndroidControlTransfer } from "../application/android-control-transfer.mjs";
+import { androidControlObservation, androidNavigationKey, androidRotationCode, presentAndroidControlOutcome as renderAndroidControlOutcome } from "../adapters/android-control-transfer.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { androidHostAvds } from "../adapters/mobile-inventory.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
@@ -713,21 +714,21 @@ function disposeAndroidControlStage(stage) {
 
 /** @type {import('../ports/android-control-transfer.mjs').AndroidControlTransferPorts<AndroidControlTarget,AndroidControlInputStage,AndroidControlOutputStage>} */
 const androidControlTransferPorts = {
-    variant: "emulator",
     target(deviceId) {
         const target = ensureAdbDevice(deviceId);
         if (target.unknown) return { kind: "unknown" };
         if (target.error) return { kind: "refused", message: target.error };
         return { kind: "ready", target };
     },
-    tap: (target, point) => run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "tap", String(point.x), String(point.y)])),
-    swipe: (target, swipe) => run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "swipe", String(swipe.x1), String(swipe.y1), String(swipe.x2), String(swipe.y2), String(swipe.durationMs)])),
-    typeText: (target, text) => run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "text", String(text).replace(/\s/g, "%s")])),
-    key: (target, key) => run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "keyevent", String(key)])),
-    disableAutoRotation: target => run(target.adb, adbArgsForDevice(target.device, ["shell", "settings", "put", "system", "accelerometer_rotation", "0"])),
-    setRotation: (target, rotation) => run(target.adb, adbArgsForDevice(target.device, ["shell", "settings", "put", "system", "user_rotation", rotation])),
-    upload: (target, localPath, remotePath, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, ["push", localPath, remotePath]), timeoutMs),
-    download: (target, remotePath, localPath, timeoutMs) => runWithTimeout(target.adb, adbArgsForDevice(target.device, ["pull", remotePath, localPath]), timeoutMs),
+    tap: (target, point) => androidControlObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "tap", String(point.x), String(point.y)]))),
+    swipe: (target, swipe) => androidControlObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "swipe", String(swipe.x1), String(swipe.y1), String(swipe.x2), String(swipe.y2), String(swipe.durationMs)]))),
+    typeText: (target, text) => androidControlObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "text", String(text).replace(/\s/g, "%s")]))),
+    key: (target, key) => androidControlObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "keyevent", String(key)]))),
+    navigate: (target, navigation) => androidControlObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "input", "keyevent", String(androidNavigationKey(navigation))]))),
+    disableAutoRotation: target => androidControlObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "settings", "put", "system", "accelerometer_rotation", "0"]))),
+    setOrientation: (target, orientation) => androidControlObservation(run(target.adb, adbArgsForDevice(target.device, ["shell", "settings", "put", "system", "user_rotation", androidRotationCode(orientation)]))),
+    upload: (target, localPath, remotePath, timeoutMs) => androidControlObservation(runWithTimeout(target.adb, adbArgsForDevice(target.device, ["push", localPath, remotePath]), timeoutMs)),
+    download: (target, remotePath, localPath, timeoutMs) => androidControlObservation(runWithTimeout(target.adb, adbArgsForDevice(target.device, ["pull", remotePath, localPath]), timeoutMs)),
     guestPath: (value, label) => {
         const policy = validateGuestPath(value, { label, platform: "posix" });
         return androidControlPathObservation(policy);
@@ -926,10 +927,7 @@ export function presentAndroidAppOutcome(outcome, variant, name) {
 
 /** @param {import('../ports/android-control-transfer.mjs').AndroidControlOutcome | undefined} outcome */
 function presentAndroidControlOutcome(outcome) {
-    if (!outcome) return undefined;
-    if (outcome.kind === "json") return jsonResult(outcome.payload);
-    if (outcome.kind === "text") return textResult(false, outcome.message);
-    return fail(outcome.command);
+    return renderAndroidControlOutcome(outcome,"emulator",{jsonResult,textResult,fail});
 }
 
 async function handleAndroidToolUnlocked(name, args) {

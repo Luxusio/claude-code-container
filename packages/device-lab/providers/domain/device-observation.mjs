@@ -52,18 +52,15 @@ export function observationMacosHelper(device, paths) {
         requiredFor: ["device_focus_window", "device_drag", "device_exec", "device_screenshot", "device_click", "device_double_click", "device_key", "device_type", "device_scroll", "device_cursor_position", "device_window_list", "device_accessibility_snapshot", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"]
     };
 }
-/** @param {string} provider @param {string} instance @param {{softnet?:boolean,headless?:boolean}} [options] */
-export function observationMacosStartArgs(provider, instance, options = {}) {
-    return provider === "tart"
-        ? ["run", ...(options.softnet ? ["--with-softnet"] : []), ...(options.headless ? ["--no-graphics"] : []), instance]
-        : ["start", instance];
-}
+/** @typedef {{requestedProvider:string,selectedProvider:string|null,providerIndex:number,providerInstance:string,available:boolean,missing:string[],implemented:boolean,deferred:string[]}} MacosObservationSelection */
 /** @param {import('./lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice} device
- * @param {{hostSupported:boolean,providers:{name:string,command:string}[],missing:string[]}} discovery
- * @param {string} ownerId @param {{workspaceDir:string,toolsDir:string,hostHelperScript:string}} paths */
-export function observationMacosPlan(device, discovery, ownerId, paths) {
+ * @param {{hostSupported:boolean,providers:{name:string,available:boolean}[],missing:string[]}} discovery
+ * @param {string} ownerId @returns {MacosObservationSelection} */
+export function observationMacosSelection(device, discovery, ownerId) {
     const requestedProvider = device.provider || "auto";
-    const selected = requestedProvider === "auto" ? discovery.providers[0] : discovery.providers.find(provider => provider.name === requestedProvider);
+    const providerIndex = requestedProvider === "auto" ? (discovery.providers.length ? 0 : -1)
+        : discovery.providers.findIndex(provider => provider.name === requestedProvider);
+    const selected = discovery.providers[providerIndex];
     const implemented = selected && ["tart", "vz", "utmctl"].includes(selected.name);
     const instance = device.providerInstance || `ccc-${ownerId}-${device.id}`;
     const missing = [...discovery.missing];
@@ -73,33 +70,14 @@ export function observationMacosPlan(device, discovery, ownerId, paths) {
             missing.push(reason);
         }
     }
-    const command = selected?.command || null;
-    const startArgs = observationMacosStartArgs(selected?.name || "", instance, device);
     return {
         requestedProvider,
         selectedProvider: selected?.name || null,
-        providerCommand: command,
+        providerIndex,
         providerInstance: instance,
-        workspaceDir: paths.workspaceDir,
-        image: device.image || null,
-        memoryMb: device.memoryMb,
-        cpus: device.cpus,
-        helper: observationMacosHelper(device, paths),
-        available: missing.length === 0 && Boolean(implemented && command),
+        available: missing.length === 0 && Boolean(implemented && selected?.available),
         missing,
-        startCommand: implemented && command ? {
-            command,
-            args: startArgs
-        } : null,
-        stopCommand: implemented && command ? {
-            command,
-            args: ["stop", instance]
-        } : null,
-        deleteCommand: implemented && command ? {
-            command,
-            args: ["delete", instance]
-        } : null,
-        implemented: selected?.name === "tart" ? ["base-image-create", "base-image-clone", "snapshot-clone", "snapshot-restore", "snapshot-delete", "provider-delete"] : [],
+        implemented: Boolean(implemented),
         deferred: device.ssh ? [] : ["guest-helper-auto-provisioning-requires-ssh"]
     };
 }

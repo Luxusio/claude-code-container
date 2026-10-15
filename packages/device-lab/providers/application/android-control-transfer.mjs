@@ -20,10 +20,9 @@ export function createAndroidControlTransfer(ports) {
             if (!stage.ok) return { kind: "text", message: stage.message };
             try {
                 const command = ports.upload(target, stage.stagedPath, remote.path, 300_000);
-                return command.status === 0
-                    ? { kind: "json", payload: { uploaded: { localPath: stage.path, remotePath: remote.path },
-                        provider: "adb", stdout: command.stdout, stderr: command.stderr, status: command.status } }
-                    : { kind: "command-failure", command };
+                return command.ok
+                    ? { kind: 'completed', completion: {kind:'uploaded',localPath:stage.path,remotePath:remote.path}, evidence:command.evidence }
+                    : { kind: "command-failure", evidence:command.evidence };
             } finally {
                 ports.disposeInput(stage.handle);
             }
@@ -35,11 +34,10 @@ export function createAndroidControlTransfer(ports) {
             if (!stage.ok) return { kind: "text", message: stage.message };
             try {
                 const command = ports.download(target, remote.path, stage.stagedPath, 300_000);
-                if (command.status !== 0) return { kind: "command-failure", command };
+                if (!command.ok) return { kind: "command-failure", evidence:command.evidence };
                 const committed = ports.commitOutput(stage.handle);
                 if (!committed.ok) return { kind: "text", message: committed.message };
-                return { kind: "json", payload: { downloaded: { remotePath: remote.path, localPath: committed.path },
-                    provider: "adb", stdout: command.stdout, stderr: command.stderr, status: command.status } };
+                return { kind: 'completed', completion: {kind:'downloaded',remotePath:remote.path,localPath:committed.path}, evidence:command.evidence };
             } finally {
                 ports.disposeOutput(stage.handle);
             }
@@ -49,25 +47,25 @@ export function createAndroidControlTransfer(ports) {
             const plan = androidOrientationPlan(operation, input);
             if (!plan.ok) return { kind: "text", message: plan.message };
             const first = ports.disableAutoRotation(target);
-            if (first.status !== 0) return { kind: "command-failure", command: first };
-            const second = ports.setRotation(target, plan.rotation);
-            return second.status === 0
-                ? { kind: "json", payload: { ...plan.payload, stdout: second.stdout, stderr: second.stderr, status: second.status } }
-                : { kind: "command-failure", command: second };
+            if (!first.ok) return { kind: "command-failure", evidence:first.evidence };
+            const second = ports.setOrientation(target, plan.orientation);
+            return second.ok
+                ? { kind: 'completed', completion: {kind:'oriented',orientation:plan.orientation}, evidence:second.evidence }
+                : { kind: "command-failure", evidence:second.evidence };
         }
 
-        const plan = androidActionPlan(operation, input, ports.variant);
+        const plan = androidActionPlan(operation, input);
         if (!plan) return undefined;
         if (!plan.ok) return { kind: "text", message: plan.message };
         const first = perform(target, plan.intent);
-        if (first.status !== 0) return { kind: "command-failure", command: first };
+        if (!first.ok) return { kind: "command-failure", evidence:first.evidence };
         if (plan.doubleTap) {
             const second = perform(target, plan.intent);
-            return second.status === 0
-                ? { kind: "json", payload: plan.payload }
-                : { kind: "command-failure", command: second };
+            return second.ok
+                ? { kind: 'completed', completion:plan.completion, evidence:second.evidence }
+                : { kind: "command-failure", evidence:second.evidence };
         }
-        return { kind: "json", payload: { ...plan.payload, stdout: first.stdout, stderr: first.stderr, status: first.status } };
+        return { kind: 'completed', completion:plan.completion, evidence:first.evidence };
     }
     /** @param {Target} target @param {import('../domain/android-control-transfer.mjs').Intent} intent */
     function perform(target, intent) {
@@ -76,6 +74,7 @@ export function createAndroidControlTransfer(ports) {
             case "swipe": return ports.swipe(target, intent.swipe);
             case "text": return ports.typeText(target, intent.text);
             case "key": return ports.key(target, intent.key);
+            case "navigation": return ports.navigate(target, intent.navigation);
         }
     }
     return { request };

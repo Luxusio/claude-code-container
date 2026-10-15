@@ -1,7 +1,7 @@
-import type { ProcessStartObservation } from "../domain/session-lock.js";
+import type { ProcessStartObservation, SessionLockLiveness } from "../domain/session-lock.js";
 
 export interface SessionLockLivenessPorts {
     getPlatform(): string;
     observeProcessStart(pid: number): ProcessStartObservation;
-    probeLegacyProcess(pid: number): undefined;
+    observeLegacyProcess(pid: number): SessionLockLiveness;
 }

@@ -15,17 +15,18 @@ export type PathObservation = { ok: false; message: string } | { ok: true; path:
 export type StageObservation<Stage> =
     | { ok: false; message: string }
     | { ok: true; path: string; stagedPath: string; handle: Stage };
+export type AndroidControlObservation = { ok: boolean; evidence: unknown };
 export interface AndroidControlTransferPorts<Target, InputStage, OutputStage> {
-    readonly variant: AndroidControlVariant;
     target(deviceId: unknown): TargetObservation<Target>;
-    tap(target: Target, point: Point): CommandReceipt;
-    swipe(target: Target, swipe: Swipe): CommandReceipt;
-    typeText(target: Target, text: unknown): CommandReceipt;
-    key(target: Target, key: unknown): CommandReceipt;
-    disableAutoRotation(target: Target): CommandReceipt;
-    setRotation(target: Target, rotation: "0"|"1"|"2"|"3"): CommandReceipt;
-    upload(target: Target, localPath: string, remotePath: string, timeoutMs: number): CommandReceipt;
-    download(target: Target, remotePath: string, localPath: string, timeoutMs: number): CommandReceipt;
+    tap(target: Target, point: Point): AndroidControlObservation;
+    swipe(target: Target, swipe: Swipe): AndroidControlObservation;
+    typeText(target: Target, text: unknown): AndroidControlObservation;
+    key(target: Target, key: unknown): AndroidControlObservation;
+    navigate(target: Target, navigation: AndroidNavigation): AndroidControlObservation;
+    disableAutoRotation(target: Target): AndroidControlObservation;
+    setOrientation(target: Target, orientation: AndroidOrientation): AndroidControlObservation;
+    upload(target: Target, localPath: string, remotePath: string, timeoutMs: number): AndroidControlObservation;
+    download(target: Target, remotePath: string, localPath: string, timeoutMs: number): AndroidControlObservation;
     guestPath(value: unknown, label: "upload-remote-path" | "download-remote-path"): PathObservation;
     stageInput(value: unknown): StageObservation<InputStage>;
     stageOutput(value: unknown): StageObservation<OutputStage>;
@@ -35,18 +36,11 @@ export interface AndroidControlTransferPorts<Target, InputStage, OutputStage> {
 }
 export type Point = import("../domain/android-control-transfer.mjs").Point;
 export type Swipe = import("../domain/android-control-transfer.mjs").Swipe;
-export type ActionPayload = import("../domain/android-control-transfer.mjs").Payload;
-export type TransferPayload = { provider: "adb" } & (
-    { uploaded: { localPath: string; remotePath: string } }
-    | { downloaded: { remotePath: string; localPath: string } }
-);
-export type AndroidControlPayload = (ActionPayload | TransferPayload) & {
-    stdout?: string; stderr?: string; status?: number | null;
-};
+export type AndroidNavigation = import("../domain/android-control-transfer.mjs").Navigation;
+export type AndroidOrientation = import("../domain/android-control-transfer.mjs").Orientation;
+export type AndroidControlCompletion = import("../domain/android-control-transfer.mjs").Completion;
 export type AndroidControlOutcome =
-    | { kind: "json"; payload: AndroidControlPayload }
+    | { kind: "completed"; completion: AndroidControlCompletion; evidence: unknown }
     | { kind: "text"; message: string }
-    | { kind: "command-failure"; command: CommandReceipt };
+    | { kind: "command-failure"; evidence: unknown };
 export type AndroidActionPlan = import("../domain/android-control-transfer.mjs").Plan;
-
-export type OrientationPayload = import("../domain/android-control-transfer.mjs").OrientationPayload;

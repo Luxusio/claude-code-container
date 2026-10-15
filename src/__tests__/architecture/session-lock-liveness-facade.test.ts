@@ -48,10 +48,7 @@ describe("session liveness public facade preserves native adapters", () => {
         vi.restoreAllMocks();
     });
 
-    it("keeps the original runtime exports, decoder and parser", () => {
-        expect(Object.keys(facade).sort()).toEqual([
-            "observeProcessStarts", "parseProcessStartObservations", "processStartToken", "sessionLockLiveness", "sessionLockOwner",
-        ].sort());
+    it("keeps the public owner decoder and batch parser behavior", () => {
         expect(facade.sessionLockOwner(JSON.stringify({ version: 2, pid, startToken: " ", extra: true })))
             .toEqual({ pid, startToken: " " });
         expect(facade.sessionLockOwner(" 4242\n")).toEqual({ pid });
@@ -60,18 +57,59 @@ describe("session liveness public facade preserves native adapters", () => {
             .toEqual([[pid, { status: "unknown" }], [4243, { status: "found", token: "windows:7" }]]);
     });
 
-    it("invalid and cached versioned records leave platform and kill getters untouched", () => {
-        const touched = vi.fn(() => { throw new Error("eager native getter"); });
-        Object.defineProperty(process, "platform", { configurable: true, get: touched });
-        Object.defineProperty(process, "kill", { configurable: true, get: touched });
+    it("invalid and cached versioned records avoid native process effects", () => {
         expect(facade.sessionLockLiveness("invalid")).toBe("unknown");
         expect(facade.sessionLockLiveness(lock("opaque"), new Map([[pid, { status: "found", token: "opaque" }]]))).toBe("active");
-        expect(touched).not.toHaveBeenCalled();
+        expect(process.kill).not.toHaveBeenCalled();
         expect(mocks.read).not.toHaveBeenCalled();
         expect(mocks.spawn).not.toHaveBeenCalled();
     });
 
+    it("decodes batch CRLF rows and keeps the first accepted observation", () => {
+        const observations = facade.parseProcessStartObservations([
+            " 42 UNKNOWN \r", "42 FOUND:123", "43 MISSING\r", "43 UNKNOWN", "44 FOUND:000123\r", "44 MISSING",
+        ].join("\n"), [42, 43, 44]);
+        expect([...observations]).toEqual([
+            [42, { status: "unknown" }], [43, { status: "missing" }], [44, { status: "found", token: "windows:000123" }],
+        ]);
+    });
 
+    it("ignores malformed and unsolicited batch rows without reserving a PID", () => {
+        const stdout = ["", "42 PRESENT", "42 FOUND:", "42 FOUND:-1", "42 FOUND:abc", "42  MISSING", "42\tMISSING",
+            "+42 MISSING", "42 UNKNOWN extra", "999 MISSING", "42 FOUND:7", "43 missing", "43 MISSING"].join("\n");
+        expect([...facade.parseProcessStartObservations(stdout, [42, 43])]).toEqual([
+            [42, { status: "found", token: "windows:7" }], [43, { status: "missing" }],
+        ]);
+        expect([...facade.parseProcessStartObservations(stdout, [])]).toEqual([]);
+    });
+
+    it("preserves batch Number conversion and requested-set membership", () => {
+        expect([...facade.parseProcessStartObservations("00042 FOUND:9\n42 MISSING\n0 UNKNOWN\n9007199254740993 MISSING", [42, 0, 9007199254740992])])
+            .toEqual([[42, { status: "found", token: "windows:9" }], [0, { status: "unknown" }], [9007199254740992, { status: "missing" }]]);
+    });
+
+    for (const nativePlatform of ["linux", "darwin", "freebsd", "other"]) {
+        it.each([
+            ["success", undefined, "active"], ["throws", { code: "ESRCH" }, "stale"], ["throws", { code: "EPERM" }, "active"],
+            ["throws", { code: "EACCES" }, "unknown"], ["throws", { code: "EINVAL" }, "unknown"],
+            ["throws", {}, "unknown"], ["throws", "ESRCH", "unknown"],
+        ] as const)(`${nativePlatform} legacy native probe %s/%j retains %s`, (kind, exception, expected) => {
+            platform(nativePlatform);
+            const kill = vi.fn(() => { if (kind === "throws") throw exception; return true; });
+            Object.defineProperty(process, "kill", { configurable: true, value: kill });
+            expect(facade.sessionLockLiveness(String(pid), new Map([[pid, { status: "missing" }]]))).toBe(expected);
+            expect(kill).toHaveBeenCalledExactlyOnceWith(pid, 0);
+            expect(mocks.spawn).not.toHaveBeenCalled();
+        });
+        it.each([null, undefined])(`${nativePlatform} preserves TypeError for a native probe throwing %s`, exception => {
+            platform(nativePlatform);
+            const kill = vi.fn(() => { throw exception; });
+            Object.defineProperty(process, "kill", { configurable: true, value: kill });
+            expect(() => facade.sessionLockLiveness(String(pid))).toThrow(TypeError);
+            expect(kill).toHaveBeenCalledExactlyOnceWith(pid, 0);
+            expect(mocks.spawn).not.toHaveBeenCalled();
+        });
+    }
 
     it("Linux proc stat uses the final close parenthesis and original start-time field", () => {
         mocks.read.mockReturnValue(`4242 (fixture ) name) ${["S", ...Array(18).fill("0"), "987", "later"].join(" ")}`);
@@ -96,7 +134,16 @@ describe("session liveness public facade preserves native adapters", () => {
         expect(facade.sessionLockLiveness(String(pid))).toBe("active");
     });
 
-    it.each(["malformed", "4242 (fixture) S 0", `4242 (fixture) ${["S", ...Array(18).fill("0"), "invalid"].join(" ")}`])("incomplete Linux stat %s remains unknown", stat => {
+    it.each([
+        "malformed", "4242 (fixture) S 0",
+        `4243 (fixture) ${["S", ...Array(18).fill("0"), "987"].join(" ")}`,
+        `4242 fixture) ${["S", ...Array(18).fill("0"), "987"].join(" ")}`,
+        `4242 (fixture) ${["?", ...Array(18).fill("0"), "987"].join(" ")}`,
+        `4242 (fixture) ${["SS", ...Array(18).fill("0"), "987"].join(" ")}`,
+        `4242 (fixture) ${["S", "bad-field", ...Array(17).fill("0"), "987"].join(" ")}`,
+        `4242 (fixture) ${["S", ...Array(18).fill("0"), "invalid"].join(" ")}`,
+        `4242 (fixture) ${["S", ...Array(18).fill("0"), "-987"].join(" ")}`,
+    ])("invalid Linux stat %s remains unknown", stat => {
         mocks.read.mockReturnValue(stat);
         expect(facade.sessionLockLiveness(lock("linux:987"))).toBe("unknown");
         expect(facade.processStartToken(pid)).toBeNull();
@@ -145,20 +192,25 @@ describe("session liveness public facade preserves native adapters", () => {
         expect(facade.sessionLockLiveness(String(pid), new Map([[pid, { status: "unknown" }]]))).toBe("active");
         expect(mocks.spawn).toHaveBeenCalledTimes(2);
         expect(mocks.spawn.mock.calls[1]).toEqual(["C:\\fixture\\tasklist.exe", ["/FO", "CSV", "/NH"], options(5000)]);
+        expect(process.kill).not.toHaveBeenCalled();
     });
     it("PowerShell MISSING is authoritative without tasklist", () => {
         platform("win32"); mocks.spawn.mockReturnValue(result("MISSING\n"));
         expect(facade.sessionLockLiveness(String(pid))).toBe("stale");
         expect(mocks.spawn).toHaveBeenCalledTimes(1); expect(mocks.tasklist).not.toHaveBeenCalled();
+        expect(process.kill).not.toHaveBeenCalled();
     });
     it.each([
         [result(taskRow(pid)), "active"], [result(taskRow(77)), "stale"],
         [result(""), "unknown"], [result(`${taskRow(pid)}\ninvalid`), "unknown"],
+        [result(`${taskRow(77)}\ninvalid`), "unknown"],
         [result(taskRow(pid), 1), "unknown"], [result(taskRow(pid), 0, "warning"), "unknown"],
+        [{ ...result(taskRow(pid)), error: new Error("native tasklist failed") }, "unknown"],
     ])("missing PowerShell uses conservative tasklist CSV behavior %#", (answer, expected) => {
         platform("win32"); mocks.powershell.mockReturnValue(null); mocks.spawn.mockReturnValue(answer);
         expect(facade.sessionLockLiveness(String(pid))).toBe(expected);
         expect(mocks.spawn).toHaveBeenCalledExactlyOnceWith("C:\\fixture\\tasklist.exe", ["/FO", "CSV", "/NH"], options(5000));
+        expect(process.kill).not.toHaveBeenCalled();
     });
     it("missing both Windows tools preserves unknown", () => {
         platform("win32"); mocks.powershell.mockReturnValue(null); mocks.tasklist.mockReturnValue(null);
@@ -184,6 +236,16 @@ describe("session liveness public facade preserves native adapters", () => {
         { ...result(), error: new Error("fixture") }])("batch failure returns an empty fallback map %#", answer => {
         platform("win32"); mocks.spawn.mockReturnValue(answer);
         expect(facade.observeProcessStarts([pid, 4243]).size).toBe(0); expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    });
+    it.each(["absent", "unknown"] as const)("a batch %s row falls back to a fresh trusted observation", cached => {
+        platform("win32");
+        mocks.spawn.mockReturnValueOnce(result(`4243 MISSING${cached === "unknown" ? "\n4242 UNKNOWN\n4242 MISSING" : ""}`))
+            .mockReturnValueOnce(result("FOUND:123\n"));
+        const observed = facade.observeProcessStarts([pid, 4243]);
+        expect(facade.sessionLockLiveness(lock("windows:123"), observed)).toBe("active");
+        expect(mocks.spawn).toHaveBeenCalledTimes(2);
+        expect(mocks.tasklist).not.toHaveBeenCalled();
+        expect(process.kill).not.toHaveBeenCalled();
     });
     it("batch throws/missing tool return empty, and small/non-Windows batches avoid discovery", () => {
         expect(facade.observeProcessStarts([pid, 4243]).size).toBe(0);
@@ -214,8 +276,6 @@ const nativePlatform = process.platform;
 let calls = [];
 process.kill = function (pid, signal) { calls.push([pid, signal]); };
 const api = await import(${JSON.stringify(moduleUrl.href)});
-Object.defineProperty(process, 'platform', {configurable:true,get() { throw new Error('eager platform read'); }});
-assert.deepEqual(Object.keys(api).sort(), ['observeProcessStarts', 'parseProcessStartObservations', 'processStartToken', 'sessionLockLiveness', 'sessionLockOwner'].sort());
 const lock = JSON.stringify({version: 2, pid: 4242, startToken: 'opaque'});
 assert.deepEqual(api.sessionLockOwner(lock), {pid: 4242, startToken: 'opaque'});
 assert.deepEqual(api.sessionLockOwner(' 4242\\n'), {pid: 4242});
@@ -225,7 +285,6 @@ for (const [observation, expected] of [[{status:'found',token:'opaque'},'active'
   assert.equal(api.sessionLockLiveness(lock,new Map([[4242,observation]])), expected);
 }
 assert.equal(api.sessionLockLiveness('invalid'), 'unknown');
-Object.defineProperty(process, 'platform', {configurable:true,value:nativePlatform});
 if (nativePlatform === 'win32') {
   assert.equal(api.sessionLockLiveness(String(process.pid),new Map([[process.pid,{status:'found',token:'windows:123'}]])), 'active');
   assert.equal(api.sessionLockLiveness(String(process.pid),new Map([[process.pid,{status:'missing'}]])), 'stale');

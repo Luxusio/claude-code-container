@@ -31,29 +31,3 @@ export function sessionLockOwner(content: string): SessionLockOwner | null {
     const pid = Number(legacy);
     return Number.isSafeInteger(pid) ? { pid } : null;
 }
-
-/**
- * The batch script's stdout, as observations. Exported because the script itself only runs on
- * Windows, so this is the only part of the batch a test on any other host can reach — the same
- * split `parseWindowsBrokerNetstatListenerForTest` already uses for netstat in this codebase.
- *
- * Anything unrecognised is simply absent from the map, which the caller reads as "ask the
- * single-pid probe" — the batch is never the authority on whether a lock may be deleted.
- */
-export function parseProcessStartObservations(
-    stdout: string,
-    pids: readonly number[],
-): Map<number, ProcessStartObservation> {
-    const observations = new Map<number, ProcessStartObservation>();
-    const wanted = new Set(pids);
-    for (const line of stdout.split(/\r?\n/)) {
-        const row = /^([0-9]+) (MISSING|UNKNOWN|FOUND:[0-9]+)$/.exec(line.trim());
-        if (!row) continue;
-        const pid = Number(row[1]);
-        if (!wanted.has(pid) || observations.has(pid)) continue;
-        if (row[2] === "MISSING") observations.set(pid, { status: "missing" });
-        else if (row[2] === "UNKNOWN") observations.set(pid, { status: "unknown" });
-        else observations.set(pid, { status: "found", token: `windows:${row[2].slice("FOUND:".length)}` });
-    }
-    return observations;
-}

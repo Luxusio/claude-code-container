@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createBrokerOwnerApplication } from "../../../packages/device-lab/src/device-lab/application/broker-owner.js";
 import { createBrokerPhysicalLeasesApplication } from "../../../packages/device-lab/src/device-lab/application/broker-physical-leases.js";
 import type { BrokerOwnerRegistration } from "../../../packages/device-lab/src/device-lab/domain/broker-owner.js";
@@ -61,6 +61,59 @@ function lease(overrides: PhysicalLeaseRecord = {}): PhysicalLeaseRecord {
 const request = { backend: "android-device", hardwareId: "phone", deviceId: "device", claimId: "old-claim", claimNonce: "operation", ttlMs: 60000 };
 
 describe("broker owner registration and resolution", () => {
+    it.each([
+        { name: "null", input: null },
+        { name: "undefined", input: undefined },
+        { name: "empty array", input: [] },
+        { name: "array containing a valid request", input: [{ projectMountPath: "/project/fixture", profile: "work" }] },
+        { name: "array with attached valid fields", input: Object.assign([], { projectMountPath: "/project/fixture", profile: "work" }) },
+        { name: "empty string", input: "" },
+        { name: "mount string", input: "/project/fixture" },
+        { name: "zero", input: 0 },
+        { name: "nonzero number", input: 42 },
+        { name: "false", input: false },
+        { name: "true", input: true },
+        { name: "bigint", input: 0n },
+        { name: "symbol", input: Symbol("owner request") },
+        { name: "function", input: () => ({ projectMountPath: "/project/fixture" }) },
+    ])("refuses $name before identity, registration or auth effects", ({ input }) => {
+        const f = ownerFixture();
+        const effects = [
+            vi.spyOn(f.ports, "identity"), vi.spyOn(f.ports, "readRegistration"),
+            vi.spyOn(f.ports, "prepareRegistrations"), vi.spyOn(f.ports, "writeRegistration"),
+            vi.spyOn(f.ports, "authFile"), vi.spyOn(f.ports, "inspectAuthDirectory"),
+            vi.spyOn(f.ports, "prepareAuthDirectory"), vi.spyOn(f.ports, "readSecret"),
+            vi.spyOn(f.ports, "newSecret"), vi.spyOn(f.ports, "publishSecret"),
+        ];
+        expect(f.app.resolve(input)).toEqual({ kind: "invalid-request", projectMountPath: "", profile: null });
+        for (const effect of effects) expect(effect).not.toHaveBeenCalled();
+        expect(f.published).toEqual([]);
+        expect(f.secret()).toBeNull();
+    });
+    it.each([{ profile: 42 }, { profile: false }, { profile: {} }, { profile: ["work"] }])("retains the original invalid profile diagnostic $profile", ({ profile }) => {
+        const f = ownerFixture();
+        const identity = vi.spyOn(f.ports, "identity"), registration = vi.spyOn(f.ports, "readRegistration"), auth = vi.spyOn(f.ports, "authFile");
+        expect(f.app.resolve({ projectMountPath: "/project/fixture", profile })).toEqual({ kind: "invalid-request", projectMountPath: "/project/fixture", profile });
+        expect(identity).not.toHaveBeenCalled();
+        expect(registration).not.toHaveBeenCalled();
+        expect(auth).not.toHaveBeenCalled();
+    });
+    it("retains normalized object-field diagnostics", () => {
+        const f = ownerFixture(), identity = vi.spyOn(f.ports, "identity");
+        expect(f.app.resolve({ projectMountPath: 42, profile: "work" })).toEqual({ kind: "invalid-request", projectMountPath: "", profile: "work" });
+        expect(identity).toHaveBeenCalledExactlyOnceWith("", "work");
+        expect(f.secret()).toBeNull();
+    });
+    it("propagates an unexpected identity failure without converting it into an invalid request", () => {
+        const f = ownerFixture(), fault = new Error("unexpected identity failure");
+        f.ports.identity = () => { throw fault; };
+        const registration = vi.spyOn(f.ports, "readRegistration"), auth = vi.spyOn(f.ports, "authFile");
+        let caught: unknown;
+        try { f.app.resolve({ projectMountPath: "/project/fixture" }); } catch (error) { caught = error; }
+        expect(caught).toBe(fault);
+        expect(registration).not.toHaveBeenCalled();
+        expect(auth).not.toHaveBeenCalled();
+    });
     it("reuses an equivalent registration while retaining its canonical host path", () => {
         const f = ownerFixture();
         const first = f.app.register("/host/project");
@@ -89,6 +142,31 @@ describe("broker owner registration and resolution", () => {
         f.setRegistration({ ...f.read()!, ownerBasis: "foreign-basis" });
         expect(f.app.resolve({ projectMountPath: "/project/fixture" })).toMatchObject({ kind: "unavailable" });
         expect(f.secret()).toBeNull();
+    });
+    it.each(["ownerBasis", "projectMountPath", "profile"] as const)("requires registered %s agreement before provisioning auth", field => {
+        const f = ownerFixture();
+        const registration = f.app.register("/host/project", "work", otherOwner);
+        f.setRegistration({ ...registration, [field]: "foreign-value" });
+        const auth = vi.spyOn(f.ports, "authFile");
+        expect(f.app.resolve({ projectMountPath: "/project/fixture", profile: "work" })).toEqual({ kind: "unavailable" });
+        expect(auth).not.toHaveBeenCalled();
+        expect(f.secret()).toBeNull();
+    });
+    it("keeps a registration read failure distinct from invalid input and never provisions auth", () => {
+        const f = ownerFixture();
+        f.ports.readRegistration = () => { throw new Error("registration unreadable"); };
+        const auth = vi.spyOn(f.ports, "authFile");
+        expect(f.app.resolve({ projectMountPath: "/project/fixture" })).toEqual({ kind: "registration-invalid" });
+        expect(auth).not.toHaveBeenCalled();
+    });
+    it("keeps failed auth provisioning distinct after registered identity agreement", () => {
+        const f = ownerFixture();
+        f.app.register("/host/project");
+        f.ports.publishSecret = () => { throw new Error("secret publication refused"); };
+        expect(f.app.resolve({ projectMountPath: "/project/fixture" })).toEqual({ kind: "auth-provisioning-failed" });
+        expect(f.secret()).toBeNull();
+        expect(f.quarantined()).toBe(true);
+        expect(f.authLocked()).toBe(false);
     });
     it("cleans quarantine after successful publication and reuses the published credential", () => {
         const f = ownerFixture();

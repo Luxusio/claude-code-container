@@ -241,6 +241,12 @@ export interface MacosObservationPorts extends Common {
     executable(name: string): string | null;
     records(): MacosVmDevice[];
     helperPaths(device: MacosVmDevice): MacosHelperPaths;
+    materializePlan(
+        device: MacosVmDevice,
+        selection: import("../domain/device-observation.mjs").MacosObservationSelection,
+        discovery: MacosFacts,
+        paths: MacosHelperPaths,
+    ): import("./lifecycle/macos-vm-lifecycle.mjs").MacosVmNativePlan;
 }
 export interface LinuxObservationPorts extends Common {
     readonly kind: "linux-vm";
