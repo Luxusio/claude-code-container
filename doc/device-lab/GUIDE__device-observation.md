@@ -19,6 +19,20 @@ admission still runs before dispatch; inventory checks executable availability,
 not provider VM listings. Linux ordinary lists omit invalid labs while strict
 lists throw, with individual native lab validation retained.
 
+Mobile inventory ports provide normalized host AVD/device facts. The shared
+`adapters/mobile-inventory.mjs` owns ADB/AVD output decoding; the iOS physical
+binding reuses its existing native inventory helper. Failed inventory is distinct
+from a successful empty list. `HostDevices<T>` belongs to the ports module, with
+an application type-only re-export for existing callers.
+
+Simulator owned lists use one finite devices observation per operation;
+inventory uses one captured catalog observation for reconciliation and outward
+catalog presentation. Only the backend resolves native SDK targets and decodes
+state/name. The application consumes matched/status/name facts and retains the
+publication decision. The next operation refreshes discovery and inventory;
+there is no cross-operation SDK cache. Catalog evidence stays opaque inward and
+is projected to the existing hostSimulators shape at the backend.
+
 Current public MCP and owner-isolation fixtures verify these contracts alongside
 required-port checks. Host broker discovery and existing request/aggregation/admin
 applications remain separate peers. Portable fixtures and package startup smoke

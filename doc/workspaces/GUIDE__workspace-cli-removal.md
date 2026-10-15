@@ -7,16 +7,18 @@ The application owns removal order, session-claim refusal, inventory matching,
 identity and duplicate checks, stop and plain removal decisions, result
 presentation, recovery advice, and stranded-registration notice formatting.
 
-Native ports retain the existing project-family critical section, raw session
-claims, workspace ownership assertion, container runtime readiness and identity
-inspection, canonical workspace removal, process invocation, and terminal
-escaping. Callable selectors capture each native callee before its arguments;
-console selectors also preserve the console receiver. They do not normalize
-results, identities, force values, or thrown causes. The four ignored native
-effect capabilities (ownership assertion, runtime readiness, log and error)
-return `undefined` in their inward contracts to reject asynchronous effects.
-Composition discards only their originally unobserved return values, after the
-same native invocation; public helper `void` signatures remain unchanged.
+`src/adapters/workspace-cli-container-runtime.ts` owns runtime argv, name-list
+newline/trim decoding, process receipts and native stop/removal errors. The
+application receives `listed`/`unavailable` inventory facts and finite synchronous
+`stop(id)`/`remove(id)` effects. It selects a native runtime at the original lazy
+listing and post-workspace-success batch sites. The public index delegates keep
+the existing runner/CLI arguments and defaults outside this inward contract.
+
+Other native ports supply the project-family critical section, raw session
+claims, workspace ownership assertion, runtime readiness and managed identity,
+canonical workspace removal and terminal escaping. Ignored synchronous effects
+return `undefined` in inward contracts. No generic process runner or native
+status/output classification crosses the container-removal port.
 
 Workspace path and project identity are computed before the handler's catch.
 Inside the real family guard, claims are queried even with force; ownership is

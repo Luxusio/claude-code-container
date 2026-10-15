@@ -11,3 +11,20 @@ Real collection retains selection, version, Desktop, remote, rootless, flavor an
 Public types and signatures, `runtimeCli`, `isContainerHostRemote`, `getHostInternalAlias` and `formatRuntimeSummary` remain compatible. Docker lifecycle/readiness/mount/capability consumers, container identity, setup, doctor, CLI commands and Codex/lab/session users keep importing this facade. No TTL, frozen object, asynchronous probe, restart action or resource policy is introduced.
 
 Proof owners are the three runtime-capabilities architecture core/facade/type-contract files, with existing runtime, selection and endpoint caller regressions. Core fixtures supply semantic observations; facade fixtures exercise actual native decoding and public cache behavior with native effects mocked. Root owns independent code/security/QA, strict compilation, whole affected suites, shipping and compiled/extracted public entrypoint qualification. Portable mocks do not certify real Docker/Podman/Colima or Windows/macOS acceptance. Full Goal and separate native/reliability/formal acceptance remain outstanding.
+
+Mount admission is a separate application in
+`src/application/container-mount-verification.ts`. It consumes normalized mount
+shape and source facts through `src/ports/container-mount-verification.ts`.
+`src/adapters/container-mount-observations.ts` owns inspect/tmpfs decoding, native
+path aliases, filesystem identities and challenge files, WSL proofs and daemon
+observations. `docker.ts` supplies the selected target, image lookup and bounded
+retry, and retains the public native helper exports.
+
+Stopped admission checks general path equivalence without target exec. Live
+custom Docker sockets require the configured literal source and daemon proof;
+a matching Desktop proxy still needs daemon proof. Strict and safe-defer policy,
+final-attempt decisions, fresh container ID/label rechecks and cleanup remain in
+the application. Proof challenges are scoped to one verification and removed in
+finally; existing captured-ID lifecycle compensation remains unchanged. The
+mount cutover requires its own combined review/QA; runtime capability acceptance
+does not imply that this follow-up or native platform checks have passed.
