@@ -361,10 +361,8 @@ export function createNestedWorkspaceRepair<A extends WorkspaceRepairAuthority>(
             }
             const { result: nestedResult, registrationFence } = addResult;
 
-            if (nestedResult.error || nestedResult.status !== 0) {
-                const detail = (nestedResult.stderr ?? "").trim()
-                    || nestedResult.error?.message
-                    || `git exited with status ${String(nestedResult.status)}`;
+            if (!nestedResult.succeeded) {
+                const detail = nestedResult.failureReason;
                 try {
                     operationGuard();
                     ports.rollbackFailedWorktreeAdd(

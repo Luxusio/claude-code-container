@@ -76,7 +76,7 @@ describe("multi creation generic and mutable legacy type contracts", () => {
         const prepared = Symbol("prepared"), receipt = Symbol("receipt"), workspace = Symbol("workspace"), copied = Symbol("copied");
         const result: LegacyResult = createMultiWorkspaceCreation({
             observeBranch: () => "none", prepareAddition: () => prepared,
-            addPrepared: () => ({ status: 0, registrationReceipt: receipt }), compensateFailedAddition: () => {},
+            addPrepared: () => ({ succeeded: true, failureDetail: "", registrationReceipt: receipt }), compensateFailedAddition: () => {},
             scanSource: () => [{ name: "repo", path: "source/repo", isGitRepo: true }], destinationPath: (_request, name) => `destination/${name}`,
             ensureWorkspaceParent: () => {}, createWorkspaceExclusive: () => {}, captureWorkspaceIdentity: () => workspace,
             requireRegistration: actual => { expect(actual).toBe(receipt); return receipt; }, pathExists: () => true, worktreeMatches: () => true,
@@ -95,7 +95,7 @@ describe("multi creation generic and mutable legacy type contracts", () => {
         // Prepared and workspace identity deliberately remain unrestricted.
         const ports: MultiCreationPorts<number, typeof registration, boolean, typeof copy> = {
             observeBranch: () => "none", prepareAddition: () => 0,
-            addPrepared: (_request, prepared) => { expect(prepared).toBe(0); return { status: 0, registrationReceipt: registration }; },
+            addPrepared: (_request, prepared) => { expect(prepared).toBe(0); return { succeeded: true, failureDetail: "", registrationReceipt: registration }; },
             compensateFailedAddition: () => { throw new Error("Unexpected addition failure"); },
             scanSource: () => [
                 { name: "repo", path: "source/repo", isGitRepo: true },

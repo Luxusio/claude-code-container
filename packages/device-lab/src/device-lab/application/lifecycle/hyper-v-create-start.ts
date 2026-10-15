@@ -437,7 +437,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 network,
             };
             const observation = await executeHyperVVmCreation(request, ports.creationEffects(session), effects, deadlineAt, () => { newVmAttempted = true; return undefined; });
-            return { ok: true, observation, execution: { mode: "exec", provider: "hyper-v", status: 0 } };
+            return { ok: true, observation, execution: { required: true, dispatched: true, ok: true } };
         }
         catch (error) {
             // Classify the triggering failure before cleanup performs further provider calls.
@@ -489,9 +489,9 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             return {
                 ok: false, observation: null,
                 execution: {
-                    mode: "exec", provider: "hyper-v", status: 1, stdout: "", stderr: "", error: code, typedCreateInvalidResult,
-                    ...(typedCreateOperation ? { typedCreateOperation } : {}),
-                    typedCreateNativeDiagnostics: ports.nativeDiagnostics(error),
+                    required: true, dispatched: true, ok: false, failureCode: code, invalidResult: typedCreateInvalidResult,
+                    ...(typedCreateOperation ? { operation: typedCreateOperation } : {}),
+                    nativeDiagnostics: ports.nativeDiagnostics(error),
                 },
             };
         }
@@ -956,7 +956,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 ok: false,
                 reason: ports.errorInfo(error)?.category === "protocol"
                     ? "hyper-v-rollback-invalid-result" : "hyper-v-rollback-command-failed",
-                execution: { mode: "exec", provider: "hyper-v", status: 1, error: code },
+                execution: { required: true, dispatched: true, ok: false, failureCode: code },
             };
         }
     }
@@ -996,8 +996,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                         invoked: false,
                         dryRun: true,
                         execution: {
-                            mode: "dry-run",
-                            providerExecution: "available",
+                            required: false, dispatched: false,
                             mutatesHost: false,
                         }};
         }
@@ -1006,7 +1005,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 kind:'idempotent',journalDisposition:'clear',recoveryDisposition:'already-handled',plan:planned,device:planned.device,...(planFacts),
                         invoked: false,
                         dryRun: false,
-                        execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false }};
+                        execution: { required: false, dispatched: false, mutatesHost: false }};
         }
     if ((parsed.command === "device_start" || parsed.command === "device_reboot") && planned.availability.kind === "available") {
         ports.forgetConsole(ownerId, parsed.backend, parsed.deviceId);
@@ -1019,7 +1018,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     missing: availability.missing || [],
                     plan: planned,};
         }
-        let execution: HyperVNativeExecution<Receipt> = { mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" };
+        let execution: HyperVNativeExecution<Receipt> = { required: false, dispatched: false, ok: true };
         let creationObservation: VmCreationObservation | null = null;
         let hyperVProvisioningExecution: HyperVNativeExecution<Receipt> | null = null;
         if (availability.kind === 'available') {
@@ -1048,22 +1047,21 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             if (!creation.ok) {
                 const rollback = await recoverCreateResidue(ownerId, parsed.backend, parsed.deviceId, hyperVCleanupDeadlineAt, (typeof parsed.create?.incarnationId === "string" ? parsed.create.incarnationId : undefined));
                 return {
-                    kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: execution.typedCreateInvalidResult === true
+                    kind:'operation-failed',reason:'provider-failed',journalDisposition:'retain',recoveryDisposition:'already-handled',error: execution.invalidResult === true
                             ? "hyper-v-create-invalid-result"
                             : "provider-command-failed",
                         failureExecution:execution,
                         // The typed primitive behind the detail, from the library's closed list.
-                        ...(execution.typedCreateOperation
-                            ? { operation: execution.typedCreateOperation }
+                        ...(execution.operation
+                            ? { operation: execution.operation }
                             : {}),
-                        ...(execution.typedCreateNativeDiagnostics),
+                        ...(execution.nativeDiagnostics),
                         ...(rollback ? { rollback } : {}),
                         plan:planned,...(planFacts),
                             invoked: true,
                             dryRun: false,
                             execution: {
-                                mode: execution.mode,
-                                providerExecution: "executed",
+                                required: execution.required, dispatched: execution.dispatched,
                                 mutatesHost: false,
                                 ...({}),
                             }};
@@ -1071,7 +1069,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
         }
         const createConnection = availability.kind === 'available' ? availability.connection : null;
         let persistedParsed = parsed;
-        if (parsed.backend === "linux-vm" && execution.mode !== "noop" && createConnection) {
+        if (parsed.backend === "linux-vm" && execution.required && createConnection) {
             const observation = creationObservation;
             const expectedVmName = ports.vmName(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || ""));
             const deviceRoot = ports.deviceRoot(ownerId, "linux-vm", parsed.deviceId);
@@ -1202,7 +1200,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             }
             persistedParsed = { ...parsed, create: { ...(parsed.create || {}), vmId: observation.vmId, ...(observation.switchName ? { switchName: observation.switchName } : {}), guestUsername, guestProvisioned: true, sshHostKeyFingerprint } };
         }
-        if (parsed.backend === "windows-vm" && execution.mode !== "noop" && createConnection) {
+        if (parsed.backend === "windows-vm" && execution.required && createConnection) {
             const observation = creationObservation;
             const expectedVmName = ports.vmName(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || ""));
             const expectedDiskPath = join(ports.deviceRoot(ownerId, "windows-vm", parsed.deviceId), "disks", "root.vhdx");
@@ -1357,15 +1355,10 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     invoked: true,
                     dryRun: false,
                     execution: {
-                        mode: execution.mode === "noop" ? "state" : execution.mode,
-                        providerExecution: execution.mode === "noop" ? "broker-state" : "executed",
+                        required: execution.required, dispatched: execution.dispatched,
                         mutatesHost: true,
-                        ...(execution.provider ? { provider: execution.provider } : {}),
-                        ...(typeof execution.status === "number" ? { status: execution.status } : {}),
-                        ...(hyperVProvisioningExecution ? { provisioning: {
-                                provider: hyperVProvisioningExecution.provider,
-                                status: hyperVProvisioningExecution.status,
-                            } } : {}),
+                        summary: execution,
+                        ...(hyperVProvisioningExecution ? { provisioning: hyperVProvisioningExecution } : {}),
                     }};
     }
     const availability = planned.availability;
@@ -1405,7 +1398,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
     }
     let success = !hyperVProviderDeadlineExpired && powerObservation.ok;
     if (hyperVProviderDeadlineExpired && guestBootstrapMayNeedContainment) {
-        execution = { ...execution, error: "hyper-v-operation-deadline-exceeded" };
+        execution = { ...execution, ok: false, failureCode: "hyper-v-operation-deadline-exceeded" };
     }
     if (success) {
         const observation = powerObservation.observation;
@@ -1494,11 +1487,11 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             let attempts = 0;
             let bootstrapProbeAttempts = 0;
             let bootstrapProbeSuccesses = 0;
-            let bootstrapProbeLastStatus: number | null = null;
+            let bootstrapProbeEvidence: unknown = null;
             let bootstrapProbeLastError: string | null = null;
             let bootstrapAddressCount = 0;
             let bootstrapSshAttempts = 0;
-            let bootstrapSshLastStatus: number | null = null;
+            let bootstrapSshEvidence: unknown = null;
             let bootstrapSshLastError: string | null = null;
             let bootstrapHostKeyObserved: boolean | null = null;
             let bootstrapHostKeyMatchesExpected: boolean | null = null;
@@ -1554,7 +1547,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     }
                     if (!bootstrapFinalizationAttempted && ports.now() < deadline) {
                         bootstrapProbeAttempts += 1;
-                        const { status: bootstrapStatus, failureCode: bootstrapFailureCode, observation: bootstrap } = await ports.bootstrapProbe(powerConnection, {
+                        const { diagnostics: bootstrapEvidence, failureCode: bootstrapFailureCode, observation: bootstrap } = await ports.bootstrapProbe(powerConnection, {
 
                             ownerId,
                             deviceId: parsed.deviceId,
@@ -1563,7 +1556,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                             vmId: hyperVCreateField(device, "vmId"),
                             deadlineAt: deadline,
                         });
-                        bootstrapProbeLastStatus = bootstrapStatus;
+                        bootstrapProbeEvidence = bootstrapEvidence;
                         bootstrapProbeLastError = bootstrapFailureCode;
                         if (bootstrap && !bootstrap.diagnosticCode) {
                             bootstrapProbeSuccesses += 1;
@@ -1580,7 +1573,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                                 verboseHostKeyDiagnostics: true,
                                 timeoutMs: Math.min(10000, Math.max(1000, deadline - ports.now())),
                             },ports.remaining(deadline,15000),ports.outputLimit);
-                            bootstrapSshLastStatus = bootstrapReadyExecution.failureDetail.status;
+                            bootstrapSshEvidence = bootstrapReadyExecution.failureDetail.evidence;
                             let bootstrapAuthenticated = bootstrapReadyExecution.ready;
                             if (!bootstrapAuthenticated) {
                                 bootstrapSshLastError = bootstrapReadyExecution.ok
@@ -1633,7 +1626,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 success = Boolean(hyperVGuestReadyExecution?.ready);
                 if (!success && hyperVLinuxGuestSignalTimedOut(readinessStartedAt, ports.now(), guestSignalObserved)) {
                     hyperVGuestReadyExecution = ports.readinessFailure("linux-vm", "hyper-v-guest-boot-signal-timeout", {
-                        previous: hyperVGuestReadyExecution, timedOut: false,
+                        previous: hyperVGuestReadyExecution, deadlineExpired: false,
                     });
                 }
                 hyperVGuestReady = success ? {
@@ -1692,11 +1685,11 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                     managedSshAttempts: attempts,
                     bootstrapProbeAttempts,
                     bootstrapProbeSuccesses,
-                    bootstrapProbeLastStatus,
+                    bootstrapProbeEvidence,
                     bootstrapProbeLastError,
                     bootstrapAddressCount,
                     bootstrapSshAttempts,
-                    bootstrapSshLastStatus,
+                    bootstrapSshEvidence,
                     bootstrapSshLastError,
                     bootstrapHostKeyObserved,
                     bootstrapHostKeyMatchesExpected,
@@ -2021,8 +2014,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
                 invoked: true as const,
                 dryRun: false as const,
                 execution: {
-                    mode: execution.mode,
-                    providerExecution: "executed",
+                    required: execution.required, dispatched: execution.dispatched,
                     // Containment force-stops the guest on a FAILED start, so deriving this from
                     // `success` alone reported mutatesHost:false for an operation whose entire
                     // purpose was to change the host. That is the same invisible-mutation the

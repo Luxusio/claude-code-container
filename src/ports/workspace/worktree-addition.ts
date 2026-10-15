@@ -11,9 +11,8 @@ export interface WorktreeAdditionRequest {
 }
 
 export interface WorktreeAdditionObservation<RegistrationReceipt> {
-    readonly status: number | null;
-    readonly stderr?: string | null;
-    readonly error?: { readonly message: string };
+    readonly succeeded: boolean;
+    readonly failureDetail: string;
     readonly registrationReceipt: RegistrationReceipt | null;
 }
 

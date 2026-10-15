@@ -22,13 +22,10 @@ export interface HyperVOperationEvidence {
 }
 export type HyperVCommandExecution<Receipt> = {
     receipt?:Receipt;
-    mode: string;
-    provider: string;
-    status?: number | null;
-    stdout?: string;
-    stderr?: string;
-    error?: string;
-    timedOut?: boolean;
+    required: boolean;
+    dispatched: boolean;
+    ok: boolean;
+    failureCode?: string;
 };
 export interface HyperVTerminalObservation {
     vmId: string;

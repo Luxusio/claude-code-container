@@ -89,13 +89,13 @@ describe("Hyper-V inward create/start readiness policy", () => {
     });
 });
 
-type PowerReceipt = { nativeEvidence: string; error?: string };
+type PowerReceipt = { nativeEvidence: string; error?: string; status?: number; stdout?: string };
 type PowerPorts = HyperVCreateStartPorts<undefined, { providerId: string }, PowerReceipt, undefined>;
 
 function powerFixture(deviceInPlan = true) {
     const device = { id: "owned", vmId: "12345678-1234-1234-1234-123456789abc", vmName: "owned-vm", incarnationId: "incarnation", status: "stopped", runtimeState: "Off", memoryMb: 4096, cpus: 2 };
     const observation: HyperVVmObservation = { ok: true, vmId: device.vmId, vmName: device.vmName, state: "Running", status: "Operating normally" };
-    const execution: HyperVNativeExecution<PowerReceipt> = { mode: "exec", provider: "hyper-v", status: 0, stdout: "native evidence is intentionally not JSON", receipt: { nativeEvidence: "power" } };
+    const execution: HyperVNativeExecution<PowerReceipt> = { required: true, dispatched: true, ok: true, receipt: { nativeEvidence: "power", status: 0, stdout: "native evidence is intentionally not JSON" } };
     const result: HyperVPowerObservation<PowerReceipt> = { ok: true, observation, execution };
     const ports = {
         planning: vi.fn((_owner: string, _params: unknown, expected?: { device?: unknown }): HyperVLifecyclePlan<{ providerId: string }, PowerReceipt> => {
@@ -116,7 +116,7 @@ function powerFixture(deviceInPlan = true) {
             expect(expected).toBe(device);
             return { found: true, matched: true, device: replace(device) };
         }),
-        diagnosticCode: vi.fn((current: HyperVNativeExecution<PowerReceipt>, fallback?: string) => current.error || fallback),
+        diagnosticCode: vi.fn((current: HyperVNativeExecution<PowerReceipt>, fallback?: string) => current.failureCode || fallback),
     } satisfies Pick<PowerPorts, "planning" | "forgetConsole" | "incarnation" | "power" | "observePlannedPower" | "deadlineExpired" | "remaining" | "outputLimit" | "deviceRoot" | "mediaRetained" | "timestamp" | "publish" | "diagnosticCode">;
     // Only leaves reachable in this settled power path are supplied; an unexpected effect fails.
     const application = createHyperVCreateStartApplication(ports as unknown as PowerPorts);
@@ -139,7 +139,7 @@ describe("Hyper-V inward power observations", () => {
 
     it("refuses semantic failure even when native status and stdout look successful", async () => {
         const f = powerFixture();
-        f.ports.power.mockResolvedValue({ ...f.result, ok: false, execution: { ...f.execution, stdout: JSON.stringify(f.observation) } });
+        f.ports.power.mockResolvedValue({ ...f.result, ok: false, execution: { ...f.execution, receipt: { nativeEvidence: "successful-looking", status: 0, stdout: JSON.stringify(f.observation) } } });
         const outcome = await f.application.execute("owner", f.request, {}, 100000, 130000);
         expect(outcome).toMatchObject({ kind: "operation-failed", error: "provider-command-failed", detail: "hyper-v-provider-command-failed" });
         expect(f.ports.publish).not.toHaveBeenCalled();
@@ -159,7 +159,7 @@ describe("Hyper-V inward power observations", () => {
 
     it("uses the same normalized planned-power result without dispatching a second power operation", async () => {
         const f = powerFixture(false);
-        const execution = { ...f.execution, error: "hyper-v-planned-power-refused", stdout: JSON.stringify(f.observation) };
+        const execution = { ...f.execution, ok: false, failureCode: "hyper-v-planned-power-refused", receipt: { nativeEvidence: "successful-looking", status: 0, stdout: JSON.stringify(f.observation) } };
         f.ports.observePlannedPower.mockResolvedValue({ ok: false, observation: null, execution });
         const outcome = await f.application.execute("owner", f.request, {}, 100000, 130000);
         expect(outcome).toMatchObject({ kind: "operation-failed", detail: "hyper-v-planned-power-refused" });
@@ -171,7 +171,7 @@ describe("Hyper-V inward power observations", () => {
 
     it("classifies the current post-dispatch deadline overlay instead of the original native receipt", async () => {
         const f = powerFixture();
-        const receipt = { nativeEvidence: "original", error: "hyper-v-original-native-error" };
+        const receipt = Object.freeze({ nativeEvidence: "original", status: 0, error: "hyper-v-original-native-error", stdout: "private native evidence" });
         const execution = { ...f.execution, receipt };
         f.ports.power.mockResolvedValue({ ...f.result, execution });
         f.ports.deadlineExpired.mockReturnValue(true);
@@ -179,10 +179,12 @@ describe("Hyper-V inward power observations", () => {
         expect(outcome).toMatchObject({ kind: "operation-failed", detail: "hyper-v-operation-deadline-exceeded" });
         expect(f.ports.diagnosticCode).toHaveBeenCalledOnce();
         const classified = f.ports.diagnosticCode.mock.calls[0]?.[0];
-        expect(classified).toEqual({ ...execution, error: "hyper-v-operation-deadline-exceeded" });
+        expect(classified).toEqual({ ...execution, ok: false, failureCode: "hyper-v-operation-deadline-exceeded" });
         expect(classified).not.toBe(receipt);
         expect(classified?.receipt).toBe(receipt);
         expect(receipt.error).toBe("hyper-v-original-native-error");
+        expect(execution).toEqual({ ...f.execution, receipt });
+        expect(outcome.execution?.command?.receipt).toBe(receipt);
         expect(f.ports.publish).not.toHaveBeenCalled();
     });
 });

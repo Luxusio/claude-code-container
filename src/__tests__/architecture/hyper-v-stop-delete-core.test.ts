@@ -6,7 +6,7 @@ import type { HyperVArtifactEvidence, HyperVCommandExecution, HyperVNetworkClean
 import type { HyperVStopDeletePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-stop-delete.js";
 
 type Connection = { providerId: string };
-type Receipt = { nativeEvidence: string };
+type Receipt = { nativeEvidence: string; status?: number; stdout?: string; stderr?: string };
 type TerminalCommand = HyperVStopDeleteRequest["command"];
 
 function terminalFixture(command: TerminalCommand) {
@@ -21,8 +21,8 @@ function terminalFixture(command: TerminalCommand) {
     const request: HyperVStopDeleteRequest = { ok: true, backend: "windows-vm", stateKey: "windows-vm", command, deviceId: device.id, force: false, dryRun: false };
     const observation: HyperVTerminalObservation = { vmId: device.vmId, vmName: device.vmName, state: "Off", status: "Stopped", diskPath: device.diskPath };
     const execution: HyperVCommandExecution<Receipt> = {
-        mode: "exec", provider: "hyper-v", status: 0, stdout: "captured native evidence is deliberately not JSON", stderr: "opaque native diagnostic",
-        receipt: { nativeEvidence: "terminal receipt" },
+        required: true, dispatched: true, ok: true,
+        receipt: Object.freeze({ nativeEvidence: "terminal receipt", status: 0, stdout: "captured native evidence is deliberately not JSON", stderr: "opaque native diagnostic" }),
     };
     const result: HyperVTerminalResult<Receipt> = { ok: true, observation, execution };
     const auxiliaryCleanup: AuxiliaryCleanup = { ok: true, changed: false, appium: {}, recording: {}, minimizeWatchdog: {} };
@@ -70,7 +70,7 @@ function terminalFixture(command: TerminalCommand) {
         stateErrorCode: () => null,
         stateFailure: (_error: unknown, target: { backend: string; stateKey: string }) => ({ reason: "state-write-failed" as const, error: "state-write-failed", ...target }),
         errorCode: (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback,
-        diagnosticCode: vi.fn((evidence: HyperVCommandExecution<Receipt>, fallback: string) => evidence.error || fallback),
+        diagnosticCode: vi.fn((evidence: HyperVCommandExecution<Receipt>, fallback: string) => evidence.failureCode || fallback),
         assertDeadline: vi.fn((): undefined => undefined),
         deadlineExpired: vi.fn(() => false),
         timestamp: () => "2026-10-15T00:01:00.000Z",
@@ -90,12 +90,12 @@ describe("Hyper-V inward terminal observations", () => {
         const predecessor = structuredClone(f.device);
         // Native status/bytes can look successful; only the semantic observation
         // establishes completion. In particular, status is not the VM power state.
-        const execution = { ...f.execution, stdout: JSON.stringify({ ...f.observation, state: "Off" }) };
+        const execution = { ...f.execution, receipt: { nativeEvidence: "success-looking", status: 0, stdout: JSON.stringify({ ...f.observation, state: "Off" }) } };
         f.ports.executeStop.mockResolvedValue({ ok: true, observation: { ...f.observation, state, status: "Stopped" }, execution });
         const outcome = await f.application.invoke("owner", f.request, 100000, 130000);
         expect(outcome).toMatchObject({ kind: "uncertain", journalDisposition: "retain" });
         expect(outcome.execution).toBe(execution);
-        expect(outcome.execution?.receipt).toBe(f.execution.receipt);
+        expect(outcome.execution?.receipt).toBe(execution.receipt);
         expect(f.current()).toBe(f.device);
         expect(f.current()).toEqual(predecessor);
         expect(f.journal()).toMatchObject({ command: "device_stop", vmId: predecessor.vmId, vmName: predecessor.vmName, incarnationId: predecessor.incarnationId });
@@ -133,7 +133,7 @@ describe("Hyper-V inward terminal observations", () => {
 
     it.each(["device_stop", "device_delete"] as const)("retains %s semantic failure despite success-looking receipt bytes", async (command) => {
         const f = terminalFixture(command);
-        const execution = { ...f.execution, stdout: JSON.stringify(f.observation) };
+        const execution = { ...f.execution, receipt: { nativeEvidence: "success-looking", status: 0, stdout: JSON.stringify(f.observation) } };
         const operation = command === "device_stop" ? f.ports.executeStop : f.ports.executeDelete;
         operation.mockResolvedValue({ ok: false, observation: f.observation, execution });
         const outcome = await f.application.invoke("owner", f.request, 100000, 130000);

@@ -19,7 +19,7 @@ export interface BrokenWorkspaceRepairPorts<A extends WorkspaceRepairAuthority> 
     removePrivateQuarantine(quarantine: A["QuarantineLocation"]): void;
     commitQuarantinedMissingWorktreeRegistration(registration: A["QuarantinedMissingWorktreeRegistration"]): void;
     warnDisplacedWorktreeRegistration(path: string, quarantinePath: string): void;
-    warnWorktreeRepairFailure(path: string, stderr: string): void;
+    warnWorktreeRepairFailure(path: string, detail: string): void;
     createPreservedContentMerge(path: string): A["PreservedContentMerge"];
     mergePreservingContent(source: string, destination: string, merge: A["PreservedContentMerge"]): void;
     createContentConflictError(path: string, merge: A["PreservedContentMerge"]): Error;

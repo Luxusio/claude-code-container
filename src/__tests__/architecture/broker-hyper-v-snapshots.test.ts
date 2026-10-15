@@ -357,8 +357,11 @@ describe("broker Hyper-V snapshot policy", () => {
         expect(f.state.journal).toBeNull();
     });
 
-    it("does not publish a restored Linux guest before SSH becomes ready", async () => {
+    it("does not publish a restored Linux guest when a successful SSH command has no readiness observation", async () => {
         const f = linuxRestoreFixture();
+        const receipt = Object.freeze({ nativeEvidence: "successful SSH without a marker", mode: "exec", provider: "hyper-v-ssh", status: 0, stdout: "unqualified native output" });
+        const execution: SnapshotExecution<Receipt> = { ok: true, receipt };
+        vi.mocked(f.ports.sshReady).mockResolvedValue({ ready: false, execution });
         expect(await f.invoke("device_snapshot_restore", { snapshotId: checkpointId })).toMatchObject({ kind: "refused", reason: "provider-failed", journalDisposition: "retain", error: "hyper-v-linux-guest-provider-failed" });
         expect(f.ports.restore).toHaveBeenCalledWith(powershell, expect.objectContaining({ snapshotId: checkpointId }),
             { force: false, startAfterRestore: true });
@@ -367,5 +370,7 @@ describe("broker Hyper-V snapshot policy", () => {
         expect(f.ports.publish).not.toHaveBeenCalled();
         expect(f.state.journal?.tool).toBe("device_snapshot_restore");
         expect(f.state.current).toBe(f.device);
+        expect(execution.receipt).toBe(receipt);
+        expect(receipt).toEqual({ nativeEvidence: "successful SSH without a marker", mode: "exec", provider: "hyper-v-ssh", status: 0, stdout: "unqualified native output" });
     });
 });

@@ -53,7 +53,10 @@ vi.mock("@ccc/device-lab/device-lab/broker/hyper-v/network.js", async (importOri
     };
 });
 
-function createDeviceBrokerServer(options: Parameters<typeof createRawDeviceBrokerServer>[0]) {
+type FixtureBrokerOptions = NonNullable<Parameters<typeof createRawDeviceBrokerServer>[0]>;
+type FixtureCommandRunner = NonNullable<FixtureBrokerOptions["commandRunner"]>;
+
+function createDeviceBrokerServer(options: FixtureBrokerOptions) {
     const networkRunner = options.commandRunner && withTypedHyperVNetworkOperations(options.commandRunner, {
         stateFile: join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json"),
     });
@@ -113,7 +116,7 @@ function memoryBootstrapEnvelope(
 // The operation request the library asked for, or null when this command is not a library call.
 function nativeLibraryRequest(
     command: { args: string[]; input?: string },
-): { operation: string; selector?: { kind: string; id?: string; name?: string }; action?: string; command?: string; localPath?: string; remotePath?: string; expectedName?: string; expectedNotes?: string; path?: string; mode?: string; force?: boolean; paths?: string[]; guard?: { expectedName: string; expectedNotes: string } } | null {
+): { operation: string; selector?: { kind: string; id?: string; name?: string }; action?: string; command?: string; localPath?: string; remotePath?: string; expectedName?: string; expectedNotes?: string; path?: string; mode?: string; force?: boolean; paths?: string[]; snapshotName?: string; guard?: { expectedName: string; expectedNotes: string } } | null {
     const envelope = memoryBootstrapEnvelope(command);
     if (envelope) {
         return envelope.script.includes("Write-HyperVWindowsSuccess")
@@ -125,16 +128,18 @@ function nativeLibraryRequest(
         : null;
 }
 
-function providerScript(command: { args: string[]; input?: string }): string {
-    const memoryEnvelope = memoryBootstrapEnvelope(command);
+function providerScript(command: { args?: string[]; input?: string }): string {
+    const args = command.args;
+    if (!args) throw new Error("missing provider command arguments");
+    const memoryEnvelope = memoryBootstrapEnvelope({ args, input: command.input });
     if (memoryEnvelope) return memoryEnvelope.script;
-    if (command.args.at(-1) === "-" && typeof command.input === "string") return command.input;
-    const fileIndex = command.args.indexOf("-File");
+    if (args.at(-1) === "-" && typeof command.input === "string") return command.input;
+    const fileIndex = args.indexOf("-File");
     if (fileIndex >= 0) {
-        const file = command.args[fileIndex + 1];
+        const file = args[fileIndex + 1];
         return file ? readFileSync(file, "utf8") : "";
     }
-    const decoded = Buffer.from(command.args.at(-1) || "", "base64").toString("utf16le");
+    const decoded = Buffer.from(args.at(-1) || "", "base64").toString("utf16le");
     if (decoded.includes("$E=[Console]::In.ReadToEnd().Trim()")) {
         if (!command.input) throw new Error("missing streamed PowerShell program");
         return Buffer.from(command.input, "base64").toString("utf8");
@@ -525,9 +530,9 @@ describe("device-lab host broker lifecycle commands", () => {
             error: reason === "conflict" ? "owner-device-state-conflict" : "provider-command-failed",
             ...(providerFailure ? { providerFailure } : {}),
             execution: {
-                mode: "exec", providerExecution: "executed", mutatesHost: false,
+                required: true, dispatched: true, mutatesHost: false,
                 command: {
-                    mode: "exec", provider: "hyper-v", status: 1,
+                    required: true, dispatched: true, ok: false,
                     receipt: {
                         mode: "exec", provider: "hyper-v", executable: "C:\\secret\\powershell.exe",
                         args: ["-EncodedCommand", "secret-program"], input: "secret-input", status: 1,
@@ -550,8 +555,9 @@ describe("device-lab host broker lifecycle commands", () => {
             ownerId: "owner", backend: "windows-vm", command: "device_start", deviceId: "owned",
             device: { id: "owned" }, invoked: true as const, dryRun: false as const,
             plan: { availability: { kind: "available" as const, connection: { executable: "powershell" } } },
-            execution: { mode: "exec", providerExecution: "executed", mutatesHost: true,
-                command: { mode: "exec", provider: "hyper-v", status: 0, stdout: "{}", stderr: "" } },
+            execution: { required: true, dispatched: true, mutatesHost: true,
+                command: { required: true, dispatched: true, ok: true,
+                    receipt: { mode: "exec", provider: "hyper-v", status: 0, stdout: "{}", stderr: "" } } },
         };
         const rendered = renderHyperVCreateStart(result === "success"
             ? { ...facts, kind: "started", journalDisposition: "clear", recoveryDisposition: "already-handled" }
@@ -665,7 +671,7 @@ describe("device-lab host broker lifecycle commands", () => {
         { profile: "windows-11", input: { profile: "windows-11" }, conflicts: [] },
         { profile: "windows-server", input: { baseImageSha256: "b".repeat(64) }, conflicts: ["baseImageSha256"] },
         { profile: "windows-server", input: { sourceImage: "different.vhdx" }, conflicts: ["sourceImage"] },
-    ])("rejects chosen Hyper-V IDs before repeated-create profile comparisons: %j", async ({ profile, input, conflicts }) => {
+    ])("rejects chosen Hyper-V IDs before repeated-create profile comparisons: %j", async ({ profile, input }) => {
         const cwd = "/project/broker-hyper-v-default-profile-retry";
         const ownerId = deviceLabOwnerId(cwd);
         const deviceId = "nested-development-vm";
@@ -982,7 +988,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 }
                 if (nativeRequest.operation === "Repair-VMSnapshotState") {
                     return { ...command, status: 0, stdout: nativeEnvelope("Repair-VMSnapshotState", [{
-                        checkpointPolicy: "ProductionOnly", candidateCount: snapshotExists ? 1 : 0,
+                        checkpointPolicy: "ProductionOnly", candidateCount: !removeAttempted || rollbackFailure === "checkpoint-remains" ? 1 : 0,
                     }]), stderr: "" };
                 }
                 if (nativeRequest.operation === "Get-VHD") {
@@ -1288,6 +1294,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     if (snapshotRepairResult === "timeout") {
                         return { ...command, status: null, stdout: "", stderr: "", timedOut: true };
                     }
+                    if (typeof nativeRequest.snapshotName !== "string") throw new Error("missing snapshot repair name");
                     const candidateExists = snapshotExists
                         && nativeSnapshot.name.toLowerCase() === nativeRequest.snapshotName.toLowerCase();
                     return { ...command, status: 0, stdout: nativeEnvelope("Repair-VMSnapshotState", [{
@@ -1719,6 +1726,13 @@ describe("device-lab host broker lifecycle commands", () => {
                 const refusedDevice = refusedBody?.result?.device;
                 expect(refusedDevice?.lastBootCheck?.diagnostic?.state, "diagnostic must predate containment").toBe("Running");
                 expect(refusedDevice?.runtimeState, "containment must drive the recorded state Off").toBe("Off");
+                expect(refusedBody?.result?.boot?.errorDetail).toMatchObject({ structured: true, status: 1, timedOut: false, stderrBytes: 0 });
+                expect(refusedDevice?.lastBootCheck).toMatchObject({ ready: false, error: scrubReason });
+                const persisted = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8"));
+                expect(persisted.devices.find((entry: { id: string }) => entry.id === deviceId)?.lastBootCheck)
+                    .toMatchObject({ ready: false, error: scrubReason });
+                expect(JSON.stringify(refusedBody)).not.toContain('"evidence"');
+                expect(JSON.stringify(persisted)).not.toContain('"evidence"');
             }
 
             // First-boot containment. The two reasons above both require the PowerShell Direct probe
@@ -2598,7 +2612,7 @@ describe("device-lab host broker lifecycle commands", () => {
             activeIncarnationId = recreatedIncarnationId;
             const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
             const canonicalState = JSON.parse(readFileSync(stateFile, "utf8"));
-            writeFileSync(stateFile, JSON.stringify({ devices: canonicalState.devices.map((device) => ({ ...device, diskPath: join(cwd, "foreign.vhdx") })) }));
+            writeFileSync(stateFile, JSON.stringify({ devices: canonicalState.devices.map((device: Record<string, unknown>) => ({ ...device, diskPath: join(cwd, "foreign.vhdx") })) }));
             const refusedTamperedDelete = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
             expect(refusedTamperedDelete.status).toBe(400);
             expect(await refusedTamperedDelete.json()).toEqual(expect.objectContaining({ error: "invalid-provider-metadata" }));
@@ -3042,7 +3056,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 }
             }
             expect(createIndex).toBe(variants.length);
-            expect(recoveryCalls).toBe(variants.length - (variants.includes("wrong-disk") ? 1 : 0));
+            expect(recoveryCalls).toBe(variants.length - (variants.some(variant => variant === "wrong-disk") ? 1 : 0));
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -4577,7 +4591,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let releaseLock!: () => void;
         const held = withSharedMutationLockAsync(operationLock, () => new Promise<void>((resolve) => {
             releaseLock = resolve;
-        }), { waitMs: 1000, staleMs: 60_000, heartbeatMs: 50 });
+        }), { waitMs: 1000, staleMs: 60_000 });
         try {
             writeBrokerDevices(ownerId, "linux-vm", [{ id: deviceId, status: "running", backend: "linux-vm" }]);
             await vi.waitFor(() => expect(releaseLock).toBeTypeOf("function"));
@@ -8231,7 +8245,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             expect(readFileSync(localPath, "utf8")).toBe("video");
             expect(JSON.parse(readFileSync(join(backendRoot(ownerId, "android"), "devices.json"), "utf8")).devices[0].recording).toBeNull();
         } finally {
-            try { process.kill(-recorder.pid, "SIGKILL"); } catch { /* already exited */ }
+            try { process.kill(-processIdentity.pid, "SIGKILL"); } catch { /* already exited */ }
             await close(server);
             cleanupOwner(ownerId);
         }
@@ -8316,7 +8330,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
 
     it("plans lifecycle commands and dry-run invokes without provider execution", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-command-test");
-        const commandRunner = vi.fn((command) => ({
+        const commandRunner = vi.fn<FixtureCommandRunner>((command) => ({
             mode: command.mode,
             provider: command.provider,
             executable: command.executable,
@@ -10350,7 +10364,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             deviceId: "foreign-sandbox",
             sandboxId: "12345678-1234-4234-9234-1234567890ff",
         }));
-        const commandRunner = vi.fn(() => ({ mode: "exec", provider: "wsb", status: 0, stdout: "", stderr: "" }));
+        const commandRunner = vi.fn<FixtureCommandRunner>(() => ({ mode: "exec", provider: "wsb", status: 0, stdout: "", stderr: "" }));
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-windows-singleton-test",
             platform: "linux", // Simulated wsb CLI, without native window/session discovery.

@@ -72,7 +72,7 @@ export interface HyperVCreateNativePorts<Session,Connection,Receipt> {
  errorInfo(error:unknown):WindowsReadinessError|null;
  typedErrorCode(error:unknown,fallback:string):string;
  typedErrorOperation(error:unknown):HyperVWindowsOperation|null;
- nativeDiagnostics(error:unknown):NonNullable<HyperVNativeExecution<Receipt>['typedCreateNativeDiagnostics']>;
+ nativeDiagnostics(error:unknown):NonNullable<HyperVNativeExecution<Receipt>['nativeDiagnostics']>;
  diagnosticCode(execution:HyperVNativeExecution<Receipt>,fallback?:string):string|undefined;
  boundedErrorCode(error:unknown,fallback:string):string;
  removeCreateArtifact(connection:Connection,target:{deviceRoot:string;diskPath:string;kind:'delete-file'|'delete-directory';path:string},timeout:number,outputLimit:number):Promise<boolean>;

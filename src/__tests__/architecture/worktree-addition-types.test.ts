@@ -29,7 +29,10 @@ function contracts(ports: WorktreeAdditionPorts<Prepared, Receipt>, request: Wor
     // @ts-expect-error Preparation cannot replace the declared opaque type with a promise.
     createWorktreeAddition<Prepared, Receipt>({ ...ports, prepareAddition: async () => ports.prepareAddition(request, "worktree-new") });
     // @ts-expect-error Addition cannot return a promise.
-    createWorktreeAddition({ ...ports, addPrepared: async () => ({ status: 0, registrationReceipt: null }) });
+    createWorktreeAddition({ ...ports, addPrepared: async () => ({ succeeded: true, failureDetail: "", registrationReceipt: null }) });
+    // @ts-expect-error Native process framing is not a completion observation.
+    const raw: WorktreeAdditionObservation<Receipt> = { status: 0, stdout: "", stderr: "", registrationReceipt: null };
+    void raw;
     // @ts-expect-error Compensation is required.
     createWorktreeAddition({ observeBranch: ports.observeBranch, prepareAddition: ports.prepareAddition, addPrepared: ports.addPrepared });
     // @ts-expect-error Semantic port properties are readonly.
@@ -37,7 +40,7 @@ function contracts(ports: WorktreeAdditionPorts<Prepared, Receipt>, request: Wor
     // @ts-expect-error Semantic port properties are readonly.
     ports.prepareAddition = () => ({} as Prepared);
     // @ts-expect-error Semantic port properties are readonly.
-    ports.addPrepared = () => ({ status: 0, registrationReceipt: null });
+    ports.addPrepared = () => ({ succeeded: true, failureDetail: "", registrationReceipt: null });
     // @ts-expect-error Semantic port properties are readonly.
     ports.compensateFailedAddition = () => {};
     // @ts-expect-error The operation requires its request.
@@ -54,7 +57,7 @@ describe("worktree addition compile contracts", () => {
     it("returns a synchronous callable with inferred opaque result types", () => {
         const prepared = { token: Symbol("prepared") };
         const receipt = { token: Symbol("receipt") };
-        const add = createWorktreeAddition({ observeBranch: () => "none", prepareAddition: () => prepared, addPrepared: () => ({ status: 0, registrationReceipt: receipt }), compensateFailedAddition: () => {} });
+        const add = createWorktreeAddition({ observeBranch: () => "none", prepareAddition: () => prepared, addPrepared: () => ({ succeeded: true, failureDetail: "", registrationReceipt: receipt }), compensateFailedAddition: () => {} });
         const result = add({ repositoryPath: "source", destinationPath: "destination", branch: "branch", failureContext: { kind: "unified" } });
         expect(result.prepared).toBe(prepared);
         expect(result.registrationReceipt).toBe(receipt);

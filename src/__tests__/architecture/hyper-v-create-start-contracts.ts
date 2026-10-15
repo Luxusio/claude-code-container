@@ -1,6 +1,6 @@
 import { createHyperVCreateStartApplication, executeHyperVVmCreation, waitHyperVWindowsGuestReadiness } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.js";
 import type { WindowsReadinessOutcome, WindowsReadinessPorts, WindowsReadinessRequest, VmCreationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-create-start.js";
-import type { HyperVCreateRecovery, HyperVLinuxReadinessObservation, HyperVLifecycleOutcome, HyperVLifecycleRequest, HyperVNativeExecution, HyperVPowerObservation, HyperVVmCreationResult, VmCreationEffect, VmCreationObservation, VmCreationRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
+import type { HyperVCreateRecovery, HyperVLinuxReadinessObservation, HyperVLifecycleExecution, HyperVLifecycleOutcome, HyperVLifecycleRequest, HyperVNativeExecution, HyperVPowerObservation, HyperVVmCreationResult, VmCreationEffect, VmCreationObservation, VmCreationRequest } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
 
 function readinessCapabilities(request: WindowsReadinessRequest, ports: WindowsReadinessPorts): void {
     const result: Promise<WindowsReadinessOutcome> = waitHyperVWindowsGuestReadiness(request, ports);
@@ -99,8 +99,8 @@ function finiteNativeCapabilities(ports: WorkflowPorts): void {
     // @ts-expect-error Linux seed preparation is required before the independently budgeted effect.
     createHyperVCreateStartApplication(withoutSeedPreparation);
     const linuxReadiness: HyperVLinuxReadinessObservation<Receipt> = {
-        backend: "linux-vm", ok: true, ready: true, execution: { mode: "exec", provider: "hyper-v-ssh", receipt: { nativeEvidence: "ready" } },
-        failureCode: "ssh-unavailable", failureDetail: { status: 0, timedOut: false, stdoutBytes: 0, stderrBytes: 0 }, hostKeyFingerprints: [],
+        backend: "linux-vm", ok: true, ready: true, execution: { required: true, dispatched: true, ok: true, receipt: { nativeEvidence: "ready" } },
+        failureCode: "ssh-unavailable", failureDetail: { evidence: { nativeEvidence: "readiness diagnostics" } }, hostKeyFingerprints: [],
     };
     // @ts-expect-error Readiness is a settled asynchronous observation.
     createHyperVCreateStartApplication({ ...ports, probeLinuxReadiness: () => linuxReadiness });
@@ -129,7 +129,7 @@ function powerCapabilities(ports: WorkflowPorts, connection: Connection): void {
     const target = { ownerId: "owner", deviceId: "owned", incarnationId: "incarnation", vmId: "vm-id", vmName: "owned-vm" };
     const powered: Promise<HyperVPowerObservation<Receipt>> = ports.power(connection, target, "start", 100000, 30000, {});
     const planned: Promise<HyperVPowerObservation<Receipt>> = ports.observePlannedPower(connection, 30000, 1024);
-    const execution: HyperVNativeExecution<Receipt> = { mode: "exec", provider: "hyper-v", status: 0, receipt: { nativeEvidence: "raw" } };
+    const execution: HyperVNativeExecution<Receipt> = { required: true, dispatched: true, ok: true, receipt: { nativeEvidence: "raw" } };
     // @ts-expect-error Power policy needs normalized success and VM identity, not only a process receipt.
     createHyperVCreateStartApplication({ ...ports, power: async () => execution });
     // @ts-expect-error Planned power has the same required semantic contract as native power.
@@ -145,7 +145,7 @@ function powerCapabilities(ports: WorkflowPorts, connection: Connection): void {
 void powerCapabilities;
 
 function generalNativeCapabilities(ports: WorkflowPorts, connection: Connection): void {
-    const execution: HyperVNativeExecution<Receipt> = { mode: "exec", provider: "hyper-v", status: 0, receipt: { nativeEvidence: "opaque" } };
+    const execution: HyperVNativeExecution<Receipt> = { required: true, dispatched: true, ok: true, receipt: { nativeEvidence: "opaque" } };
     type DirectoryResult = Awaited<ReturnType<WorkflowPorts["prepareCreateDirectories"]>>;
     type ProvisionResult = Awaited<ReturnType<WorkflowPorts["provision"]>>;
     type SeedResult = Awaited<ReturnType<ReturnType<WorkflowPorts["prepareLinuxSeed"]>>>;
@@ -185,14 +185,14 @@ function generalNativeCapabilities(ports: WorkflowPorts, connection: Connection)
     createHyperVCreateStartApplication({ ...ports, removeCreateArtifact: async () => execution });
     // @ts-expect-error Native cleanup must settle asynchronously.
     createHyperVCreateStartApplication({ ...ports, removeCreateArtifact: () => true });
-    // @ts-expect-error Bootstrap trace status must be normalized explicitly.
-    const missingBootstrapStatus: BootstrapResult = { observation: null, failureCode: null, execution };
+    // @ts-expect-error Bootstrap trace diagnostics must be captured explicitly.
+    const missingBootstrapDiagnostics: BootstrapResult = { observation: null, failureCode: null, execution };
     // @ts-expect-error Bootstrap trace diagnostics cannot remain implicit in the receipt.
-    const missingBootstrapFailure: BootstrapResult = { status: 0, observation: null, execution };
+    const missingBootstrapFailure: BootstrapResult = { diagnostics: {}, observation: null, execution };
     // @ts-expect-error A missing bootstrap observation is explicit null.
-    const missingBootstrap: BootstrapResult = { status: 0, failureCode: null, execution };
+    const missingBootstrap: BootstrapResult = { diagnostics: {}, failureCode: null, execution };
     // @ts-expect-error Bootstrap facts cannot replace native diagnostic evidence.
-    const missingBootstrapEvidence: BootstrapResult = { status: 0, failureCode: null, observation: null };
+    const missingBootstrapEvidence: BootstrapResult = { diagnostics: {}, failureCode: null, observation: null };
     // @ts-expect-error VM creation requires semantic success and explicit observation/null.
     const missingCreate: HyperVVmCreationResult<Receipt> = { ok: true, execution };
     // @ts-expect-error VM creation success cannot be inferred from its evidence.
@@ -200,6 +200,33 @@ function generalNativeCapabilities(ports: WorkflowPorts, connection: Connection)
     // @ts-expect-error VM creation facts cannot replace native diagnostic evidence.
     const missingCreateEvidence: HyperVVmCreationResult<Receipt> = { ok: true, observation: null };
     const removed: Promise<boolean> = ports.removeCreateArtifact(connection, { deviceRoot: "root", diskPath: "disk", kind: "delete-file", path: "disk" }, 1000, 1024);
-    void [missingDirectory, missingPartial, missingDirectorySuccess, missingDirectoryEvidence, missingProvision, missingProvisionSuccess, missingProvisionEvidence, missingSeed, missingSeedSuccess, missingSeedEvidence, missingFinalizeEvidence, missingBootstrapStatus, missingBootstrapFailure, missingBootstrap, missingBootstrapEvidence, missingCreate, missingCreateSuccess, missingCreateEvidence, removed];
+    void [missingDirectory, missingPartial, missingDirectorySuccess, missingDirectoryEvidence, missingProvision, missingProvisionSuccess, missingProvisionEvidence, missingSeed, missingSeedSuccess, missingSeedEvidence, missingFinalizeEvidence, missingBootstrapDiagnostics, missingBootstrapFailure, missingBootstrap, missingBootstrapEvidence, missingCreate, missingCreateSuccess, missingCreateEvidence, removed];
 }
 void generalNativeCapabilities;
+
+function semanticExecutionContract(execution: HyperVNativeExecution<Receipt>): void {
+    const settled: boolean = execution.ok;
+    // @ts-expect-error Native process records do not satisfy the inward execution contract.
+    const rawExecution: HyperVNativeExecution<Receipt> = { mode: "exec", provider: "hyper-v", status: 0, stdout: "{}" };
+    // @ts-expect-error A native exit status is opaque evidence, not an inward decision input.
+    const status = execution.status;
+    // @ts-expect-error Native output is decoded outward before the application receives facts.
+    const stdout = execution.stdout;
+    // @ts-expect-error Dispatch must be explicit even when a command is semantically successful.
+    const missingDispatch: HyperVNativeExecution<Receipt> = { required: true, ok: true };
+    void [settled, rawExecution, status, stdout, missingDispatch];
+}
+void semanticExecutionContract;
+
+function semanticLifecycleSummary(summary: HyperVLifecycleExecution<Receipt>, readiness: HyperVLinuxReadinessObservation<Receipt>): void {
+    // @ts-expect-error Lifecycle summaries carry semantic dispatch facts rather than native mode.
+    const rawSummary: HyperVLifecycleExecution<Receipt> = { mode: "exec", providerExecution: "executed", mutatesHost: true };
+    // @ts-expect-error Applications cannot branch on presentation mode.
+    const mode = summary.mode;
+    // @ts-expect-error Readiness diagnostic bytes stay inside opaque outward evidence.
+    const status = readiness.failureDetail.status;
+    // @ts-expect-error Readiness evidence cannot become an inward raw-output capability.
+    const stdout = readiness.failureDetail.evidence.stdout;
+    void [rawSummary, mode, status, stdout];
+}
+void semanticLifecycleSummary;

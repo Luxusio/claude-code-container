@@ -7,6 +7,8 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
     type NestedRepositoryIdentity = A["NestedRepositoryIdentity"];
     type CapturedDirectoryTree = A["CapturedDirectoryTree"];
     type MissingWorktreeRegistrationFence = A["MissingWorktreeRegistrationFence"];
+    type MetadataSnapshot = A["MetadataSnapshot"];
+    type MetadataPublication = A["MetadataPublication"];
     function recreateMissingWorkspaceRootRegistration(
         workspacePath: string,
         sourcePath: string,
@@ -16,13 +18,12 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
         staleGitDirectory: string,
         workspaceIdentity: DirectoryIdentity,
         gitFileIdentity: DirectoryIdentity,
-        gitFileContent: string,
+        gitFileSnapshot: MetadataSnapshot,
         mode: "inspect" | "confirmed",
         reportFailure?: (reason: string) => void,
         preflightFence?: () => void,
     ): boolean {
-        const refuse = (stage: string, gitStderr?: string): false => {
-            const reason = gitStderr ? ports.gitFailureReason(gitStderr) : undefined;
+        const refuse = (stage: string, reason?: string): false => {
             reportFailure?.(reason ? `${stage}: ${reason}` : stage);
             return false;
         };
@@ -53,7 +54,7 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
             ports.assertDirectoryIdentity(workspacePath, workspaceIdentity);
             if (expectOriginalGitFile) {
                 ports.assertPathIdentity(ports.join(workspacePath, ".git"), gitFileIdentity);
-                if (ports.readMetadataText(() => ports.join(workspacePath, ".git")) !== gitFileContent) {
+                if (!ports.metadataMatches(ports.join(workspacePath, ".git"), gitFileSnapshot)) {
                     throw new Error("Workspace Git metadata changed during root registration recovery.");
                 }
             }
@@ -62,10 +63,10 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
 
         const expectedRef = `refs/heads/${expectedBranch}`;
         const sourceEnvironment = ports.pinnedNestedRepositoryEnvironment(sourceIdentity);
-        const branchHead = ports.probeSourceBranchHead(sourceIdentity, sourceEnvironment, expectedRef);
-        const expectedOid = (branchHead.stdout ?? "").trim();
-        if (branchHead.error || branchHead.status !== 0 || !expectedOid) {
-            return refuse("expected branch is unavailable", branchHead.stderr ?? undefined);
+        const branchHead = ports.probeSourceBranchHead(sourceIdentity, sourceEnvironment, expectedRef, "branch");
+        const expectedOid = branchHead.oid;
+        if (!branchHead.succeeded || !expectedOid) {
+            return refuse("expected branch is unavailable", branchHead.failureReason);
         }
         ports.throwOnLiveWorkspaceBranchConflict(
             sourcePath,
@@ -83,38 +84,32 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
         let workspaceRewritten = false;
         let registrationRewritten = false;
         let managementGitdir = "";
-        let managementGitdirOriginal = "";
-        let workspaceInstalledIdentity: DirectoryIdentity | null = null;
-        let registrationInstalledIdentity: DirectoryIdentity | null = null;
-        let workspaceInstalledContent = "";
-        let registrationInstalledContent = "";
+        let managementGitdirOriginal: MetadataSnapshot | null = null;
+        let workspacePublication: MetadataPublication | null = null;
+        let registrationPublication: MetadataPublication | null = null;
         let createdManagementIdentity: DirectoryIdentity | null = null;
         let createdManagementHeadIdentity: FileIdentity | null = null;
         let createdManagementTree: CapturedDirectoryTree | null = null;
         let managementRootIdentity: DirectoryIdentity | null = null;
         let temporaryGitFileIdentity: DirectoryIdentity | null = null;
-        let temporaryGitFileContent = "";
+        let temporaryGitFileSnapshot: MetadataSnapshot | null = null;
         let failedRegistrationCommand = false;
         try {
             assertRecoveryAuthority();
             const registered = ports.registerTemporaryWorktree(sourceIdentity, sourceEnvironment, temporaryPath, expectedBranch);
-            failedRegistrationCommand = Boolean(registered.error) || registered.status !== 0;
+            failedRegistrationCommand = !registered.succeeded;
             if (failedRegistrationCommand) {
-                return refuse("git worktree add failed", registered.stderr ?? registered.error?.message);
+                return refuse("git worktree add failed", registered.failureReason);
             }
             temporaryRegistered = true;
 
             const temporaryGitFile = ports.join(temporaryPath, ".git");
-            const temporaryContent = ports.readMetadataText(() => temporaryGitFile);
+            const temporarySnapshot = ports.captureMetadata(temporaryGitFile);
             temporaryGitFileIdentity = ports.capturePathIdentity(temporaryGitFile);
-            temporaryGitFileContent = temporaryContent;
+            temporaryGitFileSnapshot = temporarySnapshot;
             ports.assertPathIdentity(temporaryGitFile, temporaryGitFileIdentity);
-            const temporaryMatch = temporaryContent.trim().match(/^gitdir:\s*(.+)$/);
-            if (!temporaryMatch) return refuse("temporary Git link is invalid");
-            const managementDirectory = ports.resolve(
-                ports.dirname(temporaryGitFile),
-                temporaryMatch[1].trim(),
-            );
+            const managementDirectory = ports.worktreeGitDirectory(temporaryGitFile, temporarySnapshot);
+            if (!managementDirectory) return refuse("temporary Git link is invalid");
             const managementIdentity = ports.captureDirectoryIdentity(managementDirectory);
             createdManagementIdentity = managementIdentity;
             managementRootIdentity = ports.captureDirectoryIdentity(managementRoot);
@@ -124,13 +119,13 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
             }
             const managementHead = ports.join(managementDirectory, "HEAD");
             managementGitdir = ports.join(managementDirectory, "gitdir");
-            managementGitdirOriginal = ports.readMetadataText(() => managementGitdir);
+            managementGitdirOriginal = ports.captureMetadata(managementGitdir);
             const managementHeadIdentity = ports.captureFileIdentity(managementHead);
             createdManagementHeadIdentity = managementHeadIdentity;
-            const managementHeadContent = ports.readMetadataText(() => managementHead);
+            const managementHeadSnapshot = ports.captureMetadata(managementHead);
             createdManagementTree = ports.captureDirectoryTree(managementDirectory);
             if (!ports.sameExistingObject(ports.dirname(managementIdentity.realpath), managementRoot)
-                || managementHeadContent.trim() !== `ref: ${expectedRef}`) {
+                || ports.metadataBranchRef(managementHeadSnapshot) !== expectedRef) {
                 return refuse("temporary registration path or branch does not match");
             }
             const temporaryRepositoryIdentity = ports.captureNestedRepositoryIdentity(
@@ -140,70 +135,66 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
                 temporaryRepositoryIdentity,
             );
             const registeredHead = ports.readTemporaryHead(temporaryRepositoryIdentity, temporaryEnvironment);
-            const currentBranchHead = ports.probeSourceBranchHead(sourceIdentity, sourceEnvironment, expectedRef);
-            if (registeredHead.error || registeredHead.status !== 0) {
+            const currentBranchHead = ports.probeSourceBranchHead(sourceIdentity, sourceEnvironment, expectedRef, "read");
+            if (!registeredHead.succeeded) {
                 return refuse("temporary registration HEAD could not be read",
-                    (registeredHead.stderr ?? "").trim() || registeredHead.error?.message);
+                    registeredHead.failureReason);
             }
-            if (currentBranchHead.error || currentBranchHead.status !== 0) {
+            if (!currentBranchHead.succeeded) {
                 return refuse("expected branch HEAD could not be read",
-                    (currentBranchHead.stderr ?? "").trim() || currentBranchHead.error?.message);
+                    currentBranchHead.failureReason);
             }
-            if ((registeredHead.stdout ?? "").trim() !== expectedOid
-                || (currentBranchHead.stdout ?? "").trim() !== expectedOid) {
+            if (registeredHead.oid !== expectedOid
+                || currentBranchHead.oid !== expectedOid) {
                 return refuse("temporary registration HEAD changed");
             }
             const initializedIndex = ports.initializeTemporaryIndex(temporaryRepositoryIdentity, temporaryEnvironment, expectedOid);
             createdManagementTree = ports.captureDirectoryTree(managementDirectory);
-            if (initializedIndex.error || initializedIndex.status !== 0) {
-                return refuse("git read-tree failed", initializedIndex.stderr ?? initializedIndex.error?.message);
+            if (!initializedIndex.succeeded) {
+                return refuse("git read-tree failed", initializedIndex.failureReason);
             }
             const stagedDiff = ports.compareTemporaryIndex(temporaryRepositoryIdentity, temporaryEnvironment, expectedOid);
-            if (stagedDiff.error || stagedDiff.status !== 0) {
-                return refuse("temporary index does not match the expected branch", stagedDiff.stderr ?? stagedDiff.error?.message);
+            if (!stagedDiff.succeeded) {
+                return refuse("temporary index does not match the expected branch", stagedDiff.failureReason);
             }
             const managementIndex = ports.join(managementDirectory, "index");
             const managementIndexIdentity = ports.captureFileIdentity(managementIndex);
             const managementIndexContent = ports.captureIndexContent(managementIndex);
             ports.assertFileIdentity(managementHead, managementHeadIdentity);
-            if (ports.readMetadataText(() => managementHead) !== managementHeadContent) {
+            if (!ports.metadataMatches(managementHead, managementHeadSnapshot)) {
                 return refuse("temporary registration branch changed");
             }
 
-            const portableGitDirectory = ports.portableInstalledGitDirectory(workspacePath, workspaceIdentity, managementDirectory, managementIdentity);
             assertRecoveryAuthority();
             if (!managementRootIdentity) return refuse("temporary management root identity is unavailable");
             ports.assertDirectoryIdentity(managementRoot, managementRootIdentity);
             if (ports.pathExistsStrict(staleGitDirectory)) return refuse("old management entry reappeared");
             ports.assertDirectoryIdentity(workspacePath, workspaceIdentity);
-            workspaceInstalledContent = `gitdir: ${portableGitDirectory}\n`;
-            ports.normalizeWorktreeMetadataFile(
-                ports.join(workspacePath, ".git"),
-                workspaceInstalledContent,
+            workspacePublication = ports.publishWorktreeGitLink(
+                workspacePath,
+                workspaceIdentity,
+                managementDirectory,
+                managementIdentity,
                 gitFileIdentity,
-                gitFileContent,
+                gitFileSnapshot,
             );
             workspaceRewritten = true;
-            workspaceInstalledIdentity = ports.capturePathIdentity(ports.join(workspacePath, ".git"));
-            registrationInstalledContent = `${ports.portableWorktreeBackpointer(ports.join(workspacePath, ".git"))}\n`;
-            ports.normalizeWorktreeMetadataFile(
+            registrationPublication = ports.publishWorktreeBackpointer(
                 managementGitdir,
-                registrationInstalledContent,
+                ports.join(workspacePath, ".git"),
                 ports.capturePathIdentity(managementGitdir),
                 managementGitdirOriginal,
             );
             registrationRewritten = true;
-            registrationInstalledIdentity = ports.capturePathIdentity(managementGitdir);
 
             if (!ports.withPinnedNestedRepository(
                 sourceIdentity,
                 () => ports.isValidWorktree(workspacePath, sourcePath,
                     (reason) => reportFailure?.(`relinked workspace validation failed: ${reason}`)),
             )) return false;
-            const finalBranchHead = ports.probeSourceBranchHead(sourceIdentity, sourceEnvironment, expectedRef);
-            if (finalBranchHead.error || finalBranchHead.status !== 0
-                || (finalBranchHead.stdout ?? "").trim() !== expectedOid) {
-                return refuse("expected branch changed after registration", finalBranchHead.stderr ?? undefined);
+            const finalBranchHead = ports.probeSourceBranchHead(sourceIdentity, sourceEnvironment, expectedRef, "branch");
+            if (!finalBranchHead.succeeded || finalBranchHead.oid !== expectedOid) {
+                return refuse("expected branch changed after registration", finalBranchHead.failureReason);
             }
             assertRecoveryAuthority(false);
             ports.assertDirectoryIdentity(managementRoot, managementRootIdentity);
@@ -211,26 +202,26 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
             ports.assertDirectoryIdentity(managementDirectory, managementIdentity);
             ports.assertFileIdentity(managementHead, managementHeadIdentity);
             ports.assertFileIdentity(managementIndex, managementIndexIdentity);
-            if (ports.readMetadataText(() => managementHead) !== managementHeadContent
+            if (!ports.metadataMatches(managementHead, managementHeadSnapshot)
                 || !ports.metadataIndexMatches(managementIndex, managementIndexContent)) {
                 return refuse("temporary registration HEAD or index changed");
             }
-            if (!workspaceInstalledIdentity || !registrationInstalledIdentity) {
+            if (!workspacePublication || !registrationPublication) {
                 return refuse("installed Git metadata identity is unavailable");
             }
-            ports.assertPathIdentity(ports.join(workspacePath, ".git"), workspaceInstalledIdentity);
-            ports.assertPathIdentity(managementGitdir, registrationInstalledIdentity);
-            if (ports.readMetadataText(() => ports.join(workspacePath, ".git"))
-                    !== workspaceInstalledContent
-                || ports.readMetadataText(() => managementGitdir)
-                    !== registrationInstalledContent) return refuse("installed Git metadata changed");
+            ports.assertMetadataPublication(ports.join(workspacePath, ".git"), workspacePublication);
+            ports.assertMetadataPublication(managementGitdir, registrationPublication);
+            if (!ports.metadataPublicationMatches(ports.join(workspacePath, ".git"), workspacePublication)
+                || !ports.metadataPublicationMatches(managementGitdir, registrationPublication)) {
+                return refuse("installed Git metadata changed");
+            }
             ports.assertDirectoryIdentity(temporaryPath, temporaryIdentity);
             if (ports.readDirectoryEntries(temporaryPath).some((entry) => entry !== ".git")) {
                 return refuse("temporary workspace contains unexpected content");
             }
-            if (!temporaryGitFileIdentity) return refuse("temporary Git link identity is unavailable");
+            if (!temporaryGitFileIdentity || !temporaryGitFileSnapshot) return refuse("temporary Git link identity is unavailable");
             ports.assertPathIdentity(temporaryGitFile, temporaryGitFileIdentity);
-            if (ports.readMetadataText(() => temporaryGitFile) !== temporaryGitFileContent) {
+            if (!ports.metadataMatches(temporaryGitFile, temporaryGitFileSnapshot)) {
                 return refuse("temporary Git link changed");
             }
             ports.unlinkTemporaryLink(temporaryGitFile);
@@ -258,7 +249,7 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
                     }
                     if (ports.registeredWorktreePath(sourcePath, temporaryPath)) {
                         const removed = ports.removeFailedTemporaryRegistration(sourceIdentity, sourceEnvironment, temporaryPath);
-                        if (removed.error || removed.status !== 0
+                        if (!removed.succeeded
                             || ports.pathExistsStrict(temporaryPath)
                             || ports.registeredWorktreePath(sourcePath, temporaryPath)) {
                             throw new Error("failed registration could not be rolled back");
@@ -277,38 +268,36 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
             }
             if (temporaryRegistered) {
                 try {
+                    let managementGitdirAuthority: MetadataSnapshot | MetadataPublication | null = managementGitdirOriginal;
                     if (registrationRewritten && managementGitdir) {
-                        if (!registrationInstalledIdentity) {
+                        if (!registrationPublication || !managementGitdirOriginal) {
                             throw new Error("missing installed registration identity");
                         }
-                        ports.normalizeWorktreeMetadataFile(
+                        managementGitdirAuthority = ports.restoreMetadata(
                             managementGitdir,
                             managementGitdirOriginal,
-                            registrationInstalledIdentity,
-                            registrationInstalledContent,
+                            registrationPublication,
                         );
                     }
                     if (workspaceRewritten) {
-                        if (!workspaceInstalledIdentity) {
+                        if (!workspacePublication) {
                             throw new Error("missing installed workspace identity");
                         }
-                        ports.normalizeWorktreeMetadataFile(
+                        ports.restoreMetadata(
                             ports.join(workspacePath, ".git"),
-                            gitFileContent,
-                            workspaceInstalledIdentity,
-                            workspaceInstalledContent,
+                            gitFileSnapshot,
+                            workspacePublication,
                         );
                     }
                     ports.assertDirectoryIdentity(temporaryPath, temporaryIdentity);
                     if (ports.readDirectoryEntries(temporaryPath).some((entry) => entry !== ".git")) {
                         throw new Error("temporary registration directory contains unexpected content");
                     }
-                    if (!temporaryGitFileIdentity) {
+                    if (!temporaryGitFileIdentity || !temporaryGitFileSnapshot) {
                         throw new Error("missing temporary Git file identity during rollback");
                     }
                     ports.assertPathIdentity(ports.join(temporaryPath, ".git"), temporaryGitFileIdentity);
-                    if (ports.readMetadataText(() => ports.join(temporaryPath, ".git"))
-                        !== temporaryGitFileContent) {
+                    if (!ports.metadataMatches(ports.join(temporaryPath, ".git"), temporaryGitFileSnapshot)) {
                         throw new Error("temporary Git file changed during rollback");
                     }
                     ports.unlinkTemporaryLink(ports.join(temporaryPath, ".git"));
@@ -318,6 +307,9 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
                     }
                     if (!createdManagementTree) {
                         throw new Error("missing created registration tree during rollback");
+                    }
+                    if (!managementGitdirAuthority) {
+                        throw new Error("missing created registration metadata during rollback");
                     }
                     const managementIdentity = createdManagementIdentity;
                     const managementTree = createdManagementTree;
@@ -331,7 +323,7 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
                     );
                     const staleRegistration: MissingWorktreeRegistrationFence = ports.makeMissingRegistrationFence(
                         managementIdentity,
-                        ports.captureFileIdentity(managementGitdir),
+                        managementGitdirAuthority,
                         createdManagementHeadIdentity,
                         expectedOid,
                         expectedRef,
@@ -411,14 +403,10 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
             const workspaceIdentity = ports.captureDirectoryIdentity(resolvedWorkspace);
             const gitFile = ports.join(resolvedWorkspace, ".git");
             const gitFileIdentity = ports.capturePathIdentity(gitFile);
-            const gitFileContent = ports.readMetadataText(() => gitFile);
+            const gitFileSnapshot = ports.captureMetadata(gitFile);
             ports.assertPathIdentity(gitFile, gitFileIdentity);
-            const gitFileMatch = gitFileContent.trim().match(/^gitdir:\s*(.+)$/);
-            if (!gitFileMatch) return refuse("workspace Git link is invalid");
-            const resolvedGitDirectory = ports.resolve(
-                ports.dirname(gitFile),
-                gitFileMatch[1].trim(),
-            );
+            const resolvedGitDirectory = ports.worktreeGitDirectory(gitFile, gitFileSnapshot);
+            if (!resolvedGitDirectory) return refuse("workspace Git link is invalid");
 
             const sourceIdentity = ports.captureNestedRepositoryIdentity(resolvedSource);
             const commonGitDirectory = sourceIdentity.commonDirectory.realpath;
@@ -435,7 +423,7 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
                     resolvedGitDirectory,
                     workspaceIdentity,
                     gitFileIdentity,
-                    gitFileContent,
+                    gitFileSnapshot,
                     missingRegistrationMode,
                     reportFailure,
                     preflightFence,
@@ -445,7 +433,7 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
                         ports.assertNestedRepositoryIdentity(resolvedSource, sourceIdentity);
                         ports.assertDirectoryIdentity(resolvedWorkspace, workspaceIdentity);
                         ports.assertPathIdentity(gitFile, gitFileIdentity);
-                        if (ports.readMetadataText(() => gitFile) !== gitFileContent) {
+                        if (!ports.metadataMatches(gitFile, gitFileSnapshot)) {
                             throw new Error("Workspace Git metadata changed while awaiting confirmation.");
                         }
                     });
@@ -477,81 +465,75 @@ export function createRootWorkspaceRepair<A extends WorkspaceRepairAuthority>(po
             const commonDirIdentity = ports.captureFileIdentity(commonDirFile);
             const headIdentity = ports.captureFileIdentity(headFile);
             const managementGitdirIdentity = ports.capturePathIdentity(managementGitdir);
-            const commonDirContent = ports.readMetadataText(() => commonDirFile);
-            const headContent = ports.readMetadataText(() => headFile);
-            const managementGitdirContent = ports.readMetadataText(() => managementGitdir);
-            const previousBackpointer = managementGitdirContent.trim();
-            if (!previousBackpointer) return false;
-            const previousGitFile = ports.isAbsolute(previousBackpointer)
-                ? previousBackpointer
-                : ports.resolve(ports.dirname(managementGitdir), previousBackpointer);
+            const commonDirSnapshot = ports.captureMetadata(commonDirFile);
+            const headSnapshot = ports.captureMetadata(headFile);
+            const managementGitdirSnapshot = ports.captureMetadata(managementGitdir);
+            const previousGitFile = ports.worktreeBackpointer(managementGitdir, managementGitdirSnapshot);
+            if (!previousGitFile) return false;
             if (ports.pathExistsStrict(previousGitFile)) return false;
-            const commonDirectory = ports.captureDirectoryIdentity(ports.resolve(
+            const commonDirectory = ports.captureDirectoryIdentity(ports.worktreeCommonDirectory(
                 managementEntry.realpath,
-                commonDirContent.trim(),
+                commonDirSnapshot,
             ));
             if (!ports.sameExistingObject(commonDirectory.realpath, commonGitDirectory)) return false;
 
             const expectedRef = `refs/heads/${expectedBranch}`;
-            if (headContent.trim() !== `ref: ${expectedRef}`) return false;
+            if (ports.metadataBranchRef(headSnapshot) !== expectedRef) return false;
             const branchHead = ports.probeBackpointerBranchHead(sourceIdentity, expectedRef);
-            const expectedOid = (branchHead.stdout ?? "").trim();
-            if (branchHead.error || branchHead.status !== 0 || !expectedOid) {
+            const expectedOid = branchHead.oid;
+            if (!branchHead.succeeded || !expectedOid) {
                 return false;
             }
 
             ports.assertDirectoryIdentity(resolvedWorkspace, workspaceIdentity);
             ports.assertNestedRepositoryIdentity(resolvedSource, sourceIdentity);
             ports.assertPathIdentity(gitFile, gitFileIdentity);
-            if (ports.readMetadataText(() => gitFile) !== gitFileContent) return false;
+            if (!ports.metadataMatches(gitFile, gitFileSnapshot)) return false;
             ports.assertDirectoryIdentity(managementEntry.realpath, managementEntry);
             ports.assertDirectoryIdentity(managementRoot.realpath, managementRoot);
             ports.assertFileIdentity(commonDirFile, commonDirIdentity);
             ports.assertFileIdentity(headFile, headIdentity);
             ports.assertFileIdentity(managementGitdir, managementGitdirIdentity);
-            if (ports.readMetadataText(() => commonDirFile) !== commonDirContent
-                || ports.readMetadataText(() => headFile) !== headContent
-                || ports.readMetadataText(() => managementGitdir) !== managementGitdirContent) {
+            if (!ports.metadataMatches(commonDirFile, commonDirSnapshot)
+                || !ports.metadataMatches(headFile, headSnapshot)
+                || !ports.metadataMatches(managementGitdir, managementGitdirSnapshot)) {
                 return false;
             }
 
-            const installedContent = `${ports.portableWorktreeBackpointer(gitFile)}\n`;
-            let installedIdentity: DirectoryIdentity | null = null;
+            let installedPublication: MetadataPublication | null = null;
             let repaired = false;
             try {
-                ports.normalizeWorktreeMetadataFile(
+                installedPublication = ports.publishWorktreeBackpointer(
                     managementGitdir,
-                    installedContent,
+                    gitFile,
                     managementGitdirIdentity,
-                    managementGitdirContent,
+                    managementGitdirSnapshot,
                 );
-                installedIdentity = ports.capturePathIdentity(managementGitdir);
                 ports.assertDirectoryIdentity(resolvedWorkspace, workspaceIdentity);
                 ports.assertNestedRepositoryIdentity(resolvedSource, sourceIdentity);
                 ports.assertPathIdentity(gitFile, gitFileIdentity);
-                if (ports.readMetadataText(() => gitFile) !== gitFileContent
+                if (!ports.metadataMatches(gitFile, gitFileSnapshot)
                     || !ports.isValidWorktree(resolvedWorkspace, resolvedSource)) return false;
                 const currentBranchHead = ports.probeBackpointerBranchHead(sourceIdentity, expectedRef);
                 ports.assertDirectoryIdentity(resolvedWorkspace, workspaceIdentity);
                 ports.assertNestedRepositoryIdentity(resolvedSource, sourceIdentity);
                 ports.assertPathIdentity(gitFile, gitFileIdentity);
-                ports.assertFileIdentity(managementGitdir, installedIdentity);
-                if (currentBranchHead.error || currentBranchHead.status !== 0
-                    || (currentBranchHead.stdout ?? "").trim() !== expectedOid
-                    || ports.readMetadataText(() => gitFile) !== gitFileContent
-                    || ports.readMetadataText(() => managementGitdir) !== installedContent) {
+                ports.assertMetadataPublication(managementGitdir, installedPublication);
+                if (!currentBranchHead.succeeded
+                    || currentBranchHead.oid !== expectedOid
+                    || !ports.metadataMatches(gitFile, gitFileSnapshot)
+                    || !ports.metadataPublicationMatches(managementGitdir, installedPublication)) {
                     return false;
                 }
                 repaired = true;
                 return true;
             } finally {
-                if (!repaired && installedIdentity) {
+                if (!repaired && installedPublication) {
                     try {
-                        ports.normalizeWorktreeMetadataFile(
+                        ports.restoreMetadata(
                             managementGitdir,
-                            managementGitdirContent,
-                            installedIdentity,
-                            installedContent,
+                            managementGitdirSnapshot,
+                            installedPublication,
                         );
                     } catch (error) {
                         throw ports.createRecoveryRollbackError("Workspace root backpointer recovery rollback failed; workspace content was preserved.", error);

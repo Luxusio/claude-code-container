@@ -62,7 +62,7 @@ export interface VmAdapterObservation {vmId:string|null;name:string;macAddress:s
 
 export type HyperVCreateParameters={name?:unknown;profile?:unknown;sourceImage?:unknown;image?:unknown;baseImageSha256?:unknown;baseImageGeneration?:unknown;memoryMb?:unknown;cpus?:unknown;diskMaxBytes?:unknown;incarnationId?:unknown;networking?:unknown;switchName?:unknown;macAddress?:unknown;networkAddress?:unknown;networkGateway?:unknown;networkPrefix?:unknown;outboundPolicy?:unknown;nestedVirtualization?:unknown;vmId?:unknown;guestUsername?:unknown;guestProvisioned?:unknown;sshHostKeyFingerprint?:unknown;guestUnattendPath?:unknown};
 export type HyperVLifecycleRequest={ok:true;backend:string;stateKey:string;command:string;deviceId:string;force:boolean;startIfStopped?:boolean;dryRun:boolean;headless?:boolean;minimized?:boolean;waitForBoot?:boolean;bootTimeoutMs?:number;deleteAvd?:boolean;deleteSimulator?:boolean;preserveNetwork?:boolean;create?:HyperVCreateParameters};
-export type HyperVNativeExecution<Receipt>={mode:string;provider:string;receipt?:Receipt;status?:number|null;signal?:string|null;stdout?:string;stderr?:string;error?:string;timedOut?:boolean;outputLimitExceeded?:boolean;typedCreateInvalidResult?:boolean;typedCreateOperation?:HyperVWindowsOperation;typedCreateNativeDiagnostics?:{nativeHResult?:number;nativeErrorCategory?:number}};
+export type HyperVNativeExecution<Receipt>={required:boolean;dispatched:boolean;ok:boolean;failureCode?:string;invalidResult?:boolean;operation?:HyperVWindowsOperation;nativeDiagnostics?:{nativeHResult?:number;nativeErrorCategory?:number};receipt?:Receipt};
 export type HyperVLifecycleFailureReason='invalid'|'forbidden'|'missing'|'conflict'|'provider-unavailable'|'state-write-failed'|'provider-failed'|'deadline'|'image-refused'|'network-refused'|'unsupported';
 export type HyperVCreateRecovery={ok:true;recoveredVm:boolean;removedDisk:boolean;releasedAddress:boolean}|{ok:false;reason:HyperVLifecycleFailureReason;error:string;detail?:string;stage?:'network-release'};
 export type HyperVBootDiagnosticFacts=Pick<import('@ccc/hyper-v/index.js').HyperVWindowsGuestBootDiagnostic,'state'|'uptimeMs'|'generation'|'secureBootEnabled'|'heartbeatEnabled'|'heartbeatPrimaryStatus'|'heartbeatSecondaryStatus'|'integrationServices'|'hardDiskCount'|'dvdCount'|'hardDiskControllers'|'bootDeviceTypes'|'bootEntries'|'hardDisks'|'dvdDrives'|'diagnosticComplete'|'diagnosticErrors'>;
@@ -78,8 +78,9 @@ export interface HyperVLifecycleFacts<Connection,Receipt> {
  plan?:HyperVPlannedFacts<Connection>;invoked?:boolean;dryRun?:boolean;execution?:HyperVLifecycleExecution<Receipt>;failureExecution?:HyperVNativeExecution<Receipt>;provisioning?:HyperVNativeExecution<Receipt>;boot?:HyperVBootFacts;
 }
 export interface HyperVLifecycleExecution<Receipt> {
- mode:string;providerExecution:string;mutatesHost:boolean;provider?:string;status?:number|null;
- command?:HyperVNativeExecution<Receipt>&{guestReadiness?:Omit<HyperVBootFacts,'ready'>&{provider:string;error:string}};provisioning?:{provider:string;status?:number|null};
+ required:boolean;dispatched:boolean;mutatesHost:boolean;
+ summary?:HyperVNativeExecution<Receipt>;
+ command?:HyperVNativeExecution<Receipt>&{guestReadiness?:Omit<HyperVBootFacts,'ready'>&{provider:string;error:string}};provisioning?:HyperVNativeExecution<Receipt>;
 }
 export type HyperVLifecycleOutcome<Connection,Receipt> = HyperVLifecycleFacts<Connection,Receipt> & (
  {kind:'preview';plan:HyperVPlannedFacts<Connection>;invoked:false;dryRun:true;journalDisposition:'clear';recoveryDisposition:'already-handled'} |
@@ -138,7 +139,7 @@ export interface HyperVLinuxNetworkFinalizeResult<Receipt> {
     readonly execution: HyperVNativeExecution<Receipt>;
 }
 export interface HyperVBootstrapNetworkProbeResult<Receipt> {
-    readonly status: number | null;
+    readonly diagnostics: unknown;
     readonly failureCode: string | null;
     readonly observation: HyperVBootstrapNetworkObservation | null;
     readonly execution: HyperVNativeExecution<Receipt>;
@@ -160,11 +161,11 @@ export type HyperVLinuxGuestReadyTrace = {
     managedSshAttempts: number;
     bootstrapProbeAttempts: number;
     bootstrapProbeSuccesses: number;
-    bootstrapProbeLastStatus?: number | null;
+    bootstrapProbeEvidence?: unknown;
     bootstrapProbeLastError?: string | null;
     bootstrapAddressCount: number;
     bootstrapSshAttempts: number;
-    bootstrapSshLastStatus?: number | null;
+    bootstrapSshEvidence?: unknown;
     bootstrapSshLastError?: string | null;
     bootstrapHostKeyObserved?: boolean | null;
     bootstrapHostKeyMatchesExpected?: boolean | null;
@@ -255,14 +256,8 @@ export function hyperVLinuxGuestSignalDeadlineAt(startedAt:number){return starte
 export function hyperVLinuxGuestSignalTimedOut(startedAt:number,observedAt:number,guestSignalObserved:boolean){return !guestSignalObserved&&observedAt>=hyperVLinuxGuestSignalDeadlineAt(startedAt);}
 
 export type HyperVGuestReadinessFailureDetail = {
-    // windows-vm only: the historical structured-failure field, now supplied from an arrived
-    // typed readiness failure. There is no equivalent on the linux lane; omit it there.
-    readonly structured?: boolean;
-    readonly status: number | null;
-    readonly timedOut: boolean;
-    readonly stdoutBytes: number;
-    readonly stderrBytes: number;
-    readonly diagnosticCode?: string;
+    // Native transport and typed-summary diagnostics are decoded only for outward presentation.
+    readonly evidence: unknown;
     // windows-vm only, and present only when true: the guest failed readiness for an un-scrubbed
     // reason and containment was NOT CONFIRMED. That is broader than "still running" — the stop
     // may never have been attempted (the cleanup deadline can throw before it), or it may have
@@ -295,7 +290,7 @@ export type HyperVGuestReadinessObservation<Receipt> = HyperVWindowsReadinessObs
 export interface HyperVReadinessFailureSource<Receipt> {
     readonly previous?: HyperVGuestReadinessObservation<Receipt> | null;
     readonly execution?: HyperVNativeExecution<Receipt>;
-    readonly timedOut?: boolean;
+    readonly deadlineExpired?: boolean;
 }
 
 export type HyperVVmObservation = {

@@ -4,7 +4,7 @@ import { createHyperVCreateStartApplication } from "../../../packages/device-lab
 import type { HyperVCreateStartPorts, VmCreationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-create-start.js";
 import type { HyperVCreateStartRequest, HyperVLinuxReadinessObservation, HyperVNativeExecution, VmCreationEffect, VmCreationRequest, VmObservation } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
 
-type Receipt = { nativeEvidence: string };
+type Receipt = { nativeEvidence: string; status?: number; stdout?: string };
 type Connection = { providerId: string };
 type Ports = HyperVCreateStartPorts<undefined, Connection, Receipt, { media: true }>;
 const owner = "owner123";
@@ -12,7 +12,7 @@ const connection = { providerId: "powershell" };
 const vmId = "12345678-1234-1234-1234-123456789abc";
 const fingerprint = `SHA256:${"A".repeat(43)}`;
 const evidence: HyperVNativeExecution<Receipt> = {
-    mode: "exec", provider: "hyper-v", status: 0, stdout: "native output cannot be parsed as JSON", receipt: { nativeEvidence: "captured" },
+    required: true, dispatched: true, ok: true, receipt: Object.freeze({ nativeEvidence: "captured", status: 0, stdout: "native output cannot be parsed as JSON" }),
 };
 
 function createFixture(backend: "windows-vm" | "linux-vm" = "windows-vm") {
@@ -88,7 +88,7 @@ function createFixture(backend: "windows-vm" | "linux-vm" = "windows-vm") {
         typedErrorCode: (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback,
         typedErrorOperation: () => null,
         nativeDiagnostics: () => ({}),
-        diagnosticCode: (execution: HyperVNativeExecution<Receipt>, fallback?: string) => execution.error || fallback,
+        diagnosticCode: (execution: HyperVNativeExecution<Receipt>, fallback?: string) => execution.failureCode || fallback,
         boundedErrorCode: (_error: unknown, fallback: string) => fallback,
         removeCreateArtifact: vi.fn<Ports["removeCreateArtifact"]>(async () => true),
         compensationOrder: vi.fn<Ports["compensationOrder"]>(effects => effects.slice().reverse().map(effect => effect.kind === "vm-created" ? { kind: "remove-vm" as const, vmId: effect.vmId } : { kind: effect.kind === "file-created" ? "delete-file" as const : "delete-directory" as const, path: effect.path })),
@@ -131,15 +131,15 @@ describe("Hyper-V inward directory and creation facts", () => {
         const result = await f.application.createVmFromImage(owner, f.request, connection, 200000);
         expect(result).toMatchObject({ ok: true, observation: { vmId, vmName: f.vm.name, diskPath: f.diskPath, generation: 2 } });
         expect(result.execution).not.toHaveProperty("observation");
-        expect(result.execution.stdout || "").not.toContain(vmId);
+        expect(result.execution).toMatchObject({ required: true, dispatched: true, ok: true });
         expect(f.ports.cloneDisk).toHaveBeenCalledOnce();
         expect(f.native.newVM).toHaveBeenCalledOnce();
     });
 
     it("rejects semantic directory failure despite successful-looking native evidence", async () => {
         const f = createFixture();
-        f.ports.prepareCreateDirectories.mockResolvedValue({ ...f.prologue, ok: false, execution: { ...evidence, stdout: JSON.stringify({ ok: true, ...f.prologue.observation }) } });
-        expect(await f.application.createVmFromImage(owner, f.request, connection, 200000)).toMatchObject({ ok: false, observation: null, execution: { error: "hyper-v-vm-path-inspection-failed" } });
+        f.ports.prepareCreateDirectories.mockResolvedValue({ ...f.prologue, ok: false, execution: { ...evidence, receipt: { nativeEvidence: "success-looking", status: 0, stdout: JSON.stringify({ ok: true, ...f.prologue.observation }) } } });
+        expect(await f.application.createVmFromImage(owner, f.request, connection, 200000)).toMatchObject({ ok: false, observation: null, execution: { failureCode: "hyper-v-vm-path-inspection-failed" } });
         expect(f.ports.cloneDisk).not.toHaveBeenCalled();
         expect(f.native.newVM).not.toHaveBeenCalled();
     });
@@ -189,27 +189,41 @@ describe("Hyper-V inward creation provisioning facts", () => {
 
     it("keeps status-zero invalid provisioning distinct from command failure", async () => {
         const f = createFixture();
-        f.ports.provision.mockResolvedValue({ ok: true, observation: null, execution: { ...evidence, stdout: "invalid native media response" } });
+        const receipt = Object.freeze({ nativeEvidence: "invalid-provision", status: 0, stdout: "invalid native media response" });
+        f.ports.provision.mockResolvedValue({ ok: true, observation: null, execution: { ...evidence, receipt } });
         const outcome = await f.application.execute(owner, f.request, {}, 200000, 230000);
-        expect(outcome).toMatchObject({ kind: "operation-failed", error: "hyper-v-guest-provision-invalid-result", provisioning: { status: 0 } });
+        expect(outcome).toMatchObject({ kind: "operation-failed", error: "hyper-v-guest-provision-invalid-result", provisioning: { ok: true } });
+        expect(outcome.provisioning?.receipt).toBe(receipt);
         expect(f.ports.claim).not.toHaveBeenCalled();
         expect(f.ports.recoverVM).toHaveBeenCalledOnce();
     });
 
     it("refuses semantic provisioning failure despite valid facts and a success-looking receipt", async () => {
         const f = createFixture();
-        f.ports.provision.mockResolvedValue({ ...f.provision, ok: false, execution: { ...evidence, stdout: JSON.stringify(f.provision.observation) } });
+        f.ports.provision.mockResolvedValue({ ...f.provision, ok: false, execution: { ...evidence, receipt: { nativeEvidence: "success-looking", status: 0, stdout: JSON.stringify(f.provision.observation) } } });
         const outcome = await f.application.execute(owner, f.request, {}, 200000, 230000);
-        expect(outcome).toMatchObject({ kind: "operation-failed", error: "hyper-v-guest-provision-failed", provisioning: { status: 0 } });
+        expect(outcome).toMatchObject({ kind: "operation-failed", error: "hyper-v-guest-provision-failed", provisioning: { ok: true } });
         expect(outcome.provisioning).not.toHaveProperty("observation");
+        expect(f.ports.claim).not.toHaveBeenCalled();
+    });
+
+    it("keeps invalid provisioning primary when provider compensation also fails", async () => {
+        const f = createFixture();
+        const receipt = Object.freeze({ nativeEvidence: "invalid-provision", status: 0, stdout: "invalid native media response" });
+        f.ports.provision.mockResolvedValue({ ok: true, observation: null, execution: { ...evidence, receipt } });
+        f.ports.recoverVM.mockRejectedValue(new Error("hyper-v-rollback-command-failed"));
+        const outcome = await f.application.execute(owner, f.request, {}, 200000, 230000);
+        expect(outcome).toMatchObject({ kind: "operation-failed", error: "hyper-v-guest-provision-invalid-result",
+            rollback: { attempted: true, ok: false, reason: "hyper-v-rollback-command-failed" } });
+        expect(outcome.provisioning?.receipt).toBe(receipt);
         expect(f.ports.claim).not.toHaveBeenCalled();
     });
 
     it("refuses semantic seed failure before attachment despite a success-looking receipt", async () => {
         const f = createFixture("linux-vm");
-        f.seedEffect.mockResolvedValue({ ...f.seed, ok: false, execution: { ...evidence, stdout: JSON.stringify(f.seed.observation) } });
+        f.seedEffect.mockResolvedValue({ ...f.seed, ok: false, execution: { ...evidence, receipt: { nativeEvidence: "success-looking", status: 0, stdout: JSON.stringify(f.seed.observation) } } });
         const outcome = await f.application.execute(owner, f.request, {}, 200000, 230000);
-        expect(outcome).toMatchObject({ kind: "operation-failed", error: "hyper-v-linux-seed-failed", provisioning: { status: 0 } });
+        expect(outcome).toMatchObject({ kind: "operation-failed", error: "hyper-v-linux-seed-failed", provisioning: { ok: true } });
         expect(f.ports.attachSeed).not.toHaveBeenCalled();
         expect(f.ports.claim).not.toHaveBeenCalled();
     });
@@ -224,7 +238,7 @@ describe("Hyper-V inward creation provisioning facts", () => {
 });
 
 function linuxReadiness(ready: boolean): HyperVLinuxReadinessObservation<Receipt> {
-    return { backend: "linux-vm", ok: ready, ready, execution: evidence, failureCode: "ssh-unavailable", failureDetail: { status: ready ? 0 : 255, timedOut: false, stdoutBytes: 0, stderrBytes: 0 }, hostKeyFingerprints: [] };
+    return { backend: "linux-vm", ok: ready, ready, execution: evidence, failureCode: "ssh-unavailable", failureDetail: { evidence: { status: ready ? 0 : 255, timedOut: false, stdoutBytes: 0, stderrBytes: 0 } }, hostKeyFingerprints: [] };
 }
 
 function bootstrapFixture() {
@@ -236,7 +250,7 @@ function bootstrapFixture() {
         sshKnownHostsPath: join(f.privateRoot, "secrets", "known_hosts"), sshPrivateKeyPath: join(f.privateRoot, "secrets", "id_ed25519"),
         sshHostKeyFingerprint: fingerprint, guestUsername: `ccc${owner}`, networkAddress: "172.29.0.10", networkGateway: "172.29.0.1", networkPrefix: "172.29.0.0/24", macAddress: "021122334455",
     };
-    const bootstrap: Awaited<ReturnType<Ports["bootstrapProbe"]>> = { status: 0, failureCode: null, observation: { ok: true, addresses: ["172.20.1.8"] }, execution: evidence };
+    const bootstrap: Awaited<ReturnType<Ports["bootstrapProbe"]>> = { diagnostics: { status: 0 }, failureCode: null, observation: { ok: true, addresses: ["172.20.1.8"] }, execution: evidence };
     const cleanup: Awaited<ReturnType<Ports["bootstrapCleanup"]>> = { observation: { ok: true, removed: true, alreadyMissing: false }, execution: evidence };
     const ports = {
         ...f.ports,
@@ -264,11 +278,13 @@ function bootstrapFixture() {
 }
 
 describe("Hyper-V inward bootstrap facts", () => {
-    it("uses supplied trace status and diagnostic without reclassifying native evidence", async () => {
+    it("carries supplied trace evidence and diagnostic without reclassifying native evidence", async () => {
         const f = bootstrapFixture();
-        f.ports.bootstrapProbe.mockResolvedValue({ status: 23, failureCode: "hyper-v-bootstrap-neighbor-inspection-failed", observation: null, execution: { ...evidence, status: 0, stdout: '{"ok":true,"addresses":[]}' } });
+        const diagnostics = Object.freeze({ status: 23 });
+        f.ports.bootstrapProbe.mockResolvedValue({ diagnostics, failureCode: "hyper-v-bootstrap-neighbor-inspection-failed", observation: null, execution: { ...evidence, receipt: { nativeEvidence: "success-looking", status: 0, stdout: '{"ok":true,"addresses":[]}' } } });
         const outcome = await f.application.execute(owner, f.request, {}, 200000, 230000);
-        expect(outcome.boot).toMatchObject({ ready: false, error: "hyper-v-bootstrap-neighbor-inspection-failed", readiness: { bootstrapProbeLastStatus: 23, bootstrapProbeLastError: "hyper-v-bootstrap-neighbor-inspection-failed", bootstrapProbeSuccesses: 0 } });
+        expect(outcome.boot).toMatchObject({ ready: false, error: "hyper-v-bootstrap-neighbor-inspection-failed", readiness: { bootstrapProbeLastError: "hyper-v-bootstrap-neighbor-inspection-failed", bootstrapProbeSuccesses: 0 } });
+        expect(outcome.boot?.readiness?.bootstrapProbeEvidence).toBe(diagnostics);
         expect(f.ports.finalizeLinuxNetwork).not.toHaveBeenCalled();
     });
 
@@ -286,7 +302,7 @@ describe("Hyper-V inward bootstrap facts", () => {
 
     it("refuses semantic finalization failure despite a zero-status receipt", async () => {
         const f = bootstrapFixture();
-        f.ports.finalizeLinuxNetwork.mockResolvedValue({ ok: false, execution: { ...evidence, stdout: "ccc-hyper-v-linux-ready" } });
+        f.ports.finalizeLinuxNetwork.mockResolvedValue({ ok: false, execution: { ...evidence, receipt: { nativeEvidence: "success-looking", status: 0, stdout: "ccc-hyper-v-linux-ready" } } });
         const outcome = await f.application.execute(owner, f.request, {}, 200000, 230000);
         expect(outcome.boot).toMatchObject({ ready: false, readiness: { networkFinalizeSucceeded: false, networkFinalizeAttempts: 1 } });
         expect(f.ports.probeLinuxReadiness.mock.calls.filter(([, request]) => request.networkAddress === f.device.networkAddress)).toHaveLength(1);
@@ -314,7 +330,7 @@ describe("Hyper-V inward bootstrap facts", () => {
     it("contains a null cleanup observation after readiness and refuses a running publication", async () => {
         const f = bootstrapFixture();
         f.ports.probeLinuxReadiness.mockResolvedValue(linuxReadiness(true));
-        f.ports.bootstrapCleanup.mockResolvedValue({ ...f.cleanup, observation: null, execution: { ...evidence, stdout: '{"ok":true,"removed":true}' } });
+        f.ports.bootstrapCleanup.mockResolvedValue({ ...f.cleanup, observation: null, execution: { ...evidence, receipt: { nativeEvidence: "success-looking", status: 0, stdout: '{"ok":true,"removed":true}' } } });
         const outcome = await f.application.execute(owner, f.request, {}, 200000, 230000);
         expect(outcome).toMatchObject({ kind: "operation-failed", boot: { ready: false, error: "hyper-v-bootstrap-network-cleanup-failed" }, device: { bootReady: false, runtimeState: "Off" } });
         expect(f.ports.bootstrapCleanup).toHaveBeenCalledTimes(2);

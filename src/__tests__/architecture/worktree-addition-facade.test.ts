@@ -5,7 +5,17 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { WorktreeAdditionRequest } from "../../ports/workspace/worktree-addition.js";
 
-const interception = vi.hoisted(() => ({ requests: [] as WorktreeAdditionRequest[], receipts: [] as unknown[], snapshot: undefined as undefined | ((request: WorktreeAdditionRequest) => void) }));
+const interception = vi.hoisted(() => ({ requests: [] as WorktreeAdditionRequest[], receipts: [] as unknown[], snapshot: undefined as undefined | ((request: WorktreeAdditionRequest) => void), removeReceipt: true, processError: false }));
+vi.mock("child_process", async () => {
+    const actual = await vi.importActual<typeof import("node:child_process")>("child_process");
+    return { ...actual, spawnSync: ((...args: unknown[]) => {
+        const result = Reflect.apply(actual.spawnSync, undefined, args) as ReturnType<typeof actual.spawnSync>;
+        const argv = args[1] as string[] | undefined;
+        return interception.processError && argv?.[0] === "checkout" && argv[1] === "--force"
+            ? { ...result, error: new Error("addition status-zero native process error") }
+            : result;
+    }) as typeof actual.spawnSync };
+});
 vi.mock("../../application/workspace/worktree-addition.js", async () => {
     const actual = await vi.importActual<typeof import("../../application/workspace/worktree-addition.js")>("../../application/workspace/worktree-addition.js");
     const wrapped: typeof actual.createWorktreeAddition = ports => {
@@ -15,7 +25,7 @@ vi.mock("../../application/workspace/worktree-addition.js", async () => {
             interception.requests.push(request);
             interception.receipts.push(result.registrationReceipt);
             interception.snapshot?.(request);
-            return { ...result, registrationReceipt: null };
+            return interception.removeReceipt ? { ...result, registrationReceipt: null } : result;
         };
     };
     return { ...actual, createWorktreeAddition: wrapped };
@@ -63,10 +73,28 @@ describe("real native worktree addition registration validation", () => {
         interception.requests.length = 0;
         interception.receipts.length = 0;
         interception.snapshot = undefined;
+        interception.removeReceipt = true;
+        interception.processError = false;
     });
     afterEach(() => {
         interception.snapshot = undefined;
+        interception.removeReceipt = true;
+        interception.processError = false;
         rmSync(root, { recursive: true, force: true });
+    });
+
+    it("retains addition's status-only acceptance of a completed native add with a process error", () => {
+        const source = join(root, "source");
+        init(source);
+        interception.removeReceipt = false;
+        interception.processError = true;
+        const result = createWorkspace(source, "native-completion");
+        interception.processError = false;
+        expect(result.created).toEqual([{ name: "source", branch: "native-completion", action: "worktree-new" }]);
+        expect(git(result.workspacePath, "rev-parse", "--abbrev-ref", "HEAD")).toBe("native-completion");
+        expect(readFileSync(join(result.workspacePath, "owned.txt"), "utf8")).toBe("owned file\n");
+        expect(interception.receipts[0]).not.toBeNull();
+        expect(git(source, "worktree", "list", "--porcelain")).toContain(result.workspacePath);
     });
 
     it("unified validates before nested repair and preserves the actual added root registration", () => {

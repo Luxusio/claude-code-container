@@ -39,40 +39,69 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
         const observed = deviceLabWindowsReadinessObservation(outcome);
         expect(observed.outcome).toBe(outcome);
         expect(observed).toMatchObject({ backend: "windows-vm", ok: false, ready: false,
-            failureCode: outcome.reason, failureDetail: { structured: true, status: 1, timedOut: false, stderrBytes: 0 } });
-        expect(observed.execution).toEqual({ mode: "exec", provider: "hyper-v", status: 1, stdout: JSON.stringify(outcome), stderr: "" });
-        expect(observed.failureDetail.stdoutBytes).toBe(Buffer.byteLength(JSON.stringify(outcome), "utf8"));
+            failureCode: outcome.reason, failureDetail: { evidence: { structured: true, status: 1, timedOut: false, stderrBytes: 0, stdoutBytes: Buffer.byteLength(JSON.stringify(outcome), "utf8") } } });
+        expect(observed.execution).toMatchObject({ required: true, dispatched: true, ok: false });
         const overridden = deviceLabHyperVReadinessFailure("windows-vm", "hyper-v-operation-deadline-exceeded", { previous: observed });
-        expect(overridden).toMatchObject({ ready: false, failureCode: outcome.reason, execution: { error: "hyper-v-operation-deadline-exceeded" } });
+        expect(overridden).toMatchObject({ ready: false, failureCode: outcome.reason, execution: { failureCode: "hyper-v-operation-deadline-exceeded" } });
         expect(overridden.backend === "windows-vm" ? overridden.outcome : null).toBe(outcome);
     });
 
     it("normalizes Linux substring readiness while preserving raw native evidence and success semantics", () => {
-        const receipt = { native: "unchanged" };
-        const execution = { mode: "exec", provider: "hyper-v-ssh", status: 0,
-            stdout: "prefix ccc-hyper-v-linux-ready suffix\n", stderr: "native diagnostic é", timedOut: true, outputLimitExceeded: true, receipt };
+        const execution = Object.freeze({ mode: "exec", provider: "hyper-v-ssh", status: 0,
+            stdout: "prefix ccc-hyper-v-linux-ready suffix\n", stderr: "native diagnostic é", timedOut: true, outputLimitExceeded: true });
         const observed = deviceLabHyperVLinuxReadinessObservation(execution);
         expect(observed).toMatchObject({ backend: "linux-vm", ok: true, ready: true,
-            failureDetail: { status: 0, timedOut: true, stdoutBytes: Buffer.byteLength(execution.stdout), stderrBytes: Buffer.byteLength(execution.stderr) } });
-        expect(observed.execution).toBe(execution);
-        expect(observed.execution.receipt).toBe(receipt);
-        expect(observed.failureDetail).not.toHaveProperty("structured");
+            failureDetail: { evidence: { status: 0, timedOut: true, stdoutBytes: Buffer.byteLength(execution.stdout), stderrBytes: Buffer.byteLength(execution.stderr) } } });
+        expect(observed.execution).toMatchObject({ required: true, dispatched: true, ok: true });
+        expect(observed.execution.receipt).toBe(execution);
         expect(deviceLabHyperVLinuxReadinessObservation({ ...execution, error: "native error" })).toMatchObject({ ok: false, ready: false });
         expect(deviceLabHyperVLinuxReadinessObservation({ ...execution, stdout: "ccc-hyper-v-linux-not-ready" })).toMatchObject({ ok: true, ready: false });
     });
 
     it("settles GUI marker and native stage failures without changing the command success fact", () => {
-        const receipt = { native: "gui" };
-        const execution = { mode: "exec", provider: "hyper-v-ssh", status: 0, stdout: "prefix CCC_HYPER_V_GUI_READY suffix", stderr: "", receipt };
+        const execution = Object.freeze({ mode: "exec", provider: "hyper-v-ssh", status: 0, stdout: "prefix CCC_HYPER_V_GUI_READY suffix", stderr: "" });
         const ready = deviceLabHyperVLinuxGuiReadinessObservation(execution);
         expect(ready).toMatchObject({ ok: true, ready: true });
-        expect(ready.execution).toBe(execution);
-        const missing = deviceLabHyperVLinuxGuiReadinessObservation({ ...execution, stdout: "no GUI marker", stderr: "native hyper-v-linux-gui-apt-install-failed detail" });
-        expect(missing).toMatchObject({ ok: true, ready: false, failureCode: "hyper-v-linux-gui-apt-install-failed", execution: { error: "hyper-v-linux-gui-apt-install-failed" } });
-        expect(missing.execution.receipt).toBe(receipt);
+        expect(ready.execution.receipt).toBe(execution);
+        const missingReceipt = Object.freeze({ ...execution, stdout: "no GUI marker", stderr: "native hyper-v-linux-gui-apt-install-failed detail" });
+        const missing = deviceLabHyperVLinuxGuiReadinessObservation(missingReceipt);
+        expect(missing).toMatchObject({ ok: true, ready: false, failureCode: "hyper-v-linux-gui-apt-install-failed", execution: { failureCode: "hyper-v-linux-gui-apt-install-failed" } });
+        expect(missing.execution.receipt).toBe(missingReceipt);
         expect(execution).not.toHaveProperty("error");
         expect(deviceLabHyperVLinuxGuiReadinessObservation({ ...execution, status: null, stdout: "", timedOut: true }))
             .toMatchObject({ ok: false, ready: false, failureCode: "hyper-v-linux-gui-timeout" });
+    });
+
+    it("preserves captured readiness bytes while applying a later deadline failure", () => {
+        const receipt = Object.freeze({ mode: "exec", provider: "hyper-v-ssh", status: 0,
+            stdout: "ccc-hyper-v-linux-ready", stderr: "native diagnostic é", timedOut: false });
+        const observed = deviceLabHyperVLinuxReadinessObservation(receipt);
+        const overridden = deviceLabHyperVReadinessFailure("linux-vm", "hyper-v-operation-deadline-exceeded", { previous: observed, deadlineExpired: true });
+        expect(overridden).toMatchObject({ ok: false, ready: false, execution: { ok: false, failureCode: "hyper-v-operation-deadline-exceeded" } });
+        expect(overridden.execution.receipt).toBe(receipt);
+        expect(observed).toMatchObject({ ok: true, ready: true, execution: { ok: true } });
+        expect(receipt).toEqual({ mode: "exec", provider: "hyper-v-ssh", status: 0,
+            stdout: "ccc-hyper-v-linux-ready", stderr: "native diagnostic é", timedOut: false });
+    });
+
+    it("keeps containment failure authoritative after a readiness overlay clears the native timeout", () => {
+        const receipt = Object.freeze({ mode: "exec", provider: "hyper-v-ssh", status: 255,
+            stdout: "native guest signal absent", stderr: "native diagnostic é", timedOut: true });
+        const originalBytes = Buffer.from(JSON.stringify(receipt), "utf8");
+        const observed = deviceLabHyperVLinuxReadinessObservation(receipt);
+        const first = deviceLabHyperVReadinessFailure("linux-vm", "hyper-v-guest-boot-signal-timeout", {
+            previous: observed, deadlineExpired: false,
+        });
+        const contained = deviceLabHyperVReadinessFailure("linux-vm", "hyper-v-bootstrap-network-containment-failed", { previous: first });
+        expect(first).toMatchObject({ ready: false, failureCode: "hyper-v-guest-boot-signal-timeout",
+            failureDetail: { evidence: { timedOut: false } } });
+        expect(contained).toMatchObject({ ok: false, ready: false,
+            failureCode: "hyper-v-bootstrap-network-containment-failed",
+            failureDetail: { evidence: { status: 255, timedOut: false } } });
+        expect(first.execution.receipt).toBe(receipt);
+        expect(contained.execution.receipt).toBe(receipt);
+        expect(receipt.timedOut).toBe(true);
+        expect(Buffer.from(JSON.stringify(receipt), "utf8")).toEqual(originalBytes);
     });
 
     it("extracts bounded unique ED25519 evidence from both native SSH diagnostic forms", () => {
@@ -110,8 +139,8 @@ describe("Device Lab typed Hyper-V guest readiness", () => {
         expect(calls).toEqual(["job", "Remove-VMDvdDrive", "delete-iso"]);
         expect(removeProvisioningMedia).toHaveBeenCalledTimes(1);
         const job = requestOf(run.mock.calls[0][0]);
-        expect(job.operation).toBe("Invoke-Guest");
-        if (job.operation === "Invoke-Guest") expect(job.command).toContain("FirstLogonCompleted");
+        expect(job).toMatchObject({ operation: "Invoke-Guest", action: "job" });
+        if (job.operation === "Invoke-Guest" && job.action === "job") expect(job.command).toContain("FirstLogonCompleted");
     });
 
     it("never detaches media when the incarnation marker or secrets gate fails", async () => {

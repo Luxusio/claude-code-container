@@ -6,7 +6,7 @@ const request: WorktreeAdditionRequest = { repositoryPath: "/repo", destinationP
 const prepared = Object.freeze({ opaque: Symbol("prepared") });
 const receipt = Object.freeze({ opaque: Symbol("receipt") });
 function thrown(run: () => unknown): unknown { try { run(); } catch (error) { return error; } throw new Error("Expected exception"); }
-function fixture(observation: WorktreeAdditionObservation<typeof receipt> = { status: 0, registrationReceipt: receipt }) {
+function fixture(observation: WorktreeAdditionObservation<typeof receipt> = { succeeded: true, failureDetail: "", registrationReceipt: receipt }) {
     const ports = {
         observeBranch: vi.fn<WorktreeAdditionPorts<typeof prepared, typeof receipt>["observeBranch"]>(() => "none"),
         prepareAddition: vi.fn(() => prepared),
@@ -56,21 +56,16 @@ describe("worktree addition application policy", () => {
         }
     });
 
-    it.each([null, 1, -1, 128])("compensates status %s with unchanged opaque arguments", status => {
-        const ports = fixture({ status, stderr: " \n native error \t", registrationReceipt: receipt });
+    it("compensates classified failure with unchanged opaque arguments", () => {
+        const ports = fixture({ succeeded: false, failureDetail: "native error", registrationReceipt: receipt });
         expect(() => createWorktreeAddition(ports)(request)).toThrow("Failed to create worktree: native error");
         expect(ports.compensateFailedAddition).toHaveBeenCalledExactlyOnceWith(request, "worktree-new", prepared, receipt);
         expect(ports.addPrepared.mock.invocationCallOrder[0]).toBeLessThan(ports.compensateFailedAddition.mock.invocationCallOrder[0]);
     });
 
-    it.each([
-        { stderr: " stderr ", error: { message: "process" }, detail: "stderr" },
-        { stderr: " \n ", error: { message: " process raw " }, detail: " process raw " },
-        { stderr: null, error: { message: "process" }, detail: "process" },
-        { detail: "" },
-    ])("preserves diagnostic precedence and both message contexts: %j", ({ detail, ...diagnostic }) => {
+    it.each(["stderr", " process raw ", "process", ""])("preserves the classified diagnostic and both message contexts: %j", detail => {
         for (const context of [{ kind: "unified" }, { kind: "multi-repo", repositoryName: "repo raw" }] as const) {
-            const ports = fixture({ status: null, registrationReceipt: null, ...diagnostic });
+            const ports = fixture({ succeeded: false, failureDetail: detail, registrationReceipt: null });
             const input = { ...request, failureContext: context };
             const error = thrown(() => createWorktreeAddition(ports)(input)) as Error;
             const prefix = context.kind === "unified" ? "Failed to create worktree" : "Failed to create worktree for repo raw";
@@ -85,11 +80,13 @@ describe("worktree addition application policy", () => {
         }
     });
 
-    it.each([receipt, null])("accepts zero exit even with process error and nullable receipt: %j", registrationReceipt => {
-        const ports = fixture({ status: 0, error: { message: "ignored on success" }, stderr: "ignored", registrationReceipt });
+    it.each([receipt, null])("accepts semantic completion with a nullable opaque receipt: %j", registrationReceipt => {
+        const observation = Object.freeze({ succeeded: true, failureDetail: "opaque success diagnostic", registrationReceipt });
+        const ports = fixture(observation);
         const result = createWorktreeAddition(ports)(request);
         expect(result.prepared).toBe(prepared);
         expect(result.registrationReceipt).toBe(registrationReceipt);
         expect(ports.compensateFailedAddition).not.toHaveBeenCalled();
+        expect(observation).toEqual({ succeeded: true, failureDetail: "opaque success diagnostic", registrationReceipt });
     });
 });

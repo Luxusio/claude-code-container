@@ -7,7 +7,7 @@ type Receipt = { readonly nativeEvidence: string };
 type Ports = HyperVStopDeletePorts<Connection, Receipt>;
 
 function terminalCapabilities(ports: Ports, request: HyperVStopDeleteRequest, connection: Connection): void {
-    const execution: HyperVCommandExecution<Receipt> = { mode: "exec", provider: "hyper-v", status: 0, receipt: { nativeEvidence: "opaque terminal receipt" } };
+    const execution: HyperVCommandExecution<Receipt> = { required: true, dispatched: true, ok: true, receipt: { nativeEvidence: "opaque terminal receipt" } };
     const observation: HyperVTerminalObservation = { vmId: "owned-vm-id", vmName: "owned-vm", state: "Off", status: "", diskPath: "C:\\owned\\system.vhdx" };
     const captured: HyperVTerminalResult<Receipt> = { ok: true, observation, execution };
     const unavailable: HyperVTerminalResult<Receipt> = { ok: false, observation: null, execution };
@@ -34,3 +34,14 @@ function terminalCapabilities(ports: Ports, request: HyperVStopDeleteRequest, co
     void [captured, unavailable, stop, deleted, invoked];
 }
 void terminalCapabilities;
+
+function semanticTerminalExecution(execution: HyperVCommandExecution<Receipt>): void {
+    // @ts-expect-error Native process records cannot be substituted for semantic terminal completion.
+    const raw: HyperVCommandExecution<Receipt> = { mode: "exec", provider: "hyper-v", status: 0, stdout: "{}" };
+    // @ts-expect-error Terminal policy consumes explicit completion and decoded VM facts.
+    const status = execution.status;
+    // @ts-expect-error A terminal command must explicitly report semantic success.
+    const missingSuccess: HyperVCommandExecution<Receipt> = { required: true, dispatched: true };
+    void [raw, status, missingSuccess];
+}
+void semanticTerminalExecution;

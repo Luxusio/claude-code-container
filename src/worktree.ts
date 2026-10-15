@@ -22,6 +22,7 @@ import {
     chmodSync,
     closeSync,
     existsSync,
+    fstatSync,
     mkdtempSync,
     mkdirSync,
     readdirSync,
@@ -306,6 +307,13 @@ type FileIdentity = {
     ino: string;
 };
 
+type WorktreeMetadataSnapshot = {
+    identity: DirectoryIdentity;
+    content: Buffer;
+};
+
+type WorktreeMetadataPublication = WorktreeMetadataSnapshot;
+
 // Use one observed spelling before computing containment and relative links.
 // Direct ownership comparisons still require their separate no-link/object
 // proof; native canonical spelling alone does not establish that authority.
@@ -439,15 +447,20 @@ function normalizeWorktreeGitLink(
 
 function normalizeWorktreeMetadataFile(
     metadataFile: string,
-    expectedContent: string,
+    expectedContent: string | Buffer,
     metadataIdentity: DirectoryIdentity,
-    validatedContent?: string,
-): void {
+    validatedContent?: string | Buffer,
+): WorktreeMetadataPublication {
+    const expectedBytes = typeof expectedContent === "string" ? Buffer.from(expectedContent) : expectedContent;
+    const validatedBytes = typeof validatedContent === "string" ? Buffer.from(validatedContent) : validatedContent;
     assertPathIdentity(metadataFile, metadataIdentity);
-    const existingContent = readFileSync(metadataFile, "utf-8");
+    const existingContent = readFileSync(metadataFile);
     assertPathIdentity(metadataFile, metadataIdentity);
-    if (existingContent === expectedContent) {
-        return;
+    if (existingContent.equals(expectedBytes)) {
+        if (validatedBytes && !existingContent.equals(validatedBytes)) {
+            throw new Error(`Worktree metadata changed during normalization: ${metadataFile}`);
+        }
+        return { identity: metadataIdentity, content: expectedBytes };
     }
     const parentIdentity = captureDirectoryIdentity(dirname(metadataFile));
     const temporary = join(
@@ -460,14 +473,20 @@ function normalizeWorktreeMetadataFile(
     );
     let temporaryIdentity: FileIdentity | null = null;
     try {
-        writeFileSync(temporary, expectedContent, { flag: "wx", mode: 0o600 });
-        temporaryIdentity = captureFileIdentity(temporary);
+        const descriptor = openSync(temporary, "wx", 0o600);
+        try {
+            const staged = fstatSync(descriptor, { bigint: true });
+            temporaryIdentity = { dev: staged.dev.toString(), ino: staged.ino.toString() };
+            writeFileSync(descriptor, expectedBytes);
+        } finally {
+            closeSync(descriptor);
+        }
+        assertFileIdentity(temporary, temporaryIdentity);
         assertDirectoryIdentity(dirname(metadataFile), parentIdentity);
         assertPathIdentity(metadataFile, metadataIdentity);
         renameSync(metadataFile, backup);
         assertQuarantinedIdentity(backup, metadataIdentity, "entry");
-        if (validatedContent !== undefined
-            && readFileSync(backup, "utf-8") !== validatedContent) {
+        if (validatedBytes && !readFileSync(backup).equals(validatedBytes)) {
             throw new Error("validated worktree metadata changed before quarantine");
         }
         assertDirectoryIdentity(dirname(metadataFile), parentIdentity);
@@ -476,15 +495,18 @@ function normalizeWorktreeMetadataFile(
         rmSync(temporary, { force: true });
         assertDirectoryIdentity(dirname(metadataFile), parentIdentity);
         assertFileIdentity(metadataFile, temporaryIdentity);
-        if (readFileSync(metadataFile, "utf-8") !== expectedContent) {
+        if (!readFileSync(metadataFile).equals(expectedBytes)) {
             throw new Error("normalized worktree metadata changed after installation");
         }
         assertQuarantinedIdentity(backup, metadataIdentity, "entry");
-        if (validatedContent !== undefined
-            && readFileSync(backup, "utf-8") !== validatedContent) {
+        if (validatedBytes && !readFileSync(backup).equals(validatedBytes)) {
             throw new Error("validated worktree metadata changed after quarantine");
         }
         rmSync(backup);
+        return {
+            identity: { realpath: metadataIdentity.realpath, ...temporaryIdentity },
+            content: expectedBytes,
+        };
     } catch (error) {
         rmSync(temporary, { force: true });
         let preservedBackup = false;
@@ -497,9 +519,13 @@ function normalizeWorktreeMetadataFile(
                 if (temporaryIdentity) {
                     try {
                         assertFileIdentity(metadataFile, temporaryIdentity);
-                        if (readFileSync(metadataFile, "utf-8") === expectedContent) {
+                        if (readFileSync(metadataFile).equals(expectedBytes)
+                            && (!validatedBytes || readFileSync(backup).equals(validatedBytes))) {
                             rmSync(backup);
-                            return;
+                            return {
+                                identity: { realpath: metadataIdentity.realpath, ...temporaryIdentity },
+                                content: expectedBytes,
+                            };
                         }
                     } catch {
                         // The installed path is not the file CCC staged.
@@ -514,8 +540,11 @@ function normalizeWorktreeMetadataFile(
                 }
             } else if (temporaryIdentity) {
                 assertFileIdentity(metadataFile, temporaryIdentity);
-                if (readFileSync(metadataFile, "utf-8") === expectedContent) {
-                    return;
+                if (readFileSync(metadataFile).equals(expectedBytes)) {
+                    return {
+                        identity: { realpath: metadataIdentity.realpath, ...temporaryIdentity },
+                        content: expectedBytes,
+                    };
                 }
             }
         } catch {
@@ -1994,12 +2023,38 @@ function workspaceRegistrationDigest(identity: DirectoryIdentity): string {
     ])).digest("hex").slice(0, 12);
 }
 
+function captureWorktreeMetadata(path: string): WorktreeMetadataSnapshot {
+    const identity = capturePathIdentity(path);
+    const content = readFileSync(path);
+    assertPathIdentity(path, identity);
+    return { identity, content };
+}
+
+function worktreeMetadataMatches(path: string, snapshot: WorktreeMetadataSnapshot): boolean {
+    assertPathIdentity(path, snapshot.identity);
+    const matches = readFileSync(path).equals(snapshot.content);
+    assertPathIdentity(path, snapshot.identity);
+    return matches;
+}
+
+function rootWorkspaceGitObservation(
+    result: { status: number | null; stderr?: string | null; error?: { message: string } },
+    diagnostic: "branch" | "read" | "operation",
+) {
+    const detail = diagnostic === "branch" ? result.stderr ?? undefined
+        : diagnostic === "read" ? (result.stderr ?? "").trim() || result.error?.message
+        : result.stderr ?? result.error?.message;
+    return {
+        succeeded: !result.error && result.status === 0,
+        failureReason: detail ? gitFailureReason(detail) : undefined,
+    };
+}
+
 const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAuthority>({
     resolve: (...args) => resolve(...args),
     join: (...args) => join(...args),
     dirname: (...args) => dirname(...args),
     basename: (...args) => basename(...args),
-    isAbsolute: (...args) => isAbsolute(...args),
     getWorkspacePath: (...args) => getWorkspacePath(...args),
     sameObservedPath: (...args) => sameObservedPath(...args),
     sameExistingObject: (...args) => sameExistingObject(...args),
@@ -2019,8 +2074,39 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
     assertFileIdentity: (...args) => assertFileIdentity(...args),
     captureDirectoryTree: (...args) => captureDirectoryTree(...args),
     assertCapturedDirectoryTree: (...args) => assertCapturedDirectoryTree(...args),
-    portableWorktreeBackpointer: (...args) => portableWorktreeBackpointer(...args),
-    normalizeWorktreeMetadataFile: (...args) => normalizeWorktreeMetadataFile(...args),
+    captureMetadata: path => captureWorktreeMetadata(path),
+    metadataMatches: (path, snapshot) => worktreeMetadataMatches(path, snapshot),
+    worktreeGitDirectory: (path, snapshot) => {
+        const match = snapshot.content.toString("utf-8").trim().match(/^gitdir:\s*(.+)$/);
+        return match ? resolve(dirname(path), match[1].trim()) : null;
+    },
+    worktreeCommonDirectory: (managementDirectory, snapshot) => resolve(
+        managementDirectory, snapshot.content.toString("utf-8").trim(),
+    ),
+    worktreeBackpointer: (path, snapshot) => {
+        const backpointer = snapshot.content.toString("utf-8").trim();
+        return backpointer ? isAbsolute(backpointer) ? backpointer : resolve(dirname(path), backpointer) : null;
+    },
+    metadataBranchRef: snapshot => snapshot.content.toString("utf-8").trim().match(/^ref: (.+)$/)?.[1] ?? null,
+    publishWorktreeGitLink: (workspacePath, workspaceIdentity, managementDirectory, managementIdentity, originalIdentity, original) => {
+        const portableGitDirectory = portableWorktreeGitDirectory(
+            process.platform === "win32" ? workspaceIdentity.realpath : workspacePath,
+            process.platform === "win32" ? managementIdentity.realpath : managementDirectory,
+        );
+        assertPathIdentity(join(workspacePath, ".git"), original.identity);
+        return normalizeWorktreeMetadataFile(
+            join(workspacePath, ".git"), `gitdir: ${portableGitDirectory}\n`, originalIdentity, original.content,
+        );
+    },
+    publishWorktreeBackpointer: (path, gitFile, originalIdentity, original) => {
+        assertPathIdentity(path, original.identity);
+        return normalizeWorktreeMetadataFile(path, `${portableWorktreeBackpointer(gitFile)}\n`, originalIdentity, original.content);
+    },
+    assertMetadataPublication: (path, publication) => assertPathIdentity(path, publication.identity),
+    metadataPublicationMatches: (path, publication) => worktreeMetadataMatches(path, publication),
+    restoreMetadata: (path, original, publication) => normalizeWorktreeMetadataFile(
+        path, original.content, publication.identity, publication.content,
+    ),
     pinnedNestedRepositoryEnvironment: (...args) => pinnedNestedRepositoryEnvironment(...args),
     withPinnedNestedRepository: (...args) => withPinnedNestedRepository(...args),
     throwOnLiveWorkspaceBranchConflict: (...args) => throwOnLiveWorkspaceBranchConflict(...args),
@@ -2028,8 +2114,8 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
     missingWorktreeManagementMatches: (...args) => missingWorktreeManagementMatches(...args),
     quarantineMissingWorktreeRegistration: (...args) => quarantineMissingWorktreeRegistration(...args),
     commitQuarantinedMissingWorktreeRegistration: (...args) => commitQuarantinedMissingWorktreeRegistration(...args),
-    gitFailureReason: (...args) => gitFailureReason(...args),
-    probeSourceBranchHead: (sourceIdentity, sourceEnvironment, expectedRef) => spawnSync(
+    probeSourceBranchHead: (sourceIdentity, sourceEnvironment, expectedRef, diagnostic) => {
+        const result = spawnSync(
             "git",
             ["rev-parse", "--verify", "--quiet", `${expectedRef}^{commit}`],
             {
@@ -2038,12 +2124,14 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
                 stdio: ["pipe", "pipe", "pipe"],
                 env: sourceEnvironment,
             },
-        ),
+        );
+        return { ...rootWorkspaceGitObservation(result, diagnostic), oid: (result.stdout ?? "").trim() };
+    },
     temporaryRegistrationPath: (workspacePath, workspaceIdentity, workspaceDigest) => join(
         dirname(process.platform === "win32" ? workspaceIdentity.realpath : workspacePath),
         `.ccc-register-${workspaceDigest}-${randomBytes(16).toString("hex")}`,
     ),
-    registerTemporaryWorktree: (sourceIdentity, sourceEnvironment, temporaryPath, expectedBranch) => spawnSync(
+    registerTemporaryWorktree: (sourceIdentity, sourceEnvironment, temporaryPath, expectedBranch) => rootWorkspaceGitObservation(spawnSync(
             "git",
             ["worktree", "add", "--no-checkout", temporaryPath, expectedBranch],
             {
@@ -2052,8 +2140,9 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
                 stdio: ["pipe", "pipe", "pipe"],
                 env: sourceEnvironment,
             },
-        ),
-    readTemporaryHead: (temporaryRepositoryIdentity, temporaryEnvironment) => spawnSync(
+        ), "operation"),
+    readTemporaryHead: (temporaryRepositoryIdentity, temporaryEnvironment) => {
+        const result = spawnSync(
             "git",
             ["rev-parse", "HEAD"],
             {
@@ -2062,8 +2151,10 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
                 stdio: ["pipe", "pipe", "pipe"],
                 env: temporaryEnvironment,
             },
-        ),
-    initializeTemporaryIndex: (temporaryRepositoryIdentity, temporaryEnvironment, expectedOid) => spawnSync(
+        );
+        return { ...rootWorkspaceGitObservation(result, "read"), oid: (result.stdout ?? "").trim() };
+    },
+    initializeTemporaryIndex: (temporaryRepositoryIdentity, temporaryEnvironment, expectedOid) => rootWorkspaceGitObservation(spawnSync(
             "git",
             ["read-tree", expectedOid],
             {
@@ -2072,8 +2163,8 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
                 stdio: ["pipe", "pipe", "pipe"],
                 env: temporaryEnvironment,
             },
-        ),
-    compareTemporaryIndex: (temporaryRepositoryIdentity, temporaryEnvironment, expectedOid) => spawnSync(
+        ), "operation"),
+    compareTemporaryIndex: (temporaryRepositoryIdentity, temporaryEnvironment, expectedOid) => rootWorkspaceGitObservation(spawnSync(
             "git",
             ["diff", "--cached", "--quiet", expectedOid],
             {
@@ -2082,12 +2173,8 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
                 stdio: ["pipe", "pipe", "pipe"],
                 env: temporaryEnvironment,
             },
-        ),
-    portableInstalledGitDirectory: (workspacePath, workspaceIdentity, managementDirectory, managementIdentity) => portableWorktreeGitDirectory(
-            process.platform === "win32" ? workspaceIdentity.realpath : workspacePath,
-            process.platform === "win32" ? managementIdentity.realpath : managementDirectory,
-        ),
-    removeFailedTemporaryRegistration: (sourceIdentity, sourceEnvironment, temporaryPath) => spawnSync(
+        ), "operation"),
+    removeFailedTemporaryRegistration: (sourceIdentity, sourceEnvironment, temporaryPath) => rootWorkspaceGitObservation(spawnSync(
                         "git",
                         ["worktree", "remove", "--force", temporaryPath],
                         {
@@ -2096,8 +2183,9 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
                             stdio: ["pipe", "pipe", "pipe"],
                             env: sourceEnvironment,
                         },
-                    ),
-    probeBackpointerBranchHead: (sourceIdentity, expectedRef) => spawnSync(
+                    ), "operation"),
+    probeBackpointerBranchHead: (sourceIdentity, expectedRef) => {
+        const result = spawnSync(
                 "git",
                 ["rev-parse", "--verify", "--quiet", `${expectedRef}^{commit}`],
                 {
@@ -2106,8 +2194,9 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
                     stdio: ["pipe", "pipe", "pipe"],
                     env: pinnedNestedRepositoryEnvironment(sourceIdentity),
                 },
-            ),
-    readMetadataText: path => readFileSync(path(), "utf-8"),
+            );
+        return { ...rootWorkspaceGitObservation(result, "branch"), oid: (result.stdout ?? "").trim() };
+    },
     captureIndexContent: path => readFileSync(path),
     metadataIndexMatches: (path, expected) => readFileSync(path).equals(expected),
     readDirectoryEntries: path => readdirSync(path),
@@ -2115,7 +2204,12 @@ const rootWorkspaceRepair = createRootWorkspaceRepair<WorkspaceRepairNativeAutho
     removeTemporaryDirectory: path => rmdirSync(path),
     unlinkTemporaryLink: path => unlinkSync(path),
     temporaryGitLinkIsRegular: temporaryPath => lstatSync(join(temporaryPath, ".git")).isFile(),
-    makeMissingRegistrationFence: (managementIdentity, managementGitdirIdentity, managementHeadIdentity, expectedOid, expectedRef) => ({ managementIdentity, managementGitdirIdentity, managementHeadIdentity, expectedOid, expectedRef }),
+    makeMissingRegistrationFence: (managementIdentity, gitdir, managementHeadIdentity, expectedOid, expectedRef) => {
+        if (!worktreeMetadataMatches(join(managementIdentity.realpath, "gitdir"), gitdir)) {
+            throw new Error("created registration changed during rollback");
+        }
+        return { managementIdentity, managementGitdirIdentity: gitdir.identity, managementHeadIdentity, expectedOid, expectedRef };
+    },
     createRecoveryRollbackError: (message, cause) => new WorkspaceRootRecoveryRollbackError(message, { cause }),
     isExceptionalRecoveryError: error => error instanceof WorkspaceRootRecoveryRollbackError || error instanceof WorkspaceBranchConflictError,
 });
@@ -5412,7 +5506,11 @@ const workspaceWorktreeAdditionPorts: WorktreeAdditionPorts<
             prepared.expectedBranchOid.expectedOid,
             prepared.destinationIdentity,
         );
-        return { ...result, registrationReceipt: registrationFence };
+        return {
+            succeeded: result.status === 0,
+            failureDetail: (result.stderr ?? "").trim() || result.error?.message || "",
+            registrationReceipt: registrationFence,
+        };
     },
     compensateFailedAddition: (request, action, prepared, registrationReceipt) => rollbackFailedWorktreeAdd(
         request.repositoryPath,
@@ -5539,6 +5637,8 @@ type WorkspaceRepairNativeAuthority = {
     PreservedContentMerge: PreservedContentMerge;
     Environment: ReturnType<typeof pinnedNestedRepositoryEnvironment>;
     IndexContent: Buffer;
+    MetadataSnapshot: WorktreeMetadataSnapshot;
+    MetadataPublication: WorktreeMetadataPublication;
 };
 
 const nestedWorkspaceRepair = createNestedWorkspaceRepair<WorkspaceRepairNativeAuthority>({
@@ -5570,7 +5670,17 @@ const nestedWorkspaceRepair = createNestedWorkspaceRepair<WorkspaceRepairNativeA
     restoreQuarantinedMissingWorktreeRegistration: (...args) => restoreQuarantinedMissingWorktreeRegistration(...args),
     branchExistsInRepo: (...args) => branchExistsInRepo(...args),
     prepareWorktreeCreation: (...args) => prepareWorktreeCreation(...args),
-    runPreparedWorktreeAdd: (...args) => runPreparedWorktreeAdd(...args),
+    runPreparedWorktreeAdd: (...args) => {
+        const { result, registrationFence } = runPreparedWorktreeAdd(...args);
+        return {
+            result: {
+                succeeded: !result.error && result.status === 0,
+                failureReason: (result.stderr ?? "").trim() || result.error?.message
+                    || `git exited with status ${String(result.status)}`,
+            },
+            registrationFence,
+        };
+    },
     requireWorktreeRegistrationFence: (...args) => requireWorktreeRegistrationFence(...args),
     pinnedNestedRepositoryEnvironment: (...args) => pinnedNestedRepositoryEnvironment(...args),
     removeRegisteredWorktree: (...args) => removeRegisteredWorktree(...args),
@@ -6579,7 +6689,13 @@ const brokenWorkspaceRepair = createBrokenWorkspaceRepair<WorkspaceRepairNativeA
     restoreQuarantinedMissingWorktreeRegistration: (...args) => restoreQuarantinedMissingWorktreeRegistration(...args),
     branchExistsInRepo: (...args) => branchExistsInRepo(...args),
     prepareWorktreeCreation: (...args) => prepareWorktreeCreation(...args),
-    runPreparedWorktreeAdd: (...args) => runPreparedWorktreeAdd(...args),
+    runPreparedWorktreeAdd: (...args) => {
+        const { result, registrationFence } = runPreparedWorktreeAdd(...args);
+        return {
+            result: { succeeded: result.status === 0, failureReason: result.stderr ?? "" },
+            registrationFence,
+        };
+    },
     requireWorktreeRegistrationFence: (...args) => requireWorktreeRegistrationFence(...args),
     pinnedNestedRepositoryEnvironment: (...args) => pinnedNestedRepositoryEnvironment(...args),
     removeRegisteredWorktree: (...args) => removeRegisteredWorktree(...args),

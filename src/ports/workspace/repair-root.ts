@@ -1,11 +1,10 @@
-import type { WorkspaceRepairAuthority, WorkspaceRepairGitObservation } from "../../domain/workspace/repair-authority.js";
+import type { WorkspaceRepairAuthority, WorkspaceRepairGitObservation, WorkspaceRepairBranchHeadObservation } from "../../domain/workspace/repair-authority.js";
 
 export interface RootWorkspaceRepairPorts<A extends WorkspaceRepairAuthority> {
     resolve(...paths: string[]): string;
     join(...paths: string[]): string;
     dirname(path: string): string;
     basename(path: string): string;
-    isAbsolute(path: string): boolean;
     getWorkspacePath(source: string, branch: string): string;
     sameObservedPath(left: string, right: string): boolean;
     sameExistingObject(left: string, right: string): boolean;
@@ -25,7 +24,12 @@ export interface RootWorkspaceRepairPorts<A extends WorkspaceRepairAuthority> {
     assertFileIdentity(path: string, identity: A["FileIdentity"] | A["DirectoryIdentity"]): void;
     captureDirectoryTree(path: string): A["CapturedDirectoryTree"];
     assertCapturedDirectoryTree(path: string, tree: A["CapturedDirectoryTree"], excluded: Set<string>): void;
-    readMetadataText(path: () => string): string;
+    captureMetadata(path: string): A["MetadataSnapshot"];
+    metadataMatches(path: string, snapshot: A["MetadataSnapshot"]): boolean;
+    worktreeGitDirectory(path: string, snapshot: A["MetadataSnapshot"]): string | null;
+    worktreeCommonDirectory(managementDirectory: string, snapshot: A["MetadataSnapshot"]): string;
+    worktreeBackpointer(path: string, snapshot: A["MetadataSnapshot"]): string | null;
+    metadataBranchRef(snapshot: A["MetadataSnapshot"]): string | null;
     captureIndexContent(path: string): A["IndexContent"];
     metadataIndexMatches(path: string, expected: A["IndexContent"]): boolean;
     readDirectoryEntries(path: string): string[];
@@ -34,25 +38,26 @@ export interface RootWorkspaceRepairPorts<A extends WorkspaceRepairAuthority> {
     unlinkTemporaryLink(path: string): void;
     temporaryGitLinkIsRegular(temporaryPath: string): boolean;
     temporaryRegistrationPath(workspacePath: string, workspaceIdentity: A["DirectoryIdentity"], digest: string): string;
-    portableInstalledGitDirectory(workspacePath: string, workspaceIdentity: A["DirectoryIdentity"], managementDirectory: string, managementIdentity: A["DirectoryIdentity"]): string;
-    portableWorktreeBackpointer(path: string): string;
-    normalizeWorktreeMetadataFile(path: string, content: string, identity: A["DirectoryIdentity"], original: string): void;
+    publishWorktreeGitLink(workspacePath: string, workspaceIdentity: A["DirectoryIdentity"], managementDirectory: string, managementIdentity: A["DirectoryIdentity"], originalIdentity: A["DirectoryIdentity"], original: A["MetadataSnapshot"]): A["MetadataPublication"];
+    publishWorktreeBackpointer(path: string, gitFile: string, originalIdentity: A["DirectoryIdentity"], original: A["MetadataSnapshot"]): A["MetadataPublication"];
+    assertMetadataPublication(path: string, publication: A["MetadataPublication"]): void;
+    metadataPublicationMatches(path: string, publication: A["MetadataPublication"]): boolean;
+    restoreMetadata(path: string, original: A["MetadataSnapshot"], publication: A["MetadataPublication"]): A["MetadataPublication"];
     pinnedNestedRepositoryEnvironment(identity: A["NestedRepositoryIdentity"]): A["Environment"];
     withPinnedNestedRepository<T>(identity: A["NestedRepositoryIdentity"], operation: () => T): T;
     throwOnLiveWorkspaceBranchConflict(source: string, identity: A["NestedRepositoryIdentity"], workspace: string, expectedRef: string): void;
-    probeSourceBranchHead(identity: A["NestedRepositoryIdentity"], environment: A["Environment"], expectedRef: string): WorkspaceRepairGitObservation;
+    probeSourceBranchHead(identity: A["NestedRepositoryIdentity"], environment: A["Environment"], expectedRef: string, diagnostic: "branch" | "read"): WorkspaceRepairBranchHeadObservation;
     registerTemporaryWorktree(identity: A["NestedRepositoryIdentity"], environment: A["Environment"], path: string, branch: string): WorkspaceRepairGitObservation;
-    readTemporaryHead(identity: A["NestedRepositoryIdentity"], environment: A["Environment"]): WorkspaceRepairGitObservation;
+    readTemporaryHead(identity: A["NestedRepositoryIdentity"], environment: A["Environment"]): WorkspaceRepairBranchHeadObservation;
     initializeTemporaryIndex(identity: A["NestedRepositoryIdentity"], environment: A["Environment"], oid: string): WorkspaceRepairGitObservation;
     compareTemporaryIndex(identity: A["NestedRepositoryIdentity"], environment: A["Environment"], oid: string): WorkspaceRepairGitObservation;
     removeFailedTemporaryRegistration(identity: A["NestedRepositoryIdentity"], environment: A["Environment"], path: string): WorkspaceRepairGitObservation;
-    probeBackpointerBranchHead(identity: A["NestedRepositoryIdentity"], expectedRef: string): WorkspaceRepairGitObservation;
+    probeBackpointerBranchHead(identity: A["NestedRepositoryIdentity"], expectedRef: string): WorkspaceRepairBranchHeadObservation;
     registeredWorktreePath(source: string, destination: string): boolean;
-    makeMissingRegistrationFence(management: A["DirectoryIdentity"], gitdir: A["FileIdentity"], head: A["FileIdentity"], oid: string, ref: string): A["MissingWorktreeRegistrationFence"];
+    makeMissingRegistrationFence(management: A["DirectoryIdentity"], gitdir: A["MetadataSnapshot"] | A["MetadataPublication"], head: A["FileIdentity"], oid: string, ref: string): A["MissingWorktreeRegistrationFence"];
     missingWorktreeManagementMatches(source: string, destination: string, receipt: A["MissingWorktreeRegistrationFence"]): boolean;
     quarantineMissingWorktreeRegistration(source: string, destination: string, receipt: A["MissingWorktreeRegistrationFence"]): A["QuarantinedMissingWorktreeRegistration"];
     commitQuarantinedMissingWorktreeRegistration(receipt: A["QuarantinedMissingWorktreeRegistration"]): void;
-    gitFailureReason(stderr: string): string | undefined;
     createRecoveryRollbackError(message: string, cause: unknown): Error;
     isExceptionalRecoveryError(error: unknown): boolean;
 }

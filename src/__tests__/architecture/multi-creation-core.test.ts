@@ -32,7 +32,7 @@ function fixture() {
         captureWorkspaceIdentity(actual) { parent(actual); trace.push("workspace-identity"); return workspace; },
         observeBranch(actual) { trace.push(`observe:${nameFrom(actual.repositoryPath)}`); expect(actual).toEqual({ repositoryPath: actual.repositoryPath, destinationPath: `workspace/${nameFrom(actual.repositoryPath)}`, branch: "topic", failureContext: { kind: "multi-repo", repositoryName: nameFrom(actual.repositoryPath) } }); return "none"; },
         prepareAddition(actual, action) { const name = nameFrom(actual.repositoryPath); trace.push(`prepare:${name}`); expect(action).toBe("worktree-new"); return prepared.get(name)!; },
-        addPrepared(actual, value) { const name = nameFrom(actual.repositoryPath); trace.push(`add:${name}`); expect(value).toBe(prepared.get(name)); return { status: 0, registrationReceipt: receipts.get(name)! }; },
+        addPrepared(actual, value) { const name = nameFrom(actual.repositoryPath); trace.push(`add:${name}`); expect(value).toBe(prepared.get(name)); return { succeeded: true, failureDetail: "", registrationReceipt: receipts.get(name)! }; },
         compensateFailedAddition() { trace.push("addition-rollback"); },
         requireRegistration(receipt, destination) { const name = nameFrom(destination); trace.push(`registration:${name}`); expect(receipt).toBe(receipts.get(name)); return receipt!; },
         pathExists(path) { trace.push(`exists:${nameFrom(path)}`); return present.has(path); },
@@ -199,7 +199,7 @@ describe("multi workspace creation application boundaries", () => {
         const f = fixture(); const original = new Error("next repo");
         expect(thrown(() => createMultiWorkspaceCreation({ ...f.ports,
             prepareAddition: () => undefined as unknown as symbol,
-            addPrepared: () => ({ status: 0, registrationReceipt: f.receipts.get("a")! }),
+            addPrepared: () => ({ succeeded: true, failureDetail: "", registrationReceipt: f.receipts.get("a")! }),
             observeBranch: actual => { if (actual.repositoryPath === "source/b") throw original; return f.ports.observeBranch(actual); },
             rollbackCreatedBranch: (source, branch, action, prepared) => { expect(source).toBe("source/a"); expect(branch).toBe("topic"); expect(action).toBe("worktree-new"); expect(prepared).toBeNull(); },
         })(request))).toBe(original);

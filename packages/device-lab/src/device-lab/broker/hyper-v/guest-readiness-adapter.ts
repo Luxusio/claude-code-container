@@ -11,6 +11,8 @@ import type {
     HyperVReadinessFailureSource,
 } from '../../domain/lifecycle/hyper-v-create-start.js';
 import {hyperVProviderDiagnosticCode} from './public-response.js';
+import type {ProviderCommandResult} from '../../../device-lab-broker.js';
+import {nativeHyperVExecutionReceipt} from './lifecycle-outcomes.js';
 export type DeviceLabHyperVGuestReadinessOutcome = WindowsReadinessOutcome;
 import {
     createHyperVGuestDirectClient,
@@ -92,30 +94,30 @@ export function parseHyperVLinuxEd25519HostKeyFingerprints(sshDiagnostic: string
     return [...observed];
 }
 
-function readinessFailureDetail<Receipt>(
+function readinessFailureDetail(
     backend: 'windows-vm' | 'linux-vm',
-    execution: HyperVNativeExecution<Receipt>,
+    execution: ProviderCommandResult,
     outcome: WindowsReadinessOutcome | null = null,
 ): HyperVGuestReadinessFailureDetail {
     const diagnosticCode = hyperVProviderDiagnosticCode(execution);
-    return {
+    return {evidence: {
         ...(backend === 'windows-vm' ? {structured: outcome?.ok === false} : {}),
         status: typeof execution.status === 'number' ? execution.status : null,
         timedOut: execution.timedOut === true,
         stdoutBytes: Buffer.byteLength(String(execution.stdout || ''), 'utf8'),
         stderrBytes: Buffer.byteLength(String(execution.stderr || ''), 'utf8'),
         ...(diagnosticCode ? {diagnosticCode} : {}),
-    };
+    }};
 }
 
-function windowsReadinessFailureCode<Receipt>(execution: HyperVNativeExecution<Receipt>, outcome: WindowsReadinessOutcome | null): string {
+function windowsReadinessFailureCode(execution: ProviderCommandResult, outcome: WindowsReadinessOutcome | null): string {
     if (outcome?.ok === false) return outcome.reason;
     const error = String(execution.error || '');
     if (error.length <= 128 && /^hyper-v-[a-z0-9-]+$/.test(error)) return error;
     return execution.timedOut ? 'powershell-direct-timeout' : 'powershell-direct-unavailable';
 }
 
-function linuxReadinessFailureCode<Receipt>(execution: HyperVNativeExecution<Receipt>): string {
+function linuxReadinessFailureCode(execution: ProviderCommandResult): string {
     const error = String(execution.error || '');
     if (/^hyper-v-linux-gui-(?:(?:privilege|apt-update|apt-install|configure|start|ready)-failed|timeout)$/.test(error)) return error;
     const diagnostic = `${error}\n${execution.stderr || ''}`.toLowerCase();
@@ -128,6 +130,10 @@ function linuxReadinessFailureCode<Receipt>(execution: HyperVNativeExecution<Rec
     return 'ssh-unavailable';
 }
 
+function semanticExecution<Receipt>(receipt: ProviderCommandResult): HyperVNativeExecution<Receipt> {
+    return {required: receipt.mode !== 'noop', dispatched: receipt.mode !== 'noop', ok: receipt.status === 0 && !receipt.error,
+        ...(receipt.error ? {failureCode: receipt.error} : {}), receipt: receipt as unknown as Receipt};
+}
 export function deviceLabWindowsReadinessObservation<Receipt>(outcome: WindowsReadinessOutcome): HyperVWindowsReadinessObservation<Receipt> {
     // The historical native summary stays outward; callers keep the typed outcome for policy.
     const execution = {
@@ -135,16 +141,16 @@ export function deviceLabWindowsReadinessObservation<Receipt>(outcome: WindowsRe
         stdout: JSON.stringify(outcome), stderr: '',
     };
     return {
-        backend: 'windows-vm', outcome, execution, ok: outcome.ok, ready: outcome.ok,
+        backend: 'windows-vm', outcome, execution: semanticExecution<Receipt>(execution), ok: outcome.ok, ready: outcome.ok,
         failureCode: windowsReadinessFailureCode(execution, outcome),
         failureDetail: readinessFailureDetail('windows-vm', execution, outcome),
     };
 }
 
-export function deviceLabHyperVLinuxReadinessObservation<Receipt>(execution: HyperVNativeExecution<Receipt>): HyperVLinuxReadinessObservation<Receipt> {
+export function deviceLabHyperVLinuxReadinessObservation<Receipt = ProviderCommandResult>(execution: ProviderCommandResult): HyperVLinuxReadinessObservation<Receipt> {
     const ok = execution.status === 0 && !execution.error;
     return {
-        backend: 'linux-vm', execution, ok,
+        backend: 'linux-vm', execution: semanticExecution<Receipt>(execution), ok,
         ready: ok && String(execution.stdout || '').includes('ccc-hyper-v-linux-ready'),
         failureCode: linuxReadinessFailureCode(execution),
         failureDetail: readinessFailureDetail('linux-vm', execution),
@@ -152,13 +158,13 @@ export function deviceLabHyperVLinuxReadinessObservation<Receipt>(execution: Hyp
     };
 }
 
-export function deviceLabHyperVLinuxGuiReadinessObservation<Receipt>(execution: HyperVNativeExecution<Receipt>): HyperVLinuxReadinessObservation<Receipt> {
+export function deviceLabHyperVLinuxGuiReadinessObservation<Receipt = ProviderCommandResult>(execution: ProviderCommandResult): HyperVLinuxReadinessObservation<Receipt> {
     const ok = execution.status === 0 && !execution.error;
     const ready = ok && String(execution.stdout || '').includes('CCC_HYPER_V_GUI_READY');
-    if (ready) return {...deviceLabHyperVLinuxReadinessObservation(execution), ready};
+    if (ready) return {...deviceLabHyperVLinuxReadinessObservation<Receipt>(execution), ready};
     const stage = /hyper-v-linux-gui-(?:privilege|apt-update|apt-install|configure|start|ready)-failed/.exec(String(execution.stderr || ''))?.[0];
     const error = stage || (execution.timedOut ? 'hyper-v-linux-gui-timeout' : 'hyper-v-linux-gui-ready-failed');
-    return {...deviceLabHyperVLinuxReadinessObservation({...execution, error}), ok, ready};
+    return {...deviceLabHyperVLinuxReadinessObservation<Receipt>({...execution, error}), execution: {...semanticExecution<Receipt>(execution), failureCode: error}, ok, ready};
 }
 
 export function deviceLabHyperVReadinessFailure<Receipt>(
@@ -166,17 +172,24 @@ export function deviceLabHyperVReadinessFailure<Receipt>(
     error: string,
     source: HyperVReadinessFailureSource<Receipt> = {},
 ): HyperVGuestReadinessObservation<Receipt> {
-    const execution = {
-        ...(source.execution ?? source.previous?.execution ?? {
+    const previous = source.execution ?? source.previous?.execution;
+    const previousEvidence = source.execution === undefined ? source.previous?.failureDetail.evidence : undefined;
+    const execution: ProviderCommandResult = {
+        ...(previous ? nativeHyperVExecutionReceipt(previous as HyperVNativeExecution<ProviderCommandResult>) : {
             mode: 'exec', provider: backend === 'linux-vm' ? 'hyper-v-ssh' : 'hyper-v', status: null,
         }),
+        // A preceding readiness overlay can supersede a native timeout without changing its receipt.
+        ...(previousEvidence && typeof previousEvidence === 'object' && 'timedOut' in previousEvidence
+            && typeof previousEvidence.timedOut === 'boolean' ? {timedOut: previousEvidence.timedOut} : {}),
         error,
-        ...(source.timedOut === undefined ? {} : {timedOut: source.timedOut}),
+        ...(source.deadlineExpired === undefined ? {} : {timedOut: source.deadlineExpired}),
     };
-    if (backend === 'linux-vm') return {...deviceLabHyperVLinuxReadinessObservation(execution), ready: false};
+    const observed = previous ? {...previous, ok: false, failureCode: error}
+        : {...semanticExecution<Receipt>(execution), dispatched: false};
+    if (backend === 'linux-vm') return {...deviceLabHyperVLinuxReadinessObservation<Receipt>(execution), execution: observed, ready: false};
     const outcome = source.previous?.backend === 'windows-vm' ? source.previous.outcome : null;
     return {
-        backend, outcome, execution, ok: false, ready: false,
+        backend, outcome, execution: observed, ok: false, ready: false,
         failureCode: windowsReadinessFailureCode(execution, outcome),
         failureDetail: readinessFailureDetail(backend, execution, outcome),
     };

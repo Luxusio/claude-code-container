@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { renderHyperVCreateRollback } from "@ccc/device-lab/device-lab/broker/hyper-v/lifecycle-outcomes.js";
+import { renderHyperVCreateRollback, renderHyperVCreateStart } from "@ccc/device-lab/device-lab/broker/hyper-v/lifecycle-outcomes.js";
+import { deviceLabHyperVLinuxReadinessObservation, deviceLabHyperVReadinessFailure } from "@ccc/device-lab/device-lab/broker/hyper-v/guest-readiness-adapter.js";
 import { HYPER_V_ELEVATED_NETWORK_ERROR_CODES } from "@ccc/device-lab/device-lab/broker/hyper-v/elevated-network-session.js";
 import {
     boundedPowerShellErrorId,
@@ -627,23 +628,111 @@ describe("Hyper-V create rollback public presentation", () => {
         });
     });
 
-    it("renders caught failure evidence with current execution precedence and no private paths", () => {
+    it("preserves a captured status-zero receipt while the current diagnostic takes precedence", () => {
+        const receipt = Object.freeze({
+            mode: "exec", provider: "hyper-v", status: 0, error: "hyper-v-vm-create-failed", signal: "SIGTERM", timedOut: true,
+            stdout: "C:\\private\\root.vhdx", stderr: "host failure at C:\\private\\credential.xml", input: "private credential",
+        });
         const rendered = renderHyperVCreateRollback({
             attempted: true, ok: false, reason: "hyper-v-rollback-command-failed", providerRecovery: recovered,
             execution: {
-                mode: "exec", provider: "hyper-v", status: 1, error: "hyper-v-operation-deadline-exceeded", signal: "SIGTERM", timedOut: true,
-                stderr: "host failure at C:\\private\\credential.xml",
-                receipt: { mode: "exec", provider: "hyper-v", status: 0, error: "hyper-v-vm-create-failed", stdout: "C:\\private\\root.vhdx", stderr: "", input: "private credential" },
+                required: true, dispatched: true, ok: false, failureCode: "hyper-v-operation-deadline-exceeded", receipt,
             },
         });
         expect(rendered).toEqual({
             attempted: true, ok: false, reason: "hyper-v-rollback-command-failed",
             result: {
-                mode: "exec", provider: "hyper-v", status: 1, signal: "SIGTERM", timedOut: true,
+                mode: "exec", provider: "hyper-v", status: 0, signal: "SIGTERM", timedOut: true,
                 stdoutPresent: true, stderrPresent: true, outputRedacted: true, inputConfigured: true,
                 diagnosticCode: "hyper-v-operation-deadline-exceeded",
             },
         });
         expect(JSON.stringify(rendered)).not.toContain("private");
+        expect(receipt.error).toBe("hyper-v-vm-create-failed");
+        expect(receipt.status).toBe(0);
+    });
+
+    it("renders a caught typed rollback failure as a synthetic status-one summary", () => {
+        const execution = { required: true, dispatched: true, ok: false,
+            failureCode: "hyper-v-ps-removeitemioerror-microsoft-powershell-commands-removeitemcommand" };
+        expect(renderHyperVCreateRollback({ attempted: true, ok: false, reason: "hyper-v-rollback-command-failed", execution })).toEqual({
+            attempted: true, ok: false, reason: "hyper-v-rollback-command-failed",
+            result: {
+                mode: "exec", provider: "hyper-v", status: 1,
+                stdoutPresent: false, stderrPresent: false, outputRedacted: true,
+                diagnosticCode: "hyper-v-ps-removeitemioerror-microsoft-powershell-commands-removeitemcommand",
+            },
+        });
+    });
+
+    it("retains a captured status-zero receipt when its observation is invalid", () => {
+        const execution = { required: true, dispatched: true, ok: false, failureCode: "hyper-v-rollback-invalid-result" };
+        const receipt = Object.freeze({ mode: "exec", provider: "hyper-v", status: 0, stdout: "invalid observation", stderr: "" });
+        expect(renderHyperVCreateRollback({ attempted: true, ok: false, reason: "hyper-v-rollback-invalid-result", execution: { ...execution, receipt } })).toEqual({
+            attempted: true, ok: false, reason: "hyper-v-rollback-invalid-result",
+            result: {
+                mode: "exec", provider: "hyper-v", status: 0,
+                stdoutPresent: true, stderrPresent: false, outputRedacted: true,
+                diagnosticCode: "hyper-v-rollback-command-failed",
+            },
+        });
+        expect(receipt.stdout).toBe("invalid observation");
+    });
+});
+
+describe("Hyper-V readiness diagnostic presentation", () => {
+    it("renders a later containment failure without reviving the captured SSH timeout", () => {
+        const receipt = Object.freeze({ mode: "exec", provider: "hyper-v-ssh", status: 255,
+            stdout: "private native guest signal absent", stderr: "private native diagnostic é", timedOut: true });
+        const originalBytes = Buffer.from(JSON.stringify(receipt), "utf8");
+        const first = deviceLabHyperVReadinessFailure("linux-vm", "hyper-v-guest-boot-signal-timeout", {
+            previous: deviceLabHyperVLinuxReadinessObservation(receipt), deadlineExpired: false,
+        });
+        const contained = deviceLabHyperVReadinessFailure("linux-vm", "hyper-v-bootstrap-network-containment-failed", { previous: first });
+        const readiness = { provider: "hyper-v-ssh", error: contained.failureCode, errorDetail: contained.failureDetail };
+        const rendered = renderHyperVCreateStart({
+            kind: "operation-failed", reason: "provider-failed", journalDisposition: "retain", recoveryDisposition: "required",
+            ownerId: "owner", backend: "linux-vm", command: "device_start", deviceId: "owned", error: "hyper-v-guest-not-ready",
+            execution: { required: true, dispatched: true, mutatesHost: true,
+                command: { required: true, dispatched: true, ok: true,
+                    receipt: { mode: "exec", provider: "hyper-v", status: 0 }, guestReadiness: readiness } },
+            boot: { ready: false, ...readiness },
+        });
+        const expected = { error: "hyper-v-bootstrap-network-containment-failed", errorDetail: { status: 255, timedOut: false } };
+        expect(rendered).toMatchObject({ status: 502, payload: { error: "hyper-v-guest-not-ready", result: {
+            boot: { ready: false, ...expected }, execution: { command: { guestReadiness: expected } },
+        } } });
+        expect(JSON.stringify(rendered)).not.toContain('"evidence"');
+        expect(JSON.stringify(rendered)).not.toContain("private");
+        expect(contained.execution.receipt).toBe(receipt);
+        expect(Buffer.from(JSON.stringify(receipt), "utf8")).toEqual(originalBytes);
+    });
+
+    it("renders opaque failure and bootstrap evidence into the established public fields", () => {
+        const evidence = Object.freeze({ status: 255, timedOut: false, stdoutBytes: 3, stderrBytes: 4,
+            stdout: "private-command-output", input: "private-key", credentialPath: "C:\\private\\guest.xml" });
+        const bootstrapProbeEvidence = Object.freeze({ status: 23, stdout: "private-bootstrap-command" });
+        const bootstrapSshEvidence = Object.freeze({ status: 255, stderr: "private-ssh-key" });
+        const rendered = renderHyperVCreateStart({
+            kind: "operation-failed", reason: "provider-failed", journalDisposition: "retain", recoveryDisposition: "required",
+            ownerId: "owner", backend: "linux-vm", command: "device_start", deviceId: "owned", error: "hyper-v-linux-guest-ready-failed",
+            execution: { required: true, dispatched: true, mutatesHost: true,
+                command: { required: true, dispatched: true, ok: true,
+                    receipt: { mode: "exec", provider: "hyper-v", status: 0 } } },
+            boot: { ready: false, provider: "hyper-v-ssh", error: "ssh-unavailable", errorDetail: { evidence },
+                readiness: { managedSshAttempts: 1, bootstrapProbeAttempts: 1, bootstrapProbeSuccesses: 0,
+                    bootstrapProbeEvidence, bootstrapProbeLastError: "hyper-v-bootstrap-neighbor-inspection-failed",
+                    bootstrapAddressCount: 0, bootstrapSshAttempts: 1, bootstrapSshEvidence, bootstrapSshLastError: "ssh-unavailable",
+                    networkFinalizeAttempts: 0, networkFinalizeSucceeded: false, guestSignalObserved: false, elapsedMs: 1000 } },
+        });
+        expect(rendered).toMatchObject({ status: 502, payload: { result: { boot: {
+            ready: false, errorDetail: { status: 255, timedOut: false, stdoutBytes: 3, stderrBytes: 4 },
+            readiness: { bootstrapProbeLastStatus: 23, bootstrapSshLastStatus: 255, managedSshAttempts: 1 },
+        } } } });
+        expect(JSON.stringify(rendered)).not.toContain("Evidence");
+        expect(JSON.stringify(rendered)).not.toContain('"evidence"');
+        expect(JSON.stringify(rendered)).not.toContain("private");
+        expect(evidence.stdout).toBe("private-command-output");
+        expect(bootstrapProbeEvidence.status).toBe(23);
     });
 });

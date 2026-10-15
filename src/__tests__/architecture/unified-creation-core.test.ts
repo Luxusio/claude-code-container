@@ -22,7 +22,7 @@ function fixture(existence: "local" | "remote" | "none" = "none") {
     const ports: UnifiedCreationPorts<symbol, symbol> = {
         observeBranch(actual) { trace.push("observe"); additionRequest = actual; expect(actual).toEqual({ ...request, failureContext: { kind: "unified" } }); return existence; },
         prepareAddition(actual, actualAction) { trace.push("prepare"); expect(actual).toBe(additionRequest); expect(actualAction).toBe(action); return prepared; },
-        addPrepared(actual, actualPrepared) { trace.push("add"); expect(actual).toBe(additionRequest); expect(actualPrepared).toBe(prepared); return { status: 0, registrationReceipt: receipt }; },
+        addPrepared(actual, actualPrepared) { trace.push("add"); expect(actual).toBe(additionRequest); expect(actualPrepared).toBe(prepared); return { succeeded: true, failureDetail: "", registrationReceipt: receipt }; },
         compensateFailedAddition(actual, actualAction, actualPrepared, actualReceipt) { trace.push("addition-rollback"); expect(actual).toBe(additionRequest); expect(actualAction).toBe(action); expect(actualPrepared).toBe(prepared); expect(actualReceipt).toBe(receipt); },
         requireRootRegistration(actualReceipt, actual) { trace.push("registration"); parent(actual); expect(actualReceipt).toBe(receipt); return registration; },
         sourceWorkspaceName(actual) { trace.push("name"); parent(actual); return "source-name"; },
@@ -74,13 +74,13 @@ describe("unified workspace creation orchestration", () => {
     it("passes a missing addition receipt to registration validation without inventing compensation", () => {
         const f = fixture();
         const sentinel = new Error("missing receipt");
-        const ports = { ...f.ports, addPrepared: () => ({ status: 0, registrationReceipt: null }), requireRootRegistration: (receipt: symbol | null, actual: UnifiedCreationRequest): symbol => { expect(receipt).toBeNull(); expect(actual).toBe(request); throw sentinel; } };
+        const ports = { ...f.ports, addPrepared: () => ({ succeeded: true, failureDetail: "", registrationReceipt: null }), requireRootRegistration: (receipt: symbol | null, actual: UnifiedCreationRequest): symbol => { expect(receipt).toBeNull(); expect(actual).toBe(request); throw sentinel; } };
         expect(thrown(() => createUnifiedWorkspaceCreation(ports)(request))).toBe(sentinel);
         expect(f.trace).toEqual(["observe", "prepare"]);
     });
     it("inherits addition failure diagnostics and delegates only addition compensation", () => {
         const f = fixture();
-        const ports = { ...f.ports, addPrepared: (actual: WorktreeAdditionRequest, prepared: symbol) => { f.ports.addPrepared(actual, prepared); return { status: null, stderr: "  failed add  ", registrationReceipt: f.receipt }; } };
+        const ports = { ...f.ports, addPrepared: (actual: WorktreeAdditionRequest, prepared: symbol) => { f.ports.addPrepared(actual, prepared); return { succeeded: false, failureDetail: "failed add", registrationReceipt: f.receipt }; } };
         const error = thrown(() => createUnifiedWorkspaceCreation(ports)(request));
         expect(error).toBeInstanceOf(Error);
         expect((error as Error).message).toBe("Failed to create worktree: failed add");
@@ -89,7 +89,7 @@ describe("unified workspace creation orchestration", () => {
     it("inherits addition rollback error and cause without unified repair compensation", () => {
         const f = fixture();
         const rollback = new Error("add compensation refused");
-        const ports = { ...f.ports, addPrepared: () => ({ status: 1, stderr: "add failed", registrationReceipt: f.receipt }), compensateFailedAddition: () => { throw rollback; } };
+        const ports = { ...f.ports, addPrepared: () => ({ succeeded: false, failureDetail: "add failed", registrationReceipt: f.receipt }), compensateFailedAddition: () => { throw rollback; } };
         const error = thrown(() => createUnifiedWorkspaceCreation(ports)(request)) as Error;
         expect(error.message).toBe("Failed to create worktree: add failed; rollback failed: add compensation refused");
         expect(error.cause).toBe(rollback);

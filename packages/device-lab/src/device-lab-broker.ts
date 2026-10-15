@@ -11,12 +11,12 @@ import type {BrokerRecordingArtifactContext} from "./device-lab/ports/broker-rec
 import type {BrokerAppiumRefusal} from "./device-lab/domain/broker-appium.js";
 import type {BrokerAppiumInstrumentationStep} from "./device-lab/ports/broker-appium.js";
 import type {DeviceStatusPreparation, DeviceStatusPhysicalAdmission} from "./device-lab/domain/broker-observation.js";
-import { renderHyperVCreateStart, renderHyperVCreateRollback, renderHyperVStopDelete, renderHyperVSnapshot, renderHyperVSnapshotRepair, type NativeHyperVConnection } from "./device-lab/broker/hyper-v/lifecycle-outcomes.js";
+import { renderHyperVCreateStart, renderHyperVCreateRollback, renderHyperVStopDelete, renderHyperVSnapshot, renderHyperVSnapshotRepair, nativeHyperVExecutionReceipt, publicHyperVReadinessTrace, type NativeHyperVConnection } from "./device-lab/broker/hyper-v/lifecycle-outcomes.js";
 import { normalizePhysicalExecution, normalizeAppleInventory, renderLeaseOutcome, renderLeaseFailure as leaseParamError, renderCleanupRollback, renderPhysicalAttachOutcome, renderPhysicalDetachOutcome, renderAppleTrustOutcome, renderPhysicalStopOutcome, renderOwnerCleanupOutcome } from './device-lab/broker/physical-outcomes.js';
 import type { NativePhysicalReceipt } from './device-lab/broker/physical-outcomes.js';
 import {hyperVLinuxGuestReadyTraceFailureCode as coreLinuxTraceFailure,compareHyperVLinuxEd25519HostKeyFingerprint as coreLinuxFingerprint,hyperVLinuxGuestSignalDeadlineAt as coreLinuxSignalDeadline,hyperVLinuxGuestSignalTimedOut as coreLinuxSignalTimedOut,type HyperVLinuxGuestReadyTrace} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import {hyperVCreateUniqueFields,hyperVDeviceDefinition,hyperVSecureBootConfiguration} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
-import type {HyperVLifecycleOutcome, HyperVLifecyclePlan, HyperVPowerObservation} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
+import type {HyperVLifecycleOutcome, HyperVLifecyclePlan, HyperVPowerObservation, HyperVNativeExecution} from "./device-lab/domain/lifecycle/hyper-v-create-start.js";
 import { createHyperVStopDeleteApplication } from "./device-lab/application/lifecycle/hyper-v-stop-delete.js";
 import type { HyperVStopDeletePorts } from "./device-lab/ports/lifecycle/hyper-v-stop-delete.js";
 import type { HyperVOperationEvidence, HyperVTerminalResult } from "./device-lab/domain/lifecycle/hyper-v-stop-delete.js";
@@ -3885,7 +3885,7 @@ function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions) {
             const receipt = await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({
                 executable: connection.executable, ...target, timeoutMs: 15000,
             }), { timeoutMs: 20000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-            const observation = deviceLabHyperVLinuxReadinessObservation(nativeHyperVObservation(receipt));
+            const observation = deviceLabHyperVLinuxReadinessObservation(receipt);
             return { ready: observation.ready, execution: { ok: observation.ok, receipt } };
         },
         remainingTimeout: hyperVRemainingTimeout,
@@ -6588,7 +6588,7 @@ function brokerHyperVStopDeleteApplication(normalized: NormalizedBrokerOptions) 
         cleanupArtifacts: cleanupHyperVDeviceArtifacts,
         publish: (...args) => publishLifecycleDevice(normalized, ...args),
         stateErrorCode: ownerDeviceStateErrorCode, stateFailure: nativeHyperVStateFailure,
-        errorCode: hyperVBoundedErrorCode, diagnosticCode: hyperVProviderDiagnosticCode,
+        errorCode: hyperVBoundedErrorCode, diagnosticCode: (execution, fallback) => hyperVProviderDiagnosticCode(nativeHyperVExecutionReceipt(execution), fallback),
         assertDeadline: deadline=>{assertHyperVOperationDeadline(deadline);return undefined;}, deadlineExpired:hyperVOperationDeadlineExpired,
         timestamp:()=>new Date().toISOString(),
     };
@@ -6653,14 +6653,13 @@ function nativeHyperVConnection(normalized: NormalizedBrokerOptions, provider: "
     return executable ? { executable } : null;
 }
 
-function nativeHyperVObservation(receipt: ProviderCommandResult) {
+function nativeHyperVObservation(receipt: ProviderCommandResult): HyperVNativeExecution<ProviderCommandResult> {
     return {
-        mode: receipt.mode, provider: receipt.provider, status: receipt.status, signal: receipt.signal,
-        stdout: receipt.stdout, stderr: receipt.stderr, error: receipt.error,
-        timedOut: receipt.timedOut, outputLimitExceeded: receipt.outputLimitExceeded,
-        typedCreateInvalidResult: receipt.typedCreateInvalidResult,
-        typedCreateOperation: receipt.typedCreateOperation,
-        typedCreateNativeDiagnostics: receipt.typedCreateNativeDiagnostics,
+        required: receipt.mode !== "noop", dispatched: receipt.mode !== "noop", ok: commandSucceeded(receipt),
+        ...(receipt.error !== undefined ? {failureCode: receipt.error} : {}),
+        ...(receipt.typedCreateInvalidResult !== undefined ? {invalidResult: receipt.typedCreateInvalidResult} : {}),
+        ...(receipt.typedCreateOperation !== undefined ? {operation: receipt.typedCreateOperation} : {}),
+        ...(receipt.typedCreateNativeDiagnostics !== undefined ? {nativeDiagnostics: receipt.typedCreateNativeDiagnostics} : {}),
         receipt,
     };
 }
@@ -6690,14 +6689,14 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         cloneDisk:async(request,created)=>{await cloneHyperVBaseImage({...request,onDestinationCreated:path=>{created(path);}});},
         observePlannedPower: async (connection, timeoutMs, outputLimit) => {
             if (!connection.plannedCommand) throw new Error("missing-provider-command");
-            const execution = nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, connection.plannedCommand, {timeoutMs, outputLimit}));
-            const ok = execution.status === 0 && !execution.error;
-            return {ok, observation: ok ? parseHyperVVmObservation(execution.stdout || "") : null, execution};
+            const receipt = await hyperVProviderCommandRunner(normalized, connection.plannedCommand, {timeoutMs, outputLimit});
+            const ok = commandSucceeded(receipt);
+            return {ok, observation: ok ? parseHyperVVmObservation(receipt.stdout || "") : null, execution: nativeHyperVObservation(receipt)};
         },
         remaining:hyperVRemainingTimeout,assertDeadline:deadline=>{assertHyperVOperationDeadline(deadline);return undefined;},deadlineExpired:hyperVOperationDeadlineExpired,
         errorInfo:error=>error instanceof HyperVWindowsError?{code:error.code,category:error.category}:null,
         typedErrorCode:hyperVTypedErrorCode,typedErrorOperation:error=>hyperVTypedErrorOperation(error)??null,nativeDiagnostics:hyperVTypedNativeDiagnostics,
-        diagnosticCode:hyperVProviderDiagnosticCode,boundedErrorCode:hyperVBoundedErrorCode,
+        diagnosticCode:(execution,fallback)=>hyperVProviderDiagnosticCode(nativeHyperVExecutionReceipt(execution),fallback),boundedErrorCode:hyperVBoundedErrorCode,
         removeCreateArtifact: async (connection, target, timeoutMs, outputLimit) => commandSucceeded(await hyperVProviderCommandRunner(normalized, hyperVCreateCompensationCommand({executable: connection.executable, ...target}), {timeoutMs, outputLimit})),
         compensationOrder:planHyperVVirtualMachineCreationCompensation,vms:(session,id)=>session.client.getVM({kind:"id",id}),disks:(session,id)=>session.client.getVMHardDiskDrives({kind:"id",id}),
         removeVM:(session,request)=>session.client.removeVM(request),
@@ -6737,18 +6736,18 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         prepareLinuxSeed: (connection, request) => {
             const command = hyperVLinuxSeedCommand({executable: connection.executable, ...request});
             return async (timeoutMs, outputLimit) => {
-                const execution = nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, command, {timeoutMs, outputLimit}));
-                return {ok: execution.status === 0 && !execution.error, observation: decodeHyperVLinuxSeedObservation(execution.stdout), execution};
+                const receipt = await hyperVProviderCommandRunner(normalized, command, {timeoutMs, outputLimit});
+                return {ok: commandSucceeded(receipt), observation: decodeHyperVLinuxSeedObservation(receipt.stdout), execution: nativeHyperVObservation(receipt)};
             };
         },
         prepareWindowsProvisionMedia: (connection, request) => hyperVGuestProvisionMediaCommand({executable: connection.executable, ...request}),
-        probeLinuxReadiness: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxReadinessObservation(nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit}))),
+        probeLinuxReadiness: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxReadinessObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
         finalizeLinuxNetwork: async (connection, request, timeoutMs, outputLimit) => {
             const receipt = await hyperVProviderCommandRunner(normalized, hyperVLinuxNetworkFinalizeCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit});
             return {ok: commandSucceeded(receipt), execution: nativeHyperVObservation(receipt)};
         },
-        probeLinuxGui: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxGuiReadinessObservation(nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit}))),
-        prepareLinuxGui: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxGuiReadinessObservation(nativeHyperVObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiPrepareCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit}))),
+        probeLinuxGui: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxGuiReadinessObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiReadyCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
+        prepareLinuxGui: async (connection, request, timeoutMs, outputLimit) => deviceLabHyperVLinuxGuiReadinessObservation(await hyperVProviderCommandRunner(normalized, hyperVLinuxGuiPrepareCommand({executable: connection.executable, ...request}), {timeoutMs, outputLimit})),
         inspectSeed:(connection,request,deadline)=>inspectDeviceLabHyperVLinuxSeedTarget({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
         attachSeed:(connection,request,deadline)=>attachDeviceLabHyperVLinuxSeedMedia({executable: connection.executable, ...request,run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,180000),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
         provision: async (connection, request, deadline) => {
@@ -6768,7 +6767,7 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
                     ? "hyper-v-bootstrap-network-response-invalid"
                     : hyperVProviderDiagnosticCode(observed.execution, "hyper-v-bootstrap-network-probe-failed") || "hyper-v-bootstrap-network-probe-failed");
             return {
-                status: typeof observed.execution.status === "number" ? observed.execution.status : null,
+                diagnostics: {status: typeof observed.execution.status === "number" ? observed.execution.status : null},
                 failureCode, observation: observed.observation, execution: nativeHyperVObservation(observed.execution),
             };
         },
@@ -6776,7 +6775,16 @@ function brokerHyperVCreateStartApplication(normalized:NormalizedBrokerOptions) 
         bootDiagnostic:(connection,request,deadline)=>readDeviceLabHyperVGuestBootDiagnostic({executable: connection.executable, ...request,timeoutMilliseconds:()=>hyperVRemainingTimeout(deadline,15000),run:(command,limits)=>hyperVProviderCommandRunner(normalized,command,limits),...(normalized.usesDefaultCommandRunner?{session:brokerHyperVWindowsSession(connection.executable)}:{})}),
         validateHostIdentity:validateHyperVLinuxSshHostIdentity,
         reconcileHostIdentity:(owner,state,id,hostPath,knownPath,address,expected)=>{const publication:{expected:unknown;committed?:unknown}={expected};const identity=reconcileHyperVLinuxSshHostIdentity(owner,state,id,hostPath,knownPath,address,publication);return {identity,...(publication.committed!==undefined?{committed:publication.committed}:{})};},
-        claim:claimOwnerDevice,publish:transitionOwnerLifecycleDevice,maxBootTimeout:DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS,windowsNoProgressTimeout:DEVICE_BROKER_HYPER_V_WINDOWS_NO_PROGRESS_TIMEOUT_MS,linuxGuiTimeout:DEVICE_BROKER_HYPER_V_LINUX_GUI_TIMEOUT_MS,
+        claim:claimOwnerDevice,
+        publish:(owner,state,id,expected,replace)=>transitionOwnerLifecycleDevice(owner,state,id,expected,current=>{
+            const replacement=replace(current);
+            if(!replacement||typeof replacement!=="object"||!("lastBootCheck" in replacement))return replacement;
+            const check=replacement.lastBootCheck;
+            if(!check||typeof check!=="object"||!("readiness" in check)||!check.readiness)return replacement;
+            // Serialize opaque trace evidence only inside the existing exact-predecessor publication.
+            return {...replacement,lastBootCheck:{...check,readiness:publicHyperVReadinessTrace(check.readiness as HyperVLinuxGuestReadyTrace)}};
+        }),
+        maxBootTimeout:DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS,windowsNoProgressTimeout:DEVICE_BROKER_HYPER_V_WINDOWS_NO_PROGRESS_TIMEOUT_MS,linuxGuiTimeout:DEVICE_BROKER_HYPER_V_LINUX_GUI_TIMEOUT_MS,
         cleanupArtifacts:cleanupHyperVDeviceArtifacts,outputLimit:DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     };
     return createHyperVCreateStartApplication(ports);

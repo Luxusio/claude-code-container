@@ -18,6 +18,8 @@ export interface WorkspaceRepairAuthority {
     WorkspaceOwnershipEvidence: object;
     Environment: object;
     IndexContent: object;
+    MetadataSnapshot: object;
+    MetadataPublication: object;
     PreservedContentMerge: {
         worktreeRoot: string;
         skippedIgnoredDependencyTrees: Array<{ destinationPath: string }>;
@@ -26,10 +28,12 @@ export interface WorkspaceRepairAuthority {
 }
 
 export interface WorkspaceRepairGitObservation {
-    status: number | null;
-    stdout?: string | null;
-    stderr?: string | null;
-    error?: { message: string };
+    succeeded: boolean;
+    failureReason?: string;
+}
+
+export interface WorkspaceRepairBranchHeadObservation extends WorkspaceRepairGitObservation {
+    oid: string;
 }
 
 export interface WorkspaceRepairDestinationFence<Identity> {

@@ -1,4 +1,4 @@
-import type { HyperVLifecycleOutcome, HyperVPlannedFacts, HyperVNativeExecution, HyperVRollback, HyperVCreateRecovery, HyperVLifecycleFailureReason } from "../../domain/lifecycle/hyper-v-create-start.js";
+import type { HyperVLifecycleOutcome, HyperVPlannedFacts, HyperVNativeExecution, HyperVRollback, HyperVCreateRecovery, HyperVLifecycleFailureReason, HyperVLifecycleExecution, HyperVGuestReadinessFailureDetail, HyperVLinuxGuestReadyTrace } from "../../domain/lifecycle/hyper-v-create-start.js";
 import type { HyperVStopDeleteOutcome, HyperVReplayResult, HyperVNetworkCleanupEvidence } from "../../domain/lifecycle/hyper-v-stop-delete.js";
 import type { SnapshotExecution, SnapshotOutcome, SnapshotRepairResult } from "../../domain/lifecycle/hyper-v-snapshots.js";
 import type { ProviderCommand, ProviderCommandResult } from "../../../device-lab-broker.js";
@@ -114,11 +114,62 @@ function renderHyperVPlan(plan: HyperVPlannedFacts<NativeHyperVConnection>) {
         }
     });
 }
+export function nativeHyperVExecutionReceipt(observation: HyperVNativeExecution<ProviderCommandResult>): ProviderCommandResult {
+    const receipt = observation.receipt ?? {
+        mode: observation.required ? "exec" : "noop", provider: observation.required ? "hyper-v" : "host-broker-state",
+        status: observation.ok ? 0 : 1, stdout: "", stderr: "",
+    };
+    if (observation.failureCode === undefined && observation.invalidResult === undefined && observation.operation === undefined && observation.nativeDiagnostics === undefined) return receipt;
+    return {...receipt,
+        ...(observation.failureCode === undefined ? {} : {error: observation.failureCode}),
+        ...(observation.invalidResult === undefined ? {} : {typedCreateInvalidResult: observation.invalidResult}),
+        ...(observation.operation === undefined ? {} : {typedCreateOperation: observation.operation}),
+        ...(observation.nativeDiagnostics === undefined ? {} : {typedCreateNativeDiagnostics: observation.nativeDiagnostics}),
+    };
+}
 function renderHyperVExecution(observation: HyperVNativeExecution<ProviderCommandResult>, fallback?: string) {
-    const { receipt, ...facts } = observation;
-    return redactProviderCommandInput({
-        ...receipt, ...facts
-    }, true, fallback);
+    return redactProviderCommandInput(nativeHyperVExecutionReceipt(observation), true, fallback);
+}
+export function publicHyperVReadinessTrace(trace: HyperVLinuxGuestReadyTrace) {
+    const {bootstrapProbeEvidence, bootstrapSshEvidence, ...facts} = trace;
+    const status = (evidence: unknown) => evidence && typeof evidence === "object" && "status" in evidence && typeof evidence.status === "number" ? evidence.status : null;
+    return {...facts,
+        ...("bootstrapProbeEvidence" in trace ? {bootstrapProbeLastStatus: status(bootstrapProbeEvidence)} : {}),
+        ...("bootstrapSshEvidence" in trace ? {bootstrapSshLastStatus: status(bootstrapSshEvidence)} : {}),
+    };
+}
+function publicReadinessDetail(detail: HyperVGuestReadinessFailureDetail) {
+    const evidence = detail.evidence && typeof detail.evidence === "object" ? detail.evidence as Record<string, unknown> : {};
+    return {
+        ...(typeof evidence.structured === "boolean" ? {structured: evidence.structured} : {}),
+        ...(typeof evidence.status === "number" || evidence.status === null ? {status: evidence.status} : {}),
+        ...(typeof evidence.timedOut === "boolean" ? {timedOut: evidence.timedOut} : {}),
+        ...(typeof evidence.stdoutBytes === "number" ? {stdoutBytes: evidence.stdoutBytes} : {}),
+        ...(typeof evidence.stderrBytes === "number" ? {stderrBytes: evidence.stderrBytes} : {}),
+        ...(typeof evidence.diagnosticCode === "string" ? {diagnosticCode: evidence.diagnosticCode} : {}),
+        ...(detail.scrubContainmentFailed ? {scrubContainmentFailed: true} : {})};
+}
+function publicBootFacts<T extends {errorDetail?: HyperVGuestReadinessFailureDetail; readiness?: HyperVLinuxGuestReadyTrace}>(facts: T) {
+    return {...facts,
+        ...(facts.errorDetail ? {errorDetail: publicReadinessDetail(facts.errorDetail)} : {}),
+        ...(facts.readiness ? {readiness: publicHyperVReadinessTrace(facts.readiness)} : {}),
+    };
+}
+function publicLifecycleExecution(execution: HyperVLifecycleExecution<ProviderCommandResult>, failed: boolean) {
+    const receipt = execution.summary ? nativeHyperVExecutionReceipt(execution.summary)
+        : execution.command ? nativeHyperVExecutionReceipt(execution.command) : null;
+    const provisioning = execution.provisioning ? nativeHyperVExecutionReceipt(execution.provisioning) : null;
+    return {
+        mode: execution.summary && receipt?.mode === "noop" ? "state" : receipt?.mode ?? "exec",
+        providerExecution: execution.summary && !execution.required ? "broker-state" : "executed",
+        mutatesHost: execution.mutatesHost,
+        ...(execution.summary && receipt ? {provider: receipt.provider, ...(typeof receipt.status === "number" ? {status: receipt.status} : {})} : {}),
+        ...(provisioning ? {provisioning: {provider: provisioning.provider, status: provisioning.status}} : {}),
+        ...(execution.command ? {command: {
+            ...renderHyperVExecution(execution.command, failed ? "hyper-v-provider-command-failed" : undefined),
+            ...(execution.command.guestReadiness ? {guestReadiness: publicBootFacts(execution.command.guestReadiness)} : {}),
+        }} : {}),
+    };
 }
 export function renderHyperVCreateRollback(rollback: HyperVRollback<ProviderCommandResult>) {
     if (!rollback.attempted)
@@ -140,19 +191,10 @@ export function renderHyperVCreateRollback(rollback: HyperVRollback<ProviderComm
 }
 export function renderHyperVCreateStart(outcome: HyperVLifecycleOutcome<NativeHyperVConnection, ProviderCommandResult>): HyperVWireResponse {
     const { kind, journalDisposition: _journalDisposition, recoveryDisposition: _recoveryDisposition, imageFailure, networkFailure, lifecycleFailure, rollback, artifactCleanup, execution, failureExecution, provisioning, plan, device, ...facts } = outcome;
-    const publicExecution = execution ? {
-        ...execution, ...(execution.command ? {
-            command: {
-                ...renderHyperVExecution(execution.command,
-                    ("reason" in outcome && outcome.reason === "provider-failed") || outcome.providerFailure !== undefined
-                        ? "hyper-v-provider-command-failed" : undefined), ...(execution.command.guestReadiness ? {
-                    guestReadiness: execution.command.guestReadiness
-                } : {})
-            }
-        } : {})
-    } : undefined;
+    const publicExecution = execution ? publicLifecycleExecution(execution, ("reason" in outcome && outcome.reason === "provider-failed") || outcome.providerFailure !== undefined) : undefined;
     const rendered = {
         ...facts,
+        ...(facts.boot ? {boot: publicBootFacts(facts.boot)} : {}),
         ...(facts.existing !== undefined ? {
             existing: redactHyperVDeviceSecrets(facts.existing)
         } : {}),
@@ -185,7 +227,7 @@ export function renderHyperVCreateStart(outcome: HyperVLifecycleOutcome<NativeHy
             device: redactHyperVDeviceSecrets(device)
         } : {}),
         ...(facts.boot ? {
-            boot: facts.boot
+            boot: publicBootFacts(facts.boot)
         } : {}),
         ...(execution ? {
             execution: publicExecution
@@ -284,7 +326,7 @@ export function renderHyperVStopDelete(outcome: HyperVStopDeleteOutcome<NativeHy
         } : {}),
         invoked: facts.invoked, dryRun: facts.dryRun,
         execution: execution ? {
-            mode: execution.mode, providerExecution: "executed", mutatesHost, command: renderHyperVExecution(execution, facts.error === "hyper-v-device-cleanup-failed" ? facts.error : facts.error ? "hyper-v-provider-command-failed" : undefined)
+            mode: nativeHyperVExecutionReceipt(execution).mode, providerExecution: "executed", mutatesHost, command: renderHyperVExecution(execution, facts.error === "hyper-v-device-cleanup-failed" ? facts.error : facts.error ? "hyper-v-provider-command-failed" : undefined)
         } : {
             mode: facts.invoked === false && auxiliaryCleanup ? "preflight" : "idempotent", providerExecution: auxiliaryCleanup ? "blocked" : "not-required", mutatesHost: mutatesHost ?? false
         },

@@ -5,6 +5,10 @@ import type { WorkspaceRepairAuthority } from "../../domain/workspace/repair-aut
 import type { WorktreeRepoResult } from "../../domain/workspace/creation-result.js";
 
 function contracts(ports: BrokenWorkspaceRepairPorts<WorkspaceRepairAuthority>) {
+    const add: ReturnType<typeof ports.runPreparedWorktreeAdd> = { result: { succeeded: true }, registrationFence: null };
+    // @ts-expect-error Native process framing must be classified by the binding.
+    const raw: ReturnType<typeof ports.runPreparedWorktreeAdd> = { result: { status: 0, error: undefined, stderr: "" }, registrationFence: null };
+    void [add, raw];
     const result: WorktreeRepoResult | null = createBrokenWorkspaceRepair(ports).fixBrokenWorktreeSanitized("source", "workspace", "repo", "branch", true, {});
     if (result) result.name = "mutable";
     // @ts-expect-error No ambient native defaults.

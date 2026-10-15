@@ -215,7 +215,7 @@ export function createBrokenWorkspaceRepair<A extends WorkspaceRepairAuthority>(
             sourceIdentity,
         );
 
-        if (result.status !== 0) {
+        if (!result.succeeded) {
             try {
                 operationGuard();
                 ports.rollbackFailedWorktreeAdd(
@@ -257,7 +257,7 @@ export function createBrokenWorkspaceRepair<A extends WorkspaceRepairAuthority>(
                 }
             }
             restoreStaleRegistration();
-            ports.warnWorktreeRepairFailure(destPath, result.stderr ?? "");
+            ports.warnWorktreeRepairFailure(destPath, result.failureReason ?? "");
             return null;
         }
         const createdRegistrationFence = ports.requireWorktreeRegistrationFence(

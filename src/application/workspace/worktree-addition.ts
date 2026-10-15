@@ -38,8 +38,8 @@ export function createWorktreeAddition<Prepared, RegistrationReceipt>(
         }
         const prepared = ports.prepareAddition(request, action);
         const observation = ports.addPrepared(request, prepared);
-        if (observation.status !== 0) {
-            const stderr = (observation.stderr ?? "").trim() || observation.error?.message || "";
+        if (!observation.succeeded) {
+            const detail = observation.failureDetail;
             const prefix = request.failureContext.kind === "unified"
                 ? "Failed to create worktree"
                 : `Failed to create worktree for ${request.failureContext.repositoryName}`;
@@ -47,11 +47,11 @@ export function createWorktreeAddition<Prepared, RegistrationReceipt>(
                 ports.compensateFailedAddition(request, action, prepared, observation.registrationReceipt);
             } catch (rollbackError) {
                 throw new Error(
-                    `${prefix}: ${stderr}; rollback failed: ${(rollbackError as Error).message}`,
+                    `${prefix}: ${detail}; rollback failed: ${(rollbackError as Error).message}`,
                     { cause: rollbackError },
                 );
             }
-            throw new Error(`${prefix}: ${stderr}`);
+            throw new Error(`${prefix}: ${detail}`);
         }
         return { action, prepared, registrationReceipt: observation.registrationReceipt };
     };
