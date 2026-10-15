@@ -4,8 +4,8 @@ Updated: 2026\-10\-15. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
-확인된 구조 정리 그룹: **15/24 완료 (62.5%)**, **9개 남음**.
-부분 완료: **5**; 진행 중: **4**; 미착수: **0**.
+확인된 구조 정리 그룹: **16/24 완료 (66.7%)**, **8개 남음**.
+부분 완료: **5**; 진행 중: **3**; 미착수: **0**.
 
 이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
 
@@ -23,7 +23,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | R17 | 브로커 상태·녹화·Appium 결과 | 부분 완료 | 없음 | 기존 Appium 검증 기여를 유지하고 status/recording 의미 관측을 통합했다\. owner\-cleanup은 기존 의미 결과 경계의 회귀 검증으로 확인했다\. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다\. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다\. Windows 검증과 최종 판정 전 완료 credit·formal close 없음\. |
 | R18 | 브로커 provider 수명주기 결과 | 부분 완료 | 없음 | 기존 direct 전환을 유지하고 broker Android/Apple 및 direct/broker Sandbox 의미 관측·native receipt 변환을 통합했다\. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다\. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다\. Windows 검증과 최종 판정 전 완료 credit·formal close 없음\. |
 | R19 | Desktop 제어·파일 전송 | 부분 완료 | 없음 | 기존 desktop/iOS 전환을 유지하고 typed Windows와 Linux SSH/GUI readiness 의미 관측을 통합했다\. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다\. 필수 Windows QA는 Device Lab 연결 불가로 보류 중이다\. Windows 검증과 최종 판정 전 완료 credit·formal close 없음\. 전원 경계cabb56a2는 독립 리뷰·소스6파일435PASS·컴파일된170PASS·shipping/CLI를 확인했고 Windows는 보류 중이다\. General Hyper\-V·컨테이너 생성 경계903ebab9는 독립 Code/Security/Docs와 실제 통합15파일772PASS·기존3SKIP, 컴파일된 브로커170·Root57, strict 빌드·shipping/CLI를 확인했다\. 필수 Windows는 실제 연결 불가로 보류되어 완료 credit 없음\. 별도 mount audit·전수 범위·native·reliability 조건도 남는다\. |
-| R20 | Clean native inventory and result boundary | 진행 중 | 없음 | CLI 행·실행 상태 해석을 바깥 facade로 옮기고 의미 관측·효과 결과를 코어에 전달한다\. 기존 cleanup 정책, 독립 리뷰, 영향받는 portable·emitted·npm·Unix 검증과 로컬 통합을 확인한다\. |
 
 ### 진행 순서와 완료 판정
 
@@ -79,12 +78,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 확인한 소스: [packages/device\-lab/src/device\-lab/application/lifecycle/hyper\-v\-create\-start\.ts](../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.ts)
 
-### R20. Clean native inventory and result boundary
-
-완료 조건: Native stdout/status/error와 running 판정은 facade에서 처리하고 application은 ID·이름 admission, dedup, 선택·확인, claim veto·캡처 ID·중단 순서를 소유한다\. 독립 Code/Security, 기존 테스트·엄격한 Source/emitted 계약·실제 배포 CLI와 로컬 통합을 확인한다\.
-
-확인한 소스: [src/application/clean\.ts](../../src/application/clean.ts), [src/domain/clean\.ts](../../src/domain/clean.ts), [src/ports/clean\.ts](../../src/ports/clean.ts)
-
 ## 0.1 완료한 구조 정리
 
 | WBS | 그룹 | 통합 커밋 | 완료 조건 |
@@ -104,6 +97,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | R10 | iOS 관측·접근 | `6ea57ca5` | 코어는 session 수명주기·동일성·예산·fallback 순서·staging·recording 거절을 유지하고, 어댑터가 유한한 관측·접근 효과와 응답을 제공한다\. |
 | R11 | QEMU 이미지·수명주기 | `7b0fb1d0` | 코어는 경로·materialize/reuse·runtime 동일성·snapshot 게시·공개 정책을 유지하고, 어댑터가 overlay·launch·provisioning·guest SSH·snapshot 명령 구성을 처리한다\. 독립 리뷰·QA·로컬 통합으로 확인한다\. |
 | R15 | Release workspace version synchronization | `1b699b6d` | Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI\. |
+| R20 | Clean native inventory and result boundary | `cf6ae421` | Native stdout/status/error와 running 판정은 facade에서 처리하고 application은 ID·이름 admission, dedup, 선택·확인, claim veto·캡처 ID·중단 순서를 소유한다\. 독립 Code/Security, 기존 테스트·엄격한 Source/emitted 계약·실제 배포 CLI와 로컬 통합을 확인한다\. |
 
 각 그룹의 stable ID, 과거 기여, 실제 QA·통합 근거는 progress overlay의 해당 planningLanes 항목에 유지한다. 새 잔여 작업이 확인되면 기존 그룹을 부분 완료로 되돌리고 조건을 갱신한다. helper·포트·테스트 파일을 별도 작업으로 세지 않는다.
 

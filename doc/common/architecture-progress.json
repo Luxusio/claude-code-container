@@ -4220,9 +4220,9 @@
       "title": "Clean native inventory and result boundary",
       "coveredOperationIds": [],
       "dependsOn": [],
-      "workStatus": "in-progress",
-      "status": "Confirmed original-scope OP-clean/BIND-source-clean native observation residual; semantic boundary implementation and independent qualification pending. Zero new operation credit.",
-      "remainingWork": "CLI 행·실행 상태 해석을 바깥 facade로 옮기고 의미 관측·효과 결과를 코어에 전달한다. 기존 cleanup 정책, 독립 리뷰, 영향받는 portable·emitted·npm·Unix 검증과 로컬 통합을 확인한다.",
+      "workStatus": "completed",
+      "status": "Clean native observation boundary implemented and independently Code/Security reviewed; actual portable/type/emitted/npm/Unix qualification passed and Source locally integrated. Native/full-build/reliability/exhaustive/formal acceptance remains separate.",
+      "remainingWork": "이 그룹의 구조 변경·독립 portable/artifact 검증·Source 로컬 통합 잔여 없음. 실제 Docker/Windows/native·전체 빌드·reliability·전수 범위·formal acceptance는 별도 게이트다.",
       "completionCriteria": "Native stdout/status/error와 running 판정은 facade에서 처리하고 application은 ID·이름 admission, dedup, 선택·확인, claim veto·캡처 ID·중단 순서를 소유한다. 독립 Code/Security, 기존 테스트·엄격한 Source/emitted 계약·실제 배포 CLI와 로컬 통합을 확인한다.",
       "confirmedAtCommit": "a08ad1f085d454c82b280c8688d5c62cdd4f8db2",
       "sourceTrace": {
@@ -4232,15 +4232,44 @@
         "relatedBindingIds": [
           "BIND-source-clean"
         ],
-        "remainingPaths": [
+        "nativeConsumers": [
+          "src/clean.ts"
+        ],
+        "owningPaths": [
           "src/application/clean.ts",
           "src/domain/clean.ts",
           "src/ports/clean.ts"
-        ],
-        "nativeConsumers": [
-          "src/clean.ts"
         ]
-      }
+      },
+      "acceptedIntegrationCommit": "cf6ae4219ab3430fbc04a47324c8fd16862abbe2",
+      "qaEvidence": "results/clean-native-observations-01a13ecd-20261015/independent-qa/report.md",
+      "currentQualification": {
+        "actualQaVerdict": "PASS",
+        "reportPath": "results/clean-native-observations-01a13ecd-20261015/independent-qa/report.md",
+        "rawReportJson": "results/clean-native-observations-01a13ecd-20261015/independent-qa/report.json",
+        "inventoryPath": "results/clean-native-observations-01a13ecd-20261015/independent-qa/inventory.json",
+        "inventorySha256": "4cef07a3eef5057762647fd93c57c9514d4074dfdc35c1034ba7f29194c72cec",
+        "cleanWholeCases": 31,
+        "strictSourceAndEmittedContracts": "PASS",
+        "genuineRootEmission": "PASS",
+        "scopedProductionLint": "PASS",
+        "existingNpmUnixPackageChecker": "PASS",
+        "actualCliCases": 6,
+        "cliExpectedExits": {
+          "happy": 0,
+          "secondImageInventoryFailure": 1
+        },
+        "fixtureReadonlyDispatches": 42,
+        "runtimeInvocationCount": 16,
+        "repeatedVerificationCommands": 0,
+        "parallelOverlapNs": 3784551055,
+        "observedBirths": 69,
+        "ownedCleanup": "69 observed PID/birth identities and16 leader groups gone;42 fixturechildren synchronouslyjoined",
+        "networkObservation": "Actual offline npm attempted registry.npmjs.org once; unchanged fence denied before external dispatch. Package checker passed with empty stderr; zero external-attempt claim is not made.",
+        "scope": "Actual compiled/npm/Unix CLI executed against finite readonly Docker fixtures; no actual Docker/Windows/native provider or full build/suite/reliability/wholeGoal certification. Main dist/global install unchanged.",
+        "completionCredit": "One confirmed structural group only; zero new operation credit; formal receipt gate separate."
+      },
+      "localIntegrationScope": "Qualified current Source and tests committed locally; genuinely emitted/private npm and Unix consumers passed. Main dist and globally installed CCC were not overwritten."
     }
   ],
   "currentSourceQualificationAudit": {
@@ -4377,13 +4406,13 @@
     "previousCompleted": 19,
     "previousGroups": 19,
     "confirmedGroups": 24,
-    "completedGroups": 15,
+    "completedGroups": 16,
     "partialGroups": 5,
-    "inProgressGroups": 4,
+    "inProgressGroups": 3,
     "pendingGroups": 0,
-    "remainingGroups": 9,
+    "remainingGroups": 8,
     "sourceUniverseCertified": false,
-    "scope": "완료15/24(62.5%)·잔여9개(부분5·진행4). R20은 원래 OP-clean/BIND-source-clean 범위에서 새로 확인한 native 관측 잔여다. 이전15/23 및 기존 검증 이력은 보존하며, 전체 범위·native·reliability·formal 완료는 계속 미검증이다. 완료15/23(65.2%)·잔여8개(부분5·진행3). R08/R12/R13/R14/R16은 구현·독립 Code/Security·Linux QA2를 마쳤고, R17/R18/R19 추가 의미 관측은9b12312에 통합되어 독립 Code/Security 및 Linux23whole948PASS·네 실제 공개 배포 형태·shipping을 확인했다. 두 작업의 필수 Windows 검증은 연결 불가로 보류되어 완료 credit 없음. 원래71473106 공동 FAIL·QEMU QA1·root QA1 실패와 기존 완료 기여를 보존한다. 추가 전원 경계cabb56a2의 실제 독립 local435/compiled170 검증은 통과했다. General 경계903ebab9는 실제 독립 리뷰·통합772PASS/3기존SKIP 및 compiled170+57·shipping/CLI를 통과했고 Windows는 보류 중이다. 실제 후속 Source 감사에서 mount·workspace 삭제·lab-state·macOS snapshot·mobile inventory/wireless 다섯 경계를 다음 병렬 작업으로 명시했다. 별도 mount audit·실기기/native 전체·reliability·전수 범위·formal 조건도 계속 미검증이다. Current five-seam Source827ba982 locally delivered with actual independent reviews and portable1244PASS/2existingSKIP plus compiled187, strict8 and shipping/CLI; required Windows remains BLOCKED_ENV. Original QA1 fixture failure is retained. Windows Codex recovery authorization Source is locally committed at5eb8a0d9 with actual independent Code/Security and149 qualified portable Source cases;125 actual-Windows cases remain unexecuted/BLOCKED_ENV in R12. No completion credit or exhaustive certification.",
+    "scope": "완료16/24(66.7%)·잔여8개(부분5·진행3). 원래 OP-clean/BIND-source-clean 범위의 새로 확인된 R20을 semantic native 관측/결과 경계로 정리하고 독립 Code/Security·portable/type·실제 emitted/npm/Unix CLI 검증 및 Source 로컬 커밋으로 통합했다. 이전15/23과 추가 확인 직후15/24 이력은 보존한다. 기존 여덟 그룹의 필수 Windows 검증과 별도 전체 빌드·native·reliability·전수 범위·formal 조건은 미완료다. 이 수치는 확인된 구조 그룹 수이며 전체 Goal 완료율이 아니다.",
     "currentQualificationTask": "TASK__qemu-native-framing-recovery-20261014",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",
@@ -4849,7 +4878,16 @@
       "inProgressGroups": 3,
       "pendingGroups": 0,
       "remainingGroups": 8,
-      "sourceUniverseCertified": false
+      "sourceUniverseCertified": false,
+      "scope": "완료15/23(65.2%)·잔여8개(부분5·진행3). R08/R12/R13/R14/R16은 구현·독립 Code/Security·Linux QA2를 마쳤고, R17/R18/R19 추가 의미 관측은9b12312에 통합되어 독립 Code/Security 및 Linux23whole948PASS·네 실제 공개 배포 형태·shipping을 확인했다. 두 작업의 필수 Windows 검증은 연결 불가로 보류되어 완료 credit 없음. 원래71473106 공동 FAIL·QEMU QA1·root QA1 실패와 기존 완료 기여를 보존한다. 추가 전원 경계cabb56a2의 실제 독립 local435/compiled170 검증은 통과했다. General 경계903ebab9는 실제 독립 리뷰·통합772PASS/3기존SKIP 및 compiled170+57·shipping/CLI를 통과했고 Windows는 보류 중이다. 실제 후속 Source 감사에서 mount·workspace 삭제·lab-state·macOS snapshot·mobile inventory/wireless 다섯 경계를 다음 병렬 작업으로 명시했다. 별도 mount audit·실기기/native 전체·reliability·전수 범위·formal 조건도 계속 미검증이다. Current five-seam Source827ba982 locally delivered with actual independent reviews and portable1244PASS/2existingSKIP plus compiled187, strict8 and shipping/CLI; required Windows remains BLOCKED_ENV. Original QA1 fixture failure is retained. Windows Codex recovery authorization Source is locally committed at5eb8a0d9 with actual independent Code/Security and149 qualified portable Source cases;125 actual-Windows cases remain unexecuted/BLOCKED_ENV in R12. No completion credit or exhaustive certification."
+    },
+    "currentCleanNativeObservationQualification": {
+      "taskId": "TASK__architecture-clean-native-observations-20261015",
+      "sourceCommit": "cf6ae4219ab3430fbc04a47324c8fd16862abbe2",
+      "qaEvidence": "results/clean-native-observations-01a13ecd-20261015/independent-qa/report.md",
+      "scope": "R20 only; private actual emitted/npm/Unix consumers with simulated readonly Docker facts; no realengine/native or wholeGoal acceptance",
+      "structuralGroupCredit": 1,
+      "operationCredit": 0
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
