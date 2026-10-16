@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, linkSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, linkSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { hostname, tmpdir } from "os";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -562,6 +562,57 @@ describe("device-lab shared mutation lock", () => {
         ["host", withHostSharedMutationLock, withHostSharedMutationLockAsync],
         ["direct", withNestedSharedMutationLock, withSharedMutationLockAsync],
     ] as const) {
+        it.each(["active", "archived"] as const)(`${label} recovers a future-dated exited %s owner through both acquisition modes`, async location => {
+            const ownerPid = 2147483647;
+            const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+                if (pid === ownerPid && signal === 0) throw Object.assign(new Error("fixture owner exited"), { code: "ESRCH" });
+                return true;
+            });
+            try {
+                for (const mode of ["sync", "async"] as const) {
+                    const file = lockPath();
+                    const claim = location === "active" ? file : `${file}.0123456789abcdef.stale`;
+                    const owner = { token: testToken(), pid: ownerPid, host: hostname(), processIdentityStatus: "unavailable" };
+                    writeFileSync(claim, JSON.stringify(owner));
+                    const future = new Date(Date.now() + 60_000);
+                    utimesSync(claim, future, future);
+                    expect(statSync(claim).mtimeMs).toBeGreaterThan(Date.now() + 30_000);
+                    const operation = vi.fn(() => {
+                        expect(JSON.parse(readFileSync(file, "utf8")).token).not.toBe(owner.token);
+                        if (location === "archived") expect(existsSync(claim)).toBe(false);
+                        return "recovered";
+                    });
+                    const deadline = performance.now() + 200;
+                    const options = { waitMs: 1000, staleMs: 60_000, waitBudget: { remaining: () => deadline - performance.now() } };
+                    expect(mode === "sync" ? sync(file, operation, options) : await asyncLock(file, operation, options)).toBe("recovered");
+                    expect(operation).toHaveBeenCalledOnce();
+                    expect(existsSync(claim)).toBe(false);
+                    expect(existsSync(file)).toBe(false);
+                }
+                expect(kill).toHaveBeenCalledWith(ownerPid, 0);
+            } finally { kill.mockRestore(); }
+        });
+
+        it.each(["active", "archived"] as const)(`${label} retains future-dated malformed %s publication through both acquisition modes`, async location => {
+            for (const mode of ["sync", "async"] as const) {
+                const file = lockPath();
+                const claim = location === "active" ? file : `${file}.0123456789abcdef.stale`;
+                const bytes = "{partial-publication";
+                writeFileSync(claim, bytes);
+                const future = new Date(Date.now() + 60_000);
+                utimesSync(claim, future, future);
+                expect(statSync(claim).mtimeMs).toBeGreaterThan(Date.now() + 30_000);
+                const operation = vi.fn();
+                const deadline = performance.now() + 30;
+                const options = { waitMs: 1000, staleMs: 1, waitBudget: { remaining: () => deadline - performance.now() } };
+                if (mode === "sync") expect(() => sync(file, operation, options)).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+                else await expect(asyncLock(file, operation, options)).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                expect(operation).not.toHaveBeenCalled();
+                expect(readFileSync(claim, "utf8")).toBe(bytes);
+                if (location === "archived") expect(existsSync(file)).toBe(false);
+            }
+        });
+
         it(`${label} refuses expired budgets before entering an uncontended callback`, async () => {
             const callback = vi.fn();
             const options = { waitBudget: { remaining: () => 0 } };

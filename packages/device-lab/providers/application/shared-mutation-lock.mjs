@@ -103,10 +103,11 @@ export function createSharedMutationLock(ports) {
     }
     /** @param {string} file @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord|null} lock @param {number} staleMs @param {boolean} asynchronous */
     function staleFacts(file,lock,staleMs,asynchronous) {
-        const modified = ports.mtime(file);
-        const age = modified === null ? 0 : Math.max(0,ports.now()-modified);
-        if (age < 100) return {stale:false};
-        if (!lock) return {stale:age >= Math.min(staleMs,1000)};
+        if (!lock) {
+            const modified = ports.mtime(file);
+            const age = modified === null ? 0 : Math.max(0,ports.now()-modified);
+            return {stale:age >= 100 && age >= Math.min(staleMs,1000)};
+        }
         if (lock.host === ports.host() && lock.bootId && mutationBootProvesReboot(lock.bootId,ports.boot())) return {stale:true};
         if (lock.host === ports.host() && Number.isInteger(lock.pid)) {
             if (!ports.alive(lock.pid)) return {stale:true};

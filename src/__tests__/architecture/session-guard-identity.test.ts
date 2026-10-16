@@ -427,6 +427,34 @@ describe.each(["typescript", "provider"] as const)("%s Windows own guard identit
     });
 });
 
+describe.each(["typescript", "provider"] as const)("%s valid claim ownership before age grace", variant => {
+    it.each([
+        ["exited", "sync", "young"],
+        ["authoritative-reboot", "sync", "future"],
+        ["recorded-mismatch", "async", "future"],
+    ] as const)("recovers an active %s owner through %s acquisition with a %s mtime", async (proof, mode, age) => {
+        const f = fixture(variant);
+        f.ports.platform = () => "linux";
+        const owner = { token: "f".repeat(32), pid: 456, host: "test-host",
+            bootId: proof === "authoritative-reboot" ? "11111111-1111-1111-1111-111111111111" : "test-boot",
+            processIdentity: { ...identity, pid: 456, startToken: "old-generation" } };
+        f.seed(owner);
+        const started = f.ports.now();
+        f.ports.mtime = () => age === "young" ? started - 50 : started + 60_000;
+        if (proof === "exited") f.ports.alive = pid => pid !== owner.pid;
+        if (proof === "authoritative-reboot") f.ports.boot = () => "22222222-2222-2222-2222-222222222222";
+        if (proof === "recorded-mismatch") vi.mocked(f.ports.identityAsync).mockImplementation(async pid => ({ ...identity, pid }));
+        f.ports.moveQualified = vi.fn(f.ports.moveQualified);
+        const operation = vi.fn(() => "recovered");
+        const options = { waitMs: 1, staleMs: 60_000 };
+        expect(mode === "sync" ? f.app.withLock(f.file, operation, options) : await f.app.withLockAsync(f.file, operation, options)).toBe("recovered");
+        expect(operation).toHaveBeenCalledOnce();
+        expect(f.ports.now()).toBe(started);
+        expect(f.ports.moveQualified).toHaveBeenCalledWith(f.file, owner.token, "stale", []);
+        expect(f.records.size).toBe(0);
+    });
+});
+
 describe.each(["typescript", "provider"] as const)("%s archived claim admission", variant => {
     it.each(["value", "missing", "malformed", "invalid-record", "unavailable", "native-fault"] as const)("keeps %s archive observation distinct from malformed recovery permission", state => {
         const f = fixture(variant);
@@ -522,6 +550,10 @@ describe.each(["typescript", "provider"] as const)("%s archived claim admission"
                 vi.mocked(f.ports.identityAsync).mockImplementation(async pid => ({ ...identity, pid }));
             }
             const archived = f.archive(state === "malformed" ? { kind: "malformed" } : state === "missing" ? { kind: "missing" } : { kind: "value", value: owner });
+            if (state !== "malformed" && state !== "missing") {
+                const future = f.ports.now() + 60_000;
+                f.ports.mtime = path => path === archived ? future : f.ports.now() - 5000;
+            }
             f.ports.removeArchive = vi.fn(f.ports.removeArchive);
             expect(await acquire(f, () => "entered", { waitMs: 100, staleMs: 1 })).toBe("entered");
             expect(f.records.has(f.file)).toBe(false);
@@ -532,17 +564,18 @@ describe.each(["typescript", "provider"] as const)("%s archived claim admission"
             }
         });
 
-        it(`${mode} preserves the 100ms malformed floor before archived recovery`, async () => {
+        it.each(["recent", "future"] as const)(`${mode} preserves malformed %s publication grace before archived recovery`, async age => {
             const f = fixture(variant);
             const archived = f.archive({ kind: "malformed" });
-            const born = f.ports.now() - 70;
+            const started = f.ports.now();
+            const born = started + (age === "recent" ? -70 : 60_000);
             f.ports.mtime = path => path === archived ? born : f.ports.now() - 5000;
             const operation = vi.fn();
-            await expect(acquire(f, operation, { waitMs: 20, staleMs: 1, waitBudget: { remaining: () => born + 90 - f.ports.now() } }))
+            await expect(acquire(f, operation, { waitMs: 20, staleMs: 1, waitBudget: { remaining: () => started + 20 - f.ports.now() } }))
                 .rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
             expect(operation).not.toHaveBeenCalled();
             expect(f.records.has(archived)).toBe(true);
-            f.advance(30);
+            f.advance(born + 100 - f.ports.now());
             expect(await acquire(f, () => "aged", { staleMs: 1 })).toBe("aged");
             expect(f.records.has(archived)).toBe(false);
         });
