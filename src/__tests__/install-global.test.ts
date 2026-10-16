@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -161,8 +161,8 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
     });
 });
 
-// Simulate only the installer's credential decision. When requested, execute its
-// actual Node bootstrap as the current test account, without switching accounts.
+// Simulate native credential/ownership leaves. When requested, execute the actual
+// Node bootstrap as the current test account, without switching accounts.
 function sudoSourceBuildFixture(options: {
     platform?: "darwin" | "win32";
     uid?: number;
@@ -171,17 +171,25 @@ function sudoSourceBuildFixture(options: {
     executeBootstrap?: boolean;
     npmStatus?: number;
     operation?: "postinstall" | "install" | "import";
+    ownership?: Record<string, number>;
+    setup?: (root: string) => void;
+    failRepairAt?: string;
+    failRepairAfter?: number;
+    replaceAfterRepair?: { paths: string[]; kind: "symlink" | "file" };
 }) {
     const f = fixture();
     const capture = join(f.root, "source-build-calls.jsonl"), observation = join(f.root, "npm-environment.json");
+    const ownership = join(f.root, "source-build-ownership.json"), recovery = join(f.root, "source-build-recovery.jsonl");
     const loader = join(f.root, "source-build-loader.mjs"), platform = join(f.root, "source-build-platform.mjs");
     writeFileSync(join(f.installDir, "ccc"), "previous CLI");
     mkdirSync(join(f.installDir, "ccc-dist"));
     writeFileSync(join(f.installDir, "ccc-dist", "previous"), "previous payload");
+    options.setup?.(f.root);
+    writeFileSync(ownership, JSON.stringify(Object.fromEntries(Object.entries(options.ownership || {}).map(([path, uid]) => [resolve(f.root, path), { uid, gid: uid === 0 ? 0 : 20 }]))));
     writeFileSync(join(f.root, "commands", "npm"), `#!${process.execPath}\nimport fs from 'node:fs';fs.writeFileSync(process.env.FIXTURE_OBSERVATION,JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd(),uid:process.getuid(),gid:process.getgid(),home:process.env.HOME,overrides:Object.keys(process.env).filter(key=>/^npm_config_(cache|userconfig)$/i.test(key)),unrelated:process.env.npm_config_registry}));process.exit(Number(process.env.FIXTURE_NPM_STATUS||0));\n`);
     const childModule = `import {appendFileSync} from 'node:fs';
         import {execFileSync as actualExecFileSync} from 'node:child_process';
-        function record(command,args,options){appendFileSync(process.env.FIXTURE_CAPTURE,JSON.stringify({command,args,options})+'\\n');}
+        function record(command,args,options){appendFileSync(process.env.FIXTURE_CAPTURE,JSON.stringify({command,args,options})+'\\n');appendFileSync(process.env.FIXTURE_RECOVERY,JSON.stringify({kind:'build'})+'\\n');}
         export function execSync(command,options){record(command,[],options);}
         export function execFileSync(command,args,options){
             record(command,args,options);
@@ -192,7 +200,33 @@ function sudoSourceBuildFixture(options: {
         }
         export function spawnSync(){throw Error('source-build fixture must not dispatch a runtime');}
     `;
-    writeFileSync(loader, `export function resolve(specifier,context,next){if(specifier==='child_process'&&context.parentURL?.endsWith('/scripts/install.js'))return {url:${JSON.stringify("data:text/javascript;base64," + Buffer.from(childModule).toString("base64"))},shortCircuit:true};return next(specifier,context);}`);
+    // Real private files, modes, links and inode metadata pass through unchanged.
+    // Only ownership and lchown are simulated; this does not certify macOS sudo.
+    const filesystemModule = `export {existsSync,mkdirSync,unlinkSync,writeFileSync,chmodSync,cpSync,rmSync,readFileSync,readdirSync} from 'node:fs';
+        import * as fs from 'node:fs';
+        import {resolve} from 'node:path';
+        const statePath=process.env.FIXTURE_OWNERSHIP;
+        function owners(){return JSON.parse(fs.readFileSync(statePath,'utf8'));}
+        export function lstatSync(path,...options){
+            const stat=fs.lstatSync(path,...options);
+            return Object.assign(stat,owners()[resolve(path)]||{uid:501,gid:20});
+        }
+        let repairCount=0;
+        export function lchownSync(path,uid,gid){
+            const target=resolve(path);
+            fs.appendFileSync(process.env.FIXTURE_RECOVERY,JSON.stringify({kind:'repair',path:target,uid,gid})+'\\n');
+            if(target===process.env.FIXTURE_FAIL_REPAIR||++repairCount===Number(process.env.FIXTURE_FAIL_REPAIR_AFTER))throw Object.assign(Error('fixture ownership denied'),{code:'EPERM'});
+            const state=owners();state[target]={uid,gid};fs.writeFileSync(statePath,JSON.stringify(state));
+            if(repairCount===1&&process.env.FIXTURE_REPLACE_AFTER_REPAIR){
+                const replacement=JSON.parse(process.env.FIXTURE_REPLACE_AFTER_REPAIR);
+                const changed=replacement.paths.find(path=>path!==target);
+                fs.renameSync(changed,changed+'.original');
+                if(replacement.kind==='symlink')fs.symlinkSync(process.env.FIXTURE_REPLACEMENT_TARGET,changed);
+                else fs.writeFileSync(changed,'replacement inode');
+            }
+        }
+    `;
+    writeFileSync(loader, `export function resolve(specifier,context,next){if(context.parentURL?.endsWith('/scripts/install.js')){if(specifier==='child_process')return {url:${JSON.stringify("data:text/javascript;base64," + Buffer.from(childModule).toString("base64"))},shortCircuit:true};if(specifier==='fs')return {url:${JSON.stringify("data:text/javascript;base64," + Buffer.from(filesystemModule).toString("base64"))},shortCircuit:true};}return next(specifier,context);}`);
     writeFileSync(platform, `Object.defineProperty(process,'platform',{value:${JSON.stringify(options.platform || "darwin")}});Object.defineProperty(process,'getuid',{value:()=>${options.uid ?? 0}});`);
     const env = { ...process.env };
     delete env.SUDO_UID;
@@ -202,6 +236,11 @@ function sudoSourceBuildFixture(options: {
     Object.assign(env, {
         PATH: join(f.root, "commands"), HOME: join(f.root, "inherited-root-home"), CCC_RUNTIME: "",
         FIXTURE_CAPTURE: capture, FIXTURE_OBSERVATION: observation,
+        FIXTURE_OWNERSHIP: ownership, FIXTURE_RECOVERY: recovery,
+        FIXTURE_FAIL_REPAIR: options.failRepairAt ? resolve(f.root, options.failRepairAt) : "",
+        FIXTURE_FAIL_REPAIR_AFTER: String(options.failRepairAfter || ""),
+        FIXTURE_REPLACE_AFTER_REPAIR: options.replaceAfterRepair ? JSON.stringify({ ...options.replaceAfterRepair, paths: options.replaceAfterRepair.paths.map(path => join(f.root, path)) }) : "",
+        FIXTURE_REPLACEMENT_TARGET: join(f.root, "replacement-target"),
         FIXTURE_EXECUTE_BOOTSTRAP: options.executeBootstrap ? "1" : "0",
         FIXTURE_NPM_STATUS: String(options.npmStatus || 0),
         npm_config_cache: "/root/lower-cache", NPM_CONFIG_CACHE: "/root/upper-cache", Npm_Config_Cache: "/root/mixed-cache",
@@ -211,12 +250,19 @@ function sudoSourceBuildFixture(options: {
     const invocation = options.operation === "import"
         ? ["--input-type=module", "-e", `import(${JSON.stringify(pathToFileURL(join(f.root, "scripts/install.js")).href)})`]
         : [join(f.root, "scripts/install.js"), options.operation === "install" ? "--skip-image" : "--postinstall"];
-    const result = spawnSync(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "--import", pathToFileURL(platform).href, ...invocation], {
-        encoding: "utf8", timeout: 10000, env,
-    });
-    const calls = existsSync(capture) ? readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
-    const observed = existsSync(observation) ? JSON.parse(readFileSync(observation, "utf8")) : null;
-    return { ...f, result, calls, observed };
+    const runRecovery = (failRepairAt = env.FIXTURE_FAIL_REPAIR, failRepairAfter = env.FIXTURE_FAIL_REPAIR_AFTER) => {
+        for (const path of [capture, observation, recovery]) rmSync(path, { force: true });
+        const result = spawnSync(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "--import", pathToFileURL(platform).href, ...invocation], {
+            encoding: "utf8", timeout: 10000, env: { ...env, FIXTURE_FAIL_REPAIR: failRepairAt, FIXTURE_FAIL_REPAIR_AFTER: failRepairAfter },
+        });
+        const jsonLines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+        return {
+            result, calls: jsonLines(capture), recovery: jsonLines(recovery),
+            observed: existsSync(observation) ? JSON.parse(readFileSync(observation, "utf8")) : null,
+            owners: JSON.parse(readFileSync(ownership, "utf8")),
+        };
+    };
+    return { ...f, ...runRecovery(), runRecovery };
 }
 
 describe.skipIf(process.platform === "win32")("sudo source build ownership", () => {
@@ -241,10 +287,11 @@ describe.skipIf(process.platform === "win32")("sudo source build ownership", () 
         ...["", " ", " 501", "501 ", "+501", "-1", "5.1", "1e3", "0x1f5", "0501", "0", "2147483648", "4294967294", "4294967295", "999999999999999999999"].map(sudoUid => ({ sudoUid, sudoGid: "20" })),
         ...["", " ", " 20", "20 ", "+20", "-1", "2.1", "2e1", "0x14", "020", "2147483648", "4294967294", "4294967295", "999999999999999999999"].map(sudoGid => ({ sudoUid: "501", sudoGid })),
     ])("refuses invalid or incomplete sudo identity before child or publication effects: $sudoUid/$sudoGid", identity => {
-        const f = sudoSourceBuildFixture({ ...identity, operation: "install" });
+        const f = sudoSourceBuildFixture({ ...identity, operation: "install", ownership: { dist: 0 } });
         expect(f.result.status, f.result.stderr).not.toBe(0);
         expect(f.calls).toEqual([]);
         expect(f.observed).toBeNull();
+        expect(f.recovery).toEqual([]);
         expect(readFileSync(join(f.installDir, "ccc"), "utf8")).toBe("previous CLI");
         expect(readFileSync(join(f.installDir, "ccc-dist", "previous"), "utf8")).toBe("previous payload");
     });
@@ -254,9 +301,11 @@ describe.skipIf(process.platform === "win32")("sudo source build ownership", () 
         { platform: "win32" as const, sudoUid: "malformed", sudoGid: "-1" },
         {},
     ])("keeps normal-user, Windows and non-sudo root builds unchanged: %j", options => {
-        const f = sudoSourceBuildFixture(options);
+        const f = sudoSourceBuildFixture({ ...options, ownership: { dist: 0 } });
         expect(f.result.status, f.result.stderr).toBe(0);
         expect(f.calls).toEqual([{ command: "npm run build", args: [], options: { cwd: f.root, stdio: "inherit" } }]);
+        expect(f.recovery).toEqual([{ kind: "build" }]);
+        expect(f.owners[join(f.root, "dist")]).toEqual({ uid: 0, gid: 0 });
     });
 
     it("bootstraps actual npm with the OS account HOME and removes every inherited cache/userconfig spelling", () => {
@@ -283,12 +332,296 @@ describe.skipIf(process.platform === "win32")("sudo source build ownership", () 
     });
 
     it("does not validate sudo identity or launch a build when the native installer is only imported", () => {
-        const f = sudoSourceBuildFixture({ sudoUid: "bad", sudoGid: "", operation: "import" });
+        const f = sudoSourceBuildFixture({ sudoUid: "bad", sudoGid: "", operation: "import", ownership: { dist: 0 } });
         expect(f.result.status, f.result.stderr).toBe(0);
         expect(f.calls).toEqual([]);
         expect(f.observed).toBeNull();
+        expect(f.recovery).toEqual([]);
         expect(f.result.stdout).toBe("");
         expect(readFileSync(join(f.installDir, "ccc"), "utf8")).toBe("previous CLI");
+    });
+});
+
+const generatedOutputRoots = ["dist", "packages/hyper-v/dist", "packages/device-lab/dist"];
+function privateEntry(path: string) {
+    const entry = lstatSync(path);
+    return {
+        dev: entry.dev, ino: entry.ino, mode: entry.mode, nlink: entry.nlink,
+        bytes: entry.isFile() ? readFileSync(path) : null,
+        link: entry.isSymbolicLink() ? readlinkSync(path) : null,
+    };
+}
+function privateSocket(path: string) {
+    const made = spawnSync(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1],()=>process.exit(0))", basename(path)], { cwd: dirname(path), encoding: "utf8", timeout: 5000 });
+    expect(made.status, made.stderr).toBe(0);
+    expect(lstatSync(path).isSocket()).toBe(true);
+}
+function expectPreviousInstall(f: ReturnType<typeof sudoSourceBuildFixture>) {
+    expect(f.calls).toEqual([]);
+    expect(f.observed).toBeNull();
+    expect(f.result.stdout).not.toContain("CLI installed.");
+    expect(readFileSync(join(f.installDir, "ccc"), "utf8")).toBe("previous CLI");
+    expect(readFileSync(join(f.installDir, "ccc-dist", "previous"), "utf8")).toBe("previous payload");
+}
+
+describe.skipIf(process.platform === "win32")("bounded sudo generated-output recovery", () => {
+    it("repairs root-owned files and directories in exactly the three generated trees before the unchanged child", () => {
+        const repairPaths = generatedOutputRoots.flatMap(path => [path, `${path}/nested`, `${path}/nested/output.js`, `${path}/user-nested/root-owned.js`]);
+        const userPaths = generatedOutputRoots.flatMap(path => [`${path}/user-owned.js`, `${path}/user-nested`]);
+        const untouched = [".", "packages", "packages/hyper-v", "packages/device-lab", "source-sentinel"];
+        const ownership = Object.fromEntries([...repairPaths, ...untouched].map(path => [path, 0]));
+        for (const path of userPaths) ownership[path] = 602;
+        const before: Record<string, ReturnType<typeof privateEntry>> = {};
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", ownership,
+            setup(root) {
+                for (const path of generatedOutputRoots) {
+                    mkdirSync(join(root, path, "nested"), { recursive: true });
+                    mkdirSync(join(root, path, "user-nested"));
+                    writeFileSync(join(root, path, "nested/output.js"), `generated ${path}`);
+                    writeFileSync(join(root, path, "user-nested/root-owned.js"), `legacy output inside a user directory ${path}`);
+                    writeFileSync(join(root, path, "user-owned.js"), `user ${path}`);
+                }
+                writeFileSync(join(root, "source-sentinel"), "source remains owned by root");
+                for (const path of repairPaths) chmodSync(join(root, path), path.endsWith(".js") ? 0o640 : 0o750);
+                for (const path of [...repairPaths, ...userPaths, ...untouched]) before[path] = privateEntry(join(root, path));
+            },
+        });
+        expect(f.result.status, f.result.stderr).toBe(0);
+        expect(f.recovery.filter(event => event.kind === "repair").sort((a, b) => a.path.localeCompare(b.path))).toEqual(
+            repairPaths.map(path => ({ kind: "repair", path: join(f.root, path), uid: 501, gid: 20 })).sort((a, b) => a.path.localeCompare(b.path)),
+        );
+        expect(f.recovery.at(-1)).toEqual({ kind: "build" });
+        expect(f.calls).toEqual([{
+            command: process.execPath, args: ["-e", expect.any(String)],
+            options: { cwd: f.root, stdio: "inherit", uid: 501, gid: 20 },
+        }]);
+        for (const path of repairPaths) expect(f.owners[join(f.root, path)]).toEqual({ uid: 501, gid: 20 });
+        for (const path of userPaths) expect(f.owners[join(f.root, path)]).toEqual({ uid: 602, gid: 20 });
+        for (const path of untouched) expect(f.owners[resolve(f.root, path)]).toEqual({ uid: 0, gid: 0 });
+        for (const [path, snapshot] of Object.entries(before)) expect(privateEntry(join(f.root, path))).toEqual(snapshot);
+    });
+
+    it.each(["missing", "nonroot"])("leaves %s outputs and namespace unchanged without creating or repairing them", kind => {
+        const ownership: Record<string, number> = {};
+        const before: Record<string, ReturnType<typeof privateEntry>> = {};
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", ownership,
+            setup(root) {
+                if (kind === "missing") {
+                    rmSync(join(root, "dist"), { recursive: true });
+                    return;
+                }
+                for (const path of [...generatedOutputRoots, "node_modules/@ccc"]) {
+                    mkdirSync(join(root, path), { recursive: true });
+                    writeFileSync(join(root, path, "user-file"), "ordinary user output");
+                    ownership[path] = 777;
+                    ownership[`${path}/user-file`] = 778;
+                    before[path] = privateEntry(join(root, path));
+                    before[`${path}/user-file`] = privateEntry(join(root, path, "user-file"));
+                }
+            },
+        });
+        expect(f.result.status, f.result.stderr).toBe(0);
+        expect(f.recovery).toEqual([{ kind: "build" }]);
+        for (const [path, snapshot] of Object.entries(before)) expect(privateEntry(join(f.root, path))).toEqual(snapshot);
+        if (kind === "missing") for (const path of [...generatedOutputRoots, "node_modules/@ccc"]) expect(existsSync(join(f.root, path))).toBe(false);
+        else for (const [path, uid] of Object.entries(ownership)) expect(f.owners[join(f.root, path)]).toEqual({ uid, gid: 20 });
+    });
+
+    it("recovers only the namespace directory and never its parent, dependency contents or workspace links", () => {
+        const paths = ["node_modules", "node_modules/@ccc", "node_modules/@ccc/owned-file", "node_modules/@ccc/socket", "node_modules/dependency", "node_modules/dependency/index.js", "node_modules/@ccc/hyper-v"];
+        const before: Record<string, ReturnType<typeof privateEntry>> = {};
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", ownership: Object.fromEntries(paths.map(path => [path, 0])),
+            setup(root) {
+                mkdirSync(join(root, "node_modules/@ccc"), { recursive: true });
+                mkdirSync(join(root, "node_modules/dependency"));
+                mkdirSync(join(root, "packages/hyper-v"), { recursive: true });
+                writeFileSync(join(root, "node_modules/@ccc/owned-file"), "do not recurse");
+                chmodSync(join(root, "node_modules/@ccc/owned-file"), 0o4750);
+                privateSocket(join(root, "node_modules/@ccc/socket"));
+                writeFileSync(join(root, "node_modules/dependency/index.js"), "dependency stays unchanged");
+                symlinkSync(join(root, "packages/hyper-v"), join(root, "node_modules/@ccc/hyper-v"), "dir");
+                for (const path of paths) before[path] = privateEntry(join(root, path));
+            },
+        });
+        expect(f.result.status, f.result.stderr).toBe(0);
+        expect(f.recovery).toEqual([{ kind: "repair", path: join(f.root, "node_modules/@ccc"), uid: 501, gid: 20 }, { kind: "build" }]);
+        for (const path of paths) {
+            expect(privateEntry(join(f.root, path))).toEqual(before[path]);
+            expect(f.owners[join(f.root, path)]).toEqual(path === "node_modules/@ccc" ? { uid: 501, gid: 20 } : { uid: 0, gid: 0 });
+        }
+    });
+
+    it("leaves interior symlink entries and their external targets untouched", () => {
+        const paths = ["dist/file-link", "dist/dir-link", "dist/dangling-link", "outside/file", "outside", "outside/child"];
+        const before: Record<string, ReturnType<typeof privateEntry>> = {};
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", ownership: Object.fromEntries(["dist", ...paths].map(path => [path, 0])),
+            setup(root) {
+                mkdirSync(join(root, "outside"));
+                writeFileSync(join(root, "outside/file"), "external file");
+                writeFileSync(join(root, "outside/child"), "external child");
+                symlinkSync(join(root, "outside/file"), join(root, "dist/file-link"));
+                symlinkSync(join(root, "outside"), join(root, "dist/dir-link"), "dir");
+                symlinkSync(join(root, "does-not-exist"), join(root, "dist/dangling-link"));
+                for (const path of paths) before[path] = privateEntry(join(root, path));
+            },
+        });
+        expect(f.result.status, f.result.stderr).toBe(0);
+        expect(f.recovery).toEqual([{ kind: "repair", path: join(f.root, "dist"), uid: 501, gid: 20 }, { kind: "build" }]);
+        for (const path of paths) {
+            expect(privateEntry(join(f.root, path))).toEqual(before[path]);
+            expect(f.owners[join(f.root, path)]).toEqual({ uid: 0, gid: 0 });
+        }
+    });
+
+    it.each(["dist", "packages", "packages/hyper-v", "packages/hyper-v/dist", "packages/device-lab", "packages/device-lab/dist", "node_modules", "node_modules/@ccc"])("refuses a symlinked fixed directory before all repairs: %s", path => {
+        let linkBefore: ReturnType<typeof privateEntry>, targetBefore: ReturnType<typeof privateEntry>;
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", operation: "install", ownership: { dist: 0, [path]: 0 },
+            setup(root) {
+                const target = join(root, "outside-fixed-target");
+                mkdirSync(join(root, path), { recursive: true });
+                renameSync(join(root, path), target);
+                symlinkSync(target, join(root, path), "dir");
+                linkBefore = privateEntry(join(root, path)); targetBefore = privateEntry(target);
+            },
+        });
+        expect(f.result.status).not.toBe(0);
+        expectPreviousInstall(f);
+        expect(f.recovery).toEqual([]);
+        expect(privateEntry(join(f.root, path))).toEqual(linkBefore!);
+        expect(privateEntry(join(f.root, "outside-fixed-target"))).toEqual(targetBefore!);
+    });
+
+    it.each([...generatedOutputRoots, "node_modules/@ccc"])("refuses a nondirectory output root before all repairs: %s", path => {
+        let before: ReturnType<typeof privateEntry>;
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", operation: "install", ownership: { dist: 0, [path]: 0 },
+            setup(root) {
+                rmSync(join(root, path), { recursive: true, force: true });
+                mkdirSync(dirname(join(root, path)), { recursive: true });
+                writeFileSync(join(root, path), "must remain a file");
+                before = privateEntry(join(root, path));
+            },
+        });
+        expect(f.result.status).not.toBe(0);
+        expectPreviousInstall(f);
+        expect(f.recovery).toEqual([]);
+        expect(privateEntry(join(f.root, path))).toEqual(before!);
+    });
+
+    it.each(["hardlink", "setuid-file", "setgid-directory", "socket"])("preflights a root-owned %s before changing any earlier candidate", kind => {
+        const unsafe = "packages/device-lab/dist/unsafe";
+        let before: ReturnType<typeof privateEntry>, externalBefore: ReturnType<typeof privateEntry> | undefined;
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", operation: "install", ownership: { dist: 0, "dist/first": 0, [unsafe]: 0 },
+            setup(root) {
+                writeFileSync(join(root, "dist/first"), "earlier recoverable file");
+                mkdirSync(dirname(join(root, unsafe)), { recursive: true });
+                if (kind === "hardlink") {
+                    writeFileSync(join(root, "external-hardlink"), "same underlying inode");
+                    linkSync(join(root, "external-hardlink"), join(root, unsafe));
+                    externalBefore = privateEntry(join(root, "external-hardlink"));
+                } else if (kind === "setgid-directory") {
+                    mkdirSync(join(root, unsafe)); chmodSync(join(root, unsafe), 0o2750);
+                } else if (kind === "socket") {
+                    privateSocket(join(root, unsafe));
+                } else {
+                    writeFileSync(join(root, unsafe), "setuid output"); chmodSync(join(root, unsafe), 0o4750);
+                }
+                before = privateEntry(join(root, unsafe));
+            },
+        });
+        expect(f.result.status).not.toBe(0);
+        expectPreviousInstall(f);
+        expect(f.recovery).toEqual([]);
+        expect(f.owners[join(f.root, "dist")]).toEqual({ uid: 0, gid: 0 });
+        expect(f.owners[join(f.root, "dist/first")]).toEqual({ uid: 0, gid: 0 });
+        expect(privateEntry(join(f.root, unsafe))).toEqual(before!);
+        if (externalBefore) expect(privateEntry(join(f.root, "external-hardlink"))).toEqual(externalBefore);
+    });
+
+    it("preserves nonroot hardlinks, special modes and special entries without attempting ownership changes", () => {
+        const paths = ["dist/user-hardlink", "dist/user-setuid", "dist/user-socket", "external-hardlink"];
+        const before: Record<string, ReturnType<typeof privateEntry>> = {};
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", ownership: Object.fromEntries(paths.map(path => [path, 777])),
+            setup(root) {
+                writeFileSync(join(root, "external-hardlink"), "nonroot shared inode");
+                linkSync(join(root, "external-hardlink"), join(root, "dist/user-hardlink"));
+                writeFileSync(join(root, "dist/user-setuid"), "preserve nonroot special mode");
+                chmodSync(join(root, "dist/user-setuid"), 0o4750);
+                privateSocket(join(root, "dist/user-socket"));
+                for (const path of paths) before[path] = privateEntry(join(root, path));
+            },
+        });
+        expect(f.result.status, f.result.stderr).toBe(0);
+        expect(f.recovery).toEqual([{ kind: "build" }]);
+        for (const path of paths) {
+            expect(f.owners[join(f.root, path)]).toEqual({ uid: 777, gid: 20 });
+            expect(privateEntry(join(f.root, path))).toEqual(before[path]);
+        }
+    });
+
+    it.each(["symlink", "file"] as const)("rechecks an observed output replaced by a %s before repairing it", kind => {
+        let targetBefore: ReturnType<typeof privateEntry>;
+        const paths = ["dist/first", "dist/second"];
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", operation: "install", ownership: Object.fromEntries(paths.map(path => [path, 0])),
+            replaceAfterRepair: { paths, kind },
+            setup(root) {
+                for (const path of paths) writeFileSync(join(root, path), "original output");
+                writeFileSync(join(root, "replacement-target"), "external target must stay intact");
+                targetBefore = privateEntry(join(root, "replacement-target"));
+            },
+        });
+        expect(f.result.status).not.toBe(0);
+        expectPreviousInstall(f);
+        expect(f.recovery).toHaveLength(1);
+        const [completed] = f.recovery;
+        expect(completed).toMatchObject({ kind: "repair", uid: 501, gid: 20 });
+        const changed = paths.map(path => join(f.root, path)).find(path => path !== completed.path)!;
+        expect(f.owners[changed]).toEqual({ uid: 0, gid: 0 });
+        expect(privateEntry(join(f.root, "replacement-target"))).toEqual(targetBefore!);
+        if (kind === "symlink") expect(readlinkSync(changed)).toBe(join(f.root, "replacement-target"));
+        else expect(readFileSync(changed, "utf8")).toBe("replacement inode");
+    });
+
+    it("stops on a native repair error, preserves prior publication, and permits an explicit later retry", () => {
+        const f = sudoSourceBuildFixture({ sudoUid: "501", sudoGid: "20", operation: "install", ownership: { dist: 0 }, failRepairAt: "dist" });
+        expect(f.result.status).not.toBe(0);
+        expectPreviousInstall(f);
+        expect(f.result.stderr).toContain("fixture ownership denied");
+        expect(f.recovery).toEqual([{ kind: "repair", path: join(f.root, "dist"), uid: 501, gid: 20 }]);
+        expect(f.owners[join(f.root, "dist")]).toEqual({ uid: 0, gid: 0 });
+        const retried = f.runRecovery("");
+        expect(retried.result.status, retried.result.stderr).toBe(0);
+        expect(retried.recovery).toEqual([{ kind: "repair", path: join(f.root, "dist"), uid: 501, gid: 20 }, { kind: "build" }]);
+        expect(f.runRecovery("").recovery).toEqual([{ kind: "build" }]);
+    });
+
+    it("reports partial recovery without rollback, automatic replay or root build fallback", () => {
+        const f = sudoSourceBuildFixture({
+            sudoUid: "501", sudoGid: "20", operation: "install", ownership: { dist: 0, "dist/blocked": 0 }, failRepairAfter: 2,
+            setup(root) { writeFileSync(join(root, "dist/blocked"), "cannot repair this file"); },
+        });
+        expect(f.result.status).not.toBe(0);
+        expectPreviousInstall(f);
+        expect(f.result.stderr).toContain("fixture ownership denied");
+        expect(f.result.stderr).toMatch(/partial|already|completed|repaired/i);
+        expect(f.recovery).toHaveLength(2);
+        expect(f.recovery.map(event => event.path).sort()).toEqual([join(f.root, "dist"), join(f.root, "dist/blocked")].sort());
+        for (const event of f.recovery) expect(event).toMatchObject({ kind: "repair", uid: 501, gid: 20 });
+        const [completed, failed] = f.recovery;
+        expect(f.owners[completed.path]).toEqual({ uid: 501, gid: 20 });
+        expect(f.owners[failed.path]).toEqual({ uid: 0, gid: 0 });
+        const retried = f.runRecovery("", "");
+        expect(retried.result.status, retried.result.stderr).toBe(0);
+        expect(retried.recovery).toEqual([failed, { kind: "build" }]);
+        expect(f.runRecovery("", "").recovery).toEqual([{ kind: "build" }]);
     });
 });
 

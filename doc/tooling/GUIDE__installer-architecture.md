@@ -14,21 +14,39 @@ Ordinary core/type tests exercise policy and required synchronous capabilities; 
 ## Source builds invoked through sudo
 On POSIX hosts, a source build invoked by root through sudo validates the complete numeric invoking UID/GID, then runs npm build in a child with that identity. Inside the child, HOME comes from that actual OS account after removing inherited root HOME. Inherited npm cache/userconfig overrides, including case variants, are removed so npm reads the invoking user's settings. Failed validation, account lookup or build never falls back to a root build or proceeds to installation. Ordinary-user, Windows and direct-root-without-sudo behavior is unchanged. The synchronous sourceBuild capability and import/factory inertness remain intact.
 
-This changes source-build ownership only. The parent retains existing image and publication authority; this is not an internal publication-elevation workflow. Existing owners and missing dependencies are not repaired automatically. pngjs is already declared by the MCP workspace and lockfile. Restore workspace dependencies rather than externalizing it or adding a duplicate root dependency.
+Before the user build, the sudo parent recovers legacy root-owned build outputs
+only in `dist`, `packages/hyper-v/dist` and `packages/device-lab/dist`. All fixed
+ancestors/output roots must be physical directories. Preflight the entire bounded
+set before applying ownership; refuse root-owned hardlinked regular files,
+set-ID entries and unsupported types. Skip interior symlinks without modifying
+them, and preserve nonroot owners, bytes and ordinary modes. Recheck captured
+identity/type before applying. This local recovery is not a filesystem transaction
+against adversarial concurrent changes to a checkout already executed with sudo.
+
+The build-created physical `node_modules/@ccc` directory is a nonrecursive
+exception: recover its root owner, but never traverse dependencies, change its
+workspace links or repair `node_modules` itself. Source files, credentials and
+missing dependencies remain outside recovery. pngjs is already declared by the
+MCP workspace and lockfile; restore installed dependencies rather than adding a
+duplicate declaration or externalizing the import.
+
+Recovery failure stops before build/publication. A native failure can leave
+earlier generated entries repaired; there is no inverse chown, root build fallback
+or automatic retry. The parent retains existing image/publication authority and
+the previous installed CLI is not replaced until the user build succeeds.
 
 For the reported macOS source checkout, run from the repository root:
 
 ```bash
-for p in node_modules dist packages/hyper-v/dist packages/device-lab/dist; do
-  if [ -e "$p" ]; then
-    sudo find "$p" -user root -exec chown -h "$(id -u):$(id -g)" {} +
-  fi
-done
-npm ci --ignore-scripts --no-audit --no-fund
 sudo npm run install:global -- --skip-image
 ```
 
-The final command requires the updated installer. --skip-image leaves the unchanged root-parent Docker/Podman context out of this recovery. Dependency installation must not use sudo. Broader publication-only privilege handling remains separate work.
+This command requires the updated installer. --skip-image leaves the unchanged
+root-parent Docker/Podman context out of this CLI recovery. If dependencies are
+missing, restore them separately as the ordinary checkout owner with
+`npm ci --ignore-scripts --no-audit --no-fund`; do not run dependency installation
+with sudo. Existing dependency-parent ownership may still need separately
+verified repair. Broader publication-only privilege handling remains separate.
 
 Known ceiling: portable native-leaf identity-option tests and an actual ordinary-user bootstrap do not certify macOS credential switching, this host's ownership/dependency state, or a live global installation. Actual host recovery requires its subsequent run.
 

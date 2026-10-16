@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createInstallerApplication } from "./install/application.mjs";
-import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync, readdirSync } from "fs";
+import { existsSync, lstatSync, lchownSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync, readdirSync } from "fs";
 import { createHash } from "crypto";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -93,6 +93,68 @@ function nativeFailureDetail(cause) {
     return cause && typeof cause === "object" && "message" in cause ? cause.message : undefined;
 }
 
+/** @param {number} uid @param {number} gid */
+function recoverSourceBuildOwnership(uid, gid) {
+    /** @typedef {{path: string, stat: import("fs").Stats}} Entry */
+    /** @type {Entry[][]} */
+    const repairs = [];
+    /** @param {Entry} entry @param {Entry[]} ancestors @param {boolean} recursive */
+    function scan(entry, ancestors, recursive) {
+        const { path, stat } = entry;
+        if (stat.isSymbolicLink()) return;
+        if (stat.uid === 0 && ((!stat.isDirectory() && !stat.isFile())
+            || (stat.mode & 0o6000) !== 0 || (stat.isFile() && stat.nlink > 1))) {
+            throw new Error(`Cannot recover source build ownership: unsafe root-owned entry ${JSON.stringify(path)}.`);
+        }
+        if (recursive && stat.isDirectory()) {
+            for (const name of readdirSync(path)) {
+                const child = join(path, name);
+                scan({ path: child, stat: lstatSync(child) }, [...ancestors, entry], true);
+            }
+        }
+        // Children precede parents so earlier repairs do not invalidate ancestor observations.
+        if (stat.uid === 0) repairs.push([...ancestors, entry]);
+    }
+    for (const parts of [["dist"], ["packages", "hyper-v", "dist"], ["packages", "device-lab", "dist"], ["node_modules", "@ccc"]]) {
+        /** @type {Entry[]} */
+        const ancestors = [];
+        let path = projectRoot;
+        for (const part of ["", ...parts]) {
+            path = join(path, part);
+            let stat;
+            try {
+                stat = lstatSync(path);
+            } catch (cause) {
+                if (cause && typeof cause === "object" && "code" in cause && cause.code === "ENOENT") break;
+                throw cause;
+            }
+            if (!stat.isDirectory() || stat.isSymbolicLink()) {
+                throw new Error(`Cannot recover source build ownership: expected a physical directory at ${JSON.stringify(path)}.`);
+            }
+            ancestors.push({ path, stat });
+        }
+        if (ancestors.length === parts.length + 1) {
+            scan(ancestors[ancestors.length - 1], ancestors.slice(0, -1), parts[0] !== "node_modules");
+        }
+    }
+    let completed = 0;
+    try {
+        for (const chain of repairs) {
+            for (const { path, stat } of chain) {
+                const current = lstatSync(path);
+                if (current.dev !== stat.dev || current.ino !== stat.ino || current.mode !== stat.mode
+                    || current.uid !== stat.uid || current.gid !== stat.gid || current.nlink !== stat.nlink) {
+                    throw new Error(`Source build ownership entry changed after preflight: ${JSON.stringify(path)}.`);
+                }
+            }
+            lchownSync(chain[chain.length - 1].path, uid, gid);
+            completed++;
+        }
+    } catch (cause) {
+        throw new Error(`Cannot recover source build ownership (${completed} ownership updates completed; earlier changes retained): ${nativeFailureDetail(cause)}`, { cause });
+    }
+}
+
 /** @param {string} installDir */
 function manualPathHint(installDir) {
     console.log("Add it manually in PowerShell:");
@@ -164,6 +226,7 @@ function installerApplication() {
                     || uid > 2147483647 || gid > 2147483647) {
                     throw new Error("Cannot build source: sudo must provide canonical SUDO_UID (1..2147483647) and SUDO_GID (0..2147483647).");
                 }
+                recoverSourceBuildOwnership(uid, gid);
                 execFileSync(process.execPath, ["-e", `
                     delete process.env.HOME;
                     const home = require("node:os").homedir();
