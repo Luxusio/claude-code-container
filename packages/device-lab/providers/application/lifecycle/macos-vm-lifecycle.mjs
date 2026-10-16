@@ -145,6 +145,9 @@ export function createMacosVmLifecycleApplication(ports) {
     function abortMacosLifecycle(deviceId, lifecycle, original, updates = {}) {
         const current = currentMacosLifecycleDevice(deviceId, lifecycle);
         if (!current) return { matched: false, found: Boolean((0, ports.find)(deviceId)) };
+        if (Object.hasOwn(updates, "recording") && !recordingGenerationMatches(original.recording, current.recording)) {
+            return { matched: false, found: true };
+        }
         const restored = macosLifecycleReplacement(current, original.lifecycle || null, {
             ...updates,
             status: updates.status ?? original.status,
@@ -465,7 +468,8 @@ export function createMacosVmLifecycleApplication(ports) {
         return completedOutcome({ device: updated, helper: provision.provisioning, providerStart: startedDevice.runtime, boot });
     }
 
-    /** @param {MacosVmDevice} device */
+    /** @param {MacosVmDevice} device
+     * @returns {Promise<{ok: true} | {ok: false, reason: string}>} */
     async function stopRecording(device) {
         const recording = device.recording;
         if (!recording) return { ok: true };
@@ -645,5 +649,5 @@ export function createMacosVmLifecycleApplication(ports) {
         currentLifecycleDevice: currentMacosLifecycleDevice, abortLifecycle: abortMacosLifecycle,
         transitionCurrent: transitionCurrentMacosLifecycle, rollbackStarted: rollbackStartedMacosVm,
         rollbackCreated: rollbackCreatedMacosResource, clone: runTartClone, cloneFailure: tartCloneFailure, cloneFailureEvidence,
-        replacement: macosLifecycleReplacement };
+        replacement: macosLifecycleReplacement, stopRecording, recordingCleanupIncomplete };
 }

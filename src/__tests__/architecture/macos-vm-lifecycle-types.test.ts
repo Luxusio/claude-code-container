@@ -31,10 +31,11 @@ const synchronousCreate:MacosVmLifecycleOutcome|undefined=app.create({backend:"o
 const synchronousImage:MacosVmLifecycleOutcome|undefined=app.createImage({backend:"other"});
 function positiveAsyncContract(){
     const asynchronousStart:Promise<MacosVmLifecycleOutcome|undefined>=app.start({deviceId:"missing"});
+    const recorderSettlement:Promise<{ok:true}|{ok:false;reason:string}>=app.stopRecording(device);
     const recordingExit:Promise<boolean>=ports.waitRecordingExit({runtimeId:"recorder",pid:17,processIdentity:{pid:17,startToken:"birth",commandHash:"a".repeat(64)}},1000);
     const evidence:MacosNativeCloneFailureEvidence=app.cloneFailureEvidence(observation,null,"owned-target");
     const failed:MacosVmLifecycleOutcome=app.cloneFailure(evidence.command,evidence.cleanup,evidence.target);
-    void asynchronousStart;void recordingExit;void failed;
+    void asynchronousStart;void recorderSettlement;void recordingExit;void failed;
 }
 void synchronousCreate;void synchronousImage;void positiveAsyncContract;
 function negativeContracts(){
@@ -92,6 +93,12 @@ function negativeContracts(){
     const syncExit:typeof ports={...ports,waitRecordingExit:()=>true};
     // @ts-expect-error recorder exit observation requires the complete runtime generation, not a PID
     ports.waitRecordingExit(17,1000);
+    // @ts-expect-error same-claim recorder settlement requires the captured device, not a process ID
+    app.stopRecording(17);
+    // @ts-expect-error settlement reports a finite observation, never a bare success boolean
+    const booleanSettlement:Promise<boolean>=app.stopRecording(device);
+    // @ts-expect-error the current lifecycle caller must await recorder settlement
+    const synchronousSettlement:{ok:true}|{ok:false;reason:string}=app.stopRecording(device);
     // @ts-expect-error a PID-only native adapter cannot implement generation-aware exit observation
     const pidOnlyExit:typeof ports={...ports,waitRecordingExit:async(_pid:number)=>true};
     // @ts-expect-error mutable device identity is still a string
@@ -101,7 +108,7 @@ function negativeContracts(){
     // @ts-expect-error create stays synchronous
     const promisedCreate:Promise<MacosVmLifecycleOutcome|undefined>=app.create({backend:"other"});
     void asyncRead;void asyncFind;void asyncClaim;void asyncTransition;void malformedTransition;void asyncKey;
-    void asyncCommand;void malformedCommand;void asyncSpawn;void missingUnref;void syncWait;void syncBoot;void pidOnlyExit;
+    void asyncCommand;void malformedCommand;void asyncSpawn;void missingUnref;void syncWait;void syncBoot;void pidOnlyExit;void booleanSettlement;void synchronousSettlement;
     void syncHelper;void asyncProvision;void weakSignal;void syncExit;void malformedDevice;void synchronousStart;void promisedCreate;
 }
 void negativeContracts;
@@ -150,14 +157,16 @@ function imageContracts(imagePorts:MacosImageSnapshotsPorts,lifecycle:MacosVmNat
     const deferredFind:typeof imagePorts={...imagePorts,find:async()=>device};
     // @ts-expect-error candidate publication reports its CAS outcome immediately
     const deferredTransition:typeof imagePorts={...imagePorts,transition:async()=>({matched:true,found:true,device})};
-    // @ts-expect-error recording settlement is awaited
-    const unawaitedRecording:typeof imagePorts={...imagePorts,waitRecordingExit:()=>true};
+    // @ts-expect-error recorder signaling belongs to the existing lifecycle policy peer
+    const duplicateRecordingSignal:typeof imagePorts={...imagePorts,signalRecording:()=>({signaled:true})};
+    // @ts-expect-error generation-aware exit settlement belongs to the lifecycle policy peer
+    const duplicateRecordingWait:typeof imagePorts={...imagePorts,waitRecordingExit:async()=>true};
     // @ts-expect-error restored failure always identifies the retained candidate
     const unidentifiedRecovery:MacosVmLifecycleOutcome={kind:"restore-failed",error:"exit 9",cloneEvidence:null};
     // @ts-expect-error clone cleanup evidence retains its semantic observation, not an unclassified raw receipt
     const rawRecovery:MacosVmLifecycleOutcome={kind:"restore-failed",candidate:"owned-candidate",error:"exit 9",cloneEvidence:{target:"primary",command:{status:9,stdout:"",stderr:""},cleanup:null}};
     void [imageLeavesRequired,cloned,snapshot,restored,deleted,restoreFailure,deferredStop,rawDelete,rawPlan,rawCommand,publisher,
-        deferredDiagnostic,deferredFind,deferredTransition,unawaitedRecording,unidentifiedRecovery,rawRecovery];
+        deferredDiagnostic,deferredFind,deferredTransition,duplicateRecordingSignal,duplicateRecordingWait,unidentifiedRecovery,rawRecovery];
 }
 void imageContracts;
 describe("macOS strict required native contracts",()=>{

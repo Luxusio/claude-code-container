@@ -1,4 +1,4 @@
-import type { MacosVmLifecycleInput, MacosVmDevice, MacosVmNativePlan, MacosVmNativeObservation, MacosVmClaimResult, MacosVmTransition, MacosVmRuntime, MacosVmSignal } from "./lifecycle/macos-vm-lifecycle.mjs";
+import type { MacosVmLifecycleInput, MacosVmDevice, MacosVmNativePlan, MacosVmNativeObservation, MacosVmClaimResult, MacosVmTransition } from "./lifecycle/macos-vm-lifecycle.mjs";
 export interface MacosImageInput extends MacosVmLifecycleInput { snapshotName?: string; snapshotId?: string; }
 /** Native observations/effects only; lifecycle claim and clone policy is an inward peer. */
 export interface MacosImageSnapshotsPorts {
@@ -18,6 +18,4 @@ export interface MacosImageSnapshotsPorts {
     deleteInstance(plan: MacosVmNativePlan, instance: string | undefined): MacosVmNativeObservation;
     /** Persisted operation/cleanup diagnostics exclude native Error.message. */
     imageDiagnostic(observation: MacosVmNativeObservation, kind: "operation" | "cleanup" | "output"): string;
-    signalRecording(recording: MacosVmRuntime | null | undefined, signal: string): MacosVmSignal;
-    waitRecordingExit(recording: MacosVmRuntime | null | undefined, timeoutMs: number): Promise<boolean>;
 }

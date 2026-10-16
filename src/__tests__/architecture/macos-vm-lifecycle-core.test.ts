@@ -289,26 +289,167 @@ describe("macOS image and snapshot publication",()=>{
         expect(f.trace).not.toContain("claim");
     });
 
-    it.each(["clone","createSnapshot","restoreSnapshot"] as const)("keeps image %s stop and recorder ordering separate from ordinary lifecycle settlement",async operation=>{
-        const recording={runtimeId:"recording",pid:17};
+    it.each(["clone","createSnapshot","restoreSnapshot"] as const)("refuses image %s after an unconfirmed recorder exit and retains the completed provider stop",async operation=>{
+        const recording={runtimeId:"recording",pid:17,active:true,remotePath:"/video"};
+        const restoreRecovery={candidateProviderInstance:"retained-recovery"};
         const f=nativeLeaves({id:"source",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording,
+            runtime:{providerPid:71},bootReady:true,restoreRecovery,
             snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}]});
         f.ports.stopInstance=()=>{f.trace.push("stop");return {ok:true,timedOut:false,detail:"",evidence:{status:9,stdout:"opaque stop evidence",stderr:""}};};
         f.ports.signalRecording=()=>{f.trace.push("signal");return {signaled:true};};
+        f.ports.waitRecordingExit=async(value,timeout)=>{expect(value).toBe(recording);expect(timeout).toBe(1000);f.trace.push("wait");return false;};
         const ports=imagePorts(f);
         ports.deviceId=()=>"copy";
         ports.providerPlan=device=>({...f.nativePlan,providerInstance:device.providerInstance||"ccc-owner-copy"});
         ports.snapshotId=name=>name==="After"?"snapshot-after":"snapshot-before";
-        ports.waitRecordingExit=async(value,timeout)=>{expect(value).toBe(recording);expect(timeout).toBe(1000);f.trace.push("wait");return false;};
         const app=createMacosImageSnapshots(ports,createMacosVmLifecycleApplication(f.ports));
         const result=operation==="clone"
             ? await app.clone({sourceDeviceId:"source",force:true})
             : await app[operation]({deviceId:"source",snapshotName:operation==="createSnapshot"?"After":"Before",force:true});
-        expect(result?.kind).toBe("completed");
-        const firstClone=f.trace.findIndex(value=>value.startsWith("clone "));
+        expect(result).toMatchObject({kind:"problem",value:{error:"macos-recording-cleanup-incomplete",reason:"runtime-process-exit-unconfirmed"}});
         expect(f.trace.indexOf("stop")).toBeLessThan(f.trace.indexOf("signal"));
-        expect(f.trace.indexOf("signal")).toBeLessThan(f.trace.indexOf("wait"));
-        expect(f.trace.indexOf("wait")).toBeLessThan(firstClone);
+        expect(f.trace.indexOf("signal")).toBeLessThan(f.trace.indexOf("guest-recording-interrupt"));
+        expect(f.trace.indexOf("guest-recording-interrupt")).toBeLessThan(f.trace.indexOf("wait"));
+        expect(f.trace.filter(value=>value.startsWith("clone ")||value.startsWith("delete "))).toEqual([]);
+        expect(f.read()).toMatchObject({status:"stopped",runtime:null,bootReady:false,recording,restoreRecovery});
+        expect(f.read()).not.toHaveProperty("lifecycle");
+    });
+
+    it("refuses an already-stopped snapshot with recorder metadata without fabricating provider-stop fields",async()=>{
+        const recording={runtimeId:"recorder",pid:17,active:false},runtime={providerPid:71};
+        const restoreRecovery={candidateProviderInstance:"retained-recovery"};
+        const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",recording,runtime,bootReady:true,restoreRecovery});
+        f.ports.signalRecording=()=>({signaled:false,reason:"runtime-process-identity-unavailable"});
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).createSnapshot({deviceId:"unit",snapshotName:"After"});
+        expect(result).toMatchObject({kind:"problem",value:{error:"macos-recording-cleanup-incomplete",reason:"runtime-process-identity-unavailable"}});
+        expect(f.read()).toMatchObject({status:"stopped",runtime,bootReady:true,recording,restoreRecovery});
+        expect(f.read()).not.toHaveProperty("lifecycle");
+        expect(f.trace.filter(value=>/^(stop |clone |delete )/.test(value)||value==="recording-wait"||value==="guest-recording-interrupt")).toEqual([]);
+    });
+
+    it("accepts a proven already-exited recorder only after captured-generation exit confirmation",async()=>{
+        const recording={runtimeId:"recorder",pid:17,active:true};
+        const f=nativeLeaves({id:"source",status:"stopped",provider:"tart",providerInstance:"owned-source",recording});
+        f.ports.signalRecording=(value,signal)=>{expect(value).toBe(recording);expect(signal).toBe("SIGINT");f.trace.push("already-exited");return {signaled:false,exited:true};};
+        f.ports.waitRecordingExit=async(value,timeout)=>{expect(value).toBe(recording);expect(timeout).toBe(1000);f.trace.push("confirmed-exit");return true;};
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).clone({sourceDeviceId:"source"});
+        expect(result?.kind).toBe("completed");
+        expect(f.trace.indexOf("confirmed-exit")).toBeGreaterThan(f.trace.indexOf("already-exited"));
+        expect(f.trace.indexOf("clone owned-source ccc-owner-unit")).toBeGreaterThan(f.trace.indexOf("confirmed-exit"));
+        expect(f.trace).not.toContain("guest-recording-interrupt");
+        expect(f.trace.filter(value=>value.startsWith("stop "))).toEqual([]);
+    });
+
+    it("retains recorder and recovery evidence after forced clone signaling is refused",async()=>{
+        const recording={runtimeId:"recorder",pid:17,active:true};
+        const restoreRecovery={candidateProviderInstance:"retained-recovery"};
+        const f=nativeLeaves({id:"source",status:"running",provider:"tart",providerInstance:"owned-source",recording,restoreRecovery});
+        f.ports.signalRecording=()=>({signaled:false,reason:"runtime-process-identity-mismatch"});
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).clone({sourceDeviceId:"source",force:true});
+        expect(result).toMatchObject({kind:"problem",value:{error:"macos-recording-cleanup-incomplete",reason:"runtime-process-identity-mismatch"}});
+        expect(f.read()).toMatchObject({status:"stopped",runtime:null,recording,restoreRecovery});
+        expect(f.read()).not.toHaveProperty("lifecycle");
+        expect(f.trace).not.toContain("recording-wait");expect(f.trace).not.toContain("guest-recording-interrupt");
+        expect(f.trace.filter(value=>/^(clone |delete )/.test(value))).toEqual([]);
+    });
+
+    it("does not settle the recorder or publish stopped state when forced restore provider stop fails",async()=>{
+        const recording={runtimeId:"recorder",pid:17},runtime={providerPid:71};
+        const restoreRecovery={candidateProviderInstance:"retained-recovery"};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording,runtime,bootReady:true,restoreRecovery,
+            snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}]});
+        const stop=f.observe({status:7,stdout:"",stderr:"stop denied"});f.ports.stopInstance=()=>stop;
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).restoreSnapshot({deviceId:"unit",snapshotName:"Before",force:true});
+        expect(result).toEqual({kind:"failed",evidence:stop.evidence});
+        expect(f.read()).toMatchObject({status:"running",runtime,bootReady:true,recording,restoreRecovery});
+        expect(f.read()).not.toHaveProperty("lifecycle");
+        expect(f.trace.filter(value=>/^(clone |delete |recording-)/.test(value))).toEqual([]);
+    });
+
+    it("rethrows a provider-stop observation without inventing a stopped partial state",async()=>{
+        const recording={runtimeId:"recorder",pid:17},runtime={providerPid:71};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording,runtime,bootReady:true});
+        f.ports.stopInstance=()=>{throw f.fault;};
+        await expect(createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).createSnapshot({deviceId:"unit",snapshotName:"After",force:true})).rejects.toBe(f.fault);
+        expect(f.read()).toMatchObject({status:"running",runtime,bootReady:true,recording});
+        expect(f.read()).not.toHaveProperty("lifecycle");
+        expect(f.trace.filter(value=>/^(clone |delete |recording-)/.test(value))).toEqual([]);
+    });
+
+    it("rethrows the exact recorder observation and preserves the completed stop and prepared restore",async()=>{
+        const recording={runtimeId:"recorder",pid:17,active:true};
+        const restoreRecovery={snapshotId:"snapshot-before",snapshotName:"Before",candidateProviderInstance:"owned-candidate",phase:"prepared"};
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording,restoreRecovery,
+            snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}]});
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async()=>{throw f.fault;};
+        await expect(createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).restoreSnapshot({deviceId:"unit",snapshotName:"Before",force:true})).rejects.toBe(f.fault);
+        expect(f.read()).toMatchObject({status:"stopped",runtime:null,recording,restoreRecovery});
+        expect(f.read()).not.toHaveProperty("lifecycle");
+        expect(f.trace.filter(value=>/^(clone |delete )/.test(value))).toEqual([]);
+    });
+
+    it("preserves an exact successor recorder written during the exit wait before snapshot cloning",async()=>{
+        const recording={runtimeId:"recorder",pid:17};
+        const successor={runtimeId:"successor",pid:18,processIdentity:{pid:18,startToken:"new-birth",commandHash:"b".repeat(64)}};
+        const restoreRecovery={candidateProviderInstance:"retained-recovery"};
+        const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",recording,restoreRecovery});
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async()=>{f.replace({...f.read()!,recording:successor});return true;};
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).createSnapshot({deviceId:"unit",snapshotName:"After"});
+        expect(result).toMatchObject({kind:"problem"});
+        expect(f.read()?.recording).toBe(successor);expect(f.read()?.restoreRecovery).toBe(restoreRecovery);
+        expect(f.trace.filter(value=>/^(clone |delete )/.test(value))).toEqual([]);
+    });
+
+    it("preserves a lifecycle successor during the recorder wait before resumed restore effects",async()=>{
+        const recording={runtimeId:"recorder",pid:17};
+        const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",recording,
+            snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}],
+            restoreRecovery:{snapshotId:"snapshot-before",snapshotName:"Before",candidateProviderInstance:"owned-candidate",phase:"prepared"}});
+        let successor:MacosVmDevice|undefined;
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async()=>{successor={...f.read()!,lifecycle:{runtimeId:"successor",operation:"start",claimedAt:"now"}};f.replace(successor);return true;};
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
+        expect(result).toMatchObject({kind:"problem",value:{error:"owner-device-state-conflict"}});
+        expect(f.read()).toBe(successor);
+        expect(f.trace.filter(value=>/^(clone |delete )/.test(value))).toEqual([]);
+    });
+
+    it("reports a guarded abort conflict when recorder refusal loses its lifecycle owner",async()=>{
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording:{runtimeId:"recorder",pid:17}});
+        const successor:MacosVmDevice={id:"unit",status:"running",recording:{runtimeId:"successor-recorder",pid:18},lifecycle:{runtimeId:"successor",operation:"start",claimedAt:"now"}};
+        f.ports.signalRecording=()=>{f.replace(successor);return {signaled:false,reason:"runtime-process-identity-mismatch"};};
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).createSnapshot({deviceId:"unit",snapshotName:"After",force:true});
+        expect(result).toMatchObject({kind:"problem",value:{error:"owner-device-state-conflict"}});
+        expect(f.read()).toBe(successor);
+        expect(f.trace.filter(value=>/^(clone |delete )/.test(value))).toEqual([]);
+    });
+
+    it("retains a successor and reports conflict when an exceptional recorder wait cannot publish its abort",async()=>{
+        const f=nativeLeaves({id:"unit",status:"running",provider:"tart",providerInstance:"ccc-owner-unit",recording:{runtimeId:"recorder",pid:17}});
+        const successor:MacosVmDevice={id:"unit",status:"running",recording:{runtimeId:"successor-recorder",pid:18},
+            restoreRecovery:{candidateProviderInstance:"successor-recovery"},lifecycle:{runtimeId:"successor",operation:"start",claimedAt:"now"}};
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async()=>{f.replace(successor);throw f.fault;};
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).createSnapshot({deviceId:"unit",snapshotName:"After",force:true});
+        expect(result).toMatchObject({kind:"problem",value:{error:"owner-device-state-conflict"}});
+        expect(f.read()).toBe(successor);
+        expect(f.trace.filter(value=>/^(clone |delete )/.test(value))).toEqual([]);
+    });
+
+    it.each(["prepared","activated"])("refuses resumed %s restore cleanup until recorder exit is confirmed",async phase=>{
+        const recording={runtimeId:"recorder",pid:17};
+        const restoreRecovery={snapshotId:"snapshot-before",snapshotName:"Before",candidateProviderInstance:"owned-candidate",phase};
+        const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",recording,restoreRecovery,
+            snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}]});
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async()=>false;
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
+        expect(result).toMatchObject({kind:"problem",value:{error:"macos-recording-cleanup-incomplete",reason:"runtime-process-exit-unconfirmed"}});
+        expect(f.read()).toMatchObject({status:"stopped",recording,restoreRecovery});
+        expect(f.read()).not.toHaveProperty("lifecycle");
+        expect(f.trace.filter(value=>/^(stop |clone |delete )/.test(value))).toEqual([]);
     });
 
     it("keeps a successor snapshot reference when publication loses its lifecycle claim",async()=>{
@@ -326,19 +467,24 @@ describe("macOS image and snapshot publication",()=>{
 
     it.each(["prepared","activated"])("resumes a matching %s candidate without replaying its preparation",async phase=>{
         const candidate="owned-candidate",superseded="older-candidate";
-        const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",
+        const recording={runtimeId:"recorder",pid:17};
+        const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",recording,
             snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}],
             restoreRecovery:{snapshotId:"snapshot-before",snapshotName:"Before",candidateProviderInstance:candidate,phase,supersededCandidateProviderInstances:[superseded]}});
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async(value)=>{expect(value).toBe(recording);f.trace.push("confirmed-exit");return true;};
         f.ports.cloneInstance=(_plan,source,target)=>{expect(source).toBe(candidate);expect(target).toBe("ccc-owner-unit");f.trace.push("activate");return f.observe({status:0,stdout:"activated",stderr:""});};
         f.ports.deleteInstance=(_plan,instance)=>{f.trace.push(`delete ${instance}`);return f.observe({status:0,stdout:"",stderr:""});};
         const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
         expect(result?.kind).toBe("completed");
+        expect(f.trace.indexOf("confirmed-exit")).toBeGreaterThan(-1);
+        expect(f.trace.findIndex(value=>value==="activate"||value.startsWith("delete "))).toBeGreaterThan(f.trace.indexOf("confirmed-exit"));
         expect(f.trace.filter(value=>value==="activate")).toHaveLength(phase==="prepared"?1:0);
         expect(f.trace.filter(value=>value.startsWith("delete "))).toEqual(phase==="prepared"
             ? ["delete ccc-owner-unit",`delete ${candidate}`,`delete ${superseded}`]
             : [`delete ${candidate}`,`delete ${superseded}`]);
         if(phase==="activated")expect(result).toMatchObject({kind:"completed",value:{native:null,resumedActivation:true}});
-        expect(f.read()).toMatchObject({status:"stopped",restoreRecovery:null,restoredFrom:{id:"snapshot-before",name:"Before"}});
+        expect(f.read()).toMatchObject({status:"stopped",recording:null,restoreRecovery:null,restoredFrom:{id:"snapshot-before",name:"Before"}});
         expect(f.read()).not.toHaveProperty("lifecycle");
     });
 
@@ -365,6 +511,39 @@ describe("macOS image and snapshot publication",()=>{
         expect(f.trace.filter(value=>["prepare","delete-primary","activate"].includes(value))).toEqual(["prepare","delete-primary","activate"]);
         expect(f.read()).toMatchObject({status:"stopped",restoreRecovery:{phase:"prepared",candidateProviderInstance:candidate,error:"primary delete: exit 0; activation: exit 0"}});
         expect(f.read()).not.toHaveProperty("lifecycle");
+    });
+
+    it("preserves a same-claim successor recorder when resumed prepared restore activation fails",async()=>{
+        const candidate="owned-candidate",recording={runtimeId:"captured-recorder",pid:17};
+        const restoreRecovery={snapshotId:"snapshot-before",snapshotName:"Before",candidateProviderInstance:candidate,phase:"prepared",error:"previous activation failure"};
+        const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",providerInstance:"ccc-owner-unit",recording,restoreRecovery,
+            snapshots:[{id:"snapshot-before",name:"Before",provider:"tart",providerInstance:"owned-snapshot"}]});
+        const resources=new Set(["ccc-owner-unit","owned-snapshot",candidate]);
+        const successorRecording={runtimeId:"successor-recorder",pid:18,processIdentity:{pid:18,startToken:"successor-birth",commandHash:"b".repeat(64)}};
+        let successor:MacosVmDevice|undefined,expectedSuccessor:MacosVmDevice|undefined,claim:MacosVmDevice["lifecycle"],afterActivation=0;
+        f.ports.signalRecording=()=>({signaled:true});
+        f.ports.waitRecordingExit=async value=>{expect(value).toBe(recording);f.trace.push("confirmed-exit");return true;};
+        f.ports.deleteInstance=(_plan,instance)=>{
+            expect(instance).toBe("ccc-owner-unit");expect(f.trace).toContain("confirmed-exit");
+            resources.delete(instance);f.trace.push("delete-primary");return f.observe({status:0,stdout:"",stderr:""});
+        };
+        f.ports.cloneInstance=(_plan,source,target)=>{
+            expect(source).toBe(candidate);expect(target).toBe("ccc-owner-unit");
+            const current=f.read()!;claim=current.lifecycle;
+            expect(claim).toMatchObject({operation:"snapshot-restore"});expect(current.restoreRecovery).toBe(restoreRecovery);
+            successor={...current,recording:successorRecording};
+            expectedSuccessor={...successor,lifecycle:{...claim!},recording:{...successorRecording},restoreRecovery:{...restoreRecovery}};
+            f.replace(successor);f.trace.push("activation");afterActivation=f.trace.length;
+            return f.observe({status:7,stdout:"",stderr:"activation denied"});
+        };
+        const result=await createMacosImageSnapshots(imagePorts(f),createMacosVmLifecycleApplication(f.ports)).restoreSnapshot({deviceId:"unit",snapshotName:"Before"});
+        expect(result).toMatchObject({kind:"problem",value:{error:"owner-device-state-conflict",operation:"snapshot-restore-recovery",
+            rollback:{ok:false,attempted:false,reason:"restore-candidate-preserved",candidateProviderInstance:candidate}}});
+        expect(f.read()).toBe(successor);expect(f.read()).toEqual(expectedSuccessor);
+        expect(f.read()?.lifecycle).toBe(claim);expect(f.read()?.recording).toBe(successorRecording);expect(f.read()?.restoreRecovery).toBe(restoreRecovery);
+        expect(resources).toEqual(new Set(["owned-snapshot",candidate]));
+        expect(f.trace.filter(value=>value==="delete-primary"||value==="activation")).toEqual(["delete-primary","activation"]);
+        expect(f.trace.slice(afterActivation).filter(value=>value==="transition"||value==="delete-primary"||value==="activation")).toEqual([]);
     });
 
     it("retains activation timeout cleanup evidence while keeping the prepared recovery candidate",async()=>{

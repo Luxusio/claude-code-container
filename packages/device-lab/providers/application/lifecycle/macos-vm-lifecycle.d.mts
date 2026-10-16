@@ -12,6 +12,8 @@ export interface MacosVmLifecycle<Result> {
     claimLifecycle(deviceId: string | undefined, device: MacosVmDevice, operation: string, updates?: Partial<MacosVmDevice>): {lifecycle: MacosVmLifecycleClaim; claimed: MacosVmDevice | null; transition: MacosVmTransition};
     currentLifecycleDevice(deviceId: string | undefined, lifecycle: MacosVmLifecycleClaim): MacosVmDevice | null;
     abortLifecycle(deviceId: string | undefined, lifecycle: MacosVmLifecycleClaim, original: MacosVmDevice, updates?: Partial<MacosVmDevice>): MacosVmTransition | {matched: false; found: boolean};
+    stopRecording(device: MacosVmDevice): Promise<{ok: true} | {ok: false; reason: string}>;
+    recordingCleanupIncomplete(deviceId: string | undefined, lifecycle: MacosVmLifecycleClaim, original: MacosVmDevice, updates: Partial<MacosVmDevice>, reason: string | undefined): Result;
     transitionCurrent(deviceId: string | undefined, lifecycle: MacosVmLifecycleClaim, updater: (current: MacosVmDevice) => MacosVmDevice): MacosVmTransition | {matched: false; found: boolean};
     rollbackStarted(deviceId: string | undefined, lifecycle: MacosVmLifecycleClaim, plan: MacosVmProviderPlan): MacosVmRollback;
     rollbackCreated(deviceId: string | undefined, plan: MacosVmProviderPlan, instance: string): MacosVmRollback;

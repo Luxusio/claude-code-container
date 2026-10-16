@@ -586,25 +586,6 @@ async function waitForMacosBoot(plan, timeoutMs = 300000, deadlineAt) {
     };
 }
 
-function processIsAlive(pid) {
-    if (!pid) return false;
-    try {
-        process.kill(pid, 0);
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-async function waitForProcessExit(pid, timeoutMs = 3000) {
-    const deadline = Date.now() + Math.max(0, timeoutMs);
-    while (Date.now() <= deadline) {
-        if (!processIsAlive(pid)) return true;
-        await sleep(50);
-    }
-    return !processIsAlive(pid);
-}
-
 /** @param {import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmRuntime} recording
  * @param {number} timeoutMs */
 async function waitForOwnedRecordingExit(recording, timeoutMs) {
@@ -1312,6 +1293,4 @@ const macosImages = createMacosImageSnapshots({
     stopInstance: macosStopInstance,
     deleteInstance: macosDeleteInstance,
     imageDiagnostic: macosImageDiagnostic,
-    signalRecording: (recording, signal) => signalOwnedRuntimeProcess(recording, signal),
-    waitRecordingExit: (recording, timeoutMs) => waitForProcessExit(recording?.pid, timeoutMs),
 }, macosVmNativeLifecycle);

@@ -1,5 +1,6 @@
 import { macosProviderInstanceReferenced, macosSshConfig } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { macosImageProviderRefusal, macosCloneSourceRefusal, selectMacosSnapshot, macosRestoreCandidate, defineMacosImageDevice } from "../domain/macos-image-snapshots.mjs";
+import { recordingGenerationMatches } from "../domain/runtime-generation.mjs";
 /** @param {string} message @returns {import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycleOutcome} */
 function refused(message) { return {kind: "refused", message}; }
 /** @param {object} value @returns {import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycleOutcome} */
@@ -10,6 +11,13 @@ function failed(observation) { return {kind: "failed", evidence: observation.evi
 /** @param {import("../ports/macos-image-snapshots.mjs").MacosImageSnapshotsPorts} ports
  * @param {import("./lifecycle/macos-vm-lifecycle.mjs").MacosVmNativeLifecycle} lifecycle */
 export function createMacosImageSnapshots(ports, lifecycle) {
+    /** @param {string | undefined} deviceId
+     * @param {import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycleClaim} claim
+     * @param {import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmRuntime | null | undefined} recording */
+    function currentRecordingDevice(deviceId, claim, recording) {
+        const current = lifecycle.currentLifecycleDevice(deviceId, claim);
+        return current && recordingGenerationMatches(recording, current.recording) ? current : null;
+    }
     /** @param {import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmDevice} device @param {string} name
      * @returns {{ok:true,plan:import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmNativePlan & {selectedProvider:"tart"}}|{ok:false,error:import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecycleOutcome}} */
     function requireTart(device, name) {
@@ -104,33 +112,45 @@ export function createMacosImageSnapshots(ports, lifecycle) {
                 return lifecycle.conflict(sourceDevice.id, "clone-source-claim", sourceClaim.transition);
             }
         }
-        if (sourceDevice && sourceClaim && sourceDevice.status !== "stopped" && force) {
-            const sourcePlan = requireTart(sourceDevice, name);
-            if (!sourcePlan.ok) {
-                lifecycle.abortLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
-                return sourcePlan.error;
-            }
-            if (!sourcePlan.plan.stopAvailable) {
-                lifecycle.abortLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
-                return refused(`macOS VM stop is unavailable for clone source ${sourceDevice.id}`);
-            }
-            if (sourcePlan.plan.stopAvailable) {
-                const stop = ports.stopInstance(sourcePlan.plan);
-                if (!stop.ok) {
-                    lifecycle.abortLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
-                    return failed(stop);
+        if (sourceDevice && sourceClaim) {
+            try {
+                if (sourceDevice.status !== "stopped" && force) {
+                    const sourcePlan = requireTart(sourceDevice, name);
+                    if (!sourcePlan.ok) {
+                        lifecycle.abortLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
+                        return sourcePlan.error;
+                    }
+                    if (!sourcePlan.plan.stopAvailable) {
+                        lifecycle.abortLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
+                        return refused(`macOS VM stop is unavailable for clone source ${sourceDevice.id}`);
+                    }
+                    const stop = ports.stopInstance(sourcePlan.plan);
+                    if (!stop.ok) {
+                        const aborted = lifecycle.abortLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice);
+                        return aborted.matched ? failed(stop) : lifecycle.conflict(sourceDevice.id, "clone-source-stop", aborted);
+                    }
+                    sourceCompletionUpdates = {
+                        status: "stopped",
+                        runtime: null,
+                        bootReady: false,
+                        lastBootCheck: null
+                    };
                 }
-                const recorderSignal = ports.signalRecording(sourceDevice.recording, "SIGINT");
-                if (recorderSignal.signaled) {
-                    await ports.waitRecordingExit(sourceDevice.recording, 1000);
+                const recordingCleanup = await lifecycle.stopRecording(sourceDevice);
+                if (!currentRecordingDevice(sourceDevice.id, sourceClaim.lifecycle, sourceDevice.recording)) {
+                    const aborted = lifecycle.abortLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice, sourceCompletionUpdates);
+                    return lifecycle.conflict(sourceDevice.id, "clone-source-recording", aborted);
                 }
-                sourceCompletionUpdates = {
-                    status: "stopped",
-                    runtime: null,
-                    bootReady: false,
-                    lastBootCheck: null,
-                    recording: null
-                };
+                if (!recordingCleanup.ok) {
+                    return lifecycle.recordingCleanupIncomplete(sourceDevice.id, sourceClaim.lifecycle, sourceDevice, sourceCompletionUpdates, recordingCleanup.reason);
+                }
+                sourceCompletionUpdates = { ...sourceCompletionUpdates, recording: null };
+            }
+            catch (error) {
+                const recordingOwned = Boolean(currentRecordingDevice(sourceDevice.id, sourceClaim.lifecycle, sourceDevice.recording));
+                const aborted = lifecycle.abortLifecycle(sourceDevice.id, sourceClaim.lifecycle, sourceDevice, sourceCompletionUpdates);
+                if (!recordingOwned || !aborted.matched) return lifecycle.conflict(sourceDevice.id, "clone-source-recording", aborted);
+                throw error;
             }
         }
         const target = tart.plan.providerInstance;
@@ -143,7 +163,7 @@ export function createMacosImageSnapshots(ports, lifecycle) {
             return lifecycle.cloneFailure(r, clone.cleanup, target);
         }
         if (sourceClaim && sourceDevice) {
-            const currentSource = lifecycle.currentLifecycleDevice(sourceDevice.id, sourceClaim.lifecycle);
+            const currentSource = currentRecordingDevice(sourceDevice.id, sourceClaim.lifecycle, sourceDevice.recording);
             if (!currentSource) {
                 const rollback = ports.deleteInstance(tart.plan, target);
                 return lifecycle.conflict(sourceDevice.id, "clone-source-complete", {
@@ -226,23 +246,35 @@ export function createMacosImageSnapshots(ports, lifecycle) {
         }
         /** @type {Partial<import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmDevice>} */
         let completionUpdates = {};
-        if (force && device.status !== "stopped" && tart.plan.stopAvailable) {
-            const stop = ports.stopInstance(tart.plan);
-            if (!stop.ok) {
-                lifecycle.abortLifecycle(deviceId, claim.lifecycle, device);
-                return failed(stop);
+        try {
+            if (force && device.status !== "stopped" && tart.plan.stopAvailable) {
+                const stop = ports.stopInstance(tart.plan);
+                if (!stop.ok) {
+                    const aborted = lifecycle.abortLifecycle(deviceId, claim.lifecycle, device);
+                    return aborted.matched ? failed(stop) : lifecycle.conflict(deviceId, "snapshot-create-stop", aborted);
+                }
+                completionUpdates = {
+                    status: "stopped",
+                    runtime: null,
+                    bootReady: false,
+                    lastBootCheck: null
+                };
             }
-            const recorderSignal = ports.signalRecording(device.recording, "SIGINT");
-            if (recorderSignal.signaled) {
-                await ports.waitRecordingExit(device.recording, 1000);
+            const recordingCleanup = await lifecycle.stopRecording(device);
+            if (!currentRecordingDevice(deviceId, claim.lifecycle, device.recording)) {
+                const aborted = lifecycle.abortLifecycle(deviceId, claim.lifecycle, device, completionUpdates);
+                return lifecycle.conflict(deviceId, "snapshot-create-recording", aborted);
             }
-            completionUpdates = {
-                status: "stopped",
-                runtime: null,
-                bootReady: false,
-                lastBootCheck: null,
-                recording: null
-            };
+            if (!recordingCleanup.ok) {
+                return lifecycle.recordingCleanupIncomplete(deviceId, claim.lifecycle, device, completionUpdates, recordingCleanup.reason);
+            }
+            completionUpdates = { ...completionUpdates, recording: null };
+        }
+        catch (error) {
+            const recordingOwned = Boolean(currentRecordingDevice(deviceId, claim.lifecycle, device.recording));
+            const aborted = lifecycle.abortLifecycle(deviceId, claim.lifecycle, device, completionUpdates);
+            if (!recordingOwned || !aborted.matched) return lifecycle.conflict(deviceId, "snapshot-create-recording", aborted);
+            throw error;
         }
         const snapshotInstance = `${tart.plan.providerInstance}-${snapshotId}`;
         const clone = lifecycle.clone(tart.plan, tart.plan.providerInstance, snapshotInstance);
@@ -259,7 +291,7 @@ export function createMacosImageSnapshots(ports, lifecycle) {
             sourceProviderInstance: tart.plan.providerInstance,
             createdAt: ports.timestamp()
         };
-        const current = lifecycle.currentLifecycleDevice(deviceId, claim.lifecycle);
+        const current = currentRecordingDevice(deviceId, claim.lifecycle, device.recording);
         if (!current) {
             const rollback = lifecycle.rollbackCreated(deviceId, tart.plan, snapshotInstance);
             return lifecycle.conflict(deviceId, "snapshot-create", {
@@ -309,28 +341,41 @@ export function createMacosImageSnapshots(ports, lifecycle) {
         }
         /** @type {Partial<import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmDevice>} */
         let completionUpdates = {};
-        if (force && device.status !== "stopped" && tart.plan.stopAvailable) {
-            const stop = ports.stopInstance(tart.plan);
-            if (!stop.ok) {
-                lifecycle.abortLifecycle(deviceId, claim.lifecycle, device);
-                return failed(stop);
+        try {
+            if (force && device.status !== "stopped" && tart.plan.stopAvailable) {
+                const stop = ports.stopInstance(tart.plan);
+                if (!stop.ok) {
+                    const aborted = lifecycle.abortLifecycle(deviceId, claim.lifecycle, device);
+                    return aborted.matched ? failed(stop) : lifecycle.conflict(deviceId, "snapshot-restore-stop", aborted);
+                }
+                completionUpdates = {
+                    status: "stopped",
+                    runtime: null,
+                    bootReady: false,
+                    lastBootCheck: null
+                };
             }
-            const recorderSignal = ports.signalRecording(device.recording, "SIGINT");
-            if (recorderSignal.signaled) {
-                await ports.waitRecordingExit(device.recording, 1000);
+            const recordingCleanup = await lifecycle.stopRecording(device);
+            if (!currentRecordingDevice(deviceId, claim.lifecycle, device.recording)) {
+                const aborted = lifecycle.abortLifecycle(deviceId, claim.lifecycle, device, completionUpdates);
+                return lifecycle.conflict(deviceId, "snapshot-restore-recording", aborted);
             }
-            completionUpdates = {
-                status: "stopped",
-                runtime: null,
-                bootReady: false,
-                lastBootCheck: null,
-                recording: null
-            };
+            if (!recordingCleanup.ok) {
+                return lifecycle.recordingCleanupIncomplete(deviceId, claim.lifecycle, device, completionUpdates, recordingCleanup.reason);
+            }
+            completionUpdates = { ...completionUpdates, recording: null };
+        }
+        catch (error) {
+            const recordingOwned = Boolean(currentRecordingDevice(deviceId, claim.lifecycle, device.recording));
+            const aborted = lifecycle.abortLifecycle(deviceId, claim.lifecycle, device, completionUpdates);
+            if (!recordingOwned || !aborted.matched) return lifecycle.conflict(deviceId, "snapshot-restore-recording", aborted);
+            throw error;
         }
         const pendingRecovery = device.restoreRecovery;
         const matchingCandidate = macosRestoreCandidate(device, snapshot);
         const resumesPendingCandidate = Boolean(matchingCandidate);
         const restoreCandidate = matchingCandidate || `${tart.plan.providerInstance}-restore-${snapshot.id}-${ports.runtimeId()}`;
+        let expectedRecording = device.recording;
         if (!resumesPendingCandidate) {
             const clone = lifecycle.clone(tart.plan, snapshot.providerInstance, restoreCandidate);
             const restore = clone.result;
@@ -348,7 +393,14 @@ export function createMacosImageSnapshots(ports, lifecycle) {
                 phase: "prepared",
                 preparedAt: ports.timestamp()
             };
-            const registered = lifecycle.transitionCurrent(deviceId, claim.lifecycle, (current) => lifecycle.replacement(current, claim.lifecycle, {
+            const prepared = currentRecordingDevice(deviceId, claim.lifecycle, expectedRecording);
+            if (!prepared) {
+                const rollback = lifecycle.rollbackCreated(deviceId, tart.plan, restoreCandidate);
+                return lifecycle.conflict(deviceId, "snapshot-restore-candidate", {
+                    found: Boolean(ports.find(deviceId)), matched: false
+                }, rollback);
+            }
+            const registered = ports.transition(deviceId, prepared, lifecycle.replacement(prepared, claim.lifecycle, {
                 ...completionUpdates,
                 restoreRecovery: recovery
             }));
@@ -356,12 +408,23 @@ export function createMacosImageSnapshots(ports, lifecycle) {
                 const rollback = lifecycle.rollbackCreated(deviceId, tart.plan, restoreCandidate);
                 return lifecycle.conflict(deviceId, "snapshot-restore-candidate", registered, rollback);
             }
+            expectedRecording = null;
         }
         /** @type {import("../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmNativeObservation | null} */
         let activate = null;
         if (pendingRecovery?.phase !== "activated" || !resumesPendingCandidate) {
+            if (!currentRecordingDevice(deviceId, claim.lifecycle, expectedRecording)) {
+                return lifecycle.conflict(deviceId, "snapshot-restore-primary", {
+                    found: Boolean(ports.find(deviceId)), matched: false
+                }, {
+                    ok: false,
+                    attempted: false,
+                    reason: "restore-candidate-preserved",
+                    candidateProviderInstance: restoreCandidate
+                });
+            }
             const remove = ports.deleteInstance(tart.plan, tart.plan.providerInstance);
-            if (!lifecycle.currentLifecycleDevice(deviceId, claim.lifecycle)) {
+            if (!currentRecordingDevice(deviceId, claim.lifecycle, expectedRecording)) {
                 return lifecycle.conflict(deviceId, "snapshot-restore-primary", {
                     found: Boolean(ports.find(deviceId)), matched: false
                 }, {
@@ -374,17 +437,7 @@ export function createMacosImageSnapshots(ports, lifecycle) {
             const activationClone = lifecycle.clone(tart.plan, restoreCandidate, tart.plan.providerInstance);
             activate = activationClone.result;
             if (!activate.ok) {
-                const recovery = {
-                    ...(lifecycle.currentLifecycleDevice(deviceId, claim.lifecycle)?.restoreRecovery || {}),
-                    snapshotId: snapshot.id,
-                    snapshotName: snapshot.name,
-                    candidateProviderInstance: restoreCandidate,
-                    failedAt: ports.timestamp(),
-                    error: !remove.ok
-                        ? `primary delete: ${ports.imageDiagnostic(remove, "operation")}; activation: ${ports.imageDiagnostic(activate, "operation")}`
-                        : ports.imageDiagnostic(activate, "operation")
-                };
-                const current = lifecycle.currentLifecycleDevice(deviceId, claim.lifecycle);
+                const current = currentRecordingDevice(deviceId, claim.lifecycle, expectedRecording);
                 if (!current) {
                     return lifecycle.conflict(deviceId, "snapshot-restore-recovery", {
                         found: Boolean(ports.find(deviceId)), matched: false
@@ -395,6 +448,16 @@ export function createMacosImageSnapshots(ports, lifecycle) {
                         candidateProviderInstance: restoreCandidate
                     });
                 }
+                const recovery = {
+                    ...(current.restoreRecovery || {}),
+                    snapshotId: snapshot.id,
+                    snapshotName: snapshot.name,
+                    candidateProviderInstance: restoreCandidate,
+                    failedAt: ports.timestamp(),
+                    error: !remove.ok
+                        ? `primary delete: ${ports.imageDiagnostic(remove, "operation")}; activation: ${ports.imageDiagnostic(activate, "operation")}`
+                        : ports.imageDiagnostic(activate, "operation")
+                };
                 const failed = lifecycle.replacement(current, null, {
                     ...completionUpdates,
                     status: "stopped",
@@ -414,7 +477,18 @@ export function createMacosImageSnapshots(ports, lifecycle) {
                     : null;
                 return { kind: "restore-failed", cloneEvidence: evidence, error: recovery.error, candidate: restoreCandidate };
             }
-            const activated = lifecycle.transitionCurrent(deviceId, claim.lifecycle, (current) => lifecycle.replacement(current, claim.lifecycle, {
+            const current = currentRecordingDevice(deviceId, claim.lifecycle, expectedRecording);
+            if (!current) {
+                return lifecycle.conflict(deviceId, "snapshot-restore-activate", {
+                    found: Boolean(ports.find(deviceId)), matched: false
+                }, {
+                    ok: false,
+                    attempted: false,
+                    reason: "restore-candidate-preserved",
+                    candidateProviderInstance: restoreCandidate
+                });
+            }
+            const activated = ports.transition(deviceId, current, lifecycle.replacement(current, claim.lifecycle, {
                 ...completionUpdates,
                 status: "stopped",
                 restoreRecovery: {
@@ -431,15 +505,27 @@ export function createMacosImageSnapshots(ports, lifecycle) {
                     candidateProviderInstance: restoreCandidate
                 });
             }
+            expectedRecording = null;
         }
-        const trackedRecovery = lifecycle.currentLifecycleDevice(deviceId, claim.lifecycle)?.restoreRecovery;
+        const cleanupOwner = currentRecordingDevice(deviceId, claim.lifecycle, expectedRecording);
+        if (!cleanupOwner) {
+            return lifecycle.conflict(deviceId, "snapshot-restore", {
+                found: Boolean(ports.find(deviceId)), matched: false
+            }, {
+                ok: false,
+                attempted: false,
+                reason: "restore-candidate-preserved",
+                candidateProviderInstance: restoreCandidate
+            });
+        }
+        const trackedRecovery = cleanupOwner.restoreRecovery;
         const cleanupResults = [restoreCandidate, ...(trackedRecovery?.supersededCandidateProviderInstances || [])]
             .map((instance) => ({
             instance, result: ports.deleteInstance(tart.plan, instance)
         }));
         const failedCleanups = cleanupResults.filter(({ result }) => !result.ok);
         const cleanup = failedCleanups[0]?.result || cleanupResults[0].result;
-        const current = lifecycle.currentLifecycleDevice(deviceId, claim.lifecycle);
+        const current = currentRecordingDevice(deviceId, claim.lifecycle, expectedRecording);
         if (!current) {
             return lifecycle.conflict(deviceId, "snapshot-restore", {
                 found: Boolean(ports.find(deviceId)), matched: false

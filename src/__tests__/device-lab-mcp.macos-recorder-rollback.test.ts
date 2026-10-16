@@ -3,6 +3,8 @@ import { chmodSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanupFakeMacosMcpContext, createFakeMacosMcpContext, type FakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
+import * as processIdentity from "@ccc/device-lab/providers/state/process-identity.mjs";
+import { updateMacosDevice } from "@ccc/device-lab/providers/state/macos-state.mjs";
 
 const persistenceFailure = vi.hoisted(() => ({
     armed: false,
@@ -132,5 +134,48 @@ if (command.includes("screencapture") && command.includes("-v")) {
         const statePath = join(ownersRoot, readdirSync(ownersRoot)[0], "macos", "devices.json");
         const state = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<{ id: string; recording?: unknown }> };
         expect(state.devices.find((device) => device.id === persistenceFailure.deviceId)?.recording).toEqual(successor);
+    });
+
+    it("uses the recorded process identity when PID absence cannot confirm recorder exit before image mutation", async () => {
+        const created = await handleMacosTool("device_create", {
+            backend: "macos-vm", name: "Unconfirmed Native Recorder Exit", provider: "tart",
+        });
+        expect(created?.isError).not.toBe(true);
+        const deviceId = JSON.parse((created?.content as Array<{ text: string }>)[0].text).device.id as string;
+        const identity = { pid: 999999, startToken: "captured-birth", commandHash: "a".repeat(64) };
+        const recording = { runtimeId: "captured-recorder", pid: identity.pid, processIdentity: identity, active: false };
+        const restoreRecovery = { candidateProviderInstance: "retained-native-candidate", phase: "prepared" };
+        updateMacosDevice(deviceId, device => ({ ...device, status: "running", recording, restoreRecovery }));
+        // The fixture already owns these two native observations. Signal succeeds,
+        // but exit identity is unavailable; a nonexistent PID alone proves nothing.
+        const signal = vi.mocked(processIdentity.signalOwnedRuntimeProcess);
+        const inspect = vi.mocked(processIdentity.inspectProcessIdentity);
+        const originalSignal = signal.getMockImplementation()!;
+        const originalInspect = inspect.getMockImplementation()!;
+        signal.mockReturnValue({ attempted: true, signaled: true, pid: identity.pid, signal: "SIGINT" });
+        inspect.mockReturnValue({ status: "unavailable", current: null, liveness: "unknown" });
+        const logBefore = readFileSync(context.logPath, { encoding: "utf8", flag: "a+" });
+        try {
+            const result = await handleMacosTool("device_snapshot_create", { deviceId, snapshotName: "Identity Unavailable", force: true });
+            expect(result?.isError).toBe(true);
+            expect(JSON.parse((result?.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                error: "macos-recording-cleanup-incomplete", reason: "runtime-process-exit-unconfirmed",
+            });
+            expect(inspect).toHaveBeenCalledWith(identity, identity.pid);
+            const ownersRoot = join(context.homeDir, ".ccc", "devices", "owners");
+            const statePath = join(ownersRoot, readdirSync(ownersRoot)[0], "macos", "devices.json");
+            const state = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, unknown>> };
+            const saved = state.devices.find(device => device.id === deviceId);
+            expect(saved).toMatchObject({ status: "stopped", runtime: null, recording, restoreRecovery });
+            expect(saved).not.toHaveProperty("lifecycle");
+            const effects = readFileSync(context.logPath, "utf8").slice(logBefore.length);
+            expect(effects).toContain("tart stop ");
+            expect(effects).not.toMatch(/tart (?:clone|delete) /);
+        } finally {
+            signal.mockImplementation(originalSignal);
+            inspect.mockImplementation(originalInspect);
+            updateMacosDevice(deviceId, device => ({ ...device, recording: null, restoreRecovery: null }));
+            await handleMacosTool("device_delete", { deviceId, force: true });
+        }
     });
 });

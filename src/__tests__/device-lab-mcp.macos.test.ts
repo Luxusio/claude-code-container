@@ -65,6 +65,61 @@ describe("macOS VM backend with fake Tart provider", () => {
         return join(ownersRoot, readdirSync(ownersRoot)[0], "macos", "devices.json");
     }
 
+    it("refuses a public forced snapshot when recorder identity is missing and retains the completed provider stop", async () => {
+        const deviceId = createdMacosDeviceId(await handleMacosTool("device_create", {
+            backend: "macos-vm", name: "Unsettled Snapshot Recorder", provider: "tart",
+        }));
+        const recording = { runtimeId: "unsettled-recorder", pid: 999999, active: true, remotePath: "/tmp/private-recorder.mov" };
+        const restoreRecovery = { candidateProviderInstance: "retained-restore-candidate", phase: "prepared" };
+        updateMacosDevice(deviceId, device => ({ ...device, status: "running", runtime: { providerPid: 999998 },
+            bootReady: true, recording, restoreRecovery }));
+        const before = readFileSync(logPath, { encoding: "utf8", flag: "a+" });
+        try {
+            const result = await handleMacosTool("device_snapshot_create", { deviceId, snapshotName: "After Recording", force: true });
+            expect(result?.isError).toBe(true);
+            expect(JSON.parse((result?.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                error: "macos-recording-cleanup-incomplete", reason: "runtime-process-identity-missing",
+            });
+            const state = JSON.parse(readFileSync(macosStatePath(), "utf8")) as { devices: Array<Record<string, unknown>> };
+            const saved = state.devices.find(device => device.id === deviceId);
+            expect(saved).toMatchObject({ status: "stopped", runtime: null, bootReady: false, recording, restoreRecovery });
+            expect(saved).not.toHaveProperty("lifecycle");
+            const effects = readFileSync(logPath, "utf8").slice(before.length);
+            expect(effects).toContain("tart stop ");
+            expect(effects).not.toContain("tart clone ");
+            expect(effects).not.toContain("tart delete ");
+        } finally {
+            updateMacosDevice(deviceId, device => ({ ...device, recording: null, restoreRecovery: null }));
+            await handleMacosTool("device_delete", { deviceId, force: true });
+        }
+    });
+
+    it("checks recorder settlement before cloning an already-stopped owned source", async () => {
+        const deviceId = createdMacosDeviceId(await handleMacosTool("device_create", {
+            backend: "macos-vm", name: "Stopped Clone Recorder", provider: "tart",
+        }));
+        const recording = { runtimeId: "stopped-recorder", pid: 999999, active: false };
+        updateMacosDevice(deviceId, device => ({ ...device, recording }));
+        const before = readFileSync(logPath, { encoding: "utf8", flag: "a+" });
+        let unexpectedCopy: string | undefined;
+        try {
+            const result = await handleMacosTool("device_base_image_clone", { sourceDeviceId: deviceId, name: "Refused Recorder Copy" });
+            if (!result?.isError) unexpectedCopy = JSON.parse((result?.content as Array<{ text: string }>)[0].text).device.id;
+            expect(result?.isError).toBe(true);
+            expect(JSON.parse((result?.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                error: "macos-recording-cleanup-incomplete", reason: "runtime-process-identity-missing",
+            });
+            const state = JSON.parse(readFileSync(macosStatePath(), "utf8")) as { devices: Array<Record<string, unknown>> };
+            expect(state.devices.find(device => device.id === deviceId)).toMatchObject({ status: "stopped", recording });
+            expect(state.devices.some(device => device.name === "Refused Recorder Copy")).toBe(false);
+            expect(readFileSync(logPath, "utf8").slice(before.length)).not.toMatch(/tart (?:clone|delete|stop) /);
+        } finally {
+            if (unexpectedCopy) await handleMacosTool("device_delete", { deviceId: unexpectedCopy });
+            updateMacosDevice(deviceId, device => ({ ...device, recording: null }));
+            await handleMacosTool("device_delete", { deviceId });
+        }
+    });
+
     it("runs the public image and snapshot journey through the real stdio server", { timeout: process.platform === "win32" ? 120000 : 30000 }, async () => {
         let wire: DeviceLabMcpTestContext | undefined;
         let wireLog = "";
@@ -602,7 +657,7 @@ describe("macOS VM backend with fake Tart provider", () => {
         writeFileSync(logPath, "");
     });
 
-    it("registers a restore candidate before primary deletion and resumes after interruption", async () => {
+    it("registers a restore candidate before primary deletion and settles the recorder when resuming after interruption", async () => {
         const tartPath = join(context.binDir, "tart");
         const originalTart = readFileSync(tartPath, "utf-8");
         const resourceDir = join(homeDir, "stateful-tart-resources");
@@ -707,6 +762,27 @@ describe("macOS VM backend with fake Tart provider", () => {
                 devices: Array<{ id: string; restoreRecovery?: { phase: string } }>;
             };
             expect(activatedState.devices.find((item) => item.id === deviceId)?.restoreRecovery?.phase).toBe("activated");
+
+            const recording = { runtimeId: "recorder-before-resumed-cleanup", pid: 999999, active: false };
+            updateMacosDevice(deviceId, device => ({ ...device, recording }));
+            const beforeUnsettledResume = readFileSync(logPath, "utf8");
+            const unsettledResume = await handleMacosTool("device_snapshot_restore", {
+                deviceId, snapshotName: "Crash Point",
+            });
+            expect(unsettledResume?.isError).toBe(true);
+            expect(JSON.parse((unsettledResume?.content as Array<{ text: string }>)[0].text)).toMatchObject({
+                error: "macos-recording-cleanup-incomplete", reason: "runtime-process-identity-missing",
+            });
+            const unsettledState = JSON.parse(readFileSync(macosStatePath(), "utf8")) as {
+                devices: Array<{ id: string; lifecycle?: unknown; recording?: unknown; restoreRecovery?: unknown }>;
+            };
+            const unsettledDevice = unsettledState.devices.find(device => device.id === deviceId);
+            expect(unsettledDevice).toMatchObject({ recording,
+                restoreRecovery: { phase: "activated", candidateProviderInstance: candidate } });
+            expect(unsettledDevice).not.toHaveProperty("lifecycle");
+            expect(readFileSync(logPath, "utf8").slice(beforeUnsettledResume.length)).not.toMatch(/tart (?:clone|delete|stop) /);
+            expect(existsSync(join(resourceDir, encodeURIComponent(candidate!)))).toBe(true);
+            updateMacosDevice(deviceId, device => ({ ...device, recording: null }));
 
             const resumed = await handleMacosTool("device_snapshot_restore", {
                 deviceId,
