@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { SpawnSyncReturns } from "node:child_process";
 import { createOrderedCodexConfigPreparation } from "../../application/credentials/codex-config-preparation.js";
-import type { CodexPreparationPorts, CodexPreparationParent, CodexPreparationConfig, CodexPreparationObservation } from "../../ports/credentials/codex-config-preparation.js";
+import type { CodexPreparationPorts, CodexPreparationParent, CodexPreparationConfig, CodexPreparationConfigObservation, CodexPreparationObservation, CodexPreparationResult } from "../../ports/credentials/codex-config-preparation.js";
+import type { CodexConfigPreparationObservation, CodexConfigPreparationResult } from "../../ports/codex-config-preparation.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Assert<T extends true> = T;
@@ -10,8 +12,10 @@ type RequiredPorts = Assert<Equal<CodexPreparationPorts, Required<CodexPreparati
 type SynchronousPorts = Assert<Equal<Extract<ReturnType<CodexPreparationPorts[Names]>, PromiseLike<unknown>>, never>>;
 type ParentShape = Assert<Equal<keyof CodexPreparationParent, "uid" | "isDirectory">>;
 type ConfigShape = Assert<Equal<keyof CodexPreparationConfig, "nlink" | "isFile">>;
-type ObservationShape = Assert<Equal<keyof CodexPreparationObservation, "status" | "error">>;
-function contracts(ports: CodexPreparationPorts, parent: CodexPreparationParent, config: CodexPreparationConfig, observation: CodexPreparationObservation) {
+type SemanticObservation = Assert<Equal<CodexPreparationObservation, CodexConfigPreparationObservation>>;
+type SemanticResult = Assert<Equal<CodexPreparationResult, CodexConfigPreparationResult>>;
+type ConfigObservationKinds = Assert<Equal<CodexPreparationConfigObservation["kind"], "present" | "missing">>;
+function contracts(ports: CodexPreparationPorts, parent: CodexPreparationParent, config: CodexPreparationConfig, observation: CodexPreparationObservation, metadata: CodexPreparationConfigObservation, native: SpawnSyncReturns<Buffer>) {
     const result: undefined = createOrderedCodexConfigPreparation(ports).prepare("target", "profile");
     const publicCompatible: void = result;
     // @ts-expect-error Target is required.
@@ -30,10 +34,32 @@ function contracts(ports: CodexPreparationPorts, parent: CodexPreparationParent,
     config.nlink = 1;
     // @ts-expect-error File method is readonly.
     config.isFile = () => true;
-    // @ts-expect-error Observation status is readonly.
-    observation.status = 0;
-    // @ts-expect-error Observation error is readonly.
-    observation.error = null;
+    // @ts-expect-error Observation kind is readonly.
+    observation.kind = "ready";
+    // @ts-expect-error Native status is absent from semantic observations.
+    observation.status;
+    // @ts-expect-error Native error is absent from semantic observations.
+    observation.error;
+    // @ts-expect-error Metadata observation kind is readonly.
+    metadata.kind = "missing";
+    if (metadata.kind === "missing") {
+        const original: unknown = metadata.failure;
+        // @ts-expect-error Missing failure is carried readonly.
+        metadata.failure = original;
+    }
+    createOrderedCodexConfigPreparation({ ...ports, inspectConfig: () => ({ kind: "present", metadata: config }), probeDirectory: () => ({ kind: "repair-required" }), verifyConfig: () => ({ kind: "ready" }) });
+    // @ts-expect-error Raw native probe results cannot enter the ordered application.
+    createOrderedCodexConfigPreparation({ ...ports, probeDirectory: () => native });
+    // @ts-expect-error Raw native repair results cannot enter the ordered application.
+    createOrderedCodexConfigPreparation({ ...ports, repairConfig: () => native });
+    // @ts-expect-error Repairs cannot request another repair.
+    createOrderedCodexConfigPreparation({ ...ports, repairDirectory: () => ({ kind: "repair-required" }) });
+    // @ts-expect-error Verifications cannot request another repair.
+    createOrderedCodexConfigPreparation({ ...ports, verifyConfig: () => ({ kind: "repair-required" }) });
+    // @ts-expect-error Raw metadata must be classified present or missing by its adapter.
+    createOrderedCodexConfigPreparation({ ...ports, inspectConfig: () => config });
+    // @ts-expect-error Missing metadata retains its original failure.
+    createOrderedCodexConfigPreparation({ ...ports, inspectConfig: () => ({ kind: "missing" }) });
     // @ts-expect-error resolveConfig is required.
     createOrderedCodexConfigPreparation({ ...ports, resolveConfig: undefined });
     // @ts-expect-error resolveConfig is readonly.
@@ -89,8 +115,8 @@ function contracts(ports: CodexPreparationPorts, parent: CodexPreparationParent,
     // @ts-expect-error Async identity is forbidden.
     createOrderedCodexConfigPreparation({ ...ports, mappedContainerUid: async () => "1" });
     // @ts-expect-error Async stage observations are forbidden.
-    createOrderedCodexConfigPreparation({ ...ports, repairDirectory: async () => ({ status: 0 }) });
-    // @ts-expect-error Status is required.
+    createOrderedCodexConfigPreparation({ ...ports, repairDirectory: async () => ({ kind: "ready" }) });
+    // @ts-expect-error A finite semantic kind is required.
     createOrderedCodexConfigPreparation({ ...ports, probeConfig: () => ({ error: undefined }) });
     // @ts-expect-error Repairs require target, path, and UID.
     ports.repairConfig("target", "path");
@@ -99,7 +125,7 @@ function contracts(ports: CodexPreparationPorts, parent: CodexPreparationParent,
     void [result, publicCompatible, promise];
 }
 void contracts;
-const proof: [ExactPorts, RequiredPorts, SynchronousPorts, ParentShape, ConfigShape, ObservationShape] = [true, true, true, true, true, true];
+const proof: [ExactPorts, RequiredPorts, SynchronousPorts, ParentShape, ConfigShape, SemanticObservation, SemanticResult, ConfigObservationKinds] = [true, true, true, true, true, true, true, true];
 describe("ordered preparation type boundary", () => {
     it("exposes exactly twelve required synchronous capabilities and structural metadata", () => expect(proof.every(Boolean)).toBe(true));
 });

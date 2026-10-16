@@ -1,4 +1,4 @@
-import type { CodexPreparationPorts } from "../../ports/credentials/codex-config-preparation.js";
+import type { CodexPreparationConfigInspection, CodexPreparationPorts } from "../../ports/credentials/codex-config-preparation.js";
 import { createCodexConfigPreparation } from "../codex-config-preparation.js";
 
 export function createOrderedCodexConfigPreparation(ports: CodexPreparationPorts) {
@@ -20,15 +20,15 @@ export function createOrderedCodexConfigPreparation(ports: CodexPreparationPorts
                 throw new Error("Unable to prepare Codex credentials: automatic repair requires a non-symlink directory owned by the host user");
             }
         };
-        const validateHostConfig = (allowAbsent: boolean): void => {
-            try {
-                const metadata = ports.inspectConfig(configFile);
-                if (!metadata.isFile() || metadata.nlink !== 1) {
-                    throw new Error("Unable to prepare Codex credentials: automatic repair requires a regular non-symlink, single-link config file");
-                }
-            } catch (error) {
-                if (allowAbsent && (error as { code?: unknown }).code === "ENOENT") return;
-                throw error;
+        const validateHostConfig = (inspection: CodexPreparationConfigInspection): void => {
+            const observation = ports.inspectConfig(configFile, inspection);
+            if (observation.kind === "missing") {
+                if (inspection === "allow-missing") return;
+                throw observation.failure;
+            }
+            const metadata = observation.metadata;
+            if (!metadata.isFile() || metadata.nlink !== 1) {
+                throw new Error("Unable to prepare Codex credentials: automatic repair requires a regular non-symlink, single-link config file");
             }
         };
 
@@ -37,7 +37,7 @@ export function createOrderedCodexConfigPreparation(ports: CodexPreparationPorts
             probe: () => ports.probeDirectory(target, configFile),
             repair: () => {
                 validateHostDirectory();
-                validateHostConfig(true);
+                validateHostConfig("allow-missing");
                 return ports.repairDirectory(target, configFile, getContainerUid());
             },
             finalize: () => ports.verifyDirectory(target, configFile),
@@ -46,7 +46,7 @@ export function createOrderedCodexConfigPreparation(ports: CodexPreparationPorts
             probe: () => ports.probeConfig(target, configFile),
             repair: () => {
                 validateHostDirectory();
-                validateHostConfig(false);
+                validateHostConfig("required");
                 return ports.repairConfig(target, configFile, getContainerUid());
             },
             finalize: () => ports.verifyConfig(target, configFile),

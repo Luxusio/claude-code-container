@@ -336,6 +336,10 @@ describe("ensureCodexHarness", () => {
             expect(restoreCodexConfigHostOwnership).not.toHaveBeenCalled();
         } else {
             expect(restoreCodexConfigHostOwnership).toHaveBeenCalledOnce();
+            if (failure === "prepare") {
+                expect(spawnSync).not.toHaveBeenCalled();
+                expect(warn).toHaveBeenCalledExactlyOnceWith("[ccc] Harness is unavailable: permission denied. Codex will continue. Check the container's ~/.codex/config.toml and Harness installation, then retry ccc codex.");
+            }
         }
     });
 });

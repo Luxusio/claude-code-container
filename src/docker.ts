@@ -30,6 +30,7 @@ import { createContainerExecReadiness } from "./application/container-exec-readi
 import { ContainerEngineUnavailableError } from "./domain/container-runtime.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
 import { createOrderedCodexConfigPreparation } from "./application/credentials/codex-config-preparation.js";
+import type { CodexConfigPreparationObservation, CodexConfigPreparationResult } from "./ports/codex-config-preparation.js";
 import { createCodexHostAccessRestoration } from "./application/credentials/codex-host-access.js";
 import { createNativeContainerExistingLifecycle } from "./composition/container-existing-lifecycle.js";
 import { createNativeContainerCreateLifecycle } from "./composition/container-create-lifecycle.js";
@@ -787,20 +788,32 @@ export function prepareCodexConfigForContainer(containerName: string, profile?: 
     const directoryProbe = `${directoryGuard} && [ -r "$dir" ] && [ -w "$dir" ] && [ -x "$dir" ]`;
     const configGuard = `${directoryGuard} && file="$dir/config.toml" && [ ! -L "$file" ]`;
     const configProbe = `${configGuard} && { [ ! -e "$file" ] || { [ -f "$file" ] && [ -r "$file" ] && [ -w "$file" ]; }; }`;
-    const run = (target: string, configFile: string, operation: string, script: string, root = false, probe = false, timeout = CODEX_CONFIG_PREPARE_TIMEOUT_MS) => {
+    function run(target: string, configFile: string, operation: string, script: string, root?: boolean, probe?: false): CodexConfigPreparationResult;
+    function run(target: string, configFile: string, operation: string, script: string, root: boolean, probe: true): CodexConfigPreparationObservation;
+    function run(target: string, configFile: string, operation: string, script: string, root = false, probe = false): CodexConfigPreparationObservation {
         const result = spawnSync(runtimeCli(), [
             "exec", ...(root ? ["--user", "root"] : []), target, "sh", "-c", codexConfigMutation(script),
-        ], { encoding: "utf-8", timeout });
+        ], { encoding: "utf-8", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
         if (result.error || (result.status !== 0 && !(probe && result.status === 1))) {
-            throw new Error(`Unable to prepare Codex credentials at ${dirname(configFile)}: ${operation} failed (${result.error?.message ?? (result.stderr?.trim() || `exit ${result.status ?? "unknown"}`)})`);
+            const failure = new Error(`Unable to prepare Codex credentials at ${dirname(configFile)}: ${operation} failed (${result.error?.message ?? (result.stderr?.trim() || `exit ${result.status ?? "unknown"}`)})`);
+            return { kind: "failed", failure };
         }
-        return result;
-    };
+        return { kind: probe && result.status === 1 ? "repair-required" : "ready" };
+    }
     createOrderedCodexConfigPreparation({
         resolveConfig: getCodexConfigFile,
         hasHostIdentity: () => typeof process.getuid === "function",
         inspectParent: configFile => lstatSync(dirname(configFile)),
-        inspectConfig: configFile => lstatSync(configFile),
+        inspectConfig: (configFile, inspection) => {
+            try {
+                return { kind: "present", metadata: lstatSync(configFile) };
+            } catch (error) {
+                if (inspection === "allow-missing" && (error as { code?: unknown } | null | undefined)?.code === "ENOENT") {
+                    return { kind: "missing", failure: error };
+                }
+                throw error;
+            }
+        },
         currentHostUid: () => process.getuid!(),
         mappedContainerUid: getCodexContainerUid,
         probeDirectory: (target, configFile) => run(target, configFile, "directory access check", directoryProbe, false, true),

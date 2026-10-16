@@ -1,4 +1,4 @@
-import type { CodexConfigPreparationPorts } from "../ports/codex-config-preparation.js";
+import type { CodexConfigPreparationPorts, CodexConfigPreparationResult } from "../ports/codex-config-preparation.js";
 
 export function createCodexConfigPreparation(ports: CodexConfigPreparationPorts) {
     for (const name of ["probe", "repair", "finalize"] as const) {
@@ -7,37 +7,18 @@ export function createCodexConfigPreparation(ports: CodexConfigPreparationPorts)
         }
     }
 
+    function requireReady(result: CodexConfigPreparationResult, operation: string): void {
+        if (result.kind === "ready") return;
+        throw result.failure ?? new Error(`Codex config ${operation} ${result.kind === "timed-out" ? "timed out" : "failed"}`);
+    }
+
     function run(target: string): undefined {
         const accessCheck = ports.probe(target);
-        if (accessCheck.status === 0) return;
-        if ((accessCheck.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT"
-            || accessCheck.status === 124
-            || accessCheck.status === 137) {
-            throw new Error("Codex config access probe timed out");
-        }
-        if (accessCheck.error || (accessCheck.status !== 0 && accessCheck.status !== 1)) {
-            throw new Error("Codex config access probe failed");
-        }
+        if (accessCheck.kind === "ready") return;
+        if (accessCheck.kind !== "repair-required") requireReady(accessCheck, "access probe");
 
-        const repair = ports.repair(target);
-        if ((repair.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT"
-            || repair.status === 124
-            || repair.status === 137) {
-            throw new Error("Codex config repair timed out");
-        }
-        if (repair.error || repair.status !== 0) {
-            throw new Error("Codex config repair failed");
-        }
-
-        const finalize = ports.finalize(target);
-        if ((finalize.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT"
-            || finalize.status === 124
-            || finalize.status === 137) {
-            throw new Error("Codex config repair timed out");
-        }
-        if (finalize.error || finalize.status !== 0) {
-            throw new Error("Codex config repair failed");
-        }
+        requireReady(ports.repair(target), "repair");
+        requireReady(ports.finalize(target), "repair");
     }
 
     return { run };
