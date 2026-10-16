@@ -600,7 +600,7 @@ export function createNativeContainerMountObservations(context: NativeContainerM
             literalSourceMatch: observed.Source === required.hostPath,
             requireLiteralSource,
             requireDaemonProofOnMatch: proof.kind === "daemon"
-                && observed.Source === "/run/host-services/docker.proxy.sock",
+                && bindSourcePathsEquivalent(observed.Source, "/run/host-services/docker.proxy.sock"),
         };
     }
 

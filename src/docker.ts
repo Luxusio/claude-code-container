@@ -1876,7 +1876,7 @@ function startProjectContainerLocked(
                 kind: "daemon",
                 equivalentSources: runtimeInfo.runtime === "docker" && runtimeInfo.dockerDesktop
                     && (runtimeInfo.socketPath ?? "/var/run/docker.sock") === "/var/run/docker.sock"
-                    ? ["/var/run/docker.sock.raw"]
+                    ? ["/var/run/docker.sock.raw", "/run/host-services/docker.proxy.sock"]
                     : [],
             },
         },

@@ -116,6 +116,14 @@ aliases. A creation that omits the owners tmpfs must fail immediately, rather th
 being accepted and then recreated on the next session. Compensation remains limited
 to the exact captured newly created ID; its failures retain the original cause.
 
+For Docker Desktop using the default daemon socket, supported reported sources
+include `/var/run/docker.sock.raw` and `/run/host-services/docker.proxy.sock`.
+Proxy aliases and equivalent normalized spellings still require matching host
+and mounted Docker daemon IDs during live admission. Fresh creation also retains
+the final daemon proof before publishing started or ready authority. Missing or
+foreign daemon identity refuses admission. Custom sockets and other runtimes do
+not inherit Desktop aliases; stopped preflight never substitutes for live proof.
+
 For the selected Podman runtime, an absent `HostConfig.DeviceRequests` field
 means no Docker-style device requests: Podman 4.9.3 does not expose that field.
 Determine this compatibility from the selected runtime, never inspected labels
@@ -160,6 +168,9 @@ CCC state directory and requiring verified, offline recovery. Never extend
 this repair to the user's actual `~/.codex`, project files or other credentials.
 
 ### Known ceiling
+
+Known ceiling: portable lifecycle fixtures and packaged entry checks do not
+certify the actual macOS inspected source or live Docker Desktop behavior.
 
 Known ceiling: Unresolvable active bind sources block migration. On native
 Linux WSL with rootful Docker Desktop, a daemon-reported opaque source matching
