@@ -1960,7 +1960,7 @@
       "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json",
       "title": "브로커 상태·녹화·Appium 결과",
       "workStatus": "partial",
-      "remainingWork": "기존 Appium 검증 기여를 유지하고 status/recording 의미 관측을 통합했다. owner-cleanup은 기존 의미 결과 경계의 회귀 검증으로 확인했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 실제 Windows QA는 아직 미완료다. 이전 owner/access 차단은 과거 진단이며, 이번 읽기 전용 점검은 예약 VM의 Saved 상태만 확인했다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. CB-02/CB-03의 한정된 종료 관측·canonical stop 조합·partial commit·publication deadline 수정은1a3dbf97에서 독립 Code·qualified Security carry·affected Linux/portable QA·로컬 통합을 확인했다. Darwin raw token은 동일하면 live로 관측하며 다른 live token은 locale/timezone 차이와 구분할 수 없어 unavailable로 보존한다. 실제 Windows/macOS·broader R17·native/reliability/formal 조건은 별도 미완료다. 아래 currentStopCleanupRepairQualification에 새 실행과 인증 재사용의 범위를 구분했다.",
+      "remainingWork": "기존 Appium 검증 기여를 유지하고 status/recording 의미 관측을 통합했다. owner-cleanup은 기존 의미 결과 경계의 회귀 검증으로 확인했다. 소스9b12312의 독립 Code/Security와 Linux QA는 whole23파일948PASS·실제 네 배포 형태의 HTTP/MCP·녹화/readiness 동작 및 npm shipping을 확인했다. 실제 Windows QA는 아직 미완료다. 이전 owner/access 차단은 과거 진단이며, 이번 읽기 전용 점검은 예약 VM의 Saved 상태만 확인했다. Windows 검증과 최종 판정 전 완료 credit·formal close 없음. CB-02/CB-03의 한정된 종료 관측·canonical stop 조합·partial commit·publication deadline 수정은1a3dbf97에서 독립 Code·qualified Security carry·affected Linux/portable QA·로컬 통합을 확인했다. Darwin raw token은 동일하면 live로 관측하며 다른 live token은 locale/timezone 차이와 구분할 수 없어 unavailable로 보존한다. 실제 Windows/macOS·broader R17·native/reliability/formal 조건은 별도 미완료다. 아래 currentStopCleanupRepairQualification에 새 실행과 인증 재사용의 범위를 구분했다. Broker tool/lifecycle의 private typed executor·락 담당 조합은0b8d794a에서 독립 리뷰와 Source/emitted/public467사례·배포 검증으로 확인했다. 이는 선택한 두 진입점의 기여이며 direct/admin/physical/Appium 전체 조합·독립 snapshot 예산·worker startup/grace·실제 native와 원래 최종 조건은 여전히 남는다. currentExecutorLockOwnerRegistryQualification 참조; 완료 credit 없음.",
       "completionCriteria": "상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at0cebcfe0: semantic owner resolution/device status, broker recording and Appium outcomes with finite native effects and outward HTTP presentation. Actual independent Code DEEP/Security/Docs and QA484 across13 whole files, genuine build1330, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Prior compiler/runtime failures corrected and retained. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -2385,7 +2385,7 @@
       "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
       "title": "브로커 provider 수명주기 결과",
       "workStatus": "partial",
-      "remainingWork": "기존 provider 수명주기 전환을 유지한다. 이번 macOS clone/snapshot/복원은 기존 lifecycle의 녹화 종료 확인을 재사용하고, 종료 미확인·복원 실패 중 successor가 있으면 녹화·claim·복구 후보를 보존한다. Sourcec07ecddf와 독립 owning/public69사례를 확인했다. 실제 Windows/macOS·전체 route/소스·reliability·최종 판정이 남아 부분 완료를 유지한다. 이전 기여와 currentNativeResultPolicyQualification을 함께 참조한다.",
+      "remainingWork": "기존 provider 수명주기 전환을 유지한다. 이번 macOS clone/snapshot/복원은 기존 lifecycle의 녹화 종료 확인을 재사용하고, 종료 미확인·복원 실패 중 successor가 있으면 녹화·claim·복구 후보를 보존한다. Sourcec07ecddf와 독립 owning/public69사례를 확인했다. 실제 Windows/macOS·전체 route/소스·reliability·최종 판정이 남아 부분 완료를 유지한다. 이전 기여와 currentNativeResultPolicyQualification을 함께 참조한다. Broker tool/lifecycle의 private typed executor·락 담당 조합은0b8d794a에서 독립 리뷰와 Source/emitted/public467사례·배포 검증으로 확인했다. 이는 선택한 두 진입점의 기여이며 direct/admin/physical/Appium 전체 조합·독립 snapshot 예산·worker startup/grace·실제 native와 원래 최종 조건은 여전히 남는다. currentExecutorLockOwnerRegistryQualification 참조; 완료 credit 없음.",
       "completionCriteria": "Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects with outward native framing and response presentation. Actual independent Code/Security/Docs and QA425 across17 whole files with zero skips passed; genuine1330 build artifacts qualified from unchanged executable Source/output bytes, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed. Protected42 pins/97 user paths delivered; current f5a0 Source pins qualified. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -2709,7 +2709,7 @@
       "coveredOperationIds": [],
       "title": "Desktop 제어·파일 전송",
       "workStatus": "partial",
-      "remainingWork": "기존 Desktop/전송 전환을 유지한다. 이번 Hyper-V 코어는 의미 관측과 opaque receipt를 사용하고 native result/execution/remedy·공개 응답은 어댑터가 구성한다. Source0d8bd7f1와 독립 owning/public241사례, 별도 Source90/emitted90 race witness 및 배포 검증을 확인했다. 실제 Windows/macOS와 원래 전체 소스·mount·reliability·최종 판정이 남아 부분 완료를 유지한다. 이전 budget/control 기여와 currentNativeResultPolicyQualification을 함께 참조한다.",
+      "remainingWork": "기존 Desktop/전송 전환을 유지한다. 이번 Hyper-V 코어는 의미 관측과 opaque receipt를 사용하고 native result/execution/remedy·공개 응답은 어댑터가 구성한다. Source0d8bd7f1와 독립 owning/public241사례, 별도 Source90/emitted90 race witness 및 배포 검증을 확인했다. 실제 Windows/macOS와 원래 전체 소스·mount·reliability·최종 판정이 남아 부분 완료를 유지한다. 이전 budget/control 기여와 currentNativeResultPolicyQualification을 함께 참조한다. Broker tool/lifecycle의 private typed executor·락 담당 조합은0b8d794a에서 독립 리뷰와 Source/emitted/public467사례·배포 검증으로 확인했다. 이는 선택한 두 진입점의 기여이며 direct/admin/physical/Appium 전체 조합·독립 snapshot 예산·worker startup/grace·실제 native와 원래 최종 조건은 여전히 남는다. currentExecutorLockOwnerRegistryQualification 참조; 완료 credit 없음.",
       "completionCriteria": "네이티브 명령·helper framing·응답 표현은 어댑터에 두고, 코어의 focus·파일 검증·staging·commit·finally 정책이 독립 리뷰·portable QA·로컬 통합으로 확인된다.",
       "confirmedAtCommit": "a71e9ed24b3397a1aac6620faa0e43dc798646cb",
       "sourceTrace": {
@@ -5219,7 +5219,7 @@
       "remainingGroups": 10,
       "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음."
     },
-    "currentQualificationScope": "Latest selected portable Source/artifact qualification is currentNativeResultPolicyQualification. Earlier qualifications retain their historical scope and evidence, including currentHyperVBudgetFollowthroughQualification. Original whole-source/native/reliability/formal and whole-Goal acceptance remain unproven.",
+    "currentQualificationScope": "Latest selected portable Source/artifact qualification is currentExecutorLockOwnerRegistryQualification. Prior qualifications keep their actual revision-bound evidence, including currentNativeResultPolicyQualification. Broader registry entries, independent snapshot/worker allowances, whole Source/caller/export closure, native, reliability, formal and whole-Goal acceptance remain unproven.",
     "historicalStructuralAccountingBeforeQemuRecovery": {
       "sourceCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
       "completedGroups": 14,
@@ -5667,6 +5667,60 @@
       "remaining": "Explicit typed executor/lock-owner registry and original whole-source/caller/export closure; independent snapshot-operation countdowns and broader worker startup/grace; native platforms and reliability acceptance.",
       "formalClose": "Separate automatic attestation gate; not claimed by this Source/QA delivery.",
       "priorQualificationScope": "Latest selected portable Source/artifact qualification is currentHyperVBudgetFollowthroughQualification. The previous active scope identified currentHyperVMonotonicBudgetQualification; that qualification retains its original historical scope. Earlier qualification records, including the original71473106 joint failure and accepted contributions, retain their exact historical scope. No wholeSource/native/reliability/formal or whole-Goal verdict follows.",
+      "accounting": "17/25complete(68%),5partial,3in-progress,8remaining;218cutovers/219inventory/75gates unchanged.",
+      "structuralGroupCredit": 0,
+      "operationCredit": 0,
+      "deliveryGateCredit": 0,
+      "sourceUniverseCertified": false
+    },
+    "currentExecutorLockOwnerRegistryQualification": {
+      "taskId": "TASK__architecture-executor-lock-owner-registry-20261016",
+      "runId": "01a14230-2171-7cdf-8663-83ac72809ec0",
+      "baselineCommit": "24d38d882b65a9142f1b30388d6e37ab11fdcdaf",
+      "sourceHead": "0b8d794a2656f7e536cc914fb0fe81f99196f168",
+      "selectedContribution": "Private typed broker/backend/specialized executor descriptors drive device-tool and lifecycle dispatch through the existing workflows and one acquiring process. Lazy backend handlers, separate owner queue, ordered fallback locks, current-target re-observation, recording split and CREATE-only Hyper-V dryRun exception remain.",
+      "scope": "One production file, one owning Test and existing SPEC; no new module/framework, public unlocked API, configuration or user-controlled lock bypass.",
+      "codeReview": "Actual Code1 DEEP/both-hunter PASS0; both actual first-cycle discovery arrays empty. Full independent sweep authenticated all3Main/private/baseline pins.",
+      "securityReview": "Actual independent Security1 PASS0; authentication, owner binding, admission, leases and existing concurrency/nesting remain.",
+      "reviewManifest": {
+        "path": "/tmp/ccc-executor-registry-01a14230/review/review-input.json",
+        "sha256": "8d1576d96e2a71a01a01676c2949cb3d1c41c2e3dfb9bfe8e4796a2c5573ef11",
+        "patchSha256": "735b165d4ac705ed4f243117562df4620da90c780165716c459e394f14b6b3c8"
+      },
+      "actualQa": {
+        "facts": "/tmp/ccc-executor-registry-01a14230/fixture/evidence/qa-final-facts.json",
+        "sha256": "a194021713d3048dac01009800c1bafdfa85864a1bd80fd51fe879f7e718d796",
+        "passingExecutions": 467,
+        "failures": 0,
+        "skips": 0,
+        "distinctWholeFiles": 3,
+        "wholeFileExecutions": 4,
+        "perInvocation": {
+          "qa-source-owning": {
+            "src/__tests__/device-lab-broker.commands.test.ts": 211
+          },
+          "qa-emitted-owning-public": {
+            "src/__tests__/device-lab-broker.commands.test.ts": 211,
+            "src/__tests__/device-lab-mcp.broker-routing.test.ts": 44,
+            "src/__tests__/device-lab-mcp.broker-param-coverage.test.ts": 1
+          }
+        },
+        "sourceOwning": 211,
+        "emittedOwning": 211,
+        "emittedPublicRouting": 44,
+        "emittedPublicParameterCoverage": 1,
+        "scope": "Fresh Source owning whole211 plus genuine emitted owning211/public routing44/parameter coverage1,3distinct files/4whole executions; no historical runtime credit."
+      },
+      "artifactQualification": "Fresh DeviceLab/Root/MCP/version/assembly,1057assembled/539raw,3existing strict configs,scoped ESLint and ordinary offline npm archive/Unix payload/public exports/assets/CLI help/version/invalid runtime/MCP initialize-list-ping-EOF PASS.256loaded/transformed targets authenticated,242layout productionJS,zero productionTS fallback. Owning Test is not included in tsconfig.tests.json; no owning-Test static typing claim.",
+      "unchangedProducerCarry": "HyperV26inputs/44outputs,static20inputs,resume8inputs positively authenticated against actual original producer/input/output evidence; no native PowerShell parsing or old runtime count made fresh.",
+      "developmentFailure": "Original owning whole210PASS/1FAIL at recording lease after-copy, then unchanged sole-case1PASS, retained distinctly. Current independent Source211 and emitted211 wholes passed unchanged. Existing signal/identity guards are unchanged, but the precise transient state and pre-migration/refactor causality remain unproven.",
+      "preservation": "Original1747tracked/81untracked entries and metadata,1754prepared inputs,both7598-file/3-link physical dependency copies,guard,semantic empty index and PR ancestors preserved. Actual3path Source/Test/SPEC commit leaves reviewed working bytes/metadata unchanged; no clean-worktree claim.",
+      "processSettlement": "1067observed owned birth identities/19groups/1408preloads settled with no live observed survivors or collector signals; bounded fixture observation only, no foreign cleanup.",
+      "selfHealingDisposition": "Optional offline npm registry attempt was denied before dispatch; cause unconfirmed and shipping passed. Promotion of a new retry/framework rule rejected without a demonstrated product need; preserve successful shipping and existing containment. Existing invalid-runtime product coverage is sufficient; no codifier/verifier tests added.",
+      "remaining": "Broader direct/admin/physical/Appium registry and original Source/caller/export closure; independent HyperV snapshot invocation allowance and provider-worker startup/grace; nativeWindows/macOS/PowerShell parsing/distribution/reliability and full-Goal acceptance.",
+      "nextSourceTask": "TASK__architecture-independent-snapshot-allowance-20261016",
+      "formalClose": "Separate automatic attestation gate; not claimed by this Source/QA delivery.",
+      "priorQualificationScope": "Latest selected portable Source/artifact qualification is currentNativeResultPolicyQualification. Earlier qualifications retain their historical scope and evidence, including currentHyperVBudgetFollowthroughQualification. Original whole-source/native/reliability/formal and whole-Goal acceptance remain unproven.",
       "accounting": "17/25complete(68%),5partial,3in-progress,8remaining;218cutovers/219inventory/75gates unchanged.",
       "structuralGroupCredit": 0,
       "operationCredit": 0,
