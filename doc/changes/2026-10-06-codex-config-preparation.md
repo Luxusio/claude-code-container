@@ -1,6 +1,16 @@
 # Codex config preparation extraction
 
-## Codex config preparation policy (M10m candidate)
+## Current semantic preparation boundary
+
+The configuration application consumes finite ready, repair-required, timed-out and failed observations. It owns probe/repair/finalize sequencing; native composition alone interprets process status, timeout codes and error details. Native failures may carry an opaque Error which is thrown unchanged by policy. Actual public detailed stage errors and dispatch/property exceptions retain their existing behavior, without retries or later effects after failure.
+
+Ordered preparation still proves directory access before file access, validates host-owned nonlink/singlelink metadata before root grants, and resolves mapped UID lazily per invocation. Only native lstat ENOENT becomes a semantic missing-file observation. Directory repair may admit that absence; file repair throws the captured original failure. Present metadata getter failures and generated safety refusals propagate before UID/root effects, including synthetic errors inheriting an ENOENT code.
+
+The existing core/type/facade and ordered/harness suites cover semantic policy, negative raw-result type contracts, native timeout/failure classification and public error identity. Strict Source and genuine emitted-declaration consumers are separate from runtime fake-provider verification. Native Docker/Podman ownership and actual Windows/macOS acceptance remain unverified by portable fixtures.
+
+## Historical initial extraction (superseded M10m native-result interface)
+
+The paragraphs below retain the original extraction scope and verification history. Their raw status/error port and literal native branch descriptions are superseded by the current semantic boundary above; they do not describe the current inward contract.
 
 `createCodexConfigPreparation` in `src/application/codex-config-preparation.ts`
 owns the existing access-check, repair and finalization decisions.
