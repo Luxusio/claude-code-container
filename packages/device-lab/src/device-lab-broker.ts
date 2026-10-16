@@ -4104,15 +4104,27 @@ async function invokeBackendDeviceTool(ownerId: string, parsed: DeviceToolParamS
     return await normalized.deviceToolRunner(ownerId, parsed, match, normalized);
 }
 
-async function invokeDeviceTool(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
-    const validation = validateDeviceToolParams(params);
-    if (!validation.ok) {
-        const { status, ...payload } = validation;
-        return { status, payload };
+type BrokerExecutorDescriptor = {
+    workflow: () => BrokerRpcResult | Promise<BrokerRpcResult>;
+} & (
+    | { acquisitionOwner: "broker"; stateKey: string; backend: string; nestedStateKey?: string; waitBudget?: AppiumRequestBudget }
+    | { acquisitionOwner: "backend" | "specialized" }
+);
+
+async function invokeBrokerExecutor(ownerId: string, deviceId: string, executor: BrokerExecutorDescriptor): Promise<BrokerRpcResult> {
+    if (executor.acquisitionOwner !== "broker") return executor.workflow();
+    const nestedStateKey = executor.nestedStateKey;
+    const workflow = nestedStateKey
+        ? () => withOwnerDeviceOperation(ownerId, nestedStateKey, deviceId, executor.workflow)
+        : executor.workflow;
+    return withOwnerDeviceOperation(ownerId, executor.stateKey, deviceId, workflow, executor.waitBudget);
+}
+
+function deviceToolExecutor(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): BrokerExecutorDescriptor | BrokerRpcResult {
+    const backendWorkflow = () => invokeBackendDeviceTool(ownerId, parsed, normalized);
+    if (parsed.tool === "device_inventory") {
+        return { acquisitionOwner: "specialized", workflow: () => invokeDeviceInventory(ownerId, parsed, normalized) };
     }
-    const parsed = translateDeviceToolPathsForHost(validation, normalized);
-    if ("status" in parsed) return parsed;
-    if (parsed.tool === "device_inventory") return invokeDeviceInventory(ownerId, parsed, normalized);
     if (DEVICE_BROKER_UNATTACHED_TOOL_METHODS.has(parsed.tool)) {
         if (parsed.backend !== "android-device" && parsed.backend !== "ios-device") {
             return {
@@ -4129,60 +4141,59 @@ async function invokeDeviceTool(ownerId: string, params: unknown, normalized: No
         if (!brokerDeviceToolSupportedByBackend(parsed.backend, parsed.tool)) {
             return { status: 501, payload: { ok: false, error: "broker-device-tool-backend-not-supported", backend: parsed.backend, tool: parsed.tool } };
         }
-        return await normalized.deviceToolRunner(ownerId, parsed, {
-            stateKey: String(parsed.stateKey),
-            backend: parsed.backend,
-            device: {},
-        }, normalized);
+        return { acquisitionOwner: "specialized", workflow: () => normalized.deviceToolRunner(ownerId, parsed, {
+            stateKey: String(parsed.stateKey), backend: parsed.backend, device: {},
+        }, normalized) };
     }
     if (parsed.tool === "device_record_video_status" || parsed.tool === "device_record_video_start" || parsed.tool === "device_record_video_stop") {
         const match = findOwnerDeviceForTool(ownerId, parsed);
         if ("status" in match) return match;
         if (match.stateKey === "windows" || match.stateKey === "macos") {
-            // The out-of-process backend owns this same cross-process lock.
-            return await invokeBackendDeviceTool(ownerId, parsed, normalized);
+            return { acquisitionOwner: "backend", workflow: backendWorkflow };
         }
-        if (parsed.tool === "device_record_video_status") return renderBrokerRecording(brokerRecordingApplication(normalized).status(ownerId, parsed));
-        try {
-            return await withOwnerDeviceOperation(ownerId, match.stateKey, String(parsed.deviceId), () => parsed.tool === "device_record_video_start"
+        if (parsed.tool === "device_record_video_status") {
+            return { acquisitionOwner: "specialized", workflow: () => renderBrokerRecording(brokerRecordingApplication(normalized).status(ownerId, parsed)) };
+        }
+        return {
+            acquisitionOwner: "broker", stateKey: match.stateKey, backend: match.backend || match.stateKey,
+            workflow: () => parsed.tool === "device_record_video_start"
                 ? brokerRecordingApplication(normalized).start(ownerId, parsed).then(renderBrokerRecording)
-                : brokerRecordingApplication(normalized).stop(ownerId, parsed).then(renderBrokerRecording));
-        } catch (error) {
-            if (!isDeviceOperationLockTimeout(error)) throw error;
-            return deviceOperationLockFailure(ownerId, match.backend || match.stateKey, String(parsed.deviceId), error);
-        }
+                : brokerRecordingApplication(normalized).stop(ownerId, parsed).then(renderBrokerRecording),
+        };
     }
     if (DEVICE_BROKER_BACKEND_TOOL_METHODS.has(parsed.tool)) {
         if (isHyperVBackend(parsed.backend) && parsed.stateKey) {
-            try {
-                return await withOwnerDeviceOperation(ownerId, parsed.stateKey, String(parsed.deviceId), () => invokeBackendDeviceTool(ownerId, parsed, normalized));
-            } catch (error) {
-                if (!isDeviceOperationLockTimeout(error)) throw error;
-                return deviceOperationLockFailure(ownerId, String(parsed.backend), String(parsed.deviceId), error);
-            }
+            return { acquisitionOwner: "broker", stateKey: parsed.stateKey, backend: String(parsed.backend), workflow: backendWorkflow };
         }
         const match = findOwnerDeviceForTool(ownerId, parsed);
         if ("status" in match) {
             if (parsed.backend || match.status !== 404) return match;
-            try {
-                return await withOwnerDeviceOperation(ownerId, "windows-vm", String(parsed.deviceId), () =>
-                    withOwnerDeviceOperation(ownerId, "linux-vm", String(parsed.deviceId), () => invokeBackendDeviceTool(ownerId, parsed, normalized)));
-            } catch (error) {
-                if (!isDeviceOperationLockTimeout(error)) throw error;
-                return deviceOperationLockFailure(ownerId, "windows-vm", String(parsed.deviceId), error);
-            }
+            return { acquisitionOwner: "broker", stateKey: "windows-vm", nestedStateKey: "linux-vm", backend: "windows-vm", workflow: backendWorkflow };
         }
         if (isHyperVBackend(match.backend)) {
-            try {
-                return await withOwnerDeviceOperation(ownerId, match.stateKey, String(parsed.deviceId), () => invokeBackendDeviceTool(ownerId, parsed, normalized));
-            } catch (error) {
-                if (!isDeviceOperationLockTimeout(error)) throw error;
-                return deviceOperationLockFailure(ownerId, String(match.backend), String(parsed.deviceId), error);
-            }
+            return { acquisitionOwner: "broker", stateKey: match.stateKey, backend: String(match.backend), workflow: backendWorkflow };
         }
-        return await invokeBackendDeviceTool(ownerId, parsed, normalized);
+        return { acquisitionOwner: "backend", workflow: backendWorkflow };
     }
     return { status: 501, payload: { ok: false, error: "broker-device-tool-not-supported", supported: [...DEVICE_BROKER_TOOL_METHODS] } };
+}
+
+async function invokeDeviceTool(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
+    const validation = validateDeviceToolParams(params);
+    if (!validation.ok) {
+        const { status, ...payload } = validation;
+        return { status, payload };
+    }
+    const parsed = translateDeviceToolPathsForHost(validation, normalized);
+    if ("status" in parsed) return parsed;
+    const executor = deviceToolExecutor(ownerId, parsed, normalized);
+    if ("status" in executor) return executor;
+    try {
+        return await invokeBrokerExecutor(ownerId, String(parsed.deviceId), executor);
+    } catch (error) {
+        if (executor.acquisitionOwner !== "broker" || !isDeviceOperationLockTimeout(error)) throw error;
+        return deviceOperationLockFailure(ownerId, executor.backend, String(parsed.deviceId), error);
+    }
 }
 
 function ownerDevicesFile(ownerId: string, stateKey: string) {
@@ -9824,13 +9835,16 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
             : hyperVLifecycleCleanupTimeoutMs(parsed.backend, parsed.command, hyperVLifecycleOperationTimeoutMs(parsed)))
         : Number.POSITIVE_INFINITY;
     const hyperVDeadlineAt = hyperVProviderDeadlineAt(parsed.backend, parsed.command, hyperVCleanupDeadlineAt);
-    if (isHyperVBackend(parsed.backend) && parsed.dryRun && parsed.command === "device_create") {
-        return lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized);
-    }
+    const executor: BrokerExecutorDescriptor = isHyperVBackend(parsed.backend) && parsed.dryRun && parsed.command === "device_create"
+        ? { acquisitionOwner: "specialized", workflow: () => lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized) }
+        : {
+            acquisitionOwner: "broker", stateKey: parsed.stateKey, backend: parsed.backend,
+            waitBudget: isHyperVBackend(parsed.backend) ? { remaining: () => hyperVDeadlineAt - normalized.hyperVMonotonicNow() } : undefined,
+            workflow: () => lifecycleCommandInvokeDeviceLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt),
+        };
+    if (executor.acquisitionOwner !== "broker") return invokeBrokerExecutor(ownerId, parsed.deviceId, executor);
     try {
-        return await withOwnerDeviceOperation(ownerId, parsed.stateKey, parsed.deviceId, () =>
-            lifecycleCommandInvokeDeviceLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt),
-            isHyperVBackend(parsed.backend) ? { remaining: () => hyperVDeadlineAt - normalized.hyperVMonotonicNow() } : undefined);
+        return await invokeBrokerExecutor(ownerId, parsed.deviceId, executor);
     } catch (error) {
         if (error instanceof HyperVOperationDeadlineError) {
             return {

@@ -56,6 +56,48 @@ vi.mock("@ccc/device-lab/device-lab/broker/hyper-v/network.js", async (importOri
 type FixtureBrokerOptions = NonNullable<Parameters<typeof createRawDeviceBrokerServer>[0]>;
 type FixtureCommandRunner = NonNullable<FixtureBrokerOptions["commandRunner"]>;
 
+async function holdDeviceOperationInChild(cwd: string, stateKey: string, deviceId: string) {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+const { withOwnerDeviceOperation, ownerDeviceOperationLockFile } = await import(process.argv[1]);
+let release;
+const released = new Promise(resolve => { release = resolve; });
+process.once('message', release);
+process.once('disconnect', release);
+const deadline = setTimeout(() => { process.exitCode = 1; release(); }, 20000);
+try {
+    await withOwnerDeviceOperation(process.argv[2], process.argv[3], async () => {
+        process.send({ lock: ownerDeviceOperationLockFile(process.argv[2], process.argv[3]) });
+        await released;
+    });
+} finally { clearTimeout(deadline); process.disconnect(); }
+`, import.meta.resolve("@ccc/device-lab/providers/state/device-store.mjs"), stateKey, deviceId], {
+        cwd, env: process.env, windowsHide: true, stdio: ["ignore", "ignore", "pipe", "ipc"],
+    });
+    let stderr = "", lock: string | undefined, spawnError: Error | undefined;
+    child.stderr!.on("data", chunk => { stderr += chunk; });
+    child.once("message", message => { lock = (message as { lock: string }).lock; });
+    child.once("error", error => { spawnError = error; });
+    const exited = new Promise<void>((resolveExit, reject) => {
+        child.once("close", code => code === 0 ? resolveExit() : reject(spawnError || new Error(`operation holder exited ${code}: ${stderr}`)));
+    });
+    // Startup and cleanup share this original child handle; failures cannot orphan its lock.
+    void exited.catch(() => undefined);
+    const release = async () => {
+        if (child.connected) child.send("release");
+        await exited;
+    };
+    try {
+        await vi.waitFor(() => {
+            if (spawnError || child.exitCode !== null) throw spawnError || new Error(`operation holder exited before readiness: ${stderr}`);
+            expect(lock).toBeTypeOf("string");
+        }, { timeout: 10000 });
+        return { lock: lock!, pid: child.pid!, release };
+    } catch (error) {
+        await release().catch(() => undefined);
+        throw error;
+    }
+}
+
 function createDeviceBrokerServer(options: FixtureBrokerOptions) {
     const networkRunner = options.commandRunner && withTypedHyperVNetworkOperations(options.commandRunner, {
         stateFile: join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json"),
@@ -1348,7 +1390,7 @@ describe("device-lab host broker lifecycle commands", () => {
         expect(fallback).not.toHaveBeenCalled();
     });
 
-    it("keeps Linux desktop window facts and redacted provider failures compatible through the authenticated broker", async () => {
+    it("keeps Linux desktop facts and re-observes targets under a separate process operation lock", { timeout: 60000 }, async () => {
         const cwd = join(process.env.HOME!, "broker-linux-desktop-semantic-test");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd), deviceId = "linux-desktop-semantic", incarnationId = "a".repeat(32);
@@ -1392,11 +1434,23 @@ describe("device-lab host broker lifecycle commands", () => {
         const tool = (name: string, params: Record<string, unknown> = {}) => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
             method: "POST", headers: ownerRpcHeaders(ownerId), body: JSON.stringify({ method: "broker.device.tool.invoke",
                 params: { tool: name, backend: "linux-vm", deviceId, ...params } }),
+            signal: AbortSignal.timeout(15000),
         });
+        let holder: Awaited<ReturnType<typeof holdDeviceOperationInChild>> | undefined;
+        let pending: Promise<Response> | undefined;
         try {
-            const executed = await tool("device_exec", { command: "printf fixture" });
+            holder = await holdDeviceOperationInChild(cwd, "linux-vm", deviceId);
+            let settled = false;
+            pending = tool("device_exec", { command: "printf fixture" }).finally(() => { settled = true; });
+            void pending.catch(() => undefined);
+            await new Promise(resolve => setTimeout(resolve, 100));
+            expect(settled).toBe(false);
+            expect(commandRunner).not.toHaveBeenCalled();
+            await holder.release();
+            const executed = await pending;
             expect(executed.status, JSON.stringify(await executed.clone().json())).toBe(200);
             expect(await executed.json()).toMatchObject({ result: { provider: "hyper-v-ssh", status: 0, stdout: "guest output 한글\n", stderr: "", startsDevices: false } });
+            expect(commandRunner).toHaveBeenCalledOnce();
             native.stdout = `42\t123\t${Buffer.from("Guest 한글").toString("base64")}\nTRUNCATED\n`;
             expect(await (await tool("device_window_list")).json()).toEqual({ ok: true, result: { deviceId, tool: "device_window_list", windows: [{ handle: "42", title: "Guest 한글", processId: 123 }], truncated: true } });
             native.stdout = '{"ok":true}';
@@ -1433,7 +1487,28 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(await untrusted.json()).toMatchObject({ error: "hyper-v-linux-ssh-host-identity-invalid" });
             expect(commandRunner).toHaveBeenCalledTimes(beforeTrustRefusal);
             expect(readdirSync(join(backendRoot(ownerId, "linux-vm"), "operations"))).not.toContain(operationLock);
-        } finally { await close(server); cleanupOwner(ownerId); }
+
+            writeFileSync(knownHosts, `${address} ssh-ed25519 ${encodedKey} fixture\n`);
+            holder = await holdDeviceOperationInChild(cwd, "linux-vm", deviceId);
+            settled = false;
+            pending = tool("device_exec", { command: "true" }).finally(() => { settled = true; });
+            void pending.catch(() => undefined);
+            await new Promise(resolve => setTimeout(resolve, 100));
+            expect(settled).toBe(false);
+            writeBrokerDevices(ownerId, "linux-vm", []);
+            await holder.release();
+            const removed = await pending;
+            expect(removed.status).toBe(404);
+            expect(await removed.json()).toMatchObject({ ok: false, error: "owner-device-not-found" });
+            expect(commandRunner).toHaveBeenCalledTimes(beforeTrustRefusal);
+        } finally {
+            try { await holder?.release(); }
+            finally {
+                if (pending) await Promise.allSettled([pending]);
+                await close(server);
+                cleanupOwner(ownerId);
+            }
+        }
     });
 
     it("runs an owner-fenced Hyper-V Windows VM lifecycle through the host broker", async () => {
@@ -6647,6 +6722,88 @@ if (JSON.stringify(args) === '["devices","-l"]') {
                 });
                 cleanupOwner(ownerA);
                 cleanupOwner(requestedOwner);
+            }
+        }
+    });
+
+    it("lets the real Android backend child own the contended operation lock exactly once", { timeout: 90000 }, async () => {
+        const project = join(fixtureHome!, "lock-project"), binDir = join(fixtureHome!, "lock-android-bin");
+        const logPath = join(fixtureHome!, "lock-android-sdk.log"), blockedPath = join(fixtureHome!, "backend-lock-attempt.json");
+        mkdirSync(project);
+        mkdirSync(binDir);
+        writeFileSync(logPath, "");
+        for (const tool of ["adb", "emulator", "avdmanager"]) {
+            const program = join(binDir, tool);
+            writeFileSync(program, `#!${process.execPath}\nconst tool = ${JSON.stringify(tool)};\n${fakeAndroidProviderScript}`);
+            chmodSync(program, 0o755);
+        }
+        const ownerId = deviceLabOwnerId(project), deviceId = "android-contended";
+        writeFileSync(join(fixtureHome!, "fake-adb-active-emulator-5580"), "1");
+        writeBrokerDevices(ownerId, "android", [{ id: deviceId, backend: "android-emulator", status: "running", port: 5580, avdName: `ccc-${ownerId}-contended` }]);
+        const environmentKeys = ["PATH", "NODE_OPTIONS", "FAKE_ANDROID_LOG"] as const;
+        const originalEnvironment = environmentKeys.map(key => process.env[key]);
+        let holder: Awaited<ReturnType<typeof holdDeviceOperationInChild>> | undefined;
+        let restoreRouting: (() => void) | undefined;
+        let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        let pending: Promise<Response> | undefined;
+        try {
+            holder = await holdDeviceOperationInChild(project, "android", deviceId);
+            const preload = join(fixtureHome!, "contended-android-routing.cjs");
+            // Observe the real child's failed exclusive open without replacing acquisition.
+            writeFileSync(preload, nodeProviderFixturePreloadSource(binDir) + `
+const open = fs.openSync;
+fs.openSync = function(file, flags, ...args) {
+    try { return open.call(this, file, flags, ...args); }
+    catch (error) {
+        if (String(file) === ${JSON.stringify(holder.lock)} && flags === 'wx' && error.code === 'EEXIST')
+            fs.writeFileSync(${JSON.stringify(blockedPath)}, JSON.stringify({ pid: process.pid, lock: String(file) }));
+        throw error;
+    }
+};
+require('node:module').syncBuiltinESMExports();
+`);
+            process.env.PATH = `${binDir}${delimiter}${originalEnvironment[0] || ""}`;
+            process.env.NODE_OPTIONS = `${originalEnvironment[1] || ""} --require=${JSON.stringify(preload)}`.trim();
+            process.env.FAKE_ANDROID_LOG = logPath;
+            restoreRouting = installNodeProviderFixtureRouting(binDir);
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId);
+            let settled = false;
+            pending = fetch(endpoint, {
+                method: "POST", headers: ownerRpcHeaders(ownerId), signal: AbortSignal.timeout(45000),
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: {
+                    tool: "mobile_long_press", backend: "android-emulator", deviceId, x: 17, y: 27,
+                } }),
+            }).finally(() => { settled = true; });
+            void pending.catch(() => undefined);
+            await vi.waitFor(() => expect(existsSync(blockedPath)).toBe(true), { timeout: 10000 });
+            const blocked = JSON.parse(readFileSync(blockedPath, "utf8")) as { pid: number; lock: string };
+            expect(blocked).toMatchObject({ lock: holder.lock, pid: expect.any(Number) });
+            expect(blocked.pid).not.toBe(holder.pid);
+            expect(settled).toBe(false);
+            const effect = "adb -s emulator-5580 shell input swipe 17 27 17 27 700\n";
+            expect(readFileSync(logPath, "utf8")).not.toContain(effect);
+            await holder.release();
+            await vi.waitFor(() => expect(settled).toBe(true), { timeout: 10000 });
+            const response = await pending, body = await response.json() as { result: { mcpResult: { isError?: boolean } } };
+            expect(response.status, JSON.stringify(body)).toBe(200);
+            expect(body).toMatchObject({ ok: true, result: { deviceId, backend: "android-emulator", provider: "device-lab-backend-child" } });
+            expect(body.result.mcpResult.isError).not.toBe(true);
+            expect(readFileSync(logPath, "utf8").split(effect)).toHaveLength(2);
+        } finally {
+            try { await holder?.release(); }
+            finally {
+                try {
+                    if (pending) await Promise.allSettled([pending]);
+                    if (server) await close(server);
+                } finally {
+                    restoreRouting?.();
+                    environmentKeys.forEach((key, index) => {
+                        if (originalEnvironment[index] === undefined) delete process.env[key];
+                        else process.env[key] = originalEnvironment[index];
+                    });
+                    cleanupOwner(ownerId);
+                }
             }
         }
     });

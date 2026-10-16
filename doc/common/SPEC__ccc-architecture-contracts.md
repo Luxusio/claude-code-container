@@ -187,7 +187,7 @@ below are relative to `packages/device-lab/providers/`.
 | --- | --- |
 | `broker.command.invoke` normal lifecycle | broker owner/state-key/device operation lock |
 | Hyper-V lifecycle mutation or status recovering pending journal | broker device operation -> host Hyper-V mutation |
-| Hyper-V dry-run lifecycle | bypass normal outer branch; create specialized helper remains authoritative |
+| Hyper-V create + dryRun lifecycle | specialized create helper bypasses the normal outer device-lock branch; other lifecycle dry runs retain the broker operation lock |
 | Android broker lifecycle create/start | broker device operation -> Android port allocation |
 | `broker.device.tool.invoke` Hyper-V backend tools | broker device operation before backend dispatch |
 | Same RPC, non-Hyper-V tools | backend handler owns applicable policy lock, no generic broker wrapper |
@@ -218,6 +218,8 @@ must call that handler as the locking boundary. After extraction, exactly one
 trusted executor acquires; it calls an unlocked internal adapter that is not
 exported as a public handler. Tests run two separate processes to detect deadlock
 or duplicate effects, not just async reentrancy within one process.
+
+The current broker composition cohort covers device-tool dispatch and lifecycle command invocation. Private finite descriptors pair the acquiring process with the existing workflow factory. Inventory, unattached tools and recording status keep their specialized paths; backend-owned tool handlers retain their own policy boundary. Explicit or inferred Hyper-V tools acquire in the broker and re-observe the current target inside the lock. Missing backend inference retains the ordered windows-vm then linux-vm device locks. The independent owner RPC queue remains separate. Direct/admin/physical/Appium executor coverage is not certified by this cohort.
 
 Console, snapshot, network allocation, Appium and physical lease sublocks remain
 inside their existing adapters until their dedicated packet extracts and records
