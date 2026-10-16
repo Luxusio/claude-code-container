@@ -2,9 +2,10 @@ import { snapshotInventoryConflict } from "../../domain/lifecycle/hyper-v-snapsh
 import { settleSnapshotInventory } from "../../application/lifecycle/hyper-v-snapshots.js";
 import { posix, win32 } from "path";
 import type { HyperVVmObservation } from "../../../host-control/hyper-v/index.js";
-import type {
-    HyperVVirtualMachineSnapshot,
-    HyperVWindowsClient,
+import {
+    HyperVWindowsError,
+    type HyperVVirtualMachineSnapshot,
+    type HyperVWindowsClient,
 } from "@ccc/hyper-v/index.js";
 
 // Windows provider paths are case-insensitive; POSIX fixture paths retain their semantics.
@@ -71,8 +72,17 @@ export async function settleHyperVSnapshotInventory<T>(
     readAgain: () => Promise<{ readonly ok: true; readonly snapshots: readonly InventoryLiveSnapshot[] } | { readonly ok: false; readonly error: T }>,
     limits: { readonly deadlineAt: number; readonly timeoutError: T; readonly delayMilliseconds?: number },
 ): Promise<{ readonly ok: true; readonly conflict: ReturnType<typeof hyperVSnapshotInventoryConflict> } | { readonly ok: false; readonly error: T }> {
-    return settleSnapshotInventory(ownerId, tracked, first, readAgain, limits, {
-        now: Date.now,
+    // The exported deadline is Unix time. Capture its remaining duration once so a
+    // wall-clock adjustment during a read or sleep cannot extend this invocation.
+    const startedAt = performance.now();
+    const deadlineAt = startedAt + (limits.deadlineAt - Date.now());
+    return settleSnapshotInventory(ownerId, tracked, first, async () => {
+        const observed = await readAgain();
+        if (!observed.ok) return observed;
+        if (performance.now() >= deadlineAt) return { ok: false, error: limits.timeoutError };
+        return observed;
+    }, { ...limits, deadlineAt }, {
+        now: () => performance.now(),
         sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
     });
 }
@@ -134,8 +144,28 @@ async function requireVirtualMachineState(
 export async function createDeviceLabHyperVSnapshot(
     client: HyperVWindowsClient,
     target: DeviceLabHyperVSnapshotTarget,
-    options?: { readonly signal?: AbortSignal; readonly operationDeadlineAt?: number; readonly confirmationTimeoutMilliseconds?: number; readonly confirmationDelayMilliseconds?: number; readonly onCreatedId?: (id: string) => void | Promise<void>; readonly onConfirmationDeadline?: (deadlineAt: number) => void },
+    options?: {
+        readonly signal?: AbortSignal;
+        readonly operationDeadlineAt?: number;
+        readonly remainingMilliseconds?: () => number;
+        readonly monotonicNow?: () => number;
+        readonly confirmationTimeoutMilliseconds?: number;
+        readonly confirmationDelayMilliseconds?: number;
+        readonly onCreatedId?: (id: string) => void | Promise<void>;
+        readonly onConfirmationDeadline?: (deadlineAt: number) => void;
+    },
 ): Promise<DeviceLabHyperVSnapshotObservation> {
+    const now = options?.monotonicNow ?? (() => performance.now());
+    const startedAt = now();
+    // Capture the allowance before mutation; later callback values may tighten it but
+    // cannot renew it. The internal callback takes precedence over a legacy Unix deadline.
+    const initialRemainingMilliseconds = options?.remainingMilliseconds
+        ? options.remainingMilliseconds()
+        : options?.operationDeadlineAt === undefined ? Number.POSITIVE_INFINITY : options.operationDeadlineAt - Date.now();
+    const operationDeadlineAt = startedAt + initialRemainingMilliseconds;
+    const operationRemaining = () => Math.min(operationDeadlineAt - now(), options?.remainingMilliseconds?.() ?? Number.POSITIVE_INFINITY);
+    options?.signal?.throwIfAborted();
+    if (!(operationRemaining() > 0)) throw new Error("hyper-v-snapshot-create-unconfirmed");
     const created = await client.checkpointVM({
         selector: { kind: "id", id: target.vmId },
         snapshotName: target.providerName,
@@ -146,28 +176,51 @@ export async function createDeviceLabHyperVSnapshot(
     if (created.name !== target.providerName || created.vmId.toLowerCase() !== target.vmId.toLowerCase()) {
         throw new Error("hyper-v-snapshot-result-mismatch");
     }
-    const timeoutMilliseconds = options?.confirmationTimeoutMilliseconds ?? 10000;
+    options?.signal?.throwIfAborted();
+    const timeoutMilliseconds = Math.min(10000, options?.confirmationTimeoutMilliseconds ?? 10000);
     const delayMilliseconds = options?.confirmationDelayMilliseconds ?? 500;
-    const deadlineAt = Math.min(Date.now() + timeoutMilliseconds, options?.operationDeadlineAt ?? Number.POSITIVE_INFINITY);
-    options?.onConfirmationDeadline?.(deadlineAt);
+    const confirmationMilliseconds = Math.min(timeoutMilliseconds, operationRemaining());
+    if (!Number.isFinite(confirmationMilliseconds) || confirmationMilliseconds <= 0
+        || !Number.isFinite(delayMilliseconds) || delayMilliseconds < 0) {
+        throw new Error("hyper-v-snapshot-create-unconfirmed");
+    }
+    const deadlineAt = now() + confirmationMilliseconds;
+    // This compatibility callback still receives Unix time, never the local clock coordinate.
+    options?.onConfirmationDeadline?.(Date.now() + confirmationMilliseconds);
+    const remaining = () => Math.min(deadlineAt - now(), operationRemaining());
     for (;;) {
-        if (Date.now() >= deadlineAt) throw new Error("hyper-v-snapshot-create-unconfirmed");
+        options?.signal?.throwIfAborted();
+        const readMilliseconds = remaining();
+        if (!Number.isFinite(readMilliseconds) || readMilliseconds <= 0) {
+            throw new Error("hyper-v-snapshot-create-unconfirmed");
+        }
         const controller = new AbortController();
-        const relayAbort = () => controller.abort();
+        const confirmationAbort = new Error("hyper-v-snapshot-confirmation-deadline");
+        const relayAbort = () => controller.abort(options?.signal?.reason);
         options?.signal?.addEventListener("abort", relayAbort, { once: true });
-        if (options?.signal?.aborted) controller.abort();
-        const readTimer = setTimeout(() => controller.abort(), Math.max(1, deadlineAt - Date.now()));
+        if (options?.signal?.aborted) relayAbort();
+        const readTimer = setTimeout(() => controller.abort(confirmationAbort), Math.max(1, Math.floor(readMilliseconds)));
         let live: readonly HyperVVirtualMachineSnapshot[];
         try {
             live = await client.getVMSnapshots({ kind: "id", id: target.vmId }, { signal: controller.signal });
         } catch (error) {
-            if (!options?.signal?.aborted && controller.signal.aborted && Date.now() >= deadlineAt) {
+            const abortedRead = error === confirmationAbort
+                || error instanceof Error && error.name === "AbortError"
+                || error instanceof HyperVWindowsError && error.category === "transport"
+                    && error.operation === "Get-VMSnapshot" && error.code === "cancelled";
+            if (!options?.signal?.aborted && controller.signal.reason === confirmationAbort && abortedRead) {
                 throw new Error("hyper-v-snapshot-create-unconfirmed");
             }
             throw error;
         } finally {
             clearTimeout(readTimer);
             options?.signal?.removeEventListener("abort", relayAbort);
+        }
+        options?.signal?.throwIfAborted();
+        const afterReadMilliseconds = remaining();
+        if (controller.signal.reason === confirmationAbort
+            || !Number.isFinite(afterReadMilliseconds) || afterReadMilliseconds <= 0) {
+            throw new Error("hyper-v-snapshot-create-unconfirmed");
         }
         const sameId = live.filter((candidate) => candidate.id.toLowerCase() === created.id.toLowerCase());
         if (live.some((candidate) => candidate.name.toLowerCase() === target.providerName.toLowerCase()
@@ -179,7 +232,7 @@ export async function createDeviceLabHyperVSnapshot(
             throw new Error("hyper-v-snapshot-create-identity-conflict");
         }
         if (sameId.length === 1) return observation(sameId[0] as HyperVVirtualMachineSnapshot);
-        if (Date.now() + delayMilliseconds >= deadlineAt) throw new Error("hyper-v-snapshot-create-unconfirmed");
+        if (delayMilliseconds >= remaining()) throw new Error("hyper-v-snapshot-create-unconfirmed");
         await new Promise((resolve) => setTimeout(resolve, delayMilliseconds));
     }
 }

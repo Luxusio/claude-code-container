@@ -1,5 +1,5 @@
-import { trackedHyperVSnapshots, snapshotInventoryConflict, snapshotField, snapshotCheckpointPolicy, snapshotActionReplacement } from "../../domain/lifecycle/hyper-v-snapshots.js";
-import type { SnapshotRequest, SnapshotOwnerTarget, SnapshotRepairTarget, SnapshotRepairResult, SnapshotOutcome, SnapshotOutcomeFacts, SnapshotJournal, SnapshotTracked, SnapshotMutationObservation, SnapshotDeleteObservation } from "../../domain/lifecycle/hyper-v-snapshots.js";
+import { trackedHyperVSnapshots, snapshotInventoryConflict, snapshotField, snapshotCheckpointPolicy, snapshotActionReplacement, snapshotInvocationLimits, SNAPSHOT_REPAIR_ALLOWANCE_MS } from "../../domain/lifecycle/hyper-v-snapshots.js";
+import type { SnapshotAllowance, SnapshotRequest, SnapshotOwnerTarget, SnapshotRepairTarget, SnapshotRepairResult, SnapshotOutcome, SnapshotOutcomeFacts, SnapshotJournal, SnapshotTracked, SnapshotMutationObservation, SnapshotDeleteObservation } from "../../domain/lifecycle/hyper-v-snapshots.js";
 import type { BrokerHyperVSnapshotPorts, SnapshotPublication } from "../../ports/lifecycle/hyper-v-snapshots.js";
 
 export async function settleSnapshotInventory<T>(
@@ -9,6 +9,7 @@ export async function settleSnapshotInventory<T>(
     limits: { readonly deadlineAt: number; readonly timeoutError: T; readonly delayMilliseconds?: number },
     clock: { now(): number; sleep(ms: number): Promise<void> },
 ): Promise<{ readonly ok: true; readonly conflict: ReturnType<typeof snapshotInventoryConflict> } | { readonly ok: false; readonly error: T }> {
+    if (clock.now() >= limits.deadlineAt) return { ok: false, error: limits.timeoutError };
     let conflict = snapshotInventoryConflict(ownerId, tracked, first);
     for (let attempt = 0; attempt < 2 && (conflict.untracked.length > 0 || conflict.missing.length > 0); attempt += 1) {
         const delayMilliseconds = limits.delayMilliseconds ?? 300;
@@ -17,6 +18,7 @@ export async function settleSnapshotInventory<T>(
         if (clock.now() >= limits.deadlineAt) return { ok: false, error: limits.timeoutError };
         const observed = await readAgain();
         if (!observed.ok) return observed;
+        if (clock.now() >= limits.deadlineAt) return { ok: false, error: limits.timeoutError };
         conflict = snapshotInventoryConflict(ownerId, tracked, observed.snapshots);
     }
     return { ok: true, conflict };
@@ -26,14 +28,29 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
     function settleHyperVSnapshotInventory<T>(ownerId: string, tracked: readonly SnapshotTracked[], first: readonly { snapshotId: string; snapshotName: string }[], readAgain: () => Promise<{ readonly ok: true; readonly snapshots: readonly { snapshotId: string; snapshotName: string }[] } | { readonly ok: false; readonly error: T }>, limits: { readonly deadlineAt: number; readonly timeoutError: T; readonly delayMilliseconds?: number }) {
         return settleSnapshotInventory(ownerId, tracked, first, readAgain, limits, ports);
     }
-    async function reconcileSnapshotJournal(ownerId: string, backend: string, deviceId: string, device: Record<string, unknown>, powershell: Connection, retryRestoreSnapshotId?: string, parentDeadlineAt?: number): Promise<SnapshotRepairResult> {
+    function sameJournal(current: SnapshotJournal | null, expected: SnapshotJournal): boolean {
+        const keys = Object.keys(expected) as (keyof SnapshotJournal)[];
+        return current !== null && Object.keys(current).length === keys.length
+            && keys.every(key => current[key] === expected[key]);
+    }
+    function journalMatches(ownerId: string, backend: string, deviceId: string, expected: SnapshotJournal): boolean {
+        try {
+            return sameJournal(ports.readJournal(ownerId, backend, deviceId), expected);
+        } catch {
+            return false;
+        }
+    }
+    async function reconcileSnapshotJournal(ownerId: string, backend: string, deviceId: string, device: Record<string, unknown>, powershell: Connection, retryRestoreSnapshotId?: string, parentDeadlineAt?: number, expectedJournal?: SnapshotJournal): Promise<SnapshotRepairResult> {
+        const deadlineAt = parentDeadlineAt ?? ports.now() + SNAPSHOT_REPAIR_ALLOWANCE_MS;
         const assertParentDeadline = (): undefined => {
-            if (parentDeadlineAt !== undefined) ports.remainingTimeout(parentDeadlineAt, 30000);
+            ports.remainingTimeout(deadlineAt, 30000);
             return undefined;
         };
+        const conflict = (): SnapshotRepairResult => ({ ok: false, reason: 'conflict', journalDisposition: 'retain', error: 'hyper-v-snapshot-state-conflict' });
         let capturedJournal: SnapshotJournal | null;
         try {
-            capturedJournal = ports.readJournal(ownerId, backend, deviceId);
+            const observedJournal = ports.readJournal(ownerId, backend, deviceId);
+            capturedJournal = observedJournal ? { ...observedJournal } : null;
         } catch (error) {
             return {
                 ok:false,reason:'conflict',journalDisposition:'retain',
@@ -42,7 +59,11 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
             };
         }
         const journal = capturedJournal;
-        if (!journal) return {ok:true,device,reconciled:false,journalDisposition:'clear'};
+        if (expectedJournal && !sameJournal(journal, expectedJournal)) return conflict();
+        if (!journal) {
+            assertParentDeadline();
+            return {ok:true,device,reconciled:false,journalDisposition:'clear'};
+        }
         if (journal.tool === "device_snapshot_create" && journal.confirmationRequired && !journal.snapshotId) {
             return { ok:false,reason:'conflict',journalDisposition:'retain', error: "hyper-v-snapshot-create-outcome-indeterminate" };
         }
@@ -62,10 +83,10 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
                 expectedNotes: ports.ownershipNotes(ownerId, deviceId, incarnationId),
                 providerName: journal.providerName,
                 expectedCheckpointPolicy,
-            }, parentDeadlineAt);
+            }, deadlineAt);
         } catch (error) {
             if (ports.isDeadlineError(error)) throw error;
-            if (ports.isValidationError(error)) {
+            if (ports.providerErrorKind(error) === 'validation') {
                 return { ok:false,reason:'conflict',journalDisposition:'retain', error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
             }
             const lastExecution = ports.lastExecution();
@@ -74,9 +95,10 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
         }
         assertParentDeadline();
         if (repairObservation.checkpointPolicy !== expectedCheckpointPolicy) return { ok:false,reason:'provider-failed',journalDisposition:'retain', error: "hyper-v-snapshot-reconciliation-invalid-result" };
-        const statusDeadlineAt = Math.min(parentDeadlineAt ?? Number.POSITIVE_INFINITY, ports.now() + 30000);
+        const statusDeadlineAt = Math.min(deadlineAt, ports.now() + 30000);
         const { execution, observation } = await ports.status(powershell, { ownerId, deviceId, incarnationId, vmName, vmId }, statusDeadlineAt, 30000);
         if (!execution.ok) return { ok:false,reason:'provider-failed',journalDisposition:'retain', error: "hyper-v-snapshot-reconciliation-failed", detail: ports.diagnosticCode(execution, "hyper-v-snapshot-reconciliation-failed") };
+        ports.remainingTimeout(statusDeadlineAt, 30000);
         assertParentDeadline();
         if (!observation || ports.observationMismatch(observation, { vmId, vmName, diskPath })
             || observation.checkpointPolicy !== expectedCheckpointPolicy) {
@@ -123,11 +145,23 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
             snapshots = tracked.filter((snapshot) => snapshot.id.toLowerCase() !== (journal.snapshotId || "").toLowerCase());
             if (activeSnapshotId?.toLowerCase() === (journal.snapshotId || "").toLowerCase()) activeSnapshotId = null;
         }
-        const updated = ports.mergeRepair(ownerId, backend, deviceId, device, { snapshots, activeSnapshotId, runtimeState: observation.state, status: observation.state.toLowerCase() === "running" ? "running" : "stopped" }, assertParentDeadline);
-        if (!updated.matched || !updated.device) return { ok:false,reason:'conflict',journalDisposition:'retain', error: "hyper-v-snapshot-state-conflict" };
+        const journalConflict = new Error("hyper-v-snapshot-state-conflict");
+        const beforePublish = (): undefined => {
+            if (!journalMatches(ownerId, backend, deviceId, journal)) throw journalConflict;
+            return assertParentDeadline();
+        };
+        let updated: SnapshotPublication;
+        try {
+            updated = ports.mergeRepair(ownerId, backend, deviceId, device, { snapshots, activeSnapshotId, runtimeState: observation.state, status: observation.state.toLowerCase() === "running" ? "running" : "stopped" }, beforePublish);
+        } catch (error) {
+            if (error === journalConflict) return conflict();
+            throw error;
+        }
+        if (!updated.matched || !updated.device) return conflict();
+        assertParentDeadline();
         if (!preserveJournalForRestoreRetry) {
-            assertParentDeadline();
-            ports.removeRepairJournal(ownerId, backend, deviceId);
+            const cleared = ports.removeRepairJournal(ownerId, backend, deviceId, device, journal, assertParentDeadline);
+            if (!cleared.matched) return conflict();
         }
         return {ok:true,device:updated.device,reconciled:true,journalDisposition:preserveJournalForRestoreRetry ? 'retain' : 'clear'};
     }
@@ -143,7 +177,15 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
                 ...(rollback ? { rollback } : {}),};
     }
 
-    async function invoke(ownerId: string, parsed: SnapshotRequest, match: SnapshotOwnerTarget): Promise<SnapshotOutcome<Receipt>> {
+    async function invoke(ownerId: string, parsed: SnapshotRequest, match: SnapshotOwnerTarget, allowance?: SnapshotAllowance): Promise<SnapshotOutcome<Receipt>> {
+        const limits = snapshotInvocationLimits(parsed.tool);
+        const admittedAt = ports.now();
+        const operationDeadlineAt = allowance?.operationDeadlineAt ?? admittedAt + limits.operationMilliseconds;
+        const cleanupDeadlineAt = allowance?.cleanupDeadlineAt ?? operationDeadlineAt + limits.cleanupReserveMilliseconds;
+        const assertOperationDeadline = (): undefined => {
+            ports.remainingTimeout(operationDeadlineAt, limits.operationMilliseconds);
+            return undefined;
+        };
         const deviceId = String(parsed.deviceId);
         let device = match.device;
         const powershell = ports.connection('powershell');
@@ -161,6 +203,7 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
         if (!ports.validIncarnation(ports.incarnation(device))) return {
             kind:'refused',reason:'conflict',journalDisposition:'retain',error: "missing-provider-metadata", missing: ["incarnationId"], ownerId, backend: match.backend, deviceId,
         };
+        assertOperationDeadline();
         const reconciliation = await reconcileSnapshotJournal(
             ownerId,
             match.stateKey,
@@ -170,8 +213,10 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
             parsed.tool === "device_snapshot_restore" && typeof parsed.params.snapshotId === "string"
                 ? parsed.params.snapshotId
                 : undefined,
+            operationDeadlineAt,
         );
         if (!reconciliation.ok) return { kind:'refused',reason:reconciliation.reason,journalDisposition:'retain',error: reconciliation.error, ownerId, backend: match.backend, deviceId, ...(reconciliation.detail ? { detail: reconciliation.detail } : {})};
+        assertOperationDeadline();
         device = reconciliation.device;
         const vmId = typeof device.vmId === "string" ? device.vmId : null;
         const vmName = typeof device.vmName === "string" ? device.vmName : null;
@@ -184,9 +229,8 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
             ports.forgetConsole(ownerId, match.backend || "", deviceId);
         }
         if (parsed.tool === "device_snapshot_list") {
-            // The packaged MCP route allows 60 seconds for this tool. Keep all native reads,
-            // including conflict retries, inside one shorter broker deadline.
-            const listDeadlineAt = ports.now() + 45000;
+            const listDeadlineAt = operationDeadlineAt;
+            assertOperationDeadline();
             const { execution, observation } = await ports.status(powershell, { ownerId, deviceId, incarnationId, vmName, vmId }, listDeadlineAt, 30000);
             if (!execution.ok) {
                 return {
@@ -197,19 +241,24 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
                         deviceId,
                         execution: execution,};
             }
+            assertOperationDeadline();
             const mismatch = ports.observationMismatch(observation, { vmId, vmName, diskPath });
             if (!observation || mismatch) {
                 return { kind:'refused',reason:'provider-failed',journalDisposition:'retain',error: "hyper-v-snapshot-list-invalid-result", detail: mismatch, ownerId, backend: match.backend, deviceId};
             }
             const tracked = trackedHyperVSnapshots(device);
             let observedOwnerSnapshotCount = observation.snapshots?.length ?? 0;
+            const timeoutOutcome: SnapshotOutcome<Receipt> = { kind:'refused',reason:'provider-failed',journalDisposition:'retain',error: "hyper-v-snapshot-list-provider-failed", ownerId, backend: match.backend, deviceId,
+                detail: "hyper-v-status-timeout"};
             const settled = await settleHyperVSnapshotInventory<SnapshotOutcome<Receipt>>(ownerId, tracked, observation.snapshots || [], async () => {
+                assertOperationDeadline();
                 const { execution: retryExecution, observation: retryObservation } = await ports.status(powershell, { ownerId, deviceId, incarnationId, vmName, vmId }, listDeadlineAt, 30000);
                 if (!retryExecution.ok) {
                     return { ok: false as const, error: { kind:'refused',reason:'provider-failed',journalDisposition:'retain',error: "hyper-v-snapshot-list-provider-failed", ownerId, backend: match.backend, deviceId,
                         detail: ports.diagnosticCode(retryExecution, "hyper-v-snapshot-list-provider-failed"),
                         execution: retryExecution} };
                 }
+                assertOperationDeadline();
                 const retryMismatch = ports.observationMismatch(retryObservation, { vmId, vmName, diskPath });
                 if (!retryObservation || retryMismatch) {
                     return { ok: false as const, error: { kind:'refused',reason:'provider-failed',journalDisposition:'retain',error: "hyper-v-snapshot-list-invalid-result", detail: retryMismatch, ownerId, backend: match.backend, deviceId} };
@@ -218,10 +267,13 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
                 return { ok: true as const, snapshots: retryObservation.snapshots || [] };
             }, {
                 deadlineAt: listDeadlineAt,
-                timeoutError: { kind:'refused',reason:'provider-failed',journalDisposition:'retain',error: "hyper-v-snapshot-list-provider-failed", ownerId, backend: match.backend, deviceId,
-                    detail: "hyper-v-status-timeout"},
+                timeoutError: timeoutOutcome,
             });
-            if (!settled.ok) return settled.error;
+            if (!settled.ok) {
+                if (settled.error === timeoutOutcome) assertOperationDeadline();
+                return settled.error;
+            }
+            assertOperationDeadline();
             const { untracked, missing } = settled.conflict;
             if (untracked.length > 0 || missing.length > 0) {
                 return {
@@ -265,7 +317,13 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
         const expectedProviderName = ports.providerName(ownerId, snapshotName);
         const expectedCheckpointPolicy = snapshotCheckpointPolicy(match.backend);
         if (parsed.tool === "device_snapshot_create") {
-            const { execution: statusExecution, observation: decodedStatusObservation } = await ports.status(powershell, { ownerId, deviceId, incarnationId, vmName, vmId }, ports.now() + 30000, 30000);
+            assertOperationDeadline();
+            const preflightDeadlineAt = Math.min(operationDeadlineAt, ports.now() + 30000);
+            const { execution: statusExecution, observation: decodedStatusObservation } = await ports.status(powershell, { ownerId, deviceId, incarnationId, vmName, vmId }, preflightDeadlineAt, 30000);
+            if (statusExecution.ok) {
+                ports.remainingTimeout(preflightDeadlineAt, 30000);
+                assertOperationDeadline();
+            }
             const statusObservation = statusExecution.ok ? decodedStatusObservation : null;
             const mismatch = ports.observationMismatch(statusObservation, { vmId, vmName, diskPath });
             if (!statusObservation || mismatch) {
@@ -277,10 +335,11 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
             }
         }
         const snapshotTarget = { vmId, providerName: expectedProviderName, snapshotId: tracked?.id || null };
-        const snapshotCreateDeadlineAt = parsed.tool === "device_snapshot_create" ? ports.now() + 45000 : null;
-        let snapshotConfirmationDeadlineAt: number | null = null;
+        const snapshotCreateDeadlineAt = Math.min(operationDeadlineAt, ports.now() + 45000);
+        let journal: SnapshotJournal;
+        assertOperationDeadline();
         try {
-            ports.writeJournal(ownerId, match.stateKey, deviceId, incarnationId, parsed.tool, snapshotName, expectedProviderName, tracked?.id, snapshotCheckpointPolicy(match.backend));
+            journal = { ...ports.writeJournal(ownerId, match.stateKey, deviceId, incarnationId, parsed.tool, snapshotName, expectedProviderName, tracked?.id, snapshotCheckpointPolicy(match.backend)) };
         } catch (error) {
             return {
                 kind:'refused',reason:'conflict',journalDisposition:'retain',error: "hyper-v-snapshot-journal-write-failed",
@@ -293,22 +352,28 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
                     ),};
         }
         let observation: SnapshotMutationObservation | SnapshotDeleteObservation;
+        assertOperationDeadline();
         try {
             observation = parsed.tool === "device_snapshot_create"
                 ? await ports.create(powershell, snapshotTarget, {
-                    operationDeadlineAt: snapshotCreateDeadlineAt ?? 0,
-                    timeoutMilliseconds: () => ports.remainingTimeout(Math.min(snapshotCreateDeadlineAt ?? Number.POSITIVE_INFINITY, snapshotConfirmationDeadlineAt ?? Number.POSITIVE_INFINITY), 45000),
-                    onConfirmationDeadline: (deadlineAt) => { snapshotConfirmationDeadlineAt = deadlineAt; return undefined; },
-                    onCreatedId: (snapshotId) => ports.recordCreatedId(ownerId, match.stateKey, deviceId,
-                        incarnationId, expectedProviderName, snapshotId,
-                    ),
+                    timeoutMilliseconds: () => ports.remainingTimeout(snapshotCreateDeadlineAt, 45000),
+                    remainingMilliseconds: () => snapshotCreateDeadlineAt - ports.now(),
+                    monotonicNow: () => ports.now(),
+                    onCreatedId: (snapshotId) => {
+                        // Completion evidence is useful even when the operation has expired.
+                        const recorded = ports.recordCreatedId(ownerId, match.stateKey, deviceId, device, journal, snapshotId);
+                        if (!recorded) throw new Error("hyper-v-snapshot-created-id-journal-mismatch");
+                        journal = { ...recorded };
+                        return undefined;
+                    },
                 })
                 : parsed.tool === "device_snapshot_restore"
                     ? await ports.restore(powershell, snapshotTarget, {
                         force: parsed.params.force === true,
                         startAfterRestore: match.backend === "linux-vm",
+                        deadlineAt: operationDeadlineAt,
                     })
-                    : await ports.delete(powershell, snapshotTarget);
+                    : await ports.delete(powershell, snapshotTarget, operationDeadlineAt);
         } catch (error) {
             // Uncertain create evidence remains journaled; native report mismatches are
             // distinct from ownership/provider failures that require reconciliation.
@@ -327,23 +392,41 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
                 || boundedErrorCode === "hyper-v-snapshot-result-mismatch") {
                 return { kind:'refused',reason:'provider-failed',journalDisposition:'retain',error: "hyper-v-snapshot-invalid-result", ownerId, backend: match.backend, deviceId};
             }
-            // A validation failure before native mutation clears the staged intent.
-            if (ports.isValidationError(error)) {
-                ports.clearJournal(ownerId, match.stateKey, deviceId);
-                return { kind:'refused',reason:'invalid',journalDisposition:'clear',error: "invalid-hyper-v-snapshot-options", ownerId, backend: match.backend, deviceId};
+            const providerErrorKind = ports.providerErrorKind(error);
+            // Validation remains the primary refusal even if its best-effort intent clearing expires.
+            if (providerErrorKind === 'validation') {
+                let cleared = false;
+                try {
+                    assertOperationDeadline();
+                    cleared = ports.clearJournal(ownerId, match.stateKey, deviceId, device, journal, assertOperationDeadline).matched;
+                } catch { /* Keep the primary validation result and recovery evidence. */ }
+                return { kind:'refused',reason:'invalid',journalDisposition:cleared ? 'clear' : 'retain',error: "invalid-hyper-v-snapshot-options", ownerId, backend: match.backend, deviceId};
             }
-            // Capture primary execution evidence before repair issues its own commands.
+            // Cleanup has one admission-captured deadline; capture primary evidence before it runs.
             const execution = (ports.lastExecution() ?? { ok: false });
             const executionDiagnostic = ports.errorCode(error, 'hyper-v-snapshot-provider-failed');
-            const reconciliation = await reconcileSnapshotJournal(ownerId, match.stateKey, deviceId, device, powershell);
+            let reconciliation: SnapshotRepairResult | undefined;
+            try {
+                ports.remainingTimeout(cleanupDeadlineAt, 30000);
+                reconciliation = await reconcileSnapshotJournal(ownerId, match.stateKey, deviceId, device, powershell, undefined, cleanupDeadlineAt, journal);
+            } catch { /* A failed or expired cleanup leaves the primary result authoritative. */ }
+            if (ports.isDeadlineError(error)) throw error;
+            if (providerErrorKind === 'untrusted-response' && reconciliation && !reconciliation.ok && reconciliation.reason === 'conflict') {
+                return { kind:'refused',reason:reconciliation.reason,journalDisposition:'retain',error: reconciliation.error,
+                    ownerId, backend: match.backend, deviceId, execution, executionDiagnostic,
+                    ...(reconciliation.detail ? { detail: reconciliation.detail } : {}) };
+            }
+            const cleanupDetail = reconciliation && !reconciliation.ok ? reconciliation.detail || reconciliation.error : undefined;
             return {
-                kind:'refused',reason:reconciliation.ok ? 'provider-failed' : reconciliation.reason,journalDisposition:'retain',error: reconciliation.ok ? "hyper-v-snapshot-provider-failed" : reconciliation.error,
+                kind:'refused',reason:'provider-failed',journalDisposition:'retain',error: "hyper-v-snapshot-provider-failed",
                     ownerId,
                     backend: match.backend,
                     deviceId,
                     execution, executionDiagnostic,
-                    ...(!reconciliation.ok && reconciliation.detail ? { detail: reconciliation.detail } : {}),};
+                    ...(cleanupDetail ? { detail: cleanupDetail } : {}),};
         }
+        if (parsed.tool === "device_snapshot_create") ports.remainingTimeout(snapshotCreateDeadlineAt, 45000);
+        assertOperationDeadline();
         if (parsed.tool === "device_snapshot_restore" && match.backend === "linux-vm") {
             // A production checkpoint restore leaves the VM off (no saved memory), and device_exec does not
             // auto-start devices. The restore command starts the VM; here we wait for the guest to be
@@ -358,9 +441,10 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
             if (!restoreSsh || !restoreDeviceRoot || !restoreSshPrivateKeyPath || !restoreKnownHostsPath || !restoreGuestUsername || !restoreNetworkAddress) {
                 return { kind:'refused',reason:'conflict',journalDisposition:'retain',error: "hyper-v-linux-guest-metadata-invalid", ownerId, backend: match.backend, deviceId};
             }
-            const restoreReadyDeadline = ports.now() + 120000;
+            const restoreReadyDeadline = Math.min(operationDeadlineAt, ports.now() + 120000);
             let restoreGuestReady = false;
             while (ports.now() < restoreReadyDeadline) {
+                assertOperationDeadline();
                 const restoreReadiness = await ports.sshReady(restoreSsh, {
                     deviceRoot: restoreDeviceRoot,
                     ...(restorePrivateRoot ? { privateRoot: restorePrivateRoot } : {}),
@@ -368,13 +452,22 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
                     knownHostsPath: restoreKnownHostsPath,
                     guestUsername: restoreGuestUsername,
                     networkAddress: restoreNetworkAddress,
-                });
+                }, restoreReadyDeadline);
+                if (!restoreReadiness.execution.ok && Math.floor(restoreReadyDeadline - ports.now()) <= 0) {
+                    return { kind:'refused',reason:'provider-failed',journalDisposition:'retain',error: "hyper-v-linux-guest-provider-failed",
+                        ownerId, backend: match.backend, deviceId, execution: restoreReadiness.execution };
+                }
+                assertOperationDeadline();
+                if (ports.now() >= restoreReadyDeadline) break;
                 if (restoreReadiness.ready) {
                     restoreGuestReady = true;
                     break;
                 }
-                await ports.sleep(2000);
+                const sleepMilliseconds = Math.min(2000, Math.floor(restoreReadyDeadline - ports.now()));
+                if (sleepMilliseconds <= 0) break;
+                await ports.sleep(sleepMilliseconds);
             }
+            assertOperationDeadline();
             if (!restoreGuestReady) {
                 return { kind:'refused',reason:'provider-failed',journalDisposition:'retain',error: "hyper-v-linux-guest-provider-failed", ownerId, backend: match.backend, deviceId};
             }
@@ -388,16 +481,30 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
             createdAt: now,
         };
         const replacement = snapshotActionReplacement(device, parsed.tool, match.backend, snapshots, snapshot, observation.state, now);
-        const transition = ports.publish(ownerId, match.stateKey, deviceId, device, replacement);
+        const journalConflict = new Error("hyper-v-snapshot-state-conflict");
+        const beforePublish = (): undefined => {
+            if (!journalMatches(ownerId, match.stateKey, deviceId, journal)) throw journalConflict;
+            return assertOperationDeadline();
+        };
+        let transition: SnapshotPublication;
+        try {
+            transition = ports.publish(ownerId, match.stateKey, deviceId, device, replacement, beforePublish);
+        } catch (error) {
+            if (error === journalConflict) return hyperVSnapshotStateConflict(ownerId, String(match.backend), deviceId,
+                { found: true, matched: false, device: null });
+            throw error;
+        }
         if (!transition.matched) {
             if (parsed.tool === "device_snapshot_create") {
                 let rollbackObservation: SnapshotDeleteObservation | null = null;
                 try {
+                    ports.remainingTimeout(cleanupDeadlineAt, 120000);
                     rollbackObservation = await ports.delete(powershell, {
                         vmId,
                         providerName: expectedProviderName,
                         snapshotId: snapshot.id,
-                    });
+                    }, cleanupDeadlineAt);
+                    ports.remainingTimeout(cleanupDeadlineAt, 120000);
                 } catch {
                     rollbackObservation = null;
                 }
@@ -413,7 +520,9 @@ export function createBrokerHyperVSnapshotApplication<Connection,Receipt>(ports:
             }
             return hyperVSnapshotStateConflict(ownerId, String(match.backend), deviceId, transition);
         }
-        ports.clearJournal(ownerId, match.stateKey, deviceId);
+        assertOperationDeadline();
+        const cleared = ports.clearJournal(ownerId, match.stateKey, deviceId, device, journal, assertOperationDeadline);
+        if (!cleared.matched) return hyperVSnapshotStateConflict(ownerId, String(match.backend), deviceId, cleared);
         return {
             kind:parsed.tool === 'device_snapshot_create' ? 'created' : parsed.tool === 'device_snapshot_restore' ? 'restored' : 'deleted',journalDisposition:'clear',ownerId,
                     backend: match.backend,

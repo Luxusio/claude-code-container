@@ -46,19 +46,22 @@ export function createBrokerOwnerRepository(ports: BrokerOwnerRepositoryPorts) {
             return { ok: true as const, device };
         });
     }
-    function transitionSnapshot(owner: string, key: string, id: string, expected: Record<string, unknown>, replacement: Record<string, unknown>): {found:boolean;matched:boolean;device:Record<string,unknown>|null} {
-        let found = false, matched = false;
-        let current: Record<string, unknown> | null = null;
-        mutate(owner, key, devices => devices.map(candidate => {
-            if (!ownerRecord(candidate) || candidate.id !== id) return candidate;
-            found = true;
-            current = candidate;
-            if (!ports.equal(candidate, expected)) return candidate;
-            matched = true;
-            current = replacement;
-            return replacement;
-        }));
-        return { found, matched, device: current };
+    function transitionSnapshot(owner: string, key: string, id: string, expected: Record<string, unknown>, replacement: Record<string, unknown>, beforePublish?: () => undefined): {found:boolean;matched:boolean;device:Record<string,unknown>|null} {
+        return ports.withLock(owner, key, () => {
+            const devices = ports.read(owner, key);
+            const index = devices.findIndex(candidate => ownerRecord(candidate) && candidate.id === id);
+            const selected = index < 0 ? null : devices[index];
+            const current = ownerRecord(selected) ? selected : null;
+            if (!current || !ports.equal(current, expected)) {
+                return { found: index >= 0, matched: false, device: current };
+            }
+            const next = devices.map((candidate, candidateIndex) => candidateIndex === index ? replacement : candidate);
+            assertUniqueOwnerDeviceIds(next);
+            ports.validate(next);
+            beforePublish?.();
+            ports.publish(owner, key, next);
+            return { found: true, matched: true, device: replacement };
+        });
     }
     function claimOrReattachPhysical(owner: string, key: string, device: Record<string, unknown>, hardwareField: 'serial' | 'udid') {
         return ports.withLock(owner, key, () => {

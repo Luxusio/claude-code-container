@@ -121,26 +121,117 @@ describe("broker owner repository publication", () => {
         expect(ambiguous.published()).toBeUndefined();
     });
 
-    it("publishes unchanged snapshot conflicts while returning the current successor", () => {
+    it("does not publish snapshot conflicts while returning the current successor", () => {
         const successor = { id: "one", incarnationId: "new" };
         const f = repository([successor]);
         expect(f.app.transitionSnapshot("owner", "windows-vm", "one", { id: "one", incarnationId: "old" }, { id: "one" })).toEqual({ found: true, matched: false, device: successor });
-        expect(f.published()).toEqual([successor]);
+        expect(f.published()).toBeUndefined();
         const replacement = { ...successor, activeSnapshotId: "checkpoint" };
         expect(f.app.transitionSnapshot("owner", "windows-vm", "one", successor, replacement)).toEqual({ found: true, matched: true, device: replacement });
         expect(f.stored()).toEqual([replacement]);
     });
 
-    it("publishes missing snapshot and runtime transitions with their distinct empty carriers", () => {
+    it("keeps missing snapshot state unwritten while retaining the distinct runtime transition carriers", () => {
         const f = repository();
         expect(f.app.transitionSnapshot("owner", "windows-vm", "absent", {}, {})).toEqual({ found: false, matched: false, device: null });
-        expect(f.published()).toEqual([]);
+        expect(f.published()).toBeUndefined();
         const recording = repository();
         expect(recording.app.transitionRecording("owner", "android", "absent", null, null, { stateKey: "android", backend: "android-emulator", device: { id: "absent", backend: "android-emulator" } })).toEqual({ found: false, matched: false, currentRecording: null, device: null });
         expect(recording.published()).toEqual([]);
         const appium = repository();
         expect(appium.app.transitionAppium("owner", "android", "absent", null, null)).toEqual({ found: false, matched: false, currentAppium: null, device: null });
         expect(appium.published()).toEqual([]);
+    });
+
+    it.each(["missing", "incarnationId", "vmId", "name", "snapshots"] as const)(
+        "qualifies the complete snapshot record before guarding or writing a %s target", change => {
+            const captured = { id: "one", incarnationId: "generation", vmId: "vm", name: "captured", snapshots: [{ id: "checkpoint" }] };
+            const other = { id: "other", marker: "unrelated" };
+            const successor = { ...captured, [change]: change === "snapshots" ? [{ id: "new-checkpoint" }] : "successor" };
+            const initial = change === "missing" ? [other] : [other, successor];
+            const f = repository(initial);
+            const validate = vi.fn(() => undefined);
+            const guard = vi.fn((): undefined => { throw new Error("do not guard an unqualified target"); });
+            f.ports.validate = validate;
+
+            expect(f.app.transitionSnapshot("owner", "windows-vm", "one", captured, { ...captured, activeSnapshotId: "checkpoint" }, guard))
+                .toEqual({ found: change !== "missing", matched: false, device: change === "missing" ? null : successor });
+            expect(validate).not.toHaveBeenCalled();
+            expect(guard).not.toHaveBeenCalled();
+            expect(f.published()).toBeUndefined();
+            expect(f.stored()).toEqual(initial);
+        },
+    );
+
+    it("refuses snapshot publication when acquiring the owner lock consumes the remaining deadline", () => {
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm", snapshots: [] };
+        const other = { id: "other", marker: "unrelated" };
+        const replacement = { ...captured, activeSnapshotId: "checkpoint" };
+        const f = repository([other, captured]);
+        const events: string[] = [];
+        let now = 17.25, locked = false;
+        const deadline = now + 5000, expired = new Error("hyper-v-operation-deadline-exceeded");
+        const read = f.ports.read;
+        f.ports.withLock = (owner, key, operation) => {
+            expect([owner, key]).toEqual(["owner", "windows-vm"]);
+            now = deadline; locked = true;
+            try { return operation(); } finally { locked = false; }
+        };
+        f.ports.read = (...args) => { expect(locked).toBe(true); events.push("read"); return read(...args); };
+        f.ports.validate = devices => {
+            expect(locked).toBe(true); expect(devices).toEqual([other, replacement]);
+            events.push("validate"); return undefined;
+        };
+        const guard = vi.fn(() => {
+            expect(locked).toBe(true); events.push("guard");
+            if (now >= deadline) throw expired;
+            return undefined;
+        });
+
+        expect(() => f.app.transitionSnapshot("owner", "windows-vm", "one", captured, replacement, guard)).toThrow(expired);
+        expect(events).toEqual(["read", "validate", "guard"]);
+        expect(guard).toHaveBeenCalledOnce();
+        expect(f.published()).toBeUndefined();
+        expect(f.stored()).toEqual([other, captured]);
+    });
+
+    it("preserves snapshot state validation failure before consulting an expired publication guard", () => {
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm" };
+        const f = repository([captured]), invalid = new Error("invalid snapshot state");
+        f.ports.validate = () => { throw invalid; };
+        const guard = vi.fn((): undefined => { throw new Error("hyper-v-operation-deadline-exceeded"); });
+
+        expect(() => f.app.transitionSnapshot("owner", "windows-vm", "one", captured, { ...captured, snapshots: [] }, guard)).toThrow(invalid);
+        expect(guard).not.toHaveBeenCalled();
+        expect(f.published()).toBeUndefined();
+        expect(f.stored()).toEqual([captured]);
+    });
+
+    it("guards a successful snapshot publication inside the lock after validation and retains unrelated records", () => {
+        const captured = { id: "one", incarnationId: "generation", vmId: "vm", snapshots: [] };
+        const other = { id: "other", marker: "unrelated" };
+        const replacement = { ...captured, activeSnapshotId: "checkpoint" };
+        const f = repository([other, captured]);
+        const events: string[] = [];
+        let locked = false;
+        const publish = f.ports.publish;
+        f.ports.withLock = (_owner, _key, operation) => {
+            locked = true;
+            try { return operation(); } finally { locked = false; }
+        };
+        f.ports.validate = devices => {
+            expect(locked).toBe(true); expect(devices).toEqual([other, replacement]);
+            events.push("validate"); return undefined;
+        };
+        const guard = vi.fn(() => { expect(locked).toBe(true); events.push("guard"); return undefined; });
+        f.ports.publish = (...args) => { expect(locked).toBe(true); events.push("publish"); return publish(...args); };
+
+        expect(f.app.transitionSnapshot("owner", "windows-vm", "one", structuredClone(captured), replacement, guard))
+            .toEqual({ found: true, matched: true, device: replacement });
+        expect(events).toEqual(["validate", "guard", "publish"]);
+        expect(guard).toHaveBeenCalledOnce();
+        expect(f.stored()).toEqual([other, replacement]);
+        expect(f.published()).toEqual([other, replacement]);
     });
 
     it("preserves current runtime generations on mismatches while still publishing the unchanged list", () => {

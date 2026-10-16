@@ -32,7 +32,7 @@ import type { HyperVDesktopTransferPorts } from "./device-lab/ports/hyper-v-desk
 import { desktopRecord, type DesktopOutcome, type DesktopFailureCategory } from "./device-lab/domain/hyper-v-desktop-transfer.js";
 import type { BrokerHyperVSnapshotPorts } from "./device-lab/ports/lifecycle/hyper-v-snapshots.js";
 import { createBrokerHyperVSnapshotApplication } from "./device-lab/application/lifecycle/hyper-v-snapshots.js";
-import { isSnapshotTool } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
+import { isSnapshotTool, snapshotInvocationLimits, type SnapshotAllowance } from "./device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createBrokerRecordingApplication } from "./device-lab/application/broker-recording.js";
 type BrokerAppiumVerification = {ok: true; serverUrl: string; port?: number; [field: string]: unknown} | {ok: false; error: string; [field: string]: unknown};
 import { createBrokerAppiumApplication } from "./device-lab/application/broker-appium.js";
@@ -3827,15 +3827,32 @@ function writeHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: 
 
 function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions, parentDeadlineAt?: number) {
     let lastExecution: DeviceLabHyperVCommandResult | null = null;
-    const now = parentDeadlineAt === undefined ? Date.now : normalized.hyperVMonotonicNow;
+    const now = normalized.hyperVMonotonicNow;
     function recording(executable: string, timeoutMilliseconds: number | (() => number)) {
-        return createRecordingDeviceLabHyperVWindowsClient({
-            executable, timeoutMilliseconds,
-            ...(parentDeadlineAt === undefined ? {} : { now }),
+        let dispatchDeadlineError: HyperVOperationDeadlineError | null = null;
+        const effect = createRecordingDeviceLabHyperVWindowsClient({
+            executable, now, timeoutMilliseconds: () => {
+                try { return typeof timeoutMilliseconds === "function" ? timeoutMilliseconds() : timeoutMilliseconds; }
+                catch (error) {
+                    if (error instanceof HyperVOperationDeadlineError) dispatchDeadlineError = error;
+                    throw error;
+                }
+            },
             run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
             ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(executable) } : {}),
         });
+        return { ...effect, dispatchDeadlineError: () => dispatchDeadlineError };
     }
+    const clearJournal: BrokerHyperVSnapshotPorts<NativeHyperVConnection, DeviceLabHyperVCommandResult>["clearJournal"] = (ownerId, backend, deviceId, expectedDevice, expectedJournal, beforeClear) =>
+        ownerRepository.withSnapshotRepairTarget(ownerId, backend, deviceId, expectedDevice, () => {
+            let currentJournal: HyperVSnapshotJournal | null;
+            try { currentJournal = readHyperVSnapshotJournal(ownerId, backend, deviceId); }
+            catch { return false; }
+            if (!isDeepStrictEqual(currentJournal, expectedJournal)) return false;
+            beforeClear();
+            clearHyperVSnapshotJournal(hyperVJournalPersistenceRuntime(), ownerId, backend, deviceId);
+            return true;
+        });
     const ports: BrokerHyperVSnapshotPorts<NativeHyperVConnection, DeviceLabHyperVCommandResult> = {
         connection: provider => nativeHyperVConnection(normalized, provider),
         incarnation: hyperVDeviceIncarnationId,
@@ -3844,48 +3861,79 @@ function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions, pa
         ownershipNotes: ownershipMarker,
         journalExists: (ownerId, backend, deviceId) => existsSync(hyperVSnapshotJournalPath(ownerId, backend, deviceId)),
         readJournal: readHyperVSnapshotJournal,
-        writeJournal: (...args) => { writeHyperVSnapshotJournal(...args); return undefined; },
-        recordCreatedId: (...args) => { recordHyperVSnapshotCreatedId(hyperVJournalPersistenceRuntime(), ...args); return undefined; },
-        clearJournal: (...args) => { clearHyperVSnapshotJournal(hyperVJournalPersistenceRuntime(), ...args); return undefined; },
-        removeRepairJournal: (ownerId, backend, deviceId) => { rmSync(hyperVSnapshotJournalPath(ownerId, backend, deviceId), { force: true }); return undefined; },
+        writeJournal: (...args) => {
+            writeHyperVSnapshotJournal(...args);
+            const journal = readHyperVSnapshotJournal(args[0], args[1], args[2]);
+            if (!journal) throw new Error("hyper-v-snapshot-journal-write-failed");
+            return journal;
+        },
+        recordCreatedId: (ownerId, backend, deviceId, expectedDevice, expectedJournal, snapshotId) => {
+            let recorded: HyperVSnapshotJournal | null = null;
+            const target = ownerRepository.withSnapshotRepairTarget(ownerId, backend, deviceId, expectedDevice, () => {
+                let currentJournal: HyperVSnapshotJournal | null;
+                try { currentJournal = readHyperVSnapshotJournal(ownerId, backend, deviceId); }
+                catch { return false; }
+                if (!isDeepStrictEqual(currentJournal, expectedJournal)) return false;
+                recordHyperVSnapshotCreatedId(hyperVJournalPersistenceRuntime(), ownerId, backend, deviceId,
+                    expectedJournal.incarnationId, expectedJournal.providerName, snapshotId);
+                recorded = readHyperVSnapshotJournal(ownerId, backend, deviceId);
+                return recorded !== null;
+            });
+            return target.matched ? recorded : null;
+        },
+        clearJournal,
+        removeRepairJournal: clearJournal,
         status: async (connection, identity, deadlineAt, timeoutMs) => {
-            if (parentDeadlineAt !== undefined) hyperVRemainingTimeout(parentDeadlineAt, timeoutMs, now);
-            const receipt = await hyperVTypedStatusExecution(normalized, {executable: connection.executable, ...identity}, deadlineAt, timeoutMs, true, now, parentDeadlineAt);
+            const parent = parentDeadlineAt ?? deadlineAt;
+            hyperVRemainingTimeout(parent, timeoutMs, now);
+            const receipt = await hyperVTypedStatusExecution(normalized, {executable: connection.executable, ...identity}, deadlineAt, timeoutMs, true, now, parent);
             const ok = commandSucceeded(receipt);
-            if (ok && parentDeadlineAt !== undefined) hyperVRemainingTimeout(parentDeadlineAt, timeoutMs, now);
+            if (ok) hyperVRemainingTimeout(parent, timeoutMs, now);
             return { execution: { ok, receipt }, observation: ok ? parseHyperVVmObservation(receipt.stdout || "") : null };
         },
         observationMismatch: hyperVSnapshotObservationMismatch,
         create: async (connection, target, options) => {
-            const effect = recording(connection.executable, options.timeoutMilliseconds);
-            try { return await createDeviceLabHyperVSnapshot(effect.client, target, options); }
+            const confirmationTimeoutMilliseconds = 10000;
+            let confirmationDeadlineAt: number | undefined;
+            const effect = recording(connection.executable, () => {
+                const operationTimeout = options.timeoutMilliseconds();
+                return confirmationDeadlineAt === undefined ? operationTimeout
+                    : Math.min(operationTimeout, hyperVRemainingTimeout(confirmationDeadlineAt, confirmationTimeoutMilliseconds, now));
+            });
+            try { return await createDeviceLabHyperVSnapshot(effect.client, target, {
+                ...options,
+                confirmationTimeoutMilliseconds,
+                onCreatedId: snapshotId => {
+                    options.onCreatedId(snapshotId);
+                    confirmationDeadlineAt = now() + Math.min(confirmationTimeoutMilliseconds, options.remainingMilliseconds());
+                },
+            }); }
+            catch (error) { throw effect.dispatchDeadlineError() ?? error; }
             finally { lastExecution = effect.lastExecution(); }
         },
         restore: async (connection, target, options) => {
-            const effect = recording(connection.executable, 120000);
+            const effect = recording(connection.executable, () => hyperVRemainingTimeout(options.deadlineAt, 120000, now));
             try { return await restoreDeviceLabHyperVSnapshot(effect.client, target, options); }
+            catch (error) { throw effect.dispatchDeadlineError() ?? error; }
             finally { lastExecution = effect.lastExecution(); }
         },
-        delete: async (connection, target) => {
-            const effect = recording(connection.executable, 120000);
+        delete: async (connection, target, deadlineAt) => {
+            const effect = recording(connection.executable, () => hyperVRemainingTimeout(deadlineAt, 120000, now));
             try { return await deleteDeviceLabHyperVSnapshot(effect.client, target); }
+            catch (error) { throw effect.dispatchDeadlineError() ?? error; }
             finally { lastExecution = effect.lastExecution(); }
         },
         repairPolicy: async (connection, target, deadlineAt) => {
-            let dispatchDeadlineError: HyperVOperationDeadlineError | null = null;
-            const effect = recording(connection.executable, deadlineAt === undefined ? 30000 : () => {
-                try { return hyperVRemainingTimeout(deadlineAt, 30000, now); }
-                catch (error) {
-                    if (error instanceof HyperVOperationDeadlineError) dispatchDeadlineError = error;
-                    throw error;
-                }
-            });
+            const effect = recording(connection.executable, deadlineAt === undefined ? 30000 : () => hyperVRemainingTimeout(deadlineAt, 30000, now));
             try { return await repairDeviceLabHyperVSnapshotState(effect.client, target); }
-            catch (error) { throw dispatchDeadlineError ?? error; }
+            catch (error) { throw effect.dispatchDeadlineError() ?? error; }
             finally { lastExecution = effect.lastExecution(); }
         },
         lastExecution: () => lastExecution ? { ok: lastExecution.status === 0 && !lastExecution.error, receipt: lastExecution } : null,
-        isValidationError: error => error instanceof HyperVWindowsError && error.category === "validation",
+        providerErrorKind: error => error instanceof HyperVWindowsError
+            ? error.category === "validation" ? "validation"
+                : error.category === "protocol" || error.category === "transport" ? "untrusted-response" : null
+            : null,
         isDeadlineError: error => error instanceof HyperVOperationDeadlineError,
         providerErrorCode: error => error instanceof HyperVWindowsError ? error.code : undefined,
         errorCode: hyperVBoundedErrorCode,
@@ -3897,10 +3945,11 @@ function brokerHyperVSnapshotApplication(normalized: NormalizedBrokerOptions, pa
         publish: transitionHyperVSnapshotState,
         mergeRepair: (ownerId, backend, deviceId, original, patch, beforePublish) => ownerRepository.mergeSnapshotRepair(ownerId, backend, deviceId, original, patch, beforePublish),
         forgetConsole: (ownerId, backend, deviceId) => { forgetHyperVConsoleFrame(hyperVConsoleFrameKey(ownerId, backend, deviceId)); return undefined; },
-        sshReady: async (connection, target) => {
+        sshReady: async (connection, target, deadlineAt) => {
+            const timeoutMs = hyperVRemainingTimeout(deadlineAt, 20000, now);
             const receipt = await hyperVProviderCommandRunner(normalized, hyperVLinuxSshReadyCommand({
-                executable: connection.executable, ...target, timeoutMs: 15000,
-            }), { timeoutMs: 20000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
+                executable: connection.executable, ...target, timeoutMs: Math.min(15000, timeoutMs),
+            }), { timeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
             const observation = deviceLabHyperVLinuxReadinessObservation(receipt);
             return { ready: observation.ready, execution: { ok: observation.ok, receipt } };
         },
@@ -3922,8 +3971,8 @@ function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, device
 
 
 
-function transitionHyperVSnapshotState(ownerId: string, backend: string, deviceId: string, expected: Record<string, unknown>, replacement: Record<string, unknown>) {
-    return ownerRepository.transitionSnapshot(ownerId, backend, deviceId, expected, replacement);
+function transitionHyperVSnapshotState(ownerId: string, backend: string, deviceId: string, expected: Record<string, unknown>, replacement: Record<string, unknown>, beforePublish?: () => undefined) {
+    return ownerRepository.transitionSnapshot(ownerId, backend, deviceId, expected, replacement, beforePublish);
 }
 
 
@@ -4076,12 +4125,12 @@ function renderHyperVDesktopOutcome(outcome: DesktopOutcome): BrokerRpcResult {
     return {status:outcome.kind === 'failure'?statuses[outcome.category]:200,payload:hyperVDesktopPayload(outcome)};
 }
 
-async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
-    if (isSnapshotTool(parsed.tool)) return renderHyperVSnapshot(await brokerHyperVSnapshotApplication(normalized).invoke(ownerId, { tool: parsed.tool, deviceId: parsed.deviceId, params: parsed.params }, match));
+async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions, snapshotAllowance?: SnapshotAllowance): Promise<BrokerRpcResult> {
+    if (isSnapshotTool(parsed.tool)) return renderHyperVSnapshot(await brokerHyperVSnapshotApplication(normalized).invoke(ownerId, { tool: parsed.tool, deviceId: parsed.deviceId, params: parsed.params }, match, snapshotAllowance));
     return renderHyperVDesktopOutcome(await brokerHyperVDesktopTransferApplication(normalized).invoke(ownerId, parsed, match));
 }
 
-async function invokeBackendDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {
+async function invokeBackendDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions, snapshotAllowance?: SnapshotAllowance): Promise<BrokerRpcResult> {
     const match = findOwnerDeviceForTool(ownerId, parsed);
     if ("status" in match) return match;
     if (!brokerDeviceToolSupportedByBackend(match.backend, parsed.tool)) {
@@ -4100,7 +4149,7 @@ async function invokeBackendDeviceTool(ownerId: string, parsed: DeviceToolParamS
     }
     const leaseFailure = refreshPhysicalDeviceLeaseForOperation(ownerId, match, String(parsed.deviceId));
     if (leaseFailure) return leaseFailure;
-    if (isHyperVBackend(match.backend)) return await invokeHyperVDeviceTool(ownerId, parsed, match, normalized);
+    if (isHyperVBackend(match.backend)) return await invokeHyperVDeviceTool(ownerId, parsed, match, normalized, snapshotAllowance);
     return await normalized.deviceToolRunner(ownerId, parsed, match, normalized);
 }
 
@@ -4115,13 +4164,25 @@ async function invokeBrokerExecutor(ownerId: string, deviceId: string, executor:
     if (executor.acquisitionOwner !== "broker") return executor.workflow();
     const nestedStateKey = executor.nestedStateKey;
     const workflow = nestedStateKey
-        ? () => withOwnerDeviceOperation(ownerId, nestedStateKey, deviceId, executor.workflow)
+        ? () => withOwnerDeviceOperation(ownerId, nestedStateKey, deviceId, executor.workflow, executor.waitBudget)
         : executor.workflow;
     return withOwnerDeviceOperation(ownerId, executor.stateKey, deviceId, workflow, executor.waitBudget);
 }
 
 function deviceToolExecutor(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): BrokerExecutorDescriptor | BrokerRpcResult {
-    const backendWorkflow = () => invokeBackendDeviceTool(ownerId, parsed, normalized);
+    let snapshotAllowance: SnapshotAllowance | undefined;
+    const backendWorkflow = () => invokeBackendDeviceTool(ownerId, parsed, normalized, snapshotAllowance);
+    const hyperVExecutor = (stateKey: string, backend: string, nestedStateKey?: string): BrokerExecutorDescriptor => {
+        if (isSnapshotTool(parsed.tool)) {
+            const admittedAt = normalized.hyperVMonotonicNow();
+            const limits = snapshotInvocationLimits(parsed.tool);
+            const operationDeadlineAt = admittedAt + limits.operationMilliseconds;
+            snapshotAllowance = { operationDeadlineAt, cleanupDeadlineAt: operationDeadlineAt + limits.cleanupReserveMilliseconds };
+        }
+        const allowance = snapshotAllowance;
+        return { acquisitionOwner: "broker", stateKey, backend, nestedStateKey, workflow: backendWorkflow,
+            ...(allowance ? { waitBudget: { remaining: () => allowance.operationDeadlineAt - normalized.hyperVMonotonicNow() } } : {}) };
+    };
     if (parsed.tool === "device_inventory") {
         return { acquisitionOwner: "specialized", workflow: () => invokeDeviceInventory(ownerId, parsed, normalized) };
     }
@@ -4163,15 +4224,15 @@ function deviceToolExecutor(ownerId: string, parsed: DeviceToolParamSuccess, nor
     }
     if (DEVICE_BROKER_BACKEND_TOOL_METHODS.has(parsed.tool)) {
         if (isHyperVBackend(parsed.backend) && parsed.stateKey) {
-            return { acquisitionOwner: "broker", stateKey: parsed.stateKey, backend: String(parsed.backend), workflow: backendWorkflow };
+            return hyperVExecutor(parsed.stateKey, String(parsed.backend));
         }
         const match = findOwnerDeviceForTool(ownerId, parsed);
         if ("status" in match) {
             if (parsed.backend || match.status !== 404) return match;
-            return { acquisitionOwner: "broker", stateKey: "windows-vm", nestedStateKey: "linux-vm", backend: "windows-vm", workflow: backendWorkflow };
+            return hyperVExecutor("windows-vm", "windows-vm", "linux-vm");
         }
         if (isHyperVBackend(match.backend)) {
-            return { acquisitionOwner: "broker", stateKey: match.stateKey, backend: String(match.backend), workflow: backendWorkflow };
+            return hyperVExecutor(match.stateKey, String(match.backend));
         }
         return { acquisitionOwner: "backend", workflow: backendWorkflow };
     }
@@ -4191,6 +4252,13 @@ async function invokeDeviceTool(ownerId: string, params: unknown, normalized: No
     try {
         return await invokeBrokerExecutor(ownerId, String(parsed.deviceId), executor);
     } catch (error) {
+        if (executor.acquisitionOwner === "broker" && isHyperVBackend(executor.backend)
+            && isSnapshotTool(parsed.tool)) {
+            const deadlineError = error instanceof HyperVOperationDeadlineError ? error
+                : isDeviceOperationLockTimeout(error) && executor.waitBudget && Math.floor(executor.waitBudget.remaining()) <= 0
+                    ? new HyperVOperationDeadlineError() : null;
+            if (deadlineError) return { status: 504, payload: { ok: false, error: deadlineError.code, ownerId, backend: executor.backend, deviceId: parsed.deviceId } };
+        }
         if (executor.acquisitionOwner !== "broker" || !isDeviceOperationLockTimeout(error)) throw error;
         return deviceOperationLockFailure(ownerId, executor.backend, String(parsed.deviceId), error);
     }

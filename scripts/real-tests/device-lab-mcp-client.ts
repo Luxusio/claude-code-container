@@ -1,4 +1,6 @@
 import { TOOLS, toolOperation, isSimpleAction, CREATE_TOOL_BACKENDS } from "../../device-lab-mcp/src/tools.mjs";
+import { brokerDeviceToolExecutionTimeout } from "../../device-lab-mcp/src/domain/device-request.mjs";
+import { isSnapshotTool } from "@ccc/device-lab/device-lab/domain/lifecycle/hyper-v-snapshots.js";
 import { createHash, randomUUID } from "crypto";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -87,6 +89,14 @@ export function realMcpToolRequestTimeoutMs(name: string, args: Record<string, a
     const timeoutMs = Number(args?.timeoutMs);
     if (Number.isFinite(timeoutMs)) {
         return Math.min(MAX_REAL_MCP_TOOL_TIMEOUT_MS, Math.max(DEFAULT_REAL_MCP_TOOL_TIMEOUT_MS, timeoutMs + 30000));
+    }
+    const operation = toolOperation(name, args);
+    if (operation && isSnapshotTool(operation)) {
+        const serverTimeoutMs = brokerDeviceToolExecutionTimeout(operation, args).rpcTimeoutMs ?? 0;
+        return Math.min(MAX_REAL_MCP_TOOL_TIMEOUT_MS, Math.max(
+            DEFAULT_REAL_MCP_TOOL_TIMEOUT_MS,
+            serverTimeoutMs + REAL_MCP_CLIENT_RPC_BUFFER_MS,
+        ));
     }
     if (name === "create_android_emulator" && Boolean(args?.systemImage)) return LONG_REAL_MCP_TOOL_TIMEOUT_MS;
     if (name === "start" && args?.waitForBoot === true) {

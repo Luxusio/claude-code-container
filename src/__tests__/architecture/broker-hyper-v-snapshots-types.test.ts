@@ -1,27 +1,73 @@
 import { describe, expect, it } from "vitest";
 import { createBrokerHyperVSnapshotApplication } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-snapshots.js";
-import { snapshotCheckpointPolicy, type SnapshotOwnerTarget, type SnapshotRepairResult, type SnapshotOutcome, type SnapshotExecution, type SnapshotVmObservation } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-snapshots.js";
-import type { BrokerHyperVSnapshotPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-snapshots.js";
+import { snapshotCheckpointPolicy, type SnapshotAllowance, type SnapshotJournal, type SnapshotOwnerTarget, type SnapshotRepairResult, type SnapshotOutcome, type SnapshotExecution, type SnapshotVmObservation } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-snapshots.js";
+import type { BrokerHyperVSnapshotPorts, SnapshotPublication } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-snapshots.js";
 
 type Connection = { readonly providerId: string };
 type Receipt = { readonly nativeEvidence: string };
 
 function snapshotCapabilityContracts(ports: BrokerHyperVSnapshotPorts<Connection, Receipt>, target: SnapshotOwnerTarget, connection: Connection): void {
     const application = createBrokerHyperVSnapshotApplication(ports);
+    const allowance: SnapshotAllowance = { operationDeadlineAt: 75000, cleanupDeadlineAt: 105000 };
     const operation: Promise<SnapshotOutcome<Receipt>> = application.invoke("owner", {
         tool: "device_snapshot_create", deviceId: "vm", params: { snapshotName: "baseline", incarnationId: "generation" },
-    }, target);
+    }, target, allowance);
     const repair: Promise<SnapshotRepairResult> = application.repair("owner", {
         backend: "linux-vm", deviceId: "vm", device: target.device, connection,
     }, "exact-checkpoint-id");
     const completed: SnapshotExecution<Receipt> = { ok: true };
     const failed: SnapshotExecution<Receipt> = { ok: false, receipt: { nativeEvidence: "opaque" } };
+    const providerErrorKind: "validation" | "untrusted-response" | null = ports.providerErrorKind(new Error("provider failure"));
     const status: Promise<{ execution: SnapshotExecution<Receipt>; observation: SnapshotVmObservation | null }> = ports.status(connection,
         { ownerId: "owner", deviceId: "vm", incarnationId: "generation", vmName: "vm", vmId: "native-vm" }, 45000, 30000);
     const readiness: Promise<{ ready: boolean; execution: SnapshotExecution<Receipt> }> = ports.sshReady(connection,
-        { deviceRoot: "/device", sshPrivateKeyPath: "/key", knownHostsPath: "/known-hosts", guestUsername: "guest", networkAddress: "192.0.2.5" });
+        { deviceRoot: "/device", sshPrivateKeyPath: "/key", knownHostsPath: "/known-hosts", guestUsername: "guest", networkAddress: "192.0.2.5" }, allowance.operationDeadlineAt);
+    const journal: SnapshotJournal = ports.writeJournal("owner", "linux-vm", "vm", "generation",
+        "device_snapshot_create", "baseline", "owned-provider-name", undefined, "Production");
+    const recorded: SnapshotJournal | null = ports.recordCreatedId("owner", "linux-vm", "vm", target.device, journal, "created-checkpoint");
+    const cleared: SnapshotPublication = ports.clearJournal("owner", "linux-vm", "vm", target.device, journal, () => undefined);
+    const repaired: SnapshotPublication = ports.removeRepairJournal("owner", "linux-vm", "vm", target.device, journal, () => undefined);
+    ports.publish("owner", "linux-vm", "vm", target.device, target.device, () => undefined);
+    ports.restore(connection, { vmId: "vm", providerName: "owned", snapshotId: "checkpoint" },
+        { force: false, startAfterRestore: true, deadlineAt: allowance.operationDeadlineAt });
+    ports.delete(connection, { vmId: "vm", providerName: "owned", snapshotId: "checkpoint" }, allowance.cleanupDeadlineAt);
+    ports.create(connection, { vmId: "vm", providerName: "owned", snapshotId: null }, {
+        timeoutMilliseconds: () => 45000, remainingMilliseconds: () => 75000,
+        monotonicNow: () => 0, onCreatedId: () => undefined,
+    });
+    // @ts-expect-error The immutable allowance cannot be renewed during a later phase.
+    allowance.operationDeadlineAt = 120000;
+    // @ts-expect-error Cleanup retains the same admission-captured immutable deadline.
+    allowance.cleanupDeadlineAt = 150000;
+    // @ts-expect-error Exact created-ID evidence requires its captured target and whole journal.
+    ports.recordCreatedId("owner", "linux-vm", "vm", "generation", "owned-provider-name", "created-checkpoint");
+    // @ts-expect-error Three IDs alone cannot authorize clearing recovery evidence.
+    ports.clearJournal("owner", "linux-vm", "vm");
+    // @ts-expect-error Repair clearing also needs a guard at its actual authority boundary.
+    ports.removeRepairJournal("owner", "linux-vm", "vm", target.device, journal);
+    // @ts-expect-error A journal write must return the actual captured journal, not unqualified void success.
+    createBrokerHyperVSnapshotApplication({ ...ports, writeJournal: () => undefined });
+    // @ts-expect-error Journal clearing must return a qualified settled publication result.
+    createBrokerHyperVSnapshotApplication({ ...ports, clearJournal: () => undefined });
+    // @ts-expect-error Repair clearing must also return its qualified settled publication result.
+    createBrokerHyperVSnapshotApplication({ ...ports, removeRepairJournal: () => undefined });
+    // @ts-expect-error Refused exact-ID recording is explicitly null, never unqualified void success.
+    createBrokerHyperVSnapshotApplication({ ...ports, recordCreatedId: () => undefined });
+    // @ts-expect-error Native restore must receive the invocation's remaining deadline authority.
+    ports.restore(connection, { vmId: "vm", providerName: "owned", snapshotId: "checkpoint" }, { force: false, startAfterRestore: true });
+    // @ts-expect-error Native deletion must receive action or cleanup deadline authority.
+    ports.delete(connection, { vmId: "vm", providerName: "owned", snapshotId: "checkpoint" });
     ports.diagnosticCode(failed, "fallback", "typed-provider-code");
     ports.diagnosticCode(null, "fallback");
+    // @ts-expect-error A validation-only predicate cannot distinguish an untrusted response from a native failure.
+    ports.isValidationError(new Error("provider failure"));
+    // @ts-expect-error Provider classification supplies semantic evidence rather than a boolean predicate.
+    createBrokerHyperVSnapshotApplication({ ...ports, providerErrorKind: () => true });
+    // @ts-expect-error Native protocol details must be mapped to the inward untrusted-response classification.
+    createBrokerHyperVSnapshotApplication({ ...ports, providerErrorKind: () => "protocol" });
+    const { providerErrorKind: classifyProviderError, ...withoutProviderErrorKind } = ports;
+    // @ts-expect-error Failure reconciliation requires semantic provider classification at the boundary.
+    createBrokerHyperVSnapshotApplication(withoutProviderErrorKind);
     // @ts-expect-error A native receipt alone cannot classify an execution.
     const unclassified: SnapshotExecution<Receipt> = { receipt: { nativeEvidence: "opaque" } };
     // @ts-expect-error Native process fields do not belong to inward execution facts.
@@ -53,7 +99,8 @@ function snapshotCapabilityContracts(ports: BrokerHyperVSnapshotPorts<Connection
     createBrokerHyperVSnapshotApplication({ ...ports, delete: async () => ({ ok: true, snapshotId: "checkpoint", snapshotName: "owned" }) });
     // @ts-expect-error Repair policy admits only zero or one exact candidate; ambiguity is not a valid result.
     createBrokerHyperVSnapshotApplication({ ...ports, repairPolicy: async () => ({ checkpointPolicy: "Production", candidateCount: 2 }) });
-    void [operation, repair, completed, failed, status, readiness, unclassified, rawExecution, readJournal, recordCreatedId, publish];
+    void [operation, repair, completed, failed, providerErrorKind, status, readiness, journal, recorded, cleared, repaired,
+        unclassified, rawExecution, readJournal, recordCreatedId, publish, classifyProviderError];
 }
 void snapshotCapabilityContracts;
 

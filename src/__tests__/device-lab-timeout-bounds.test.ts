@@ -17,7 +17,7 @@ import {
     brokerDeviceToolExecutionTimeout,
     brokerLifecycleExecutionTimeout,
 } from "../../device-lab-mcp/src/server.mjs";
-import { TOOLS } from "../../device-lab-mcp/src/tools.mjs";
+import { TOOLS, toolOperation } from "../../device-lab-mcp/src/tools.mjs";
 import {
     DEVICE_BROKER_MAX_HELPER_TIMEOUT_MS,
     DEVICE_BROKER_MAX_OPERATION_TIMEOUT_MS,
@@ -37,6 +37,13 @@ import {
 function toolProperty(toolName: string, property: string): Record<string, unknown> {
     const tool = TOOLS.find((candidate) => candidate.name === toolName);
     return ((tool?.inputSchema?.properties || {})[property] || {}) as Record<string, unknown>;
+}
+
+function snapshotRequestTimeout(action: string, args: Record<string, unknown> = {}) {
+    const request = { deviceId: "owned-snapshot-vm", action, ...args };
+    const operation = toolOperation("snapshot", request);
+    expect(operation).toBe(`device_snapshot_${action}`);
+    return brokerDeviceToolExecutionTimeout(operation!, request);
 }
 
 describe("device-lab public timeout bounds", () => {
@@ -105,6 +112,70 @@ describe("device-lab public timeout bounds", () => {
         });
         expect(brokerDeviceToolExecutionTimeout("device_inventory", {})).toEqual({
             rpcTimeoutMs: 60000,
+        });
+    });
+
+    describe("Hyper-V snapshot broker completion", () => {
+        const routes = [
+            { backend: "windows-vm" },
+            { backend: "linux-vm", provider: "hyper-v" },
+            { backend: "linux-vm" },
+            {}, // Public snapshot calls omit backend; owner inventory resolves it at the broker.
+        ];
+
+        it.each(routes)("waits for create preflight, mutation and cleanup before returning: %j", (route) => {
+            const timeout = snapshotRequestTimeout("create", route);
+            // Preflight can consume 30s before a 45s native create; keep its 30s recovery
+            // reserve and 15s return margin instead of dropping the reply at the old 60s.
+            expect(timeout).toEqual({ rpcTimeoutMs: 120000 });
+            expect(timeout.rpcTimeoutMs).toBeGreaterThanOrEqual(30000 + 45000 + 30000 + 15000);
+        });
+
+        it.each(routes)("keeps the full restore and Linux guest-readiness window: %j", (route) => {
+            const timeout = snapshotRequestTimeout("restore", route);
+            expect(timeout).toEqual({ rpcTimeoutMs: 285000 });
+            expect(timeout.rpcTimeoutMs).toBeGreaterThanOrEqual(120000 + 120000 + 30000 + 15000);
+        });
+
+        it.each(routes)("waits for deletion and its cleanup outcome: %j", (route) => {
+            const timeout = snapshotRequestTimeout("delete", route);
+            expect(timeout).toEqual({ rpcTimeoutMs: 165000 });
+            expect(timeout.rpcTimeoutMs).toBeGreaterThanOrEqual(120000 + 30000 + 15000);
+        });
+
+        it.each(routes)("keeps list bounded without adding a mutation cleanup reserve: %j", (route) => {
+            expect(snapshotRequestTimeout("list", route)).toEqual({ rpcTimeoutMs: 60000 });
+        });
+
+        it("retains unrelated provider defaults and introduces no snapshot timeout argument", () => {
+            for (const route of [
+                { backend: "macos-vm" },
+                { backend: "linux-vm", provider: "container-qemu" },
+            ]) {
+                for (const action of ["list", "create", "restore", "delete"]) {
+                    expect(snapshotRequestTimeout(action, route), `${route.backend}/${route.provider || "default"}/${action}`)
+                        .toEqual({ rpcTimeoutMs: 60000 });
+                }
+            }
+            for (const property of ["timeoutMs", "rpcTimeoutMs", "helperTimeoutMs"]) {
+                expect(toolProperty("snapshot", property)).toEqual({});
+            }
+        });
+
+        it("preserves explicit caller timeout precedence and bounds on snapshot requests", () => {
+            for (const action of ["list", "create", "restore", "delete"]) {
+                const route = { backend: "windows-vm" };
+                expect(snapshotRequestTimeout(action, { ...route, rpcTimeoutMs: 4500.9, timeoutMs: 9000 }))
+                    .toEqual({ rpcTimeoutMs: 4500 });
+                expect(snapshotRequestTimeout(action, { ...route, timeoutMs: 5500.9 }))
+                    .toEqual({ rpcTimeoutMs: 5500 });
+                expect(snapshotRequestTimeout(action, { ...route, helperTimeoutMs: 5000 }))
+                    .toEqual({ rpcTimeoutMs: 35000 });
+                expect(snapshotRequestTimeout(action, { ...route, rpcTimeoutMs: 0 }))
+                    .toEqual({ rpcTimeoutMs: 30000 });
+                expect(snapshotRequestTimeout(action, { ...route, rpcTimeoutMs: Number.MAX_SAFE_INTEGER }))
+                    .toEqual({ rpcTimeoutMs: MAX_DEVICE_OPERATION_TIMEOUT_MS + 30000 });
+            }
         });
     });
 

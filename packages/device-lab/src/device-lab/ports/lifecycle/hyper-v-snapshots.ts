@@ -6,10 +6,10 @@ import type {
 export type SnapshotIdentity = { ownerId: string; deviceId: string; incarnationId: string; vmName: string; vmId: string };
 export type SnapshotPublication = { found: boolean; matched: boolean; device: Record<string, unknown> | null };
 export type SnapshotCreateOptions = {
-    operationDeadlineAt: number;
     timeoutMilliseconds(): number;
+    remainingMilliseconds(): number;
+    monotonicNow(): number;
     onCreatedId(id: string): undefined;
-    onConfirmationDeadline(deadlineAt: number): undefined;
 };
 export type SnapshotRepairPatch = {
     snapshots: SnapshotTracked[]; activeSnapshotId: string | null; runtimeState: string; status: string;
@@ -26,26 +26,26 @@ export interface BrokerHyperVSnapshotPorts<Connection,Receipt> {
     readJournal(ownerId: string, backend: string, deviceId: string): SnapshotJournal | null;
     writeJournal(ownerId: string, backend: string, deviceId: string, incarnationId: string,
         tool: SnapshotJournal["tool"], snapshotName: string, providerName: string,
-        snapshotId: string | undefined, policy: SnapshotCheckpointPolicy): undefined;
-    recordCreatedId(ownerId: string, backend: string, deviceId: string, incarnationId: string, providerName: string, snapshotId: string): undefined;
-    clearJournal(ownerId: string, backend: string, deviceId: string): undefined;
-    removeRepairJournal(ownerId: string, backend: string, deviceId: string): undefined;
+        snapshotId: string | undefined, policy: SnapshotCheckpointPolicy): SnapshotJournal;
+    recordCreatedId(ownerId: string, backend: string, deviceId: string, expectedDevice: Record<string, unknown>, expectedJournal: SnapshotJournal, snapshotId: string): SnapshotJournal | null;
+    clearJournal(ownerId: string, backend: string, deviceId: string, expectedDevice: Record<string, unknown>, expectedJournal: SnapshotJournal, beforeClear: () => undefined): SnapshotPublication;
+    removeRepairJournal(ownerId: string, backend: string, deviceId: string, expectedDevice: Record<string, unknown>, expectedJournal: SnapshotJournal, beforeClear: () => undefined): SnapshotPublication;
     status(connection:Connection, identity: SnapshotIdentity, deadlineAt: number, timeoutMs: number): Promise<{ readonly execution: SnapshotExecution<Receipt>; readonly observation: SnapshotVmObservation | null }>;
     observationMismatch(observation: SnapshotVmObservation | null, expected: { vmId: string; vmName: string; diskPath: string }): string | null;
     create(connection:Connection, target: SnapshotCheckpointTarget, options: SnapshotCreateOptions): Promise<SnapshotMutationObservation>;
-    restore(connection:Connection, target: SnapshotCheckpointTarget, options: { force: boolean; startAfterRestore: boolean }): Promise<SnapshotMutationObservation>;
-    delete(connection:Connection, target: SnapshotCheckpointTarget): Promise<SnapshotDeleteObservation>;
+    restore(connection:Connection, target: SnapshotCheckpointTarget, options: { force: boolean; startAfterRestore: boolean; deadlineAt: number }): Promise<SnapshotMutationObservation>;
+    delete(connection:Connection, target: SnapshotCheckpointTarget, deadlineAt: number): Promise<SnapshotDeleteObservation>;
     repairPolicy(connection:Connection, target: { vmId: string; vmName: string; expectedNotes: string; providerName: string; expectedCheckpointPolicy: SnapshotCheckpointPolicy }, deadlineAt?: number): Promise<{ readonly checkpointPolicy: SnapshotCheckpointPolicy; readonly candidateCount: 0 | 1 }>;
     lastExecution(): SnapshotExecution<Receipt> | null;
-    isValidationError(error: unknown): boolean;
+    providerErrorKind(error: unknown): 'validation' | 'untrusted-response' | null;
     isDeadlineError(error: unknown): boolean;
     providerErrorCode(error: unknown): string | undefined;
     errorCode(error: unknown, fallback: string): string;
     diagnosticCode(execution: SnapshotExecution<Receipt> | null, fallback: string, providerErrorCode?: string): string;
-    publish(ownerId: string, backend: string, deviceId: string, expected: Record<string, unknown>, replacement: Record<string, unknown>): SnapshotPublication;
+    publish(ownerId: string, backend: string, deviceId: string, expected: Record<string, unknown>, replacement: Record<string, unknown>, beforePublish?: () => undefined): SnapshotPublication;
     mergeRepair(ownerId: string, backend: string, deviceId: string, original: Record<string, unknown>, patch: SnapshotRepairPatch, beforePublish?: () => undefined): SnapshotPublication;
     forgetConsole(ownerId: string, backend: string, deviceId: string): undefined;
-    sshReady(connection:Connection, target: { deviceRoot: string; privateRoot?: string; sshPrivateKeyPath: string; knownHostsPath: string; guestUsername: string; networkAddress: string }): Promise<{ readonly ready: boolean; readonly execution: SnapshotExecution<Receipt> }>;
+    sshReady(connection:Connection, target: { deviceRoot: string; privateRoot?: string; sshPrivateKeyPath: string; knownHostsPath: string; guestUsername: string; networkAddress: string }, deadlineAt: number): Promise<{ readonly ready: boolean; readonly execution: SnapshotExecution<Receipt> }>;
     remainingTimeout(deadlineAt: number, maximumMs: number): number;
     now(): number;
     timestamp(): string;

@@ -17,6 +17,7 @@ import { androidEmulatorAppSelection, androidEmulatorCreateRequest, deviceFromPa
 import { currentDisplayPrerequisiteResult } from "../../scripts/real-tests/level1-display-e2e.ts";
 import { startWindowsSandboxE2EDevice } from "../../scripts/real-tests/windows-sandbox-e2e.ts";
 import { realMcpToolRequestTimeoutMs } from "../../scripts/real-tests/device-lab-mcp-client.ts";
+import { brokerDeviceToolExecutionTimeout } from "../../device-lab-mcp/src/domain/device-request.mjs";
 import {
     normalizeProviderConcurrency,
     partitionProviderFiles,
@@ -572,6 +573,64 @@ function testSupportText() {
 }
 
 describe("test level runner", () => {
+    describe("real MCP snapshot client timeouts", () => {
+        it.each([
+            ["list", 120000],
+            ["create", 150000],
+            ["delete", 195000],
+            ["restore", 315000],
+        ] as const)("keeps %s alive through the server completion and return margin", (action, minimumClientTimeout) => {
+            for (const target of [
+                {},
+                { backend: "windows-vm", provider: "hyper-v" },
+                { backend: "linux-vm", provider: "hyper-v" },
+            ]) {
+                const args = { ...target, action, deviceId: "snapshot-timeout-target" };
+                const operation = toolOperation("snapshot", args);
+                expect(operation).toBe(`device_snapshot_${action}`);
+                const clientTimeout = realMcpToolRequestTimeoutMs("snapshot", args);
+                const serverTimeout = brokerDeviceToolExecutionTimeout(operation!, args).rpcTimeoutMs;
+
+                expect(clientTimeout, JSON.stringify(target)).toBeGreaterThanOrEqual(minimumClientTimeout);
+                expect(clientTimeout, JSON.stringify(target)).toBeGreaterThanOrEqual(serverTimeout! + 30000);
+            }
+        });
+
+        it.each([
+            { backend: "macos-vm", provider: "tart" },
+            { backend: "linux-vm", provider: "container-qemu" },
+        ])("retains the existing default for unrelated snapshot provider $provider", (target) => {
+            for (const action of ["list", "create", "delete", "restore"]) {
+                expect(realMcpToolRequestTimeoutMs("snapshot", { ...target, action })).toBe(120000);
+            }
+        });
+
+        it("keeps explicit RPC and operation timeout precedence ahead of the snapshot default", () => {
+            for (const target of [{}, { backend: "linux-vm", provider: "hyper-v" }]) {
+                const args = { ...target, action: "restore" };
+                expect(realMcpToolRequestTimeoutMs("snapshot", {
+                    ...args, rpcTimeoutMs: 150000, timeoutMs: 600000,
+                })).toBe(165000);
+                expect(realMcpToolRequestTimeoutMs("snapshot", {
+                    ...args, timeoutMs: 450000,
+                })).toBe(480000);
+                expect(realMcpToolRequestTimeoutMs("snapshot", {
+                    ...args, rpcTimeoutMs: 1000,
+                })).toBe(120000);
+                expect(realMcpToolRequestTimeoutMs("snapshot", {
+                    ...args, timeoutMs: 1000,
+                })).toBe(120000);
+            }
+        });
+
+        it("retains the existing non-snapshot client timeout policies", () => {
+            expect(realMcpToolRequestTimeoutMs("status")).toBe(120000);
+            expect(realMcpToolRequestTimeoutMs("start", { waitForBoot: true, bootTimeoutMs: 180000 })).toBe(210000);
+            expect(realMcpToolRequestTimeoutMs("exec", { timeoutMs: 180000 })).toBe(210000);
+            expect(realMcpToolRequestTimeoutMs("clipboard", { backend: "android-emulator" })).toBe(360000);
+        });
+    });
+
     it("does not stop a pre-existing foreign Windows Sandbox session during single-use recovery", async () => {
         const foreignId = "11111111-1111-4111-8111-111111111111";
         const stopped: string[] = [];

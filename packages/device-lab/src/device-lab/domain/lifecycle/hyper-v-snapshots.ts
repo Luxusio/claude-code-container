@@ -1,4 +1,25 @@
 export type SnapshotTool = "device_snapshot_list" | "device_snapshot_create" | "device_snapshot_restore" | "device_snapshot_delete";
+/** Process-local monotonic deadlines captured once at invocation admission. */
+export type SnapshotAllowance = {
+    readonly operationDeadlineAt: number;
+    readonly cleanupDeadlineAt: number;
+};
+export const SNAPSHOT_REPAIR_ALLOWANCE_MS = 60000;
+const snapshotOperationMilliseconds: Readonly<Record<SnapshotTool, number>> = {
+    device_snapshot_list: 45000,
+    device_snapshot_create: 75000,
+    device_snapshot_delete: 120000,
+    device_snapshot_restore: 240000,
+};
+export function snapshotInvocationLimits(tool: SnapshotTool) {
+    const operationMilliseconds = snapshotOperationMilliseconds[tool];
+    const cleanupReserveMilliseconds = tool === "device_snapshot_list" ? 0 : 30000;
+    return {
+        operationMilliseconds,
+        cleanupReserveMilliseconds,
+        rpcTimeoutMilliseconds: operationMilliseconds + cleanupReserveMilliseconds + 15000,
+    } as const;
+}
 export type SnapshotFailureReason='invalid'|'missing'|'conflict'|'provider-failed';
 export interface SnapshotOutcomeFacts<Receipt> {
  ownerId?:string;backend?:string|null;stateKey?:string;deviceId?:string;tool?:SnapshotTool;provider?:string;error?:string;detail?:string|null;missing?:unknown[];

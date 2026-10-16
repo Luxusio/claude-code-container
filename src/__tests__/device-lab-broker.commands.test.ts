@@ -35,6 +35,8 @@ import { renderHyperVCreateStart } from "@ccc/device-lab/device-lab/broker/hyper
 import { rememberHyperVConsoleFrame, forgetHyperVConsoleFrame, hyperVConsoleFrameKey } from "@ccc/device-lab/device-lab/broker/hyper-v/console.js";
 import { hyperVVmName } from "@ccc/device-lab/host-control/hyper-v/index.js";
 import * as macosLifecycleApplication from "@ccc/device-lab/device-lab/application/lifecycle/macos-vm-lifecycle.js";
+import * as hyperVLifecycleAdapter from "@ccc/device-lab/device-lab/broker/hyper-v/lifecycle-adapter.js";
+import type { HyperVWindowsExecutor } from "@ccc/hyper-v/index.js";
 import { HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP } from "@ccc/hyper-v/low-level/powershell-transport.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRoot, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 import {
@@ -144,9 +146,9 @@ function createDeviceBrokerServer(options: FixtureBrokerOptions) {
 // its UTF-8 JSON envelope as Base64 ASCII"). This fixture stands in for the PowerShell host, so it
 // has to unwrap that envelope the same way.
 function memoryBootstrapEnvelope(
-    command: { args: string[]; input?: string },
+    command: { args?: string[]; input?: string },
 ): { script: string; input: string } | null {
-    if (command.args.at(-1) !== HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP || !command.input) return null;
+    if (command.args?.at(-1) !== HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP || !command.input) return null;
     const decoded = JSON.parse(Buffer.from(command.input, "base64").toString("utf8")) as {
         script?: unknown;
         input?: unknown;
@@ -157,7 +159,7 @@ function memoryBootstrapEnvelope(
 
 // The operation request the library asked for, or null when this command is not a library call.
 function nativeLibraryRequest(
-    command: { args: string[]; input?: string },
+    command: { args?: string[]; input?: string },
 ): { operation: string; selector?: { kind: string; id?: string; name?: string }; action?: string; command?: string; localPath?: string; remotePath?: string; expectedName?: string; expectedNotes?: string; path?: string; mode?: string; force?: boolean; paths?: string[]; snapshotName?: string; guard?: { expectedName: string; expectedNotes: string } } | null {
     const envelope = memoryBootstrapEnvelope(command);
     if (envelope) {
@@ -1106,6 +1108,384 @@ describe("device-lab host broker lifecycle commands", () => {
             await close(server);
             cleanupOwner(ownerId);
         }
+    });
+
+    describe("independent snapshot invocation allowance through authenticated RPC", () => {
+        async function snapshotFixture(label: string, backend: "windows-vm" | "linux-vm" = "windows-vm", tracked = false) {
+            const cwd = join(process.env.HOME!, `broker-independent-snapshot-${label}`);
+            mkdirSync(cwd, { recursive: true });
+            const ownerId = deviceLabOwnerId(cwd), deviceId = "independent-snapshot", incarnationId = "c".repeat(32);
+            const vmId = "12345678-1234-1234-1234-123456789abc", snapshotId = "87654321-4321-4321-4321-cba987654321";
+            const vmName = hyperVVmName(ownerId, deviceId, incarnationId), providerName = `ccc-${ownerId}-baseline`;
+            const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, backend, deviceId);
+            const deviceRoot = join(privateRoot, "artifacts"), diskPath = join(deviceRoot, "disks", "root.vhdx");
+            const secrets = join(privateRoot, "secrets"), address = "172.29.0.20";
+            const privateKey = join(secrets, "id_ed25519"), publicKey = join(secrets, "ssh_host_ed25519_key.pub"), knownHosts = join(secrets, "known_hosts");
+            mkdirSync(dirname(diskPath), { recursive: true });
+            writeFileSync(diskPath, "owned snapshot root disk");
+            writeFileSync(join(privateRoot, "incarnation.json"), JSON.stringify({ version: 1, ownerId, backend, deviceId, incarnationId, createdAt: new Date().toISOString() }));
+            let linuxSsh: Record<string, unknown> = {};
+            if (backend === "linux-vm") {
+                const hostKey = Buffer.alloc(51, 5);
+                hostKey.writeUInt32BE(11, 0); hostKey.write("ssh-ed25519", 4, "ascii"); hostKey.writeUInt32BE(32, 15);
+                const encodedKey = hostKey.toString("base64"), fingerprint = `SHA256:${createHash("sha256").update(hostKey).digest("base64").replace(/=+$/, "")}`;
+                mkdirSync(secrets, { recursive: true, mode: 0o700 });
+                writeFileSync(privateKey, "fixture-private-key", { mode: 0o600 });
+                writeFileSync(publicKey, `ssh-ed25519 ${encodedKey} fixture\n`, { mode: 0o600 });
+                writeFileSync(knownHosts, `${address} ssh-ed25519 ${encodedKey} fixture\n`, { mode: 0o600 });
+                linuxSsh = { guestUsername: "fixture-user", networkAddress: address, sshPrivateKeyPath: privateKey,
+                    sshHostPublicKeyPath: publicKey, sshKnownHostsPath: knownHosts, sshHostKeyFingerprint: fingerprint };
+                const networkFile = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
+                mkdirSync(dirname(networkFile), { recursive: true });
+                writeFileSync(networkFile, JSON.stringify({ version: 1, marker: "ccc-device-lab:hyper-v-network:v1", switchName: "CCC Device Lab",
+                    switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", natName: "CCCDeviceLab", natInstanceId: "fixture-nat",
+                    prefix: "172.29.0.0/24", gateway: "172.29.0.1", outboundPolicy: "nat", managedNat: true, managedSwitch: false, managedGateway: false,
+                    allocations: [{ ownerId, deviceId, incarnationId, address, macAddress: "02:11:22:33:44:55", allocatedAt: new Date().toISOString() }] }));
+            }
+            const root = writeBrokerDevices(ownerId, backend, [{ id: deviceId, ownerId, name: "Independent snapshot",
+                backend, provider: "hyper-v", incarnationId, vmId, vmName, diskPath, privateRoot, deviceRoot,
+                status: "stopped", runtimeState: "Off", retainedField: "owned",
+                snapshots: tracked ? [{ id: snapshotId, name: "baseline", providerName, snapshotType: "Recovery" }] : [], ...linuxSsh }]);
+            const stateFile = join(root, "devices.json"), snapshotJournal = join(deviceRoot, "snapshot-operation.json");
+            const originalState = readFileSync(stateFile);
+            const clock = { now: 17.25, wall: Date.now() }, admittedAt = clock.now;
+            const wallClock = vi.spyOn(Date, "now").mockImplementation(() => clock.wall);
+            const monotonicNow = vi.fn(() => clock.now);
+            const calls: Array<{ operation: string; timeoutMs: number; elapsed: number }> = [];
+            const observe = vi.fn<(operation: string) => void>();
+            const failNative = new Set<string>();
+            let snapshotExists = tracked, vmState = "Off";
+            const inventory = { hiddenReads: 0 };
+            const nativeSnapshot = { id: snapshotId, name: providerName, vmId, vmName, snapshotType: "Recovery",
+                parentSnapshotId: null, parentSnapshotName: null, creationTimeMilliseconds: 1_700_000_000_000 };
+            const serveNative = (native: { readonly operation: string; readonly path?: string }, timeoutMs: number) => {
+                const operation = native.operation;
+                calls.push({ operation, timeoutMs, elapsed: clock.now - admittedAt });
+                observe(operation);
+                if (failNative.has(operation)) return { status: 1, stdout: JSON.stringify({ schemaVersion: 1,
+                    operation, ok: false, errorCode: "vm-not-found" }), stderr: "" };
+                if (operation === "Checkpoint-VM") snapshotExists = true;
+                if (operation === "Remove-VMSnapshot") snapshotExists = false;
+                if (operation === "Start-VM") vmState = "Running";
+                if (operation === "Stop-VM") vmState = "Off";
+                const hideSnapshot = operation === "Get-VMSnapshot" && inventory.hiddenReads > 0;
+                if (hideSnapshot) inventory.hiddenReads -= 1;
+                const items = operation === "Checkpoint-VM" ? [nativeSnapshot]
+                    : operation === "Get-VMSnapshot" ? snapshotExists && !hideSnapshot ? [nativeSnapshot] : []
+                        : operation === "Repair-VMSnapshotState" ? [{ checkpointPolicy: backend === "linux-vm" ? "Production" : "ProductionOnly", candidateCount: snapshotExists ? 1 : 0 }]
+                            : operation === "Get-VM" ? [{ id: vmId, name: vmName, state: vmState, status: "Operating normally",
+                                notes: `ccc-device-lab:${ownerId}:${deviceId}:${incarnationId}`, uptimeMilliseconds: 0, generation: 2,
+                                checkpointType: backend === "linux-vm" ? "Production" : "ProductionOnly" }]
+                                : operation === "Get-VMHardDiskDrive" ? [{ vmId, vmName, path: diskPath, controllerType: "SCSI",
+                                    controllerNumber: 0, controllerLocation: 0, diskNumber: null }]
+                                    : operation === "Get-VHD" ? [{ path: native.path, vhdFormat: "VHDX", vhdType: "Dynamic", parentPath: null,
+                                        virtualSizeBytes: 4096, fileSizeBytes: 1024 }]
+                                        : [];
+                return { status: 0, stdout: nativeEnvelope(operation, items), stderr: "" };
+            };
+            const commandRunner = vi.fn<FixtureCommandRunner>((command, options) => {
+                if (command.provider === "hyper-v-ssh") {
+                    calls.push({ operation: command.provider, timeoutMs: options.timeoutMs, elapsed: clock.now - admittedAt });
+                    observe(command.provider);
+                    return { ...command, status: 0, stdout: "ccc-hyper-v-linux-ready\n", stderr: "" };
+                }
+                const native = nativeLibraryRequest(command);
+                if (!native) throw new Error("unexpected non-library snapshot request");
+                return { ...command, ...serveNative(native, options.timeoutMs) };
+            });
+            const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32",
+                providerPaths: { "powershell.exe": "/fake/powershell.exe", "ssh.exe": "/fake/ssh.exe" },
+                hyperVMonotonicNow: monotonicNow, commandRunner });
+            const baseUrl = await listen(server);
+            return { cwd, ownerId, deviceId, incarnationId, snapshotId, stateFile, snapshotJournal, originalState,
+                clock, calls, observe, failNative, monotonicNow, inventory, serveNative, commandRunner,
+                journal() {
+                    const journal = { version: 1, operationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", ownerId, deviceId, incarnationId,
+                        tool: "device_snapshot_delete", snapshotName: "baseline", providerName, snapshotId,
+                        expectedCheckpointPolicy: backend === "linux-vm" ? "Production" : "ProductionOnly", startedAt: new Date().toISOString() };
+                    writeFileSync(snapshotJournal, JSON.stringify(journal));
+                    return journal;
+                },
+                invoke(tool: string, params: Record<string, unknown> = {}) {
+                    return fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                        body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend, deviceId, ...params } }),
+                        signal: AbortSignal.timeout(15000) });
+                },
+                async close() { wallClock.mockRestore(); await close(server); cleanupOwner(ownerId); },
+            };
+        }
+
+        it.each([false, true])("charges device-lock wait to admission and refuses expired=%s before native dispatch", { timeout: 20000 }, async expired => {
+            const f = await snapshotFixture(`operation-lock-${expired}`);
+            let holder: Awaited<ReturnType<typeof holdDeviceOperationInChild>> | undefined, pending: Promise<Response> | undefined;
+            try {
+                holder = await holdDeviceOperationInChild(f.cwd, "windows-vm", f.deviceId);
+                const observationsBefore = f.monotonicNow.mock.calls.length;
+                let settled = false;
+                pending = f.invoke("device_snapshot_list").finally(() => { settled = true; });
+                void pending.catch(() => undefined);
+                await vi.waitFor(() => expect(f.monotonicNow.mock.calls.length).toBeGreaterThan(observationsBefore));
+                expect(settled).toBe(false);
+                expect(f.calls).toEqual([]);
+                f.clock.now += expired ? 45000.5 : 44900.5;
+                await holder.release();
+                const response = await pending, body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(expired ? 504 : 200);
+                if (expired) {
+                    expect(body).toMatchObject({ ok: false, error: "hyper-v-operation-deadline-exceeded" });
+                    expect(f.calls).toEqual([]);
+                } else {
+                    expect(body).toMatchObject({ ok: true, result: { snapshots: [] } });
+                    expect(f.calls.length).toBeGreaterThan(0);
+                    expect(f.calls.map(call => call.timeoutMs)).toEqual(f.calls.map(() => 99));
+                }
+                expect(readFileSync(f.stateFile)).toEqual(f.originalState);
+                expect(existsSync(f.snapshotJournal)).toBe(false);
+            } finally {
+                try { await holder?.release(); }
+                finally { if (pending) await Promise.allSettled([pending]); await f.close(); }
+            }
+        });
+
+        it.each([-1, 1] as const)("uses decreasing positive native durations while wall time jumps %s independently", async direction => {
+            const f = await snapshotFixture(`wall-${direction}`);
+            f.observe.mockImplementation(() => {
+                f.clock.wall += direction * 86_400_000;
+                if (f.calls.length <= 2) f.clock.now += 20000.25;
+            });
+            try {
+                const response = await f.invoke("device_snapshot_list"), body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(200);
+                expect(f.calls.length).toBeGreaterThanOrEqual(3);
+                expect(f.calls.slice(0, 3).map(call => call.timeoutMs)).toEqual([30000, 24999, 4999]);
+                for (const call of f.calls) {
+                    expect(Number.isInteger(call.timeoutMs)).toBe(true);
+                    expect(call.timeoutMs).toBeGreaterThan(0);
+                    expect(call.timeoutMs).toBeLessThanOrEqual(Math.floor(45000 - call.elapsed));
+                }
+                expect(readFileSync(f.stateFile)).toEqual(f.originalState);
+            } finally { await f.close(); }
+        });
+
+        it.each([false, true])("maps an actual selected snapshot deadline to HTTP504 while preserving native-failure=%s precedence", async nativeFailure => {
+            const f = await snapshotFixture(`late-list-${nativeFailure}`);
+            if (nativeFailure) f.failNative.add("Get-VM");
+            f.observe.mockImplementation(() => { f.clock.now += 45000.5; });
+            try {
+                const response = await f.invoke("device_snapshot_list"), body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(nativeFailure ? 502 : 504);
+                expect(body).toMatchObject({ ok: false, error: nativeFailure
+                    ? "hyper-v-snapshot-list-provider-failed" : "hyper-v-operation-deadline-exceeded" });
+                expect(f.calls.map(call => call.operation)).toEqual(["Get-VM"]);
+                expect(readFileSync(f.stateFile)).toEqual(f.originalState);
+                expect(existsSync(f.snapshotJournal)).toBe(false);
+            } finally { await f.close(); }
+        });
+
+        it("returns HTTP504 when the authenticated list retry sleep consumes its remaining admission allowance", async () => {
+            const f = await snapshotFixture("list-retry-sleep-deadline", "windows-vm", true);
+            f.inventory.hiddenReads = 1;
+            let retrySleepArmed = false, interceptedSleeps = 0;
+            f.observe.mockImplementation(operation => {
+                if (operation === "Get-VMSnapshot" && !retrySleepArmed) {
+                    f.clock.now += 44000;
+                    retrySleepArmed = true;
+                }
+            });
+            const originalSetTimeout = globalThis.setTimeout;
+            const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+                if (retrySleepArmed && delay === 300 && f.calls.at(-1)?.operation === "Get-VM"
+                    && f.calls.filter(call => call.operation === "Get-VMSnapshot").length === 1
+                    && f.calls.filter(call => call.operation === "Get-VM").length === 2) {
+                    retrySleepArmed = false;
+                    interceptedSleeps += 1;
+                    f.clock.now += 1000;
+                    return originalSetTimeout(callback, 0, ...args);
+                }
+                return originalSetTimeout(callback, delay, ...args);
+            });
+            try {
+                const response = await f.invoke("device_snapshot_list"), body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(504);
+                expect(body).toMatchObject({ ok: false, error: "hyper-v-operation-deadline-exceeded" });
+                expect(interceptedSleeps).toBe(1);
+                expect(f.calls.filter(call => call.operation === "Get-VM")).toHaveLength(2);
+                expect(f.calls.filter(call => call.operation === "Get-VMSnapshot")).toHaveLength(1);
+                expect(f.calls.at(-1)?.operation).toBe("Get-VM");
+                expect(readFileSync(f.stateFile)).toEqual(f.originalState);
+                expect(existsSync(f.snapshotJournal)).toBe(false);
+            } finally { timer.mockRestore(); await f.close(); }
+        });
+
+        it.each(["mutation", "confirmation"] as const)("retains the exact created ID when native %s succeeds after admission expires", async phase => {
+            const f = await snapshotFixture(`late-create-${phase}`);
+            let checkpointIssued = false;
+            f.observe.mockImplementation(operation => {
+                if (operation === "Checkpoint-VM") {
+                    checkpointIssued = true;
+                    if (phase === "mutation") f.clock.now += 75000.5;
+                } else if (operation === "Get-VMSnapshot" && checkpointIssued) f.clock.now += 75000.5;
+            });
+            try {
+                const response = await f.invoke("device_snapshot_create", { snapshotName: "baseline" }), body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(409);
+                expect(body).toMatchObject({ ok: false, error: "hyper-v-snapshot-create-outcome-indeterminate" });
+                const journal = JSON.parse(readFileSync(f.snapshotJournal, "utf8"));
+                expect(journal).toMatchObject({ ownerId: f.ownerId, deviceId: f.deviceId, incarnationId: f.incarnationId,
+                    tool: "device_snapshot_create", snapshotId: f.snapshotId, confirmationRequired: true });
+                expect(journal.operationId).toMatch(/^[0-9a-f-]{36}$/);
+                expect(f.calls.filter(call => call.operation === "Checkpoint-VM")).toHaveLength(1);
+                expect(f.calls.some(call => ["Remove-VMSnapshot", "Repair-VMSnapshotState"].includes(call.operation))).toBe(false);
+                expect(readFileSync(f.stateFile)).toEqual(f.originalState);
+            } finally { await f.close(); }
+        });
+
+        it.each(["created-id", "repair-clear"] as const)("preserves a same-generation replacement operationId at %s", async phase => {
+            const f = await snapshotFixture(`replacement-${phase}`, "windows-vm", phase === "repair-clear");
+            if (phase === "repair-clear") f.journal();
+            let replacement: string | undefined;
+            f.observe.mockImplementation(operation => {
+                if (operation !== (phase === "created-id" ? "Checkpoint-VM" : "Repair-VMSnapshotState")) return;
+                const journal = JSON.parse(readFileSync(f.snapshotJournal, "utf8"));
+                replacement = JSON.stringify({ ...journal, operationId: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff" });
+                writeFileSync(f.snapshotJournal, replacement);
+            });
+            try {
+                const response = await f.invoke(phase === "created-id" ? "device_snapshot_create" : "device_snapshot_list", { snapshotName: "baseline" });
+                const body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(409);
+                expect(body).toMatchObject({ ok: false, error: phase === "created-id"
+                    ? "hyper-v-snapshot-create-outcome-indeterminate" : "hyper-v-snapshot-state-conflict" });
+                expect(replacement).toBeTypeOf("string");
+                expect(readFileSync(f.snapshotJournal, "utf8")).toBe(replacement);
+                if (phase === "created-id") {
+                    expect(JSON.parse(readFileSync(f.snapshotJournal, "utf8"))).not.toHaveProperty("snapshotId");
+                    expect(f.calls.some(call => call.operation === "Remove-VMSnapshot")).toBe(false);
+                    expect(readFileSync(f.stateFile)).toEqual(f.originalState);
+                }
+            } finally { await f.close(); }
+        });
+
+        it("uses the captured cleanup reserve to reconcile a late native delete failure without replacing its primary error", async () => {
+            const f = await snapshotFixture("delete-cleanup-reserve", "windows-vm", true);
+            f.failNative.add("Remove-VMSnapshot");
+            f.observe.mockImplementation(operation => {
+                if (operation === "Remove-VMSnapshot") f.clock.now += 120001;
+                else if (f.clock.now > 120000) f.clock.now += 250.25;
+            });
+            try {
+                const response = await f.invoke("device_snapshot_delete", { snapshotId: f.snapshotId, confirmDestructive: true });
+                const body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(502);
+                expect(body).toMatchObject({ ok: false, error: "hyper-v-snapshot-provider-failed" });
+                const failedAt = f.calls.findIndex(call => call.operation === "Remove-VMSnapshot");
+                expect(failedAt).toBeGreaterThanOrEqual(0);
+                const cleanup = f.calls.slice(failedAt + 1);
+                expect(cleanup.map(call => call.operation)).toContain("Repair-VMSnapshotState");
+                expect(cleanup.map(call => call.operation)).toContain("Get-VM");
+                expect(cleanup.map(call => call.operation)).toContain("Get-VMSnapshot");
+                for (const call of cleanup) {
+                    expect(Number.isInteger(call.timeoutMs)).toBe(true);
+                    expect(call.timeoutMs).toBeGreaterThan(0);
+                    expect(call.timeoutMs).toBeLessThanOrEqual(Math.floor(150000 - call.elapsed));
+                }
+                expect(cleanup[0]?.timeoutMs).toBe(29999);
+                expect(existsSync(f.snapshotJournal)).toBe(false);
+                expect(JSON.parse(readFileSync(f.stateFile, "utf8")).devices[0]).toMatchObject({ retainedField: "owned",
+                    incarnationId: f.incarnationId, snapshots: [{ id: f.snapshotId, name: "baseline" }] });
+            } finally { await f.close(); }
+        });
+
+        it.each(["one-shot", "session", "fallback"] as const)("bounds actual %s create confirmation transport by its decreasing ten-second allowance", async transport => {
+            const f = await snapshotFixture(`create-confirmation-${transport}`);
+            const realRecordingFactory = hyperVLifecycleAdapter.createRecordingDeviceLabHyperVWindowsClient;
+            const sessionCalls: Array<{ operation: string; timeoutMs: number }> = [];
+            let checkpointIssued = false, confirmationReads = 0;
+            f.observe.mockImplementation(operation => {
+                if (operation === "Checkpoint-VM") {
+                    checkpointIssued = true; f.inventory.hiddenReads = 1; f.clock.now += 1234.25;
+                } else if (operation === "Get-VMSnapshot" && checkpointIssued && ++confirmationReads === 1) f.clock.now += 600.5;
+            });
+            const session: HyperVWindowsExecutor = {
+                execute(request, context) {
+                    sessionCalls.push({ operation: request.operation, timeoutMs: context.timeoutMilliseconds });
+                    if (transport === "fallback") return { status: null, stdout: "", error: "hyper-v-windows-session-unavailable" };
+                    return f.serveNative(request, context.timeoutMilliseconds);
+                },
+            };
+            const recordingFactory = transport === "one-shot" ? undefined
+                : vi.spyOn(hyperVLifecycleAdapter, "createRecordingDeviceLabHyperVWindowsClient")
+                    .mockImplementation(options => realRecordingFactory({ ...options, session }));
+            try {
+                const response = await f.invoke("device_snapshot_create", { snapshotName: "baseline" }), body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(200);
+                const checkpointIndex = f.calls.findIndex(call => call.operation === "Checkpoint-VM");
+                expect(checkpointIndex).toBeGreaterThanOrEqual(0);
+                expect(f.calls[checkpointIndex]?.timeoutMs).toBeLessThanOrEqual(45000);
+                const confirmation = f.calls.slice(checkpointIndex + 1).filter(call => call.operation === "Get-VMSnapshot");
+                expect(confirmation).toHaveLength(2);
+                expect(confirmation[0]?.timeoutMs).toBeLessThanOrEqual(10000);
+                expect(confirmation[1]?.timeoutMs).toBeLessThanOrEqual(9399);
+                expect(confirmation[1]!.timeoutMs).toBeLessThan(confirmation[0]!.timeoutMs);
+                for (const call of [f.calls[checkpointIndex]!, ...confirmation]) {
+                    expect(Number.isInteger(call.timeoutMs)).toBe(true);
+                    expect(call.timeoutMs).toBeGreaterThan(0);
+                }
+                if (transport === "session") {
+                    expect(recordingFactory).toHaveBeenCalled();
+                    expect(f.commandRunner.mock.calls.map(([command]) => nativeLibraryRequest(command)?.operation))
+                        .toEqual(f.calls.slice(0, checkpointIndex).map(call => call.operation));
+                    expect(sessionCalls.filter(call => call.operation === "Get-VMSnapshot").slice(-2).map(call => call.timeoutMs))
+                        .toEqual(confirmation.map(call => call.timeoutMs));
+                } else if (transport === "fallback") {
+                    expect(recordingFactory).toHaveBeenCalled();
+                    expect(f.commandRunner.mock.calls.slice(checkpointIndex).map(([command]) => nativeLibraryRequest(command)?.operation))
+                        .toEqual(sessionCalls.map(call => call.operation));
+                    const sessionConfirmation = sessionCalls.slice(sessionCalls.findIndex(call => call.operation === "Checkpoint-VM") + 1)
+                        .filter(call => call.operation === "Get-VMSnapshot");
+                    expect(sessionConfirmation).toHaveLength(2);
+                    expect(sessionConfirmation[1]?.timeoutMs).toBeLessThanOrEqual(9399);
+                    for (const [index, call] of sessionConfirmation.entries()) {
+                        expect(Number.isInteger(call.timeoutMs)).toBe(true);
+                        expect(call.timeoutMs).toBeGreaterThan(0);
+                        expect(call.timeoutMs).toBeLessThanOrEqual(10000);
+                        expect(confirmation[index]!.timeoutMs).toBeLessThanOrEqual(call.timeoutMs);
+                    }
+                } else expect(sessionCalls).toEqual([]);
+                expect(existsSync(f.snapshotJournal)).toBe(false);
+                expect(body).toMatchObject({ ok: true, result: { snapshot: { id: f.snapshotId } } });
+            } finally { recordingFactory?.mockRestore(); await f.close(); }
+        });
+
+        it.each([false, true])("reduces restored Linux SSH to the shared remainder and rejects late-success=%s", async late => {
+            const f = await snapshotFixture(`restore-ssh-${late}`, "linux-vm", true);
+            let restored = false, observedRestoredState = false;
+            f.observe.mockImplementation(operation => {
+                if (operation === "Restore-VMSnapshot") { restored = true; f.clock.now += 100000; }
+                else if (operation === "Get-VM" && restored && !observedRestoredState) {
+                    observedRestoredState = true; f.clock.now += 100000;
+                } else if (operation === "Start-VM") f.clock.now += 39000.5;
+                else if (operation === "hyper-v-ssh" && late) f.clock.now += 1000;
+            });
+            try {
+                const response = await f.invoke("device_snapshot_restore", { snapshotId: f.snapshotId, confirmDestructive: true }), body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(late ? 504 : 200);
+                expect(f.calls.filter(call => call.operation === "hyper-v-ssh").map(call => call.timeoutMs)).toEqual([999]);
+                for (const call of f.calls) {
+                    expect(Number.isInteger(call.timeoutMs)).toBe(true);
+                    expect(call.timeoutMs).toBeGreaterThan(0);
+                    expect(call.timeoutMs).toBeLessThanOrEqual(Math.floor(240000 - call.elapsed));
+                }
+                if (late) {
+                    expect(body).toMatchObject({ ok: false, error: "hyper-v-operation-deadline-exceeded" });
+                    expect(JSON.parse(readFileSync(f.snapshotJournal, "utf8"))).toMatchObject({ tool: "device_snapshot_restore", snapshotId: f.snapshotId });
+                    expect(readFileSync(f.stateFile)).toEqual(f.originalState);
+                } else {
+                    expect(body).toMatchObject({ ok: true, result: { device: { activeSnapshotId: f.snapshotId, status: "running", bootReady: true } } });
+                    expect(existsSync(f.snapshotJournal)).toBe(false);
+                }
+            } finally { await f.close(); }
+        });
     });
 
     describe("snapshot journal recovery inside a public lifecycle budget", () => {

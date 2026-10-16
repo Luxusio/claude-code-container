@@ -1,3 +1,5 @@
+import { isSnapshotTool, snapshotInvocationLimits } from "@ccc/device-lab/device-lab/domain/lifecycle/hyper-v-snapshots.js";
+
 /** @typedef {{[key: string]: unknown, backend?: string, deviceId?: string, name?: string, provider?: string, button?: string, key?: string, packageName?: string, bundleId?: string, component?: string, orientation?: string, text?: string, path?: string, url?: string, launchHost?: string, automationName?: string, incarnationId?: string, command?: string, action?: string, tool?: string, method?: string, x?: number, y?: number, x1?: number, y1?: number, x2?: number, y2?: number, keyCode?: number, latitude?: number, longitude?: number, altitude?: number, durationMs?: number, timeoutMs?: number, rpcTimeoutMs?: number, helperTimeoutMs?: number, bootTimeoutMs?: number, intervalMs?: number, port?: number, brokerPort?: number, devicePort?: number, appiumPort?: number, serverPort?: number, launchTimeoutMs?: number, limit?: number, broker?: boolean, viaBroker?: boolean, implicitBroker?: boolean, autolaunch?: boolean, physical?: boolean, createAvd?: boolean, deleteAvd?: boolean, deleteSimulator?: boolean, waitForBoot?: boolean, dryRun?: boolean, force?: boolean, enabled?: boolean, preserveNetwork?: boolean, detail?: boolean, confirmDestructive?: boolean, hostCandidates?: string[], region?: unknown}} DeviceArguments */
 export const BROKER_LIFECYCLE_COMMANDS = new Set(["device_create", "device_status", "device_start", "device_stop", "device_reboot", "device_delete"]);
 
@@ -258,6 +260,11 @@ export function brokerDeviceToolExecutionTimeout(name, args) {
                 boundedTimeoutMs(requestedHelperTimeoutMs, MAX_DEVICE_HELPER_TIMEOUT_MS, DEFAULT_BROKER_DEVICE_TOOL_TIMEOUT_MS) + BROKER_DEVICE_TOOL_RPC_BUFFER_MS,
             ),
         };
+    }
+    if (isSnapshotTool(name)
+        && (!args?.backend || HYPER_V_LIFECYCLE_BACKENDS.has(args.backend))
+        && (!args?.provider || args.provider === "hyper-v")) {
+        return { rpcTimeoutMs: snapshotInvocationLimits(name).rpcTimeoutMilliseconds };
     }
     if (BROKER_FAST_DEVICE_TOOLS.has(name)) return {};
     const rpcTimeoutMs = DEFAULT_BROKER_DEVICE_TOOL_TIMEOUT_MS + BROKER_DEVICE_TOOL_RPC_BUFFER_MS;
