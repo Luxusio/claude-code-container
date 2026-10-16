@@ -23,9 +23,12 @@ function consumedContracts(ports: WorkspaceOpenPorts) {
     const { registrationPreflight, ...withoutPreflight } = ports;
     // @ts-expect-error missing registration recovery requires captured native inspection
     createWorkspaceOpen(withoutPreflight);
-    const { assertBranch, ...withoutFinalGuard } = ports;
-    // @ts-expect-error final workspace ownership and branch validation are required
+    const { assertWorkspace, ...withoutFinalGuard } = ports;
+    // @ts-expect-error final workspace ownership and readiness validation are required
     createWorkspaceOpen(withoutFinalGuard);
+    const { inspectWorkspace, ...withoutInspection } = ports;
+    // @ts-expect-error existing content must pass native topology inspection before repair
+    createWorkspaceOpen(withoutInspection);
     // @ts-expect-error branch validation must finish before filesystem observations
     createWorkspaceOpen({ ...ports, validateBranch: async () => undefined });
     // @ts-expect-error ownership observations must settle synchronously
@@ -34,15 +37,21 @@ function consumedContracts(ports: WorkspaceOpenPorts) {
     createWorkspaceOpen({ ...ports, registrationPreflight: async () => null });
     // @ts-expect-error confirmed native registration recovery is synchronous
     createWorkspaceOpen({ ...ports, recoverRegistration: async () => ({ repaired: true }) });
-    // @ts-expect-error final native branch guard cannot defer settlement
-    createWorkspaceOpen({ ...ports, assertBranch: async () => undefined });
+    // @ts-expect-error final native workspace readiness cannot defer settlement
+    createWorkspaceOpen({ ...ports, assertWorkspace: async () => undefined });
+    // @ts-expect-error existing workspace inspection must finish before content mutation
+    createWorkspaceOpen({ ...ports, inspectWorkspace: async () => undefined });
+    // @ts-expect-error existing workspace opening does not inspect a shared checked-out branch
+    createWorkspaceOpen({ ...ports, actualBranch: () => "feature/other" });
+    // @ts-expect-error differing existing branches are not a workspace refusal outcome
+    const branchCollision: WorkspaceOpenOutcome = { kind: "refused", reason: "branch-collision", actualBranch: "feature/other", branch: "feature" };
     // @ts-expect-error optional initialization must complete before creation
     createWorkspaceOpen({ ...ports, initSubmodules: async () => undefined });
     // @ts-expect-error reporting is a synchronous presentation effect
     createWorkspaceOpen({ ...ports, report: async () => undefined });
     // @ts-expect-error captured native registration fences are synchronous
     createWorkspaceOpen({ ...ports, registrationPreflight: () => ({ assertUnchanged: async () => undefined }) });
-    void [opened, confirmed, family, registrationPreflight, assertBranch];
+    void [opened, confirmed, family, registrationPreflight, assertWorkspace, inspectWorkspace, branchCollision];
 }
 void consumedContracts;
 
@@ -57,7 +66,7 @@ describe("workspace opening typed consumer", () => {
             validateBranch: () => { expect(locked).toBe(true); throw original; },
             exists: unexpected, hasGitMetadata: unexpected, repairRoot: unexpected, assertOwner: unexpected,
             missingRegistration: () => false, registrationPreflight: unexpected, recoverRegistration: unexpected,
-            recoveryError: unexpected, assertBranch: unexpected, actualBranch: unexpected, repairNested: unexpected,
+            recoveryError: unexpected, inspectWorkspace: unexpected, assertWorkspace: unexpected, repairNested: unexpected,
             broken: unexpected, repairContent: unexpected, submoduleRepos: unexpected, initSubmodules: unexpected,
             create: unexpected, damage: unexpected, repairRegistration: unexpected, confirm: unexpected, report: unexpected,
         };

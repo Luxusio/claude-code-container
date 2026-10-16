@@ -39,7 +39,7 @@ Object.assign(ports, {
  ensureRuntime: noop, resolveProject: () => '/project/repo', ensureDirectories: noop,
  ensureProjectTools: async () => {}, projectId: () => 'isolated-exec', debugEnabled: () => false,
  terminalReady: () => false, runtime: () => 'docker', tool: () => undefined,
- detectWorktreeBranch: () => null, familyLock: async (_id, operation) => operation(),
+ isWorktreeWorkspace: () => false, familyLock: async (_id, operation) => operation(),
  acquireOwnership: async () => ({lockFile: '/owned/session.lock', existingId: 'pinned-id'}),
  inspectSessionContainer: () => ({known: true, containerId: 'pinned-id'}),
  ensureClipboard: async () => null, clipboardPortFile: () => '/owned/clipboard.port', clipboardConnection: () => ({}),

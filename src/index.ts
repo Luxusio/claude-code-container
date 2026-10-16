@@ -32,7 +32,7 @@ import { hasLegacyHomeLayoutContainerMounts } from "./home-layout-container-guar
 import { withSharedMutationLock } from "@ccc/device-lab/device-lab-shared-state.js";
 import { formatContainerStartupError } from "./container-restart-guidance.js";
 import { maybeAttachCodexClipboardImage } from "./codex-clipboard-image.js";
-import { parseWorktreeArg, validateBranchName, listWorkspaces, createWorkspace, removeWorkspace, repairWorkspace, detectBrokenWorktrees, fixBrokenWorktree, getWorkspacePath, assertWorkspaceBranch, assertWorkspaceRootOwnership, strandedBranchRegistrations, terminalSafeLiteral, pasteableArgument, type StrandedBranchRegistration, repairWorkspaceRootOwnership, hasGitMetadata, detectWorktreeWorkspaceBranch, workspaceExists, needsSubmoduleSetup, initWithSubmodules, DamagedWorkspaceMetadataError, MissingWorkspaceRootRegistrationError, canRecreateMissingWorkspaceRootRegistration, WorktreeContentConflictError, setAsideConflictingContent, repairWorkspaceWorktree } from "./worktree.js";
+import { parseWorktreeArg, validateBranchName, listWorkspaces, createWorkspace, removeWorkspace, repairWorkspace, detectBrokenWorktrees, fixBrokenWorktree, getWorkspacePath, assertWorkspaceBranch, assertWorkspaceRootOwnership, strandedBranchRegistrations, terminalSafeLiteral, pasteableArgument, type StrandedBranchRegistration, repairWorkspaceRootOwnership, hasGitMetadata, isWorktreeWorkspace, assertWorkspaceReady, workspaceExists, needsSubmoduleSetup, initWithSubmodules, DamagedWorkspaceMetadataError, MissingWorkspaceRootRegistrationError, canRecreateMissingWorkspaceRootRegistration, WorktreeContentConflictError, setAsideConflictingContent, repairWorkspaceWorktree } from "./worktree.js";
 import { getContainerName, ensureDockerRunning, isContainerRunning, isContainerConfirmedStopped, isContainerExists, getContainerIdentity, getManagedProjectContainerIdentity, type ContainerIdentity, isImageExists, getImageLabel, stopProjectContainer, removeProjectContainer, getContainerStatus, ensureCredentialHostDir } from "./docker.js";
 import { ensureTools } from "./container-setup.js";
 import { createSessionLock, getActiveSessionsForContainer, getSessionLockClaimsForProjectFamily, recreateContainerWithoutInterruptingSessions, withContainerSetupLockAsync, withProjectFamilyLifecycleLock, withProjectFamilyLifecycleLockAsync, cleanupSession } from "./session.js";
@@ -97,30 +97,28 @@ import { labsCli } from "./lab-runner-admin.js";
 export function createWorktreeSessionLock(
     projectId: string,
     workspacePath: string,
-    expectedBranch: string,
     profile?: string,
     familyLock: typeof withProjectFamilyLifecycleLock = withProjectFamilyLifecycleLock,
-    branchGuard: typeof assertWorkspaceBranch = assertWorkspaceBranch,
+    workspaceGuard: typeof assertWorkspaceReady = assertWorkspaceReady,
     lockCreator: typeof createSessionLock = createSessionLock,
     sourcePath?: string,
 ): string {
     return familyLock(projectId, () => {
-        branchGuard(workspacePath, expectedBranch, spawnSync, sourcePath);
+        workspaceGuard(workspacePath, spawnSync, sourcePath, { allowTrackedGitlinks: true });
         return lockCreator(projectId, profile);
     });
 }
 
 export function runWorktreeLifecycleOperation<T>(
     workspacePath: string,
-    expectedBranch: string,
     operation: () => T,
     familyLock: typeof withProjectFamilyLifecycleLock = withProjectFamilyLifecycleLock,
-    branchGuard: typeof assertWorkspaceBranch = assertWorkspaceBranch,
+    workspaceGuard: typeof assertWorkspaceReady = assertWorkspaceReady,
     sourcePath?: string,
 ): T {
     const projectId = getProjectId(workspacePath);
     return familyLock(projectId, () => {
-        branchGuard(workspacePath, expectedBranch, spawnSync, sourcePath);
+        workspaceGuard(workspacePath, spawnSync, sourcePath, { allowTrackedGitlinks: true });
         return operation();
     });
 }
@@ -541,11 +539,11 @@ const workspaceOpen = createWorkspaceOpen({
         });
         return { repaired, failure };
     },
-    assertBranch: (path, branch, cwd, allowTrackedGitlinks) => {
-        assertWorkspaceBranch(path, branch, spawnSync, cwd, allowTrackedGitlinks ? { allowTrackedGitlinks: true } : undefined);
+    inspectWorkspace: path => { assertWorkspaceReady(path); return undefined; },
+    assertWorkspace: (path, cwd, allowTrackedGitlinks) => {
+        assertWorkspaceReady(path, spawnSync, cwd, { allowTrackedGitlinks });
         return undefined;
     },
-    actualBranch: path => detectWorktreeWorkspaceBranch(path),
     repairNested: (cwd, path, branch) => repairWorkspace(cwd, path, branch),
     broken: (cwd, path) => detectBrokenWorktrees(cwd, path),
     repairContent: (cwd, path, name, branch) => repairBrokenWorktree(cwd, path, name, branch),
@@ -1019,7 +1017,7 @@ export async function main(): Promise<void> {
 
     let command = cmdArgs[0];
     let cwd = process.cwd();
-    let expectedWorktreeBranch: string | undefined;
+    let worktreeWorkspace = false;
     let expectedWorktreeSourcePath: string | undefined;
 
     // @ prefix → worktree workspace
@@ -1044,11 +1042,11 @@ export async function main(): Promise<void> {
             }
             expectedWorktreeSourcePath = cwd;
             cwd = await prepareWorktree(cwd, parsed.branch);
-            expectedWorktreeBranch = parsed.branch;
+            worktreeWorkspace = true;
             // command stays as filteredArgs[0] (parseArgs already separated @branch)
         }
     }
-    expectedWorktreeBranch ??= detectWorktreeWorkspaceBranch(cwd) ?? undefined;
+    worktreeWorkspace ||= isWorktreeWorkspace(cwd);
 
     switch (command) {
         case "-h":
@@ -1064,20 +1062,20 @@ export async function main(): Promise<void> {
             break;
 
         case "stop":
-            if (expectedWorktreeBranch) {
-                runWorktreeLifecycleOperation(cwd, expectedWorktreeBranch, () => {
+            if (worktreeWorkspace) {
+                runWorktreeLifecycleOperation(cwd, () => {
                     stopProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
-                }, withProjectFamilyLifecycleLock, assertWorkspaceBranch, expectedWorktreeSourcePath);
+                }, withProjectFamilyLifecycleLock, assertWorkspaceReady, expectedWorktreeSourcePath);
             } else {
                 stopProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
             }
             break;
 
         case "rm":
-            if (expectedWorktreeBranch) {
-                runWorktreeLifecycleOperation(cwd, expectedWorktreeBranch, () => {
+            if (worktreeWorkspace) {
+                runWorktreeLifecycleOperation(cwd, () => {
                     removeProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
-                }, withProjectFamilyLifecycleLock, assertWorkspaceBranch, expectedWorktreeSourcePath);
+                }, withProjectFamilyLifecycleLock, assertWorkspaceReady, expectedWorktreeSourcePath);
             } else {
                 removeProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
             }
@@ -1111,7 +1109,7 @@ export async function main(): Promise<void> {
             const subcommand = cmdArgs[1] || "status";
             if (subcommand === "shell") {
                 ensureProfile(LAB_RUNNER_PROFILE_NAME);
-                await exec(cwd, ["bash"], { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, LAB_RUNNER_PROFILE_NAME);
+                await exec(cwd, ["bash"], { ...envOpt, worktreeWorkspace, expectedWorktreeSourcePath }, LAB_RUNNER_PROFILE_NAME);
                 break;
             }
             if (subcommand === "run") {
@@ -1121,7 +1119,7 @@ export async function main(): Promise<void> {
                     process.exit(1);
                 }
                 ensureProfile(LAB_RUNNER_PROFILE_NAME);
-                await exec(cwd, labCommand, { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, LAB_RUNNER_PROFILE_NAME);
+                await exec(cwd, labCommand, { ...envOpt, worktreeWorkspace, expectedWorktreeSourcePath }, LAB_RUNNER_PROFILE_NAME);
                 break;
             }
             const status = labsCli(cmdArgs.slice(1), cwd);
@@ -1224,18 +1222,18 @@ export async function main(): Promise<void> {
         }
 
         case "shell":
-            await exec(cwd, ["bash"], { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
+            await exec(cwd, ["bash"], { ...envOpt, worktreeWorkspace, expectedWorktreeSourcePath }, profile);
             break;
 
         case "update": {
             const tool = resolveTool(process.env);
-            await exec(cwd, tool.updateCommand, { tool, ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
+            await exec(cwd, tool.updateCommand, { tool, ...envOpt, worktreeWorkspace, expectedWorktreeSourcePath }, profile);
             break;
         }
 
         case undefined: {
             const tool = resolveTool(process.env);
-            await exec(cwd, buildToolInvocation(tool, []), { tool, ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
+            await exec(cwd, buildToolInvocation(tool, []), { tool, ...envOpt, worktreeWorkspace, expectedWorktreeSourcePath }, profile);
             break;
         }
 
@@ -1243,12 +1241,12 @@ export async function main(): Promise<void> {
             const tool = getToolByName(command);
             if (tool) {
                 const toolArgs = cmdArgs.slice(1);
-                await exec(cwd, buildToolInvocation(tool, toolArgs), { tool, ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
+                await exec(cwd, buildToolInvocation(tool, toolArgs), { tool, ...envOpt, worktreeWorkspace, expectedWorktreeSourcePath }, profile);
             } else if (command.startsWith("-")) {
                 const defTool = resolveTool(process.env);
-                await exec(cwd, buildToolInvocation(defTool, cmdArgs), { tool: defTool, ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
+                await exec(cwd, buildToolInvocation(defTool, cmdArgs), { tool: defTool, ...envOpt, worktreeWorkspace, expectedWorktreeSourcePath }, profile);
             } else {
-                await exec(cwd, cmdArgs, { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
+                await exec(cwd, cmdArgs, { ...envOpt, worktreeWorkspace, expectedWorktreeSourcePath }, profile);
             }
             break;
     }

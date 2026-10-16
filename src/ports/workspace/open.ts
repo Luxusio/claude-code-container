@@ -13,8 +13,8 @@ export interface WorkspaceOpenPorts {
     registrationPreflight(path: string, cwd: string, branch: string): WorkspaceRegistrationPreflight | null;
     recoverRegistration(path: string, cwd: string, branch: string, preflight: WorkspaceRegistrationPreflight): { repaired: boolean; failure?: string };
     recoveryError(path: string, failure?: string): Error;
-    assertBranch(path: string, branch: string, cwd: string, allowTrackedGitlinks: boolean): undefined;
-    actualBranch(path: string): string | null | undefined;
+    inspectWorkspace(path: string): undefined;
+    assertWorkspace(path: string, cwd: string, allowTrackedGitlinks: boolean): undefined;
     repairNested(cwd: string, path: string, branch: string): WorktreeRepoResult[];
     broken(cwd: string, path: string): { name: string }[];
     repairContent(cwd: string, path: string, name: string, branch: string): Promise<void>;

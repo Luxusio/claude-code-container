@@ -13,7 +13,6 @@ export interface WorkspaceRegistrationPreflight {
 }
 export type WorkspaceOpenOutcome =
     | { kind: "opened"; path: string }
-    | { kind: "refused"; reason: "branch-collision"; actualBranch: string; branch: string }
     | { kind: "refused"; reason: "invalid-branch" | "submodule-initialization-failed" | "creation-failed"; error: unknown };
 
 export type WorkspaceOpenConfirmation =

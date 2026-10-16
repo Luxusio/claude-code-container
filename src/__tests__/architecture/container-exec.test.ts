@@ -13,7 +13,7 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
         ensureRuntime: vi.fn(), resolveProject: () => "/project/repo", ensureDirectories: vi.fn(), ensureProjectTools: async () => {},
         projectId: () => "repo-id", debugEnabled: () => false, terminalReady: () => false, runtime: () => "docker",
         tool: name => catalog.find(tool => tool.name === name), defaultTool: () => catalog[0],
-        detectWorktreeBranch: () => null, assertWorktreeBranch: vi.fn(),
+        isWorktreeWorkspace: () => false, assertWorkspace: vi.fn(),
         async familyLock<T>(_id: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
         acquireOwnership: async () => ({lockFile: "/owned/session.lock", existingId: options.running ? "final-id" : null}),
         inspectSessionContainer: () => ({known: true, containerId: options.running ? "final-id" : null}),
@@ -336,6 +336,107 @@ describe("container exec semantic workflow", () => {
         vi.mocked(f.ports.installTools).mockImplementation(() => { throw failure; }); f.ports.isRestartRequired = error => error === failure;
         await expect(f.exec("/repo", ["codex"])).rejects.toBe(failure);
         expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+    });
+});
+
+describe("workspace execution admission", () => {
+    it.each([
+        {mode: "explicit normal", command: ["codex"], worktreeWorkspace: true, sourcePath: "/source/repo"},
+        {mode: "explicit resume", command: ["codex", "resume", "session-id"], worktreeWorkspace: true, sourcePath: "/source/repo"},
+        {mode: "direct normal", command: ["codex"], worktreeWorkspace: undefined, sourcePath: undefined},
+        {mode: "direct resume", command: ["codex", "resume", "session-id"], worktreeWorkspace: undefined, sourcePath: undefined},
+        {mode: "direct false hint", command: ["codex"], worktreeWorkspace: false, sourcePath: undefined},
+    ])("admits $mode under the family lock and keeps common Git mounts mandatory", async ({command, worktreeWorkspace, sourcePath}) => {
+        const f = fixture(), admission: string[] = [];
+        const mounts: ReturnType<typeof f.ports.worktreeMounts> = ["root", "child"].map(name => ({
+            hostPath: `/source/${name}/.git`, containerPath: `/source/${name}/.git`,
+            identity: {realpath: `/source/${name}/.git`, dev: "1", ino: name}, presence: "core" as const,
+        }));
+        let familyHeld = false;
+        f.ports.isWorktreeWorkspace = vi.fn(() => true);
+        f.ports.familyLock = async (_id, operation) => {
+            expect(_id).toBe("repo-id"); familyHeld = true; admission.push("family");
+            try { return await operation(); }
+            finally { familyHeld = false; admission.push("release"); }
+        };
+        f.ports.assertWorkspace = vi.fn((path, source) => {
+            expect(familyHeld).toBe(true); expect([path, source]).toEqual(["/project/repo", sourcePath]);
+            admission.push("ready");
+        });
+        f.ports.acquireOwnership = vi.fn(async () => {
+            expect(familyHeld).toBe(true); admission.push("acquire");
+            return {lockFile: "/owned/session.lock", existingId: null};
+        });
+        f.ports.worktreeMounts = vi.fn((path, required, mountPath) => {
+            expect(familyHeld).toBe(false); expect([path, required, mountPath]).toEqual(["/project/repo", true, "/project/repo-id"]);
+            admission.push("mounts"); return mounts;
+        });
+        const start = f.ports.startContainer;
+        f.ports.startContainer = vi.fn((...args: Parameters<typeof start>) => {
+            expect(args[2]).toEqual(mounts); return start(...args);
+        });
+        expect(await f.exec("/repo", command, {worktreeWorkspace, expectedWorktreeSourcePath: sourcePath})).toBe(0);
+        expect(admission).toEqual(["family", "ready", "acquire", "release", "mounts"]);
+        expect(f.ports.assertWorkspace).toHaveBeenCalledOnce();
+        expect(f.ports.acquireOwnership).toHaveBeenCalledOnce();
+        expect(f.ports.startContainer).toHaveBeenCalled();
+        expect(f.ports.launchCommand).toHaveBeenCalledOnce();
+        if (worktreeWorkspace !== true) expect(f.ports.isWorktreeWorkspace).toHaveBeenCalledExactlyOnceWith("/project/repo");
+    });
+    it("a false hint still surfaces malformed workspace metadata before claiming or starting a container", async () => {
+        const f = fixture(), failure = new Error("workspace metadata is malformed");
+        f.ports.isWorktreeWorkspace = vi.fn(() => { throw failure; });
+        f.ports.acquireOwnership = vi.fn();
+        f.ports.familyLock = vi.fn();
+        f.ports.worktreeMounts = vi.fn();
+        f.ports.prepareContainer = vi.fn();
+        await expect(f.exec("/repo", ["codex", "resume", "session-id"], {worktreeWorkspace: false})).rejects.toBe(failure);
+        expect(f.ports.isWorktreeWorkspace).toHaveBeenCalledExactlyOnceWith("/project/repo");
+        expect(f.ports.familyLock).not.toHaveBeenCalled();
+        expect(f.ports.assertWorkspace).not.toHaveBeenCalled();
+        expect(f.ports.acquireOwnership).not.toHaveBeenCalled();
+        expect(f.ports.worktreeMounts).not.toHaveBeenCalled();
+        expect(f.ports.prepareContainer).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+    });
+    it.each([true, false, undefined])("revalidates workspace ownership under the family lock before claiming (hint=%s)", async worktreeWorkspace => {
+        const f = fixture(), failure = new Error("workspace replaced while waiting for family lock");
+        let familyHeld = false;
+        f.ports.isWorktreeWorkspace = () => true;
+        f.ports.familyLock = async (_id, operation) => {
+            familyHeld = true;
+            try { return await operation(); } finally { familyHeld = false; }
+        };
+        f.ports.assertWorkspace = vi.fn(() => { expect(familyHeld).toBe(true); throw failure; });
+        f.ports.acquireOwnership = vi.fn();
+        f.ports.worktreeMounts = vi.fn();
+        f.ports.prepareContainer = vi.fn();
+        await expect(f.exec("/repo", ["codex"], {worktreeWorkspace, expectedWorktreeSourcePath: "/source/repo"})).rejects.toBe(failure);
+        expect(f.ports.assertWorkspace).toHaveBeenCalledExactlyOnceWith("/project/repo", "/source/repo");
+        expect(familyHeld).toBe(false);
+        expect(f.ports.acquireOwnership).not.toHaveBeenCalled();
+        expect(f.ports.worktreeMounts).not.toHaveBeenCalled();
+        expect(f.ports.prepareContainer).not.toHaveBeenCalled();
+        expect(f.ports.setSessionContainer).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+    });
+    it("waits for the family lock before readiness and session ownership", async () => {
+        const f = fixture();
+        let entered!: () => void, release!: () => void;
+        const waiting = new Promise<void>(resolve => { entered = resolve; });
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        f.ports.familyLock = async (_id, operation) => { entered(); await gate; return operation(); };
+        f.ports.acquireOwnership = vi.fn(async () => ({lockFile: "/owned/session.lock", existingId: null}));
+        const pending = f.exec("/repo", ["codex"], {worktreeWorkspace: true});
+        await waiting;
+        expect(f.ports.assertWorkspace).not.toHaveBeenCalled();
+        expect(f.ports.acquireOwnership).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        release();
+        expect(await pending).toBe(0);
+        expect(f.ports.assertWorkspace).toHaveBeenCalledExactlyOnceWith("/project/repo", undefined);
+        expect(f.ports.acquireOwnership).toHaveBeenCalledOnce();
     });
 });
 

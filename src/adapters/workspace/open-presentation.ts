@@ -52,10 +52,7 @@ export function createWorkspaceOpenPresentation(ports: WorkspaceOpenPresentation
             + (failure ? ` Reason: ${ports.safeLiteral(failure.slice(0, 500))}` : " Reason: Git registration conditions changed during recovery."));
     }
     function refusal(outcome: Extract<WorkspaceOpenOutcome, { kind: "refused" }>): undefined {
-        if (outcome.reason === "branch-collision") {
-            ports.reportError(`Error: Workspace exists for branch '${outcome.actualBranch}', not '${outcome.branch}'.`);
-            ports.reportError("Different branches map to the same directory due to '/' → '-' conversion.");
-        } else { ports.reportError(`Error: ${errorMessage(outcome.error)}`); }
+        ports.reportError(`Error: ${errorMessage(outcome.error)}`);
         return undefined;
     }
     return { confirm, report, recoveryError, refusal };

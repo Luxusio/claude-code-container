@@ -975,6 +975,26 @@ export function getWorkspacePath(sourcePath: string, branch: string): string {
     return join(parent, formatWorkspaceSiblingBasename(dirName, branch));
 }
 
+export function assertWorkspaceReady(
+    workspacePath: string,
+    runner: typeof spawnSync = spawnSync,
+    sourcePath?: string,
+    options: { allowTrackedGitlinks?: boolean } = {},
+): void {
+    if (!pathExistsStrict(workspacePath)) {
+        throw new Error("Workspace no longer exists.");
+    }
+    if (sourcePath) {
+        assertWorkspaceOwnership(workspacePath, sourcePath, options);
+    }
+    const repositories = withSanitizedGitRepositoryEnvironment(
+        () => observeWorktreeWorkspaceBranches(workspacePath, runner, options),
+    );
+    if (!repositories) {
+        throw new Error("Unable to verify workspace readiness: no worktree repositories found.");
+    }
+}
+
 export function assertWorkspaceBranch(
     workspacePath: string,
     expectedBranch: string,
@@ -2382,10 +2402,11 @@ function damagedWorkspaceMetadataError(
     );
 }
 
-export function detectWorktreeWorkspaceBranch(
+function observeWorktreeWorkspaceBranches(
     workspacePath: string,
     runner: typeof spawnSync = spawnSync,
-): string | null {
+    options: { allowTrackedGitlinks?: boolean } = {},
+): Array<{ name: string; path: string; branch: string }> | null {
     if (!pathExistsStrict(workspacePath)) return null;
     const rootGit = join(workspacePath, ".git");
     let repositories: Array<{ name: string; path: string }>;
@@ -2400,7 +2421,7 @@ export function detectWorktreeWorkspaceBranch(
             }
             return null;
         }
-        repositories = branchRepositories(workspacePath, "root");
+        repositories = branchRepositories(workspacePath, "root", options);
     } else {
         const candidates = scanDirectory(workspacePath, { strict: true }).filter((entry) => entry.isGitRepo);
         const kinds = candidates.map((entry) => ({
@@ -2433,7 +2454,6 @@ export function detectWorktreeWorkspaceBranch(
     }
     if (repositories.length === 0) return null;
 
-    const branches = new Set<string>();
     const observedRepositories: Array<{ name: string; path: string; branch: string }> = [];
     for (const repository of repositories) {
         const identity = captureNestedRepositoryIdentity(repository.path);
@@ -2452,9 +2472,27 @@ export function detectWorktreeWorkspaceBranch(
         if (result.error || result.status !== 0 || !branch) {
             throw new Error(`Unable to determine worktree branch in '${repository.name}'.`);
         }
-        branches.add(branch);
         observedRepositories.push({ ...repository, branch });
     }
+    return observedRepositories;
+}
+
+export function isWorktreeWorkspace(
+    workspacePath: string,
+    runner: typeof spawnSync = spawnSync,
+): boolean {
+    return withSanitizedGitRepositoryEnvironment(
+        () => observeWorktreeWorkspaceBranches(workspacePath, runner, { allowTrackedGitlinks: true }),
+    ) !== null;
+}
+
+export function detectWorktreeWorkspaceBranch(
+    workspacePath: string,
+    runner: typeof spawnSync = spawnSync,
+): string | null {
+    const observedRepositories = observeWorktreeWorkspaceBranches(workspacePath, runner);
+    if (!observedRepositories) return null;
+    const branches = new Set(observedRepositories.map(({ branch }) => branch));
     if (branches.size !== 1) {
         const listed = observedRepositories.map(({ name, path, branch }) => (
             `\n  ${terminalSafe(name)}: ${terminalSafe(path)} -> ${terminalSafe(branch)}`

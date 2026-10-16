@@ -67,20 +67,33 @@ the workspace without risking uncommitted files.
   Failure to read a temporary HEAD reports the observation step and Git
   error; a successfully observed mismatching HEAD reports an identity change.
 
-## Branch-conflict inspection
+## Independent repository branches during execution
 
-When the surviving managed repositories in an existing workspace report
-different checked-out branches, refuse reuse and identify each compared
-repository by name, path and its actual observed branch. Escape terminal
-control characters in these values. Use the already identity-qualified Git
-observations; formatting the refusal must not run new Git commands.
+An existing workspace is selected by its directory or its explicit @argument.
+Its healthy root and nested repositories may each keep a different checked-out
+branch, including a root branch different from the directory alias. Both normal
+execution and --resume accept that layout without checkout, reset, ref/index
+changes, or branch renaming. New workspaces and newly created missing child
+checkouts still use the requested branch.
 
-A nested repository excluded because its Git metadata is unreachable may
-produce its existing separate notice, but must not appear as an observed
-branch in the conflict. Consistent healthy repositories can still identify
-the workspace branch. Inspect with `git status --short --branch` inside the
-reported repositories before deciding how to reconcile them. Refusal must
-not switch branches, reset files, prune registrations or change Git indexes.
+Existing-workspace opening checks the topology and ownership of present
+repositories before nested creation or any content-repair prompt, so a foreign
+nested repository and its unique Git history remain untouched. This preflight
+permits absent new child checkouts; final admission requires their complete
+source ownership after repair.
+
+Execution revalidates repository ownership, readable Git metadata and worktree
+topology under the project-family lock before acquiring a session. A skipped
+nested repository with unreachable metadata retains its separate notice and
+must not supply a fabricated branch or trigger unconfirmed repair. Every
+healthy owned repository still contributes its verified common Git directory
+mount. Mixed regular repositories/worktrees, foreign ownership, malformed or
+replaced metadata remain refusals.
+
+Stop and container-only removal use the same readiness checks. Workspace-file
+deletion retains its existing strict branch and ownership validation. Missing
+registration recovery retains its separate confirmation and exact ref/commit
+requirements; accepting an existing independent branch does not weaken them.
 
 ## Verification
 

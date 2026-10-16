@@ -22,7 +22,7 @@ function execFixture() {
         ensureRuntime: vi.fn(), resolveProject: () => "/fixture/project", ensureDirectories: vi.fn(), ensureProjectTools: async () => {},
         projectId: () => "fixture", debugEnabled: () => false, terminalReady: vi.fn(() => false), runtime: () => "docker",
         tool: name => catalog.find(tool => tool.name === name), defaultTool: () => catalog[0],
-        detectWorktreeBranch: () => null, assertWorktreeBranch: vi.fn(),
+        isWorktreeWorkspace: () => false, assertWorkspace: vi.fn(),
         async familyLock<T>(_id: string, operation: () => Promise<T> | T) { return operation(); },
         acquireOwnership: async () => ({ lockFile: "/fixture/session.lock", existingId: "final-id" }),
         inspectSessionContainer: () => ({ known: true, containerId: "final-id" }),
@@ -32,6 +32,8 @@ function execFixture() {
         sessionClaims: () => ["session.lock"], lockName: () => "session.lock", prepareDeviceBroker: async () => {},
         lifecycleLock<T>(_id: string, operation: () => T) { return operation(); },
         async setupLock<T>(_id: string, operation: () => Promise<T> | T) { return operation(); },
+        async stateLock<T>(operation: () => Promise<T> | T) { return operation(); },
+        prepareContainer: () => ({ start: ports.startContainer, initialize: () => {} }),
         startContainer: (_path, _directories, _mounts, _port, _profile, _recreate, _replacement, onReady) => {
             onReady("final-id", { startedByInvocation: false }); return "fixture-container";
         },

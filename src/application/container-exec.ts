@@ -72,7 +72,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
         if (ports.debugEnabled()) ports.report({ kind: "exec-debug", projectPath, fullPath, projectId, command: cmd });
         const { setupTool, commandTool } = resolveContainerExecTools(cmd, options.tool, ports);
         const shouldEnsureTool = commandTool !== undefined || options.tool !== undefined;
-        const worktreeBranch = options.expectedWorktreeBranch ?? ports.detectWorktreeBranch(fullPath);
+        const worktreeWorkspace = options.worktreeWorkspace === true || ports.isWorktreeWorkspace(fullPath);
         const acquire = () => ports.acquireOwnership({
             projectId, projectPath: fullPath, profile,
             toolName: (commandTool ?? options.tool)?.name ?? "command",
@@ -81,9 +81,9 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             if (runtime !== "docker" && runtime !== "podman") throw ports.invalidRuntimeFailure();
             return { ...ports.inspectSessionContainer(request.projectPath, request.profile), runtime };
         });
-        const { lockFile: sessionLockFile } = worktreeBranch
+        const { lockFile: sessionLockFile } = worktreeWorkspace
             ? await ports.familyLock(projectId, () => {
-                ports.assertWorktreeBranch(fullPath, worktreeBranch, options.expectedWorktreeSourcePath);
+                ports.assertWorkspace(fullPath, options.expectedWorktreeSourcePath);
                 return acquire();
             })
             : await acquire();
@@ -97,7 +97,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
         // Detect worktree mounts (source .git directories needed for git operations)
         const worktreeMounts = ports.worktreeMounts(
             fullPath,
-            worktreeBranch !== null,
+            worktreeWorkspace,
             `/project/${projectId}`,
         );
         if (ports.debugEnabled() && worktreeMounts.length > 0) ports.report({ kind: "mounts-debug", mounts: worktreeMounts });

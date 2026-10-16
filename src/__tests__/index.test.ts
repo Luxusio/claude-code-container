@@ -222,89 +222,112 @@ describe('workspace removal lifecycle lock', () => {
 })
 
 describe('worktree session registration', () => {
-  it('validates the exact branch and creates the lock inside one family critical section', () => {
+  it('checks workspace readiness before creating the session inside one family critical section', () => {
     let insideLock = false
+    const sequence: string[] = []
     const familyLock = vi.fn((_projectId: string, operation: () => string) => {
       insideLock = true
+      sequence.push('family lock')
       try { return operation() } finally { insideLock = false }
     })
-    const branchGuard = vi.fn(() => expect(insideLock).toBe(true))
+    const workspaceGuard = vi.fn(() => {
+      expect(insideLock).toBe(true)
+      sequence.push('workspace ready')
+    })
     const lockCreator = vi.fn(() => {
       expect(insideLock).toBe(true)
+      sequence.push('session lock')
       return '/locks/worktree.lock'
     })
 
     expect(createWorktreeSessionLock(
       'worktree-id',
       '/projects/repo--feature',
-      'feature',
       'work',
       familyLock,
-      branchGuard,
+      workspaceGuard,
       lockCreator,
       '/projects/repo',
     )).toBe('/locks/worktree.lock')
-    expect(branchGuard).toHaveBeenCalledWith(
+    expect(familyLock).toHaveBeenCalledWith('worktree-id', expect.any(Function))
+    expect(workspaceGuard).toHaveBeenCalledOnce()
+    expect(workspaceGuard).toHaveBeenCalledWith(
       '/projects/repo--feature',
-      'feature',
       expect.any(Function),
       '/projects/repo',
+      { allowTrackedGitlinks: true },
     )
     expect(lockCreator).toHaveBeenCalledWith('worktree-id', 'work')
+    expect(sequence).toEqual(['family lock', 'workspace ready', 'session lock'])
+    expect(insideLock).toBe(false)
   })
 
   it('does not create a session after removal wins and the workspace disappears', () => {
     const familyLock = (_projectId: string, operation: () => string) => operation()
     const lockCreator = vi.fn(() => '/locks/worktree.lock')
-    const branchGuard = () => {
-      throw new Error('Workspace for branch feature no longer exists')
+    const workspaceGuard = () => {
+      throw new Error('Workspace no longer exists')
     }
 
     expect(() => createWorktreeSessionLock(
       'worktree-id',
       '/projects/repo--feature',
-      'feature',
       undefined,
       familyLock,
-      branchGuard,
+      workspaceGuard,
       lockCreator,
     )).toThrow('no longer exists')
     expect(lockCreator).not.toHaveBeenCalled()
   })
 
-  it('guards stop and other destructive worktree operations with the same branch/family lock', () => {
-    const operation = vi.fn(() => 'stopped')
-    const familyLock = (_projectId: string, callback: () => string) => callback()
-    const branchGuard = vi.fn()
+  it('checks readiness before stop or container-only removal inside the family lock', () => {
+    let insideLock = false
+    const sequence: string[] = []
+    const operation = vi.fn(() => {
+      expect(insideLock).toBe(true)
+      sequence.push('operation')
+      return 'stopped'
+    })
+    const familyLock = vi.fn((_projectId: string, callback: () => string) => {
+      insideLock = true
+      sequence.push('family lock')
+      try { return callback() } finally { insideLock = false }
+    })
+    const workspaceGuard = vi.fn(() => {
+      expect(insideLock).toBe(true)
+      sequence.push('workspace ready')
+    })
 
     expect(runWorktreeLifecycleOperation(
       '/projects/repo--feature',
-      'feature',
       operation,
       familyLock,
-      branchGuard,
+      workspaceGuard,
       '/projects/repo',
     )).toBe('stopped')
-    expect(branchGuard).toHaveBeenCalledWith(
+    expect(familyLock).toHaveBeenCalledWith(getProjectId('/projects/repo--feature'), expect.any(Function))
+    expect(workspaceGuard).toHaveBeenCalledOnce()
+    expect(workspaceGuard).toHaveBeenCalledWith(
       '/projects/repo--feature',
-      'feature',
       expect.any(Function),
       '/projects/repo',
+      { allowTrackedGitlinks: true },
     )
     expect(operation).toHaveBeenCalledOnce()
+    expect(sequence).toEqual(['family lock', 'workspace ready', 'operation'])
+    expect(insideLock).toBe(false)
   })
 
-  it('does not run stop or rm after the final branch guard fails', () => {
+  it('does not run stop or container-only removal after the final readiness check fails', () => {
     const operation = vi.fn()
     const familyLock = (_projectId: string, callback: () => unknown) => callback()
 
     expect(() => runWorktreeLifecycleOperation(
       '/projects/repo--feature',
-      'feature',
       operation,
       familyLock,
-      () => { throw new Error('workspace branch changed') },
-    )).toThrow('workspace branch changed')
+      () => { throw new Error('workspace ownership changed') },
+    )).toThrow('workspace ownership changed')
     expect(operation).not.toHaveBeenCalled()
   })
 })

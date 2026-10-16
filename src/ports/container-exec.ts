@@ -6,7 +6,7 @@ export interface ContainerExecOptions {
     interactive?: boolean;
     env?: Record<string, string>;
     tool?: ToolDefinition;
-    expectedWorktreeBranch?: string;
+    worktreeWorkspace?: boolean;
     expectedWorktreeSourcePath?: string;
 }
 export interface ContainerExecStatus { exists: boolean; running: boolean; containerId: string | null; imageId: string | null; }
@@ -71,8 +71,8 @@ export interface ContainerExecPorts<Prepared> {
     runtime(): "docker" | "podman";
     tool(name: string): ToolDefinition | undefined;
     defaultTool(): ToolDefinition;
-    detectWorktreeBranch(path: string): string | null;
-    assertWorktreeBranch(path: string, branch: string, sourcePath?: string): void;
+    isWorktreeWorkspace(path: string): boolean;
+    assertWorkspace(path: string, sourcePath?: string): void;
     familyLock<T>(projectId: string, operation: () => Promise<T> | T): Promise<T>;
     acquireOwnership(request: SessionAcquisitionRequest, inspect: (request: SessionAcquisitionRequest) => SessionAcquisitionInspection): Promise<{ lockFile: string; existingId: string | null }>;
     inspectSessionContainer(path: string, profile?: string): { known: boolean; containerId: string | null };

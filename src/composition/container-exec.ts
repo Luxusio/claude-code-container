@@ -8,7 +8,7 @@ import { ensureClipboardServer } from "../clipboard-server.js";
 import { clipboardPortFile } from "../home-layout.js";
 import { runtimeCli } from "../container-runtime.js";
 import { getToolByName, getDefaultTool } from "../tool-registry.js";
-import { detectWorktreeWorkspaceBranch, assertWorkspaceBranch, getWorktreeGitMounts } from "../worktree.js";
+import { isWorktreeWorkspace, assertWorkspaceReady, getWorktreeGitMounts } from "../worktree.js";
 import {
     ensureDockerRunning, inspectSessionContainerOwnership, getContainerName, getContainerStatus,
     startProjectContainer, prepareProjectContainerStartup, withProjectContainerStateLockAsync, restoreCodexConfigHostOwnership, isContainerRunning,
@@ -132,8 +132,8 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         runtime: runtimeCli,
         tool: getToolByName,
         defaultTool: getDefaultTool,
-        detectWorktreeBranch: detectWorktreeWorkspaceBranch,
-        assertWorktreeBranch: (path, branch, source) => assertWorkspaceBranch(path, branch, spawnSync, source),
+        isWorktreeWorkspace,
+        assertWorkspace: (path, source) => assertWorkspaceReady(path, spawnSync, source, { allowTrackedGitlinks: true }),
         familyLock: withProjectFamilyLifecycleLockAsync,
         acquireOwnership: acquireHostSessionOwnership,
         inspectSessionContainer: inspectSessionContainerOwnership,

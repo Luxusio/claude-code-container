@@ -51,10 +51,12 @@ import {
     portableWorktreeGitDirectory,
     portableWorktreeBackpointer,
     assertWorkspaceBranch,
+    assertWorkspaceReady,
     assertWorkspaceRootOwnership,
     canRecreateMissingWorkspaceRootRegistration,
     repairWorkspaceRootOwnership,
     detectWorktreeWorkspaceBranch,
+    isWorktreeWorkspace,
     needsSubmoduleSetup,
     initWithSubmodules,
 } from "../worktree.js";
@@ -1338,7 +1340,7 @@ describe("assertWorkspaceBranch", () => {
         rmSync(repoPath, { recursive: true, force: true });
     });
 
-    function workspaceWithOrphan(branch: string, healthyName = "api") {
+    function workspaceWithOrphan(branch: string, healthyName = "api", orphanName = "webapp") {
         const workspace = getWorkspacePath(repoPath, branch);
         branchWorkspaces.push(workspace);
         const git = (cwd: string, args: string[]): string => {
@@ -1348,14 +1350,14 @@ describe("assertWorkspaceBranch", () => {
         };
         git(repoPath, ["worktree", "add", "-b", branch, workspace]);
         const sources = [repoPath];
-        for (const name of [healthyName, "webapp"]) {
+        for (const name of [healthyName, orphanName]) {
             const source = join(repoPath, name);
             initRepo(source);
             git(source, ["worktree", "add", "-b", branch, join(workspace, name)]);
             sources.push(source);
         }
         const healthy = join(workspace, healthyName);
-        const orphan = join(workspace, "webapp");
+        const orphan = join(workspace, orphanName);
         const administration = [workspace, healthy, orphan].map((repository) => (
             resolve(repository, readFileSync(join(repository, ".git"), "utf-8")
                 .replace(/^gitdir: /, "").trim())
@@ -1380,10 +1382,284 @@ describe("assertWorkspaceBranch", () => {
                 return { file, contents: readFileSync(file), ino, uid, gid, mode };
             }),
             refs: sources.map((source) => git(source, ["for-each-ref", "--format=%(refname) %(objectname)"])),
+            registrations: sources.map((source) => git(source, ["worktree", "list", "--porcelain"])),
             orphanRegistrationPresent: existsSync(removedRegistration),
         });
         return { workspace, healthy, orphan, sources, removedRegistration, capture, git };
     }
+
+    describe("existing workspace readiness with independent branches", () => {
+        it("classifies an ordinary source repository separately from worktree workspaces", () => {
+            expect(isWorktreeWorkspace(repoPath)).toBe(false);
+            expect(isWorktreeWorkspace(join(repoPath, "absent"))).toBe(false);
+        });
+
+        it("accepts the PAY root and independently committed webapp while excluding its orphaned api", () => {
+            const { workspace, healthy, orphan, capture, git } = workspaceWithOrphan(
+                "DEV-208-29", "pay-webapp", "pay-api",
+            );
+            git(healthy, ["switch", "-c", "DEV-208-29-urs"]);
+            git(healthy, ["add", "init.txt"]);
+            git(healthy, ["commit", "-m", "independent webapp work"]);
+            writeFileSync(join(healthy, "init.txt"), "unstaged webapp work");
+            writeFileSync(join(healthy, "staged.txt"), "staged webapp work");
+            git(healthy, ["add", "staged.txt"]);
+            const before = capture();
+            const stderr: string[] = [];
+            const originalWrite = process.stderr.write;
+            process.stderr.write = ((chunk: unknown) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+            try {
+                expect(isWorktreeWorkspace(workspace)).toBe(true);
+                expect(() => assertWorkspaceReady(workspace, spawnSync, repoPath)).not.toThrow();
+            } finally {
+                process.stderr.write = originalWrite;
+            }
+            expect(capture(), "acceptance preserves files, indexes, refs and worktree registrations").toEqual(before);
+            expect(git(healthy, ["status", "--short"])).toContain("A  staged.txt");
+            expect(git(healthy, ["status", "--short"])).toContain(" M init.txt");
+            const notice = stderr.join("");
+            expect(notice).toContain("Skipping nested Git repository");
+            expect(notice).toContain(orphan);
+            expect(notice).not.toContain(healthy);
+        });
+
+        it("accepts a root branch that also differs from the workspace directory alias", () => {
+            const { workspace, healthy, capture, git } = workspaceWithOrphan("DEV-208-29");
+            git(workspace, ["switch", "-c", "root-independent"]);
+            git(healthy, ["switch", "-c", "child-independent"]);
+            const before = capture();
+            expect(isWorktreeWorkspace(workspace)).toBe(true);
+            expect(() => assertWorkspaceReady(workspace, spawnSync, repoPath)).not.toThrow();
+            expect(capture()).toEqual(before);
+        });
+
+        it("accepts independent branches in a rootless multi-repository workspace", () => {
+            const source = join(repoPath, "rootless-source");
+            mkdirSync(source);
+            initRepo(join(source, "frontend"));
+            initRepo(join(source, "backend"));
+            const { workspacePath: workspace } = createWorkspace(source, "directory-alias");
+            branchWorkspaces.push(workspace);
+            const backend = join(workspace, "backend");
+            expect(spawnSync("git", ["switch", "-c", "backend-independent"], {
+                cwd: backend, encoding: "utf-8", stdio: "pipe",
+            }).status).toBe(0);
+            const repositories = [join(workspace, "frontend"), backend];
+            const before = repositories.map((repository) => ({
+                metadata: readFileSync(join(repository, ".git")),
+                branch: spawnSync("git", ["symbolic-ref", "HEAD"], { cwd: repository, encoding: "utf-8" }).stdout,
+                head: spawnSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf-8" }).stdout,
+            }));
+            expect(isWorktreeWorkspace(workspace)).toBe(true);
+            expect(() => assertWorkspaceReady(workspace, spawnSync, source)).not.toThrow();
+            expect(repositories.map((repository) => ({
+                metadata: readFileSync(join(repository, ".git")),
+                branch: spawnSync("git", ["symbolic-ref", "HEAD"], { cwd: repository, encoding: "utf-8" }).stdout,
+                head: spawnSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf-8" }).stdout,
+            }))).toEqual(before);
+        });
+
+        it("includes a healthy tracked gitlink on an independent branch when execution admits gitlinks", () => {
+            const { workspace, healthy, capture, git } = workspaceWithOrphan("gitlink-alias", "pay-webapp", "pay-api");
+            git(healthy, ["switch", "-c", "webapp-independent"]);
+            const childHead = git(healthy, ["rev-parse", "HEAD"]).trim();
+            git(workspace, ["update-index", "--add", "--cacheinfo", `160000,${childHead},pay-webapp`]);
+            const before = capture();
+            expect(isWorktreeWorkspace(workspace)).toBe(true);
+            expect(() => assertWorkspaceReady(workspace, spawnSync, repoPath, { allowTrackedGitlinks: true }))
+                .not.toThrow();
+            expect(capture()).toEqual(before);
+        });
+
+        it("refuses a missing workspace instead of admitting a session", () => {
+            expect(() => assertWorkspaceReady(join(repoPath, "missing"), spawnSync, repoPath))
+                .toThrow("no longer exists");
+        });
+
+        it("still refuses a workspace belonging to another source repository", () => {
+            const foreignSource = join(repoPath, "foreign-source");
+            initRepo(foreignSource);
+            const workspace = getWorkspacePath(repoPath, "foreign-alias");
+            branchWorkspaces.push(workspace);
+            const created = spawnSync("git", ["worktree", "add", "-b", "foreign-branch", workspace], {
+                cwd: foreignSource, encoding: "utf-8", stdio: "pipe",
+            });
+            expect(created.status, created.stderr).toBe(0);
+            const metadata = readFileSync(join(workspace, ".git"));
+            expect(() => assertWorkspaceReady(workspace, spawnSync, repoPath))
+                .toThrow("is not owned by source repository");
+            expect(readFileSync(join(workspace, ".git"))).toEqual(metadata);
+        });
+
+        it("still refuses malformed registration metadata in classifier and readiness", () => {
+            const { workspacePath: workspace } = createWorkspace(repoPath, "malformed-registration");
+            branchWorkspaces.push(workspace);
+            const gitDirectory = resolve(workspace, readFileSync(join(workspace, ".git"), "utf-8")
+                .replace(/^gitdir: /, "").trim());
+            writeFileSync(join(gitDirectory, "gitdir"), join(repoPath, ".git"));
+            const malformed = readFileSync(join(gitDirectory, "gitdir"));
+            expect(() => isWorktreeWorkspace(workspace)).toThrow(/inspect|metadata|owned/);
+            expect(() => assertWorkspaceReady(workspace, spawnSync, repoPath)).toThrow(/inspect|metadata|owned/);
+            expect(readFileSync(join(gitDirectory, "gitdir"))).toEqual(malformed);
+        });
+
+        it.each(["exit", "spawn", "empty"] as const)("refuses unreadable branch observations (%s)", (failure) => {
+            const { workspacePath: workspace } = createWorkspace(repoPath, "unreadable-branch");
+            branchWorkspaces.push(workspace);
+            const runner = vi.fn(() => ({
+                pid: failure === "spawn" ? 0 : 1,
+                output: [null, "", "branch unavailable"],
+                stdout: "",
+                stderr: "branch unavailable",
+                status: failure === "exit" ? 128 : failure === "spawn" ? null : 0,
+                signal: null,
+                ...(failure === "spawn" ? { error: Object.assign(new Error("spawnSync git EACCES"), { code: "EACCES" }) } : {}),
+            })) as unknown as typeof spawnSync;
+            const metadata = readFileSync(join(workspace, ".git"));
+            expect(() => assertWorkspaceReady(workspace, runner, repoPath)).toThrow("Unable to determine worktree branch");
+            expect(runner).toHaveBeenCalled();
+            expect(readFileSync(join(workspace, ".git"))).toEqual(metadata);
+        });
+
+        it("refuses replacement metadata written while a branch is being observed", () => {
+            const { workspacePath: workspace } = createWorkspace(repoPath, "readiness-replacement");
+            branchWorkspaces.push(workspace);
+            const metadata = join(workspace, ".git");
+            const previous = `${metadata}.previous`;
+            const contents = readFileSync(metadata);
+            let replaced = false;
+            const runner = vi.fn((...args: Parameters<typeof spawnSync>) => {
+                const result = spawnSync(...args);
+                if (!replaced) {
+                    renameSync(metadata, previous);
+                    writeFileSync(metadata, contents);
+                    replaced = true;
+                }
+                return result;
+            }) as typeof spawnSync;
+            expect(() => assertWorkspaceReady(workspace, runner, repoPath)).toThrow(/changed|metadata|inspect/i);
+            expect(replaced).toBe(true);
+            expect(readFileSync(metadata), "a rejected observation does not remove the replacement metadata").toEqual(contents);
+            expect(readFileSync(previous)).toEqual(contents);
+        });
+
+        it("refuses a foreign child through the CLI before offering destructive content repair", () => {
+            const childSource = join(repoPath, "api");
+            initRepo(childSource);
+            const branch = "foreign-child-admission";
+            const { workspacePath: workspace } = createWorkspace(repoPath, branch);
+            branchWorkspaces.push(workspace);
+            const child = join(workspace, "api");
+            const removed = spawnSync("git", ["worktree", "remove", "--force", child], {
+                cwd: childSource, encoding: "utf-8", stdio: "pipe",
+            });
+            expect(removed.status, removed.stderr).toBe(0);
+            initRepo(child);
+            writeFileSync(join(child, "foreign-history.txt"), "unique history, only in this repository");
+            for (const args of [["add", "foreign-history.txt"], ["commit", "-m", "foreign-only history"]]) {
+                const result = spawnSync("git", args, { cwd: child, encoding: "utf-8", stdio: "pipe" });
+                expect(result.status, result.stderr).toBe(0);
+            }
+            writeFileSync(join(child, "init.txt"), "unstaged foreign changes");
+            writeFileSync(join(child, "staged.txt"), "staged foreign changes");
+            expect(spawnSync("git", ["add", "staged.txt"], { cwd: child, stdio: "pipe" }).status).toBe(0);
+            writeFileSync(join(child, "untracked.txt"), "untracked foreign work");
+            const foreignMetadata = join(child, ".git");
+            const capture = () => {
+                const files = readdirSync(foreignMetadata, { recursive: true })
+                    .map((name) => join(foreignMetadata, name)).filter((file) => lstatSync(file).isFile()).sort();
+                files.push(...["init.txt", "foreign-history.txt", "staged.txt", "untracked.txt"].map((name) => join(child, name)));
+                return files.map((file) => {
+                    const { ino, uid, gid, mode } = lstatSync(file);
+                    return { file, ino, uid, gid, mode, contents: readFileSync(file) };
+                });
+            };
+            const before = capture();
+            const cliEnvironment = { ...process.env };
+            delete cliEnvironment.VITEST;
+            const cli = spawnSync(process.execPath, [
+                "--import", import.meta.resolve("tsx"), resolve("src/index.ts"),
+                `@${branch}`, "profile", "list",
+            ], {
+                cwd: repoPath, input: "y\n", env: cliEnvironment,
+                encoding: "utf-8", stdio: "pipe", timeout: 20_000,
+            });
+            const output = `${cli.stdout ?? ""}${cli.stderr ?? ""}`;
+            expect(cli.status, output).toBe(1);
+            expect(output).toMatch(/contains unmanaged Git repository|not owned by/);
+            expect(output).not.toContain("Stash content and recreate as proper worktrees?");
+            expect(output).not.toContain("Found 1 broken worktree(s)");
+            expect(capture(), "refusal leaves the foreign history, refs, index and working files intact").toEqual(before);
+        });
+
+        it("creates a newly added source child through the CLI without changing existing independent branches", () => {
+            const existingSource = join(repoPath, "existing-child");
+            initRepo(existingSource);
+            const branch = "new-child-admission";
+            const { workspacePath: workspace } = createWorkspace(repoPath, branch);
+            branchWorkspaces.push(workspace);
+            const existingChild = join(workspace, "existing-child");
+            for (const [repository, independentBranch] of [
+                [workspace, "root-independent"], [existingChild, "child-independent"],
+            ]) {
+                const result = spawnSync("git", ["switch", "-c", independentBranch], {
+                    cwd: repository, encoding: "utf-8", stdio: "pipe",
+                });
+                expect(result.status, result.stderr).toBe(0);
+            }
+            writeFileSync(join(existingChild, "independent.txt"), "existing independent history");
+            for (const args of [["add", "independent.txt"], ["commit", "-m", "independent child history"]]) {
+                const result = spawnSync("git", args, { cwd: existingChild, encoding: "utf-8", stdio: "pipe" });
+                expect(result.status, result.stderr).toBe(0);
+            }
+            const preservedFiles = [workspace, existingChild].flatMap((repository) => {
+                writeFileSync(join(repository, "init.txt"), `dirty ${basename(repository)}`);
+                writeFileSync(join(repository, "untracked.txt"), `untracked ${basename(repository)}`);
+                const management = resolve(repository, readFileSync(join(repository, ".git"), "utf-8")
+                    .replace(/^gitdir: /, "").trim());
+                return [".git", "init.txt", "untracked.txt"].map((name) => join(repository, name))
+                    .concat(["HEAD", "index", "gitdir", "commondir"].map((name) => join(management, name)));
+            });
+            preservedFiles.push(join(existingChild, "independent.txt"));
+            const capture = () => ({
+                files: preservedFiles.map((file) => {
+                    const { ino, uid, gid, mode } = lstatSync(file);
+                    return { file, ino, uid, gid, mode, contents: readFileSync(file) };
+                }),
+                refs: [repoPath, existingSource].map((source) => spawnSync("git", [
+                    "for-each-ref", "--format=%(refname) %(objectname)",
+                ], { cwd: source, encoding: "utf-8", stdio: "pipe" }).stdout),
+                registrations: [repoPath, existingSource].map((source) => spawnSync("git", [
+                    "worktree", "list", "--porcelain",
+                ], { cwd: source, encoding: "utf-8", stdio: "pipe" }).stdout),
+            });
+            const newSource = join(repoPath, "new-child");
+            initRepo(newSource);
+            const before = capture();
+            const cliEnvironment = { ...process.env };
+            delete cliEnvironment.VITEST;
+            const cli = spawnSync(process.execPath, [
+                "--import", import.meta.resolve("tsx"), resolve("src/index.ts"),
+                `@${branch}`, "profile", "list",
+            ], {
+                cwd: repoPath, input: "y\n", env: cliEnvironment,
+                encoding: "utf-8", stdio: "pipe", timeout: 20_000,
+            });
+            const output = `${cli.stdout ?? ""}${cli.stderr ?? ""}`;
+            expect(cli.status, output).toBe(0);
+            expect(output).toContain("Using existing workspace:");
+            expect(output).not.toContain("Stash content and recreate as proper worktrees?");
+            expect(capture(), "adding a missing child preserves each existing checkout").toEqual(before);
+            const newChild = join(workspace, "new-child");
+            expect(isValidWorktree(newChild, newSource)).toBe(true);
+            const newBranch = spawnSync("git", ["symbolic-ref", "--short", "HEAD"], {
+                cwd: newChild, encoding: "utf-8", stdio: "pipe",
+            });
+            expect(newBranch.status, newBranch.stderr).toBe(0);
+            expect(newBranch.stdout.trim()).toBe(branch);
+            expect(readFileSync(join(newChild, "init.txt"), "utf-8")).toBe("init");
+        });
+    });
 
     it("accepts only the exact checked-out branch", () => {
         const current = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {

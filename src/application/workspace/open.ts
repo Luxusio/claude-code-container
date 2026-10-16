@@ -21,11 +21,8 @@ export function createWorkspaceOpen(ports: WorkspaceOpenPorts) {
                     ports.report({ kind: "registration-recreated", path });
                     ports.assertOwner(path, cwd);
                 }
-            } else { ports.assertBranch(path, branch, cwd, false); }
-            const actualBranch = ports.actualBranch(path) ?? "";
-            if (actualBranch && actualBranch !== branch) {
-                return { kind: "refused", reason: "branch-collision", actualBranch, branch };
-            }
+            } else { ports.assertWorkspace(path, cwd, false); }
+            ports.inspectWorkspace(path);
             ports.report({ kind: "existing", path });
             for (const repo of ports.repairNested(cwd, path, branch)) ports.report({ kind: "nested-repaired", repo });
             const broken = ports.broken(cwd, path);
@@ -50,7 +47,7 @@ export function createWorkspaceOpen(ports: WorkspaceOpenPorts) {
                 ports.report({ kind: "created", result });
             } catch (error) { return { kind: "refused", reason: "creation-failed", error }; }
         }
-        ports.assertBranch(path, branch, cwd, true);
+        ports.assertWorkspace(path, cwd, true);
         return { kind: "opened", path };
     }
     async function open(cwd: string, branch: string): Promise<WorkspaceOpenOutcome> {

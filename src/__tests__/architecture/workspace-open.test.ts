@@ -25,8 +25,9 @@ function fixture() {
         missingRegistration: () => false, registrationPreflight: () => null,
         recoverRegistration: () => { throw new Error("unexpected-registration-recovery"); },
         recoveryError: createWorkspaceOpenPresentation({ prompt: async () => "n", report: () => undefined, reportError: () => undefined, safeLiteral: text => text }).recoveryError,
-        assertBranch: (_path, _branch, _cwd, allowTrackedGitlinks) => { held(); state.finalGuard = allowTrackedGitlinks; return undefined; },
-        actualBranch: () => BRANCH, repairNested: () => [], broken: () => [],
+        inspectWorkspace: () => { held(); return undefined; },
+        assertWorkspace: (_path, _cwd, allowTrackedGitlinks) => { held(); state.finalGuard = allowTrackedGitlinks; return undefined; },
+        repairNested: () => [], broken: () => [],
         repairContent: async () => { throw new Error("unexpected-content-repair"); }, submoduleRepos: () => null,
         initSubmodules: () => { throw new Error("unexpected-submodule-initialization"); },
         create: () => ({ workspacePath: WORKSPACE, created: [], copied: [] }), damage: () => null,
@@ -43,13 +44,14 @@ describe("workspace opening policy", () => {
         f.ports.hasGitMetadata = () => false;
         let admissionChecked = false;
         let finalChecked = false;
-        f.ports.assertBranch = (path, branch, cwd, allowTrackedGitlinks) => {
-            f.held(); expect([path, branch, cwd]).toEqual([WORKSPACE, BRANCH, SOURCE]);
+        f.ports.assertWorkspace = (path, cwd, allowTrackedGitlinks) => {
+            f.held(); expect([path, cwd]).toEqual([WORKSPACE, SOURCE]);
             if (!admissionChecked) { expect(allowTrackedGitlinks).toBe(false); admissionChecked = true; }
             else { expect(allowTrackedGitlinks).toBe(true); finalChecked = true; }
             return undefined;
         };
-        f.ports.actualBranch = () => { expect(admissionChecked).toBe(true); return BRANCH; };
+        f.ports.inspectWorkspace = (path) => { f.held(); expect(path).toBe(WORKSPACE); expect(admissionChecked).toBe(true); return undefined; };
+        f.ports.repairNested = () => { expect(admissionChecked).toBe(true); return []; };
         await expect(f.open()).resolves.toEqual({ kind: "opened", path: WORKSPACE });
         expect(finalChecked).toBe(true);
     });
@@ -71,9 +73,25 @@ describe("workspace opening policy", () => {
         const original = new Error("foreign root owner");
         f.ports.repairRoot = () => { f.held(); rootRepaired = true; return undefined; };
         f.ports.assertOwner = () => { expect(rootRepaired).toBe(true); throw original; };
-        f.ports.actualBranch = () => { throw new Error("foreign-owner-must-not-observe-content"); };
+        f.ports.inspectWorkspace = () => { throw new Error("foreign-root-must-not-inspect-nested-content"); };
+        f.ports.repairNested = () => { throw new Error("foreign-owner-must-not-observe-content"); };
+        f.ports.broken = () => { throw new Error("foreign-owner-must-not-observe-content"); };
         await expect(f.open()).rejects.toBe(original);
         expect(f.state.finalGuard).toBe(false);
+    });
+
+    it.each(["foreign nested repository", "malformed nested metadata"])("refuses %s before reporting or repairing existing content", async diagnosis => {
+        const f = fixture();
+        const original = new Error(diagnosis);
+        f.ports.inspectWorkspace = path => { f.held(); expect(path).toBe(WORKSPACE); throw original; };
+        f.ports.repairNested = () => { throw new Error("rejected-topology-must-not-repair-nested-content"); };
+        f.ports.broken = () => { throw new Error("rejected-topology-must-not-discover-broken-content"); };
+        f.ports.confirm = async () => { throw new Error("rejected-topology-must-not-prompt"); };
+        f.ports.repairContent = async () => { throw new Error("rejected-topology-must-not-mutate-content"); };
+        await expect(f.open()).rejects.toBe(original);
+        expect(f.state.reports).toEqual([]);
+        expect(f.state.finalGuard).toBe(false);
+        expect(f.state.locked).toBe(false);
     });
 
     it("repairs broken content only after confirmation while retaining family authority", async () => {
@@ -87,9 +105,9 @@ describe("workspace opening policy", () => {
             expect([cwd, path, name, branch]).toEqual([SOURCE, WORKSPACE, "child", BRANCH]);
             repaired = true;
         };
-        f.ports.assertBranch = (path, branch, cwd, allowTrackedGitlinks) => {
+        f.ports.assertWorkspace = (path, cwd, allowTrackedGitlinks) => {
             f.held(); expect(repaired).toBe(true);
-            expect([path, branch, cwd, allowTrackedGitlinks]).toEqual([WORKSPACE, BRANCH, SOURCE, true]);
+            expect([path, cwd, allowTrackedGitlinks]).toEqual([WORKSPACE, SOURCE, true]);
             return undefined;
         };
         await expect(f.open()).resolves.toEqual({ kind: "opened", path: WORKSPACE });
@@ -100,6 +118,11 @@ describe("workspace opening policy", () => {
         f.ports.exists = () => false;
         f.ports.submoduleRepos = () => ["child"];
         f.ports.confirm = async () => { f.held(); return false; };
+        f.ports.inspectWorkspace = () => { throw new Error("new-workspace-must-not-inspect-existing-topology"); };
+        f.ports.create = (cwd, branch) => {
+            f.held(); expect([cwd, branch]).toEqual([SOURCE, BRANCH]);
+            return { workspacePath: WORKSPACE, created: [], copied: [] };
+        };
         await expect(f.open()).resolves.toEqual({ kind: "opened", path: WORKSPACE });
         expect(f.state.finalGuard).toBe(true);
         expect(f.state.reports).toContainEqual({ kind: "created", result: { workspacePath: WORKSPACE, created: [], copied: [] } });
@@ -124,7 +147,8 @@ describe("workspace opening policy", () => {
         let fencePassed = false;
         let repairedOwnershipChecked = false;
         f.ports.assertOwner = () => { f.held(); if (!repaired) throw original; repairedOwnershipChecked = true; return undefined; };
-        f.ports.actualBranch = () => { expect(repairedOwnershipChecked).toBe(true); return BRANCH; };
+        f.ports.inspectWorkspace = () => { f.held(); expect(repairedOwnershipChecked).toBe(true); return undefined; };
+        f.ports.repairNested = () => { expect(repairedOwnershipChecked).toBe(true); return []; };
         f.ports.missingRegistration = (error) => error === original;
         f.ports.registrationPreflight = () => ({ assertUnchanged: () => { f.held(); fencePassed = true; return undefined; } });
         f.ports.confirm = async () => { f.held(); return true; };
@@ -165,14 +189,25 @@ describe("workspace opening policy", () => {
         expect(f.state.locked).toBe(false);
     });
 
-    it("refuses a different branch at the selected workspace path before nested repair", async () => {
+    it.each([BRANCH, "feature/other"])("opens an existing workspace selected by %s without a branch observation or recreation", async branch => {
         const f = fixture();
-        f.ports.actualBranch = () => "feature/other";
-        f.ports.repairNested = () => { throw new Error("collision-must-not-repair-content"); };
-        f.ports.broken = () => { throw new Error("collision-must-not-observe-content"); };
-        await expect(f.open()).resolves.toEqual({ kind: "refused", reason: "branch-collision", actualBranch: "feature/other", branch: BRANCH });
+        let nestedObserved = false;
+        f.ports.path = (cwd, selector) => {
+            expect([cwd, selector]).toEqual([SOURCE, branch]);
+            return WORKSPACE;
+        };
+        f.ports.create = () => { throw new Error("existing-workspace-must-not-be-recreated"); };
+        f.ports.repairNested = () => { f.held(); nestedObserved = true; return []; };
+        f.ports.assertWorkspace = (path, cwd, allowTrackedGitlinks) => {
+            f.held(); expect(nestedObserved).toBe(true);
+            expect([path, cwd, allowTrackedGitlinks]).toEqual([WORKSPACE, SOURCE, true]);
+            f.state.finalGuard = true;
+            return undefined;
+        };
+        await expect(createWorkspaceOpen(f.ports).open(SOURCE, branch)).resolves.toEqual({ kind: "opened", path: WORKSPACE });
         expect(f.state.locked).toBe(false);
-        expect(f.state.finalGuard).toBe(false);
+        expect(f.state.finalGuard).toBe(true);
+        expect(f.state.reports).toEqual([{ kind: "existing", path: WORKSPACE }]);
     });
 
     it("returns failed optional initialization before creating a workspace", async () => {
@@ -201,15 +236,15 @@ describe("workspace opening policy", () => {
         expect(f.state.reports.some(event => event.kind === "created")).toBe(false);
     });
 
-    it("propagates the final branch guard's refusal instead of opening changed content", async () => {
+    it("propagates the final workspace readiness refusal instead of opening changed content", async () => {
         const f = fixture();
-        const original = new Error("workspace branch changed");
-        f.ports.assertBranch = () => { f.held(); throw original; };
+        const original = new Error("workspace ownership changed");
+        f.ports.assertWorkspace = () => { f.held(); throw original; };
         await expect(f.open()).rejects.toBe(original);
         expect(f.state.locked).toBe(false);
     });
 
-    it("opens declined broken content only after the qualified final branch guard", async () => {
+    it("opens declined broken content only after the qualified final workspace readiness guard", async () => {
         const f = fixture();
         f.ports.broken = () => [{ name: "child" }];
         f.ports.confirm = async request => { f.held(); expect(request).toEqual({ purpose: "broken-content" }); return false; };
@@ -289,13 +324,10 @@ describe("native workspace opening presentation", () => {
 
     it("renders terminal refusals without adding output effects", () => {
         const f = presentationFixture();
-        f.presentation.refusal({ kind: "refused", reason: "branch-collision", actualBranch: "feature/other", branch: BRANCH });
         for (const reason of ["invalid-branch", "submodule-initialization-failed", "creation-failed"] as const) {
             f.presentation.refusal({ kind: "refused", reason, error: new Error(reason) });
         }
         expect(f.errors).toEqual([
-            "Error: Workspace exists for branch 'feature/other', not 'feature'.",
-            "Different branches map to the same directory due to '/' → '-' conversion.",
             "Error: invalid-branch", "Error: submodule-initialization-failed", "Error: creation-failed",
         ]);
         expect(f.output).toEqual([]);
