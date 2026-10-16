@@ -1,47 +1,56 @@
 import { describe, expect, it, vi } from "vitest";
-import { observeDesktopDirect, observeDesktopExecution, desktopGuestCommand, desktopRemoteReadCommand } from "../../../packages/device-lab/src/device-lab/broker/hyper-v/desktop-native.js";
+import { observeDesktopDirect, observeDesktopExecution, desktopGuestCommand, desktopRemoteReadCommand, desktopReceiptPresentation } from "../../../packages/device-lab/src/device-lab/broker/hyper-v/desktop-native.js";
 import { createHyperVDesktopTransferApplication } from "../../../packages/device-lab/src/device-lab/application/hyper-v-desktop-transfer.js";
-import type { DesktopDirectObservation, DesktopExecution } from "../../../packages/device-lab/src/device-lab/domain/hyper-v-desktop-transfer.js";
+import type { DesktopDirectObservation, DesktopExecution, DesktopReceipt } from "../../../packages/device-lab/src/device-lab/domain/hyper-v-desktop-transfer.js";
 import type { HyperVDesktopTransferPorts } from "../../../packages/device-lab/src/device-lab/ports/hyper-v-desktop-transfer.js";
 
 function fixture(backend: "windows-vm" | "linux-vm" = "windows-vm") {
     const roots = { deviceRoot: "/owned", privateRoot: "/owned/private", credentialPath: "/owned/private/guest", sshPrivateKeyPath: "/owned/private/key", sshHostPublicKeyPath: "/owned/private/host", knownHostsPath: "/owned/private/known" };
     const device = { vmId: "12345678-1234-1234-1234-123456789abc", vmName: "owned-vm", diskPath: "/owned/disk", ...roots, sshKnownHostsPath: roots.knownHostsPath, guestCredentialPath: roots.credentialPath, guestUsername: "ccc-desktop", networkAddress: "172.29.0.10", sshHostKeyFingerprint: "SHA256:" + "a".repeat(43) };
-    const execution = vi.fn(async (): Promise<DesktopExecution> => ({ ok: true, action: "upload", status: 0 }));
+    const receipt = Object.freeze({}) as DesktopReceipt;
+    const execution = vi.fn(async (): Promise<DesktopExecution> => ({ kind: "completed", action: "upload", receipt }));
     const stage = { id: "owned-stage" };
     const ports = {
         executable: () => "powershell", incarnation: () => "incarnation", validIncarnation: (value: unknown): value is string => value === "incarnation",
-        pendingJournal: () => false, repair: async () => ({ ok: true as const, device, reconciled: false }), ownershipNotes: () => "owned-notes",
+        pendingJournal: () => false, repair: vi.fn(async () => ({ ok: true as const, device, reconciled: false })), ownershipNotes: () => "owned-notes",
         createConsole: () => ({}), withConsoleLock: async (_owner, _backend, _id, operation) => operation(),
         capture: vi.fn(), cursor: vi.fn(), vms: vi.fn(), input: vi.fn(), frame: () => null, rememberFrame: () => undefined, timestamp: () => "now",
         roots: () => roots, assertPrivateRoot: () => undefined, readableSecret: () => true, sshIdentity: () => true,
         localPath: () => "/destination", readSource: () => Buffer.from("abc"), allocateStage: vi.fn(() => ({ handle: stage, path: "/owned/private/stage" })),
         writeStage: vi.fn(() => undefined), readStage: vi.fn(() => Buffer.from("abc")), disposeStage: vi.fn(() => undefined), writeDestination: vi.fn(() => undefined),
-        guestConnection: () => ({}), prepareGuestExec: () => execution, prepareUpload: () => execution, prepareRemoteRead: () => execution,
-        direct: vi.fn(async (): Promise<DesktopDirectObservation> => ({ ok: true, action: "download", result: { localPath: "/owned/private/stage", remotePath: "/guest", bytes: 3 } })),
-        stateErrorCode: () => null, providerError: () => null, boundedErrorCode: (_error, fallback) => fallback, redactExecution: value => value,
+        guestConnection: () => ({}), prepareGuestExec: vi.fn(() => execution), prepareUpload: () => execution, prepareRemoteRead: () => execution,
+        direct: vi.fn(async (): Promise<DesktopDirectObservation> => ({ kind: "completed", action: "download", receipt, bytes: 3 })),
+        stateErrorCode: () => null, providerError: () => null, boundedErrorCode: (_error, fallback) => fallback,
     } satisfies HyperVDesktopTransferPorts<object, typeof stage, Buffer, object>;
     const app = createHyperVDesktopTransferApplication(ports);
     const invoke = (tool = "device_download", params: Record<string, unknown> = {}) => app.invoke("owner", { deviceId: "device", tool, params, localPath: "/destination", remotePath: "/guest" }, { backend, stateKey: backend, device });
-    return { ports, execution, stage, invoke };
+    return { ports, execution, receipt, stage, invoke };
 }
 
 describe("Hyper-V native desktop observations", () => {
     it("decodes Unicode binary download framing and rejects malformed framing", () => {
         const bytes = Buffer.from("한글\u0000abc");
-        expect(observeDesktopExecution({ status: 0, stdout: bytes.toString("base64") }, "download")).toMatchObject({ ok: true, action: "download", artifact: bytes, stdout: "" });
-        for (const stdout of ["%%%", "YQ=", "YQ==\nnoise"]) expect(observeDesktopExecution({ status: 0, stdout }, "download")).toMatchObject({ ok: true, action: "download", artifactInvalid: true });
-        expect(observeDesktopExecution({ status: 1, stdout: "%%%", error: "native-failed" }, "download")).toMatchObject({ ok: false, error: "native-failed" });
+        expect(observeDesktopExecution({ status: 0, stdout: bytes.toString("base64") }, "download")).toMatchObject({ kind: "completed", action: "download", artifact: bytes });
+        for (const stdout of ["%%%", "YQ=", "YQ==\nnoise"]) expect(observeDesktopExecution({ status: 0, stdout }, "download")).toMatchObject({ kind: "completed", action: "download", artifactInvalid: true });
+        expect(observeDesktopExecution({ status: 1, stdout: "%%%", error: "native-failed" }, "download")).toMatchObject({ kind: "failed", reason: "provider", category: "provider-failed" });
     });
     it("rejects a successful native action different from the requested download", () => {
-        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: "abc", stderr: "" }, { action: "download", localPath: "/stage", remotePath: "/guest", maxBytes: 8 })).toMatchObject({ ok: false, error: "hyper-v-guest-invalid-result" });
+        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: "abc", stderr: "" }, { action: "download", localPath: "/stage", remotePath: "/guest", maxBytes: 8 })).toMatchObject({ kind: "failed", reason: "invalid-result" });
     });
     it("projects Windows windows and focus only from successful native guest results", () => {
         const action = { action: "exec" as const, command: "native-command" };
-        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: '{"windows":[{"handle":"42","title":"한글","processId":3,"extra":true}]}', stderr: "" }, action, { kind: "window-list" }).windows).toEqual({ windows: [{ handle: "42", title: "한글", processId: 3 }] });
-        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: "{}", stderr: "" }, action, { kind: "window-list" })).toMatchObject({ windowFailure: "window-list-invalid-result" });
-        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: '{"error":"window-focus-denied"}', stderr: "" }, action, { kind: "focus", handle: "42" })).toMatchObject({ windowFailure: "window-focus-denied" });
-        expect(observeDesktopDirect({ action: "exec", status: 9, stdout: "{}", stderr: "denied" }, action, { kind: "window-list" })).toMatchObject({ guestFailed: true, result: { status: 9 } });
+        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: '{"windows":[{"handle":"42","title":"한글","processId":3,"extra":true}]}', stderr: "" }, action, { kind: "window-list" })).toMatchObject({ kind: "completed", windows: { windows: [{ handle: "42", title: "한글", processId: 3 }] } });
+        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: "{}", stderr: "" }, action, { kind: "window-list" })).toMatchObject({ kind: "window-failed", reason: "window-list-invalid-result" });
+        expect(observeDesktopDirect({ action: "exec", status: 0, stdout: '{"error":"window-focus-denied"}', stderr: "" }, action, { kind: "focus", handle: "42" })).toMatchObject({ kind: "window-failed", reason: "window-focus-denied" });
+        expect(observeDesktopDirect({ action: "exec", status: 9, stdout: "{}", stderr: "denied" }, action, { kind: "window-list" })).toMatchObject({ kind: "guest-failed", action: "exec" });
+    });
+    it("keeps native process data in an opaque receipt until outward presentation", () => {
+        const native = { mode: "exec", provider: "hyper-v-ssh", status: 0, stdout: "guest output 한글", stderr: "guest error" };
+        const observation = observeDesktopExecution(native, "exec");
+        expect(observation).toMatchObject({ kind: "completed", action: "exec" });
+        for (const key of ["mode", "provider", "status", "stdout", "stderr", "error", "result"]) expect(observation).not.toHaveProperty(key);
+        expect(JSON.stringify(observation.receipt)).not.toContain("guest output");
+        expect(desktopReceiptPresentation(observation.receipt)).toMatchObject({ kind: "execution", execution: native });
     });
     it("frames Unicode paths and keeps native commands inside guest limits", () => {
         const path = "/tmp/한글 ' $(id)";
@@ -84,6 +93,40 @@ describe("Hyper-V normalized native failure composition", () => {
         f.ports.direct.mockResolvedValueOnce(observeDesktopDirect({ action: "exec", status: 9, stdout: '{"error":"window-focus-denied"}', stderr: "guest failed" }, { action: "exec", command: "native-command" }, { kind: "focus", handle: "42" }));
         expect(await f.invoke("device_focus_window", { handle: "42" })).toMatchObject({ kind: "failure", category: "guest-failed", facts: { error: "hyper-v-guest-command-failed" } });
     });
+    it("uses recursive semantic windows and focus without constructing legacy payloads", async () => {
+        const f = fixture("linux-vm");
+        const listing = { windows: [{ handle: "42", title: "semantic 한글", processId: 3 }], truncated: true };
+        f.execution.mockResolvedValueOnce({ kind: "completed", action: "exec", receipt: f.receipt, windows: listing });
+        const windows = await f.invoke("device_window_list");
+        expect(windows).toMatchObject({ kind: "success", completion: { kind: "window-list", deviceId: "device", listing } });
+        expect(windows.facts).not.toHaveProperty("result");
+        expect(f.ports.prepareGuestExec).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { kind: "window-list" });
+        expect(f.ports.repair).toHaveBeenCalledTimes(2);
+        f.execution.mockResolvedValueOnce({ kind: "completed", action: "exec", receipt: f.receipt, focused: true });
+        expect(await f.invoke("device_focus_window", { handle: "42" })).toMatchObject({ kind: "success", completion: { kind: "focus", deviceId: "device" } });
+        expect(f.ports.prepareGuestExec).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), { kind: "focus", handle: "42" });
+        expect(f.ports.repair).toHaveBeenCalledTimes(4);
+    });
+    it("passes an opaque receipt through guest completion without reading its properties", async () => {
+        const f = fixture("linux-vm");
+        const read = vi.fn(() => { throw new Error("application read native receipt"); });
+        const receipt = new Proxy(Object.create(null), { get: read, ownKeys: read }) as DesktopReceipt;
+        f.execution.mockResolvedValueOnce({ kind: "completed", action: "exec", receipt });
+        const outcome = await f.invoke("device_exec", { command: "true" });
+        expect(outcome).toMatchObject({ kind: "success", completion: { kind: "guest", action: "exec" } });
+        expect(outcome.kind === "success" && outcome.completion.kind === "guest" && outcome.completion.receipt).toBe(receipt);
+        expect(read).not.toHaveBeenCalled();
+        expect(outcome.facts).not.toHaveProperty("result");
+    });
+    it("keeps a Linux native failure ahead of successful-looking focus output", async () => {
+        const f = fixture("linux-vm");
+        const observed = observeDesktopExecution({ status: 255, stdout: '{"ok":true}', stderr: "private provider output" }, "exec", { kind: "focus", handle: "42" });
+        f.execution.mockResolvedValueOnce(observed);
+        const result = await f.invoke("device_focus_window", { handle: "42" });
+        expect(result).toMatchObject({ kind: "failure", category: "provider-failed", facts: { error: "hyper-v-linux-guest-provider-failed", tool: "device_focus_window" } });
+        expect(result.kind === "failure" && result.receipt).toBe(observed.receipt);
+        expect(result.facts).not.toHaveProperty("execution");
+    });
 });
 
 describe("Hyper-V owned transfer stage lifetime", () => {
@@ -106,14 +149,14 @@ describe("Hyper-V owned transfer stage lifetime", () => {
         f.execution.mockRejectedValueOnce(new Error("native disconnected"));
         f.ports.disposeStage.mockImplementationOnce(() => { throw new Error("stage locked"); });
         const result = await f.invoke("device_upload");
-        expect(result).toMatchObject({ kind: "failure", facts: { detail: { cleanupError: "stage locked", publicationCompleted: false } } });
+        expect(result).toMatchObject({ kind: "failure", cleanup: { error: "stage locked", publicationCompleted: false, primary: { kind: "failure" } } });
         expect(JSON.stringify(result)).toContain("native disconnected");
         expect(f.ports.disposeStage).toHaveBeenCalledTimes(1);
     });
     it("retains completed publication evidence when disposal fails", async () => {
         const f = fixture();
         f.ports.disposeStage.mockImplementationOnce(() => { throw new Error("stage locked"); });
-        expect(await f.invoke()).toMatchObject({ kind: "failure", facts: { detail: { publicationCompleted: true, primary: { ok: true, result: { localPath: "/destination", bytes: 3 } } } } });
+        expect(await f.invoke()).toMatchObject({ kind: "failure", cleanup: { publicationCompleted: true, primary: { kind: "success", completion: { kind: "guest", transfer: { localPath: "/destination", bytes: 3 } } } } });
         expect(f.ports.writeDestination).toHaveBeenCalledExactlyOnceWith("/destination", Buffer.from("abc"), "hyper-v-guest-download");
     });
     it("refuses invalid stored private incarnation before native execution or allocation", async () => {
@@ -130,9 +173,25 @@ describe("Hyper-V owned transfer stage lifetime", () => {
         expect(f.ports.writeDestination).not.toHaveBeenCalled();
         expect(f.ports.disposeStage).toHaveBeenCalledExactlyOnceWith(f.stage);
     });
+    it("refuses a failed destination commit and disposes the observed download stage", async () => {
+        const f = fixture();
+        f.ports.writeDestination.mockImplementationOnce(() => { throw new Error("destination is read-only"); });
+        expect(await f.invoke()).toMatchObject({ kind: "failure", category: "provider-failed", facts: { error: "hyper-v-guest-download-invalid-artifact" } });
+        expect(f.ports.readStage).toHaveBeenCalledExactlyOnceWith(f.stage, 16 * 1024 * 1024);
+        expect(f.ports.writeDestination).toHaveBeenCalledTimes(1);
+        expect(f.ports.disposeStage).toHaveBeenCalledExactlyOnceWith(f.stage);
+    });
     it("requires the current frame before pointer input", async () => {
         const f = fixture();
         expect(await f.invoke("device_click", { x: 1, y: 1 })).toMatchObject({ kind: "failure", category: "conflict", facts: { error: "hyper-v-console-screenshot-required" } });
+        expect(f.ports.input).not.toHaveBeenCalled();
+        expect(f.ports.direct).not.toHaveBeenCalled();
+    });
+    it("refuses Linux guest typing when the observed VM ownership identity differs", async () => {
+        const f = fixture("linux-vm");
+        f.ports.vms.mockResolvedValueOnce([{ id: "12345678-1234-1234-1234-123456789abc", name: "owned-vm", notes: "foreign-owner", state: "Running" }]);
+        expect(await f.invoke("device_type", { text: "한글" })).toMatchObject({ kind: "failure", category: "conflict", facts: { error: "hyper-v-console-identity-mismatch" } });
+        expect(f.execution).not.toHaveBeenCalled();
         expect(f.ports.input).not.toHaveBeenCalled();
         expect(f.ports.direct).not.toHaveBeenCalled();
     });
@@ -152,7 +211,7 @@ describe("Hyper-V owned transfer stage lifetime", () => {
     });
     it("keeps Linux decoded bytes bounded before destination publication", async () => {
         const f = fixture("linux-vm");
-        f.execution.mockResolvedValueOnce({ ok: true, action: "download", status: 0, artifact: Buffer.alloc(9) });
+        f.execution.mockResolvedValueOnce({ kind: "completed", action: "download", receipt: f.receipt, artifact: Buffer.alloc(9) });
         expect(await f.invoke("device_download", { maxFileBytes: 8 })).toMatchObject({ kind: "failure", category: "too-large" });
         expect(f.ports.writeDestination).not.toHaveBeenCalled();
         expect(f.execution).toHaveBeenCalledExactlyOnceWith({ timeoutMs: 30000, outputLimit: 9 });

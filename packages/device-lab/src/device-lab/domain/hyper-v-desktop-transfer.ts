@@ -10,15 +10,28 @@ export interface DesktopFacts {
     missing?: string[];
     minimumTimeoutMs?: number;
     detail?: unknown;
-    remedy?: string;
-    execution?: unknown;
     bytes?: number;
     maxFileBytes?: number;
-    result?: DesktopRecord;
 }
+declare const desktopReceiptBrand: unique symbol;
+/** Native evidence can only be rendered by its adapter; policy carries its identity. */
+export interface DesktopReceipt { readonly [desktopReceiptBrand]: true; }
+export interface DesktopOperationTarget {
+    ownerId: string;
+    backend: string | null;
+    deviceId: string;
+    tool: string;
+}
+export type DesktopCompletion =
+    { kind: 'capture'; target: DesktopOperationTarget; capturedAt: string } |
+    { kind: 'cursor'; target: DesktopOperationTarget; position: DesktopCursor } |
+    { kind: 'input'; target: DesktopOperationTarget; method: 'console' | 'guest-x11' } |
+    { kind: 'guest'; target: DesktopOperationTarget; stateKey: string; action: 'exec' | 'upload' | 'download'; receipt: DesktopReceipt; windows?: DesktopWindowList; focused?: boolean; transfer?: { localPath: string; remotePath: string; bytes: number | null } } |
+    { kind: 'window-list'; deviceId: string; listing: DesktopWindowList } |
+    { kind: 'focus'; deviceId: string };
 export type DesktopOutcome =
-    { kind: 'success'; facts: DesktopFacts; capture?: DesktopCapture } |
-    { kind: 'failure'; category: DesktopFailureCategory; facts: DesktopFacts };
+    { kind: 'success'; facts: DesktopFacts; completion: DesktopCompletion; capture?: DesktopCapture } |
+    { kind: 'failure'; category: DesktopFailureCategory; facts: DesktopFacts; completion?: DesktopCompletion; receipt?: DesktopReceipt; cleanup?: { primary: DesktopOutcome; error: string; publicationCompleted: boolean } };
 /** Raw request fields retain their input types until the application admits them. */
 export interface DesktopArguments {
     helperTimeoutMs?: unknown;
@@ -157,41 +170,20 @@ export type DesktopDirectAction = {
     remotePath: string;
     maxBytes: number;
 };
-export type DesktopDirectResult = {
-    action: 'exec';
-    status: number;
-    stdout: string;
-    stderr: string;
-} | {
-    action: 'job';
-    output: string;
-} | {
-    action: 'mkdir';
-} | {
-    action: 'upload' | 'download';
-    localPath: string;
-    remotePath: string;
-    bytes: number;
-};
 export type DesktopGuestIntent = {kind:"exec";command:string}|{kind:"window-list"}|{kind:"focus";handle:string}|{kind:"type";text:string}|{kind:"scroll";direction:"up"|"down";amount:number};
 export type DesktopWindowFailure = 'window-focus-invalid-result' | 'window-list-invalid-result' | 'window-focus-denied' | 'window-not-found' | 'focus-window-session-changed' | 'window-list-session-changed' | 'window-list-query-failed';
 export type DesktopExecution = {
-    ok: boolean;
-    guestFailed?: boolean;
-    action?: "exec" | "upload" | "download";
+    kind: 'completed';
+    action: 'exec' | 'upload' | 'download';
+    receipt: DesktopReceipt;
     windows?: DesktopWindowList;
     focused?: boolean;
     artifact?: { readonly length: number };
     artifactInvalid?: boolean;
-    windowFailure?: DesktopWindowFailure;
-    mode?: string;
-    provider?: string;
-    status?: number | null;
-    stdout?: string;
-    stderr?: string;
-    error?: string;
-    timedOut?: boolean;
-};
+    bytes?: number;
+} | { kind: 'guest-failed'; action: 'exec'; receipt: DesktopReceipt }
+  | { kind: 'window-failed'; reason: DesktopWindowFailure; receipt: DesktopReceipt }
+  | { kind: 'failed'; reason: 'provider' | 'invalid-result'; category: 'invalid' | 'provider-failed'; receipt: DesktopReceipt };
 /** One prepared native effect; application selects execution budgets and interprets its observation. */
 export type DesktopPreparedEffect = (budget: { timeoutMs: number; outputLimit: number }) => Promise<DesktopExecution>;
 export interface DesktopSshFacts {
@@ -205,7 +197,6 @@ export interface DesktopSshFacts {
 }
 export function desktopRecord(value: unknown): value is DesktopRecord { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
 export function desktopField(record: DesktopDevice, key: string): string | null { return typeof record[key] === 'string' ? record[key] : null; }
-export function desktopSucceeded(result: DesktopExecution) { return result.ok === true; }
 export const DESKTOP_CONSOLE_TOOLS: ReadonlySet<string> = new Set(['device_screenshot', 'device_click', 'device_double_click', 'device_drag', 'device_key', 'device_type', 'device_scroll', 'device_cursor_position']);
 export function desktopReadOnly(tool: string) { return ['device_screenshot', 'device_cursor_position', 'device_window_list'].includes(tool); }
 export function desktopInputFailure(result: DesktopOutcome, tool: string): DesktopOutcome {
@@ -251,4 +242,4 @@ export function validateWindowHandle(handle: unknown): asserts handle is string 
         throw new Error("window-handle-invalid");
 }
 
-export type DesktopDirectObservation = DesktopExecution & {result?: {status?:number;stdout?:string;stderr?:string;localPath?:string;remotePath?:string;bytes?:number}};
+export type DesktopDirectObservation = DesktopExecution;

@@ -62,7 +62,7 @@ import { createAppiumObservations } from "./device-lab/application/broker-observ
 import { createBrokerService, createBrokerStatus, createBrokerDeviceStatus } from "./device-lab/application/broker-observation-status.js";
 import { createAndroidPreviewPortAllocation, createLifecyclePreview } from "./device-lab/application/broker-observation-command-plan.js";
 import { hyperVPreviewConflicts } from "./device-lab/domain/broker-observation-command-plan.js";
-import { desktopGuestCommand, desktopRemoteReadCommand, desktopRemoteReadOutputLimit, observeDesktopExecution, observeDesktopDirect } from "./device-lab/broker/hyper-v/desktop-native.js";
+import { desktopGuestCommand, desktopRemoteReadCommand, desktopRemoteReadOutputLimit, observeDesktopExecution, observeDesktopDirect, observeDesktopDirectFailure, desktopReceiptPresentation } from "./device-lab/broker/hyper-v/desktop-native.js";
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
@@ -4008,39 +4008,72 @@ function brokerHyperVDesktopTransferApplication(normalized: NormalizedBrokerOpti
             return async budget => observeDesktopExecution(await hyperVProviderCommandRunner(normalized, command, { ...budget, outputLimit: desktopRemoteReadOutputLimit(maxBytes) }), "download");
         },
         direct: async (executable, timeoutMs, identity, action, intent) => {
-            const nativeAction = action.action === "exec" && intent
-                ? { ...action, command: desktopGuestCommand("windows-vm", intent) }
-                : action;
-            const result = await invokeDeviceLabHyperVGuestDirect({ executable, timeoutMilliseconds: timeoutMs, run: (command, options) => hyperVProviderCommandRunner(normalized, command, options), identity, action: nativeAction });
-            return observeDesktopDirect(result, nativeAction, intent);
+            try {
+                const nativeAction = action.action === "exec" && intent
+                    ? { ...action, command: desktopGuestCommand("windows-vm", intent) }
+                    : action;
+                const result = await invokeDeviceLabHyperVGuestDirect({ executable, timeoutMilliseconds: timeoutMs, run: (command, options) => hyperVProviderCommandRunner(normalized, command, options), identity, action: nativeAction });
+                return observeDesktopDirect(result, nativeAction, intent);
+            } catch (error) {
+                return observeDesktopDirectFailure(error instanceof HyperVWindowsError ? error.code : "guest-executor-failed", error instanceof HyperVWindowsError && error.category === "validation");
+            }
         },
         stateErrorCode: error => deviceLabStateFileErrorCode(error) || null,
         providerError: error => error instanceof HyperVWindowsError ? { code: error.code, validation: error.category === "validation" } : null,
         boundedErrorCode: hyperVBoundedErrorCode,
-        redactExecution: (execution, fallback) => redactProviderCommandInput(execution, true, fallback),
     };
     return createHyperVDesktopTransferApplication(ports);
 }
 
 /** Presentation follows application decisions and frame publication. */
-function renderHyperVDesktopOutcome(outcome: DesktopOutcome): BrokerRpcResult {
-    if (outcome.kind === 'failure') {
-        const statuses: Record<DesktopFailureCategory, number> = {
-            invalid: 400, denied: 403, missing: 404, conflict: 409, 'too-large': 413,
-            'guest-failed': 422, unsupported: 501, 'provider-failed': 502, unavailable: 503,
-        };
-        return { status: statuses[outcome.category], payload: outcome.facts };
+function hyperVDesktopPayload(outcome: DesktopOutcome): Record<string, unknown> {
+    if (outcome.kind === 'failure' && outcome.cleanup) {
+        const primary = hyperVDesktopPayload(outcome.cleanup.primary);
+        return {...primary,...outcome.facts,detail:{primary,cleanupError:outcome.cleanup.error,publicationCompleted:outcome.cleanup.publicationCompleted}};
     }
-    if (!outcome.capture) return { status: 200, payload: outcome.facts };
-    const result = desktopRecord(outcome.facts.result) ? outcome.facts.result : {};
-    const capture = outcome.capture;
-    return { status: 200, payload: { ...outcome.facts, result: { ...result, mcpResult: {
-        content: [
-            { type: 'image', data: capture.pngBase64, mimeType: 'image/png' },
-            { type: 'text', text: JSON.stringify({ backend: result.backend, deviceId: result.deviceId,
-                width: capture.width, height: capture.height, capturedAt: result.capturedAt }) },
-        ],
-    } } } };
+    const payload: Record<string, unknown> = {...outcome.facts};
+    const error = outcome.facts.error;
+    if (["hyper-v-console-screenshot-required", "hyper-v-console-geometry-changed"].includes(error || ""))
+        payload.remedy = "Call device_screenshot again, then use its image coordinates.";
+    else if (error === "hyper-v-display-unavailable")
+        payload.remedy = "Start the VM and wait for its desktop, then call device_screenshot.";
+    else if (error === "hyper-v-console-identity-mismatch")
+        payload.remedy = "Call device_inventory for the current owner VM, then take a new screenshot.";
+    if (outcome.kind === 'failure' && outcome.receipt) {
+        const presentation = desktopReceiptPresentation(outcome.receipt);
+        if (presentation?.kind === 'execution') payload.execution = redactProviderCommandInput({...presentation.execution}, true, error || "hyper-v-guest-provider-failed");
+    }
+    const completion = outcome.completion;
+    if (!completion) return payload;
+    if (completion.kind === 'focus') payload.result = {deviceId:completion.deviceId,tool:'device_focus_window',ok:true};
+    else if (completion.kind === 'window-list') payload.result = {deviceId:completion.deviceId,tool:'device_window_list',...completion.listing};
+    else if (completion.kind === 'guest') {
+        const presentation = desktopReceiptPresentation(completion.receipt);
+        const linux = completion.target.backend === 'linux-vm';
+        const nativeResult = presentation?.kind === 'direct' ? presentation.result : presentation?.kind === 'execution'
+            ? {status:0,stdout:presentation.execution.stdout || '',stderr:presentation.execution.stderr || ''} : {};
+        const transfer = completion.transfer;
+        payload.result = {...completion.target,stateKey:completion.stateKey,
+            provider:linux ? completion.action === 'upload' ? 'hyper-v-scp' : 'hyper-v-ssh' : 'hyper-v-powershell-direct',
+            ...nativeResult,...(completion.windows?{windows:completion.windows}:{}),...(completion.focused?{focused:true}:{}),
+            ...(transfer?{localPath:transfer.localPath,...(linux && transfer.remotePath?{remotePath:transfer.remotePath}:{}),...(transfer.bytes!==null?{bytes:transfer.bytes}:{})}:{}),startsDevices:false};
+    } else if (completion.kind === 'input') payload.result = {...completion.target,provider:completion.method === 'guest-x11'?'hyper-v-ssh-x11':'hyper-v-console',applied:true};
+    else if (completion.kind === 'cursor') payload.result = {...completion.target,provider:'hyper-v-console',...completion.position};
+    else if (outcome.kind === 'success' && outcome.capture) {
+        const capture = outcome.capture;
+        payload.result = {...completion.target,provider:'hyper-v-console',width:capture.width,height:capture.height,capturedAt:completion.capturedAt,mcpResult:{content:[
+            {type:'image',data:capture.pngBase64,mimeType:'image/png'},
+            {type:'text',text:JSON.stringify({backend:completion.target.backend,deviceId:completion.target.deviceId,width:capture.width,height:capture.height,capturedAt:completion.capturedAt})},
+        ]}};
+    }
+    return payload;
+}
+function renderHyperVDesktopOutcome(outcome: DesktopOutcome): BrokerRpcResult {
+    const statuses: Record<DesktopFailureCategory, number> = {
+        invalid: 400, denied: 403, missing: 404, conflict: 409, 'too-large': 413,
+        'guest-failed': 422, unsupported: 501, 'provider-failed': 502, unavailable: 503,
+    };
+    return {status:outcome.kind === 'failure'?statuses[outcome.category]:200,payload:hyperVDesktopPayload(outcome)};
 }
 
 async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions): Promise<BrokerRpcResult> {

@@ -1348,6 +1348,94 @@ describe("device-lab host broker lifecycle commands", () => {
         expect(fallback).not.toHaveBeenCalled();
     });
 
+    it("keeps Linux desktop window facts and redacted provider failures compatible through the authenticated broker", async () => {
+        const cwd = join(process.env.HOME!, "broker-linux-desktop-semantic-test");
+        mkdirSync(cwd, { recursive: true });
+        const ownerId = deviceLabOwnerId(cwd), deviceId = "linux-desktop-semantic", incarnationId = "a".repeat(32);
+        const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId);
+        const deviceRoot = join(privateRoot, "artifacts"), secrets = join(privateRoot, "secrets");
+        const privateKey = join(secrets, "id_ed25519"), publicKey = join(secrets, "ssh_host_ed25519_key.pub"), knownHosts = join(secrets, "known_hosts");
+        const address = "172.29.0.20", vmId = "12345678-1234-1234-1234-123456789abc";
+        const hostKey = Buffer.alloc(51, 5);
+        hostKey.writeUInt32BE(11, 0); hostKey.write("ssh-ed25519", 4, "ascii"); hostKey.writeUInt32BE(32, 15);
+        const encodedKey = hostKey.toString("base64"), fingerprint = `SHA256:${createHash("sha256").update(hostKey).digest("base64").replace(/=+$/, "")}`;
+        mkdirSync(secrets, { recursive: true, mode: 0o700 });
+        mkdirSync(join(deviceRoot, "disks"), { recursive: true, mode: 0o700 });
+        writeFileSync(privateKey, "fixture-private-key", { mode: 0o600 });
+        writeFileSync(publicKey, `ssh-ed25519 ${encodedKey} fixture\n`, { mode: 0o600 });
+        writeFileSync(knownHosts, `${address} ssh-ed25519 ${encodedKey} fixture\n`, { mode: 0o600 });
+        writeFileSync(join(privateRoot, "incarnation.json"), JSON.stringify({ version: 1, ownerId, backend: "linux-vm", deviceId, incarnationId, createdAt: new Date().toISOString() }));
+        const diskPath = join(deviceRoot, "disks", "root.vhdx");
+        writeFileSync(diskPath, "owned-root-disk");
+        writeBrokerDevices(ownerId, "linux-vm", [{ id: deviceId, ownerId, backend: "linux-vm", provider: "hyper-v", status: "running",
+            incarnationId, vmId, vmName: hyperVVmName(ownerId, deviceId, incarnationId), deviceRoot, privateRoot, diskPath,
+            guestUsername: "fixture-user", networkAddress: address, sshPrivateKeyPath: privateKey, sshHostPublicKeyPath: publicKey,
+            sshKnownHostsPath: knownHosts, sshHostKeyFingerprint: fingerprint }]);
+        const networkFile = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
+        mkdirSync(dirname(networkFile), { recursive: true });
+        writeFileSync(networkFile, JSON.stringify({ version: 1, marker: "ccc-device-lab:hyper-v-network:v1", switchName: "CCC Device Lab",
+            switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", natName: "CCCDeviceLab", natInstanceId: "fixture-nat",
+            prefix: "172.29.0.0/24", gateway: "172.29.0.1", outboundPolicy: "nat", managedNat: true, managedSwitch: false, managedGateway: false,
+            allocations: [{ ownerId, deviceId, incarnationId, address, macAddress: "02:11:22:33:44:55", allocatedAt: new Date().toISOString() }] }));
+        let native: { status: number | null; stdout: string; stderr: string; error?: string } = { status: 0, stdout: "guest output 한글\n", stderr: "" };
+        const operationLock = `${createHash("sha256").update(deviceId).digest("hex").slice(0, 32)}.lock`;
+        const commandRunner = vi.fn<FixtureCommandRunner>((command) => {
+            expect(command.provider).toBe("hyper-v-ssh");
+            expect(command.executable).toBe("/fake/ssh.exe");
+            expect(command.args).toContain("StrictHostKeyChecking=yes");
+            expect(readdirSync(join(backendRoot(ownerId, "linux-vm"), "operations"))).toContain(operationLock);
+            return { ...command, ...native };
+        });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32",
+            providerPaths: { "powershell.exe": "/fake/powershell.exe", "ssh.exe": "/fake/ssh.exe" }, commandRunner });
+        const baseUrl = await listen(server);
+        const tool = (name: string, params: Record<string, unknown> = {}) => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+            method: "POST", headers: ownerRpcHeaders(ownerId), body: JSON.stringify({ method: "broker.device.tool.invoke",
+                params: { tool: name, backend: "linux-vm", deviceId, ...params } }),
+        });
+        try {
+            const executed = await tool("device_exec", { command: "printf fixture" });
+            expect(executed.status, JSON.stringify(await executed.clone().json())).toBe(200);
+            expect(await executed.json()).toMatchObject({ result: { provider: "hyper-v-ssh", status: 0, stdout: "guest output 한글\n", stderr: "", startsDevices: false } });
+            native.stdout = `42\t123\t${Buffer.from("Guest 한글").toString("base64")}\nTRUNCATED\n`;
+            expect(await (await tool("device_window_list")).json()).toEqual({ ok: true, result: { deviceId, tool: "device_window_list", windows: [{ handle: "42", title: "Guest 한글", processId: 123 }], truncated: true } });
+            native.stdout = '{"ok":true}';
+            expect(await (await tool("device_focus_window", { handle: "42" })).json()).toEqual({ ok: true, result: { deviceId, tool: "device_focus_window", ok: true } });
+            native.stdout = '{"error":"window-focus-denied"}';
+            const denied = await tool("device_focus_window", { handle: "42" });
+            expect(denied.status).toBe(502);
+            expect(await denied.json()).toMatchObject({ error: "window-focus-denied", tool: "device_focus_window" });
+
+            const secret = "private-native-output password=fixture-secret";
+            native = { status: 255, stdout: secret, stderr: `${privateKey} ${secret}` };
+            const failed = await tool("device_window_list"), failure = await failed.json();
+            expect(failed.status).toBe(502);
+            expect(failure).toMatchObject({ ok: false, error: "hyper-v-linux-guest-provider-failed", tool: "device_window_list",
+                execution: { mode: "exec", provider: "hyper-v-ssh", status: 255, stdoutPresent: true, stderrPresent: true, outputRedacted: true } });
+            expect(failure.execution).not.toHaveProperty("stdout");
+            expect(failure.execution).not.toHaveProperty("stderr");
+            expect(failure.execution).not.toHaveProperty("args");
+            expect(JSON.stringify(failure)).not.toContain(secret);
+            expect(JSON.stringify(failure)).not.toContain(privateKey);
+            expect(failure).not.toHaveProperty("receipt");
+            expect(failure).not.toHaveProperty("completion");
+
+            native = { status: 0, stdout: '{"ok":true}', stderr: secret, error: `native transport failed at ${privateKey}` };
+            const transport = await tool("device_focus_window", { handle: "42" }), transportBody = await transport.json();
+            expect(transport.status).toBe(502);
+            expect(transportBody).toMatchObject({ error: "hyper-v-linux-guest-provider-failed", tool: "device_focus_window", execution: { outputRedacted: true } });
+            expect(JSON.stringify(transportBody)).not.toContain(privateKey);
+            expect(JSON.stringify(transportBody)).not.toContain(secret);
+            const beforeTrustRefusal = commandRunner.mock.calls.length;
+            writeFileSync(knownHosts, `${address} ssh-ed25519 ${Buffer.from("foreign key").toString("base64")} attacker\n`);
+            const untrusted = await tool("device_exec", { command: "true" });
+            expect(untrusted.status).toBe(409);
+            expect(await untrusted.json()).toMatchObject({ error: "hyper-v-linux-ssh-host-identity-invalid" });
+            expect(commandRunner).toHaveBeenCalledTimes(beforeTrustRefusal);
+            expect(readdirSync(join(backendRoot(ownerId, "linux-vm"), "operations"))).not.toContain(operationLock);
+        } finally { await close(server); cleanupOwner(ownerId); }
+    });
+
     it("runs an owner-fenced Hyper-V Windows VM lifecycle through the host broker", async () => {
         const cwd = join(process.env.HOME!, "broker-hyper-v-lifecycle-test");
         mkdirSync(cwd, { recursive: true });
@@ -1515,7 +1603,7 @@ describe("device-lab host broker lifecycle commands", () => {
                         }
                     }
                     const item = action === "exec"
-                        ? { action, status: guestExecExitCode, stdout: guestExecExitCode === 0 ? (nativeRequest.command?.includes("CCCWin") ? windowListOutput : nativeRequest.command?.includes("CCCFocus") ? focusWindowOutput : "guest-ok\r\n") : "", stderr: guestExecExitCode === 0 ? "" : "guest-failed" }
+                        ? { action, status: guestExecExitCode, stdout: guestExecExitCode === 0 ? (nativeRequest.command?.includes("CCCWin") ? windowListOutput : nativeRequest.command?.includes("CCCFocus") ? focusWindowOutput : "guest-ok\r\n") : "guest output before exit 7 한글\r\n", stderr: guestExecExitCode === 0 ? "" : "guest-failed" }
                         : action === "mkdir" ? { action }
                             : { action, localPath: nativeRequest.localPath, remotePath: nativeRequest.remotePath, bytes: action === "upload" ? guestUploadReportedBytes ?? statSync(nativeRequest.localPath!).size : guestDownloadReportedBytes };
                     return { ...command, status: 0, stdout: JSON.stringify({ schemaVersion: 1, operation: "Invoke-Guest", ok: true, items: [item] }), stderr: "" };
@@ -2457,8 +2545,16 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(failedGuestExec.status).toBe(422);
             expect(await failedGuestExec.json()).toEqual(expect.objectContaining({
                 error: "hyper-v-guest-command-failed",
-                result: expect.objectContaining({ status: 7, stderr: "guest-failed" }),
+                result: expect.objectContaining({ provider: "hyper-v-powershell-direct", status: 7, stdout: "guest output before exit 7 한글\r\n", stderr: "guest-failed" }),
             }));
+            const failedWindowList = await invokeTool("device_window_list", {});
+            expect(failedWindowList.status).toBe(422);
+            expect(await failedWindowList.json()).toMatchObject({ error: "hyper-v-guest-command-failed", tool: "device_window_list",
+                result: { status: 7, stdout: "guest output before exit 7 한글\r\n", stderr: "guest-failed" } });
+            const failedFocus = await invokeTool("device_focus_window", { handle: "42" });
+            expect(failedFocus.status).toBe(422);
+            expect(await failedFocus.json()).toMatchObject({ error: "hyper-v-guest-command-failed", tool: "device_focus_window",
+                result: { status: 7, stdout: "guest output before exit 7 한글\r\n", stderr: "guest-failed" } });
             guestExecExitCode = 0;
 
             const callsBeforeUpload = commandRunner.mock.calls.length;

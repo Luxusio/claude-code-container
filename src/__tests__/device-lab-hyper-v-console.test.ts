@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createHyperVDesktopTransferApplication } from "../../packages/device-lab/src/device-lab/application/hyper-v-desktop-transfer.js";
-import type { HyperVDesktopTransferPorts } from "../../packages/device-lab/src/device-lab/ports/hyper-v-desktop-transfer.js";
-import type { DesktopRequest, DesktopTarget, DesktopOutcome, DesktopSshFacts, DesktopPreparedEffect } from "../../packages/device-lab/src/device-lab/domain/hyper-v-desktop-transfer.js";
+import { createHyperVDesktopTransferApplication } from "@ccc/device-lab/device-lab/application/hyper-v-desktop-transfer.js";
+import type { HyperVDesktopTransferPorts } from "@ccc/device-lab/device-lab/ports/hyper-v-desktop-transfer.js";
+import type { DesktopRequest, DesktopTarget, DesktopOutcome, DesktopSshFacts, DesktopPreparedEffect, DesktopExecution } from "@ccc/device-lab/device-lab/domain/hyper-v-desktop-transfer.js";
 import {
     currentHyperVConsoleFrame,
     forgetHyperVConsoleFrame,
@@ -17,7 +17,7 @@ import {
 export function requiredDesktopTransferCapabilities(ports: HyperVDesktopTransferPorts<unknown, unknown, Uint8Array, unknown>, facts: DesktopSshFacts, connection: unknown): void {
     const application = createHyperVDesktopTransferApplication(ports);
     const invoke: (ownerId: string, request: DesktopRequest, target: DesktopTarget) => Promise<DesktopOutcome> = application.invoke;
-    const prepared: DesktopPreparedEffect = ports.prepareGuestExec(facts, connection, "true");
+    const prepared: DesktopPreparedEffect = ports.prepareGuestExec(facts, connection, { kind: "exec", command: "true" });
     const { prepareUpload, ...withoutUploadPreparation } = ports;
     // @ts-expect-error guarded native upload preparation is required
     createHyperVDesktopTransferApplication(withoutUploadPreparation);
@@ -38,6 +38,26 @@ export function requiredDesktopTransferCapabilities(ports: HyperVDesktopTransfer
     // @ts-expect-error destination publication must finish before a success result
     createHyperVDesktopTransferApplication({ ...ports, writeDestination: async () => undefined });
     void invoke; void direct; void allocateStage; void prepareUpload;
+}
+
+// These assertions must be consumed explicitly against Source and emitted declarations:
+// tsconfig.tests.json does not include this public console consumer.
+export function semanticDesktopResultContract(execution: DesktopExecution, outcome: DesktopOutcome): void {
+    // @ts-expect-error raw process status belongs to the native receipt owner
+    execution.status;
+    // @ts-expect-error stdout is native presentation data
+    execution.stdout;
+    // @ts-expect-error legacy Direct result payloads are not semantic observations
+    execution.result;
+    // @ts-expect-error applications do not build legacy public result payloads
+    outcome.facts.result;
+    // @ts-expect-error execution rendering belongs to the broker
+    outcome.facts.execution;
+    // @ts-expect-error public remedy text belongs to the broker
+    outcome.facts.remedy;
+    // @ts-expect-error a native process receipt is not a semantic execution observation
+    const raw: DesktopExecution = { ok: true, status: 0, stdout: "native output", stderr: "" };
+    void raw;
 }
 
 describe("Hyper-V console input contract", () => {

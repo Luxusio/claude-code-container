@@ -1,4 +1,4 @@
-import type { DesktopDevice, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopExecution, DesktopPreparedEffect, DesktopSshFacts, DesktopFailureCategory, DesktopGuestIntent, DesktopDirectObservation } from '../domain/hyper-v-desktop-transfer.js';
+import type { DesktopDevice, DesktopIdentity, DesktopFrame, DesktopCapture, DesktopCursor, DesktopVm, DesktopInput, DesktopDirectAction, DesktopPreparedEffect, DesktopSshFacts, DesktopFailureCategory, DesktopGuestIntent, DesktopDirectObservation } from '../domain/hyper-v-desktop-transfer.js';
 export interface DesktopRoots {
     deviceRoot: string;
     privateRoot: string;
@@ -63,5 +63,4 @@ export interface HyperVDesktopTransferPorts<Console, Stage, Bytes extends {
         validation: boolean;
     } | null;
     boundedErrorCode(error: unknown, fallback: string): string;
-    redactExecution(execution: DesktopExecution, fallback: string): unknown;
 }
