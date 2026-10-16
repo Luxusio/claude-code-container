@@ -32,7 +32,13 @@ keeps its synchronous four-argument entrypoint.
 
 `docker.ts:prepareRetainedState` retains exact previous container ID/Image/Mounts
 before replacement, calls Codex ownership migration before this operation, and
-sets its once flag only after both succeed. `startProjectContainer` holds the
+invokes Lab preparation only when the new run has Lab status `ready`. Unsupported
+hosts, including macOS Docker Desktop, keep any retained named Lab volume without
+probing its old image account, mounting it in a repair helper or changing it.
+The new container omits that volume. Codex preparation remains independent;
+required ready-host Lab preparation retains every existing refusal/provenance
+check. The caller sets its once flag after the applicable preparations succeed.
+`startProjectContainer` holds the
 existing host-wide `~/.ccc/codex-state.lock` with a 600-second wait and
 `reclaimStale:false` through preparation and container start. The extraction
 adds no lock, stale-owner reclaim, broader cleanup or public authority input.

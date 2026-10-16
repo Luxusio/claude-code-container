@@ -3631,6 +3631,104 @@ describe("docker.ts module exports", () => {
             expect(mockSharedMutationLock.mock.calls[0][0]).toMatch(/codex-state\.lock$/);
         });
 
+        it.each([
+            ["restart without a legacy lab mount", false, false],
+            ["restart with the exact legacy lab mount", true, false],
+            ["image replacement without a legacy lab mount", false, true],
+            ["image replacement with the exact legacy lab mount", true, true],
+        ] as const)("skips unused lab ownership preparation on an unsupported host during %s", (_name, labState, replaceImage) => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-desktop", remote: true, dockerDesktop: true });
+            const previousImage = replaceImage ? `sha256:${"3".repeat(64)}` : TEST_IDENTITY_IMAGE;
+            const inspected = JSON.parse(fullCredentialMountsJson([{
+                Source: "/run/host-services/ssh-auth.sock", Destination: "/tmp/ssh-agent.sock",
+            }], {
+                status: "unsupported", kvmDevice: false, groupAdd: [], labState,
+            }));
+            inspected.State = { Running: false };
+            inspected.Image = previousImage;
+            mockReplacementRuntime(JSON.stringify(inspected), { identityRunning: false, startTransitionsToRunning: true });
+            mockPrepareLabStateOwnership.mockImplementation(() => {
+                throw new Error("unused retained lab state must not be probed or migrated");
+            });
+            const guard = vi.fn((replace: () => void) => { replace(); return true; });
+
+            expect(startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard))
+                .toBe(getContainerName(projectPath));
+
+            expect(mockPrepareLabStateOwnership).not.toHaveBeenCalled();
+            expect(mockPrepareCodexStateOwnership).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({ Image: previousImage, Id: TEST_CONTAINER_ID }),
+                TEST_IDENTITY_IMAGE, mockIdentity, undefined, expect.any(Function),
+            );
+            const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
+            expect(calls.some(args => args[0] === "volume")).toBe(false);
+            expect(calls.some(args => args[0] === "stop")).toBe(false);
+            expect(mockSharedMutationLock).toHaveBeenCalledOnce();
+            expect(mockSharedMutationLock.mock.calls[0][0]).toMatch(/codex-state\.lock$/);
+            if (replaceImage) {
+                expect(guard).toHaveBeenCalledOnce();
+                expect(calls.filter(args => args[0] === "rm")).toEqual([["rm", TEST_CONTAINER_SHORT_ID]]);
+                const runCalls = calls.filter(args => args[0] === "run");
+                expect(runCalls).toHaveLength(1);
+                expect(runCalls[0]).toContain(TEST_IDENTITY_IMAGE);
+                expect(runCalls[0]).toContain("CCC_LAB_RUNNER_STATUS=unsupported");
+                expect(runCalls[0].some(arg => arg.includes("/home/ccc/.ccc/labs") && !arg.startsWith("CCC_LAB_STATE_DIR=")))
+                    .toBe(false);
+            } else {
+                expect(guard).not.toHaveBeenCalled();
+                expect(calls.filter(args => args[0] === "start")).toEqual([["start", TEST_CONTAINER_SHORT_ID]]);
+                expectNoContainerReplacement();
+            }
+            const lifecycleIndex = calls.findIndex(args => args[0] === (replaceImage ? "rm" : "start"));
+            expect(lifecycleIndex).toBeGreaterThan(-1);
+            expect(mockSharedMutationLock.mock.invocationCallOrder[0])
+                .toBeLessThan(spawnSyncMock.mock.invocationCallOrder[lifecycleIndex]);
+            if (replaceImage) expect(guard.mock.invocationCallOrder[0])
+                .toBeLessThan(spawnSyncMock.mock.invocationCallOrder[lifecycleIndex]);
+            expect(mockPrepareCodexStateOwnership.mock.invocationCallOrder[0])
+                .toBeLessThan(spawnSyncMock.mock.invocationCallOrder[lifecycleIndex]);
+        });
+
+        it.each([false, true])("prepares the exact retained lab volume before ready-host image replacement (migration failure=%s)", fails => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-native", remote: false, rootless: false });
+            const previousImage = `sha256:${"3".repeat(64)}`;
+            const contract = makeDriftedRunningContract(value => { value.Image = previousImage; }, false);
+            mockReplacementRuntime(contract, { identityRunning: false });
+            if (fails) mockPrepareLabStateOwnership.mockImplementationOnce(() => { throw new Error("lab ownership refused"); });
+            const guard = vi.fn((replace: () => void) => { replace(); return true; });
+            const start = () => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard);
+
+            if (fails) expect(start).toThrow("lab ownership refused");
+            else expect(start()).toBe(getContainerName(projectPath));
+
+            expect(guard).toHaveBeenCalledOnce();
+            expect(mockPrepareCodexStateOwnership).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({ Image: previousImage, Id: TEST_CONTAINER_ID }),
+                TEST_IDENTITY_IMAGE, mockIdentity, undefined, expect.any(Function),
+            );
+            expect(mockPrepareLabStateOwnership).toHaveBeenCalledExactlyOnceWith(
+                `${getContainerName(projectPath)}-lab-state`, TEST_IDENTITY_IMAGE, mockIdentity, previousImage,
+            );
+            expect(mockPrepareCodexStateOwnership.mock.invocationCallOrder[0])
+                .toBeLessThan(mockPrepareLabStateOwnership.mock.invocationCallOrder[0]);
+            if (fails) {
+                expectNoContainerReplacement();
+            } else {
+                const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
+                const removeIndex = calls.findIndex(args => args[0] === "rm");
+                expect(removeIndex).toBeGreaterThan(-1);
+                expect(mockPrepareLabStateOwnership.mock.invocationCallOrder[0])
+                    .toBeLessThan(spawnSyncMock.mock.invocationCallOrder[removeIndex]);
+                expect(calls.filter(args => args[0] === "rm")).toEqual([["rm", TEST_CONTAINER_SHORT_ID]]);
+                const runCalls = calls.filter(args => args[0] === "run");
+                expect(runCalls).toHaveLength(1);
+                expect(runCalls[0]).toContain(`${getContainerName(projectPath)}-lab-state:/home/ccc/.ccc/labs`);
+                expect(calls.some(args => args[0] === "stop" || args[0] === "volume")).toBe(false);
+            }
+        });
+
         it.each(["mismatched ID", "missing image", "missing mounts", "non-array mounts", "unavailable"])("rejects unusable previous provenance (%s) without migration or replacement", fault => {
             const snapshot = JSON.parse(makeDriftedRunningContract(() => undefined, false));
             if (fault === "mismatched ID") snapshot.Id = "b".repeat(64);
@@ -6790,7 +6888,12 @@ describe("docker.ts module exports", () => {
         it("refuses to stop a container with any session ownership claim unless forced", () => {
             mockGetSessionLockClaimsForContainer.mockReturnValue(["active.lock"]);
 
-            expect(() => stopProjectContainer(projectPath)).toThrow("Container has 1 session ownership claim(s)");
+            let failure: unknown;
+            try { stopProjectContainer(projectPath); } catch (error) { failure = error; }
+            expect(failure).toBeInstanceOf(Error);
+            expect((failure as Error).message).toBe(
+                `Container for workspace ${JSON.stringify(resolve(projectPath))} has 1 session ownership claim(s); close its other CCC sessions and retry.`,
+            );
             expect(spawnSyncMock).not.toHaveBeenCalled();
 
             spawnSyncMock

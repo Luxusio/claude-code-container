@@ -1957,8 +1957,10 @@ function startProjectContainerLocked(
             prepareCodexStateOwnership(previousContainer, imageId, identity, profile,
                 (source) => bindSourceIsTrustedFilesystemAlias(source, codexRoot, codexSource, getCurrentImageId) === "match");
         }
-        prepareLabStateOwnership(labRunner.stateVolumeName, imageId, identity,
-            typeof previousContainer?.Image === "string" ? previousContainer.Image : undefined);
+        if (labRunner.status === "ready") {
+            prepareLabStateOwnership(labRunner.stateVolumeName, imageId, identity,
+                typeof previousContainer?.Image === "string" ? previousContainer.Image : undefined);
+        }
         retainedStatePrepared = true;
     };
     if ((previousContainer?.State as { Running?: boolean } | undefined)?.Running

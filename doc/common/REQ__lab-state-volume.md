@@ -47,6 +47,13 @@ labs can never start. Every project container still received an empty volume.
 
 ## Cleanup of existing empty volumes
 
+Ownership preparation follows the new container's mount policy. When lab status
+is `unsupported`, restart/recreation must leave any old named lab volume alone:
+do not probe its previous image account, mount it in a repair helper, change its
+owners or delete it. Codex state preparation remains independent. A `ready` host
+still requires the existing strict ownership checks before replacing the old
+container; an unconfirmed required migration must preserve that container/data.
+
 A volume cannot be removed while a container mounts it. Remove or recreate the
 project container first (`ccc rm`, or let the one-time recreate happen), then:
 
