@@ -2434,6 +2434,7 @@ export function detectWorktreeWorkspaceBranch(
     if (repositories.length === 0) return null;
 
     const branches = new Set<string>();
+    const observedRepositories: Array<{ name: string; path: string; branch: string }> = [];
     for (const repository of repositories) {
         const identity = captureNestedRepositoryIdentity(repository.path);
         const result = runner(
@@ -2452,9 +2453,17 @@ export function detectWorktreeWorkspaceBranch(
             throw new Error(`Unable to determine worktree branch in '${repository.name}'.`);
         }
         branches.add(branch);
+        observedRepositories.push({ ...repository, branch });
     }
     if (branches.size !== 1) {
-        throw new Error("Workspace repositories do not share one checked-out branch.");
+        const listed = observedRepositories.map(({ name, path, branch }) => (
+            `\n  ${terminalSafe(name)}: ${terminalSafe(path)} -> ${terminalSafe(branch)}`
+        )).join("");
+        throw new Error(
+            "Workspace repositories do not share one checked-out branch."
+            + `\n\nObserved repositories and branches:${listed}`
+            + "\n\nInspect each reported repository with `git status --short --branch` before reconciling branches.",
+        );
     }
     return [...branches][0];
 }

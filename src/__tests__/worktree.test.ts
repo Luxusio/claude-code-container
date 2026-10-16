@@ -1322,16 +1322,68 @@ describe("createWorkspace", () => {
 
 describe("assertWorkspaceBranch", () => {
     let repoPath: string;
+    let branchWorkspaces: string[];
 
     beforeEach(() => {
         repoPath = join(tmpdir(), `wt-branch-guard-${randomUUID()}`);
+        branchWorkspaces = [];
         initRepo(repoPath);
     });
 
     afterEach(() => {
         rmSync(getWorkspacePath(repoPath, "feature-login"), { recursive: true, force: true });
+        for (const workspace of branchWorkspaces) {
+            rmSync(workspace, { recursive: true, force: true });
+        }
         rmSync(repoPath, { recursive: true, force: true });
     });
+
+    function workspaceWithOrphan(branch: string, healthyName = "api") {
+        const workspace = getWorkspacePath(repoPath, branch);
+        branchWorkspaces.push(workspace);
+        const git = (cwd: string, args: string[]): string => {
+            const result = spawnSync("git", args, { cwd, encoding: "utf-8", stdio: "pipe" });
+            expect(result.status, result.stderr).toBe(0);
+            return result.stdout;
+        };
+        git(repoPath, ["worktree", "add", "-b", branch, workspace]);
+        const sources = [repoPath];
+        for (const name of [healthyName, "webapp"]) {
+            const source = join(repoPath, name);
+            initRepo(source);
+            git(source, ["worktree", "add", "-b", branch, join(workspace, name)]);
+            sources.push(source);
+        }
+        const healthy = join(workspace, healthyName);
+        const orphan = join(workspace, "webapp");
+        const administration = [workspace, healthy, orphan].map((repository) => (
+            resolve(repository, readFileSync(join(repository, ".git"), "utf-8")
+                .replace(/^gitdir: /, "").trim())
+        ));
+        const removedRegistration = administration.pop()!;
+        rmSync(removedRegistration, { recursive: true });
+
+        const files = [workspace, healthy, orphan].flatMap((repository) => {
+            writeFileSync(join(repository, "init.txt"), `dirty ${basename(repository)}`);
+            writeFileSync(join(repository, "untracked.txt"), `untracked ${basename(repository)}`);
+            return [".git", "init.txt", "untracked.txt"].map((name) => join(repository, name));
+        });
+        for (const source of sources) {
+            files.push(...["HEAD", "index", "config"].map((name) => join(source, ".git", name)));
+        }
+        for (const directory of administration) {
+            files.push(...["HEAD", "index", "gitdir", "commondir"].map((name) => join(directory, name)));
+        }
+        const capture = () => ({
+            files: files.map((file) => {
+                const { ino, uid, gid, mode } = lstatSync(file);
+                return { file, contents: readFileSync(file), ino, uid, gid, mode };
+            }),
+            refs: sources.map((source) => git(source, ["for-each-ref", "--format=%(refname) %(objectname)"])),
+            orphanRegistrationPresent: existsSync(removedRegistration),
+        });
+        return { workspace, healthy, orphan, sources, removedRegistration, capture, git };
+    }
 
     it("accepts only the exact checked-out branch", () => {
         const current = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
@@ -1536,56 +1588,83 @@ describe("assertWorkspaceBranch", () => {
     // exist, over a checkout whose files were entirely intact, and taking the healthy sibling
     // repositories in the same workspace down with it.
     it("skips a nested worktree whose registration was deleted instead of failing the workspace", () => {
-        const workspace = getWorkspacePath(repoPath, "feature-orphan");
-        spawnSync("git", ["branch", "feature-orphan"], { cwd: repoPath, stdio: "pipe" });
-        spawnSync("git", ["worktree", "add", workspace, "feature-orphan"], { cwd: repoPath, stdio: "pipe" });
-
-        // Two nested repositories, as in the workspace this came from: one stays healthy so the
-        // test can prove the scan still reaches it, one loses its registration. They live inside
-        // the source root, because that is what makes the workspace copies owned — the layout
-        // the reported failure actually had.
-        const sources: Record<string, string> = {};
-        for (const name of ["api", "webapp"]) {
-            const source = join(repoPath, name);
-            sources[name] = source;
-            mkdirSync(source, { recursive: true });
-            for (const args of [
-                ["init"],
-                ["config", "user.email", "t@example.com"],
-                ["config", "user.name", "t"],
-                ["commit", "--allow-empty", "-m", "init"],
-            ]) spawnSync("git", args, { cwd: source, stdio: "pipe" });
-            spawnSync("git", ["worktree", "add", join(workspace, name), "-b", "feature-orphan"], {
-                cwd: source, stdio: "pipe",
-            });
-        }
-
-        // Exactly what the other tool did: remove the administrative directory outright. The
-        // gitfile in the workspace survives and still names it, which is the whole defect.
-        const registrations = join(sources.webapp, ".git", "worktrees");
-        const orphaned = join(registrations, readdirSync(registrations)[0]);
-        expect(existsSync(orphaned), "the nested worktree must really be registered first").toBe(true);
-        rmSync(orphaned, { recursive: true, force: true });
-        expect(existsSync(join(workspace, "webapp", ".git")), "its gitfile must survive").toBe(true);
-
+        const { workspace, healthy, orphan, sources, removedRegistration, capture } = workspaceWithOrphan("feature-orphan");
+        const before = capture();
         const stderr: string[] = [];
         const originalWrite = process.stderr.write;
         process.stderr.write = ((chunk: unknown) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
-        let detected: unknown;
         try {
-            detected = detectWorktreeWorkspaceBranch(workspace);
+            expect(detectWorktreeWorkspaceBranch(workspace)).toBe("feature-orphan");
+            expect(() => assertWorkspaceBranch(workspace, "feature-orphan", spawnSync, repoPath)).not.toThrow();
         } finally {
             process.stderr.write = originalWrite;
         }
+        expect(capture(), "detection and assertion do not change files, metadata, indexes or branches").toEqual(before);
 
-        // The point of the fix: the workspace still resolves.
-        expect(detected, "one orphaned checkout must not take the workspace down").toBeTruthy();
         const notice = stderr.join("");
         expect(notice, "the operator has to be told which directory was dropped").toContain("Skipping nested Git repository");
-        expect(notice).toContain(join(workspace, "webapp"));
+        expect(notice).toContain(orphan);
         expect(notice, "and must not be told it is an ownership problem")
             .not.toContain("not owned by its parent");
-        expect(notice, "the healthy sibling must not be dropped").not.toContain(join(workspace, "api"));
+        expect(notice, "the healthy sibling must not be dropped").not.toContain(healthy);
+
+        // Mount preparation intentionally normalizes the healthy .git links; it must still
+        // include their verified sources and leave the excluded checkout alone.
+        const mounts = getWorktreeGitMounts(workspace, true, "/project/resume-feature-orphan");
+        expect(mounts.some((mount) => mount.hostPath === join(repoPath, ".git"))).toBe(true);
+        expect(mounts.some((mount) => mount.hostPath === join(sources[1], ".git"))).toBe(true);
+        expect(mounts.some((mount) => mount.hostPath === join(sources[2], ".git"))).toBe(false);
+        expect(readFileSync(join(orphan, ".git"))).toEqual(before.files.find((file) => file.file === join(orphan, ".git"))!.contents);
+        expect(readFileSync(join(orphan, "init.txt"), "utf-8")).toBe("dirty webapp");
+        expect(readFileSync(join(orphan, "untracked.txt"), "utf-8")).toBe("untracked webapp");
+        expect(existsSync(removedRegistration)).toBe(false);
+    });
+
+    it("reports the observed root and healthy branch conflict while excluding an orphaned repository", () => {
+        const { workspace, healthy, orphan, capture, git } = workspaceWithOrphan("branch-conflict");
+        git(healthy, ["switch", "-c", "wrong-branch"]);
+        const before = capture();
+        let failure: unknown;
+        try {
+            detectWorktreeWorkspaceBranch(workspace);
+        } catch (error) {
+            failure = error;
+        }
+        expect(failure).toBeInstanceOf(Error);
+        const message = (failure as Error).message;
+        expect(message).toMatch(/^Workspace repositories do not share one checked-out branch\./);
+        const rootRow = message.split("\n").find((line) => line.includes(JSON.stringify(workspace)));
+        const healthyRow = message.split("\n").find((line) => line.includes(JSON.stringify(healthy)));
+        expect(rootRow).toContain(JSON.stringify(basename(workspace)));
+        expect(rootRow).toContain('"branch-conflict"');
+        expect(healthyRow).toContain('"api"');
+        expect(healthyRow).toContain('"wrong-branch"');
+        expect(message).not.toContain(orphan);
+        expect(message).not.toContain('"webapp"');
+        expect(message).toContain("git status --short --branch");
+        expect(capture(), "refusal preserves operator files and Git state").toEqual(before);
+    });
+
+    it.skipIf(process.platform === "win32")("escapes a control-character repository path and preserves its observed Unicode branch", () => {
+        const name = "api\u001b[31m";
+        const branch = "수정-브랜치";
+        const { workspace, healthy, capture, git } = workspaceWithOrphan("hostile-branch", name);
+        git(healthy, ["switch", "-c", branch]);
+        const before = capture();
+        let failure: unknown;
+        try {
+            detectWorktreeWorkspaceBranch(workspace);
+        } catch (error) {
+            failure = error;
+        }
+        expect(failure).toBeInstanceOf(Error);
+        const message = (failure as Error).message;
+        expect(message).toMatch(/^Workspace repositories do not share one checked-out branch\./);
+        expect(message).toContain(JSON.stringify(name));
+        expect(message).toContain(JSON.stringify(healthy));
+        expect(message).toContain(JSON.stringify(branch));
+        expect(message).not.toContain("\u001b");
+        expect(capture()).toEqual(before);
     });
 
     // The sibling case, reported from the same machine: a submodule whose gitdir under

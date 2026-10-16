@@ -67,6 +67,21 @@ the workspace without risking uncommitted files.
   Failure to read a temporary HEAD reports the observation step and Git
   error; a successfully observed mismatching HEAD reports an identity change.
 
+## Branch-conflict inspection
+
+When the surviving managed repositories in an existing workspace report
+different checked-out branches, refuse reuse and identify each compared
+repository by name, path and its actual observed branch. Escape terminal
+control characters in these values. Use the already identity-qualified Git
+observations; formatting the refusal must not run new Git commands.
+
+A nested repository excluded because its Git metadata is unreachable may
+produce its existing separate notice, but must not appear as an observed
+branch in the conflict. Consistent healthy repositories can still identify
+the workspace branch. Inspect with `git status --short --branch` inside the
+reported repositories before deciding how to reconcile them. Refusal must
+not switch branches, reset files, prune registrations or change Git indexes.
+
 ## Verification
 
 Use real temporary Git repositories and worktrees to cover owned, relative
