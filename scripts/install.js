@@ -153,7 +153,36 @@ function installerApplication() {
         installDirectory: getInstallDir,
         runtimeOverride: () => process.env.CCC_RUNTIME,
         githubTokenConfigured: () => Boolean(process.env.GITHUB_TOKEN),
-        sourceBuild: () => { execSync("npm run build", { cwd: projectRoot, stdio: "inherit" }); },
+        sourceBuild: () => {
+            if (!isWindows && process.getuid?.() === 0
+                && (process.env.SUDO_UID !== undefined || process.env.SUDO_GID !== undefined)) {
+                const { SUDO_UID: uidText, SUDO_GID: gidText } = process.env;
+                const uid = Number(uidText);
+                const gid = Number(gidText);
+                if (typeof uidText !== "string" || !/^[1-9]\d*$/.test(uidText)
+                    || typeof gidText !== "string" || !/^(0|[1-9]\d*)$/.test(gidText)
+                    || uid > 2147483647 || gid > 2147483647) {
+                    throw new Error("Cannot build source: sudo must provide canonical SUDO_UID (1..2147483647) and SUDO_GID (0..2147483647).");
+                }
+                execFileSync(process.execPath, ["-e", `
+                    delete process.env.HOME;
+                    const home = require("node:os").homedir();
+                    if (!home) throw new Error("Cannot resolve the sudo invoking user's home directory.");
+                    process.env.HOME = home;
+                    for (const key of Object.keys(process.env)) {
+                        if (/^npm_config_(cache|userconfig)$/i.test(key)) delete process.env[key];
+                    }
+                    try {
+                        require("node:child_process").execSync("npm run build", { stdio: "inherit" });
+                    } catch (cause) {
+                        if (typeof cause.status === "number") process.exit(cause.status);
+                        throw cause;
+                    }
+                `], { cwd: projectRoot, stdio: "inherit", uid, gid });
+                return;
+            }
+            execSync("npm run build", { cwd: projectRoot, stdio: "inherit" });
+        },
         contentHash: getContentHash,
         runtimeAvailable: runtime => spawnSync(runtime, ["--version"], {
             encoding: "utf-8",

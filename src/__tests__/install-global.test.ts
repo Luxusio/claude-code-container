@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -43,7 +43,7 @@ function fixture(packaged = false) {
         writeFileSync(join(commands, name), script);
         chmodSync(join(commands, name), 0o755);
     }
-    const run = (args: string[] = [], env: Record<string, string> = {}) => spawnSync(process.execPath, [join(root, "scripts/install.js"), ...args], {
+    const run = (args: string[] = [], env: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [join(root, "scripts/install.js"), ...args], {
         encoding: "utf8", timeout: 10000,
         env: { ...process.env, CCC_RUNTIME: "", FIXTURE_LOG: log, ...env, PATH: commands },
     });
@@ -76,7 +76,7 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
 
     it.each([{ FIXTURE_IMAGE_STATUS: "7", reason: "exited with code 7" }, { FIXTURE_RUNTIME_SIGNAL: "1", reason: "terminated by SIGTERM" }, { FIXTURE_RUNTIME_DISAPPEAR: "1", reason: "ENOENT" }])("installs the CLI and reports image failure accurately: $reason", ({ reason, ...env }) => {
         const f = fixture();
-        const result = f.run([], env as Record<string, string>);
+        const result = f.run([], env);
         expect(result.status).toBe(0);
         expect(existsSync(join(f.installDir, "ccc"))).toBe(true);
         expect(result.stderr).toContain(reason);
@@ -158,6 +158,137 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
         expect(readFileSync(join(source.root, "dist/index.js"))).toEqual(previousArtifact);
         expect(existsSync(join(source.installDir, "ccc"))).toBe(false);
         expect(existsSync(join(source.installDir, "ccc-dist"))).toBe(false);
+    });
+});
+
+// Simulate only the installer's credential decision. When requested, execute its
+// actual Node bootstrap as the current test account, without switching accounts.
+function sudoSourceBuildFixture(options: {
+    platform?: "darwin" | "win32";
+    uid?: number;
+    sudoUid?: string;
+    sudoGid?: string;
+    executeBootstrap?: boolean;
+    npmStatus?: number;
+    operation?: "postinstall" | "install" | "import";
+}) {
+    const f = fixture();
+    const capture = join(f.root, "source-build-calls.jsonl"), observation = join(f.root, "npm-environment.json");
+    const loader = join(f.root, "source-build-loader.mjs"), platform = join(f.root, "source-build-platform.mjs");
+    writeFileSync(join(f.installDir, "ccc"), "previous CLI");
+    mkdirSync(join(f.installDir, "ccc-dist"));
+    writeFileSync(join(f.installDir, "ccc-dist", "previous"), "previous payload");
+    writeFileSync(join(f.root, "commands", "npm"), `#!${process.execPath}\nimport fs from 'node:fs';fs.writeFileSync(process.env.FIXTURE_OBSERVATION,JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd(),uid:process.getuid(),gid:process.getgid(),home:process.env.HOME,overrides:Object.keys(process.env).filter(key=>/^npm_config_(cache|userconfig)$/i.test(key)),unrelated:process.env.npm_config_registry}));process.exit(Number(process.env.FIXTURE_NPM_STATUS||0));\n`);
+    const childModule = `import {appendFileSync} from 'node:fs';
+        import {execFileSync as actualExecFileSync} from 'node:child_process';
+        function record(command,args,options){appendFileSync(process.env.FIXTURE_CAPTURE,JSON.stringify({command,args,options})+'\\n');}
+        export function execSync(command,options){record(command,[],options);}
+        export function execFileSync(command,args,options){
+            record(command,args,options);
+            if(process.env.FIXTURE_EXECUTE_BOOTSTRAP==='1'){
+                const {uid,gid,...ordinaryOptions}=options;
+                return actualExecFileSync(command,args,ordinaryOptions);
+            }
+        }
+        export function spawnSync(){throw Error('source-build fixture must not dispatch a runtime');}
+    `;
+    writeFileSync(loader, `export function resolve(specifier,context,next){if(specifier==='child_process'&&context.parentURL?.endsWith('/scripts/install.js'))return {url:${JSON.stringify("data:text/javascript;base64," + Buffer.from(childModule).toString("base64"))},shortCircuit:true};return next(specifier,context);}`);
+    writeFileSync(platform, `Object.defineProperty(process,'platform',{value:${JSON.stringify(options.platform || "darwin")}});Object.defineProperty(process,'getuid',{value:()=>${options.uid ?? 0}});`);
+    const env = { ...process.env };
+    delete env.SUDO_UID;
+    delete env.SUDO_GID;
+    if (options.sudoUid !== undefined) env.SUDO_UID = options.sudoUid;
+    if (options.sudoGid !== undefined) env.SUDO_GID = options.sudoGid;
+    Object.assign(env, {
+        PATH: join(f.root, "commands"), HOME: join(f.root, "inherited-root-home"), CCC_RUNTIME: "",
+        FIXTURE_CAPTURE: capture, FIXTURE_OBSERVATION: observation,
+        FIXTURE_EXECUTE_BOOTSTRAP: options.executeBootstrap ? "1" : "0",
+        FIXTURE_NPM_STATUS: String(options.npmStatus || 0),
+        npm_config_cache: "/root/lower-cache", NPM_CONFIG_CACHE: "/root/upper-cache", Npm_Config_Cache: "/root/mixed-cache",
+        npm_config_userconfig: "/root/lower-npmrc", NPM_CONFIG_USERCONFIG: "/root/upper-npmrc", NpM_cOnFiG_uSeRcOnFiG: "/root/mixed-npmrc",
+        npm_config_registry: "https://registry.invalid/unchanged",
+    });
+    const invocation = options.operation === "import"
+        ? ["--input-type=module", "-e", `import(${JSON.stringify(pathToFileURL(join(f.root, "scripts/install.js")).href)})`]
+        : [join(f.root, "scripts/install.js"), options.operation === "install" ? "--skip-image" : "--postinstall"];
+    const result = spawnSync(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "--import", pathToFileURL(platform).href, ...invocation], {
+        encoding: "utf8", timeout: 10000, env,
+    });
+    const calls = existsSync(capture) ? readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+    const observed = existsSync(observation) ? JSON.parse(readFileSync(observation, "utf8")) : null;
+    return { ...f, result, calls, observed };
+}
+
+describe.skipIf(process.platform === "win32")("sudo source build ownership", () => {
+    it.each([
+        { sudoUid: "501", sudoGid: "20" },
+        { sudoUid: "1", sudoGid: "0" },
+        { sudoUid: "2147483647", sudoGid: "2147483647" },
+    ])("dispatches the validated invoking identity as numeric child credentials: $sudoUid/$sudoGid", identity => {
+        const f = sudoSourceBuildFixture(identity);
+        expect(f.result.status, f.result.stderr).toBe(0);
+        expect(f.calls).toHaveLength(1);
+        expect(f.calls[0]).toEqual({
+            command: process.execPath,
+            args: ["-e", expect.any(String)],
+            options: { cwd: f.root, stdio: "inherit", uid: Number(identity.sudoUid), gid: Number(identity.sudoGid) },
+        });
+        expect(f.calls[0].args[1]).not.toBe("");
+    });
+
+    it.each([
+        { sudoUid: "501" }, { sudoGid: "20" },
+        ...["", " ", " 501", "501 ", "+501", "-1", "5.1", "1e3", "0x1f5", "0501", "0", "2147483648", "4294967294", "4294967295", "999999999999999999999"].map(sudoUid => ({ sudoUid, sudoGid: "20" })),
+        ...["", " ", " 20", "20 ", "+20", "-1", "2.1", "2e1", "0x14", "020", "2147483648", "4294967294", "4294967295", "999999999999999999999"].map(sudoGid => ({ sudoUid: "501", sudoGid })),
+    ])("refuses invalid or incomplete sudo identity before child or publication effects: $sudoUid/$sudoGid", identity => {
+        const f = sudoSourceBuildFixture({ ...identity, operation: "install" });
+        expect(f.result.status, f.result.stderr).not.toBe(0);
+        expect(f.calls).toEqual([]);
+        expect(f.observed).toBeNull();
+        expect(readFileSync(join(f.installDir, "ccc"), "utf8")).toBe("previous CLI");
+        expect(readFileSync(join(f.installDir, "ccc-dist", "previous"), "utf8")).toBe("previous payload");
+    });
+
+    it.each([
+        { uid: 501, sudoUid: "malformed", sudoGid: "-1" },
+        { platform: "win32" as const, sudoUid: "malformed", sudoGid: "-1" },
+        {},
+    ])("keeps normal-user, Windows and non-sudo root builds unchanged: %j", options => {
+        const f = sudoSourceBuildFixture(options);
+        expect(f.result.status, f.result.stderr).toBe(0);
+        expect(f.calls).toEqual([{ command: "npm run build", args: [], options: { cwd: f.root, stdio: "inherit" } }]);
+    });
+
+    it("bootstraps actual npm with the OS account HOME and removes every inherited cache/userconfig spelling", () => {
+        const f = sudoSourceBuildFixture({ sudoUid: "501", sudoGid: "20", executeBootstrap: true });
+        expect(f.result.status, f.result.stderr).toBe(0);
+        expect(f.calls).toHaveLength(1);
+        expect(f.calls[0].options).toMatchObject({ uid: 501, gid: 20 });
+        expect(f.observed).toEqual({
+            argv: ["run", "build"], cwd: f.root,
+            uid: process.getuid!(), gid: process.getgid!(),
+            home: userInfo().homedir, overrides: [], unrelated: "https://registry.invalid/unchanged",
+        });
+    });
+
+    it("propagates a genuine npm child failure before replacing an existing installation", () => {
+        const f = sudoSourceBuildFixture({ sudoUid: "501", sudoGid: "20", executeBootstrap: true, npmStatus: 7, operation: "install" });
+        expect(f.result.status).not.toBe(0);
+        expect(f.calls).toHaveLength(1);
+        expect(f.observed?.argv).toEqual(["run", "build"]);
+        expect(f.result.stderr).toContain("Command failed");
+        expect(f.result.stdout).not.toContain("CLI installed.");
+        expect(readFileSync(join(f.installDir, "ccc"), "utf8")).toBe("previous CLI");
+        expect(readFileSync(join(f.installDir, "ccc-dist", "previous"), "utf8")).toBe("previous payload");
+    });
+
+    it("does not validate sudo identity or launch a build when the native installer is only imported", () => {
+        const f = sudoSourceBuildFixture({ sudoUid: "bad", sudoGid: "", operation: "import" });
+        expect(f.result.status, f.result.stderr).toBe(0);
+        expect(f.calls).toEqual([]);
+        expect(f.observed).toBeNull();
+        expect(f.result.stdout).toBe("");
+        expect(readFileSync(join(f.installDir, "ccc"), "utf8")).toBe("previous CLI");
     });
 });
 
