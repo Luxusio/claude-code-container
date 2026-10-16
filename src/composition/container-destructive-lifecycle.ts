@@ -21,15 +21,15 @@ export function createNativeContainerDestructiveLifecycle(
             if (removed.error || removed.status !== 0) throw new Error("Failed to remove container.");
         },
         reportNotFound: () => { console.log("Container not found"); },
-        reportStopping: () => { console.log("Stopping container..."); },
+        reportStopping: (name, fullPath) => { console.log(`Stopping container ${JSON.stringify(name)} for workspace ${JSON.stringify(fullPath)}...`); },
         reportStopped: () => { console.log("Container stopped"); },
-        reportRemoving: () => { console.log("Removing container..."); },
+        reportRemoving: (name, fullPath) => { console.log(`Removing container ${JSON.stringify(name)} for workspace ${JSON.stringify(fullPath)}...`); },
         reportRemoved: () => { console.log("Container removed"); },
         reportDeviceCleanupFailure: (error) => {
             console.error(`[ccc] device cleanup failed before container stop: ${error instanceof Error ? error.message : String(error)}`);
         },
-        throwSessionClaims: (count) => {
-            throw new Error(`Container has ${count} session ownership claim(s); use --force to continue.`);
+        throwSessionClaims: (count, fullPath) => {
+            throw new Error(`Container for workspace ${JSON.stringify(fullPath)} has ${count} session ownership claim(s); close its other CCC sessions and retry.`);
         },
     });
 }

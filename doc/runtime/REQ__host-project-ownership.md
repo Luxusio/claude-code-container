@@ -36,6 +36,17 @@ session. Stopped legacy containers can transition without deleting projects,
 credentials or prior cache volumes. Subsequent starts reuse the resolved image
 instead of repeatedly comparing a derived image with its base.
 
+Restart guidance must provide one copyable stop command that selects the exact
+workspace directory, runtime and default/named profile even from another working
+directory. POSIX guidance uses a subshell and stops on a failed directory change;
+Windows guidance explicitly identifies PowerShell and restores the caller's
+directory/profile. Literal paths and profile names must not become shell code.
+Stop/remove output identifies the selected managed container and full workspace
+path. A session-claim refusal identifies that workspace and asks the user to
+close its other CCC sessions and retry. Explicit `--force` remains available,
+but is not the default recovery recommendation. Dispatch remains limited to the
+verified container ID; it never stops the runtime engine or other workspaces.
+
 For an already running container with the correct identity and mounts, an
 image-only update is deferred: the command continues in the existing container
 and prints instructions to stop it after its work finishes. Mount-contract drift
@@ -67,7 +78,9 @@ Forwarded SSH agent sockets keep their host permissions; startup must never
 broaden a socket's mode to make the agent accessible to other host users.
 
 Lab-volume migration runs only while that exact named volume has no running
-container users. Establish its previous ccc UID/GID from the old container's
+container users and the new run will mount it (lab status `ready`). Unsupported
+hosts leave retained lab volumes untouched during restart/recreation, including
+skipping the old-account probe. Establish its previous ccc UID/GID from the old container's
 image before removal; translate only those owners, without following symlinks,
 in a helper that mounts no host directories or credentials. The dedicated volume
 root itself is assigned to the target UID/GID, regardless of its previous owner.

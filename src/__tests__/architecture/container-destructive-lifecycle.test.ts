@@ -35,12 +35,12 @@ function fixture() {
         stop: id => effect(`stop:${id}`),
         remove: id => effect(`remove:${id}`),
         reportNotFound: () => effect("not-found"),
-        reportStopping: () => effect("stopping"),
+        reportStopping: (name, path) => effect(`stopping:${name}:${path}`),
         reportStopped: () => effect("stopped"),
-        reportRemoving: () => effect("removing"),
+        reportRemoving: (name, path) => effect(`removing:${name}:${path}`),
         reportRemoved: () => effect("removed"),
         reportDeviceCleanupFailure: error => effect(`cleanup-warning:${String(error)}`),
-        throwSessionClaims: count => { trace.push(`refuse:${count}`); throw new Error(`claimed:${count}`); },
+        throwSessionClaims: (count, path) => { trace.push(`refuse:${count}:${path}`); throw new Error(`claimed:${count}`); },
     };
     return { trace, state, ports, app: createContainerDestructiveLifecycle(ports) };
 }
@@ -48,8 +48,8 @@ function fixture() {
 const guard = ["resolve:input", "project:/full/1", "lock:project-id", "claims:project-id", "runtime"];
 const stopProof = ["resolve:input", "name:/full/2:undefined", "identity:container-name:/full/2"];
 const removeProof = ["resolve:input", "name:/full/2:undefined", "resolve:input", "identity:container-name:/full/3"];
-const stopRunning = [...guard, ...stopProof, "cleanup:/full/2:5000:undefined", "stopping", "stop:pinned-id", "stopped", "unlock"];
-const removeRunning = [...guard, ...removeProof, "resolve:input", "cleanup:/full/4:5000:undefined", "stopping", "stop:pinned-id", "stopped", "removing", "remove:pinned-id", "removed", "unlock"];
+const stopRunning = [...guard, ...stopProof, "cleanup:/full/2:5000:undefined", "stopping:container-name:/full/2", "stop:pinned-id", "stopped", "unlock"];
+const removeRunning = [...guard, ...removeProof, "resolve:input", "cleanup:/full/4:5000:undefined", "stopping:container-name:/full/3", "stop:pinned-id", "stopped", "removing:container-name:/full/3", "remove:pinned-id", "removed", "unlock"];
 
 function throwsSame(operation: () => unknown, failure: unknown): void {
     try {
@@ -100,7 +100,7 @@ describe("destructive claim authorization", () => {
                 expect(f.trace).toEqual(operation === "stop" ? stopRunning : removeRunning);
             } else {
                 expect(run).toThrow("claimed:2");
-                expect(f.trace).toEqual(["resolve:input", "project:/full/1", "lock:project-id", "claims:project-id", "refuse:2"]);
+                expect(f.trace).toEqual(["resolve:input", "project:/full/1", "lock:project-id", "claims:project-id", "refuse:2:/full/1"]);
             }
         }
     });
@@ -182,7 +182,7 @@ describe("ordered managed destruction", () => {
     });
     it("removes an already stopped container without a stopped presentation", () => {
         const f = fixture(); f.state.identity!.running = false; f.app.remove("input");
-        expect(f.trace).toEqual([...guard, ...removeProof, "resolve:input", "cleanup:/full/4:5000:undefined", "removing", "remove:pinned-id", "removed", "unlock"]);
+        expect(f.trace).toEqual([...guard, ...removeProof, "resolve:input", "cleanup:/full/4:5000:undefined", "removing:container-name:/full/3", "remove:pinned-id", "removed", "unlock"]);
     });
     it.each(["stop", "remove"] as const)("%s refuses an unavailable managed identity even when forced", operation => {
         const f = fixture(); f.state.identity = null; f.state.claims = ["claim"];
@@ -243,8 +243,8 @@ describe("fallible capability boundaries", () => {
             resolvePath: "resolve:input", projectId: "project:/full/1", withLifecycleLock: "lock:project-id",
             sessionClaims: "claims:project-id", ensureRuntime: "runtime", containerName: "name:/full/2:undefined",
             managedIdentity: operation === "stop" ? "identity:container-name:/full/2" : "identity:container-name:/full/3",
-            reportStopping: "stopping", stop: "stop:pinned-id", reportStopped: "stopped",
-            reportRemoving: "removing", remove: "remove:pinned-id", reportRemoved: "removed",
+            reportStopping: `stopping:container-name:/full/${operation === "stop" ? 2 : 3}`, stop: "stop:pinned-id", reportStopped: "stopped",
+            reportRemoving: "removing:container-name:/full/3", remove: "remove:pinned-id", reportRemoved: "removed",
         };
         let seen = 0;
         const index = baseline.findIndex(event => event === eventForPort[port] && ++seen === atCall);

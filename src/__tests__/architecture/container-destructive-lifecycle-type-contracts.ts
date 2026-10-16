@@ -12,11 +12,17 @@ const removed: void = app.remove("project", "profile", { force: true });
 const identity: DestructiveContainerIdentity | null = ports.managedIdentity("name", "path");
 const claims: readonly string[] = ports.sessionClaims("prefix");
 const effect: undefined = ports.stop("pinned-id");
+const stopping: undefined = ports.reportStopping("selected-name", "selected-path");
+const removing: undefined = ports.reportRemoving("selected-name", "selected-path");
 const locked: undefined = ports.withLifecycleLock("prefix", () => undefined);
 const options: ContainerDestructiveLifecycleOptions = {};
-void [stopped, removed, identity, claims, effect, locked, options];
+void [stopped, removed, identity, claims, effect, stopping, removing, locked, options];
 
 type Assert<T extends true> = T;
+type StopPresentationTarget = Assert<Parameters<ContainerDestructiveLifecyclePorts["reportStopping"]> extends [string, string] ? true : false>;
+type RemovePresentationTarget = Assert<Parameters<ContainerDestructiveLifecyclePorts["reportRemoving"]> extends [string, string] ? true : false>;
+type ClaimGuardTarget = Assert<Parameters<ContainerDestructiveLifecyclePorts["throwSessionClaims"]> extends [number, string] ? true : false>;
+type ClaimRejectionThrows = Assert<ReturnType<ContainerDestructiveLifecyclePorts["throwSessionClaims"]> extends never ? true : false>;
 type EveryPortRequired = Assert<{
     [K in keyof ContainerDestructiveLifecyclePorts]: {} extends Pick<ContainerDestructiveLifecyclePorts, K> ? false : true
 }[keyof ContainerDestructiveLifecyclePorts] extends true ? true : false>;
@@ -27,7 +33,8 @@ type EveryPortSynchronous = Assert<{
 }[keyof ContainerDestructiveLifecyclePorts] extends true ? true : false>;
 const required: EveryPortRequired = true;
 const synchronous: EveryPortSynchronous = true;
-void [required, synchronous];
+const presentation: [StopPresentationTarget, RemovePresentationTarget, ClaimGuardTarget, ClaimRejectionThrows] = [true, true, true, true];
+void [required, synchronous, presentation];
 
 // @ts-expect-error No ambient capabilities are supplied.
 createContainerDestructiveLifecycle();
@@ -45,6 +52,12 @@ createContainerDestructiveLifecycle({ ...ports, stop: () => ({ status: 0 }) });
 createContainerDestructiveLifecycle({ ...ports, cleanupDevices: async () => undefined });
 // @ts-expect-error Claim rejection must throw rather than return permission.
 createContainerDestructiveLifecycle({ ...ports, throwSessionClaims: () => undefined });
+// @ts-expect-error Stopping presentation requires the selected workspace as well as its name.
+ports.reportStopping("selected-name");
+// @ts-expect-error Removal presentation requires the selected workspace as well as its name.
+ports.reportRemoving("selected-name");
+// @ts-expect-error Claim refusal requires the resolved guard workspace.
+ports.throwSessionClaims(2);
 // @ts-expect-error Permissive void callbacks do not prove synchronous undefined effects.
 createContainerDestructiveLifecycle({ ...ports, reportStopped: (): void => {} });
 // @ts-expect-error An asynchronous critical section cannot satisfy the synchronous lock.

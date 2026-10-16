@@ -19,10 +19,10 @@ export interface ContainerDestructiveLifecyclePorts {
     stop(id: string): undefined;
     remove(id: string): undefined;
     reportNotFound(): undefined;
-    reportStopping(): undefined;
+    reportStopping(name: string, fullPath: string): undefined;
     reportStopped(): undefined;
-    reportRemoving(): undefined;
+    reportRemoving(name: string, fullPath: string): undefined;
     reportRemoved(): undefined;
     reportDeviceCleanupFailure(error: unknown): undefined;
-    throwSessionClaims(count: number): never;
+    throwSessionClaims(count: number, fullPath: string): never;
 }

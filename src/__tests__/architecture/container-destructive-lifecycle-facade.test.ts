@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { createNativeContainerDestructiveLifecycle } from "../../composition/container-destructive-lifecycle.js";
 import {
     bindMountSourceIdentityDigest, captureBindMountSourceIdentity,
-    removeProjectContainer, stopProjectContainer,
+    getContainerName, removeProjectContainer, stopProjectContainer,
 } from "../../docker.js";
 import { getProjectId } from "../../utils.js";
 
@@ -27,6 +27,8 @@ vi.mock("../../session.js", () => ({
 }));
 
 const id = "a".repeat(64);
+const fixtureStopping = 'log:Stopping container "fixture-container" for workspace "/full/project"...';
+const fixtureRemoving = 'log:Removing container "fixture-container" for workspace "/full/project"...';
 type SuppliedPorts = Parameters<typeof createNativeContainerDestructiveLifecycle>[0];
 
 function fixture(overrides: Partial<SuppliedPorts> = {}) {
@@ -80,12 +82,26 @@ describe("native destructive lifecycle composition", () => {
             ["podman", ["rm", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }],
         ]);
         expect(native.runtime).toHaveBeenCalledTimes(2);
-        expect(native.order).toEqual(["log:Stopping container...", "log:Container stopped", "log:Removing container...", "log:Container removed"]);
+        expect(native.order).toEqual([fixtureStopping, "log:Container stopped", fixtureRemoving, "log:Container removed"]);
         expect(f.order).toEqual([
             "resolve:input", "project:/full/project", "lock:project-id", "claims:project-id", "runtime-ready",
             "resolve:input", "name:/full/project:undefined", "resolve:input", "identity:fixture-container:/full/project",
             "resolve:input", "cleanup:/full/project:5000:undefined", "unlock",
         ]);
+    });
+
+    it("escapes the exact selected name and resolved workspace in stop and removal output", () => {
+        const name = 'selected "container"\nwith control characters';
+        const path = '/full/selected "workspace"\nwith control characters';
+        const f = fixture({ resolvePath: () => path, containerName: () => name });
+        f.lifecycle.remove("other-workspace", "work");
+        expect(native.order).toEqual([
+            `log:Stopping container ${JSON.stringify(name)} for workspace ${JSON.stringify(path)}...`,
+            "log:Container stopped",
+            `log:Removing container ${JSON.stringify(name)} for workspace ${JSON.stringify(path)}...`,
+            "log:Container removed",
+        ]);
+        expect(native.order.every(message => !message.includes("\n"))).toBe(true);
     });
 
     it.each(["stop", "remove"] as const)("%s never dispatches or cleans without managed identity even forced", operation => {
@@ -96,10 +112,14 @@ describe("native destructive lifecycle composition", () => {
         expect(native.spawn).not.toHaveBeenCalled(); expect(console.log).toHaveBeenCalledExactlyOnceWith("Container not found");
     });
 
-    it.each(["stop", "remove"] as const)("%s rejects raw claims with the unchanged count message", operation => {
+    it.each(["stop", "remove"] as const)("%s rejects raw claims with the guard workspace and close/retry guidance before effects", operation => {
         const f = fixture({ sessionClaims: () => ["stale", "live"] });
-        expect(() => f.lifecycle[operation]("input")).toThrow("Container has 2 session ownership claim(s); use --force to continue.");
-        expect(f.order).not.toContain("runtime-ready"); expect(native.spawn).not.toHaveBeenCalled();
+        let failure: unknown;
+        try { f.lifecycle[operation]("input"); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toBe('Container for workspace "/full/project" has 2 session ownership claim(s); close its other CCC sessions and retry.');
+        expect(f.order).toEqual(["resolve:input", "project:/full/project", "lock:project-id"]);
+        expect(native.order).toEqual([]); expect(native.runtime).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
     });
 
     it.each(["stop", "remove"] as const)("%s formats Error and non-Error device cleanup warnings then continues", operation => {
@@ -127,7 +147,7 @@ describe("native destructive lifecycle composition", () => {
             const f = fixture();
             expect(() => f.lifecycle.remove("input")).toThrow(operation === "stop" ? "Failed to stop container." : "Failed to remove container.");
             expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(operation === "stop" ? ["stop"] : ["stop", "rm"]);
-            expect(native.order).toEqual(operation === "stop" ? ["log:Stopping container..."] : ["log:Stopping container...", "log:Container stopped", "log:Removing container..."]);
+            expect(native.order).toEqual(operation === "stop" ? [fixtureStopping] : [fixtureStopping, "log:Container stopped", fixtureRemoving]);
         });
         it(`propagates a thrown ${operation} subprocess error unchanged`, () => {
             const failure = new Error(`spawn-${operation}`);
@@ -141,7 +161,7 @@ describe("native destructive lifecycle composition", () => {
     it.each(["stop", "remove"] as const)("%s propagates current runtime selection failure before subprocess dispatch", operation => {
         const failure = new Error("runtime-selection"); native.runtime.mockImplementation(() => { throw failure; });
         const f = fixture(); expect(() => f.lifecycle[operation]("input")).toThrow(failure);
-        expect(native.spawn).not.toHaveBeenCalled(); expect(console.log).toHaveBeenCalledExactlyOnceWith("Stopping container...");
+        expect(native.spawn).not.toHaveBeenCalled(); expect(console.log).toHaveBeenCalledExactlyOnceWith('Stopping container "fixture-container" for workspace "/full/project"...');
     });
 
     it("propagates presentation failure after stop without removal or rollback", () => {
@@ -177,10 +197,11 @@ describe("public Docker destructive facade through actual application and compos
         const execute = operation === "stop" ? stopProjectContainer : removeProjectContainer;
         expect(execute(root)).toBeUndefined();
         const prefix = getProjectId(root);
+        const selectedName = getContainerName(resolve(root));
         expect(native.order).toEqual([
             `lock:${prefix}`, `claims:${prefix}`, "native:info", "native:inspect", "cleanup",
-            "log:Stopping container...", "native:stop", "log:Container stopped",
-            ...(operation === "remove" ? ["log:Removing container...", "native:rm", "log:Container removed"] : []), "unlock",
+            `log:Stopping container ${JSON.stringify(selectedName)} for workspace ${JSON.stringify(resolve(root))}...`, "native:stop", "log:Container stopped",
+            ...(operation === "remove" ? [`log:Removing container ${JSON.stringify(selectedName)} for workspace ${JSON.stringify(resolve(root))}...`, "native:rm", "log:Container removed"] : []), "unlock",
         ]);
         expect(native.cleanup).toHaveBeenCalledExactlyOnceWith(resolve(root), 5000, undefined);
         expect(native.spawn.mock.calls.filter(call => ["stop", "rm"].includes(call[1][0]))).toEqual([
@@ -192,7 +213,7 @@ describe("public Docker destructive facade through actual application and compos
     it.each(["stop", "remove"] as const)("%s preserves raw-claim refusal and explicit force under profile lock", operation => {
         provider(); native.claims.mockReturnValue(["raw-claim"]);
         const execute = operation === "stop" ? stopProjectContainer : removeProjectContainer;
-        expect(() => execute(root, "work")).toThrow("Container has 1 session ownership claim(s); use --force to continue.");
+        expect(() => execute(root, "work")).toThrow(`Container for workspace ${JSON.stringify(resolve(root))} has 1 session ownership claim(s); close its other CCC sessions and retry.`);
         expect(native.spawn).not.toHaveBeenCalled(); expect(native.cleanup).not.toHaveBeenCalled();
         expect(native.lock).toHaveBeenCalledWith(`${getProjectId(root)}--p--work`, expect.any(Function));
         expect(execute(root, "work", { force: true })).toBeUndefined();

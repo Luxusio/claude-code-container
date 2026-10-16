@@ -22,12 +22,13 @@ export function createContainerDestructiveLifecycle(ports: ContainerDestructiveL
         options: ContainerDestructiveLifecycleOptions,
         operation: () => undefined,
     ): void {
-        const projectId = ports.projectId(ports.resolvePath(projectPath));
+        const guardPath = ports.resolvePath(projectPath);
+        const projectId = ports.projectId(guardPath);
         const prefix = sessionClaimPrefix(projectId, profile);
         ports.withLifecycleLock(prefix, () => {
             const claims = ports.sessionClaims(prefix);
             if (claims.length > 0 && options.force !== true) {
-                ports.throwSessionClaims(claims.length);
+                ports.throwSessionClaims(claims.length, guardPath);
             }
             return operation();
         });
@@ -58,7 +59,7 @@ export function createContainerDestructiveLifecycle(ports: ContainerDestructiveL
 
             cleanupDevices(fullPath, profile);
             if (identity.running) {
-                ports.reportStopping();
+                ports.reportStopping(containerName, fullPath);
                 ports.stop(identity.containerId);
             }
             ports.reportStopped();
@@ -73,7 +74,8 @@ export function createContainerDestructiveLifecycle(ports: ContainerDestructiveL
         withGuard(projectPath, profile, options, () => {
             ports.ensureRuntime();
             const containerName = ports.containerName(ports.resolvePath(projectPath), profile);
-            const identity = ports.managedIdentity(containerName, ports.resolvePath(projectPath));
+            const fullPath = ports.resolvePath(projectPath);
+            const identity = ports.managedIdentity(containerName, fullPath);
             if (!identity) {
                 ports.reportNotFound();
                 return;
@@ -81,11 +83,11 @@ export function createContainerDestructiveLifecycle(ports: ContainerDestructiveL
 
             cleanupDevices(ports.resolvePath(projectPath), profile);
             if (identity.running) {
-                ports.reportStopping();
+                ports.reportStopping(containerName, fullPath);
                 ports.stop(identity.containerId);
                 ports.reportStopped();
             }
-            ports.reportRemoving();
+            ports.reportRemoving(containerName, fullPath);
             ports.remove(identity.containerId);
             ports.reportRemoved();
         });
