@@ -20,7 +20,8 @@ function fixture() {
         unrefDaemon: value => { calls.push(["unref", value]); return undefined; },
     };
     return { calls, ports, lock, child, app: createClipboardServerLifecycle(ports, "current"),
-        setRecord: (value: ClipboardPortRecord | null) => { record = value; }, setHealth: (value: ClipboardHealthResult) => { health = value; } };
+        setRecord: (value: ClipboardPortRecord | null) => { record = value; }, setHealth: (value: ClipboardHealthResult) => { health = value; },
+        advance: (milliseconds: number) => { now += milliseconds; } };
 }
 
 describe("Clipboard server lifecycle application policy", () => {
@@ -58,6 +59,91 @@ describe("Clipboard server lifecycle application policy", () => {
         await expect(f.app.ensureClipboardServer()).rejects.toThrow("Clipboard startup is still owned or its owner cannot be verified: /private/lock");
         expect(f.calls.filter(call => Array.isArray(call) && call[0] === "sleep")).toHaveLength(135);
         expect(f.calls.some(call => Array.isArray(call) && ["launch", "release"].includes(String(call[0])))).toBe(false);
+    });
+    it.each(["contention", "publication"] as const)("clips the last %s sleep and stops before expired publication polling", async phase => {
+        const f = fixture(); const allowance = phase === "contention" ? 13500 : 5000;
+        const beforePolling = phase === "contention" ? 1 : 2; let reads = 0;
+        if (phase === "contention") f.ports.tryAcquireStartupLock = path => { f.calls.push(["acquire", path]); return null; };
+        else f.ports.launchDaemon = script => { f.calls.push(["launch", script]); return f.child; };
+        f.ports.readPortFile = path => {
+            f.calls.push(["read", path]);
+            return ++reads <= beforePolling ? null : { port: 4321, token: "new-token" };
+        };
+        f.ports.checkHealth = async (port, token, address) => {
+            f.calls.push(["health", port, token, address]); f.advance(allowance - 125); return { alive: false };
+        };
+        await expect(f.app.ensureClipboardServer()).rejects.toThrow(phase === "contention"
+            ? "Clipboard startup is still owned or its owner cannot be verified"
+            : "Clipboard server failed to start within timeout");
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "sleep")).toEqual([["sleep", 100], ["sleep", 25]]);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "read")).toHaveLength(phase === "contention" ? 2 : 3);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "health")).toEqual([["health", 4321, "new-token", "127.0.0.1"]]);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "acquire")).toHaveLength(phase === "contention" ? 2 : 1);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "recover")).toHaveLength(phase === "contention" ? 1 : 0);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "release")).toEqual(phase === "publication" ? [["release", f.lock]] : []);
+    });
+    it.each(["contention", "publication"] as const)("refuses health and lock followups when a %s publication read consumes the remainder", async phase => {
+        const f = fixture(); const allowance = phase === "contention" ? 13500 : 5000;
+        const beforePolling = phase === "contention" ? 1 : 2; let reads = 0;
+        f.ports.tryAcquireStartupLock = path => { f.calls.push(["acquire", path]); return phase === "contention" ? null : f.lock; };
+        f.ports.launchDaemon = () => f.child;
+        f.ports.readPortFile = path => {
+            f.calls.push(["read", path]);
+            if (++reads <= beforePolling) return null;
+            f.advance(allowance - 100);
+            return { port: 4321, token: "new-token" };
+        };
+        f.ports.checkHealth = async () => { f.calls.push("unexpected-health"); return { alive: true, version: "current" }; };
+        await expect(f.app.ensureClipboardServer()).rejects.toThrow(phase === "contention"
+            ? "Clipboard startup is still owned or its owner cannot be verified"
+            : "Clipboard server failed to start within timeout");
+        expect(reads).toBe(beforePolling + 1); expect(f.calls).not.toContain("unexpected-health");
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "acquire")).toHaveLength(1);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "recover")).toEqual([]);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "sleep")).toEqual([["sleep", 100]]);
+    });
+    it.each(["contention", "publication"] as const)("does not accept a late healthy %s publication or dispatch another attempt", async phase => {
+        const f = fixture(); const allowance = phase === "contention" ? 13500 : 5000;
+        const beforePolling = phase === "contention" ? 1 : 2; let reads = 0; let probes = 0;
+        f.ports.tryAcquireStartupLock = path => { f.calls.push(["acquire", path]); return phase === "contention" ? null : f.lock; };
+        f.ports.launchDaemon = () => f.child;
+        f.ports.readPortFile = () => ++reads <= beforePolling ? null : { port: 4321, token: "new-token" };
+        f.ports.checkHealth = async () => { probes++; f.advance(allowance - 100); return { alive: true, version: "current" }; };
+        await expect(f.app.ensureClipboardServer()).rejects.toThrow(phase === "contention"
+            ? "Clipboard startup is still owned or its owner cannot be verified"
+            : "Clipboard server failed to start within timeout");
+        expect(probes).toBe(1); expect(reads).toBe(beforePolling + 1);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "acquire")).toHaveLength(1);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "recover")).toEqual([]);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "sleep")).toEqual([["sleep", 100]]);
+    });
+    it.each(["acquire", "recover"] as const)("does not dispatch another lock operation after an unsuccessful %s exhausts contention", async operation => {
+        const f = fixture(); let attempts = 0; let recoveries = 0;
+        f.ports.tryAcquireStartupLock = () => { if (++attempts === 2 && operation === "acquire") f.advance(13400); return null; };
+        f.ports.recoverDeadStartupLock = () => { recoveries++; f.advance(13400); return true; };
+        await expect(f.app.ensureClipboardServer()).rejects.toThrow("Clipboard startup is still owned or its owner cannot be verified");
+        expect(attempts).toBe(2); expect(recoveries).toBe(operation === "recover" ? 1 : 0);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "sleep")).toEqual([["sleep", 100]]);
+        expect(f.calls.some(call => Array.isArray(call) && ["launch", "release"].includes(String(call[0])))).toBe(false);
+    });
+    it("keeps a successfully acquired lock even when acquisition itself reaches the contention deadline", async () => {
+        const f = fixture(); let attempts = 0;
+        f.ports.tryAcquireStartupLock = () => {
+            if (++attempts === 1) return null;
+            f.advance(13400); f.setRecord({ port: 2345, token: "new-token" }); f.setHealth({ alive: true, version: "current" });
+            return f.lock;
+        };
+        expect(await f.app.ensureClipboardServer()).toBe(2345);
+        expect(attempts).toBe(2); expect(f.calls.at(-1)).toEqual(["release", f.lock]);
+        expect(f.calls.some(call => Array.isArray(call) && ["recover", "launch"].includes(String(call[0])))).toBe(false);
+    });
+    it.each(["initial", "held-lock"] as const)("retains independent %s authenticated health outside the publication phase", async phase => {
+        const f = fixture(); f.setRecord({ port: 2345, token: "old-token" }); let probes = 0;
+        f.ports.checkHealth = async () => { f.advance(50000); return { alive: ++probes === (phase === "initial" ? 1 : 2), version: "current" }; };
+        expect(await f.app.ensureClipboardServer()).toBe(2345);
+        expect(probes).toBe(phase === "initial" ? 1 : 2);
+        expect(f.calls.filter(call => Array.isArray(call) && call[0] === "release")).toEqual(phase === "initial" ? [] : [["release", f.lock]]);
+        expect(f.calls.some(call => Array.isArray(call) && ["launch", "sleep"].includes(String(call[0])))).toBe(false);
     });
     it("recovers then reacquires, sleeps the recovery grace before entering the release boundary", async () => {
         const f = fixture(); let acquired = 0;

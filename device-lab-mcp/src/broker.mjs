@@ -9,6 +9,7 @@ import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync
 import { request as httpRequest } from "http";
 import { homedir } from "os";
 import { delimiter, dirname, join, resolve } from "path";
+import { performance } from "node:perf_hooks";
 import { ownerBasis, ownerId, PACKAGE_ROOT, projectMountPath } from "@ccc/device-lab/providers/context.mjs";
 import { DEVICE_BROKER_PROTOCOL_VERSION, isCompatibleBrokerProtocol } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
 import { isDeepStrictEqual } from "node:util";
@@ -785,14 +786,17 @@ async function probeCccHostBrokerProtocol(host, port, timeoutMs) {
 export const probeCccHostBrokerProtocolForTest = probeCccHostBrokerProtocol;
 
 async function waitForBrokerHealth({ host, port, timeoutMs }) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = performance.now() + timeoutMs;
     const attempts = [];
-    while (Date.now() <= deadline) {
-        const remaining = Math.max(1, Math.min(250, deadline - Date.now()));
-        const probe = await probeBrokerHealth({ hostCandidates: [host], port, timeoutMs: remaining });
+    for (;;) {
+        const remainingMs = deadline - performance.now();
+        if (!(remainingMs > 0)) break;
+        const probe = await probeBrokerHealth({ hostCandidates: [host], port, timeoutMs: Math.min(250, remainingMs) });
         attempts.push(...probe.attempts);
-        if (probe.available) return { ...probe, attempts };
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        const afterProbeMs = deadline - performance.now();
+        if (probe.available && afterProbeMs > 0) return { ...probe, attempts };
+        if (!(afterProbeMs > 0)) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(50, afterProbeMs)));
     }
     return { requested: true, available: false, selected: null, attempts };
 }
@@ -817,12 +821,17 @@ function registerBrokerCleanup() {
 }
 
 async function waitForProcessExit(pid, timeoutMs = 1500) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() <= deadline) {
-        if (!pidAlive(pid)) return true;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+    const deadline = performance.now() + timeoutMs;
+    for (;;) {
+        const remainingMs = deadline - performance.now();
+        if (!(remainingMs > 0)) break;
+        const exited = !pidAlive(pid);
+        const afterProbeMs = deadline - performance.now();
+        if (exited && afterProbeMs > 0) return true;
+        if (!(afterProbeMs > 0)) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(50, afterProbeMs)));
     }
-    return !pidAlive(pid);
+    return false;
 }
 
 async function terminateBrokerProcess(pid, timeoutMs = 3000, expectedStartToken = null) {
@@ -1412,12 +1421,13 @@ async function cleanupLaunchedBrokerRuntime(runtime, child, timeoutMs) {
 }
 
 export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
-    const deadline = Date.now() + Math.max(1, timeoutMs);
+    const deadline = performance.now() + Math.max(1, timeoutMs);
     const attempts = [];
     let lastResult = null;
     let lastHttpFailure = null;
-    while (Date.now() <= deadline) {
-        const remainingMs = Math.max(1, deadline - Date.now());
+    for (;;) {
+        const remainingMs = deadline - performance.now();
+        if (!(remainingMs > 0)) break;
         const resolved = await resolveBrokerOwner({
             hostCandidates: [host],
             port,
@@ -1429,8 +1439,10 @@ export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
             if (attempts.length > MAX_PROBE_CANDIDATES) attempts.shift();
             if (Number.isInteger(attempt?.status) && attempt.status >= 400) lastHttpFailure = attempt;
         }
-        if (resolved.ok) return { ...resolved, attempts };
-        if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, Math.min(100, remainingMs)));
+        const afterProbeMs = deadline - performance.now();
+        if (resolved.ok && afterProbeMs > 0) return { ...resolved, attempts };
+        if (!(afterProbeMs > 0)) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(100, afterProbeMs)));
     }
     return {
         ok: false,

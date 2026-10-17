@@ -1424,27 +1424,48 @@ interface HealthResult {
 }
 
 function checkServerHealth(port: number, expectedToken: string, bindAddr: string): Promise<HealthResult> {
-    return new Promise((resolve) => {
-        const timeout = setTimeout(() => resolve({ alive: false }), HEALTH_CHECK_TIMEOUT_MS);
-        const req = httpRequest(
-            { hostname: bindAddr, port, path: "/health", method: "GET", headers: { "Authorization": `Bearer ${expectedToken}` }, timeout: HEALTH_CHECK_TIMEOUT_MS },
-            (res) => {
-                let data = "";
-                res.on("data", (chunk) => { data += chunk; });
-                res.on("end", () => {
-                    clearTimeout(timeout);
-                    try {
-                        const json = JSON.parse(data);
-                        const alive = json.service === "ccc-clipboard" && json.valid === true;  // valid only present when auth header sent
-                        resolve({ alive, version: json.version });
-                    } catch {
-                        resolve({ alive: false });
-                    }
-                });
-            },
-        );
-        req.on("error", () => { clearTimeout(timeout); resolve({ alive: false }); });
-        req.end();
+    return new Promise((resolve, reject) => {
+        let req: ReturnType<typeof httpRequest> | undefined;
+        let settled = false;
+        const timeout = setTimeout(() => finish({ alive: false }, true), HEALTH_CHECK_TIMEOUT_MS);
+        const finish = (health: HealthResult, destroyUnfinished = false) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            if (destroyUnfinished) {
+                try { req?.destroy(); } catch { /* Keep the health result when cleanup fails. */ }
+            }
+            resolve(health);
+        };
+        try {
+            req = httpRequest(
+                { hostname: bindAddr, port, path: "/health", method: "GET", headers: { "Authorization": `Bearer ${expectedToken}` }, timeout: HEALTH_CHECK_TIMEOUT_MS },
+                (res) => {
+                    let data = "";
+                    res.on("data", (chunk) => { if (!settled) data += chunk; });
+                    res.on("error", () => finish({ alive: false }, true));
+                    res.on("aborted", () => finish({ alive: false }, true));
+                    res.on("end", () => {
+                        if (settled) return;
+                        try {
+                            const json = JSON.parse(data);
+                            const alive = json.service === "ccc-clipboard" && json.valid === true;  // valid only present when auth header sent
+                            finish({ alive, version: json.version });
+                        } catch {
+                            finish({ alive: false });
+                        }
+                    });
+                },
+            );
+            req.on("error", () => finish({ alive: false }, true));
+            req.end();
+        } catch (error) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            try { req?.destroy(); } catch { /* Preserve the synchronous request failure. */ }
+            reject(error);
+        }
     });
 }
 
@@ -1469,7 +1490,7 @@ const clipboardLifecycle = createClipboardServerLifecycle({
         console.warn("[ccc] Clipboard update deferred: running container bind users could not be excluded. Keeping the authenticated existing bridge; retry after its container users stop.");
         return undefined;
     },
-    now: () => Date.now(),
+    now: () => performance.now(),
     sleep: (milliseconds) => new Promise((r) => setTimeout(r, milliseconds)),
     daemonScriptPath: () => fileURLToPath(import.meta.url).replace(/\.ts$/, ".js"),
     launchDaemon: (serverScript) => spawn(process.execPath, [serverScript, "--serve"], {

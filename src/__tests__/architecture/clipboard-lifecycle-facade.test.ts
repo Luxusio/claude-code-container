@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { RequestOptions } from "node:http";
+import { performance } from "node:perf_hooks";
 
 const native = vi.hoisted(() => ({ read: vi.fn(), exists: vi.fn(), spawn: vi.fn(), request: vi.fn(), acquire: vi.fn(), recover: vi.fn(), release: vi.fn(), bindUsers: vi.fn() }));
 vi.mock("child_process", () => ({ spawn: native.spawn, spawnSync: () => { throw new Error("No native command"); } }));
@@ -20,7 +21,7 @@ vi.mock("fs", async actual => ({ ...await actual<typeof import("node:fs")>(), re
 let mod: typeof import("../../clipboard-server.js"); let record: string | null; let version: string;
 const lock = { opaque: "native-lock" }; let child: { unref: ReturnType<typeof vi.fn> };
 beforeEach(async () => {
-    vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers(); record = "1234:secret:with:colon"; version = "aaaaaaaaaaaa";
+    vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); record = "1234:secret:with:colon"; version = "aaaaaaaaaaaa";
     child = { unref: vi.fn().mockReturnValue({ ignored: true }) };
     native.exists.mockImplementation((path: string) => path.endsWith("port") && record !== null);
     native.read.mockImplementation((path: string) => path.endsWith(".js") ? "fixture-policy" : record);
@@ -38,6 +39,16 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
+function pendingHealthResponse() {
+    const req = Object.assign(new EventEmitter(), { end: vi.fn(), destroy: vi.fn() });
+    const res = Object.assign(new EventEmitter(), { statusCode: 200 });
+    native.request.mockImplementation((_options: RequestOptions, callback: (response: unknown) => void) => {
+        req.end.mockImplementation(() => { callback(res); });
+        return req;
+    });
+    return { req, res };
+}
+
 describe("Clipboard lifecycle actual public native facade", () => {
     it("exports direct named async ensure and synchronous retirement bindings", () => {
         expect(mod.ensureClipboardServer.name).toBe("ensureClipboardServer"); expect(mod.ensureClipboardServer.length).toBe(0);
@@ -49,7 +60,72 @@ describe("Clipboard lifecycle actual public native facade", () => {
     it("reuses current authenticated health with the whole token after the first colon", async () => {
         expect(await mod.ensureClipboardServer()).toBe(1234); expect(native.acquire).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
         expect(native.request.mock.calls[0][0]).toEqual({ hostname: "127.0.0.1", port: 1234, path: "/health", method: "GET", headers: { Authorization: "Bearer secret:with:colon" }, timeout: 2000 });
+        expect(native.request.mock.results[0].value.destroy).not.toHaveBeenCalled();
         expect(vi.getTimerCount()).toBe(0);
+    });
+    it.each(["contention", "publication"] as const)("uses the native monotonic clock for %s despite forward and backward wall jumps", async phase => {
+        record = null; const allowance = phase === "contention" ? 13500 : 5000;
+        if (phase === "contention") native.acquire.mockReturnValue(null);
+        else native.spawn.mockReturnValue(child);
+        let monotonic = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+        const wall = vi.spyOn(Date, "now").mockReturnValue(0);
+        const observed = mod.ensureClipboardServer().catch(error => error);
+        monotonic = allowance - 25; wall.mockReturnValue(1_000_000_000);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(vi.getTimerCount()).toBe(1); expect(native.request).not.toHaveBeenCalled();
+        monotonic = allowance; wall.mockReturnValue(-1_000_000_000);
+        await vi.advanceTimersByTimeAsync(25);
+        expect(await observed).toEqual(expect.objectContaining({ message: expect.stringContaining(phase === "contention"
+            ? "Clipboard startup is still owned or its owner cannot be verified"
+            : "Clipboard server failed to start within timeout") }));
+        expect(native.acquire).toHaveBeenCalledTimes(phase === "contention" ? 2 : 1);
+        expect(native.recover).toHaveBeenCalledTimes(phase === "contention" ? 1 : 0);
+        expect(native.release).toHaveBeenCalledTimes(phase === "publication" ? 1 : 0);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+    it("destroys an unfinished authenticated health response once at its separate 2000 ms timeout", async () => {
+        const { req, res } = pendingHealthResponse(); const afterHealth = new Error("health failed before lock acquisition");
+        native.acquire.mockImplementation(() => { throw afterHealth; });
+        req.destroy.mockImplementation(() => {
+            req.emit("error", new Error("destroyed request")); res.emit("aborted"); res.emit("error", new Error("destroyed response"));
+            return req;
+        });
+        const observed = mod.ensureClipboardServer().catch(error => error);
+        res.emit("data", JSON.stringify({ service: "ccc-clipboard", valid: true, version }));
+        expect(native.request.mock.calls[0][0]).toEqual({ hostname: "127.0.0.1", port: 1234, path: "/health", method: "GET", headers: { Authorization: "Bearer secret:with:colon" }, timeout: 2000 });
+        await vi.advanceTimersByTimeAsync(1999); expect(req.destroy).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await observed).toBe(afterHealth); expect(req.destroy).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+        res.emit("end"); req.emit("timeout");
+        expect(req.destroy).toHaveBeenCalledTimes(1); expect(native.acquire).toHaveBeenCalledTimes(1);
+        expect(native.spawn).not.toHaveBeenCalled(); expect(native.release).not.toHaveBeenCalled();
+    });
+    it.each(["request-error", "response-error", "response-aborted"] as const)("settles %s once and consumes destroy/error races without accepting late health", async event => {
+        const { req, res } = pendingHealthResponse(); const afterHealth = new Error("failed health reached the existing lock path");
+        native.acquire.mockImplementation(() => { throw afterHealth; });
+        req.destroy.mockImplementation(() => { req.emit("error", new Error("destroy race")); throw new Error("cleanup failure"); });
+        const observed = mod.ensureClipboardServer().catch(error => error);
+        if (event === "request-error") req.emit("error", new Error("request failure"));
+        else if (event === "response-error") res.emit("error", new Error("response failure"));
+        else res.emit("aborted");
+        expect(await observed).toBe(afterHealth); expect(req.destroy).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+        res.emit("data", JSON.stringify({ service: "ccc-clipboard", valid: true, version })); res.emit("end");
+        expect(req.destroy).toHaveBeenCalledTimes(1); expect(native.acquire).toHaveBeenCalledTimes(1); expect(native.spawn).not.toHaveBeenCalled();
+    });
+    it.each(["construction", "end"] as const)("preserves the original synchronous request %s rejection and clears owned work even if destruction throws", async operation => {
+        const { req } = pendingHealthResponse(); const primary = { raw: `request ${operation}` }; const cleanup = { raw: "destroy" };
+        if (operation === "construction") native.request.mockImplementation(() => { throw primary; });
+        else {
+            req.end.mockImplementation(() => { throw primary; });
+            native.request.mockImplementation(() => req);
+            req.destroy.mockImplementation(() => { req.emit("error", cleanup); throw cleanup; });
+        }
+        await expect(mod.ensureClipboardServer()).rejects.toBe(primary);
+        expect(req.destroy).toHaveBeenCalledTimes(operation === "end" ? 1 : 0);
+        expect(vi.getTimerCount()).toBe(0); expect(native.acquire).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(native.acquire).not.toHaveBeenCalled(); expect(req.destroy).toHaveBeenCalledTimes(operation === "end" ? 1 : 0);
     });
     it.each([" 12junk:raw:token \n", "-12:token"])("retains parseInt behavior and token bytes for port record %s", async raw => {
         record = raw; expect(await mod.ensureClipboardServer()).toBe(Number.parseInt(raw.trim().split(":", 1)[0], 10));

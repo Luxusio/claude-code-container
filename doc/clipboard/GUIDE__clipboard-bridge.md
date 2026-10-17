@@ -73,7 +73,7 @@ completion, returning 204 for success and the existing 500 for native failure.
 Function/Promise identity, getter ordering and ignored undefined returns are
 not architecture contracts.
 
-Ensure preserves its existing wall-clock deadlines and lock order. Recovery
+Ensure uses monotonic contention/publication deadlines and preserves lock order. Recovery
 grace remains before try/finally: rejection does not release that recovered lock.
 The locked finally release may override success or a primary error. Bind-user
 uncertainty keeps the authenticated old bridge; acknowledged shutdown and legacy

@@ -20,15 +20,22 @@ export function createClipboardServerLifecycle<Lock, Child>(
         if (!lock) {
             const deadline = ports.now() + STARTUP_LOCK_TIMEOUT_MS;
             while (ports.now() < deadline) {
-                await ports.sleep(STARTUP_POLL_INTERVAL_MS);
+                const remaining = deadline - ports.now();
+                if (remaining <= 0) break;
+                await ports.sleep(Math.min(STARTUP_POLL_INTERVAL_MS, remaining));
+                if (ports.now() >= deadline) break;
                 const info = ports.readPortFile();
+                if (ports.now() >= deadline) break;
                 if (info && info.token !== existing?.token) {
                     const health = await ports.checkHealth(info.port, info.token, bindAddr);
+                    if (ports.now() >= deadline) break;
                     if (health.alive && health.version === serverVersion) return info.port;
                 }
                 lock = ports.tryAcquireStartupLock(lockPath);
                 if (lock) break;
+                if (ports.now() >= deadline) break;
                 if (ports.recoverDeadStartupLock(lockPath)) {
+                    if (ports.now() >= deadline) break;
                     lock = ports.tryAcquireStartupLock(lockPath);
                     if (lock) {
                         await ports.sleep(UPGRADE_SHUTDOWN_GRACE_MS);
@@ -62,10 +69,15 @@ export function createClipboardServerLifecycle<Lock, Child>(
             ports.unrefDaemon(child);
             const deadline = ports.now() + STARTUP_POLL_TIMEOUT_MS;
             while (ports.now() < deadline) {
-                await ports.sleep(STARTUP_POLL_INTERVAL_MS);
+                const remaining = deadline - ports.now();
+                if (remaining <= 0) break;
+                await ports.sleep(Math.min(STARTUP_POLL_INTERVAL_MS, remaining));
+                if (ports.now() >= deadline) break;
                 const info = ports.readPortFile();
+                if (ports.now() >= deadline) break;
                 if (info && info.token !== existing?.token) {
                     const health = await ports.checkHealth(info.port, info.token, bindAddr);
+                    if (ports.now() >= deadline) break;
                     if (health.alive && health.version === serverVersion) return info.port;
                 }
             }

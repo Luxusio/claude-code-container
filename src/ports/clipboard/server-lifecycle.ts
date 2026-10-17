@@ -11,6 +11,7 @@ export interface ClipboardServerLifecyclePorts<Lock, Child> {
     requestShutdown(port: number, token?: string): Promise<boolean>;
     portMayHaveBindUsers(path: string): boolean;
     warnUpgradeDeferred(): undefined;
+    /** Monotonic elapsed time in milliseconds. */
     now(): number;
     sleep(milliseconds: number): Promise<unknown>;
     daemonScriptPath(): string;

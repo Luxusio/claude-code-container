@@ -142,7 +142,7 @@ describe.skipIf(process.platform === "win32")("scoped native metadata protocol",
         expect(run.mock.calls.some(call => !call[0].includes("--help"))).toBe(false);
     });
 
-    it.each(["success", "failed-rpc", "failed-second-migration", "interrupted-help", "interrupted-rpc"])("bounds the complete metadata fallback: %s", async mode => {
+    it.each(["success", "failed-rpc", "failed-second-migration", "interrupted-help", "interrupted-rpc", "interrupted-second-migration"])("bounds the complete metadata fallback: %s", async mode => {
         const { home, rollout } = fixture();
         let interrupted = 0;
         let migrations = 0;
@@ -158,6 +158,7 @@ describe.skipIf(process.platform === "win32")("scoped native metadata protocol",
                 if (args.includes("--help")) return result({ output: "Usage: codex migrate-rollouts\n--apply --thread --json" });
                 migrations++;
                 if (migrations === 1) return result({ code: 1, stderr: missing() });
+                if (mode === "interrupted-second-migration") interrupted = 143;
                 return mode === "failed-second-migration" ? result({ code: 1, stderr: "PRIVATE_SECOND_MIGRATION" }) : result({ output: JSON.stringify({ outcomes: [{ thread_id: id, status: "already_paginated" }] }) });
             }
             if (args.includes("--help")) {
@@ -170,7 +171,7 @@ describe.skipIf(process.platform === "win32")("scoped native metadata protocol",
         const runner: ResumeProcessRunner = { run, get interrupted() { return interrupted; }, dispose: vi.fn() };
         const code = await runCodexResumeRecovery({ command: ["codex", "resume", "--last"], retry: ["codex", "resume"], config: [] }, runner, home, report);
         expect(code).toBe(mode === "success" ? 0 : mode.startsWith("interrupted") ? 143 : 1);
-        expect(migrations).toBe(mode === "success" || mode === "failed-second-migration" ? 2 : 1);
+        expect(migrations).toBe(mode === "success" || mode === "failed-second-migration" || mode === "interrupted-second-migration" ? 2 : 1);
         expect(terminals).toBe(mode === "success" ? 2 : 1);
         expect(report.mock.calls.map(call => call[0]).join("")).not.toContain("sensitive-preview-marker");
         const diagnostic = report.mock.calls.map(call => call[0]).join("");
