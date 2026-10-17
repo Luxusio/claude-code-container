@@ -1,18 +1,20 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeviceObservation } from "../../../packages/device-lab/providers/application/device-observation.mjs";
 import { observationMacosSelection } from "../../../packages/device-lab/providers/domain/device-observation.mjs";
 import { materializeMacosObservationPlan, observationMacosPlan, observationMacosStartArgs } from "../../../packages/device-lab/providers/adapters/macos-observation-plan.mjs";
 import type { MacosFacts, MacosObservationPorts } from "../../../packages/device-lab/providers/ports/device-observation.mjs";
-import type { MacosVmDevice, MacosVmLifecyclePorts } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
+import type { MacosVmDevice, MacosVmLifecyclePorts, MacosVmStartBudget } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
 import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-environment.js";
 
 const native = vi.hoisted(() => ({
     records: [] as MacosVmDevice[],
     executables: new Map<string, string>(),
     launch: undefined as MacosVmLifecyclePorts["launchProvider"] | undefined,
+    settle: undefined as ((budget: MacosVmStartBudget) => ReturnType<MacosVmLifecyclePorts["waitProviderStart"]>) | undefined,
     stop: undefined as MacosVmLifecyclePorts["stopInstance"] | undefined,
     remove: undefined as MacosVmLifecyclePorts["deleteInstance"] | undefined,
     spawn: vi.fn((_command: string, _args: string[], _options: object) => ({ unref() {} })),
@@ -31,7 +33,13 @@ vi.mock("../../../packages/device-lab/providers/state/macos-state.mjs", async or
 vi.mock("../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs", async () => {
     const actual = await vi.importActual<typeof import("../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs")>("../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs");
     const create: typeof actual.createMacosVmLifecycleApplication = ports => {
-        native.launch = (plan, device) => ports.launchProvider(plan, device);
+        native.launch = (plan, device, budget) => {
+            const launched = ports.launchProvider(plan, device, budget);
+            // Keep the factory's generic child inside its original port scope;
+            // settlement must use the exact handle returned by that launch.
+            if (launched) native.settle = captured => ports.waitProviderStart(launched.child, captured);
+            return launched;
+        };
         native.stop = plan => ports.stopInstance(plan);
         native.remove = (plan, instance) => ports.deleteInstance(plan, instance);
         return actual.createMacosVmLifecycleApplication(ports);
@@ -62,6 +70,12 @@ function fixture(records: MacosVmDevice[] = []) {
         helperPaths, materializePlan: materializeMacosObservationPlan,
     };
     return { ports, app: createDeviceObservation(ports), executable, helperPaths };
+}
+function launch(plan: Parameters<MacosVmLifecyclePorts["launchProvider"]>[0], device: MacosVmDevice, budget: MacosVmStartBudget = { remainingMs: () => 300000 }) {
+    const result = native.launch!(plan, device, budget);
+    expect(result).not.toBeNull();
+    if (!result) throw new Error("Expected an admitted native launch");
+    return result;
 }
 
 describe("macOS semantic provider selection and outward plans", () => {
@@ -190,7 +204,7 @@ describe("actual macOS backend native recipe binding", () => {
         native.spawn.mockClear(); native.run.mockClear();
         native.timed.mockReset().mockReturnValue({ status: 0, stdout: "", stderr: "" });
     });
-    afterEach(() => { vi.restoreAllMocks(); restore(); rmSync(home, { recursive: true, force: true }); });
+    afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); restore(); rmSync(home, { recursive: true, force: true }); });
 
     it("lists inventory and identities without starting, listing or probing provider features", async () => {
         expect(backend.listMacosDevices()).toEqual([]);
@@ -211,7 +225,7 @@ describe("actual macOS backend native recipe binding", () => {
         const nativePlan = plan(owned, facts([{ name: "tart", command }]));
         expect(nativePlan.evidence.startCommand?.args).toEqual(["run", ...(headless ? ["--no-graphics"] : []), "ccc-owner-owned"]);
         native.timed.mockReturnValue({ status: 0, stdout: "--with-softnet", stderr: "" });
-        const launched = native.launch!(nativePlan, owned);
+        const launched = launch(nativePlan, owned);
         expect(launched.startCommand).toEqual({ command, args: ["run", "--with-softnet", ...(headless ? ["--no-graphics"] : []), "ccc-owner-owned"] });
         expect(native.timed).toHaveBeenCalledExactlyOnceWith(command, ["run", "--help"], 5000);
         expect(native.spawn).toHaveBeenCalledWith(command, (launched.startCommand as { args: string[] }).args, expect.objectContaining({ detached: true, stdio: "ignore", windowsHide: true }));
@@ -220,7 +234,7 @@ describe("actual macOS backend native recipe binding", () => {
     it("short-circuits feature detection for explicit softnet:false while preserving headless", () => {
         const owned = { ...device, provider: "tart", softnet: false, headless: true };
         const nativePlan = plan(owned, facts([{ name: "tart", command: "/fixture/tart-no-softnet" }]));
-        expect(native.launch!(nativePlan, owned).startCommand).toEqual({ command: "/fixture/tart-no-softnet", args: ["run", "--no-graphics", "ccc-owner-owned"] });
+        expect(launch(nativePlan, owned).startCommand).toEqual({ command: "/fixture/tart-no-softnet", args: ["run", "--no-graphics", "ccc-owner-owned"] });
         expect(native.timed).not.toHaveBeenCalled();
     });
 
@@ -231,18 +245,18 @@ describe("actual macOS backend native recipe binding", () => {
     ])("retains the status and newline-delimited feature result for $label", ({ label, status, stdout, stderr, supported }) => {
         const command = `/fixture/tart-${label}`;
         native.timed.mockReturnValue({ status, stdout, stderr });
-        const launched = native.launch!(plan(device, facts([{ name: "tart", command }])), device);
+        const launched = launch(plan(device, facts([{ name: "tart", command }])), device);
         expect((launched.startCommand as { args: string[] }).args).toEqual(["run", ...(supported ? ["--with-softnet"] : []), "ccc-owner-owned"]);
     });
 
     it("reuses a cached false result and probes a different command independently", () => {
         const first = plan(device, facts([{ name: "tart", command: "/fixture/tart-cache-false" }]));
-        expect((native.launch!(first, device).startCommand as { args: string[] }).args).toEqual(["run", "ccc-owner-owned"]);
+        expect((launch(first, device).startCommand as { args: string[] }).args).toEqual(["run", "ccc-owner-owned"]);
         native.timed.mockReturnValue({ status: 0, stdout: "--with-softnet", stderr: "" });
-        expect((native.launch!(first, device).startCommand as { args: string[] }).args).toEqual(["run", "ccc-owner-owned"]);
+        expect((launch(first, device).startCommand as { args: string[] }).args).toEqual(["run", "ccc-owner-owned"]);
         expect(native.timed).toHaveBeenCalledTimes(1);
         const second = plan(device, facts([{ name: "tart", command: "/fixture/tart-cache-other" }]));
-        expect((native.launch!(second, device).startCommand as { args: string[] }).args).toEqual(["run", "--with-softnet", "ccc-owner-owned"]);
+        expect((launch(second, device).startCommand as { args: string[] }).args).toEqual(["run", "--with-softnet", "ccc-owner-owned"]);
         expect(native.timed).toHaveBeenCalledTimes(2);
     });
 
@@ -250,10 +264,48 @@ describe("actual macOS backend native recipe binding", () => {
         const owned = { ...device, provider, providerInstance: "native-instance", headless: true, softnet: true };
         const command = `/fixture/${provider}`;
         const nativePlan = plan(owned, facts([{ name: provider, command }]));
-        expect(native.launch!(nativePlan, owned).startCommand).toEqual({ command, args: ["start", "native-instance"] });
+        expect(launch(nativePlan, owned).startCommand).toEqual({ command, args: ["start", "native-instance"] });
         expect(native.stop!(nativePlan).ok).toBe(true);
         expect(native.remove!(nativePlan, "delete-instance").ok).toBe(true);
         expect(native.timed.mock.calls).toEqual([[command, ["stop", "native-instance"], 60000], [command, ["delete", "delete-instance"], 60000]]);
         expect(native.spawn).toHaveBeenCalledExactlyOnceWith(command, ["start", "native-instance"], expect.objectContaining({ windowsHide: true }));
+    });
+
+    it.each([0, -1, 0.9, Number.NaN, Number.POSITIVE_INFINITY])("refuses native preparation and spawn for invalid allowance %s", remaining => {
+        const nativePlan = plan(device, facts([{ name: "tart", command: `/fixture/tart-invalid-${remaining}` }]));
+        expect(native.launch!(nativePlan, device, { remainingMs: () => remaining })).toBeNull();
+        expect(native.timed).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
+    });
+
+    it("floors the feature-help timeout and refuses spawn when preparation consumes the remainder", () => {
+        let remaining = 37.9;
+        const command = "/fixture/tart-late-help", nativePlan = plan(device, facts([{ name: "tart", command }]));
+        native.timed.mockImplementation(() => { remaining = 0; return { status: 0, stdout: "--with-softnet", stderr: "" }; });
+        expect(native.launch!(nativePlan, device, { remainingMs: () => remaining })).toBeNull();
+        expect(native.timed).toHaveBeenCalledExactlyOnceWith(command, ["run", "--help"], 37);
+        expect(native.spawn).not.toHaveBeenCalled();
+    });
+
+    it("checks the budget even when the feature result is already cached", () => {
+        const nativePlan = plan(device, facts([{ name: "tart", command: "/fixture/tart-budget-cache" }]));
+        launch(nativePlan, device);
+        native.spawn.mockClear(); native.timed.mockClear();
+        expect(native.launch!(nativePlan, device, { remainingMs: () => 0 })).toBeNull();
+        expect(native.timed).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
+    });
+
+    it.each([100, 1000])("caps provider settling by the relative remainder and its retained 200ms limit: %s", async remaining => {
+        vi.useFakeTimers();
+        const child = Object.assign(new EventEmitter(), { pid: 71, unref() {} });
+        const budget = { remainingMs: () => remaining };
+        native.spawn.mockReturnValueOnce(child);
+        const nativePlan = plan(device, facts([{ name: "tart", command: `/fixture/tart-settle-${remaining}` }]));
+        expect(launch(nativePlan, device, budget).child).toBe(child);
+        let settled = false;
+        const pending = native.settle!(budget).then(() => { settled = true; });
+        const cap = Math.min(200, remaining);
+        await vi.advanceTimersByTimeAsync(cap - 1); expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1); expect(settled).toBe(true);
+        await pending;
     });
 });

@@ -854,7 +854,11 @@ describe("device-lab host broker Appium session authority", () => {
         });
         writeFileSync(installLock, lockBytes);
         let syntheticNow = 0;
-        vi.spyOn(Date, "now").mockImplementation(() => (syntheticNow += 400000));
+        vi.spyOn(performance, "now").mockImplementation(() => syntheticNow);
+        vi.spyOn(Atomics, "wait").mockImplementation(() => {
+            syntheticNow += 400000;
+            return "timed-out";
+        });
         const commandRunner = vi.fn(() => ({ mode: "exec" as const, provider: "unexpected", status: 0, stdout: "", stderr: "" }));
         const { createDeviceBrokerServer: createIsolatedBrokerServer } = await isolatedDeviceLabPackage(packageRoot);
         const server = createIsolatedBrokerServer({ cwd: packageRoot, host: "127.0.0.1", port: 0, commandRunner });
@@ -2124,8 +2128,8 @@ describe("device-lab host broker Appium session authority", () => {
     it("returns raw false-readiness evidence and simulated process termination without waiting sixty seconds", async () => {
         const cwd = "/project/broker-appium-permanent-false-readiness";
         const ownerId = deviceLabOwnerId(cwd);
-        let clock = Date.now();
-        vi.spyOn(Date, "now").mockImplementation(() => clock);
+        let clock = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => clock);
         const statusBody = { value: { ready: false, message: "warming" } };
         const upstream = await createFakeAppiumServer("UNCREATED", { statusBody, onStatus: () => { clock += 60001; } });
         const commandRunner = vi.fn(() => { throw new Error("unexpected provider command"); });
@@ -2143,6 +2147,35 @@ describe("device-lab host broker Appium session authority", () => {
             expect(payload.signal).toEqual(expect.objectContaining({ attempted: false, ok: true, simulated: true }));
             expect(payload.signal).not.toHaveProperty("body");
             expect(payload.signal).not.toHaveProperty("receipt");
+            expect(upstream.requests).toEqual([{ method: "GET", url: "/status", body: null }]);
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium).toBeNull();
+            expect(commandRunner).not.toHaveBeenCalled();
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it("refuses late positive HTTP readiness without posting a session or publishing its metadata", async () => {
+        const cwd = "/project/broker-appium-late-positive-readiness";
+        const ownerId = deviceLabOwnerId(cwd);
+        let elapsed = 0, wall = Date.now();
+        vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+        vi.spyOn(Date, "now").mockImplementation(() => wall);
+        const statusBody = { value: { ready: true, message: "late ready evidence" } };
+        const upstream = await createFakeAppiumServer("FORBIDDEN-SESSION", {
+            statusBody, onStatus: () => { elapsed = 60000; wall -= 1e12; },
+        });
+        const commandRunner = vi.fn(() => { throw new Error("unexpected provider command"); });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner });
+        const baseUrl = await listen(broker);
+        const previous = currentProcessAppiumRuntime(upstream.url, upstream.port, "late-ready-runtime");
+        const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running", appium: previous }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.ensure", params: { backend: "android-emulator", deviceId: "pixel" } }) });
+            const payload = await response.json();
+            expect(response.status).toBe(502);
+            expect(payload).toMatchObject({ ok: false, error: "appium-server-not-ready",
+                readiness: { ok: false, response: { ok: true, status: 200, body: statusBody } },
+                signal: { attempted: false, ok: true, simulated: true } });
             expect(upstream.requests).toEqual([{ method: "GET", url: "/status", body: null }]);
             expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium).toBeNull();
             expect(commandRunner).not.toHaveBeenCalled();
@@ -3401,8 +3434,8 @@ describe("device-lab host broker Appium session authority", () => {
                 sandboxId, claimId: singletonClaimId, pid: process.pid, acquiredAt: new Date().toISOString(), updatedAt: new Date().toISOString()}));
             singletonBefore = readFileSync(singletonFile, "utf8");
         }
-        let now = Date.now(), stopObserved = false;
-        const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+        let now = 0, stopObserved = false;
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
         const isStop = (command: {provider: string; args?: string[]}) => command.provider === provider && (
             stateKey === "android" ? command.args?.at(-1) === "kill"
                 : stateKey === "ios" ? command.args?.[1] === "shutdown" : command.args?.[0] === "stop");

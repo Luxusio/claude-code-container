@@ -3,7 +3,7 @@ import { createMacosVmLifecycleApplication } from "../../../packages/device-lab/
 import type { MacosVmLifecycle, MacosVmNativeLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
 import { createMacosImageSnapshots } from "../../../packages/device-lab/providers/application/macos-image-snapshots.mjs";
 import type { MacosImageSnapshotsPorts } from "../../../packages/device-lab/providers/ports/macos-image-snapshots.mjs";
-import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle, MacosNativeCloneFailureEvidence, MacosVmLifecycleOutcome } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
+import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmProcessHandle, MacosNativeCloneFailureEvidence, MacosVmLifecycleOutcome, MacosVmStartBudget } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
 
 // These are strict source AND genuine-emission consumer controls. Vitest alone
 // does not check their directives; QA must use skipLibCheck=false on both.
@@ -15,7 +15,7 @@ const nativePlan={available:true,missing:[],selectedProvider:"tart",providerInst
 const observation={ok:true,timedOut:false,detail:"",evidence:{status:0,stdout:"",stderr:""}};
 const ports:MacosVmLifecyclePorts<typeof child>={
     read:()=>[device],find:()=>device,claim:()=>({ok:true}),transition:()=>({matched:false,found:true}),
-    owner:()=>"owner",deviceId:()=>"unit",timestamp:()=>"now",now:()=>1,runtimeId:()=>"claim",claimTtlMs:()=>1000,parseLifecycleClaimedAt:value=>Date.parse(value),
+    owner:()=>"owner",deviceId:()=>"unit",timestamp:()=>"now",now:()=>1,monotonicNow:()=>17.25,runtimeId:()=>"claim",claimTtlMs:()=>1000,parseLifecycleClaimedAt:value=>Date.parse(value),
     validateSshKey:()=>({ok:true,path:null}),helperMetadata:()=>({}),
     providerPlan:()=>nativePlan,tartPlan:()=>({plan:nativePlan}),
     cloneInstance:()=>observation,deleteInstance:()=>observation,stopInstance:()=>observation,
@@ -38,6 +38,45 @@ function positiveAsyncContract(){
     void asynchronousStart;void recorderSettlement;void recordingExit;void failed;
 }
 void synchronousCreate;void synchronousImage;void positiveAsyncContract;
+function relativeStartBudgetContracts() {
+    const budget: MacosVmStartBudget = { remainingMs: () => 123.75 };
+    const remaining: number = budget.remainingMs();
+    const wall: number = ports.now(), elapsed: number = ports.monotonicNow();
+    const launched = ports.launchProvider(nativePlan, device, budget);
+    if (launched) {
+        const providerChild: typeof child = launched.child;
+        const settled: Promise<MacosVmLifecycleOutcome | null> = ports.waitProviderStart(providerChild, budget);
+        void settled;
+    }
+    const boot = ports.waitBoot(nativePlan, Number.NaN, budget);
+    const helper = ports.waitGuestHelper(device, budget);
+    const provision = ports.provisionHelper(device, budget);
+    const { monotonicNow, ...withoutElapsed } = ports;
+    // @ts-expect-error Elapsed start accounting requires its own clock beside wall now.
+    createMacosVmLifecycleApplication(withoutElapsed);
+    // @ts-expect-error Clock readings settle synchronously before native effects.
+    const deferredClock: typeof ports = { ...ports, monotonicNow: async () => 1 };
+    // @ts-expect-error Relative allowances are finite numeric durations, not serialized text.
+    const textBudget: MacosVmStartBudget = { remainingMs: () => "123" };
+    // @ts-expect-error A relative allowance cannot defer its admission decision.
+    const deferredBudget: MacosVmStartBudget = { remainingMs: async () => 123 };
+    // @ts-expect-error Native lifecycle boot no longer receives an absolute Unix deadline.
+    ports.waitBoot(nativePlan, 1000, Date.now() + 1000);
+    // @ts-expect-error Feature preparation and spawn require the shared relative allowance.
+    ports.launchProvider(nativePlan, device);
+    // @ts-expect-error Settling cannot renew a standalone timer after provider launch.
+    ports.waitProviderStart(child);
+    // @ts-expect-error A launch refused by the budget has no native child authority.
+    const uncheckedChild = launched.child;
+    // @ts-expect-error Native lifecycle helper receives the captured relative carrier.
+    ports.waitGuestHelper(device, Date.now() + 1000);
+    // @ts-expect-error Even one-shot provisioning must receive the captured allowance.
+    ports.provisionHelper(device);
+    // @ts-expect-error Provisioning cannot replace the relative carrier with a Unix deadline.
+    ports.provisionHelper(device, Date.now() + 1000);
+    void [remaining, wall, elapsed, boot, helper, provision, monotonicNow, deferredClock, textBudget, deferredBudget, uncheckedChild];
+}
+void relativeStartBudgetContracts;
 function negativeContracts(){
     const {deviceId,...withoutCreationEntropy}=ports;void deviceId;
     // @ts-expect-error creation entropy is a required native leaf

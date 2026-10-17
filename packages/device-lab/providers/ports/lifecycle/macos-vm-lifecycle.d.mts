@@ -62,6 +62,8 @@ export interface MacosVmProvision {
 }
 export interface MacosVmSignal { signaled: boolean; exited?: boolean; reason?: string }
 export interface MacosVmRollback { ok: boolean; attempted?: boolean; [key: string]: unknown }
+/** Relative allowance local to one direct start invocation. */
+export interface MacosVmStartBudget { remainingMs(): number }
 
 export interface MacosVmNativePlan {available:boolean;missing:string[];selectedProvider:string|null;providerInstance:string;stopAvailable:boolean;evidence:MacosVmProviderPlan}
 export interface MacosVmNativeObservation {ok:boolean;timedOut:boolean;detail:string;evidence:MacosVmCommandResult}
@@ -74,7 +76,7 @@ export interface MacosVmLifecyclePorts<Child extends MacosVmProcessHandle = Maco
     claim(device: MacosVmDevice): MacosVmClaimResult;
     transition(deviceId: string | undefined, expected: MacosVmDevice | null, replacement: MacosVmDevice | null): MacosVmTransition;
     owner(): string; deviceId(): string;
-    timestamp(): string; now(): number; runtimeId(): string; claimTtlMs(): number;
+    timestamp(): string; now(): number; monotonicNow(): number; runtimeId(): string; claimTtlMs(): number;
     parseLifecycleClaimedAt(value: string): number;
     validateSshKey(path: string | null | undefined): {ok: true; path: string | null} | {ok: false; message: string};
     helperMetadata(device: Partial<MacosVmDevice>): {provisioning?: unknown; [key: string]: unknown};
@@ -83,11 +85,11 @@ export interface MacosVmLifecyclePorts<Child extends MacosVmProcessHandle = Maco
     cloneInstance(plan:MacosVmNativePlan,source:string|null|undefined,target:string):MacosVmNativeObservation;
     deleteInstance(plan:MacosVmNativePlan,instance:string):MacosVmNativeObservation;
     stopInstance(plan:MacosVmNativePlan):MacosVmNativeObservation;
-    launchProvider(plan:MacosVmNativePlan,device:MacosVmDevice):{child:Child;startCommand:unknown};
-    waitProviderStart(child: Child): Promise<MacosVmLifecycleOutcome | null>;
-    waitBoot(plan: MacosVmNativePlan, timeoutMs: number, deadlineAt: number): Promise<MacosVmBoot>;
-    waitGuestHelper(device: MacosVmDevice, deadlineAt: number): Promise<MacosVmProvision>;
-    provisionHelper(device: MacosVmDevice): MacosVmProvision;
+    launchProvider(plan:MacosVmNativePlan,device:MacosVmDevice,budget:MacosVmStartBudget):{child:Child;startCommand:unknown}|null;
+    waitProviderStart(child: Child, budget: MacosVmStartBudget): Promise<MacosVmLifecycleOutcome | null>;
+    waitBoot(plan: MacosVmNativePlan, timeoutMs: number, budget: MacosVmStartBudget): Promise<MacosVmBoot>;
+    waitGuestHelper(device: MacosVmDevice, budget: MacosVmStartBudget): Promise<MacosVmProvision>;
+    provisionHelper(device: MacosVmDevice, budget: MacosVmStartBudget): MacosVmProvision;
     signalRecording(recording: MacosVmRuntime | null | undefined, signal: string): MacosVmSignal;
     waitRecordingExit(recording: MacosVmRuntime, timeoutMs: number): Promise<boolean>;
     interruptGuestRecording(device:MacosVmDevice,recording:MacosVmRuntime):void;

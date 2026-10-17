@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createBrokerAppiumApplication } from "../../../packages/device-lab/src/device-lab/application/broker-appium.js";
 import type { BrokerAppiumPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-appium.js";
 
@@ -49,6 +49,19 @@ function fixture() {
         monotonicNow: () => 1000, runtimeId: () => "runtime-new", sleep: unexpected,
     };
     return { device, ports };
+}
+
+function launchFixture() {
+    const result = fixture();
+    const runtime = { token: "captured-runtime" };
+    result.ports.portSeed = () => 0;
+    result.ports.portListener = () => null;
+    result.ports.captureRuntime = () => ({ kind: "injected", handle: runtime });
+    result.ports.ensureRuntimeDirectory = () => undefined;
+    result.ports.terminatePortListener = () => ({ ok: true, receipt: Symbol("port cleanup") });
+    result.ports.launchServer = async () => ({ ok: true, pid: 23456,
+        processIdentity: serverMetadata.processIdentity, receipt: Symbol("native launch") });
+    return result;
 }
 
 describe("broker Appium application policies", () => {
@@ -428,7 +441,7 @@ describe("broker Appium application policies", () => {
         const { ports, device } = fixture();
         device.appium = serverMetadata;
         let clock = 1000;
-        ports.now = () => clock;
+        ports.monotonicNow = () => clock;
         const status = { ok: true, ready: false, receipt: Symbol("not ready") };
         let probes = 0;
         ports.status = async (endpoint, timeoutMs) => {
@@ -457,12 +470,226 @@ describe("broker Appium application policies", () => {
         const { ports, device } = fixture();
         device.appium = serverMetadata;
         let clockReads = 0;
-        ports.now = () => clockReads++ === 0 ? 1000 : 61001;
+        ports.monotonicNow = () => clockReads++ === 0 ? 1000 : 61001;
         ports.terminateRuntime = async () => ({ ok: true, receipt: {} });
         expect(await createBrokerAppiumApplication(ports).ensureSession(owner, target)).toMatchObject({
             kind: "refused", error: "appium-server-not-ready", readiness: { ok: false, response: null },
         });
         expect(device.appium).toBeNull();
+    });
+
+    it.each([-1e12, 1e12])("ignores a wall jump of %sms during readiness polling", async wallJump => {
+        const { ports, device } = fixture();
+        device.appium = serverMetadata;
+        let elapsed = 0, wall = 1000;
+        ports.monotonicNow = () => elapsed;
+        ports.now = () => wall;
+        const timeouts: number[] = [];
+        ports.status = async (_endpoint, timeoutMs) => {
+            timeouts.push(timeoutMs);
+            expect(timeouts.length).toBeLessThanOrEqual(2);
+            elapsed += 10;
+            wall += wallJump;
+            return { ok: true, ready: timeouts.length === 2, receipt: Symbol("status") };
+        };
+        ports.sleep = async milliseconds => { expect(milliseconds).toBe(200); elapsed += milliseconds; };
+        ports.createSession = async () => ({ ok: true, sessionId: "timely-session", instrumentationInitializationFailed: false, receipt: Symbol("created") });
+        const outcome = await createBrokerAppiumApplication(ports).ensureSession(owner, target);
+        expect(outcome).toMatchObject({ kind: "session-created", created: true });
+        expect(timeouts).toEqual([2000, 2000]);
+        expect(device.appium).toMatchObject({ sessionId: "timely-session", updatedAt: "2026-10-10T00:00:00.000Z" });
+    });
+
+    it.each([false, true])("rejects late positive readiness and preserves exact cleanup authority (successor=%s)", async successorWins => {
+        const { ports, device } = fixture();
+        device.appium = serverMetadata;
+        let elapsed = 0;
+        ports.monotonicNow = () => elapsed;
+        const response = { ok: true, ready: true, receipt: Symbol("late positive status") };
+        ports.status = async () => { elapsed = 60000; return response; };
+        const createSession = vi.fn(unexpected);
+        ports.createSession = createSession;
+        const signal = { ok: true, receipt: Symbol("confirmed exact runtime termination") };
+        ports.terminateRuntime = async runtime => {
+            expect(runtime).toEqual(serverMetadata);
+            expect((runtime as typeof serverMetadata).processIdentity).toBe(serverMetadata.processIdentity);
+            return signal;
+        };
+        const successor = { ...serverMetadata, runtimeId: "successor", sessionId: "successor-session" };
+        ports.publish = (_owner, _state, _id, expected, replacement) => {
+            expect(expected).toEqual(serverMetadata);
+            expect(replacement).toBeNull();
+            device.appium = successorWins ? successor : null;
+            return { found: true, matched: !successorWins, currentAppium: device.appium, device };
+        };
+        const outcome = await createBrokerAppiumApplication(ports).ensureSession(owner, target);
+        expect(outcome).toMatchObject({ kind: "refused", error: successorWins ? "appium-runtime-state-conflict" : "appium-server-not-ready" });
+        if (outcome.kind !== "refused") throw new Error("expected late readiness refusal");
+        expect(outcome.readiness?.response).toBe(response);
+        expect(outcome.signal).toBe(signal);
+        expect(createSession).not.toHaveBeenCalled();
+        expect(device.appium).toBe(successorWins ? successor : null);
+    });
+
+    it("shares readiness remainder between status probes and preserves the final native failure", async () => {
+        const { ports, device } = fixture();
+        device.appium = serverMetadata;
+        let elapsed = 0;
+        ports.monotonicNow = () => elapsed;
+        const nativeFailure = { ok: false, ready: false, receipt: Symbol("native status failure") };
+        const timeouts: number[] = [];
+        ports.status = async (_endpoint, timeoutMs) => {
+            timeouts.push(timeoutMs);
+            expect(timeouts.length).toBeLessThanOrEqual(2);
+            elapsed = timeouts.length === 1 ? 59000 : 59999.5;
+            return timeouts.length === 1 ? { ok: true, ready: false, receipt: Symbol("warming") } : nativeFailure;
+        };
+        ports.sleep = async milliseconds => {
+            expect(milliseconds).toBeGreaterThan(0);
+            expect(milliseconds).toBeLessThanOrEqual(Math.min(200, 60000 - elapsed));
+            elapsed += milliseconds;
+        };
+        ports.terminateRuntime = async () => ({ ok: false, receipt: Symbol("unconfirmed cleanup") });
+        const outcome = await createBrokerAppiumApplication(ports).ensureSession(owner, target);
+        expect(timeouts).toEqual([2000, 800]);
+        if (outcome.kind !== "refused") throw new Error("expected native readiness failure");
+        expect(outcome.readiness?.response).toBe(nativeFailure);
+        expect(device.appium).toBe(serverMetadata);
+    });
+
+    it("rechecks readiness after capability preparation before admitting session creation", async () => {
+        const { ports, device } = fixture();
+        device.appium = serverMetadata;
+        let elapsed = 0;
+        ports.monotonicNow = () => elapsed;
+        const response = { ok: true, ready: true, receipt: Symbol("timely readiness") };
+        ports.status = async () => { elapsed = 100; return response; };
+        Object.defineProperty(device, "name", { get: () => { elapsed = 60000; return "Pixel"; } });
+        const createSession = vi.fn(unexpected);
+        ports.createSession = createSession;
+        ports.terminateRuntime = async runtime => {
+            expect(runtime).toEqual(serverMetadata);
+            return { ok: true, receipt: Symbol("exact runtime cleanup") };
+        };
+        const outcome = await createBrokerAppiumApplication(ports).ensureSession(owner, target);
+        expect(outcome).toMatchObject({ kind: "refused", error: "appium-server-not-ready" });
+        if (outcome.kind !== "refused") throw new Error("expected expired readiness admission");
+        expect(outcome.readiness?.response).toBe(response);
+        expect(createSession).not.toHaveBeenCalled();
+        expect(device.appium).toBeNull();
+    });
+
+    it("retains the independent session command allowance after timely readiness admission", async () => {
+        const { ports, device } = fixture();
+        device.appium = serverMetadata;
+        let elapsed = 0;
+        ports.monotonicNow = () => elapsed;
+        ports.status = async () => { elapsed = 100; return { ok: true, ready: true, receipt: Symbol("ready") }; };
+        const response = { ok: true, sessionId: "independently-admitted", instrumentationInitializationFailed: false, receipt: Symbol("late session response") };
+        ports.createSession = async (_endpoint, _capabilities, timeoutMs) => {
+            expect(timeoutMs).toBe(240000);
+            elapsed += 60000;
+            return response;
+        };
+        const outcome = await createBrokerAppiumApplication(ports).ensureSession(owner, target);
+        expect(outcome).toMatchObject({ kind: "session-created", created: true });
+        expect(outcome.response).toBe(response);
+        expect(device.appium).toMatchObject({ sessionId: "independently-admitted" });
+    });
+
+    it.each([0.4, 50])("caps readiness sleep at remaining %sms and dispatches no final expired status probe", async remainder => {
+        const { ports, device } = fixture();
+        device.appium = serverMetadata;
+        let elapsed = 0, probes = 0;
+        ports.monotonicNow = () => elapsed;
+        ports.status = async (_endpoint, timeoutMs) => {
+            expect(++probes).toBe(1);
+            expect(timeoutMs).toBe(2000);
+            elapsed = 60000 - remainder;
+            return { ok: true, ready: false, receipt: Symbol("last status") };
+        };
+        const sleeps: number[] = [];
+        ports.sleep = async milliseconds => { sleeps.push(milliseconds); elapsed += milliseconds; };
+        ports.terminateRuntime = async () => ({ ok: true, receipt: Symbol("cleanup") });
+        expect(await createBrokerAppiumApplication(ports).ensureSession(owner, target)).toMatchObject({ kind: "refused", error: "appium-server-not-ready" });
+        if (remainder >= 1) expect(sleeps).toEqual([50]);
+        else {
+            expect(sleeps.length).toBeLessThanOrEqual(1);
+            expect(sleeps.every(milliseconds => milliseconds > 0 && milliseconds <= remainder + 1e-6)).toBe(true);
+        }
+        expect(probes).toBe(1);
+    });
+
+    it.each(["first-positive", "retried-positive", "retried-failure"] as const)("preserves exact listener evidence for a late %s", async mode => {
+        const { ports, device } = launchFixture();
+        let elapsed = 0, wall = 1000, probes = 0;
+        ports.monotonicNow = () => elapsed;
+        ports.now = () => wall;
+        const firstFailure = { ok: false as const, error: "appium-port-listener-unavailable", receipt: Symbol("last real listener failure") };
+        const lateFailure = { ok: false as const, error: "appium-process-identity-mismatch", receipt: Symbol("late native identity mismatch") };
+        const positive = { ok: true as const, serverUrl: "http://127.0.0.1:20000", port: 20000, receipt: Symbol("late verified listener") };
+        ports.verifyListener = metadata => {
+            expect(metadata).toEqual(device.appium);
+            expect(++probes).toBeLessThanOrEqual(mode === "first-positive" ? 1 : 2);
+            wall += 1e12;
+            if (mode !== "first-positive" && probes === 1) { elapsed = 10; return firstFailure; }
+            elapsed += 60000;
+            return mode === "retried-failure" ? lateFailure : positive;
+        };
+        ports.sleep = async milliseconds => { expect(milliseconds).toBe(100); elapsed += milliseconds; };
+        const outcome = await createBrokerAppiumApplication(ports).ensureSession(owner, target);
+        expect(outcome).toMatchObject({ kind: "refused", error: "appium-listener-ownership-unverified" });
+        expect(probes).toBe(mode === "first-positive" ? 1 : 2);
+        if (outcome.kind !== "refused") throw new Error("expected listener refusal");
+        if (mode === "first-positive") {
+            expect(outcome.verification).toMatchObject({ ok: false, error: "appium-port-listener-unavailable" });
+            expect(outcome.verification?.receipt).toBe(positive.receipt);
+        } else expect(outcome.verification).toBe(mode === "retried-positive" ? firstFailure : lateFailure);
+        expect(device.appium).toMatchObject({ serverPid: 23456, runtimeId: "runtime-new" });
+        expect(device.appium).not.toHaveProperty("sessionId");
+    });
+
+    it.each([0.4, 50])("caps listener sleep at remaining %sms and dispatches no final expired verification", async remainder => {
+        const { ports, device } = launchFixture();
+        let elapsed = 0, probes = 0;
+        ports.monotonicNow = () => elapsed;
+        const failure = { ok: false as const, error: "appium-port-listener-unavailable", receipt: Symbol("last listener failure") };
+        ports.verifyListener = () => { expect(++probes).toBe(1); elapsed = 60000 - remainder; return failure; };
+        const sleeps: number[] = [];
+        ports.sleep = async milliseconds => { sleeps.push(milliseconds); elapsed += milliseconds; };
+        const outcome = await createBrokerAppiumApplication(ports).ensureSession(owner, target);
+        if (outcome.kind !== "refused") throw new Error("expected exhausted listener phase");
+        expect(outcome.verification).toBe(failure);
+        if (remainder >= 1) expect(sleeps).toEqual([50]);
+        else {
+            expect(sleeps.length).toBeLessThanOrEqual(1);
+            expect(sleeps.every(milliseconds => milliseconds > 0 && milliseconds <= remainder + 1e-6)).toBe(true);
+        }
+        expect(device.appium).toMatchObject({ runtimeId: "runtime-new", serverPid: 23456 });
+    });
+
+    it.each([-1e12, 1e12])("keeps separate listener/readiness phase allowances across wall jump %sms", async wallJump => {
+        const { ports, device } = launchFixture();
+        let elapsed = 0, wall = 1000, probes = 0;
+        ports.monotonicNow = () => elapsed;
+        ports.now = () => wall;
+        ports.verifyListener = () => {
+            wall += wallJump;
+            elapsed = ++probes === 1 ? 59750 : 59900;
+            return probes === 1
+                ? { ok: false, error: "appium-port-listener-unavailable", receipt: Symbol("warming listener") }
+                : { ok: true, serverUrl: "http://127.0.0.1:20000", port: 20000, receipt: Symbol("timely listener") };
+        };
+        ports.sleep = async milliseconds => { expect(milliseconds).toBe(100); elapsed += milliseconds; };
+        ports.status = async (_endpoint, timeoutMs) => {
+            expect(timeoutMs).toBe(2000);
+            elapsed += 59900;
+            wall -= wallJump;
+            return { ok: true, ready: true, receipt: Symbol("timely second phase") };
+        };
+        ports.createSession = async () => ({ ok: true, sessionId: "two-phase-session", instrumentationInitializationFailed: false, receipt: Symbol("created") });
+        expect(await createBrokerAppiumApplication(ports).ensureSession(owner, target)).toMatchObject({ kind: "session-created", created: true });
+        expect(device.appium).toMatchObject({ runtimeId: "runtime-new", sessionId: "two-phase-session", updatedAt: "2026-10-10T00:00:00.000Z" });
     });
 
     it.each([
@@ -542,7 +769,7 @@ describe("broker Appium application policies", () => {
         let clock = 1000;
         let probes = 0;
         let sleeps = 0;
-        ports.now = () => clock;
+        ports.monotonicNow = () => clock;
         ports.status = async (endpoint, timeoutMs) => {
             expect([endpoint, timeoutMs]).toEqual([serverMetadata.serverUrl, 2000]);
             probes += 1;
@@ -587,7 +814,7 @@ describe("broker Appium application policies", () => {
         const status = { ok: false, ready: false, receipt: Symbol("failed readiness") };
         const signal = { ok: true, receipt: Symbol("owned process termination") };
         let clock = 1000;
-        ports.now = () => clock;
+        ports.monotonicNow = () => clock;
         ports.status = async () => { clock += 60001; return status; };
         ports.terminateRuntime = async (runtime) => {
             expect(runtime).toEqual(serverMetadata);

@@ -202,6 +202,57 @@ describe("device-lab shared mutation lock", () => {
 
     for (const implementation of ["host", "provider"] as const) {
         it.each([
+            ["sync", -60_000], ["sync", 60_000], ["async", -60_000], ["async", 60_000],
+        ] as const)(`${implementation} filesystem facade bounds ordinary %s acquisition through a %s wall jump during contention`, async (mode, jump) => {
+            const file = lockPath();
+            const bytes = JSON.stringify({ token: testToken(), pid: 424242, host: "foreign-clock-test-host" });
+            writeFileSync(file, bytes);
+            let wall = Date.now(), elapsed = 1000;
+            const pauses: number[] = [];
+            const wallClock = vi.spyOn(Date, "now").mockImplementation(() => wall);
+            const elapsedClock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+            const ownIdentity = { pid: process.pid, startToken: "clock-test-own-generation", commandHash: "a".repeat(64) };
+            const pause = (milliseconds: number) => {
+                if (pauses.length > 20) throw new Error("ordinary lock allowance was renewed by wall rollback");
+                pauses.push(milliseconds);
+                elapsed += milliseconds;
+                wall += milliseconds + (pauses.length === 1 ? jump : 0);
+                return undefined;
+            };
+            vi.resetModules();
+            vi.doMock("@ccc/device-lab/providers/application/shared-mutation-lock.mjs", async importOriginal => {
+                const actual = await importOriginal<typeof import("@ccc/device-lab/providers/application/shared-mutation-lock.mjs")>();
+                return { ...actual, createSharedMutationLock(ports: Parameters<typeof actual.createSharedMutationLock>[0]) {
+                    return actual.createSharedMutationLock({ ...ports,
+                        identitySync: () => ownIdentity, identityAsync: async () => ownIdentity,
+                        pauseSync: pause,
+                        pause: (milliseconds, signal) => signal ? ports.pause(milliseconds, signal) : Promise.resolve(pause(milliseconds)),
+                    });
+                } };
+            });
+            try {
+                const api = implementation === "host"
+                    ? await import("@ccc/device-lab/device-lab-shared-state.js?ordinary-monotonic-clock")
+                    : await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?ordinary-monotonic-clock");
+                const operation = vi.fn();
+                if (mode === "sync") expect(() => api.withSharedMutationLock(file, operation, { waitMs: 27 }))
+                    .toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+                else await expect(api.withSharedMutationLockAsync(file, operation, { waitMs: 27 }))
+                    .rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                expect(elapsed).toBe(1027);
+                expect(pauses).toEqual([10, 10, 7]);
+                expect(operation).not.toHaveBeenCalled();
+                expect(readFileSync(file, "utf8")).toBe(bytes);
+                expect(readdirSync(dirname(file))).toEqual(["state.mutation.lock"]);
+            } finally {
+                vi.doUnmock("@ccc/device-lab/providers/application/shared-mutation-lock.mjs");
+                vi.resetModules();
+                elapsedClock.mockRestore();
+                wallClock.mockRestore();
+            }
+        });
+
+        it.each([
             ["active", "sync", false], ["active", "async", false],
             ["archived", "sync", false], ["archived", "async", false],
             ["active", "sync", true], ["active", "async", true],

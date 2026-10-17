@@ -21,6 +21,15 @@ function appiumCapabilityContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>): 
     const { withInstallLock: _installLock, ...withoutInstallLock } = ports;
     // @ts-expect-error Managed runtime installation requires the shared native install lock.
     createBrokerAppiumApplication(withoutInstallLock);
+    const monotonic: number = ports.monotonicNow();
+    const wall: number = ports.now();
+    const { monotonicNow: _monotonicNow, ...withoutElapsedClock } = ports;
+    // @ts-expect-error Readiness and listener admission require the existing elapsed capability.
+    createBrokerAppiumApplication(withoutElapsedClock);
+    // @ts-expect-error The elapsed clock returns a numeric local observation.
+    createBrokerAppiumApplication({ ...ports, monotonicNow: () => "wall timestamp" });
+    // @ts-expect-error Native elapsed observations do not consume a transported Unix deadline.
+    ports.monotonicNow(Date.now());
     // @ts-expect-error Native publication must return a settled generation comparison.
     createBrokerAppiumApplication({ ...ports, publish: async () => ({ found: true, matched: true, currentAppium: null, device: null }) });
     // @ts-expect-error Manifest publication must settle before npm execution or runtime reuse.
@@ -67,7 +76,7 @@ function appiumCapabilityContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>): 
     const payload = (awaited: BrokerAppiumResponse) => awaited.payload;
     // @ts-expect-error Operation locks and cleanup settle before the response is available.
     const synchronous: BrokerAppiumResponse = app.stop("owner", params);
-    void [responses, _publish, _deviceLock, _installLock, synchronous, launchServer, payload,
+    void [responses, _publish, _deviceLock, _installLock, monotonic, wall, _monotonicNow, synchronous, launchServer, payload,
         status, inspectSession, createSession, deleteSession, sessionCommand, rawBody, rawStatus, decodedReceipt, responseBody];
 }
 void appiumCapabilityContracts;

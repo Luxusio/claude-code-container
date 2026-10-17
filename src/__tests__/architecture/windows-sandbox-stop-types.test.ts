@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createWindowsSandboxStop, createWindowsSandboxLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs";
+import type { WindowsSandboxLifecycleOutcome } from "../../../packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs";
 import type { WindowsSandboxStopPorts, WindowsSandboxLifecyclePorts, WindowsSandboxNativeResult } from "../../../packages/device-lab/providers/ports/lifecycle/windows-sandbox-stop.mjs";
 import type { IsoTimestamp, WindowsSandboxLifecycleDevice } from "../../../packages/device-lab/providers/domain/lifecycle/windows-sandbox-stop.mjs";
 
@@ -48,11 +49,12 @@ void contracts;
 describe("checked Sandbox stop carriers", () => { it("uses the actual synchronous application", () => { expect(createWindowsSandboxStop(ports).stop("missing")).toEqual({ kind: "unhandled" }); }); });
 
 
-function lifecycleContracts(required: WindowsSandboxLifecyclePorts<{ handle: "native" }, WindowsSandboxNativeResult, { ok: boolean }>) {
+function lifecycleContracts(required: WindowsSandboxLifecyclePorts<{ handle: "native" }, { receipt: "opaque" }>) {
     const app = createWindowsSandboxLifecycle(required);
-    const started: Promise<{ ok: boolean } | undefined> = app.start({ deviceId: "sandbox", minimized: false });
-    const stopped: { ok: boolean } | undefined = app.stop({ deviceId: "sandbox" });
-    const deleted: { ok: boolean } | undefined = app.delete({ deviceId: "sandbox", force: true });
+    type Outcome = WindowsSandboxLifecycleOutcome<{ receipt: "opaque" }>;
+    const started: Promise<Outcome> = app.start({ deviceId: "sandbox", minimized: false });
+    const stopped: Outcome = app.stop({ deviceId: "sandbox" });
+    const deleted: Outcome = app.delete({ deviceId: "sandbox", force: true });
     const { writeConfig, ...withoutConfig } = required;
     // @ts-expect-error guarded config publication is required
     createWindowsSandboxLifecycle(withoutConfig);
@@ -67,18 +69,79 @@ function lifecycleContracts(required: WindowsSandboxLifecyclePorts<{ handle: "na
     // @ts-expect-error scratch deletion cannot defer settlement
     createWindowsSandboxLifecycle({ ...required, removeScratch: async () => undefined });
     // @ts-expect-error registration observation is asynchronous at the application boundary
-    const synchronousStart: { ok: boolean } | undefined = app.start({ deviceId: "sandbox" });
+    const synchronousStart: Outcome = app.start({ deviceId: "sandbox" });
     // @ts-expect-error stop completes synchronously
     const asynchronousStop: Promise<unknown> = app.stop({ deviceId: "sandbox" });
     // @ts-expect-error the public request requires a concrete device ID
     app.start({ deviceId: 7 });
-    const { registrationDiagnostic, ...withoutDiagnostic } = required;
-    // @ts-expect-error opaque registration evidence needs its native presentation authority
-    createWindowsSandboxLifecycle(withoutDiagnostic);
+    const { monotonicNow, ...withoutElapsedClock } = required;
+    // @ts-expect-error registration requires an elapsed clock, independently of wallTimestamp
+    createWindowsSandboxLifecycle(withoutElapsedClock);
+    // @ts-expect-error the elapsed clock is synchronous and numeric
+    createWindowsSandboxLifecycle({ ...required, monotonicNow: async () => 0 });
+    // @ts-expect-error ambiguous wall now is no longer a lifecycle port
+    createWindowsSandboxLifecycle({ ...required, now: () => 0 });
+    // @ts-expect-error native registration diagnostic presentation belongs to the backend
+    createWindowsSandboxLifecycle({ ...required, registrationDiagnostic: () => "native diagnostic" });
+    // @ts-expect-error target rendering belongs to the backend
+    createWindowsSandboxLifecycle({ ...required, targetStatus: () => ({}) });
+    // @ts-expect-error conflict envelope construction belongs to the backend
+    createWindowsSandboxLifecycle({ ...required, lifecycleConflict: () => ({}) });
+    // @ts-expect-error text response construction belongs to the backend
+    createWindowsSandboxLifecycle({ ...required, textResult: () => ({}) });
+    // @ts-expect-error JSON response construction belongs to the backend
+    createWindowsSandboxLifecycle({ ...required, jsonResult: () => ({}) });
+    // @ts-expect-error native error response construction belongs to the backend
+    createWindowsSandboxLifecycle({ ...required, fail: () => ({}) });
+    // @ts-expect-error response generic is removed from the lifecycle ports
+    type ResponsePorts = WindowsSandboxLifecyclePorts<{ handle: "native" }, WindowsSandboxNativeResult, { ok: boolean }>;
     // @ts-expect-error raw process evidence is not a settled runtime inventory
     createWindowsSandboxLifecycle({ ...required, listRuntime: () => ({ status: 0, stdout: "[]" }) });
     // @ts-expect-error a watchdog observation must preserve its launch metadata separately
     createWindowsSandboxLifecycle({ ...required, launchWatchdog: () => ({ ok: true, pid: 17 }) });
-    void [started, stopped, deleted, writeConfig, listRuntime, removeScratch, registrationDiagnostic, synchronousStart, asynchronousStop];
+    void [started, stopped, deleted, writeConfig, listRuntime, removeScratch, monotonicNow, synchronousStart, asynchronousStop];
 }
 void lifecycleContracts;
+
+function outcomeNarrowing(result: WindowsSandboxLifecycleOutcome<{ receipt: "opaque" }>) {
+    switch (result.kind) {
+        case "unhandled": break;
+        case "completed": {
+            const device: WindowsSandboxLifecycleDevice = result.device;
+            // @ts-expect-error semantic completion has no MCP response envelope
+            const content = result.content;
+            void [device, content]; break;
+        }
+        case "deleted": {
+            const deleted: string = result.deleted, scratch: string = result.scratchRemoved;
+            void [deleted, scratch]; break;
+        }
+        case "conflict": {
+            const operation: string = result.operation, found: boolean = result.transition.found;
+            const detail: Record<string, unknown> | undefined = result.detail;
+            void [operation, found, detail]; break;
+        }
+        case "refused": { const error: string | undefined = result.error; void error; break; }
+        case "native-failure": { const receipt: "opaque" = result.evidence.receipt; void receipt; break; }
+        case "registration-failed": {
+            const failed: false = result.registration.ok;
+            const receipt: "opaque" | undefined = result.registration.result?.receipt;
+            const ids: string[] = result.cleanupIds, observed: string[] = result.registration.observedIds;
+            const ambiguous: boolean = result.ambiguous, gone: boolean = result.runtimeGone, released: boolean = result.releaseLockAfterFailure;
+            const stopped: string[] = result.cleanup.stopped, refused: boolean = result.cleanup.refused;
+            const failedReceipt: "opaque" | undefined = result.cleanup.failed[0]?.result.receipt;
+            const verifyReceipt: "opaque" | undefined = result.cleanupVerify?.result.receipt;
+            const watchdog: boolean = result.watchdogCleanup.ok;
+            // @ts-expect-error registration failures preserve observations rather than serialized error responses
+            const content = result.content;
+            void [failed, receipt, ids, observed, ambiguous, gone, released, stopped, refused, failedReceipt, verifyReceipt, watchdog, content]; break;
+        }
+        case "singleton-conflict": {
+            const id: string = result.deviceId, stopped: boolean = result.runtimeStopped;
+            const refused: boolean = result.compensationRefused, cleaned: boolean = result.watchdogCleaned;
+            void [id, stopped, refused, cleaned]; break;
+        }
+        default: { const exhaustive: never = result; void exhaustive; }
+    }
+}
+void outcomeNarrowing;

@@ -1431,6 +1431,38 @@ function windowsLifecycleConflict(deviceId, operation, transition, rollback = nu
     }));
 }
 
+/** @param {string} deviceId
+ * @param {import('../application/lifecycle/windows-sandbox-stop.mjs').WindowsSandboxLifecycleOutcome<ReturnType<typeof runWithTimeout>>} outcome */
+function windowsSandboxLifecycleResult(deviceId, outcome) {
+    switch (outcome.kind) {
+        case "unhandled": return undefined;
+        case "completed": return jsonResult({device:withTargetStatus(outcome.device)});
+        case "deleted": return jsonResult({deleted:outcome.deleted,scratchRemoved:outcome.scratchRemoved});
+        case "conflict": return windowsLifecycleConflict(deviceId,outcome.operation,outcome.transition,outcome.detail);
+        case "refused": return textResult(false,outcome.error);
+        case "native-failure": return fail(outcome.evidence);
+        case "singleton-conflict": return textResult(false,JSON.stringify({
+            ok:false,error:"windows-sandbox-singleton-generation-conflict",backend:"windows-sandbox",
+            deviceId:outcome.deviceId,runtimeStopped:outcome.runtimeStopped,
+            compensationRefused:outcome.compensationRefused,watchdogCleaned:outcome.watchdogCleaned,
+        }));
+        case "registration-failed": {
+            const {registration,ambiguous,cleanupIds,cleanup,cleanupVerify,runtimeGone,releaseLockAfterFailure,watchdogCleanup}=outcome;
+            const result=registration.result;
+            const detail=result
+                ? ` status=${result.status} stderr=${result.stderr || ""} stdout=${result.stdout || ""} error=${result.error?.message || ""}`
+                : "";
+            const cleanupDetail=cleanupIds.length > 0
+                ? ` cleanupStopped=${cleanup.stopped.join(",") || "<none>"} cleanupFailed=${cleanup.failed.map((item) => item.id).join(",") || "<none>"} cleanupVerifiedGone=${cleanupVerify ? runtimeGone : cleanup.ok} cleanupRefused=${cleanup.refused} lockRetained=${!releaseLockAfterFailure}`
+                : ambiguous ? " cleanupSkipped=ambiguous-runtime-ownership lockRetained=true" : " cleanupSkipped=no-new-runtime-observed";
+            const watchdogDetail=watchdogCleanup.ok
+                ? " minimizeWatchdogCleaned=true"
+                : ` minimizeWatchdogCleaned=false error=${watchdogCleanup.attempts.filter((attempt) => !attempt?.ok).map((attempt) => attempt?.error || `pid ${attempt?.pid}`).join(",")}`;
+            return textResult(false,`${registration.error}.${detail}${cleanupDetail}${watchdogDetail}`);
+        }
+    }
+}
+
 function windowsSandboxStopPorts(cancelWatchdog = cancelWindowsMinimizeWatchdog) {
     return {
         readSingleton: () => readWindowsSingletonLock(),
@@ -1476,9 +1508,6 @@ function windowsSandboxLifecyclePorts() {
             const result = runWithTimeout(discovery.wsb, ["stop", "--id", id], timeoutMs);
             return { ok: result.status === 0, result };
         },
-        registrationDiagnostic: result => result
-            ? ` status=${result.status} stderr=${result.stderr || ""} stdout=${result.stdout || ""} error=${result.error?.message || ""}`
-            : "",
         timestampBefore: milliseconds => new Date(Date.now() - milliseconds).toISOString(),
         windowHandles: () => windowsSandboxWindowHandles(),
         launchConfig: (path, minimized, timeoutMs) => {
@@ -1502,13 +1531,8 @@ function windowsSandboxLifecyclePorts() {
         scratchDirectory: device => windowsScratchDir(device),
         removeScratch: device => {removeWindowsScratch(device); return undefined;},
         platform: process.platform,
-        now: () => Date.now(),
+        monotonicNow: () => performance.now(),
         wait: milliseconds => sleep(milliseconds),
-        targetStatus: device => withTargetStatus(device),
-        lifecycleConflict: (id, operation, transition, detail) => windowsLifecycleConflict(id,operation,transition,detail),
-        textResult: (ok, text) => textResult(ok,text),
-        jsonResult: value => jsonResult(value),
-        fail: result => fail(result),
     };
 }
 
@@ -1748,13 +1772,13 @@ async function handleWindowsToolUnlocked(name, args) {
             return jsonResult({ device: withTargetStatus(outcome.device) });
         }
 
-        case "device_delete": return createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).delete(args);
+        case "device_delete": return windowsSandboxLifecycleResult(args.deviceId,createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).delete(args));
 
         case "device_status": return windowsAccessResult(await windowsAccess.handle(name, args));
 
-        case "device_start": return createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).start(args);
+        case "device_start": return windowsSandboxLifecycleResult(args.deviceId,await createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).start(args));
 
-        case "device_stop": return createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).stop(args);
+        case "device_stop": return windowsSandboxLifecycleResult(args.deviceId,createWindowsSandboxLifecycle(windowsSandboxLifecyclePorts()).stop(args));
 
         case "device_exec":
         case "device_screenshot":

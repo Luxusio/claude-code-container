@@ -60,6 +60,336 @@ function fixture(variant: "typescript" | "provider") {
         advance: (ms: number) => { now += ms; }, seed: (value: Record<string, unknown>) => { activeFile = file; records.set(file, { kind: "value", value }); } };
 }
 
+function elapsedFixture(variant: "typescript" | "provider") {
+    const f = fixture(variant);
+    let wall = Date.UTC(2026, 9, 17, 12), elapsed = 1000;
+    const pauses: number[] = [];
+    const observationPause = f.ports.pause;
+    const advance = (ms: number) => { elapsed += ms; wall += ms; };
+    f.ports.now = () => wall;
+    f.ports.monotonic = () => elapsed;
+    f.ports.timestamp = () => new Date(wall).toISOString();
+    f.ports.mtime = () => wall - 5000;
+    f.ports.pauseSync = ms => { pauses.push(ms); advance(ms); };
+    f.ports.pause = (ms, signal) => {
+        if (signal) return observationPause(ms, signal);
+        f.ports.pauseSync(ms);
+        return Promise.resolve(undefined);
+    };
+    return { ...f, advance, pauses, jumpWall: (ms: number) => { wall += ms; } };
+}
+
+async function flushIdentityWork() {
+    for (let turn = 0; turn < 24; turn++) await Promise.resolve();
+}
+
+describe.each(["typescript", "provider"] as const)("%s captured acquisition allowance", variant => {
+    for (const mode of ["sync", "async"] as const) {
+        async function acquire(f: ReturnType<typeof elapsedFixture>, operation: () => unknown, options: { waitMs: number; staleMs?: number; waitBudget?: { remaining(): number } }) {
+            return mode === "sync" ? f.app.withLock(f.file, operation, options) : f.app.withLockAsync(f.file, operation, options);
+        }
+
+        it.each([-60_000, 60_000])(`${mode} bounds contention and its final pause when wall time jumps by %s during acquisition`, async jump => {
+            const f = elapsedFixture(variant);
+            const owner = { token: "f".repeat(32), pid: 456, host: "foreign-host" };
+            f.seed(owner);
+            const pause = f.ports.pauseSync;
+            f.ports.pauseSync = ms => {
+                if (f.pauses.length > 20) throw new Error("elapsed acquisition allowance was renewed");
+                pause(ms);
+                if (f.pauses.length === 1) f.jumpWall(jump);
+            };
+            const started = f.ports.monotonic();
+            const operation = vi.fn();
+            await expect(acquire(f, operation, { waitMs: 27 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(f.ports.monotonic() - started).toBe(27);
+            expect(f.pauses).toEqual([10, 10, 7]);
+            expect(operation).not.toHaveBeenCalled();
+            expect(f.record()).toEqual(owner);
+        });
+
+        it(`${mode} refuses a new claim when the owner releases at the captured deadline`, async () => {
+            const f = elapsedFixture(variant);
+            f.seed({ token: "f".repeat(32), pid: 456, host: "foreign-host" });
+            const started = f.ports.monotonic(), pause = f.ports.pauseSync;
+            f.ports.openClaim = vi.fn(f.ports.openClaim);
+            f.ports.pauseSync = ms => { pause(ms); if (f.ports.monotonic() - started >= 17) f.records.delete(f.file); };
+            const operation = vi.fn();
+            await expect(acquire(f, operation, { waitMs: 17 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(f.pauses).toEqual([10, 7]);
+            expect(f.ports.openClaim).toHaveBeenCalledTimes(2);
+            expect(operation).not.toHaveBeenCalled();
+            expect(f.records.size).toBe(0);
+        });
+
+        it(`${mode} permanently captures a parent shrink before its later growth`, async () => {
+            const f = elapsedFixture(variant);
+            f.seed({ token: "f".repeat(32), pid: 456, host: "foreign-host" });
+            let parent = 100;
+            const read = f.ports.readRaw, pause = f.ports.pauseSync;
+            f.ports.readRaw = path => { parent = 7; return read(path); };
+            f.ports.pauseSync = ms => { pause(ms); parent = 1000; f.records.delete(f.file); };
+            const started = f.ports.monotonic(), operation = vi.fn();
+            await expect(acquire(f, operation, { waitMs: 100, waitBudget: { remaining: () => parent } }))
+                .rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(f.ports.monotonic() - started).toBe(7);
+            expect(f.pauses).toEqual([7]);
+            expect(operation).not.toHaveBeenCalled();
+        });
+
+        it.each([0, -10])(`${mode} preserves immediate qualified recovery without polling at waitMs %s`, async waitMs => {
+            for (const state of ["empty", "exited", "malformed", "live", "unknown", "foreign"] as const) {
+                const f = elapsedFixture(variant);
+                const owner = { token: "f".repeat(32), pid: 456, host: state === "foreign" ? "foreign-host" : "test-host" };
+                if (state === "malformed") f.records.set(f.file, { kind: "malformed" });
+                else if (state === "unknown") f.records.set(f.file, { kind: "unavailable" });
+                else if (state !== "empty") f.seed(owner);
+                f.ports.alive = pid => state !== "exited" || pid !== owner.pid;
+                f.ports.moveMalformed = vi.fn(path => { if (f.records.get(path)?.kind !== "malformed") return false; f.records.delete(path); return true; });
+                const operation = vi.fn(() => "immediate");
+                if (state === "empty" || state === "exited" || state === "malformed") {
+                    expect(await acquire(f, operation, { waitMs, staleMs: 1 })).toBe("immediate");
+                    expect(operation).toHaveBeenCalledOnce();
+                    expect(f.records.size).toBe(0);
+                } else {
+                    await expect(acquire(f, operation, { waitMs, staleMs: 1 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                    expect(operation).not.toHaveBeenCalled();
+                    expect(f.records.has(f.file)).toBe(true);
+                }
+                expect(f.pauses, state).toEqual([]);
+            }
+        });
+
+        it(`${mode} refuses an exhausted explicit parent before acquiring any capabilities`, async () => {
+            const f = elapsedFixture(variant);
+            f.ports.token = vi.fn(f.ports.token);
+            f.ports.capture = vi.fn(f.ports.capture);
+            f.ports.openClaim = vi.fn(f.ports.openClaim);
+            const operation = vi.fn();
+            await expect(acquire(f, operation, { waitMs: 100, waitBudget: { remaining: () => 0 } }))
+                .rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+            for (const effect of [f.ports.token, f.ports.capture, f.ports.openClaim, f.ports.identitySync, f.ports.identityAsync, operation]) expect(effect).not.toHaveBeenCalled();
+            expect(f.records.size).toBe(0);
+        });
+
+        it.each([-600_000, 600_000])(`${mode} retries unavailable own identity after elapsed sixty seconds despite wall jump %s`, async jump => {
+            const f = elapsedFixture(variant);
+            vi.mocked(f.ports.identitySync).mockReturnValueOnce(null);
+            vi.mocked(f.ports.identityAsync).mockResolvedValueOnce(null);
+            expect(await acquire(f, f.record, { waitMs: 0 })).toMatchObject({ processIdentityStatus: "unavailable" });
+            f.jumpWall(jump);
+            f.advance(59_999);
+            expect(await acquire(f, f.record, { waitMs: 0 })).toMatchObject({ processIdentityStatus: "unavailable" });
+            expect(mode === "sync" ? f.ports.identitySync : f.ports.identityAsync).toHaveBeenCalledTimes(1);
+            f.advance(1);
+            expect(await acquire(f, f.record, { waitMs: 0 })).toMatchObject({ processIdentity: identity });
+            expect(mode === "sync" ? f.ports.identitySync : f.ports.identityAsync).toHaveBeenCalledTimes(2);
+        });
+
+        it.each([-60_000, 60_000])(`${mode} expires owner observations by elapsed time despite wall jump %s`, async jump => {
+            for (const initialStatus of ["match", "unavailable"] as const) {
+                const f = elapsedFixture(variant);
+                f.ports.platform = () => "linux";
+                f.app.withLock(f.file, () => undefined, { waitMs: 0 });
+                const ownerIdentity = { ...identity, pid: 456, startToken: "owner-generation" };
+                const owner = { token: "f".repeat(32), pid: 456, host: "test-host", processIdentity: ownerIdentity };
+                f.seed(owner);
+                let expired = false;
+                vi.mocked(f.ports.observe).mockImplementation(() => expired ? "mismatch" : initialStatus);
+                vi.mocked(f.ports.identityAsync).mockImplementation(async pid => initialStatus === "unavailable" && !expired ? null : { ...ownerIdentity, pid, ...(expired ? { startToken: "replacement" } : {}) });
+                const operation = vi.fn(() => "recovered");
+                await expect(acquire(f, operation, { waitMs: 0 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                f.jumpWall(jump);
+                const lifetime = mode === "async" && initialStatus === "unavailable" ? 30_000 : 1000;
+                f.advance(lifetime - 1);
+                await expect(acquire(f, operation, { waitMs: 0 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                const observe = mode === "sync" ? f.ports.observe : f.ports.identityAsync;
+                expect(observe).toHaveBeenCalledTimes(1);
+                f.advance(1);
+                expired = true;
+                expect(await acquire(f, operation, { waitMs: 0 })).toBe("recovered");
+                expect(observe).toHaveBeenCalledTimes(2);
+                expect(f.records.size).toBe(0);
+            }
+        });
+
+        it.each(["active", "archived"] as const)(`${mode} keeps malformed ${"%s"} grace on wall time and publishes wall timestamps`, async location => {
+            for (const offset of [-70, 60_000]) {
+                const f = elapsedFixture(variant);
+                const path = location === "active" ? f.file : f.archive({ kind: "malformed" });
+                f.records.set(path, { kind: "malformed" });
+                const modified = f.ports.now() + offset;
+                f.ports.mtime = () => modified;
+                f.ports.moveMalformed = target => { if (f.records.get(target)?.kind !== "malformed") return false; f.records.delete(target); return true; };
+                f.ports.monotonic = () => 999_999_999;
+                await expect(acquire(f, () => "too young", { waitMs: 0, staleMs: 1 })).rejects.toMatchObject({ code: "shared-mutation-lock-timeout" });
+                expect(f.records.has(path)).toBe(true);
+                f.jumpWall(modified + 100 - f.ports.now());
+                const timestamp = new Date(f.ports.now()).toISOString();
+                expect(await acquire(f, f.record, { waitMs: 0, staleMs: 1 })).toMatchObject({ createdAt: timestamp, processIdentity: identity });
+                expect(f.records.size).toBe(0);
+            }
+        });
+    }
+
+    it("charges a cold synchronous identity probe before granting claim authority", () => {
+        const f = elapsedFixture(variant);
+        vi.mocked(f.ports.identitySync).mockImplementation(() => { f.advance(17); return identity; });
+        f.ports.openClaim = vi.fn(f.ports.openClaim);
+        const operation = vi.fn();
+        expect(() => f.app.withLock(f.file, operation, { waitMs: 17 })).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+        expect(f.ports.openClaim).not.toHaveBeenCalled();
+        expect(operation).not.toHaveBeenCalled();
+        expect(f.records.size).toBe(0);
+    });
+
+    it.each(["cold", "pending"] as const)("bounds %s own async identity by the caller's captured allowance", async warmth => {
+        const f = elapsedFixture(variant);
+        let finish!: (value: LockProcessIdentity) => void;
+        const probe = new Promise<LockProcessIdentity>(resolve => { finish = resolve; });
+        vi.mocked(f.ports.identityAsync).mockReturnValue(probe);
+        let earlier: Promise<unknown> | undefined;
+        if (warmth === "pending") { earlier = f.app.withLockAsync(`${f.file}.earlier`, () => "earlier", { waitMs: 1000 }); await flushIdentityWork(); }
+        const operation = vi.fn();
+        const bounded = f.app.withLockAsync(f.file, operation, { waitMs: 17 }).then(value => value, error => error);
+        try {
+            await flushIdentityWork();
+            const timer = f.observationWaits.find(wait => wait.pending && wait.milliseconds === 17);
+            f.advance(17);
+            if (timer) timer.wake();
+            else finish(identity);
+            const result = await bounded;
+            expect(result).toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(timer, "ordinary identity waiting must have a cancellable acquisition deadline").toBeDefined();
+            expect(operation).not.toHaveBeenCalled();
+            expect(f.records.has(f.file)).toBe(false);
+        } finally {
+            finish(identity);
+            for (const wait of f.observationWaits) if (wait.pending) wait.wake();
+            await Promise.all([bounded, earlier]);
+        }
+        expect(f.ports.identityAsync).toHaveBeenCalledOnce();
+        expect(operation).not.toHaveBeenCalled();
+        expect(f.records.size).toBe(0);
+        expect(f.observationWaits.every(wait => !wait.pending && wait.signal.aborted)).toBe(true);
+    });
+
+    it.each(["active", "archived"] as const)("rejects a late synchronous %s mismatch without granting stale authority", location => {
+        const f = elapsedFixture(variant);
+        f.ports.platform = () => "linux";
+        f.app.withLock(f.file, () => undefined);
+        const owner = { token: "f".repeat(32), pid: 456, host: "test-host", processIdentity: { ...identity, pid: 456 } };
+        const path = location === "active" ? f.file : f.archive({ kind: "value", value: owner });
+        f.records.set(path, { kind: "value", value: owner });
+        vi.mocked(f.ports.observe).mockImplementation(() => { f.advance(17); return "mismatch"; });
+        f.ports.moveQualified = vi.fn(f.ports.moveQualified);
+        f.ports.removeArchive = vi.fn(f.ports.removeArchive);
+        const operation = vi.fn();
+        expect(() => f.app.withLock(f.file, operation, { waitMs: 17 })).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+        expect(operation).not.toHaveBeenCalled();
+        expect(f.records.get(path)).toEqual({ kind: "value", value: owner });
+        expect(f.ports.removeArchive).not.toHaveBeenCalled();
+        expect(vi.mocked(f.ports.moveQualified).mock.calls.every(([, , suffix]) => suffix === "release")).toBe(true);
+        if (location === "archived") expect(f.records.has(f.file)).toBe(false);
+    });
+
+    it.each(["active", "archived"] as const)("settles a late ordinary async %s observation without reclaiming it", async location => {
+        const f = elapsedFixture(variant);
+        f.app.withLock(f.file, () => undefined);
+        const ownerIdentity = { ...identity, pid: 456, startToken: "original" };
+        const owner = { token: "f".repeat(32), pid: 456, host: "test-host", processIdentity: ownerIdentity };
+        const path = location === "active" ? f.file : f.archive({ kind: "value", value: owner });
+        f.records.set(path, { kind: "value", value: owner });
+        let finish!: (value: LockProcessIdentity) => void;
+        const probe = new Promise<LockProcessIdentity>(resolve => { finish = resolve; });
+        vi.mocked(f.ports.identityAsync).mockReturnValue(probe);
+        f.ports.removeArchive = vi.fn(f.ports.removeArchive);
+        f.ports.moveQualified = vi.fn(f.ports.moveQualified);
+        const operation = vi.fn();
+        const bounded = f.app.withLockAsync(f.file, operation, { waitMs: 17 }).then(value => value, error => error);
+        try {
+            await flushIdentityWork();
+            const timer = f.observationWaits.find(wait => wait.pending && wait.milliseconds === 17);
+            f.advance(17);
+            if (timer) timer.wake();
+            else finish({ ...ownerIdentity, startToken: "replacement" });
+            expect(await bounded).toMatchObject({ code: "shared-mutation-lock-timeout" });
+            expect(timer).toBeDefined();
+        } finally {
+            finish({ ...ownerIdentity, startToken: "replacement" });
+            for (const wait of f.observationWaits) if (wait.pending) wait.wake();
+            await bounded;
+            await flushIdentityWork();
+        }
+        expect(operation).not.toHaveBeenCalled();
+        expect(f.records.get(path)).toEqual({ kind: "value", value: owner });
+        expect(f.ports.removeArchive).not.toHaveBeenCalled();
+        expect(vi.mocked(f.ports.moveQualified).mock.calls.every(([, , suffix]) => suffix === "release")).toBe(true);
+        if (location === "archived") expect(f.records.has(f.file)).toBe(false);
+        expect(f.observationWaits.every(wait => !wait.pending && wait.signal.aborted)).toBe(true);
+    });
+
+    it("does not queue or later dispatch an ordinary timed owner probe behind four occupied slots", async () => {
+        const f = elapsedFixture(variant);
+        f.app.withLock(f.file, () => undefined);
+        let finish!: () => void;
+        const gate = new Promise<void>(resolve => { finish = resolve; });
+        vi.mocked(f.ports.identityAsync).mockImplementation(async pid => { await gate; return { ...identity, pid }; });
+        const callers: Promise<unknown>[] = [];
+        const operation = vi.fn();
+        const files: string[] = [];
+        try {
+            for (let index = 0; index < 5; index++) {
+                const path = `${f.file}.owner-${index}`;
+                files.push(path);
+                const pid = 456 + index;
+                f.records.set(path, { kind: "value", value: { token: "f".repeat(32), pid, host: "test-host", processIdentity: { ...identity, pid } } });
+                callers.push(f.app.withLockAsync(path, operation, { waitMs: 17 }).then(value => value, error => error));
+                await flushIdentityWork();
+            }
+            expect(f.ports.identityAsync).toHaveBeenCalledTimes(4);
+            f.advance(17);
+            for (const wait of f.observationWaits) if (wait.pending) wait.wake();
+            const bounded = await Promise.race([callers[4], new Promise(resolve => setTimeout(() => resolve("still queued after expiry"), 30))]);
+            expect(bounded).toMatchObject({ code: "shared-mutation-lock-timeout" });
+        } finally {
+            finish();
+            for (const wait of f.observationWaits) if (wait.pending) wait.wake();
+            await Promise.all(callers);
+            await flushIdentityWork();
+        }
+        expect(f.ports.identityAsync).toHaveBeenCalledTimes(4);
+        expect(operation).not.toHaveBeenCalled();
+        for (const path of files) expect(f.records.get(path)).toMatchObject({ kind: "value", value: { token: "f".repeat(32) } });
+        expect(f.observationWaits.every(wait => !wait.pending && wait.signal.aborted)).toBe(true);
+    });
+
+    it.each([false, true])("releases exact overdue ownership and preserves successors after an operation failure: %s", async fails => {
+        for (const mode of ["sync", "async"] as const) {
+            const f = elapsedFixture(variant);
+            const primary = new Error("operation-primary");
+            const successor = { token: "e".repeat(32), pid: 456, host: "foreign-host" };
+            let owned = "", foreign = "";
+            const operation = () => {
+                f.advance(1000);
+                owned = f.displace();
+                f.seed(successor);
+                foreign = f.archive({ kind: "value", value: successor });
+                if (fails) throw primary;
+                return "completed";
+            };
+            const result = mode === "sync"
+                ? Promise.resolve().then(() => f.app.withLock(f.file, operation, { waitMs: 17 }))
+                : f.app.withLockAsync(f.file, operation, { waitMs: 17 });
+            if (fails) await expect(result).rejects.toBe(primary);
+            else expect(await result).toBe("completed");
+            expect(f.records.has(owned)).toBe(false);
+            expect(f.records.get(f.file)).toEqual({ kind: "value", value: successor });
+            expect(f.records.get(foreign)).toEqual({ kind: "value", value: successor });
+        }
+    });
+});
+
 describe.each(["typescript", "provider"] as const)("%s Windows own guard identity", variant => {
     it.each([
         ["later process", "windows:2026-10-12T14:52:34.0000000Z"],
@@ -475,7 +805,11 @@ describe.each(["typescript", "provider"] as const)("%s archived claim admission"
         const ownerReady = new Promise<void>(resolve => { ownerEntered = resolve; });
         const pauseGate = new Promise<void>(resolve => { releasePause = resolve; });
         const paused = new Promise<void>(resolve => { candidatePaused = resolve; });
-        f.ports.pause = async ms => { f.advance(ms); candidatePaused(); await pauseGate; return undefined; };
+        const observationPause = f.ports.pause;
+        f.ports.pause = async (ms, signal) => {
+            if (signal) return observationPause(ms, signal);
+            f.advance(ms); candidatePaused(); await pauseGate; return undefined;
+        };
         const owner = f.app.withLockAsync(f.file, async () => { f.displace(); ownerEntered(); await ownerGate; return "owner"; });
         await ownerReady;
         const contender = f.app.withLockAsync(f.file, () => "candidate", { waitMs: 100 });

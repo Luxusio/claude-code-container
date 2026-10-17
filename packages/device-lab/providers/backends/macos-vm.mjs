@@ -76,6 +76,12 @@ const MACOS_HELPER_TIMEOUT_MS = 30000;
 const MACOS_LIFECYCLE_CLAIM_TTL_MS = 15 * 60 * 1000;
 const tartFeatureCache = new Map();
 
+/** @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmStartBudget} budget */
+function macosStartRemainingMs(budget) {
+    const remaining = budget.remainingMs();
+    return Number.isFinite(remaining) ? Math.max(0,remaining) : 0;
+}
+
 // Lazy native leaf selection retains imported-callee timing and bare calls.
 const macosVmNativeLifecycle = createMacosVmLifecycleApplication({
     get read() { return readMacosDevices; },
@@ -96,29 +102,33 @@ const macosVmNativeLifecycle = createMacosVmLifecycleApplication({
     cloneInstance: (plan,source,target) => macosNativeObservation(runProviderCommand(plan.evidence.providerCommand,['clone',source,target],'clone')),
     deleteInstance: macosDeleteInstance,
     stopInstance: macosStopInstance,
-    launchProvider: (plan,device) => {
+    launchProvider: (plan,device,budget) => {
+        if (!(macosStartRemainingMs(budget) >= 1)) return null;
         const native = plan.evidence;
         const startCommand = native.selectedProvider === 'tart' && native.providerCommand
-            ? {command:native.providerCommand,args:providerByName('tart').startArgs(native.providerInstance,{...device,softnet:device.softnet !== false && tartSupportsFeature(native.providerCommand,'--with-softnet')})}
+            ? {command:native.providerCommand,args:providerByName('tart').startArgs(native.providerInstance,{...device,softnet:device.softnet !== false && tartSupportsFeature(native.providerCommand,'--with-softnet',budget)})}
             : native.startCommand;
+        if (!(macosStartRemainingMs(budget) >= 1)) return null;
         const child = spawn(startCommand.command,startCommand.args,{detached:true,stdio:'ignore',env:process.env,windowsHide:true});
         return {child,startCommand};
     },
-    waitProviderStart: async child => {
-        const error = await waitForProviderStart(child,'macOS VM provider start');
+    waitProviderStart: async (child,budget) => {
+        const timeoutMs = Math.floor(Math.min(200,macosStartRemainingMs(budget)));
+        const error = await waitForProviderStart(child,'macOS VM provider start',timeoutMs);
         return error ? {kind:'native',evidence:error} : null;
     },
-    waitBoot: (plan,timeoutMs,deadlineAt) => waitForMacosBoot(plan.evidence,timeoutMs,deadlineAt),
+    waitBoot: (plan,timeoutMs,budget) => waitForMacosBoot(plan.evidence,timeoutMs,budget),
     interruptGuestRecording: (device,recording) => {
         const bridge = sshBridge(device,'device_record_video_stop');
         if (!bridge.error) runHelperCommand(bridge.discovery.ssh,[...sshBaseArgs(device),bridge.target,`pkill -INT -f ${shellQuote(`screencapture.*${recording.remotePath}`)} || true`],undefined,sshCommandOptions(device));
     },
-    get waitGuestHelper() { return waitForMacosGuestHelper; },
-    get provisionHelper() { return provisionMacosGuestHelper; },
+    waitGuestHelper: (device,budget) => waitForMacosGuestHelperWithinBudget(budget,() => provisionMacosGuestHelper(device,{startBudget:budget}),sleep,true),
+    provisionHelper: (device,budget) => provisionMacosGuestHelper(device,{startBudget:budget}),
     get signalRecording() { return signalOwnedRuntimeProcess; },
     get waitRecordingExit() { return waitForOwnedRecordingExit; },
     timestamp: () => new Date().toISOString(),
     now: () => Date.now(),
+    monotonicNow: () => performance.now(),
     get parseLifecycleClaimedAt() {
         const clock = Date;
         const parse = clock.parse;
@@ -221,10 +231,12 @@ function providerCommandTimedOut(result) {
     return result?.error?.code === "ETIMEDOUT" || result?.signal === "SIGTERM" || result?.signal === "SIGKILL";
 }
 
-function tartSupportsFeature(command, feature) {
+function tartSupportsFeature(command, feature, budget) {
     const key = `${command}:${feature}`;
     if (tartFeatureCache.has(key)) return tartFeatureCache.get(key);
-    const result = runWithTimeout(command, ["run", "--help"], 5000);
+    const timeoutMs = Math.floor(Math.min(5000,macosStartRemainingMs(budget)));
+    if (!(timeoutMs >= 1)) return false;
+    const result = runWithTimeout(command, ["run", "--help"], timeoutMs);
     const supported = result.status === 0 && `${result.stdout || ""}\n${result.stderr || ""}`.includes(feature);
     tartFeatureCache.set(key, supported);
     return supported;
@@ -516,7 +528,7 @@ async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForProviderStart(child, label) {
+async function waitForProviderStart(child, label, timeoutMs) {
     return new Promise((resolve) => {
         let settled = false;
         const done = (result) => {
@@ -525,7 +537,7 @@ async function waitForProviderStart(child, label) {
             clearTimeout(timer);
             resolve(result);
         };
-        const timer = setTimeout(() => done(null), 200);
+        const timer = setTimeout(() => done(null), timeoutMs);
         child.once("error", (error) => done(textResult(false, `${label} failed to start: ${error.message}`)));
         child.once("exit", (code, signal) => {
             done(textResult(false, `${label} exited before it was ready: ${signal || `exit ${code}`}`));
@@ -533,22 +545,21 @@ async function waitForProviderStart(child, label) {
     });
 }
 
-async function waitForMacosBoot(plan, timeoutMs = 300000, deadlineAt) {
+async function waitForMacosBoot(plan, _timeoutMs, budget) {
     if (plan.selectedProvider !== "tart" || !plan.providerCommand || !plan.providerInstance) {
         return { ready: false, skipped: true, reason: "boot readiness is only implemented for Tart" };
     }
-    const parsedTimeout = Number(timeoutMs);
-    const deadline = deadlineAt ?? Date.now() + (Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 300000);
     let last = null;
     const attempts = [];
     const ipAttempts = () => [
         { resolver: "dhcp-leases", args: ["ip", plan.providerInstance] },
         { resolver: "arp", args: ["ip", "--resolver=arp", plan.providerInstance] },
     ];
-    while (Date.now() < deadline) {
+    while (macosStartRemainingMs(budget) >= 1) {
         for (const attempt of ipAttempts()) {
-            if (Date.now() >= deadline) break;
-            const ip = runWithTimeout(plan.providerCommand, attempt.args, Math.max(1, Math.min(macosProviderTimeoutMs("ip"), deadline - Date.now())));
+            const timeoutMs = Math.floor(Math.min(MACOS_PROVIDER_TIMEOUTS.ip, macosProviderTimeoutMs("ip"), macosStartRemainingMs(budget)));
+            if (!(timeoutMs >= 1)) break;
+            const ip = runWithTimeout(plan.providerCommand, attempt.args, timeoutMs);
             last = ip;
             attempts.push({
                 resolver: attempt.resolver,
@@ -557,7 +568,7 @@ async function waitForMacosBoot(plan, timeoutMs = 300000, deadlineAt) {
                 stderr: ip.stderr || "",
             });
             const address = String(ip.stdout || "").trim();
-            if (ip.status === 0 && address) {
+            if (ip.status === 0 && address && macosStartRemainingMs(budget) > 0) {
                 return {
                     ready: true,
                     skipped: false,
@@ -571,7 +582,7 @@ async function waitForMacosBoot(plan, timeoutMs = 300000, deadlineAt) {
                 };
             }
         }
-        const remainingMs = deadline - Date.now();
+        const remainingMs = macosStartRemainingMs(budget);
         if (remainingMs > 0) await sleep(Math.min(5000, remainingMs));
     }
     return {
@@ -806,9 +817,10 @@ export function writeMacosGuestHelper(device, options = {}) {
     return writeMacosExecutableArtifact(path, macosGuestHelperScript(device), options);
 }
 
-function provisionMacosGuestHelper(device, { deadlineAt } = {}) {
-    const exhausted = () => Number.isFinite(deadlineAt) && Date.now() >= deadlineAt;
-    const budget = () => Number.isFinite(deadlineAt) ? Math.max(1, Math.min(macosHelperTimeoutMs(), deadlineAt - Date.now())) : undefined;
+function provisionMacosGuestHelper(device, { deadlineAt, startBudget } = {}) {
+    const remainingMs = () => startBudget ? macosStartRemainingMs(startBudget) : Number.isFinite(deadlineAt) ? deadlineAt - Date.now() : Infinity;
+    const exhausted = () => !(remainingMs() >= 1);
+    const commandTimeout = () => Math.floor(Math.min(startBudget ? MACOS_HELPER_TIMEOUT_MS : Infinity, macosHelperTimeoutMs(), remainingMs()));
     const timeout = () => ({ ok: false, error: "macos-helper-readiness-timeout", provisioning: { status: "failed", provider: "ssh", updatedAt: new Date().toISOString() } });
     if (exhausted()) return timeout();
     const target = sshTarget(device);
@@ -852,6 +864,7 @@ function provisionMacosGuestHelper(device, { deadlineAt } = {}) {
     }
     let localScriptPath;
     try {
+        if (exhausted()) return timeout();
         localScriptPath = writeMacosGuestHelper(device);
     } catch (error) {
         return {
@@ -867,8 +880,12 @@ function provisionMacosGuestHelper(device, { deadlineAt } = {}) {
         };
     }
     const remoteScriptPath = device.helper?.remoteScriptPath || `/tmp/ccc-${device.id}-guest-helper.sh`;
-    if (exhausted()) return timeout();
-    const copy = runHelperCommand(discovery.scp, [...scpBaseArgs(device), localScriptPath, `${target}:${remoteScriptPath}`], budget(), sshCommandOptions(device));
+    const copyArgs = startBudget ? [...scpBaseArgs(device), localScriptPath, `${target}:${remoteScriptPath}`] : null;
+    if (startBudget && exhausted()) return timeout();
+    const copyOptions = startBudget ? sshCommandOptions(device) : null;
+    const copyTimeout = commandTimeout();
+    if (!(copyTimeout >= 1)) return timeout();
+    const copy = runHelperCommand(discovery.scp, copyArgs || [...scpBaseArgs(device), localScriptPath, `${target}:${remoteScriptPath}`], copyTimeout, copyOptions || sshCommandOptions(device));
     if (copy.status !== 0) {
         return {
             ok: false,
@@ -883,8 +900,12 @@ function provisionMacosGuestHelper(device, { deadlineAt } = {}) {
             },
         };
     }
-    if (exhausted()) return timeout();
-    const chmod = runHelperCommand(discovery.ssh, [...sshBaseArgs(device), target, `chmod 700 ${shellQuote(remoteScriptPath)} && ${shellQuote(remoteScriptPath)} status`], budget(), sshCommandOptions(device));
+    const chmodArgs = startBudget ? [...sshBaseArgs(device), target, `chmod 700 ${shellQuote(remoteScriptPath)} && ${shellQuote(remoteScriptPath)} status`] : null;
+    if (startBudget && exhausted()) return timeout();
+    const chmodOptions = startBudget ? sshCommandOptions(device) : null;
+    const chmodTimeout = commandTimeout();
+    if (!(chmodTimeout >= 1)) return timeout();
+    const chmod = runHelperCommand(discovery.ssh, chmodArgs || [...sshBaseArgs(device), target, `chmod 700 ${shellQuote(remoteScriptPath)} && ${shellQuote(remoteScriptPath)} status`], chmodTimeout, chmodOptions || sshCommandOptions(device));
     if (chmod.status !== 0) {
         return {
             ok: false,
@@ -899,6 +920,7 @@ function provisionMacosGuestHelper(device, { deadlineAt } = {}) {
             },
         };
     }
+    if (!(remainingMs() > 0)) return timeout();
     return {
         ok: true,
         skipped: false,
@@ -917,17 +939,24 @@ function provisionMacosGuestHelper(device, { deadlineAt } = {}) {
 export async function waitForMacosGuestHelper(device, deadlineAt, {
     provision = provisionMacosGuestHelper, now = Date.now, delay = sleep,
 } = {}) {
+    return waitForMacosGuestHelperWithinBudget({remainingMs:() => deadlineAt - now()},() => provision(device,{deadlineAt}),delay);
+}
+
+async function waitForMacosGuestHelperWithinBudget(budget, provision, delay = sleep, preserveLateFailure = false) {
     let last;
-    while (now() < deadlineAt) {
-        last = provision(device, { deadlineAt });
-        if (last.ok && now() < deadlineAt) return last;
+    while (budget.remainingMs() > 0) {
+        last = provision();
+        const observedRemainingMs = preserveLateFailure || last.ok ? budget.remainingMs() : 0;
+        if (last.ok && observedRemainingMs > 0) return last;
+        if (preserveLateFailure && !last.ok && !(observedRemainingMs > 0)) return last;
         const command = last.command;
         const transient = ["macos-helper-scp-failed", "macos-helper-chmod-failed"].includes(last.error)
             && (command?.error?.code === "ETIMEDOUT"
                 || /connection (?:refused|reset|closed)|connection timed out|operation timed out|no route to host|network is unreachable/i.test(`${command?.stderr || ""}\n${command?.stdout || ""}`));
         if (!transient && !last.ok) return last;
-        if (now() >= deadlineAt) break;
-        await delay(Math.min(500, deadlineAt - now()));
+        const remainingMs = budget.remainingMs();
+        if (!(remainingMs > 0)) break;
+        await delay(Math.min(500, remainingMs));
     }
     return { ok: false, error: "macos-helper-readiness-timeout", provisioning: { ...last?.provisioning, status: "failed", updatedAt: new Date().toISOString() } };
 }

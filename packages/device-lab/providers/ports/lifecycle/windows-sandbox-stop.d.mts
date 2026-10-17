@@ -57,7 +57,7 @@ export type WindowsSandboxRegistration<NativeResult extends object> = {
     observedIds: string[];
     newIds: string[];
 };
-export interface WindowsSandboxLifecyclePorts<Binding extends object, NativeResult extends object, Result> extends WindowsSandboxStopPorts<Binding, NativeResult> {
+export interface WindowsSandboxLifecyclePorts<Binding extends object, NativeResult extends object> extends WindowsSandboxStopPorts<Binding, NativeResult> {
     readDevices(): Device[];
     helperMetadata(device: Device): WindowsSandboxHelperMetadata;
     writeConfig(device: Device): string;
@@ -65,7 +65,6 @@ export interface WindowsSandboxLifecyclePorts<Binding extends object, NativeResu
     resetHelperMarkers(helper: WindowsSandboxHelperMetadata): undefined;
     listRuntime(binding: Binding, timeoutMs: number): WindowsSandboxRuntimeObservation<NativeResult>;
     stopRuntime(binding: Binding, id: string, timeoutMs: number): WindowsSandboxNativeObservation<NativeResult>;
-    registrationDiagnostic(result: NativeResult | null): string;
     timestampBefore(milliseconds: number): string;
     windowHandles(): number[] | null;
     launchConfig(path: string, minimized: boolean, timeoutMs: number): WindowsSandboxNativeObservation<NativeResult>;
@@ -84,11 +83,6 @@ export interface WindowsSandboxLifecyclePorts<Binding extends object, NativeResu
     scratchDirectory(device: Device): string;
     removeScratch(device: Device): undefined;
     readonly platform: string;
-    now(): number;
+    monotonicNow(): number;
     wait(milliseconds: number): Promise<void>;
-    targetStatus(device: Device): unknown;
-    lifecycleConflict(id: string, operation: string, transition: Transition, detail?: Record<string, unknown>): Result;
-    textResult(ok: boolean, text: string | undefined): Result;
-    jsonResult(value: unknown): Result;
-    fail(result: NativeResult): Result;
 }

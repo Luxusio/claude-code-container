@@ -244,8 +244,7 @@ export function createWindowsSandboxStop(ports) { return createStopPolicy(ports)
 
 /** @template {object} Binding
  * @template {object} NativeResult
- * @template Result
- * @param {import('../../ports/lifecycle/windows-sandbox-stop.mjs').WindowsSandboxLifecyclePorts<Binding, NativeResult, Result>} ports */
+ * @param {import('../../ports/lifecycle/windows-sandbox-stop.mjs').WindowsSandboxLifecyclePorts<Binding, NativeResult>} ports */
 export function createWindowsSandboxLifecycle(ports) {
     const policy = createStopPolicy(ports);
     const WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS = 60000;
@@ -293,28 +292,36 @@ export function createWindowsSandboxLifecycle(ports) {
         if (ports.platform !== "win32") return {ok:true,skipped:true,sandboxId};
         const expected = String(sandboxId).toLowerCase();
         const previous = new Set(options.previousIds.map(id => String(id).toLowerCase()));
-        const deadline = ports.now() + Math.max(0,timeoutMs);
+        const deadline = ports.monotonicNow() + Math.max(0,timeoutMs);
         /** @type {NativeResult|null} */ let lastResult=null;
         let lastObservationOk=false;
         /** @type {string[]} */ let lastIds=[];
         /** @type {string[]} */ let lastNewIds=[];
-        while (ports.now() <= deadline) {
-            const observation = ports.listRuntime(binding,Math.min(10000,Math.max(1000,deadline - ports.now())));
+        while (true) {
+            const remaining = Math.floor(deadline - ports.monotonicNow());
+            if (remaining <= 0) break;
+            const observation = ports.listRuntime(binding,Math.min(10000,remaining));
             lastResult=observation.result;
             lastObservationOk=observation.ok;
             if (observation.ok) {
                 const ids=observation.ids;
                 lastIds=ids; lastNewIds=ids.map(id=>String(id).toLowerCase()).filter(id=>!previous.has(id));
+            }
+            if (ports.monotonicNow() >= deadline) break;
+            if (observation.ok) {
+                const ids=observation.ids;
                 if (options.requireNewRuntime) {
                     if(lastNewIds.includes(expected)) return {ok:true,sandboxId:expected,matchedRequested:true,result:lastResult,observedIds:ids,newIds:lastNewIds};
                     if(lastNewIds.length===1) return {ok:true,sandboxId:lastNewIds[0],requestedSandboxId:sandboxId,matchedRequested:false,result:lastResult,observedIds:ids,newIds:lastNewIds};
                     if(lastNewIds.length>1) return {ok:false,result:lastResult,lastObservationOk,observedIds:ids,newIds:lastNewIds,error:`Windows Sandbox launch produced multiple new runtimes: ${lastNewIds.join(", ")}`};
-                    await ports.wait(500); continue;
+                } else {
+                    if(ids.includes(expected)) return {ok:true,sandboxId:expected,matchedRequested:true,result:lastResult};
+                    if(ids.length===1) return {ok:true,sandboxId:ids[0],requestedSandboxId:sandboxId,matchedRequested:false,result:lastResult};
                 }
-                if(ids.includes(expected)) return {ok:true,sandboxId:expected,matchedRequested:true,result:lastResult};
-                if(ids.length===1) return {ok:true,sandboxId:ids[0],requestedSandboxId:sandboxId,matchedRequested:false,result:lastResult};
             }
-            await ports.wait(500);
+            const pause = Math.min(500,deadline - ports.monotonicNow());
+            if (pause <= 0) break;
+            await ports.wait(pause);
         }
         return {ok:false,result:lastResult,lastObservationOk,observedIds:lastIds,newIds:lastNewIds,error:`Windows Sandbox runtime ${sandboxId} did not appear in wsb list within ${timeoutMs}ms`};
     }
@@ -337,22 +344,23 @@ export function createWindowsSandboxLifecycle(ports) {
         const observation=ports.launchRuntime(binding,id,config,minimized,120000);
         return {ok:observation.ok,result:observation.result,launchMode:"wsb-cli-start",minimizeWatchdogFailed:false};
     }
-    /** @param {{deviceId:string,minimized?:boolean}} args @returns {Promise<Result|undefined>} */
+    /** @param {{deviceId:string,minimized?:boolean}} args
+     * @returns {Promise<import('./windows-sandbox-stop.mjs').WindowsSandboxLifecycleOutcome<NativeResult>>} */
     async function start(args) {
         const { deviceId } = args;
         const device = ports.findDevice(deviceId);
-        if (!device) return undefined;
+        if (!device) return {kind:"unhandled"};
         if (device.status !== "stopped") {
-            return ports.textResult(false, `Refusing to start ${deviceId} while status is ${device.status}`);
+            return {kind:"refused",error:`Refusing to start ${deviceId} while status is ${device.status}`};
         }
 
         const discovery = ports.discoverRuntime();
         if (!discovery.available) {
-            return ports.textResult(false, `Windows Sandbox backend missing prerequisites: ${discovery.missing.join(", ")}`);
+            return {kind:"refused",error:`Windows Sandbox backend missing prerequisites: ${discovery.missing.join(", ")}`};
         }
 
         const lifecycleClaim = policy.claimLifecycle(deviceId, device, "start");
-        if (!lifecycleClaim.transition.matched) return ports.lifecycleConflict(deviceId, "start-claim", lifecycleClaim.transition);
+        if (!lifecycleClaim.transition.matched) return {kind:"conflict",operation:"start-claim",transition:lifecycleClaim.transition};
 
         const helper = ports.helperMetadata(device);
         const configPath = ports.writeConfig(device);
@@ -362,7 +370,7 @@ export function createWindowsSandboxLifecycle(ports) {
         const lock = ports.claimSingleton(device, claimedSandboxId, lifecycleClaim.lifecycle.runtimeId);
         if (!lock.ok) {
             policy.abortLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-            return ports.textResult(false, lock.error);
+            return {kind:"refused",error:lock.error};
         }
         const starting = {
             ...lifecycleClaim.claimed,
@@ -374,7 +382,7 @@ export function createWindowsSandboxLifecycle(ports) {
         const lockTransition = ports.transitionDevice(deviceId, lifecycleClaim.claimed, starting);
         if (!lockTransition.matched) {
             ports.releaseSingleton({ ...device, sandboxId: claimedSandboxId }, lock.lock.claimId);
-            return ports.lifecycleConflict(deviceId, "start-lock", lockTransition);
+            return {kind:"conflict",operation:"start-lock",transition:lockTransition};
         }
         const minimized = typeof args.minimized === "boolean" ? args.minimized : device.minimized !== false;
         /** @type {string[]} */ let previousRuntimeIds = [];
@@ -383,12 +391,12 @@ export function createWindowsSandboxLifecycle(ports) {
             if (!beforeLaunch.ok) {
                 ports.releaseSingleton(starting, lock.lock.claimId);
                 policy.abortLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-                return ports.fail(beforeLaunch.result);
+                return {kind:"native-failure",evidence:beforeLaunch.result};
             }
             if (beforeLaunch.ids.length > 0) {
                 ports.releaseSingleton(starting, lock.lock.claimId);
                 policy.abortLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-                return ports.textResult(false, `Windows Sandbox already has a running runtime before ${deviceId} start: ${beforeLaunch.ids.join(", ")}. Stop it before starting an owner-scoped device.`);
+                return {kind:"refused",error:`Windows Sandbox already has a running runtime before ${deviceId} start: ${beforeLaunch.ids.join(", ")}. Stop it before starting an owner-scoped device.`};
             }
             previousRuntimeIds = beforeLaunch.ids;
         }
@@ -396,7 +404,7 @@ export function createWindowsSandboxLifecycle(ports) {
         if (!r.ok) {
             ports.releaseSingleton(starting, lock.lock.claimId);
             policy.abortLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-            return ports.fail(r.result);
+            return {kind:"native-failure",evidence:r.result};
         }
         const registered = await waitForRuntime(discovery.binding, claimedSandboxId, WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS, {
             previousIds: previousRuntimeIds,
@@ -434,14 +442,7 @@ export function createWindowsSandboxLifecycle(ports) {
                 ports.releaseSingleton(starting, lock.lock.claimId);
                 policy.abortLifecycle(deviceId, lifecycleClaim.lifecycle, device);
             }
-            const detail = ports.registrationDiagnostic(registered.result);
-            const cleanupDetail = cleanupIds.length > 0
-                ? ` cleanupStopped=${cleanup.stopped.join(",") || "<none>"} cleanupFailed=${cleanup.failed.map((item) => item.id).join(",") || "<none>"} cleanupVerifiedGone=${cleanupVerify ? runtimeGone : cleanup.ok} cleanupRefused=${cleanup.refused} lockRetained=${!releaseLockAfterFailure}`
-                : ambiguous ? " cleanupSkipped=ambiguous-runtime-ownership lockRetained=true" : " cleanupSkipped=no-new-runtime-observed";
-            const watchdogDetail = watchdogCleanup.ok
-                ? " minimizeWatchdogCleaned=true"
-                : ` minimizeWatchdogCleaned=false error=${watchdogCleanup.attempts.filter((attempt) => !attempt?.ok).map((attempt) => attempt?.error || `pid ${attempt?.pid}`).join(",")}`;
-            return ports.textResult(false, `${registered.error}.${detail}${cleanupDetail}${watchdogDetail}`);
+            return {kind:"registration-failed",registration:registered,ambiguous,cleanupIds,cleanup,cleanupVerify,runtimeGone,releaseLockAfterFailure,watchdogCleanup};
         }
         const sandboxId = registered.sandboxId || claimedSandboxId;
         if (sandboxId !== claimedSandboxId) {
@@ -449,15 +450,13 @@ export function createWindowsSandboxLifecycle(ports) {
             if (!singletonUpdated) {
                 const {watchdogCleanup,cleanup} = compensateRuntime(discovery.binding, { ...starting, sandboxId, minimizeWatchdogLaunch:r.minimizeWatchdogLaunch }, [sandboxId]);
                 if (cleanup.ok && watchdogCleanup.ok) policy.abortLifecycle(deviceId, lifecycleClaim.lifecycle, device);
-                return ports.textResult(false, JSON.stringify({
-                    ok: false,
-                    error: "windows-sandbox-singleton-generation-conflict",
-                    backend: "windows-sandbox",
+                return {
+                    kind:"singleton-conflict",
                     deviceId,
                     runtimeStopped: cleanup.ok,
                     compensationRefused: cleanup.refused,
                     watchdogCleaned: watchdogCleanup.ok,
-                }));
+                };
             }
         }
         /** @type {{ok:boolean,warning?:string}|null} */ let minimizeConfirmation = null;
@@ -492,32 +491,33 @@ export function createWindowsSandboxLifecycle(ports) {
         if (!transition.matched) {
             const {watchdogCleanup,cleanup} = compensateRuntime(discovery.binding, { ...starting, sandboxId, minimizeWatchdogLaunch:r.minimizeWatchdogLaunch, helperSessionLaunch }, [sandboxId]);
             if (cleanup.ok && watchdogCleanup.ok) ports.releaseSingleton({ ...starting, sandboxId }, lock.lock.claimId);
-            return ports.lifecycleConflict(deviceId, "start-complete", transition, {
+            return {kind:"conflict",operation:"start-complete",transition,detail:{
                 runtimeStopped: cleanup.ok,
                 compensationRefused: cleanup.refused,
                 watchdogCleaned: watchdogCleanup.ok,
                 singletonReleased: cleanup.ok && watchdogCleanup.ok,
-            });
+            }};
         }
-        return ports.jsonResult({ device: ports.targetStatus(updated) });
+        return {kind:"completed",device:updated};
     }
 
-    /** @param {{deviceId:string,force?:boolean}} args @returns {Result|undefined} */
+    /** @param {{deviceId:string,force?:boolean}} args
+     * @returns {import('./windows-sandbox-stop.mjs').WindowsSandboxLifecycleOutcome<NativeResult>} */
     function deleteDevice(args) {
         const { deviceId, force = false } = args;
         const devices = ports.readDevices();
         const device = devices.find((item) => item.id === deviceId);
-        if (!device) return undefined;
+        if (!device) return {kind:"unhandled"};
         if (!force && device.status !== "stopped") {
-            return ports.textResult(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
+            return {kind:"refused",error:`Refusing to delete ${deviceId} while status is ${device.status}`};
         }
         let claim = policy.claimLifecycle(deviceId, device, "delete");
-        if (!claim.transition.matched) return ports.lifecycleConflict(deviceId, "delete-claim", claim.transition);
+        if (!claim.transition.matched) return {kind:"conflict",operation:"delete-claim",transition:claim.transition};
         const singleton = policy.bindLifecycleSingleton(deviceId, claim, device);
         if (!singleton.ok) {
             policy.abortLifecycle(deviceId, claim.lifecycle, device);
-            if (singleton.conflict) return ports.lifecycleConflict(deviceId, "delete-singleton", singleton.conflict);
-            return ports.textResult(false, singleton.error);
+            if (singleton.conflict) return {kind:"conflict",operation:"delete-singleton",transition:singleton.conflict};
+            return {kind:"refused",error:singleton.error};
         }
         claim = singleton.claim;
         const stopped = policy.stopDevice({ ...claim.claimed, status: device.status });
@@ -528,30 +528,24 @@ export function createWindowsSandboxLifecycle(ports) {
                     ? { helperSessionLaunch: stopped.device.helperSessionLaunch }
                     : {}),
             } : null);
-            if (stopped.result) return ports.fail(stopped.result);
-            return ports.textResult(false, stopped.error || `Failed to stop Windows Sandbox before deleting ${deviceId}`);
+            if (stopped.result) return {kind:"native-failure",evidence:stopped.result};
+            return {kind:"refused",error:stopped.error || `Failed to stop Windows Sandbox before deleting ${deviceId}`};
         }
         const current = policy.currentLifecycleDevice(deviceId, claim.lifecycle);
         if (!current) {
             ports.releaseSingleton(stopped.device, claim.lifecycle.singletonClaimId);
-            return ports.lifecycleConflict(deviceId, "delete", { found: Boolean(ports.findDevice(deviceId)), matched: false });
+            return {kind:"conflict",operation:"delete",transition:{found:Boolean(ports.findDevice(deviceId)),matched:false}};
         }
         const transition = ports.transitionDevice(deviceId, current, null);
         ports.releaseSingleton(stopped.device, claim.lifecycle.singletonClaimId);
-        if (!transition.matched) return ports.lifecycleConflict(deviceId, "delete", transition);
+        if (!transition.matched) return {kind:"conflict",operation:"delete",transition};
         ports.removeScratch(stopped.device);
-        return ports.jsonResult({ deleted: deviceId, scratchRemoved: ports.scratchDirectory(device) });
+        return {kind:"deleted",deleted:deviceId,scratchRemoved:ports.scratchDirectory(device)};
     }
-    /** @param {{deviceId:string}} args @returns {Result|undefined} */
+    /** @param {{deviceId:string}} args
+     * @returns {import('./windows-sandbox-stop.mjs').WindowsSandboxLifecycleOutcome<NativeResult>} */
     function stop(args) {
-        const outcome=policy.stop(args.deviceId);
-        switch(outcome.kind) {
-            case "unhandled": return undefined;
-            case "conflict": return ports.lifecycleConflict(args.deviceId,outcome.operation,outcome.transition);
-            case "refused": return ports.textResult(false,outcome.error);
-            case "native-failure": return ports.fail(outcome.evidence);
-            case "completed": return ports.jsonResult({device:ports.targetStatus(outcome.device)});
-        }
+        return policy.stop(args.deviceId);
     }
     return {start,stop,delete:deleteDevice};
 }

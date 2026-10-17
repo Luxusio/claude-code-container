@@ -271,14 +271,17 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
             : verifyBrokerOwnedAppiumListener(appium);
         if (!listenerVerification.ok) return appiumListenerOwnershipFailure(ownerId, parsed, listenerVerification);
         const serverUrl = listenerVerification.serverUrl;
-        const readiness = await waitForAppiumServerReady(serverUrl);
-        if (!readiness.ok) {
+        const readinessDeadline = ports.monotonicNow() + DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS;
+        const readinessRemainingMs = () => readinessDeadline - ports.monotonicNow();
+        const readiness = await waitForAppiumServerReady(serverUrl, readinessRemainingMs);
+        const capabilities = readiness.ok ? appiumCapabilities(parsed.backend, device) : {};
+        if (!readiness.ok || readinessRemainingMs() <= 0) {
+            readiness.ok = false;
             const signal = await terminateBrokerOwnedAppiumAndWait(appium);
             const transition = signal.ok ? writeUpdatedAppiumDevice(ownerId, parsed, appium, null) : null;
             if (transition && !transition.matched) return appiumRuntimeStateConflict(ownerId, parsed, transition, { readiness, signal });
             return {kind: "refused", reason: "provider-failed", error: "appium-server-not-ready", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, readiness, signal};
         }
-        const capabilities = appiumCapabilities(parsed.backend, device);
         let response = await ports.createSession(serverUrl, capabilities, DEVICE_BROKER_APPIUM_SESSION_TIMEOUT_MS);
         let instrumentationRecovery = null;
         if (!response.ok && parsed.backend.startsWith("android") && response.instrumentationInitializationFailed) {
@@ -415,14 +418,16 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
         }
     }
 
-    async function waitForAppiumServerReady(serverUrl: string, timeoutMs = DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS) {
-        const deadline = ports.now() + Math.max(1, timeoutMs);
+    async function waitForAppiumServerReady(serverUrl: string, remainingMilliseconds: () => number) {
         let response: Awaited<ReturnType<typeof ports.status>> | null = null;
-        while (ports.now() <= deadline) {
-            const remainingMs = Math.max(1, deadline - ports.now());
+        while (true) {
+            const remainingMs = Math.floor(remainingMilliseconds());
+            if (remainingMs <= 0) break;
             response = await ports.status(serverUrl, Math.min(2000, remainingMs));
+            const remaining = remainingMilliseconds();
+            if (remaining <= 0) break;
             if (response.ok && response.ready) return { ok: true, response };
-            if (ports.now() < deadline) await sleep(Math.min(200, Math.max(1, deadline - ports.now())));
+            await sleep(Math.min(200, remaining));
         }
         return { ok: false, response };
     }
@@ -431,15 +436,20 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
         appium: unknown,
         timeoutMs = DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS,
     ) {
-        const deadline = ports.now() + Math.max(1, timeoutMs);
-        let verification = verifyBrokerOwnedAppiumListener(appium);
-        while (!verification.ok
-            && verification.error === "appium-port-listener-unavailable"
-            && ports.now() < deadline) {
-            await sleep(Math.min(100, Math.max(1, deadline - ports.now())));
-            verification = verifyBrokerOwnedAppiumListener(appium);
+        const deadline = ports.monotonicNow() + Math.max(1, timeoutMs);
+        let failure: Extract<BrokerAppiumVerification, {ok: false}> | null = null;
+        while (Math.floor(deadline - ports.monotonicNow()) > 0) {
+            const verification = verifyBrokerOwnedAppiumListener(appium);
+            const remaining = deadline - ports.monotonicNow();
+            if (verification.ok) {
+                if (remaining > 0) return verification;
+                return failure || {ok: false as const, error: "appium-port-listener-unavailable", receipt: verification.receipt};
+            }
+            failure = verification;
+            if (verification.error !== "appium-port-listener-unavailable" || remaining <= 0) break;
+            await sleep(Math.min(100, remaining));
         }
-        return verification;
+        return failure || {ok: false as const, error: "appium-port-listener-unavailable", receipt: null};
     }
 
     function selectAvailableAppiumPort(

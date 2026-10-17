@@ -112,3 +112,140 @@ describe("actual public Sandbox facade with private native/state adapters", () =
         } finally { for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill(); rmSync(f.home, { recursive: true, force: true }); }
     }, 30000);
 });
+
+function lifecycleFacade(mode: string) {
+    const home = mkdtempSync(join(tmpdir(), "ccc-sandbox-lifecycle-facade-"));
+    const script = join(home, "lifecycle.mjs");
+    writeFileSync(script, `
+import assert from 'node:assert/strict';
+import cp from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import {syncBuiltinESMExports} from 'node:module';
+const mode=process.argv[2],guid=${JSON.stringify(guid)},other='22222222-2222-4222-8222-222222222222',third='33333333-3333-4333-8333-333333333333';
+const trace=[];let launched=false,lists=0,state,owner,scratch,lock;
+const nativeRm=fs.rmSync;
+fs.rmSync=function(file,options){if(mode==='delete-scratch-throw'&&file===scratch&&options?.recursive)throw Error('scratch denied');return nativeRm(file,options)};
+cp.spawn=function(command,args){throw Error('unexpected detached native command: '+command+' '+JSON.stringify(args))};
+cp.spawnSync=function(command,args=[],options={}){
+ const lookup=command==='where'?args[0]:command==='/bin/sh'&&args[0]==='-c'&&args[1]?.startsWith('command -v ')?args[1].slice(11):null;
+ if(lookup!==null)return {status:lookup==='wsb'&&mode!=='start-prerequisite'?0:1,stdout:lookup==='wsb'&&mode!=='start-prerequisite'?'scope-safe-fake-wsb\\n':'',stderr:''};
+ if(command==='scope-safe-fake-wsb'){
+  assert.equal(options.windowsHide,true);trace.push({command,args,timeout:options.timeout});
+  if(args[0]==='list'){
+   assert.deepEqual(args,['list','--raw']);lists++;
+   if(mode==='start-inventory-failure')return {status:8,stdout:'inventory stdout',stderr:'',error:new Error('inventory error')};
+   if(!launched)return {status:0,stdout:'[]',stderr:''};
+   if(mode==='start-ambiguous')return {status:0,stdout:JSON.stringify([other,third]),stderr:'inventory warning',error:new Error('inventory opaque')};
+   if(mode==='start-singleton-conflict'){
+    const current=state.findOwnerDevice('windows','sandbox');
+    state.writeOwnerDevices('windows',[{...current,status:'running',sandboxId:other,singletonClaimId:'successor',lifecycle:{runtimeId:'successor',operation:'start',claimedAt:'2026-10-10T00:00:00.000Z'}}]);
+    const singleton=JSON.parse(fs.readFileSync(lock,'utf8'));fs.writeFileSync(lock,JSON.stringify({...singleton,sandboxId:other,claimId:'successor'}));
+    return {status:0,stdout:JSON.stringify([other]),stderr:''};
+   }
+   if(mode==='start-complete-conflict'){
+    const current=state.findOwnerDevice('windows','sandbox');
+    state.writeOwnerDevices('windows',[{...current,status:'running',singletonClaimId:'successor',lifecycle:{runtimeId:'successor',operation:'start',claimedAt:'2026-10-10T00:00:00.000Z'}}]);
+    const singleton=JSON.parse(fs.readFileSync(lock,'utf8'));fs.writeFileSync(lock,JSON.stringify({...singleton,claimId:'successor'}));
+   }
+   return {status:0,stdout:JSON.stringify([guid]),stderr:''};
+  }
+  if(args[0]==='stop'){
+   assert.deepEqual(args,['stop','--id',guid]);assert.equal(options.timeout,60000);
+   return {status:mode==='delete-native-failure'?7:0,stdout:'stop stdout',stderr:mode==='delete-native-failure'?'stop stderr':'',error:new Error('stop error')};
+  }
+ }
+ if(/powershell(?:\\.exe)?$/i.test(String(command))){
+  assert.equal(options.timeout,120000);assert.equal(options.windowsHide,true);
+  trace.push({command,args,timeout:options.timeout});launched=true;
+  return {status:mode==='start-launch-failure'?7:0,stdout:'launch stdout',stderr:mode==='start-launch-failure'?'launch stderr':'',error:new Error('launch error')};
+ }
+ throw Error('unexpected native command: '+command+' '+JSON.stringify(args));
+};
+syncBuiltinESMExports();
+const backend=await import(${JSON.stringify(pathToFileURL(join(providers, "backends/windows-sandbox.mjs")).href)});
+state=await import(${JSON.stringify(pathToFileURL(join(providers, "state/device-store.mjs")).href)});
+const {ownerId}=await import(${JSON.stringify(pathToFileURL(join(providers, "context.mjs")).href)});
+owner=ownerId();scratch=path.join(process.env.HOME,'.ccc/devices/owners',owner,'windows/sandbox');lock=path.join(process.env.HOME,'.ccc/devices/host-locks/windows-sandbox.json');
+const running=mode==='start-status'||mode==='delete-native-failure';
+state.writeOwnerDevices('windows',mode==='missing'?[]:[{id:'sandbox',status:running?'running':'stopped',backend:'windows-sandbox',sandboxId:guid,minimized:false,...(running?{singletonClaimId:'old'}:{})}]);
+fs.mkdirSync(scratch,{recursive:true});fs.writeFileSync(path.join(scratch,'preserved-marker'),'scratch');
+if(running){fs.mkdirSync(path.dirname(lock),{recursive:true});fs.writeFileSync(lock,JSON.stringify({provider:'windows-sandbox',ownerId:owner,deviceId:'sandbox',sandboxId:guid,claimId:'old'}))}
+// State publication above establishes this process's real identity on its native host.
+// Only the provider-facing native leaves below use the Windows launch/registration branch.
+Object.defineProperty(process,'platform',{value:'win32'});
+if(mode==='missing'){
+ for(const name of ['device_start','device_stop','device_delete'])assert.equal(await backend.handleWindowsTool(name,{deviceId:'missing'}),undefined);
+ console.log(JSON.stringify({missing:true,trace}));
+}else{
+ let result,thrown;
+ try{result=await backend.handleWindowsTool(mode.startsWith('delete')?'device_delete':'device_start',{deviceId:'sandbox',minimized:false,force:mode==='delete-native-failure'})}catch(error){thrown=error.message}
+ console.log(JSON.stringify({result,thrown,device:state.findOwnerDevice('windows','sandbox'),trace,lists,lockExists:fs.existsSync(lock),scratchExists:fs.existsSync(scratch),scratch}));
+}
+`);
+    const env: NodeJS.ProcessEnv = { HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData/Roaming"), LOCALAPPDATA: join(home, "AppData/Local"), TMPDIR: home, TMP: home, TEMP: home, PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR };
+    try {
+        const execution = spawnSync(process.execPath, [script, mode], { cwd: home, env, encoding: "utf8", timeout: 20000, windowsHide: true });
+        expect(execution.status, execution.stderr).toBe(0);
+        return JSON.parse(execution.stdout.trim().split(/\r?\n/).at(-1)!);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+}
+
+describe("actual public Sandbox start and delete semantic rendering", () => {
+    it("renders start with the existing public device fields and accepts status-zero native error metadata", () => {
+        const value = lifecycleFacade("start-success");
+        expect(value.result.isError).toBe(false);
+        expect(value.result.content).toHaveLength(1); expect(value.result.content[0].type).toBe("text");
+        const payload = JSON.parse(value.result.content[0].text);
+        expect(Object.keys(payload)).toEqual(["device"]);
+        expect(payload.device).toMatchObject({ id: "sandbox", status: "running", sandboxId: guid, launchMode: "wsb-file", minimized: false,
+            minimizeConfirmed: false, minimizeWarning: null, minimizeWatchdogLaunch: { ok: true, skipped: true },
+            helperSessionLaunch: { ok: true, skipped: true, reason: "wsb-file launch creates the interactive Sandbox session", launchMode: "wsb-file", minimizeWatchdogLaunch: { ok: true, skipped: true } } });
+        expect(value.device).toMatchObject({ status: "running", sandboxId: guid }); expect(value.lockExists).toBe(true);
+        expect(value.trace.map((item: { timeout: number }) => item.timeout)).toEqual([10000, 120000, 10000]);
+        expect(value.trace[1].args).toContain("-EncodedCommand");
+    });
+    it.each([
+        ["start-status", "Refusing to start sandbox while status is running"],
+        ["start-prerequisite", "Windows Sandbox backend missing prerequisites: wsb"],
+        ["start-inventory-failure", "Error: inventory stdout"],
+        ["start-launch-failure", "Error: launch stderr"],
+        ["delete-native-failure", "Error: stop stderr"],
+    ])("preserves the exact public refusal/native error priority for %s", (mode, text) => {
+        const value = lifecycleFacade(mode);
+        expect(value.result).toEqual({ content: [{ type: "text", text }], isError: true });
+        expect(value.device.status).toBe(mode === "start-status" || mode === "delete-native-failure" ? "running" : "stopped");
+        expect(value.scratchExists).toBe(true);
+    });
+    it("preserves the exact registration diagnostic order and ambiguous ownership cleanup suffix", () => {
+        const value = lifecycleFacade("start-ambiguous"), other = "22222222-2222-4222-8222-222222222222", third = "33333333-3333-4333-8333-333333333333";
+        expect(value.result).toEqual({ content: [{ type: "text", text: `Windows Sandbox launch produced multiple new runtimes: ${other}, ${third}. status=0 stderr=inventory warning stdout=${JSON.stringify([other, third])} error=inventory opaque cleanupSkipped=ambiguous-runtime-ownership lockRetained=true minimizeWatchdogCleaned=true` }], isError: true });
+        expect(value.device.status).toBe("starting"); expect(value.lockExists).toBe(true); expect(value.lists).toBe(2);
+        expect(value.trace.some((item: { args: string[] }) => item.args[0] === "stop")).toBe(false);
+    });
+    it("renders the existing singleton conflict JSON in its exact public field order", () => {
+        const value = lifecycleFacade("start-singleton-conflict");
+        expect(value.result).toEqual({ content: [{ type: "text", text: JSON.stringify({ ok: false, error: "windows-sandbox-singleton-generation-conflict", backend: "windows-sandbox", deviceId: "sandbox", runtimeStopped: false, compensationRefused: true, watchdogCleaned: false }) }], isError: true });
+        expect(value.device.singletonClaimId).toBe("successor"); expect(value.lockExists).toBe(true);
+        expect(value.trace.some((item: { args: string[] }) => item.args[0] === "stop")).toBe(false);
+    });
+    it("renders conflict compensation as the existing rollback field and preserves the successor", () => {
+        const value = lifecycleFacade("start-complete-conflict");
+        expect(value.result).toEqual({ content: [{ type: "text", text: JSON.stringify({ ok: false, error: "owner-device-state-conflict", backend: "windows-sandbox", deviceId: "sandbox", operation: "start-complete", found: true,
+            rollback: { runtimeStopped: false, compensationRefused: true, watchdogCleaned: false, singletonReleased: false } }) }], isError: true });
+        expect(value.device.lifecycle.runtimeId).toBe("successor"); expect(value.lockExists).toBe(true);
+    });
+    it("renders actual record and scratch deletion with the existing pretty JSON response", () => {
+        const value = lifecycleFacade("delete-success");
+        expect(value.result).toEqual({ content: [{ type: "text", text: JSON.stringify({ deleted: "sandbox", scratchRemoved: value.scratch }, null, 2) }], isError: false });
+        expect(value.device).toBeUndefined(); expect(value.lockExists).toBe(false); expect(value.scratchExists).toBe(false); expect(value.trace).toEqual([]);
+    });
+    it("keeps record deletion truthful when scratch removal throws at the actual facade", () => {
+        const value = lifecycleFacade("delete-scratch-throw");
+        expect(value.thrown).toBe("scratch denied"); expect(value.result).toBeUndefined(); expect(value.device).toBeUndefined();
+        expect(value.lockExists).toBe(false); expect(value.scratchExists).toBe(true);
+    });
+    it("retains undefined missing-device results for all public entrypoints", () => {
+        expect(lifecycleFacade("missing")).toEqual({ missing: true, trace: [] });
+    });
+});

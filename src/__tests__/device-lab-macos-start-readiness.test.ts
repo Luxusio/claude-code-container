@@ -44,4 +44,36 @@ describe("macOS start helper provisioning", () => {
         });
         expect(observed.error).toBe("macos-helper-readiness-timeout");
     });
+    it("keeps the exported numeric deadline and injected legacy callback shape as Unix time", async () => {
+        const unix = Date.parse("2026-10-17T12:00:00.000Z"), device = { id: "legacy" };
+        let clock = unix;
+        const delay = vi.fn(async (milliseconds: number) => { clock += milliseconds; });
+        const provision = vi.fn().mockReturnValueOnce(refused).mockReturnValueOnce({ ok: true, provisioning: { updatedAt: new Date(unix).toISOString() } });
+        const result = await waitForMacosGuestHelper(device, unix + 700, { now: () => clock, provision, delay });
+        expect(result.ok).toBe(true);
+        expect(provision.mock.calls).toEqual([[device, { deadlineAt: unix + 700 }], [device, { deadlineAt: unix + 700 }]]);
+        expect(delay.mock.calls).toEqual([[500]]);
+    });
+    it("preserves a genuine legacy provisioning failure that arrives after its numeric deadline", async () => {
+        let clock = 0;
+        const native = { ok: false, error: "macos-helper-chmod-failed", command: { status: 9, stderr: "Permission denied" } };
+        const delay = vi.fn();
+        const result = await waitForMacosGuestHelper({}, 1000, {
+            now: () => clock, provision: () => { clock = 1001; return native; }, delay,
+        });
+        expect(result).toBe(native);
+        expect(delay).not.toHaveBeenCalled();
+    });
+    it.each(["scp", "chmod"])("keeps legacy transient %s failure at numeric expiry as timeout with its original callback shape", async stage => {
+        const unix = Date.parse("2026-10-17T12:00:00.000Z"), device = { id: "legacy-expiry" };
+        let clock = unix;
+        const native = { ok: false, error: stage === "scp" ? "macos-helper-scp-failed" : "macos-helper-chmod-failed",
+            command: { status: 255, stderr: "Connection refused" } };
+        const provision = vi.fn(() => { clock = unix + 1001; return native; }), delay = vi.fn();
+        const result = await waitForMacosGuestHelper(device, unix + 1000, { now: () => clock, provision, delay });
+        expect(result).toMatchObject({ ok: false, error: "macos-helper-readiness-timeout" });
+        expect(result).not.toBe(native);
+        expect(provision.mock.calls).toEqual([[device, { deadlineAt: unix + 1000 }]]);
+        expect(delay).not.toHaveBeenCalled();
+    });
 });

@@ -358,12 +358,17 @@ export function createMacosVmLifecycleApplication(ports) {
     /** @param {MacosVmLifecycleInput} args */
     async function start(args) {
         const { deviceId, headless, waitForBoot = true, bootTimeoutMs = 300000 } = args;
-        const startDeadlineAt = (0, ports.now)() + (Number.isFinite(bootTimeoutMs) ? Math.min(600000, Math.max(1000, bootTimeoutMs)) : 300000);
+        const startedAt = (0, ports.monotonicNow)();
+        const allowanceMs = Number.isFinite(bootTimeoutMs) ? Math.min(600000, Math.max(1000, bootTimeoutMs)) : 300000;
+        /** @type {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmStartBudget} */
+        const budget = { remainingMs: () => Math.max(0, allowanceMs - Math.max(0, (0, ports.monotonicNow)() - startedAt)) };
+        const timeoutError = waitForBoot ? "macos-boot-not-ready" : "macos-helper-readiness-timeout";
         const device = (0, ports.find)(deviceId);
         if (!device) return undefined;
         if (device.status !== "stopped" || device.lifecycle) {
             return refused( `Refusing to start ${deviceId} while status is ${device.status}${device.lifecycle ? ` and lifecycle operation ${device.lifecycle.operation || "unknown"} is active` : ""}`);
         }
+        if (!(budget.remainingMs() >= 1)) return problem({ ok: false, error: timeoutError, device });
         const keyPolicy = (0, ports.validateSshKey)(device.ssh?.keyPath);
         if (!keyPolicy.ok) return refused( keyPolicy.message);
         const safeDevice = device.ssh?.keyPath && keyPolicy.path !== device.ssh.keyPath
@@ -371,11 +376,13 @@ export function createMacosVmLifecycleApplication(ports) {
             : device;
         const startDevice = headless === undefined ? safeDevice : { ...safeDevice, headless: Boolean(headless) };
 
+        if (!(budget.remainingMs() >= 1)) return problem({ ok: false, error: timeoutError, device });
         const plan = (0, ports.providerPlan)(startDevice);
         if (!plan.available) {
             return refused( `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`);
         }
 
+        if (!(budget.remainingMs() >= 1)) return problem({ ok: false, error: timeoutError, device });
         const claim = claimMacosLifecycle(deviceId, device, "start", {
             provider: plan.selectedProvider,
             providerInstance: plan.providerInstance,
@@ -384,8 +391,14 @@ export function createMacosVmLifecycleApplication(ports) {
         });
         if (!claim.transition.matched) return macosLifecycleConflict(deviceId, "start-claim", claim.transition);
 
-        const {child,startCommand} = ports.launchProvider(plan,startDevice);
-        const startError = await (0, ports.waitProviderStart)(child);
+        const launched = budget.remainingMs() >= 1 ? ports.launchProvider(plan,startDevice,budget) : null;
+        if (!launched) {
+            const aborted = abortMacosLifecycle(deviceId, claim.lifecycle, device);
+            if (!aborted.matched) return macosLifecycleConflict(deviceId, "start-claim", aborted);
+            return problem({ ok: false, error: timeoutError, device: aborted.device });
+        }
+        const {child,startCommand} = launched;
+        const startError = await (0, ports.waitProviderStart)(child,budget);
         if (startError) {
             abortMacosLifecycle(deviceId, claim.lifecycle, device);
             return startError;
@@ -424,16 +437,31 @@ export function createMacosVmLifecycleApplication(ports) {
             const rollback = rollbackStartedMacosVm(deviceId, claim.lifecycle, plan);
             return macosLifecycleConflict(deviceId, "start-runtime-readback", { found: Boolean((0, ports.find)(deviceId)), matched: false }, rollback);
         }
-        const boot = waitForBoot ? await (0, ports.waitBoot)(plan, bootTimeoutMs, startDeadlineAt) : { ready: false, skipped: true };
+        let boot = waitForBoot
+            ? budget.remainingMs() >= 1 ? await (0, ports.waitBoot)(plan, bootTimeoutMs, budget) : { ready: false, skipped: false }
+            : { ready: false, skipped: budget.remainingMs() > 0 };
+        if (!(budget.remainingMs() > 0) && (boot.ready || boot.skipped)) boot = { ...boot, ready: false, skipped: false };
         startedDevice.status = boot.ready || boot.skipped ? "running" : "starting";
         startedDevice.bootReady = boot.ready;
         startedDevice.lastBootCheck = boot;
         if (boot.ready && boot.ip && startedDevice.ssh?.user && !startedDevice.ssh.host) {
             startedDevice.ssh = { ...startedDevice.ssh, host: boot.ip };
         }
-        const provision = waitForBoot
-            ? await (0, ports.waitGuestHelper)(startedDevice, startDeadlineAt)
-            : (0, ports.provisionHelper)(startedDevice);
+        let provision = budget.remainingMs() >= 1
+            ? waitForBoot ? await (0, ports.waitGuestHelper)(startedDevice, budget) : (0, ports.provisionHelper)(startedDevice, budget)
+            : { ok: false, error: "macos-helper-readiness-timeout", provisioning: { status: "failed", updatedAt: (0, ports.timestamp)() } };
+        if (provision.ok && !(budget.remainingMs() > 0)) {
+            provision = {
+                ...provision,
+                ok: false,
+                error: "macos-helper-readiness-timeout",
+                provisioning: {
+                    ...(provision.provisioning && typeof provision.provisioning === "object" ? provision.provisioning : {}),
+                    status: "failed",
+                    updatedAt: (0, ports.timestamp)(),
+                },
+            };
+        }
         const completed = macosLifecycleReplacement(persistedStarted, null, {
             provider: plan.selectedProvider,
             providerInstance: plan.providerInstance,
@@ -445,7 +473,9 @@ export function createMacosVmLifecycleApplication(ports) {
             bootReady: startedDevice.bootReady,
             lastBootCheck: startedDevice.lastBootCheck,
         });
+        const admittedBeforeCompletion = budget.remainingMs() > 0;
         const completedTransition = (0, ports.transition)(deviceId, persistedStarted, completed);
+        const admittedAfterCompletion = budget.remainingMs() > 0;
         if (!completedTransition.matched) {
             const rollback = rollbackStartedMacosVm(deviceId, claim.lifecycle, plan);
             return macosLifecycleConflict(deviceId, "start-complete", completedTransition, rollback);
@@ -464,6 +494,9 @@ export function createMacosVmLifecycleApplication(ports) {
                 providerStart: startedDevice.runtime,
                 boot,
             });
+        }
+        if (!admittedBeforeCompletion || !admittedAfterCompletion) {
+            return problem({ ok: false, error: "macos-helper-readiness-timeout", device: updated, helper: provision.provisioning, providerStart: startedDevice.runtime, boot });
         }
         return completedOutcome({ device: updated, helper: provision.provisioning, providerStart: startedDevice.runtime, boot });
     }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createMacosVmLifecycleApplication } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
 import { createMacosImageSnapshots } from "../../../packages/device-lab/providers/application/macos-image-snapshots.mjs";
 import type { MacosImageSnapshotsPorts } from "../../../packages/device-lab/providers/ports/macos-image-snapshots.mjs";
-import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmCommandResult, MacosVmNativeObservation } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
+import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmCommandResult, MacosVmNativeObservation, MacosVmStartBudget } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
 
 function nativeLeaves(initial?:MacosVmDevice){
     let current=initial;const trace:string[]=[],fault={native:"raw claim failure"};
@@ -15,7 +15,7 @@ function nativeLeaves(initial?:MacosVmDevice){
         read(){trace.push("read");return current?[current]:[];},find(){trace.push("find");return current||null;},
         claim(device){trace.push("claim");current=device;return {ok:true};},
         transition(_id,expected,replacement){trace.push("transition");if(current!==expected)return {matched:false,found:Boolean(current),device:current!};current=replacement||undefined;return {matched:true,found:true,device:current!};},
-        owner:()=>"owner",deviceId:()=>"unit",timestamp:()=>"2026-10-10T12:00:00.000Z",now:()=>1791633600000,runtimeId:()=>"claim",claimTtlMs:()=>1000,parseLifecycleClaimedAt:value=>Date.parse(value),
+        owner:()=>"owner",deviceId:()=>"unit",timestamp:()=>"2026-10-10T12:00:00.000Z",now:()=>1791633600000,monotonicNow:()=>17.25,runtimeId:()=>"claim",claimTtlMs:()=>1000,parseLifecycleClaimedAt:value=>Date.parse(value),
         validateSshKey:()=>({ok:true,path:null}),helperMetadata:()=>({}),
         providerPlan:()=>nativePlan,tartPlan:()=>({plan:nativePlan}),
         cloneInstance(_plan,source,target){return observe(command(null,["clone",source,target]));},
@@ -29,6 +29,155 @@ function nativeLeaves(initial?:MacosVmDevice){
     };
     return {ports,trace,fault,child,plan,nativePlan,command,observe,read:()=>current,replace:(value:MacosVmDevice)=>{current=value;}};
 }
+function startLeaves() {
+    const f = nativeLeaves({ id: "unit", status: "stopped", provider: "tart", ssh: { user: "guest" } });
+    let elapsed = 17.25, wall = Date.parse("2026-10-10T12:00:00.000Z");
+    f.ports.now = () => wall;
+    f.ports.monotonicNow = () => elapsed;
+    f.ports.timestamp = () => new Date(wall).toISOString();
+    return { ...f, advance: (milliseconds: number) => { elapsed += milliseconds; }, shiftWall: (milliseconds: number) => { wall += milliseconds; } };
+}
+
+describe("direct macOS captured start allowance", () => {
+    it.each([
+        [undefined, 300000], [Number.NaN, 300000], [Number.POSITIVE_INFINITY, 300000],
+        [-1, 1000], [0, 1000], [999, 1000], [1234.5, 1234.5], [700000, 600000],
+    ])("normalizes the allowance without changing raw boot timeout forwarding: %s", async (raw, normalized) => {
+        const f = startLeaves();
+        let budget: MacosVmStartBudget | undefined;
+        f.ports.waitBoot = async (plan, timeout, captured) => {
+            expect(plan).toBe(f.nativePlan);
+            expect(timeout).toBe(raw === undefined ? 300000 : raw);
+            expect(captured.remainingMs()).toBe(normalized);
+            budget = captured;
+            return { ready: true, ip: "192.0.2.4" };
+        };
+        f.ports.waitGuestHelper = async (_device, captured) => {
+            expect(captured).toBe(budget);
+            expect(captured.remainingMs()).toBe(normalized);
+            return { ok: true };
+        };
+        expect(await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: raw })).toMatchObject({ kind: "completed" });
+    });
+
+    it.each([1, -1])("debits lookup, validation, claim, launch, settling, boot and helper despite wall jump %s", async direction => {
+        const f = startLeaves(), find = f.ports.find, validate = f.ports.validateSshKey, transition = f.ports.transition;
+        let found = false, claimed = false, captured: MacosVmStartBudget | undefined;
+        f.ports.find = id => { if (!found) { found = true; f.advance(10); } return find(id); };
+        f.ports.validateSshKey = path => { f.advance(20); return validate(path); };
+        f.ports.transition = (...args) => { const result = transition(...args); if (!claimed) { claimed = true; f.advance(30); } return result; };
+        f.ports.launchProvider = (_plan, _device, budget) => { expect(budget.remainingMs()).toBe(940); captured = budget; f.advance(40); return { child: f.child, startCommand: f.plan.startCommand }; };
+        f.ports.waitProviderStart = async (_child, budget) => { expect(budget).toBe(captured); expect(budget.remainingMs()).toBe(900); f.advance(200); f.shiftWall(direction * 86400000); return null; };
+        f.ports.waitBoot = async (_plan, timeout, budget) => {
+            expect(timeout).toBe(1000); expect(budget).toBe(captured); expect(budget.remainingMs()).toBe(700);
+            f.advance(100); return { ready: true, ip: "192.0.2.4" };
+        };
+        f.ports.waitGuestHelper = async (device, budget) => {
+            expect(device.ssh?.host).toBe("192.0.2.4"); expect(budget).toBe(captured); expect(budget.remainingMs()).toBe(600);
+            f.advance(50); return { ok: true, provisioning: { status: "provisioned" } };
+        };
+        expect(await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 })).toMatchObject({ kind: "completed" });
+        expect(captured!.remainingMs()).toBe(550);
+        expect(f.read()).toMatchObject({ status: "running", bootReady: true, runtime: { providerPid: 71 } });
+        expect(f.read()?.runtime?.startedAt).toBe(direction === 1 ? "2026-10-11T12:00:00.000Z" : "2026-10-09T12:00:00.000Z");
+    });
+
+    it.each(["lookup", "validation", "claim"])("refuses launch when %s has exhausted the captured allowance", async stage => {
+        const f = startLeaves();
+        if (stage === "lookup") { const native = f.ports.find; f.ports.find = id => { f.advance(1000); return native(id); }; }
+        if (stage === "validation") { const native = f.ports.validateSshKey; f.ports.validateSshKey = path => { f.advance(1000); return native(path); }; }
+        if (stage === "claim") { const native = f.ports.transition; let calls = 0; f.ports.transition = (...args) => { const result = native(...args); if (++calls === 1) f.advance(1000); return result; }; }
+        const result = await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 });
+        expect(result).toMatchObject({ kind: "problem", value: { error: "macos-boot-not-ready" } });
+        expect(f.trace).not.toContain("spawn"); expect(f.trace).not.toContain("boot"); expect(f.trace).not.toContain("guest-helper");
+        expect(f.read()).toMatchObject({ status: "stopped" }); expect(f.read()?.runtime).toBeUndefined(); expect(f.read()?.lifecycle).toBeUndefined();
+    });
+
+    it.each(["launch", "settling"])("retains truthful runtime after %s exhausts the allowance", async stage => {
+        const f = startLeaves();
+        if (stage === "launch") f.ports.launchProvider = () => { f.advance(1000); return { child: f.child, startCommand: f.plan.startCommand }; };
+        else f.ports.waitProviderStart = async () => { f.advance(1000); return null; };
+        expect(await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 })).toMatchObject({ kind: "problem", value: { error: "macos-boot-not-ready" } });
+        expect(f.read()).toMatchObject({ status: "starting", bootReady: false, runtime: { providerPid: 71, runtimeId: "claim" } });
+        expect(f.read()?.lifecycle).toBeUndefined(); expect(f.trace).not.toContain("boot"); expect(f.trace).not.toContain("guest-helper"); expect(f.trace).not.toContain("stop ccc-owner-unit");
+    });
+
+    it.each([false, true])("handles native pre-spawn budget refusal without inventing a runtime or overwriting a successor: successor=%s", async replaced => {
+        const f = startLeaves(), successor: MacosVmDevice = { id: "unit", status: "running", providerInstance: "successor", lifecycle: { runtimeId: "successor", operation: "start", claimedAt: "now" } };
+        f.ports.launchProvider = (_plan, _device, budget) => { expect(budget.remainingMs()).toBe(1000); f.advance(1000); if (replaced) f.replace(successor); return null; };
+        const result = await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 });
+        expect(result?.kind).toBe("problem");
+        if (replaced) expect(f.read()).toBe(successor);
+        else { expect(result).toMatchObject({ value: { error: "macos-boot-not-ready" } }); expect(f.read()).toMatchObject({ status: "stopped" }); expect(f.read()?.lifecycle).toBeUndefined(); }
+        expect(f.read()?.runtime).toBeUndefined(); expect(f.trace).not.toContain("wait-start"); expect(f.trace).not.toContain("stop ccc-owner-unit");
+    });
+
+    it("cannot grant running or bootReady authority from a late positive boot", async () => {
+        const f = startLeaves();
+        f.ports.waitBoot = async () => { f.advance(1000); return { ready: true, ip: "192.0.2.4" }; };
+        expect(await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 })).toMatchObject({ kind: "problem", value: { error: "macos-boot-not-ready" } });
+        expect(f.read()).toMatchObject({ status: "starting", bootReady: false, runtime: { providerPid: 71 } });
+        expect(f.read()?.ssh?.host).toBeUndefined(); expect(f.read()?.lifecycle).toBeUndefined();
+        expect(f.trace).not.toContain("guest-helper"); expect(f.trace).not.toContain("stop ccc-owner-unit");
+    });
+
+    it("retains timely running/boot facts when helper success arrives late", async () => {
+        const f = startLeaves();
+        f.ports.waitBoot = async () => { f.advance(100); return { ready: true, ip: "192.0.2.4" }; };
+        f.ports.waitGuestHelper = async (_device, budget) => { expect(budget.remainingMs()).toBe(900); f.advance(900); return { ok: true }; };
+        expect(await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 })).toMatchObject({ kind: "problem", value: { error: "macos-helper-readiness-timeout" } });
+        expect(f.read()).toMatchObject({ status: "running", bootReady: true, ssh: { host: "192.0.2.4" }, runtime: { providerPid: 71 } });
+        expect(f.read()?.lifecycle).toBeUndefined(); expect(f.trace).not.toContain("stop ccc-owner-unit");
+    });
+
+    it.each(["helper", "provider"])("retains an admitted native %s failure even when it consumes the remainder", async stage => {
+        const f = startLeaves(), native = { status: 9, stdout: "partial", stderr: "native rejected" };
+        if (stage === "provider") {
+            const error = { kind: "native" as const, evidence: native };
+            f.ports.waitProviderStart = async () => { f.advance(1000); return error; };
+            expect(await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 })).toBe(error);
+        } else {
+            f.ports.waitGuestHelper = async () => { f.advance(1000); return { ok: false, error: "macos-helper-scp-failed", command: native }; };
+            expect(await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 })).toMatchObject({ kind: "problem", value: { error: "macos-helper-scp-failed", command: native } });
+        }
+    });
+
+    it.each(["before", "during"])("refuses successful completion when expiry occurs %s final CAS, retaining timely facts", async phase => {
+        const f = startLeaves(), native = f.ports.transition;
+        if (phase === "before") {
+            f.ports.helperMetadata = () => { f.advance(1000); return {}; };
+        } else f.ports.transition = (...args) => { const result = native(...args); if (args[2]?.lifecycle === undefined && args[2]?.bootReady === true) f.advance(1000); return result; };
+        expect(await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 })).toMatchObject({ kind: "problem", value: { error: "macos-helper-readiness-timeout" } });
+        expect(f.read()).toMatchObject({ status: "running", bootReady: true, runtime: { providerPid: 71 } });
+        expect(f.read()?.lifecycle).toBeUndefined(); expect(f.trace).not.toContain("stop ccc-owner-unit");
+    });
+
+    it("does not finalize or stop a successor written during a late helper observation", async () => {
+        const f = startLeaves(), successor: MacosVmDevice = { id: "unit", status: "running", providerInstance: "ccc-owner-unit", runtime: { runtimeId: "successor", providerPid: 99 }, lifecycle: { runtimeId: "successor", operation: "start", claimedAt: "now" } };
+        f.ports.waitGuestHelper = async () => { f.advance(1000); f.replace(successor); return { ok: true }; };
+        expect(await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000 })).toMatchObject({ kind: "problem", value: { error: "owner-device-state-conflict" } });
+        expect(f.read()).toBe(successor); expect(f.trace).not.toContain("stop ccc-owner-unit");
+    });
+
+    it.each([false, true])("keeps waitForBoot:false one-shot provisioning bounded without boot/helper waits: late=%s", async late => {
+        const f = startLeaves();
+        let provisions = 0;
+        f.ports.provisionHelper = (_device, budget) => { expect(budget.remainingMs()).toBe(1000); provisions++; if (late) f.advance(1000); return { ok: true, skipped: true }; };
+        const result = await createMacosVmLifecycleApplication(f.ports).start({ deviceId: "unit", bootTimeoutMs: 1000, waitForBoot: false });
+        expect(result).toMatchObject(late ? { kind: "problem", value: { error: "macos-helper-readiness-timeout" } } : { kind: "completed" });
+        expect(provisions).toBe(1); expect(f.trace).not.toContain("boot"); expect(f.trace).not.toContain("guest-helper");
+        expect(f.read()).toMatchObject({ status: "running", bootReady: false, runtime: { providerPid: 71 } });
+    });
+
+    it.each([999, 1000, 1001])("keeps ISO claim TTL on wall time at age %s with an unrelated elapsed origin", age => {
+        const f = startLeaves(), claimedAt = "2026-10-10T12:00:00.000Z";
+        f.replace({ id: "unit", status: "starting", lifecycle: { runtimeId: "old", operation: "start", claimedAt } });
+        f.shiftWall(age); f.advance(1000000000);
+        createMacosVmLifecycleApplication(f.ports).recoverStale("unit");
+        if (age < 1000) { expect(f.read()?.lifecycle?.runtimeId).toBe("old"); expect(f.trace).not.toContain("stop ccc-owner-unit"); }
+        else { expect(f.read()?.lifecycle).toBeUndefined(); expect(f.read()).toMatchObject({ status: "stopped", lastLifecycleRecovery: { claimedAt, recoveredAt: new Date(Date.parse(claimedAt) + age).toISOString() } }); }
+    });
+});
 function imagePorts(f:ReturnType<typeof nativeLeaves>):MacosImageSnapshotsPorts {
     return {...f.ports,snapshotId:()=>"snapshot-before",
         stopInstance:plan=>f.ports.stopInstance(plan),
@@ -196,7 +345,7 @@ describe("macOS independent inward policy controls",()=>{
     });
     it.each(["boot-failure","helper-failure"])("publishes truthful started partial fields on %s",async mode=>{
         const f=nativeLeaves({id:"unit",status:"stopped",provider:"tart",ssh:{user:"user",host:null}});
-        f.ports.waitBoot=async(_plan,timeout,deadline)=>{expect(timeout).toBe(900000);expect(deadline).toBe(1791634200000);return mode==="boot-failure"?{ready:false,error:"raw-ip-failure"}:{ready:true,ip:"192.0.2.4"};};
+        f.ports.waitBoot=async(_plan,timeout,budget)=>{expect(timeout).toBe(900000);expect(budget.remainingMs()).toBe(600000);return mode==="boot-failure"?{ready:false,error:"raw-ip-failure"}:{ready:true,ip:"192.0.2.4"};};
         f.ports.waitGuestHelper=async()=>mode==="helper-failure"?{ok:false,error:"raw-helper-failure",provisioning:{status:"failed"}}:{ok:true};
         const result=await createMacosVmLifecycleApplication(f.ports).start({deviceId:"unit",waitForBoot:true,bootTimeoutMs:900000});
         expect(result?.kind).toBe("problem");expect(f.read()?.status).toBe(mode==="boot-failure"?"starting":"running");expect(f.read()).not.toHaveProperty("lifecycle");

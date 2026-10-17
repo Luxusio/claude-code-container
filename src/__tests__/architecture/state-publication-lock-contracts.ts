@@ -67,6 +67,19 @@ function lockCapabilities(ports: SharedMutationLockPorts<Fence>): void {
     const { identityAsync, ...withoutAsyncIdentity } = ports;
     // @ts-expect-error Asynchronous live-owner observation is a required capability.
     createSharedMutationLock(withoutAsyncIdentity);
+    const { monotonic, ...withoutElapsedClock } = ports;
+    // @ts-expect-error Acquisition, retry, and observation lifetimes require an elapsed clock.
+    createSharedMutationLock(withoutElapsedClock);
+    const { now, ...withoutWallClock } = ports;
+    // @ts-expect-error Malformed publication grace still requires persisted wall mtime comparison.
+    createSharedMutationLock(withoutWallClock);
+    const { timestamp, ...withoutTimestamp } = ports;
+    // @ts-expect-error Published lock records require a wall timestamp separate from elapsed accounting.
+    createSharedMutationLock(withoutTimestamp);
+    // @ts-expect-error Elapsed reads must settle synchronously at each authority boundary.
+    createSharedMutationLock({ ...ports, monotonic: async () => 100 });
+    // @ts-expect-error Parent remaining is an immediate observation, not a renewed asynchronous allowance.
+    application.withLock("/owned/state.lock", () => "settled", { waitBudget: { remaining: async () => 100 } });
     // @ts-expect-error Exclusive claim admission must settle synchronously.
     createSharedMutationLock({ ...ports, openClaim: async () => 1 });
     // @ts-expect-error Token-qualified release cannot remain pending after the operation settles.
@@ -81,6 +94,6 @@ function lockCapabilities(ports: SharedMutationLockPorts<Fence>): void {
     createSharedMutationLock({ ...ports, identitySync: async () => null });
     // @ts-expect-error Synchronous contention pause cannot defer lock acquisition.
     createSharedMutationLock({ ...ports, pauseSync: async () => undefined });
-    void [record, raw, observed, archives, removed, synchronous, asynchronous, readRaw, openClaim, moveQualified, enumerateArchives, removeArchive, identityAsync];
+    void [record, raw, observed, archives, removed, synchronous, asynchronous, readRaw, openClaim, moveQualified, enumerateArchives, removeArchive, identityAsync, monotonic, now, timestamp];
 }
 void lockCapabilities;
