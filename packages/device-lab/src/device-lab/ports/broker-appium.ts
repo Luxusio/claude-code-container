@@ -22,7 +22,7 @@ export interface BrokerAppiumPorts<Runtime> {
     isLockTimeout(error: unknown): boolean;
     lockFailure(ownerId: string, backend: string, deviceId: string, error: unknown): BrokerAppiumRefusal;
     isProcessIdentityCurrent(identity: unknown, pid: number): boolean;
-    verifyListener(appium: unknown): BrokerAppiumVerification;
+    verifyListener(appium: unknown, remainingMs?: () => number): BrokerAppiumVerification;
     terminateRuntime(appium: unknown): Promise<BrokerAppiumTermination>;
     terminatePortListener(port: number): BrokerAppiumTermination;
     portListener(port: number): unknown;

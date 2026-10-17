@@ -40,6 +40,14 @@ These semantics follow [Microsoft's Restart-VM documentation](https://learn.micr
   may issue one pending start or stop after a fresh owner-fenced inspection shows
   a stable terminal state that differs from the recorded intent, as specified by
   the existing lifecycle reconciliation contract.
+- For an existing start journal, a fresh Saved observation of the exact owned VM
+  is a stable terminal mismatch. Reconciliation may perform its existing single
+  ordinary Start-VM replay, then re-observe and conditionally publish/clear only
+  after Running is confirmed. It never removes saved state or forces a retry.
+  Native failure, unchanged Saved or successor conflict retains the journal.
+  Saved does not satisfy stop: canonical Off remains required. Unknown or
+  transitional states remain pending. Status that reconciles an existing start
+  journal can perform this established mutation; it is not a read-only workaround.
 - A successful power call requires exact VM identity in its final observation.
   The broker retains guest readiness, diagnostic, and public response behavior.
   Failure containment succeeds only when a fresh read of that exact VM says Off;

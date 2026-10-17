@@ -439,7 +439,7 @@ export function createBrokerAppiumApplication<Runtime>(ports: BrokerAppiumPorts<
         const deadline = ports.monotonicNow() + Math.max(1, timeoutMs);
         let failure: Extract<BrokerAppiumVerification, {ok: false}> | null = null;
         while (Math.floor(deadline - ports.monotonicNow()) > 0) {
-            const verification = verifyBrokerOwnedAppiumListener(appium);
+            const verification = verifyBrokerOwnedAppiumListener(appium, () => deadline - ports.monotonicNow());
             const remaining = deadline - ports.monotonicNow();
             if (verification.ok) {
                 if (remaining > 0) return verification;

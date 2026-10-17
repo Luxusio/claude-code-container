@@ -250,6 +250,57 @@ describe("Hyper-V Windows lifecycle reconciliation", () => {
         });
     });
 
+    it.each(["Saved", "saved", "SAVED", "sAvEd"])("offers the existing ordinary start action for normalized %s", state => {
+        const observed = inspection(state, [hardDisk("C:\\Managed\\root.vhdx")]);
+        const outcome = reconcileHyperVVirtualMachine(observed, expectation, "start");
+        expect(outcome).toMatchObject({ kind: "pending", intent: "start", reason: "terminal-state-mismatch", action: "start", virtualMachine: { state } });
+        expect(outcome.inspection).toBe(observed);
+        if (outcome.kind === "pending") {
+            expect(outcome.virtualMachine).toBe(observed.virtualMachines[0]);
+            expect(outcome.drift).toEqual({ missingExpectedPaths: ["C:\\Managed\\media\\setup.iso"] });
+        }
+    });
+
+    it.each([
+        ["ambiguous VM", { ...inspection("Saved"), virtualMachines: [virtualMachine("Saved"), virtualMachine("Saved", { id: foreignVmId })] }, expectation, "ambiguous"],
+        ["VM id before name and Notes", inspection("Saved"), { ...expectation, id: foreignVmId, name: "foreign", notes: "foreign" }, "id-mismatch"],
+        ["VM name before Notes", inspection("Saved"), { ...expectation, name: "foreign", notes: "foreign" }, "name-mismatch"],
+        ["Notes before attachment identity", inspection("Saved", [hardDisk("C:\\Foreign\\root.vhdx", { vmId: foreignVmId })]), { ...expectation, notes: "foreign" }, "notes-mismatch"],
+        ["disk identity before path allowance", inspection("Saved", [hardDisk("C:\\Foreign\\root.vhdx", { vmId: foreignVmId })]), expectation, "attachment-identity-mismatch"],
+        ["disk VM name", inspection("Saved", [hardDisk("C:\\Managed\\root.vhdx", { vmName: "foreign" })]), expectation, "attachment-identity-mismatch"],
+        ["DVD identity", inspection("Saved", [], [dvd("C:\\Managed\\media\\setup.iso", { vmId: foreignVmId })]), expectation, "attachment-identity-mismatch"],
+    ] as const)("checks %s before offering Saved start recovery", (_label, observed, expected, reason) => {
+        expect(reconcileHyperVVirtualMachine(observed, expected, "start")).toMatchObject({ kind: "identity-conflict", reason });
+    });
+
+    it.each([
+        ["foreign disk", [hardDisk("C:\\Foreign\\root.vhdx")], []],
+        ["foreign DVD", [], [dvd("C:\\Managed\\media-foreign\\setup.iso")]],
+        ["pass-through disk", [hardDisk(null, { diskNumber: 7 })], []],
+    ] as const)("checks %s attachment authority before offering Saved start recovery", (_label, disks, dvds) => {
+        const outcome = reconcileHyperVVirtualMachine(inspection("Saved", disks, dvds), expectation, "start");
+        expect(outcome.kind).toBe("attachment-conflict");
+        expect(outcome).not.toHaveProperty("action");
+    });
+
+    it.each(["stop", "restart"] as const)("keeps Saved pending without a replay action for %s", intent => {
+        expect(reconcileHyperVVirtualMachine(inspection("Saved"), expectation, intent)).toMatchObject({
+            kind: "pending", intent, reason: "transitioning-or-unknown", action: "wait", virtualMachine: { state: "Saved" },
+        });
+    });
+
+    it.each(["Starting", "Stopping", "Saving", "Restoring", "Paused", "SavedCritical", "FutureTransitionState", " Saved "])("does not widen %s into Saved start authority", state => {
+        expect(reconcileHyperVVirtualMachine(inspection(state), expectation, "start")).toMatchObject({
+            kind: "pending", reason: "transitioning-or-unknown", action: "wait", virtualMachine: { state },
+        });
+    });
+
+    it.each(["Saved", "Saving", "FutureTransitionState"])("preserves existing removal classification for %s", state => {
+        expect(reconcileHyperVVirtualMachine(inspection(state), expectation, "remove")).toMatchObject({
+            kind: "pending", intent: "remove", reason: "removal-required", action: "remove",
+        });
+    });
+
     it("requires removal only after identity and attachment checks pass", () => {
         expect(reconcileHyperVVirtualMachine(
             inspection("Off", [hardDisk("C:\\Managed\\root.vhdx")]),

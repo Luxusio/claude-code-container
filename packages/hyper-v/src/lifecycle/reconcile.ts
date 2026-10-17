@@ -152,7 +152,7 @@ export function reconcileHyperVVirtualMachine(
     if (state === desiredState) {
         return { kind: "settled", intent, virtualMachine, inspection, drift };
     }
-    if (state === "running" || state === "off") {
+    if (state === "running" || state === "off" || (intent === "start" && state === "saved")) {
         return pending(
             intent,
             virtualMachine,

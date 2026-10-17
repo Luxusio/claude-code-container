@@ -2,6 +2,30 @@ import { describe, expect, it } from "vitest";
 import { createBrokerAppiumApplication } from "../../../packages/device-lab/src/device-lab/application/broker-appium.js";
 import { validateAppiumRequestParams, type BrokerAppiumResponse, type BrokerAppiumExecution } from "../../../packages/device-lab/src/device-lab/domain/broker-appium.js";
 import type { BrokerAppiumPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-appium.js";
+import type { BrokerPortProcessResolver } from "../../../packages/device-lab/src/device-lab-broker.js";
+
+function listenerAllowanceContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>): void {
+    const legacyVerification: BrokerAppiumPorts<Runtime>["verifyListener"] = _appium => ({ ok: false, error: "unavailable", receipt: null });
+    const boundedVerification: BrokerAppiumPorts<Runtime>["verifyListener"] = (_appium, remainingMs) => {
+        const duration: number | undefined = remainingMs?.();
+        void duration;
+        return { ok: false, error: "unavailable", receipt: null };
+    };
+    ports.verifyListener({}, () => 50);
+    const legacyResolver: BrokerPortProcessResolver = (_port, _platform) => null;
+    const boundedResolver: BrokerPortProcessResolver = (_port, _platform, remainingMs) => {
+        const duration: number | undefined = remainingMs?.();
+        void duration;
+        return null;
+    };
+    boundedResolver(4723, "darwin", () => 50);
+    // @ts-expect-error Listener handoff carries a relative callback, not an absolute deadline.
+    ports.verifyListener({}, 12345);
+    // @ts-expect-error Native discovery receives the same relative callback contract.
+    boundedResolver(4723, "darwin", 12345);
+    void [legacyVerification, boundedVerification, legacyResolver];
+}
+void listenerAllowanceContracts;
 
 function appiumCapabilityContracts<Runtime>(ports: BrokerAppiumPorts<Runtime>): void {
     const app = createBrokerAppiumApplication(ports);

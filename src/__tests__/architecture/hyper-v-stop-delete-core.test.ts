@@ -1,6 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
+import { reconcileHyperVVirtualMachine, type HyperVVirtualMachineInspection, type HyperVVirtualMachineReconciliationOutcome } from "@ccc/hyper-v/index.js";
 import { createHyperVStopDeleteApplication } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-stop-delete.js";
+import { deviceLabHyperVExpectation, deviceLabHyperVOperationIntent } from "../../../packages/device-lab/src/device-lab/broker/hyper-v/lifecycle-adapter.js";
 import type { AuxiliaryCleanup, AuxiliaryOutcome } from "../../../packages/device-lab/src/device-lab/domain/broker-owner-cleanup.js";
 import type { HyperVArtifactEvidence, HyperVCommandExecution, HyperVNetworkCleanupEvidence, HyperVOperationEvidence, HyperVStopDeleteRequest, HyperVTerminalObservation, HyperVTerminalResult } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-stop-delete.js";
 import type { HyperVStopDeletePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-stop-delete.js";
@@ -81,8 +83,155 @@ function terminalFixture(command: TerminalCommand) {
         current: () => current,
         journal: () => journal,
         setCurrent: (record: Record<string, unknown>) => { current = record; },
+        setJournal: (record: HyperVOperationEvidence) => { journal = record; },
     };
 }
+
+function savedReplayFixture(command: "device_start" | "device_stop" = "device_start") {
+    const f = terminalFixture("device_stop");
+    const initial = { ...f.device, status: "stopped", runtimeState: "Saved" };
+    f.setCurrent(initial);
+    const journal: HyperVOperationEvidence = {
+        version: 1, operationId: "saved-start-operation", ownerId: "owner", deviceId: f.device.id,
+        incarnationId: f.device.incarnationId, command, vmId: f.device.vmId, vmName: f.device.vmName,
+        diskPath: f.device.diskPath, startedAt: "2026-10-17T00:00:00.000Z",
+    };
+    f.setJournal(journal);
+    let observed: HyperVVirtualMachineInspection = {
+        virtualMachines: [{ id: f.device.vmId, name: f.device.vmName, state: "Saved", status: "Saved native observation",
+            notes: `ccc-device-lab:owner:${f.device.id}:${f.device.incarnationId}`, uptimeMilliseconds: 0,
+            generation: 2, checkpointType: "Production" }],
+        hardDiskDrives: [{ vmId: f.device.vmId, vmName: f.device.vmName, path: f.device.diskPath,
+            controllerType: "SCSI", controllerNumber: 0, controllerLocation: 0, diskNumber: null }],
+        dvdDrives: [],
+    };
+    function setState(state: string) {
+        const vm = observed.virtualMachines[0];
+        if (!vm) throw new Error("missing native fixture VM");
+        observed = { ...observed, virtualMachines: [{ ...vm, state, status: `${state} native observation` }] };
+    }
+    const classifications: HyperVVirtualMachineReconciliationOutcome[] = [];
+    const replayObservation = vi.fn<HyperVStopDeletePorts<Connection, Receipt>["replayObservation"]>(async (_connection, owner, evidence, media) => {
+        f.effects.push("observe");
+        // Compose the real library classifier and broker expectation/intent mapping.
+        // Only native observations are supplied by the fixture.
+        const outcome = reconcileHyperVVirtualMachine(observed,
+            deviceLabHyperVExpectation({ ownerId: owner, journal: evidence, auxiliaryMediaPaths: media }),
+            deviceLabHyperVOperationIntent(evidence.command));
+        classifications.push(outcome);
+        return outcome;
+    });
+    const replayPower = vi.fn<HyperVStopDeletePorts<Connection, Receipt>["replayPower"]>(async (_connection, _owner, _evidence, action) => {
+        f.effects.push(`replay-${action}`);
+        setState(action === "start" ? "Running" : "Off");
+    });
+    Object.assign(f.ports, { replayObservation, replayPower });
+    return { ...f, initial, savedJournal: journal, classifications, replayObservation, replayPower, setState,
+        observation: () => observed, setObservation: (value: HyperVVirtualMachineInspection) => { observed = value; } };
+}
+
+describe("Hyper-V Saved start journal reconciliation with the real classifier", () => {
+    it("replays one ordinary start then conditionally publishes Running and clears the exact start journal", async () => {
+        const f = savedReplayFixture();
+        expect(await f.application.reconcile("owner", "windows-vm", f.device.id, 100000)).toEqual({ ok: true, reconciled: true });
+        expect(f.classifications).toMatchObject([
+            { kind: "pending", reason: "terminal-state-mismatch", action: "start", virtualMachine: { state: "Saved" } },
+            { kind: "settled", virtualMachine: { state: "Running" } },
+        ]);
+        expect(f.replayPower).toHaveBeenCalledExactlyOnceWith({ providerId: "powershell" }, "owner", f.savedJournal, "start", false, 100000);
+        expect(f.replayObservation).toHaveBeenCalledTimes(2);
+        expect(f.ports.publish.mock.calls[0]?.[3]).toEqual(f.initial);
+        expect(f.ports.publish.mock.calls[0]?.[3]).not.toBe(f.initial);
+        expect(f.current()).toEqual({ ...f.initial, status: "running", runtimeState: "Running", hyperVStatus: "Running native observation", updatedAt: "2026-10-15T00:01:00.000Z" });
+        expect(f.effects).toEqual(["observe", "replay-start", "observe", "publish", "journal-clear"]);
+        expect(f.journal()).toBeNull();
+        expect(f.ports.executeStop).not.toHaveBeenCalled();
+        expect(f.ports.executeDelete).not.toHaveBeenCalled();
+        expect(f.ports.releaseNetwork).not.toHaveBeenCalled();
+        expect(f.ports.cleanupArtifacts).not.toHaveBeenCalled();
+    });
+
+    it("retains the original Saved record and start journal after the one native replay fails", async () => {
+        const f = savedReplayFixture();
+        const failure = new Error("native-start-vm-failed");
+        f.replayPower.mockRejectedValueOnce(failure);
+        expect(await f.application.reconcile("owner", "windows-vm", f.device.id, 100000)).toMatchObject({
+            ok: false, reason: "provider-failed", journalDisposition: "retain", error: "hyper-v-state-reconciliation-failed", detail: failure.message,
+        });
+        expect(f.replayPower).toHaveBeenCalledExactlyOnceWith({ providerId: "powershell" }, "owner", f.savedJournal, "start", false, 100000);
+        expect(f.replayObservation).toHaveBeenCalledOnce();
+        expect(f.current()).toBe(f.initial);
+        expect(f.journal()).toBe(f.savedJournal);
+        expect(f.ports.publish).not.toHaveBeenCalled();
+        expect(f.ports.clearJournal).not.toHaveBeenCalled();
+    });
+
+    it.each(["Saved", "Starting"])("retains evidence after one successful replay still observes %s without a second replay", async state => {
+        const f = savedReplayFixture();
+        f.replayPower.mockImplementation(async () => { f.effects.push("replay-start"); f.setState(state); });
+        expect(await f.application.reconcile("owner", "windows-vm", f.device.id, 100000)).toMatchObject({
+            ok: false, journalDisposition: "retain", error: state === "Saved" ? "hyper-v-state-reconciliation-invalid-result" : "hyper-v-operation-still-transitioning",
+        });
+        expect(f.replayPower).toHaveBeenCalledExactlyOnceWith({ providerId: "powershell" }, "owner", f.savedJournal, "start", false, 100000);
+        expect(f.replayObservation).toHaveBeenCalledTimes(2);
+        expect(f.classifications[1]).toMatchObject({ kind: "pending", virtualMachine: { state } });
+        expect(f.current()).toBe(f.initial);
+        expect(f.journal()).toBe(f.savedJournal);
+        expect(f.ports.publish).not.toHaveBeenCalled();
+        expect(f.ports.clearJournal).not.toHaveBeenCalled();
+    });
+
+    it("preserves a same-ID successor and the original journal when Running publication loses its full-record comparison", async () => {
+        const f = savedReplayFixture();
+        const successor = { ...f.initial, incarnationId: "successor-incarnation", revision: 2, label: "concurrent successor" };
+        f.replayPower.mockImplementation(async () => { f.effects.push("replay-start"); f.setState("Running"); f.setCurrent(successor); });
+        expect(await f.application.reconcile("owner", "windows-vm", f.device.id, 100000)).toMatchObject({
+            ok: false, reason: "conflict", journalDisposition: "retain", error: "owner-device-state-conflict",
+        });
+        expect(f.replayPower).toHaveBeenCalledOnce();
+        expect(f.replayObservation).toHaveBeenCalledTimes(2);
+        expect(f.ports.publish).toHaveBeenCalledOnce();
+        expect(f.ports.publish.mock.calls[0]?.[3]).toEqual(f.initial);
+        expect(f.current()).toBe(successor);
+        expect(f.journal()).toBe(f.savedJournal);
+        expect(f.ports.clearJournal).not.toHaveBeenCalled();
+    });
+
+    it("retains Saved for a stop journal without treating it as canonical Off or issuing start", async () => {
+        const f = savedReplayFixture("device_stop");
+        expect(await f.application.reconcile("owner", "windows-vm", f.device.id, 100000)).toMatchObject({
+            ok: false, reason: "conflict", journalDisposition: "retain", error: "hyper-v-operation-still-transitioning", detail: "Saved",
+        });
+        expect(f.classifications[0]).toMatchObject({ kind: "pending", action: "wait", reason: "transitioning-or-unknown" });
+        expect(f.replayPower).not.toHaveBeenCalled();
+        expect(f.replayObservation).toHaveBeenCalledOnce();
+        expect(f.current()).toBe(f.initial);
+        expect(f.journal()).toBe(f.savedJournal);
+        expect(f.ports.publish).not.toHaveBeenCalled();
+        expect(f.ports.clearJournal).not.toHaveBeenCalled();
+    });
+
+    it.each(["vm-id", "vm-name", "notes", "disk-identity", "disk-path"] as const)("withholds Saved replay authority after the real %s fence rejects", async fence => {
+        const f = savedReplayFixture(), observed = f.observation();
+        const vm = observed.virtualMachines[0]!, disk = observed.hardDiskDrives[0]!;
+        f.setObservation({ ...observed,
+            virtualMachines: [{ ...vm, ...(fence === "vm-id" ? { id: "87654321-4321-4321-4321-cba987654321" } : {}),
+                ...(fence === "vm-name" ? { name: "foreign-vm" } : {}), ...(fence === "notes" ? { notes: "foreign-owner" } : {}) }],
+            hardDiskDrives: [{ ...disk, ...(fence === "disk-identity" ? { vmId: "87654321-4321-4321-4321-cba987654321" } : {}),
+                ...(fence === "disk-path" ? { path: "C:\\foreign\\system.vhdx" } : {}) }],
+        });
+        expect(await f.application.reconcile("owner", "windows-vm", f.device.id, 100000)).toMatchObject({
+            ok: false, journalDisposition: "retain", error: "hyper-v-state-reconciliation-invalid-result",
+        });
+        expect(f.classifications[0]?.kind).toBe(fence === "disk-path" ? "attachment-conflict" : "identity-conflict");
+        expect(f.replayPower).not.toHaveBeenCalled();
+        expect(f.replayObservation).toHaveBeenCalledOnce();
+        expect(f.current()).toBe(f.initial);
+        expect(f.journal()).toBe(f.savedJournal);
+        expect(f.ports.publish).not.toHaveBeenCalled();
+        expect(f.ports.clearJournal).not.toHaveBeenCalled();
+    });
+});
 
 describe("Hyper-V inward terminal observations", () => {
     it.each([
@@ -143,7 +292,7 @@ describe("Hyper-V inward terminal observations", () => {
         }
     });
 
-    it.each(["Running", "Stopping", "Unknown", "", "off", " Off "])("retains ordinary stop state and recovery evidence for noncanonical state %j", async (state) => {
+    it.each(["Running", "Saved", "Stopping", "Unknown", "", "off", " Off "])("retains ordinary stop state and recovery evidence for noncanonical state %j", async (state) => {
         const f = terminalFixture("device_stop");
         const predecessor = structuredClone(f.device);
         // Native status/bytes can look successful; only the semantic observation

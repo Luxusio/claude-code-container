@@ -1,9 +1,12 @@
 import * as fixtureFs from "fs";
 import * as windowsProcesses from "@ccc/device-lab/windows-system-powershell.js";
+import * as childProcesses from "child_process";
+import * as processIdentityAdapters from "@ccc/device-lab/device-lab-process-identity.js";
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { isolatedDeviceLabPackage } from "./helpers/isolated-device-lab-package.js";
 import { createHash } from "crypto";
+import { EventEmitter } from "events";
 import { spawn, type ChildProcess } from "child_process";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createServer } from "http";
@@ -11,13 +14,14 @@ import { AddressInfo } from "net";
 import { homedir, hostname, tmpdir, uptime } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { appiumWebDriverRequestTimeoutMs, createDeviceBrokerServer, DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES, DEVICE_BROKER_APPIUM_RESPONSE_LIMIT_BYTES, DEVICE_BROKER_COMMAND_OUTPUT_LIMIT, managedAppiumCommandLine, registerDeviceBrokerOwner } from "@ccc/device-lab/device-lab-broker.js";
+import { appiumWebDriverRequestTimeoutMs, createDeviceBrokerServer, discoverBrokerPortProcessForTest, DEVICE_BROKER_APPIUM_LOCK_MANIFEST_LIMIT_BYTES, DEVICE_BROKER_APPIUM_RESPONSE_LIMIT_BYTES, DEVICE_BROKER_COMMAND_OUTPUT_LIMIT, managedAppiumCommandLine, registerDeviceBrokerOwner } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { readDeviceRuntimeProcessIdentity } from "@ccc/device-lab/device-lab-process-identity.js";
 import { cleanupOwner, close, listen, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 import { renderBrokerAppium } from "@ccc/device-lab/device-lab/broker/broker-outcomes-codec.js";
 
 vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import("fs")>() }));
+vi.mock("child_process", async importOriginal => ({ ...await importOriginal<typeof import("child_process")>() }));
 
 async function createFakeAppiumServer(sessionId = "BROKER-SESSION-1", options: {
     deleteStatus?: number; readyAfterStatusRequests?: number; sessionCreateFailures?: number; onSessionCreated?: () => void;
@@ -183,6 +187,270 @@ describe("device-lab host broker Appium session authority", () => {
         vi.restoreAllMocks();
         if (fixtureHome) rmSync(fixtureHome, { recursive: true, force: true });
         originalHomeRestore?.();
+    });
+
+    it.runIf(process.platform !== "win32").each([
+        "preparation", "settling", "native-error", "queued-native-error", "early-exit",
+    ] as const)("phase allowance qualifies default detached Appium launch after %s", async mode => {
+        const cwd = `/project/broker-native-appium-phase-${mode}`, ownerId = deviceLabOwnerId(cwd);
+        const executable = join(fixtureHome!, "owned-native-appium");
+        writeFileSync(executable, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n");
+        chmodSync(executable, 0o755);
+        let elapsed = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+        const child = Object.assign(new EventEmitter(), { pid: 7331, exitCode: null as number | null,
+            signalCode: null, unref: vi.fn(), kill: vi.fn() });
+        const nativeAccess = fixtureFs.accessSync;
+        vi.spyOn(fixtureFs, "accessSync").mockImplementation((file, permission) => {
+            if (String(file) === executable && mode === "preparation") elapsed = 1001;
+            return nativeAccess(file, permission);
+        });
+        const timers: ReturnType<typeof setTimeout>[] = [];
+        const launched = vi.spyOn(childProcesses, "spawn").mockImplementation(() => {
+            if (mode === "settling") timers.push(setTimeout(() => { elapsed = 1001; }, 10));
+            if (mode === "queued-native-error") {
+                elapsed = 1001;
+                process.nextTick(() => child.emit("error", Object.assign(new Error("spawn owned-native-appium ENOENT"), { code: "ENOENT" })));
+            }
+            if (mode === "native-error" || mode === "early-exit") queueMicrotask(() => {
+                elapsed = 1001;
+                if (mode === "native-error") child.emit("error", new Error("native-start-rejected"));
+                else { child.exitCode = 7; child.emit("exit", 7, null); }
+            });
+            return child as unknown as ChildProcess;
+        });
+        const signal = vi.spyOn(process, "kill").mockImplementation(() => true);
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandTimeoutMs: 1000,
+            providerPaths: { appium: executable }, portProcessResolver: () => null });
+        const baseUrl = await listen(broker);
+        const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running", appium: null }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.start", params: { backend: "android-emulator", deviceId: "pixel" } }) });
+            const body = await response.json();
+            expect(response.status, JSON.stringify(body)).toBe(502);
+            expect(body).toMatchObject({ ok: false, error: "appium-server-start-failed" });
+            if (mode === "preparation") {
+                expect(launched).not.toHaveBeenCalled();
+                expect(body.execution).toMatchObject({ timedOut: true, status: null });
+            } else {
+                expect(launched).toHaveBeenCalledOnce();
+                expect(body.execution.pid).toBe(child.pid);
+                if (mode === "native-error") expect(body.execution.error).toContain("native-start-rejected");
+                else if (mode === "queued-native-error") {
+                    expect(body.execution.error).toContain("ENOENT");
+                    expect(body.execution.timedOut).not.toBe(true);
+                }
+                else if (mode === "early-exit") expect(body.execution).toMatchObject({ status: 7, error: expect.stringContaining("exit 7") });
+                else {
+                    expect(body.execution.cleanup).toMatchObject({ pid: child.pid, attempted: false, ok: false });
+                    expect(body.execution.timedOut).toBe(true);
+                }
+            }
+            expect(child.kill).not.toHaveBeenCalled();
+            expect(signal.mock.calls.every(([, delivered]) => delivered === 0)).toBe(true);
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium).toBeNull();
+        } finally {
+            for (const timer of timers) clearTimeout(timer);
+            await close(broker);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it.runIf(process.platform === "linux").each(["late-identity", "missing-identity"] as const)(
+        "phase allowance retains default native detached launch evidence after %s", async mode => {
+            const cwd = `/project/broker-native-identity-phase-${mode}`, ownerId = deviceLabOwnerId(cwd);
+            const executable = join(fixtureHome!, "owned-native-identity-appium");
+            writeFileSync(executable, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n");
+            chmodSync(executable, 0o755);
+            const saved = readDeviceRuntimeProcessIdentity(process.pid)!;
+            expect(saved).toBeTruthy();
+            let elapsed = 0, spawned = false;
+            vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+            const child = Object.assign(new EventEmitter(), { pid: saved.pid, exitCode: null, signalCode: null, unref: vi.fn(), kill: vi.fn() });
+            vi.spyOn(childProcesses, "spawn").mockImplementation(() => { spawned = true; return child as unknown as ChildProcess; });
+            const nativeCommand = vi.spyOn(childProcesses, "spawnSync");
+            const signal = vi.spyOn(process, "kill").mockImplementation(() => true);
+            const nativeRead = fixtureFs.readFileSync;
+            const observed: string[] = [];
+            vi.spyOn(fixtureFs, "readFileSync").mockImplementation(((...args: Parameters<typeof nativeRead>) => {
+                const path = String(args[0]);
+                if (spawned && path === `/proc/${saved.pid}/cmdline`) {
+                    observed.push("cmdline");
+                    if (mode === "missing-identity") return Buffer.alloc(0);
+                }
+                const result = nativeRead(...args);
+                if (spawned && path === `/proc/${saved.pid}/stat`) {
+                    observed.push("stat");
+                    if (mode === "late-identity") elapsed = 1001;
+                }
+                return result;
+            }) as typeof nativeRead);
+            const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandTimeoutMs: 1000,
+                providerPaths: { appium: executable }, portProcessResolver: () => null });
+            const baseUrl = await listen(broker);
+            const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running", appium: null }]);
+            try {
+                const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                    body: JSON.stringify({ method: "broker.appium.start", params: { backend: "android-emulator", deviceId: "pixel" } }) });
+                const body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(502);
+                expect(body).toMatchObject({ ok: false, error: "appium-server-start-failed", execution: {
+                    pid: saved.pid, status: null, cleanup: { pid: saved.pid, attempted: false, ok: false },
+                } });
+                if (mode === "late-identity") expect(body.execution).toMatchObject({ timedOut: true, processIdentity: saved });
+                else expect(body.execution.error).toContain("process identity");
+                expect(observed).toEqual(["cmdline", "stat"]);
+                expect(nativeCommand).not.toHaveBeenCalled();
+                expect(child.kill).not.toHaveBeenCalled();
+                expect(signal.mock.calls.every(([, delivered]) => delivered === 0)).toBe(true);
+                expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium).toBeNull();
+            } finally { await close(broker); cleanupOwner(ownerId); }
+        },
+    );
+
+    it("phase allowance shares Windows netstat, PowerShell and fallback identity without renewal", () => {
+        let elapsed = 0, parent = 80.8;
+        vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+        vi.spyOn(windowsProcesses, "canonicalWindowsSystemExecutablePath").mockReturnValue("C:\\Windows\\System32\\netstat.exe");
+        vi.spyOn(windowsProcesses, "canonicalWindowsPowerShellPath").mockReturnValue("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        const native = vi.spyOn(childProcesses, "spawnSync");
+        native.mockImplementationOnce((_file, _args, options) => {
+            expect(options?.timeout).toBe(80);
+            elapsed = 20; parent = 30.7;
+            return { status: 0, stdout: "TCP 127.0.0.1:4723 0.0.0.0:0 LISTENING 7451", stderr: "" } as any;
+        }).mockImplementationOnce((_file, _args, options) => {
+            expect(options?.timeout).toBe(30);
+            elapsed = 30; parent = 1000;
+            return { status: 1, stdout: "", stderr: "native lookup unavailable" } as any;
+        });
+        const saved = { pid: 7451, startToken: "windows:exact-handle-token", commandHash: "b".repeat(64) };
+        const read = vi.spyOn(processIdentityAdapters, "readDeviceRuntimeProcessIdentity").mockImplementation((pid, options) => {
+            expect(pid).toBe(saved.pid);
+            expect(Math.floor(options!.remainingMs!())).toBe(20);
+            return saved;
+        });
+        expect(discoverBrokerPortProcessForTest(4723, "win32", () => parent)).toMatchObject({ pid: saved.pid, processIdentity: saved });
+        expect(native).toHaveBeenCalledTimes(2);
+        expect(read).toHaveBeenCalledOnce();
+    });
+
+    it("phase allowance retains completed late Windows listener facts for negative classification", () => {
+        let elapsed = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+        vi.spyOn(windowsProcesses, "canonicalWindowsSystemExecutablePath").mockReturnValue("C:\\Windows\\System32\\netstat.exe");
+        vi.spyOn(windowsProcesses, "canonicalWindowsPowerShellPath").mockReturnValue("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        const native = vi.spyOn(childProcesses, "spawnSync");
+        native.mockReturnValueOnce({ status: 0, stdout: "TCP 127.0.0.1:4723 0.0.0.0:0 LISTENING 7451", stderr: "" } as any)
+            .mockImplementationOnce(() => { elapsed = 50; return { status: 0,
+                stdout: JSON.stringify({ pid: 7451, commandLine: "node owned-appium.js", startToken: "exact-token" }), stderr: "" } as any; });
+        const read = vi.spyOn(processIdentityAdapters, "readDeviceRuntimeProcessIdentity");
+        expect(discoverBrokerPortProcessForTest(4723, "win32", () => 40)).toMatchObject({ pid: 7451, commandLine: "node owned-appium.js" });
+        expect(native).toHaveBeenCalledTimes(2);
+        expect(read).not.toHaveBeenCalled();
+    });
+
+    it.runIf(process.platform === "linux").each([
+        { platform: "win32", mismatch: false, psFailure: undefined }, { platform: "win32", mismatch: true, psFailure: undefined },
+        { platform: "darwin", mismatch: false, psFailure: undefined }, { platform: "darwin", mismatch: true, psFailure: undefined },
+        { platform: "darwin", mismatch: true, psFailure: "status" },
+        { platform: "darwin", mismatch: true, psFailure: "timeout" },
+        { platform: "darwin", mismatch: true, psFailure: "signal" },
+        { platform: "darwin", mismatch: false, psFailure: "timeout" },
+        { platform: "darwin", mismatch: false, psFailure: "timely-timeout" },
+    ] as const)("phase allowance qualifies late default listener facts on $platform (mismatch=$mismatch, psFailure=$psFailure)", async ({ platform, mismatch, psFailure }) => {
+        const cwd = `/project/broker-default-listener-phase-${platform}-${mismatch}-${psFailure}`, ownerId = deviceLabOwnerId(cwd);
+        const saved = readDeviceRuntimeProcessIdentity(process.pid)!;
+        expect(saved).toBeTruthy();
+        let elapsed = 0, launched = false;
+        vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+        vi.spyOn(windowsProcesses, "canonicalWindowsSystemExecutablePath").mockReturnValue("C:\\Windows\\System32\\netstat.exe");
+        vi.spyOn(windowsProcesses, "canonicalWindowsPowerShellPath").mockReturnValue("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        const upstream = await createFakeAppiumServer("FORBIDDEN-LATE-LISTENER-SESSION");
+        const executable = join(fixtureHome!, "owned-default-listener-appium");
+        writeFileSync(executable, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n");
+        chmodSync(executable, 0o755);
+        const child = Object.assign(new EventEmitter(), { pid: saved.pid, exitCode: null, signalCode: null, unref: vi.fn(), kill: vi.fn() });
+        vi.spyOn(childProcesses, "spawn").mockImplementation(() => { launched = true; return child as unknown as ChildProcess; });
+        const listenerPid = mismatch ? process.pid + 100000 : process.pid;
+        const observations: number[] = [];
+        vi.spyOn(childProcesses, "spawnSync").mockImplementation((_file, _args, options) => {
+            if (!launched) return { status: 0, stdout: "", stderr: "" } as any;
+            observations.push(options?.timeout as number);
+            if (psFailure && observations.length === 2) {
+                elapsed = psFailure === "timely-timeout" ? 30 : 60000;
+                return { status: psFailure === "status" ? 1 : null,
+                    error: psFailure === "timeout" || psFailure === "timely-timeout" ? Object.assign(new Error("native ps timed out"), { code: "ETIMEDOUT" }) : undefined,
+                    signal: psFailure === "signal" ? "SIGTERM" : null,
+                    stdout: "node partial-owned-appium.js", stderr: "native command lookup failed" } as any;
+            }
+            if (psFailure === "timely-timeout" && observations.length === 3) {
+                elapsed = 60000;
+                return { status: 1, stdout: "", stderr: "listener no longer observable" } as any;
+            }
+            expect(observations).toHaveLength(1);
+            elapsed = psFailure ? 20 : 60000;
+            return { status: 0, stdout: platform === "win32"
+                ? `TCP 127.0.0.1:${upstream.port} 0.0.0.0:0 LISTENING ${listenerPid}`
+                : `p${listenerPid}\n`, stderr: "" } as any;
+        });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform,
+            providerPaths: { appium: executable } });
+        const baseUrl = await listen(broker);
+        const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running", appium: null }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.ensure", params: { backend: "android-emulator", deviceId: "pixel", port: upstream.port } }) });
+            const body = await response.json();
+            expect(response.status, JSON.stringify(body)).toBe(409);
+            expect(body).toMatchObject({ ok: false, error: "appium-listener-ownership-unverified", verification: {
+                error: mismatch ? "appium-port-listener-identity-mismatch" : "appium-port-listener-unavailable",
+                ...(psFailure === "timely-timeout" ? {} : { listener: { pid: listenerPid } }),
+            } });
+            expect(observations).toEqual(psFailure === "timely-timeout" ? [5000, 5000, 5000] : psFailure ? [5000, 5000] : [5000]);
+            if (psFailure && psFailure !== "timely-timeout") expect(body.verification.listener.commandLine).toBe("");
+            expect(child.kill).not.toHaveBeenCalled();
+            expect(upstream.requests).toEqual([]);
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium).toMatchObject({ serverPid: saved.pid });
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
+    });
+
+    it.each([false, true])("phase allowance reaches native runtime identity and the injected listener resolver (late mismatch=%s)", async mismatch => {
+        const cwd = `/project/broker-listener-native-phase-${mismatch}`, ownerId = deviceLabOwnerId(cwd);
+        let elapsed = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+        const upstream = await createFakeAppiumServer("FORBIDDEN-PHASE-SESSION");
+        const saved = { pid: 7561, startToken: "native:owned", commandHash: "c".repeat(64) };
+        const originalInspect = processIdentityAdapters.inspectDeviceRuntimeProcessIdentity;
+        vi.spyOn(processIdentityAdapters, "inspectDeviceRuntimeProcessIdentity").mockImplementation((expected, pid, options) => {
+            if (pid !== saved.pid) return originalInspect(expected, pid, options);
+            expect(options?.remainingMs?.()).toBe(60000);
+            elapsed = 59980;
+            return { status: "match", current: saved } as ReturnType<typeof originalInspect>;
+        });
+        const observed: number[] = [];
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0,
+            providerPaths: { appium: "/fake/appium" },
+            commandRunner: command => ({ ...command, status: 0, pid: saved.pid, processIdentity: saved }),
+            portProcessResolver: (_port, _platform, remainingMs) => {
+                if (!remainingMs) return null;
+                observed.push(remainingMs());
+                elapsed = 60000;
+                return { pid: mismatch ? saved.pid + 1 : saved.pid, commandLine: "owned-appium" };
+            } });
+        const baseUrl = await listen(broker);
+        const root = writeBrokerDevices(ownerId, "android", [{ id: "pixel", backend: "android-emulator", status: "running", appium: null }]);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), { method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.session.ensure", params: { backend: "android-emulator", deviceId: "pixel", port: upstream.port } }) });
+            const body = await response.json();
+            expect(response.status, JSON.stringify(body)).toBe(409);
+            expect(body).toMatchObject({ ok: false, error: "appium-listener-ownership-unverified",
+                verification: { error: mismatch ? "appium-port-listener-identity-mismatch" : "appium-port-listener-unavailable" } });
+            expect(observed).toEqual([20]);
+            expect(upstream.requests).toEqual([]);
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices[0].appium).toMatchObject({ serverPid: saved.pid });
+        } finally { await close(broker); await upstream.close(); cleanupOwner(ownerId); }
     });
 
     it("gives proxied WebDriver commands enough time for device-side clipboard work", () => {

@@ -1,5 +1,17 @@
 # Current architecture boundaries and remaining work
 
+## Provider native handoffs and Saved-start recovery, 2026-10-17
+
+Task TASK__architecture-appium-startup-allowance-20261017 corrects demonstrated boundaries on Main1e093ce5: the existing Appium listener phase did not supply its remainder to native identity/listener discovery, default detached Appium launch ignored its supplied command allowance, and the macOS recorder-exit loop used wall time and unbounded identity observations. Three disjoint implementation/test pairs also include the Saved/start classifier below. Actual independent CodeR3 and SecurityR3 PASS preceded independent QA. Existing phase/native capabilities carry the remainder; no new whole-Appium timer, wire field or framework is introduced.
+
+Current nine whole owning files passed375tests with2existing Windows-only skips. Both genuine archive and Unix public consumers passed strict TypeScript with skipLibCheck=false, compiled Appium/identity/Saved behavior and CLI0/0/1. QA1 correctly failed both MCP startup paths: the coordinator had run bundling and final assembly concurrently, leaving unresolved workspace package references. The existing build recipe already orders those steps. After sequential final assembly, only the MCP bundle changed; all635selected inputs and other1057assembled files remained identical. Independent QA2 authenticated the unchanged tests/consumers and preserved QA1FAIL, then created fresh offline archive and actual Unix payloads, checked all1058assembled files, and ran both MCPs through initialize/list59/ping/unknown-method-32601/EOFexit0 with confirmed child exit. Source and the17Source/Test/REQ pins stayed unchanged. Evidence: `/tmp/ccc-appium-phase-01a14941/review-input-r3.json`, `artifact-inputs-r4.json`, `qa/qa-evidence.json` and `qa-r2/qa-final-facts.json`. Guarded Main adoption and task-only Git delivery are coordinator steps; this evidence is not formal close.
+
+Independent review of the original SPEC/M01/M07 found no requirement to invent an aggregate Appium startup/session timeout. The315000ms public HTTP wait is not broker cancellation; installation, listener/readiness and session limits remain independent. Earlier wording that called a new aggregate duration an established original obligation was too broad. This does not certify the complete Source/caller/export universe.
+
+The reserved Windows VM last returned409/detailSaved. Source inspection explains the reconciliation refusal: a retained start journal reached a classifier that recognized onlyRunning/Off as terminal, so Saved never reached the existing exact-ID/Notes-qualified ordinary start replay. The candidate adds only start+Saved to that classification, after identity/attachment checks; stop still requires Off and unknown/transitional states remain pending. Failure, unchanged Saved or successor conflict retains the journal. The original native exit1 cause and old driver/target terminal state remain unknown. No new native start/job, discard or force was performed. WBS remains17/25(68%),5partial,3in-progress,8remaining, with no completion credit.
+
+Known ceiling: the selected portable/package evidence does not certify actual Windows/macOS, full Source/caller/export coverage, reliability, formal task closure or parent Goal completion.
+
 ## Current provider-worker qualification, 2026-10-17
 
 Task `TASK__architecture-provider-worker-budget-20261017` implements the selected original broker Worker/backend-child allowance. Native adapters capture command/wrapper/completion/fallback ceilings before preparation, debit relative admission transport and bound identity/termination. Atomic dispatch claim, revocation and PID/identity acknowledgement prevent parent fallback from discarding an in-flight spawn. Sync waits and responsive async handoff consume captured F. Established failures remain primary; expiry grants no identity or PID-only termination authority. The handoff reuses the private admission buffer introduced by this task.
@@ -317,7 +329,7 @@ Qualification alone does not establish Main adoption or a commit; the coordinato
 ### Known ceiling
 
 Known ceiling: Synchronous probes cannot be preempted; expiry prevents subsequent authority — upgrade when native APIs support cancellation.
-Known ceiling: Full Appium startup/session total allowance remains outside this change — extend when that original obligation is assigned.
+Qualification ceiling: this contribution does not establish a caller-wide Appium cancellation/allowance contract. Original SPEC/M01/M07 inspection does not establish a mandatory new aggregate startup/session timeout; confirmed existing phase/native handoffs are addressed by the current task instead.
 Known ceiling: native macOS remains unverified — qualify when a native host is available.
 
 At the AC-001 handoff, the developer also reported: “Known ceiling: Static compilation, combined build/review/QA and native Windows acceptance remain coordinator-owned — upgrade when those checks complete.” The static producers/types, independent reviews and portable QA above are now executed; required native acceptance remains blocked. The reserved Windows VM was Saved and its exact resume failed; prior driver8704/target2860 termination is still unobserved. Neither that hold nor absent automatic attestation can be replaced by portable evidence.

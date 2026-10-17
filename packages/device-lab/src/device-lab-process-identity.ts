@@ -190,12 +190,16 @@ async function psProcessIdentityAsync(pid: number, platform: NodeJS.Platform): P
     return identity(pid, startToken ? `ps:${startToken}` : null, commandLine || null);
 }
 
-export function readDeviceRuntimeProcessIdentity(pid: unknown, options: ProcessIdentityOptions = {}): DeviceRuntimeProcessIdentity | null {
+function readNativeDeviceRuntimeProcessIdentity(pid: unknown, options: ProcessIdentityOptions): DeviceRuntimeProcessIdentity | null {
     if (!validPid(pid) || !processIdentityProbeTimeoutMs(options.remainingMs)) return null;
     const platform = options.platform || process.platform;
-    const current = platform === "linux" ? linuxProcessIdentity(pid, options.remainingMs)
+    return platform === "linux" ? linuxProcessIdentity(pid, options.remainingMs)
         : platform === "win32" ? windowsProcessIdentity(pid, options.remainingMs)
             : psProcessIdentity(pid, platform, options.remainingMs);
+}
+
+export function readDeviceRuntimeProcessIdentity(pid: unknown, options: ProcessIdentityOptions = {}): DeviceRuntimeProcessIdentity | null {
+    const current = readNativeDeviceRuntimeProcessIdentity(pid, options);
     return current && processIdentityProbeTimeoutMs(options.remainingMs) ? current : null;
 }
 
@@ -238,7 +242,7 @@ export function inspectDeviceRuntimeProcessIdentity(
     options: ProcessIdentityOptions = {},
 ): DeviceRuntimeProcessObservation {
     if (!validPid(pid) || !processIdentityProbeTimeoutMs(options.remainingMs)) return { status: "unavailable", current: null, liveness: "unknown" };
-    const readIdentity = options.readIdentity || ((value: number) => readDeviceRuntimeProcessIdentity(value, options));
+    const readIdentity = options.readIdentity || ((value: number) => readNativeDeviceRuntimeProcessIdentity(value, options));
     const current = readIdentity(pid);
     const hasTime = processIdentityProbeTimeoutMs(options.remainingMs) > 0;
     if (current) {

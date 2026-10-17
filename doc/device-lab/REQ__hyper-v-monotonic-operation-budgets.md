@@ -66,6 +66,18 @@ Native create confirmation uses at most10000ms of invocation remainder, with bou
 
 Verification uses the existing native, snapshot application, repository, timeout-client and authenticated broker owners. Exercise repair consuming action time, standalone60s/parent precedence, local/wall changes, late successful inventory/SSH, exact-ID retention, genuine late rejection versus own abort, same-generation replacement operationId, locked publication and clearing, actual504 mapping, and identical captured cleanup deadlines after early or late failure. Genuine compiled/package consumers qualify transport alignment; portable evidence does not certify actual Windows/macOS or whole-Goal completion.
 
+## macOS recorder-exit wait
+
+The existing direct macOS recorder-exit wait also uses its own1000ms monotonic allowance. Native identity observations and sleeps consume that same remainder; do not dispatch an expired probe or accept a late exited result. Preserve mismatch/unavailable refusal, exact native exceptions and existing generation-qualified recording/recovery evidence. No new recorder timeout or public option is introduced.
+
+## Appium native phase handoff
+
+Appium retains its independent install-lock315000ms, install300000ms, listener60000ms, readiness60000ms and each admitted session POST240000ms limits, including the existing conditional instrumentation recovery/retry. The client HTTP waiting timer is not server effect cancellation. This migration introduces no aggregate Appium startup default or new wire timer.
+
+The existing listener phase passes its shrinking local remainder into runtime identity and native listener discovery. Each native subprocess receives only a positive integral duration capped by its existing limit and the same remaining phase. Earlier preparation/probes consume that phase; a growing callback or wall-clock adjustment cannot renew an observed shrink. A late positive observation cannot grant listener authority; preserve genuine native failure/mismatch evidence and omitted-budget caller compatibility.
+
+Default detached Appium launch honors its already-supplied command allowance through invocation preparation, settling and identity acquisition. Recheck before native dispatch and successful acceptance. Preserve native failures and actual child evidence. Expiry is neither termination proof nor PID-only cleanup authority; unconfirmed owned-child cleanup remains explicit. Existing recording callers that omit this launch allowance retain their established behavior. These phase corrections do not establish caller-wide cancellation or certify actual Windows/macOS execution.
+
 ## Detached provider native process allowance
 The existing provider native process-identity adapter owns its command recipes and decoding. Every identity read, wait, refresh, observation, signal and termination captures a local monotonic countdown. Optional parent remaining durations can shorten it; each observed shrink is permanent and later growth or host wall-clock changes cannot renew it. Native timeouts are the positive integral minimum of the legacy cap and remaining duration. Invalid, nonfinite or sub-millisecond native allowance refuses dispatch rather than passing timeout0. Absolute monotonic values remain process-local.
 

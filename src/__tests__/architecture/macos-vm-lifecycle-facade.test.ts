@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-environment.js";
+import * as processIdentity from "../../../packages/device-lab/providers/state/process-identity.mjs";
 
 const commands = vi.hoisted(() => ({ timed: vi.fn(), run: vi.fn(), spawn: vi.fn(), executables: new Map<string, string>() }));
 vi.mock("../../../packages/device-lab/providers/commands.mjs", () => ({
@@ -14,6 +15,7 @@ vi.mock("../../../packages/device-lab/providers/commands.mjs", () => ({
 }));
 vi.mock("child_process", async original => ({ ...await original<Record<string, unknown>>(), spawn: commands.spawn }));
 vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
+vi.mock("../../../packages/device-lab/providers/state/process-identity.mjs", async original => ({ ...await original<typeof import("../../../packages/device-lab/providers/state/process-identity.mjs")>() }));
 type Device = Record<string, unknown>;
 type Reply = { isError?: boolean; content: Array<{ text: string }> };
 // Vitest imports the actual facade; only its command leaves are doubled.
@@ -76,6 +78,137 @@ async function startNativeFixture(extra: Record<string, unknown> = {}) {
         },
     };
 }
+async function recorderStopFixture() {
+    const deviceId: string = payload(await create()).device.id;
+    const identity = { pid: 424242, startToken: "recorder-birth", commandHash: "a".repeat(64) };
+    const recording = { runtimeId: "owned-recorder", pid: identity.pid, processIdentity: identity, active: false };
+    const restoreRecovery = { candidateProviderInstance: "retained-restore", phase: "prepared" };
+    state.updateMacosDevice(deviceId, device => ({ ...device, status: "running", runtime: { runtimeId: "vm-runtime", providerPid: 71 }, recording, restoreRecovery }));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-10-17T12:00:00.000Z"));
+    let elapsed = 17.25;
+    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    const signal = vi.spyOn(processIdentity, "signalOwnedRuntimeProcess").mockReturnValue({ attempted: true, signaled: true, pid: identity.pid, signal: "SIGINT" });
+    const inspect = vi.spyOn(processIdentity, "inspectProcessIdentity").mockReturnValue({ status: "match", current: identity, liveness: "alive" });
+    commands.timed.mockClear();
+    const stop = () => handleMacosTool("device_stop", { deviceId });
+    return {
+        deviceId, identity, recording, restoreRecovery, signal, inspect, stop,
+        advance: (milliseconds: number) => { elapsed += milliseconds; },
+        read: () => state.findMacosDevice(deviceId),
+        async begin() {
+            const pending = stop();
+            for (let attempts = 0; attempts < 100 && inspect.mock.calls.length === 0; attempts++) await Promise.resolve();
+            expect(inspect).toHaveBeenCalled();
+            return { pending };
+        },
+    };
+}
+
+describe("actual macOS recorder exit allowance", () => {
+    it("confirms timely recorder exit using the saved birth and shrinking native allowance", async () => {
+        const f = await recorderStopFixture(), observed: number[] = [];
+        let reads = 0;
+        f.inspect.mockImplementation((identity, pid, options) => {
+            expect(identity).toEqual(f.identity); expect(pid).toBe(f.identity.pid);
+            if (options?.remainingMs) observed.push(options.remainingMs());
+            if (++reads === 1) { f.advance(100); return { status: "match", current: f.identity, liveness: "alive" }; }
+            f.advance(20); return { status: "exited", current: null, liveness: "exited" };
+        });
+        const { pending } = await f.begin();
+        f.advance(50); await vi.advanceTimersByTimeAsync(50);
+        expect(payload(await pending).device).toMatchObject({ status: "stopped", runtime: null, recording: null, restoreRecovery: f.restoreRecovery });
+        expect(observed).toEqual([1000, 850]);
+        expect(f.inspect.mock.calls.every(call => typeof call[2]?.remainingMs === "function")).toBe(true);
+        expect(f.signal).toHaveBeenCalledExactlyOnceWith(f.recording, "SIGINT");
+    });
+
+    it.each([1, -1])("does not renew or truncate recorder polling when wall time jumps %s", async direction => {
+        const f = await recorderStopFixture(), observed: number[] = [];
+        let reads = 0;
+        f.inspect.mockImplementation((_identity, _pid, options) => {
+            if (options?.remainingMs) observed.push(options.remainingMs());
+            return ++reads > 20 ? { status: "exited", current: null, liveness: "exited" }
+                : { status: "match", current: f.identity, liveness: "alive" };
+        });
+        const { pending } = await f.begin();
+        vi.setSystemTime(Date.now() + direction * 86400000);
+        for (let elapsed = 0; elapsed < 1000; elapsed += 50) { f.advance(50); await vi.advanceTimersByTimeAsync(50); }
+        expect(failurePayload(await pending)).toMatchObject({ error: "macos-recording-cleanup-incomplete", reason: "runtime-process-exit-unconfirmed" });
+        expect(reads).toBe(20); expect(observed).toEqual(Array.from({ length: 20 }, (_, index) => 1000 - index * 50));
+        expect(f.read()).toMatchObject({ status: "stopped", runtime: null, recording: f.recording, restoreRecovery: f.restoreRecovery });
+        expect(f.read()?.lifecycle).toBeUndefined(); expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("retains recorder and recovery evidence when an exited observation returns after expiry", async () => {
+        const f = await recorderStopFixture();
+        f.inspect.mockImplementation(() => { f.advance(1000); return { status: "exited", current: null, liveness: "exited" }; });
+        expect(failurePayload(await f.stop())).toMatchObject({ error: "macos-recording-cleanup-incomplete", reason: "runtime-process-exit-unconfirmed" });
+        expect(f.inspect).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+        expect(f.read()).toMatchObject({ status: "stopped", runtime: null, recording: f.recording, restoreRecovery: f.restoreRecovery });
+    });
+
+    it("refuses another native probe when an observation leaves less than one usable millisecond", async () => {
+        const f = await recorderStopFixture();
+        let reads = 0;
+        f.inspect.mockImplementation(() => {
+            if (++reads > 1) return { status: "exited", current: null, liveness: "exited" };
+            f.advance(999.5); return { status: "match", current: f.identity, liveness: "alive" };
+        });
+        const { pending } = await f.begin();
+        await vi.advanceTimersByTimeAsync(50);
+        expect(failurePayload(await pending)).toMatchObject({ reason: "runtime-process-exit-unconfirmed" });
+        expect(f.inspect).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+        expect(f.read()).toMatchObject({ recording: f.recording, restoreRecovery: f.restoreRecovery });
+    });
+
+    it.each([false, true])("bounds the final recorder sleep and never accepts an expired final exit lookup: overlong=%s", async overlong => {
+        const f = await recorderStopFixture(), sleep = vi.spyOn(globalThis, "setTimeout");
+        let reads = 0;
+        f.inspect.mockImplementation(() => {
+            if (++reads > 1) return { status: "exited", current: null, liveness: "exited" };
+            if (!overlong) f.advance(980);
+            return { status: "match", current: f.identity, liveness: "alive" };
+        });
+        const { pending } = await f.begin(), requestedSleep = overlong ? 50 : 20;
+        expect(sleep.mock.calls.at(-1)?.[1]).toBe(requestedSleep);
+        f.advance(overlong ? 1001 : 20); await vi.advanceTimersByTimeAsync(requestedSleep);
+        expect(failurePayload(await pending)).toMatchObject({ reason: "runtime-process-exit-unconfirmed" });
+        expect(reads).toBe(1); expect(vi.getTimerCount()).toBe(0);
+        expect(f.read()).toMatchObject({ status: "stopped", runtime: null, recording: f.recording, restoreRecovery: f.restoreRecovery });
+    });
+
+    it.each(["mismatch", "unavailable"] as const)("retains recorder and recovery evidence after native %s", async status => {
+        const f = await recorderStopFixture();
+        f.inspect.mockReturnValue(status === "mismatch"
+            ? { status: "mismatch", current: { ...f.identity, startToken: "successor" }, liveness: "alive" }
+            : { status: "unavailable", current: null, liveness: "unknown" });
+        expect(failurePayload(await f.stop())).toMatchObject({ reason: "runtime-process-exit-unconfirmed" });
+        expect(f.inspect).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+        expect(f.read()).toMatchObject({ status: "stopped", runtime: null, recording: f.recording, restoreRecovery: f.restoreRecovery });
+        expect(commands.timed.mock.calls.map(([, args]) => args[0])).toEqual(["stop"]);
+    });
+
+    it("propagates the native observation exception without discarding recorder or recovery identity", async () => {
+        const f = await recorderStopFixture(), fault = new Error("native recorder observation failed");
+        f.inspect.mockImplementation(() => { throw fault; });
+        await expect(f.stop()).rejects.toBe(fault);
+        expect(f.inspect).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+        expect(f.read()).toMatchObject({ recording: f.recording, restoreRecovery: f.restoreRecovery });
+        expect(commands.timed.mock.calls.map(([, args]) => args[0])).toEqual(["stop"]);
+    });
+
+    it.each(["pid", "birth", "hash"])("does not probe or erase malformed saved recorder %s evidence", async field => {
+        const f = await recorderStopFixture();
+        const recording = { ...f.recording, processIdentity: { ...f.identity,
+            ...(field === "pid" ? { pid: f.identity.pid + 1 } : field === "birth" ? { startToken: "" } : { commandHash: "invalid" }) } };
+        state.updateMacosDevice(f.deviceId, device => ({ ...device, recording }));
+        f.inspect.mockReturnValue({ status: "exited", current: null, liveness: "exited" });
+        expect(failurePayload(await f.stop())).toMatchObject({ reason: "runtime-process-exit-unconfirmed" });
+        expect(f.inspect).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+        expect(f.read()).toMatchObject({ recording, restoreRecovery: f.restoreRecovery });
+    });
+});
 describe("macOS current native facade", () => {
     it("uses default native entropy for same-name definitions, images and clones", async () => {
         const name = "Same 名称 with spaces";

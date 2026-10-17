@@ -153,7 +153,11 @@ if (command.includes("screencapture") && command.includes("-v")) {
         const originalSignal = signal.getMockImplementation()!;
         const originalInspect = inspect.getMockImplementation()!;
         signal.mockReturnValue({ attempted: true, signaled: true, pid: identity.pid, signal: "SIGINT" });
-        inspect.mockReturnValue({ status: "unavailable", current: null, liveness: "unknown" });
+        const remainingAtObservation: number[] = [];
+        inspect.mockImplementation((_identity, _pid, options) => {
+            if (options?.remainingMs) remainingAtObservation.push(options.remainingMs());
+            return { status: "unavailable", current: null, liveness: "unknown" };
+        });
         const logBefore = readFileSync(context.logPath, { encoding: "utf8", flag: "a+" });
         try {
             const result = await handleMacosTool("device_snapshot_create", { deviceId, snapshotName: "Identity Unavailable", force: true });
@@ -161,7 +165,11 @@ if (command.includes("screencapture") && command.includes("-v")) {
             expect(JSON.parse((result?.content as Array<{ text: string }>)[0].text)).toMatchObject({
                 error: "macos-recording-cleanup-incomplete", reason: "runtime-process-exit-unconfirmed",
             });
-            expect(inspect).toHaveBeenCalledWith(identity, identity.pid);
+            expect(inspect).toHaveBeenCalledWith(identity, identity.pid, { remainingMs: expect.any(Function) });
+            expect(remainingAtObservation).toHaveLength(1);
+            expect(Number.isFinite(remainingAtObservation[0])).toBe(true);
+            expect(Math.floor(remainingAtObservation[0])).toBeGreaterThanOrEqual(1);
+            expect(remainingAtObservation[0]).toBeLessThanOrEqual(1000);
             const ownersRoot = join(context.homeDir, ".ccc", "devices", "owners");
             const statePath = join(ownersRoot, readdirSync(ownersRoot)[0], "macos", "devices.json");
             const state = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, unknown>> };

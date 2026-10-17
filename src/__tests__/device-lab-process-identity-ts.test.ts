@@ -1,4 +1,5 @@
 import * as childProcess from "child_process";
+import * as fileSystem from "fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as windowsSystem from "@ccc/device-lab/windows-system-powershell.js";
 import {
@@ -13,6 +14,7 @@ import {
 vi.mock("child_process", async (importOriginal) => ({
     ...await importOriginal<typeof import("child_process")>(),
 }));
+vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import("fs")>() }));
 vi.mock("@ccc/device-lab/windows-system-powershell.js", async (importOriginal) => ({
     ...await importOriginal<typeof import("@ccc/device-lab/windows-system-powershell.js")>(),
 }));
@@ -127,6 +129,64 @@ describe("broker device runtime process identity", () => {
 });
 
 describe("native process identity remaining allowance", () => {
+    it.runIf(process.platform === "linux").each([false, true])("classifies completed late default identity from Linux proc files (mismatch=%s)", mismatch => {
+        const actual = readDeviceRuntimeProcessIdentity(process.pid)!;
+        expect(actual).toBeTruthy();
+        let remaining = 37.9;
+        const nativeRead = fileSystem.readFileSync;
+        const read = vi.spyOn(fileSystem, "readFileSync").mockImplementation(((...args: Parameters<typeof nativeRead>) => {
+            const output = nativeRead(...args);
+            if (String(args[0]) === `/proc/${process.pid}/stat`) remaining = 0;
+            return output;
+        }) as typeof nativeRead);
+        const expected = mismatch ? { ...actual, startToken: "previous-process-birth" } : actual;
+        const probeLiveness = vi.fn(() => "alive" as const);
+        expect(inspectDeviceRuntimeProcessIdentity(expected, process.pid, { remainingMs: () => remaining, probeLiveness }))
+            .toEqual(mismatch ? { status: "mismatch", current: actual, liveness: "alive" } : { status: "unavailable", current: null, liveness: "unknown" });
+        expect(probeLiveness).not.toHaveBeenCalled();
+        remaining = 37.9;
+        expect(readDeviceRuntimeProcessIdentity(process.pid, { remainingMs: () => remaining })).toBeNull();
+        read.mockClear();
+        expect(inspectDeviceRuntimeProcessIdentity(expected, process.pid, { remainingMs: () => remaining, probeLiveness }).status).toBe("unavailable");
+        expect(read).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { platform: "win32", mismatch: false }, { platform: "win32", mismatch: true },
+        { platform: "darwin", mismatch: false }, { platform: "darwin", mismatch: true },
+    ] as const)("classifies completed late default identity on $platform (mismatch=$mismatch)", ({ platform, mismatch }) => {
+        let remaining = 37.9, observations = 0, expire = false;
+        const spawn = mockIdentityProbes(platform, () => {
+            if (expire && ++observations === (platform === "win32" ? 1 : 2)) remaining = 0;
+        });
+        const actual = readDeviceRuntimeProcessIdentity(321, { platform })!;
+        expect(actual).toBeTruthy();
+        spawn.mockClear();
+        expire = true;
+        const expected = mismatch ? { ...actual, startToken: "previous-process-birth" } : actual;
+        const probeLiveness = vi.fn(() => "alive" as const);
+
+        expect(inspectDeviceRuntimeProcessIdentity(expected, 321, { platform, remainingMs: () => remaining, probeLiveness }))
+            .toEqual(mismatch ? { status: "mismatch", current: actual, liveness: "alive" } : { status: "unavailable", current: null, liveness: "unknown" });
+        expect(probeTimeouts(spawn)).toEqual(platform === "win32" ? [37] : [37, 37]);
+        expect(probeLiveness).not.toHaveBeenCalled();
+
+        remaining = 37.9; observations = 0; spawn.mockClear();
+        expect(readDeviceRuntimeProcessIdentity(321, { platform, remainingMs: () => remaining })).toBeNull();
+        expect(probeTimeouts(spawn)).toEqual(platform === "win32" ? [37] : [37, 37]);
+    });
+
+    it("does not dispatch a second default identity probe after the first consumes the allowance", () => {
+        let remaining = 37.9;
+        const spawn = mockIdentityProbes("darwin", () => { remaining = 0; });
+        const probeLiveness = vi.fn(() => "alive" as const);
+        expect(inspectDeviceRuntimeProcessIdentity({ pid: 321, startToken: "saved", commandHash: "saved" }, 321,
+            { platform: "darwin", remainingMs: () => remaining, probeLiveness }))
+            .toEqual({ status: "unavailable", current: null, liveness: "unknown" });
+        expect(probeTimeouts(spawn)).toEqual([37]);
+        expect(probeLiveness).not.toHaveBeenCalled();
+    });
+
     it.each(["win32", "darwin"] as const)("preserves omitted-budget probe limits on %s", (platform) => {
         const spawn = mockIdentityProbes(platform);
         if (platform === "win32") spawn.mockReturnValueOnce(successfulProbe(windowsStartToken));

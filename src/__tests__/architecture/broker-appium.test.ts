@@ -649,6 +649,46 @@ describe("broker Appium application policies", () => {
         expect(device.appium).not.toHaveProperty("sessionId");
     });
 
+    it("phase allowance reaches each listener verification through the same elapsed countdown", async () => {
+        const { ports, device } = launchFixture();
+        let elapsed = 0, wall = 1000;
+        ports.monotonicNow = () => elapsed;
+        ports.now = () => wall;
+        const observed: number[] = [];
+        ports.verifyListener = (_metadata, remainingMs) => {
+            expect(remainingMs).toBeTypeOf("function");
+            const before = remainingMs!();
+            observed.push(before);
+            elapsed += 30;
+            wall -= 1e12;
+            expect(remainingMs!()).toBe(before - 30);
+            return observed.length === 1
+                ? { ok: false, error: "appium-port-listener-unavailable", receipt: Symbol("warming") }
+                : { ok: true, serverUrl: "http://127.0.0.1:20000", port: 20000, receipt: Symbol("matched") };
+        };
+        ports.sleep = async milliseconds => { expect(milliseconds).toBe(100); elapsed += milliseconds; };
+        ports.status = async () => ({ ok: true, ready: true, receipt: Symbol("ready") });
+        ports.createSession = async (_endpoint, _capabilities, timeoutMs) => {
+            expect(timeoutMs).toBe(240000);
+            return { ok: true, sessionId: "phase-session", instrumentationInitializationFailed: false, receipt: Symbol("created") };
+        };
+        expect(await createBrokerAppiumApplication(ports).ensureSession(owner, target)).toMatchObject({ kind: "session-created" });
+        expect(observed).toEqual([60000, 59870]);
+        expect(device.appium).toMatchObject({ sessionId: "phase-session" });
+    });
+
+    it("phase allowance refuses native verification when the listener phase expires before its first dispatch", async () => {
+        const { ports, device } = launchFixture();
+        let reads = 0;
+        ports.monotonicNow = () => reads++ === 0 ? 0 : 60000;
+        const verify = vi.fn(unexpected);
+        ports.verifyListener = verify;
+        const outcome = await createBrokerAppiumApplication(ports).ensureSession(owner, target);
+        expect(outcome).toMatchObject({ kind: "refused", error: "appium-listener-ownership-unverified" });
+        expect(verify).not.toHaveBeenCalled();
+        expect(device.appium).toMatchObject({ runtimeId: "runtime-new", serverPid: 23456 });
+    });
+
     it.each([0.4, 50])("caps listener sleep at remaining %sms and dispatches no final expired verification", async remainder => {
         const { ports, device } = launchFixture();
         let elapsed = 0, probes = 0;

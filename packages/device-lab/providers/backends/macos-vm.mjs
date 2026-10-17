@@ -605,13 +605,17 @@ async function waitForOwnedRecordingExit(recording, timeoutMs) {
     const identity = recording.processIdentity;
     if (identity.pid !== recording.pid || typeof identity.startToken !== "string" || !identity.startToken
         || typeof identity.commandHash !== "string" || !/^[a-f0-9]{64}$/i.test(identity.commandHash)) return false;
-    const deadline = Date.now() + Math.max(0, timeoutMs);
-    do {
-        const observation = inspectProcessIdentity(identity, recording.pid);
+    const deadline = performance.now() + Math.max(0, timeoutMs);
+    const remainingMs = () => Math.max(0, deadline - performance.now());
+    while (remainingMs() >= 1) {
+        const observation = inspectProcessIdentity(identity, recording.pid, { remainingMs });
+        if (!(remainingMs() >= 1)) return false;
         if (observation.status === "exited") return true;
-        if (observation.status !== "match" || Date.now() >= deadline) return false;
-        await sleep(Math.min(50, Math.max(0, deadline - Date.now())));
-    } while (Date.now() <= deadline);
+        if (observation.status !== "match") return false;
+        const delay = Math.min(50, remainingMs());
+        if (!(delay > 0)) return false;
+        await sleep(delay);
+    }
     return false;
 }
 
