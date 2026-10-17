@@ -2860,7 +2860,8 @@
           "kind": "explicit-callee-boundary",
           "scope": "own-start permission and pinnedID handoffs connect canonical childoperations; no unbounded recursive journal certification"
         }
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/containerExec"
     },
     {
       "id": "OP-home-migrate",
@@ -11674,7 +11675,8 @@
       },
       "historicalSourceImplementationRemainingWorkBeforeSourceAcceptance": [
         "The retained exported synchronous deleteOwnerDevice/devicesCli binding still owns delete eligibility, provider cleanup, lease/claim release and conditional removal."
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/adminDelete"
     },
     {
       "id": "OP-device-admin-prune",
@@ -16616,7 +16618,8 @@
           "lockCategories": [],
           "exactBindingSource": "bindings and referenced bindingProofCatalog records"
         }
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/brokerExecutor"
     },
     {
       "id": "OP-windows-sandbox-create",
@@ -27055,7 +27058,8 @@
       },
       "historicalSourceImplementationRemainingWorkBeforeAttachmentAcceptance": [
         "Android/iOS direct device_attach still own discovery/selection, claim, publication and compensation sequencing."
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/physicalRpc"
     },
     {
       "id": "OP-physical-detach",
@@ -27417,7 +27421,8 @@
       },
       "historicalSourceImplementationRemainingWorkBeforeAttachmentAcceptance": [
         "Android/iOS direct device_detach still own lifecycle admission, auxiliary cleanup, CAS/lease removal and rollback sequencing."
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/physicalRpc"
     },
     {
       "id": "OP-apple-trust-diagnostic",
@@ -30889,7 +30894,8 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-appium-server-start-broker-appium-start"
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/appium"
     },
     {
       "id": "OP-appium-server-stop",
@@ -31339,7 +31345,8 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-appium-server-stop-broker-appium-stop"
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/appium"
     },
     {
       "id": "OP-appium-session-ensure",
@@ -31789,7 +31796,8 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-appium-session-ensure-broker-appium-session-ensure"
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/appium"
     },
     {
       "id": "OP-appium-session-delete",
@@ -32230,7 +32238,8 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-appium-session-delete-broker-appium-session-delete"
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/appium"
     },
     {
       "id": "OP-appium-request",
@@ -32660,7 +32669,8 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-appium-request-broker-appium-request"
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/appium"
     },
     {
       "id": "OP-appium-record",
@@ -33085,7 +33095,8 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-appium-record-broker-appium-record"
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/appium"
     },
     {
       "id": "OP-appium-clear",
@@ -33510,7 +33521,8 @@
       "implementationRemainingWork": [],
       "bindingIds": [
         "BIND-appium-clear-broker-appium-clear"
-      ]
+      ],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/appium"
     },
     {
       "id": "OP-broker-owner-cleanup",
@@ -56955,7 +56967,8 @@
         "packages/device-lab/src/device-lab-broker.ts",
         "packages/device-lab/src/device-lab/broker/hyper-v/console.ts"
       ],
-      "implementationRemainingWork": []
+      "implementationRemainingWork": [],
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/physicalDirect"
     },
     {
       "id": "OP-device-clipboard-read",
@@ -233343,7 +233356,8 @@
         "gitBlob": "869fc2e64c187409ab24ca136f4ccc94cfbb050d",
         "symbol": "main",
         "line": 1820
-      }
+      },
+      "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/containerExec"
     }
   ],
   "deviceAdminRouteCatalog": {
@@ -233409,7 +233423,8 @@
           "delete owneddevice legacy"
         ],
         "target": "stopAllProjectDevices/deleteOwnerDevice",
-        "operation": "OP-device-admin-cleanup"
+        "operation": "OP-device-admin-cleanup",
+        "currentSourceTraceRef": "#/bindingAuthorityCatalog/currentSourceReconciliation/routes/adminDelete"
       },
       {
         "cases": [
@@ -261368,7 +261383,152 @@
         "detail": "Broker/provider operation paths align; provider reentrancy is process-local AsyncLocalStorage and does not allow broker to hold lock while launching child. Physical lease transaction takes hardware then aggregate mutation guard separately."
       }
     ],
-    "acceptanceScope": "All proposed closures are static source-route/authority observations only; portable/native/emitted/installed/reliability acceptance is not inferred."
+    "acceptanceScope": "All proposed closures are static source-route/authority observations only; portable/native/emitted/installed/reliability acceptance is not inferred.",
+    "currentSourceReconciliation": {
+      "sourceCommit": "abb48599f51f80afac89e1c2ebc3d7f211fd5d2d",
+      "scope": "Bounded read-only reconciliation of the named implemented composition routes. Historical fields and baseline blobs remain intact; this section supplies current source location and authority, not new implementation, whole-source purity, executed qualification, native proof or completion credit.",
+      "sourcePins": {
+        "broker": {
+          "path": "packages/device-lab/src/device-lab-broker.ts",
+          "headGitBlob": "3f562e85a0415a182aa5b4c3b67ffc1748b48043",
+          "observedWorkingSha256": "2fe673f07be5dbada7bd8e0528a0a041f33046efa129b28cdb90b3d426c92294",
+          "workingBytesEqualHead": true
+        },
+        "androidPhysical": {
+          "path": "packages/device-lab/providers/backends/android-device.mjs",
+          "headGitBlob": "68218d553c1615f4de8d77dd3e032786b05d1d54",
+          "observedWorkingSha256": "35425efa27672c32ddfedc5371006df2b55c4e419d1dbf9b3ce9f5f99286fecb",
+          "workingBytesEqualHead": true
+        },
+        "iosPhysical": {
+          "path": "packages/device-lab/providers/backends/ios-device.mjs",
+          "headGitBlob": "098e43be23d0d795663bf2c4542762399ab75632",
+          "observedWorkingSha256": "92feb091c47bd94d1ca4518128cdc1d198283f8903660c84806d33a9ab7618df",
+          "workingBytesEqualHead": true
+        },
+        "providerDeviceGuard": {
+          "path": "packages/device-lab/providers/state/device-store.mjs",
+          "headGitBlob": "93ad49e52d100f491287a7591fe0bae4f4c06854",
+          "observedWorkingSha256": "9e506abc94ecbec5de6e1abf621aaef922743efd56d64ff223a851b490608705",
+          "workingBytesEqualHead": true
+        },
+        "appiumApplication": {
+          "path": "packages/device-lab/src/device-lab/application/broker-appium.ts",
+          "headGitBlob": "4ee1159745a08da29e99607c34d3787aa87de4bd",
+          "observedWorkingSha256": "5067b75dd41ca6d4ce4e9535cb46efd212bcbe360645c674f3187ba4a48f62b9",
+          "workingBytesEqualHead": true
+        },
+        "adminFacade": {
+          "path": "src/device-lab-admin.ts",
+          "headGitBlob": "e059a943afec12e4d039c1fe2ee6dd1f47d4b259",
+          "observedWorkingSha256": "72b18c61239a6cfa1db1d2a446b4d019fa5932088c933b182f176de5a7571585",
+          "workingBytesEqualHead": true
+        },
+        "adminDeleteApplication": {
+          "path": "src/application/device-admin-delete.ts",
+          "headGitBlob": "0a7a1e5f88bde8f2adc33394c05fb5c46d512b04",
+          "observedWorkingSha256": "7242e492b1251e80665e6ed2ddc800cbd8d23a51ecafd2b5fa713c722f203825",
+          "workingBytesEqualHead": true
+        },
+        "adminDeviceGuard": {
+          "path": "src/device-lab-cleanup.ts",
+          "headGitBlob": "4facb66f36433a48a7ced3c02eb22817b0f05c79",
+          "observedWorkingSha256": "65b83404ab9397830d1f2c55e9a43293014fc55c1a3694c48e3b8aa4c2cb7652",
+          "workingBytesEqualHead": true
+        },
+        "cli": {
+          "path": "src/index.ts",
+          "headGitBlob": "a076ba9b11a4951966f0d5dfb9a3e45e4a36dd6a",
+          "observedWorkingSha256": "1e233ae84f40e0d487fe29ff8ecce4912c21bf099b93e748853f64cea4b99cba",
+          "workingBytesEqualHead": true
+        },
+        "containerComposition": {
+          "path": "src/composition/container-exec.ts",
+          "headGitBlob": "b648480958e94036ffe9517c439821187d46915d",
+          "observedWorkingSha256": "82d9d5c312cb08f88ac03268b6914fa2c47f03cfd8d5788449a793eda66a12db",
+          "workingBytesEqualHead": false,
+          "workingContentDisposition": "Original user working content; this documentary observation neither stages nor replaces it. HEAD blob is historical committed content, not a hash of these working bytes."
+        },
+        "containerApplication": {
+          "path": "src/application/container-exec.ts",
+          "headGitBlob": "cc92923db2ce143c475c3ba6cffb381bae4cf27c",
+          "observedWorkingSha256": "6a86d67dd6c9666b2f56c1b444cc71260a65d2f112c6be3983cb5340e78adf60",
+          "workingBytesEqualHead": true
+        }
+      },
+      "routes": {
+        "brokerExecutor": {
+          "trace": [
+            "broker:4225 BrokerExecutorDescriptor",
+            "broker:4232 invokeBrokerExecutor",
+            "broker:4241 deviceToolExecutor",
+            "broker:4311 invokeDeviceTool",
+            "broker:10303 lifecycleCommandInvoke"
+          ],
+          "authority": "Authenticated broker owner/device target; finite descriptor selects broker, backend or specialized workflow. Only broker descriptors acquire the owner/stateKey/device operation guard; backend descriptors call the existing provider locking boundary; specialized inventory, unattached tools and recording status retain their distinct behavior.",
+          "lock": "broker:4349 withOwnerDeviceOperation uses owner/stateKey/operations/SHA256(deviceId)[0:32].lock. Missing Hyper-V backend inference retains ordered windows-vm then linux-vm acquisition. Owner RPC queue, short state publication and specialized resource guards remain separate.",
+          "catalogScope": "Existing bindingAuthorityCatalog categories describe the selected executor-specific authority. Example existing bindings BIND-broker-windows-vm-device_exec, BIND-broker-linux-vm-device_exec, BIND-broker-android-device-device_inventory and BIND-broker-android-device-device_record_video_status retain their respective lock policies; no all-branch requalification is inferred."
+        },
+        "physicalDirect": {
+          "trace": [
+            "androidPhysical:651 handleAndroidRealTool",
+            "iosPhysical:302 handleIosRealTool",
+            "providerDeviceGuard:24 ownerDeviceOperationLockFile",
+            "providerDeviceGuard:30 withOwnerDeviceOperation"
+          ],
+          "authority": "Trusted direct owner or authenticated provider-child context; requiresOwnerDeviceOperation selects acquisition, an attach may derive its ID, and an existing non-attach target refreshes its physical lease inside the device guard before private unlocked dispatch.",
+          "lock": "The public provider handler remains the permitted legacy acquiring boundary. Reentrancy is process-local and does not authorize a broker to hold that same lock while launching a child. Hardware lease mutations and short owner repository publication remain distinct.",
+          "catalogScope": "Current shared handler boundary for existing direct android-device/ios-device bindings; representative OP-device-click bindings BIND-proof-direct-android-device-mobile_tap and BIND-proof-direct-ios-device-mobile_tap already reference their PROOF-direct records. Existing case/proof history and acceptance limitations remain unchanged."
+        },
+        "physicalRpc": {
+          "trace": [
+            "broker:5257 withPhysicalDeviceOperation",
+            "broker:10569 broker.physical.attach dispatch",
+            "broker:10570 broker.physical.detach dispatch"
+          ],
+          "authority": "Authenticated owner and validated physical backend/device target; the broker acquires the device operation guard before the inward physical workflow. Dedicated physical attach/detach routes remain distinct from raw device-tool invocation.",
+          "lock": "Broker device operation guard surrounds the workflow; hardware-specific lease transaction, rollback and owner-record publication retain their separate guards."
+        },
+        "appium": {
+          "trace": [
+            "broker:10418 brokerAppiumApplication",
+            "broker:10578-10584 Appium mutation RPC dispatch",
+            "appiumApplication:16 createBrokerAppiumApplication",
+            "appiumApplication:382 withAppiumDeviceOperation",
+            "appiumApplication:574-580 public application methods"
+          ],
+          "authority": "Authenticated owner plus validated backend/stateKey/device. RPC dispatch invokes the inward application; trusted native composition supplies withDeviceOperation, process/listener proofs, conditional generation publication and native effects.",
+          "lock": "The application wrapper acquires the broker device-operation port exactly once. Physical lease refresh occurs for session ensure, session delete and request only. Owner RPC serialization, start installation lock and short conditional repository publication remain separate; no new aggregate Appium allowance is implied.",
+          "catalogScope": "Seven existing OP-appium-server-start/server-stop/session-ensure/session-delete/request/record/clear operations and their BIND-appium-* rows retain IDs and method-specific authority. Their old broker-local implementation names are historical; current policy resides in appiumApplication."
+        },
+        "adminDelete": {
+          "trace": [
+            "adminFacade:610 deviceAdminDeleteNativePorts",
+            "adminFacade:627 createDeviceAdminDelete composition",
+            "adminFacade:673 deleteOwnerDevice",
+            "adminDeleteApplication:73 deleteDevice",
+            "adminDeviceGuard:105 withAdminOwnerDeviceOperation"
+          ],
+          "authority": "Existing OP-device-admin-cleanup legacy delete subroute selects the local owner and expected complete device record; application rereads and exact-compares under the device guard, requires stopped/detached state, then conditionally removes the same record after supported native/resource cleanup.",
+          "lock": "Composition supplies withRecordLock:withAdminOwnerDeviceOperation. Device guard spans reread/native effects/commit; physical lease, Sandbox singleton and short owner publication retain their specialized fences. No extra canonical operation or broad registry is introduced.",
+          "catalogScope": "BIND-source-device-admin-cleanup and deviceAdminRouteCatalog legacy delete route; the existing bb502909 source qualification and historical statuses are retained, not rerun or broadened by this source observation."
+        },
+        "containerExec": {
+          "trace": [
+            "cli:351-360 createContainerExec composition and exec facade",
+            "containerApplication:47 createContainerExec",
+            "containerApplication:64 ensureProjectTools invocation",
+            "containerComposition:130 ensureProjectTools forwarding",
+            "cli:312 ensureMiseConfig",
+            "cli:353 ensureProjectTools binding"
+          ],
+          "authority": "The inward container-exec application owns the outer execution sequence through explicit ports. Host session receipts, pinned container IDs, own-start cleanup permission and canonical child-operation authorities remain separate retained collaborators.",
+          "retainedCallback": "ensureProjectTools -> ensureMiseConfig remains an explicit native/presentation callback: it checks existing mise config and remembered skip, scans version files, prompts, creates selected config or records an explicit decline. Naming this retained policy does not claim whole-source purity or silently extract/recount it.",
+          "lock": "Project-family, session/container lifecycle and setup guards remain the existing acquisition boundaries; this callback runs before session ownership and is not described as newly guarded. Canonical child-operation locks/journals are referenced rather than recursively duplicated.",
+          "catalogScope": "OP-container-exec/BIND-source-container-exec and existing CLI exec aliases. Old fields saying index.ts owns the complete outer workflow are historical pre-cutover evidence; this current trace describes the application/composition cutover with the retained callback limitation."
+        }
+      }
+    }
   },
   "semanticImportReferenceScope": "Historical import/reference observations retain their original static scope; current androidCreationChoices SDK leaf and observeFocusedInventory enclosing owner are separately reconciled. No nearby-call substitution or exhaustive/runtime/native certification."
 }
