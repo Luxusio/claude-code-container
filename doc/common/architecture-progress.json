@@ -2385,7 +2385,7 @@
       "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
       "title": "브로커 provider 수명주기 결과",
       "workStatus": "partial",
-      "remainingWork": "기존 provider 수명주기 전환을 유지한다. 이번 macOS clone/snapshot/복원은 기존 lifecycle의 녹화 종료 확인을 재사용하고, 종료 미확인·복원 실패 중 successor가 있으면 녹화·claim·복구 후보를 보존한다. Sourcec07ecddf와 독립 owning/public69사례를 확인했다. 실제 Windows/macOS·전체 route/소스·reliability·최종 판정이 남아 부분 완료를 유지한다. 이전 기여와 currentNativeResultPolicyQualification을 함께 참조한다. Broker tool/lifecycle의 private typed executor·락 담당 조합은0b8d794a에서 독립 리뷰와 Source/emitted/public467사례·배포 검증으로 확인했다. 이는 선택한 두 진입점의 기여이며 direct/admin/physical/Appium 전체 조합·detached provider startup/escalation·실제 native와 원래 최종 조건은 여전히 남는다. 독립 Hyper-V snapshot 네 동작의 allowance는 side Source 2cbefec6와 portable 476사례로 검증했다. currentSnapshotInvocationAllowanceQualification은 이 side 기여만 기록하며 Root 통합 판정은 원래 canonical task에서 별도로 관리한다. 두 qualification 모두 완료 credit 없음. Broker Worker/backend child의 시작·신원 확인·실행·정리 시간 예산과 생성 인계 처리를 구현했다. 독립 Code/Security 리뷰 후 compiled owning4파일223PASS/기존Windows1SKIP, 실제 npm/Unix 배포·CLI·ESM·MCP QA를 확인했다. currentProviderWorkerAllowanceQualification은 이 범위와 보호된 Main 반영만 기록한다. Detached provider startup/escalation·전체 호출 경계·실제 native·reliability·formal 조건은 남으며 완료 credit은 없다.",
+      "remainingWork": "현재 확인된 구현 잔여: direct Sandbox lifecycle 코어의 공개 응답 구성을 기존 backend renderer로 이동한다. 기존 provider 수명주기 전환을 유지한다. 이번 macOS clone/snapshot/복원은 기존 lifecycle의 녹화 종료 확인을 재사용하고, 종료 미확인·복원 실패 중 successor가 있으면 녹화·claim·복구 후보를 보존한다. Sourcec07ecddf와 독립 owning/public69사례를 확인했다. 실제 Windows/macOS·전체 route/소스·reliability·최종 판정이 남아 부분 완료를 유지한다. 이전 기여와 currentNativeResultPolicyQualification을 함께 참조한다. Broker tool/lifecycle의 private typed executor·락 담당 조합은0b8d794a에서 독립 리뷰와 Source/emitted/public467사례·배포 검증으로 확인했다. 이는 선택한 두 진입점의 기여이며 direct/admin/physical/Appium 전체 조합·detached provider startup/escalation·실제 native와 원래 최종 조건은 여전히 남는다. 독립 Hyper-V snapshot 네 동작의 allowance는 side Source 2cbefec6와 portable 476사례로 검증했다. currentSnapshotInvocationAllowanceQualification은 이 side 기여만 기록하며 Root 통합 판정은 원래 canonical task에서 별도로 관리한다. 두 qualification 모두 완료 credit 없음. Broker Worker/backend child의 시작·신원 확인·실행·정리 시간 예산과 생성 인계 처리를 구현했다. 독립 Code/Security 리뷰 후 compiled owning4파일223PASS/기존Windows1SKIP, 실제 npm/Unix 배포·CLI·ESM·MCP QA를 확인했다. currentProviderWorkerAllowanceQualification은 이 범위와 보호된 Main 반영만 기록한다. Detached provider startup/escalation·전체 호출 경계·실제 native·reliability·formal 조건은 남으며 완료 credit은 없다. Detached native process helper의 캡처된 시간 제한은 독립 Code/Security와 Linux owning5파일111PASS 및 실제 배포 소비로 확인했다. 요청한 Windows 실행은 기존 VM Saved/재개 실패로 BLOCKED_ENV이며 전체 startup·caller·native 완료는 아니다. currentDetachedRuntimeAllowanceQualification 참조; 완료 credit 없음.",
       "completionCriteria": "Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects with outward native framing and response presentation. Actual independent Code/Security/Docs and QA425 across17 whole files with zero skips passed; genuine1330 build artifacts qualified from unchanged executable Source/output bytes, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed. Protected42 pins/97 user paths delivered; current f5a0 Source pins qualified. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -5219,7 +5219,7 @@
       "remainingGroups": 10,
       "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음."
     },
-    "currentQualificationScope": "currentProviderWorkerAllowanceQualification records the selected broker Worker/backend-child Source and portable artifact qualification. Source/Test/REQ bytes are independently qualified; guarded Main adoption and task-only local commit are coordinator delivery steps, not whole-Goal certification. Prior Snapshot, executor and native-result qualifications retain their revision-bound scope; detached provider, broader Source/caller/export, native, reliability and formal acceptance remain open.",
+    "currentQualificationScope": "currentDetachedRuntimeAllowanceQualification records native MJS helper portable QA with actual Windows BLOCKED_ENV. Prior Worker/Snapshot/executor/native-result contributions retain their revision-bound scope. Bounded source audits identify concrete remaining seams; full startup/callers, native, reliability, formal and whole-Goal remain unproven.",
     "historicalStructuralAccountingBeforeQemuRecovery": {
       "sourceCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
       "completedGroups": 14,
@@ -5821,6 +5821,78 @@
         "packages/device-lab/src/device-lab-process-identity.ts": "eaa28d51a8803bd5604ed323d5bfd61215fbe89c7f0da4ee33e3b71fcb74a846",
         "packages/device-lab/src/windows-system-powershell.ts": "70c6835f357fcda8155c334315f6ab5d57022cd57e40eeb3771efe048d01551c"
       }
+    },
+    "currentRemainingSourceAudit20261017": {
+      "baseCommit": "97317ca0c5c5a8cd3d929fa6940bd64e5a3e8f2b",
+      "kind": "bounded independent read-only owner/caller audit, not fresh QA",
+      "implementedNamedBoundaries": [
+        "R08",
+        "R12",
+        "R16"
+      ],
+      "r13": "Separation implemented; latest installer adapter ebf55316 evidence needs reconciliation.",
+      "r14": "Ordinary acquisition without waitBudget retains wall-clock elapsed accounting; ownership extraction remains qualified.",
+      "r18": "Direct Sandbox lifecycle still constructs public diagnostics/text/json; use existing native backend renderer and existing core/types/facade owners.",
+      "r17R19": "No additional result/framing hole demonstrated in inspected owners; exhaustive source remains uncertified.",
+      "native": "Actual provider status Saved/stopped after stale Running inventory; guest probes502. One user-authorized exact reserved VM resume failed, subsequent status409 still-transitioning; no native QA or prior-driver terminal proof.",
+      "accounting": "17/25complete(68%),5partial,3in-progress,8remaining;218/219/75 unchanged",
+      "structuralGroupCredit": 0,
+      "sourceUniverseCertified": false
+    },
+    "currentDetachedRuntimeAllowanceQualification": {
+      "taskId": "TASK__architecture-detached-runtime-allowance-20261017",
+      "runId": "01a148cb-0322-730a-999d-a35a2d450d0d",
+      "baseCommit": "97317ca0c5c5a8cd3d929fa6940bd64e5a3e8f2b",
+      "stage": "portable-qualified-native-windows-blocked",
+      "scope": "Existing native provider MJS identity/wait/refresh/inspect/signal/termination allowance; retained native recipes, per-signal caps and semantic authority. Not whole startup/flow closure.",
+      "reviews": "Actual independent both hunters empty, subsequent full Code DEEP and Security PASS0 before QA.",
+      "independentQa": {
+        "verdict": "BLOCKED_ENV",
+        "portableWholeFiles": 5,
+        "portablePassing": 111,
+        "portableFailed": 0,
+        "portableSkipped": 0,
+        "nativeOwningCases": 61,
+        "baselinePassed": 20,
+        "baselineExpectedFailures": 41,
+        "payloads": [
+          "ordinary offline npm archive1235entries",
+          "actual Unix materializer with spaces"
+        ],
+        "strictConsumers": 3,
+        "cliExits": [
+          0,
+          0,
+          1
+        ],
+        "mcpPayloads": 2,
+        "mcpToolsEach": 59,
+        "mcpEofExit": 0,
+        "providerCalls": 0,
+        "ownedNativeChildJoined": true,
+        "mcpChildrenJoined": 2,
+        "reviewPins": 7,
+        "producerInputs": 634,
+        "producerOutputs": 1375,
+        "changedProducerInputs": 2,
+        "changedDistOutputs": 3,
+        "facts": "/tmp/ccc-detached-runtime-01a148cb/qa/qa-final-facts.json",
+        "factsSha256": "d8f77ce448734b6c3ed92bb97e9e6c28b049f320cef56e78af1ea93d406df103"
+      },
+      "producerScope": "Fresh MCP/assembly/test-types/strict-export checks; unchanged Root/DeviceLab/HyperV TS emits authenticated carry; provider MJS ships directly.",
+      "nativeHold": "Existing reserved VM actualSaved/stopped, guest502s, one resume502/native-status1/stderrPresent, followup409Saved. No native tests or olddriver8704/target2860 terminal proof; no force or duplicate lifecycle.",
+      "remaining": "Full provider/Appium startup and caller-wide budget propagation, confirmed Sandbox result and lock/Appium/macOS elapsed seams, latest installer evidence reconciliation, original native/universe/reliability/formal requirements.",
+      "formalDisposition": "Actual native BLOCKED_ENV published directly; no task_verify/close or automatic-receipt PASS. Any Main adoption/delivery requires separate coordinator authentication; this qualification does not certify it or clear the native hold.",
+      "sourceTestReqDigests": {
+        "packages/device-lab/providers/state/process-identity.mjs": "c5bed219ec6cf42d22585937ad42dbfb2df9d46beb1c6d0e6feb2a14371c0e37",
+        "packages/device-lab/providers/state/process-identity.d.mts": "b9d206cfede22b597306556ff268bc0fcb2865f8af4d19ebfcf038f6f9dfcf34",
+        "src/__tests__/device-lab-process-identity.test.ts": "829402b4e9ddb046bd5df027871595d14bb62c2595a63c4ff52d43ff7bc237ee",
+        "doc/device-lab/REQ__hyper-v-monotonic-operation-budgets.md": "04d68bfc1ddb0a87b25caacc1963997067cf9e79cb07bc2e113c24e00acf2f10"
+      },
+      "structuralGroupCredit": 0,
+      "operationCredit": 0,
+      "deliveryGateCredit": 0,
+      "sourceUniverseCertified": false
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {

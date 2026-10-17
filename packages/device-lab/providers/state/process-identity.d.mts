@@ -19,7 +19,13 @@ export type ProcessObservation =
     | { status: "exited"; current: null; liveness: "exited" }
     | { status: "unavailable"; current: null; liveness: "alive" | "unknown" };
 
-export interface ProcessIdentityReadOptions {
+/** Local monotonic time and a parent allowance that may only shorten this operation. */
+export interface ProcessIdentityBudgetOptions {
+    now?: () => number;
+    remainingMs?: () => number;
+}
+
+export interface ProcessIdentityReadOptions extends ProcessIdentityBudgetOptions {
     readIdentity?: (pid: number) => ProcessIdentity | null | undefined;
 }
 
@@ -28,7 +34,7 @@ export interface ProcessObservationOptions extends ProcessIdentityReadOptions {
 }
 
 /** The wait function forwards its raw PID to injected readers before validation. */
-export interface ProcessIdentityWaitOptions<Pid = unknown> {
+export interface ProcessIdentityWaitOptions<Pid = unknown> extends ProcessIdentityBudgetOptions {
     readIdentity?: (pid: Pid) => ProcessIdentity | null | undefined;
     probeLiveness?: (pid: Pid) => ProcessLiveness;
     sleep?: (milliseconds: number) => void | PromiseLike<void>;
@@ -131,8 +137,8 @@ export type RefreshedRuntimeProcessRecord<Runtime> = Runtime extends object
     ? Runtime | (Omit<Runtime, "processIdentity"> & { processIdentity: ProcessIdentity })
     : Runtime;
 
-export function readProcessIdentity(pid: unknown): ProcessIdentity | null;
-export function readProcessIdentityAsync(pid: unknown): Promise<ProcessIdentity | null>;
+export function readProcessIdentity(pid: unknown, options?: ProcessIdentityBudgetOptions): ProcessIdentity | null;
+export function readProcessIdentityAsync(pid: unknown, options?: ProcessIdentityBudgetOptions): Promise<ProcessIdentity | null>;
 export function waitForProcessIdentity(pid: unknown, timeoutMs?: unknown): Promise<ProcessIdentity | null>;
 export function waitForProcessIdentity<Pid>(pid: Pid, timeoutMs?: unknown, options?: ProcessIdentityWaitOptions<Pid>): Promise<ProcessIdentity | null | undefined>;
 export function processIdentityMatches(expected: unknown, current: unknown): boolean;
