@@ -26,6 +26,7 @@ import {
     registerDeviceBrokerOwner,
     deviceBrokerStatus,
     deviceBrokerToolContractForTest,
+    defaultProviderCommandRunner,
     defaultProviderCommandRunnerAsync,
     ensureHostDeviceBroker,
     hostBrokerRuntimeFromPortProcessForTest,
@@ -2826,6 +2827,37 @@ try {
         }, 10));
         expect(timerObserved).toBe(true);
         await expect(command).resolves.toEqual(expect.objectContaining({ status: 0, stdout: "done" }));
+    });
+
+    it.each([false, true])("captures provider allowance before invocation preparation (%s async)", async asynchronous => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-broker-preparation-allowance-"));
+        const effectFile = join(root, "forbidden-effect");
+        let prepared = false;
+        const command = {
+            mode: "exec" as const,
+            provider: "preparation-allowance-provider",
+            executable: process.execPath,
+            get args() {
+                if (!prepared) {
+                    prepared = true;
+                    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+                }
+                return ["-e", `require('node:fs').writeFileSync(${JSON.stringify(effectFile)}, 'forbidden')`];
+            },
+            cwd: root,
+        };
+        // Wall-clock changes cannot renew the already captured native allowance.
+        vi.spyOn(Date, "now").mockReturnValue(-1e12);
+        try {
+            const result = asynchronous
+                ? await defaultProviderCommandRunnerAsync(command, { timeoutMs: 100, outputLimit: 16 })
+                : defaultProviderCommandRunner(command, { timeoutMs: 100, outputLimit: 16 });
+            await new Promise(resolve => setTimeout(resolve, 300));
+            expect(result, JSON.stringify(result)).toMatchObject({ timedOut: true });
+            expect(existsSync(effectFile)).toBe(false);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 
     it("reports provider output-limit termination as an explicit bounded signal", async () => {

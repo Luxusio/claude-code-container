@@ -137,6 +137,7 @@ export function terminateWindowsProcessByStartToken(
     expectedStartToken: string,
     timeoutMs = 10_000,
     powershellPath = canonicalWindowsPowerShellPath(),
+    remainingMs?: () => number,
 ): {
     ok: boolean;
     pid: number;
@@ -149,24 +150,39 @@ export function terminateWindowsProcessByStartToken(
         return { ok: false, pid, reason: "windows-process-identity-unavailable" };
     }
     const script = windowsHandleBoundTerminationScript();
+    let outerTimeoutMs = Math.max(1000, timeoutMs + 1000);
+    let waitTimeoutMs = Math.max(1, timeoutMs);
+    if (remainingMs) {
+        const remaining = remainingMs();
+        if (!Number.isFinite(remaining) || remaining < 1) {
+            return { ok: false, pid, reason: "process-termination-timeout" };
+        }
+        outerTimeoutMs = Math.min(Math.floor(remaining), Math.floor(outerTimeoutMs));
+        waitTimeoutMs = Math.min(Math.floor(remaining), Math.floor(waitTimeoutMs));
+    }
     const result = spawnSync(powershellPath, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf8",
         windowsHide: true,
-        timeout: Math.max(1000, timeoutMs + 1000),
+        timeout: outerTimeoutMs,
         env: {
             ...process.env,
             CCC_WINDOWS_TERMINATE_PID: String(pid),
             CCC_WINDOWS_TERMINATE_START_TOKEN: expectedStartToken,
-            CCC_WINDOWS_TERMINATE_TIMEOUT_MS: String(Math.max(1, timeoutMs)),
+            CCC_WINDOWS_TERMINATE_TIMEOUT_MS: String(waitTimeoutMs),
         },
     });
+    let expired = false;
+    if (result.status === 0 && remainingMs) {
+        const remaining = remainingMs();
+        expired = !Number.isFinite(remaining) || remaining < 1;
+    }
     return {
-        ok: result.status === 0,
+        ok: result.status === 0 && !expired,
         pid,
         status: result.status,
         method: "process-handle",
         ...(result.status === 3 ? { reason: "process-start-token-mismatch" } : {}),
-        ...(result.status === 4 ? { reason: "process-termination-timeout" } : {}),
+        ...(result.status === 4 || expired ? { reason: "process-termination-timeout" } : {}),
         ...(result.status === 0 ? {} : {
             error: String(result.stderr || result.error?.message || "").trim() || undefined,
         }),

@@ -5744,9 +5744,13 @@ function terminateWindowsProcessTree(
     forceTreeAttempt = false,
     expectedStartToken?: string,
     authorize: () => boolean = () => true,
+    remainingMs?: () => number,
 ) {
+    const hasTime = () => brokerProcessRemainingMs(remainingMs) > 0;
+    const exhausted = () => ({ attempted: false, ok: false, stale: false, pid, signal: "SIGTERM" as const, status: null, error: "runtime-process-identity-unavailable" });
+    if (!hasTime()) return exhausted();
     if (expectedIdentity) {
-        const observation = inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid);
+        const observation = inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid, { remainingMs });
         if (observation.status === "exited" && !forceTreeAttempt) {
             return {
                 attempted: false,
@@ -5785,7 +5789,8 @@ function terminateWindowsProcessTree(
             error: undefined,
         };
     }
-    if (expectedStartToken && readDeviceRuntimeProcessStartToken(pid, { platform: "win32" }) !== expectedStartToken) {
+    if (!hasTime()) return exhausted();
+    if (expectedStartToken && readDeviceRuntimeProcessStartToken(pid, { platform: "win32", remainingMs }) !== expectedStartToken) {
         return {
             attempted: false,
             ok: false,
@@ -5796,6 +5801,7 @@ function terminateWindowsProcessTree(
             error: "runtime-process-start-token-mismatch",
         };
     }
+    if (!hasTime()) return exhausted();
     const startToken = expectedStartToken || expectedIdentity?.startToken;
     if (!startToken) {
         return {
@@ -5809,7 +5815,8 @@ function terminateWindowsProcessTree(
         };
     }
     if (!authorize()) return { attempted: false, ok: false, stale: false, pid, reason: "runtime-termination-not-authorized" };
-    const result = terminateWindowsProcessByStartToken(pid, startToken);
+    if (!hasTime()) return exhausted();
+    const result = terminateWindowsProcessByStartToken(pid, startToken, 10000, undefined, remainingMs);
     return {
         attempted: true,
         ok: result.ok,
@@ -5838,7 +5845,14 @@ type BrokerProcessTreeCleanupOptions = {
     expectedIdentity?: DeviceRuntimeProcessIdentity | null;
     readIdentity?: (pid: number) => DeviceRuntimeProcessIdentity | null;
     requireIdentity?: boolean;
+    remainingMs?: () => number;
 };
+
+function brokerProcessRemainingMs(remainingMs?: () => number): number {
+    if (!remainingMs) return Infinity;
+    const remaining = remainingMs();
+    return Number.isFinite(remaining) && remaining >= 1 ? Math.floor(remaining) : 0;
+}
 
 /** Terminates a process tree whose root was spawned by this broker invocation. */
 export function terminateBrokerSpawnedProcessTree(
@@ -5849,6 +5863,8 @@ export function terminateBrokerSpawnedProcessTree(
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
         return { attempted: false, ok: false, pid: 0, signal: "SIGKILL", platform, error: "spawned-process-pid-missing" };
     }
+    const exhausted = () => ({ attempted: false, ok: false, pid, signal: "SIGKILL" as const, platform, error: "spawned-process-identity-unavailable" });
+    if (!brokerProcessRemainingMs(options.remainingMs)) return exhausted();
     if (options.requireIdentity) {
         if (!options.expectedIdentity) {
             return { attempted: false, ok: false, pid, signal: "SIGKILL", platform, error: "spawned-process-identity-missing" };
@@ -5856,6 +5872,7 @@ export function terminateBrokerSpawnedProcessTree(
         const observation = inspectDeviceRuntimeProcessIdentity(options.expectedIdentity, pid, {
             platform,
             ...(options.readIdentity ? { readIdentity: options.readIdentity } : {}),
+            remainingMs: options.remainingMs,
         });
         if (observation.status === "exited") {
             return { attempted: false, ok: true, stale: true, pid, signal: "SIGKILL", platform };
@@ -5873,12 +5890,15 @@ export function terminateBrokerSpawnedProcessTree(
             };
         }
     }
+    if (!brokerProcessRemainingMs(options.remainingMs)) return exhausted();
     if (platform === "win32") {
         const outcome = (options.terminateWindowsTree || ((value: number) => terminateWindowsProcessTree(
             value,
             options.expectedIdentity || undefined,
             true,
             options.expectedIdentity?.startToken,
+            undefined,
+            options.remainingMs,
         )))(pid);
         return {
             attempted: outcome.attempted !== false,
@@ -7646,6 +7666,22 @@ type BrokerBackendChildResult = {
     cleanup?: BrokerProcessTreeCleanup;
 };
 
+function captureBrokerCommandAllowance(options: Pick<ProviderCommandRunnerOptions, "timeoutMs" | "cleanupGraceMs" | "wrapperTimeoutMs">) {
+    const startedAt = performance.now();
+    const timeoutMs = Math.max(1, options.timeoutMs);
+    const cleanupGraceMs = Math.min(10000, Math.max(1, options.cleanupGraceMs ?? 1000));
+    const wrapperTimeoutMs = Math.max(1, options.wrapperTimeoutMs ?? (timeoutMs + cleanupGraceMs + 15000));
+    const commandDeadlineAt = startedAt + timeoutMs;
+    const wrapperDeadlineAt = startedAt + wrapperTimeoutMs;
+    const completionDeadlineAt = commandDeadlineAt + 15000 + cleanupGraceMs;
+    const fallbackDeadlineAt = Math.min(completionDeadlineAt, wrapperDeadlineAt + 15000 + cleanupGraceMs);
+    const remainingMs = (deadlineAt: number, observedAt = performance.now()) => {
+        const remaining = deadlineAt - observedAt;
+        return Number.isFinite(remaining) && remaining >= 1 ? Math.floor(remaining) : 0;
+    };
+    return { timeoutMs, cleanupGraceMs, wrapperTimeoutMs, commandDeadlineAt, wrapperDeadlineAt, completionDeadlineAt, fallbackDeadlineAt, remainingMs };
+}
+
 export function runBrokerBackendChild(
     script: string,
     input: string,
@@ -7658,32 +7694,42 @@ export function runBrokerBackendChild(
         terminateTree?: (pid: number | undefined) => BrokerProcessTreeCleanup;
     },
 ): Promise<BrokerBackendChildResult> {
+    const allowance = captureBrokerCommandAllowance(options);
     return new Promise((resolveResult) => {
+        const commandRemainingMs = () => allowance.remainingMs(allowance.commandDeadlineAt);
+        const completionRemainingMs = () => allowance.remainingMs(allowance.completionDeadlineAt);
+        const timeoutError = () => new Error(`device-lab backend tool timed out after ${options.timeoutMs}ms`);
+        if (!commandRemainingMs()) {
+            resolveResult({ status: null, signal: null, stdout: "", stderr: "", error: timeoutError(), timedOut: true });
+            return;
+        }
         const child = spawn(process.execPath, ["--input-type=module", "-e", script], hiddenChildProcessOptions({
             cwd: options.cwd,
             ...(options.env ? { env: options.env } : {}),
             detached: process.platform !== "win32",
         }));
-        const spawnedProcessIdentity = readDeviceRuntimeProcessIdentity(child.pid);
+        const spawnedProcessIdentity = readDeviceRuntimeProcessIdentity(child.pid, { remainingMs: commandRemainingMs });
         let stdout = Buffer.alloc(0);
         let stderr = Buffer.alloc(0);
         let outputBytes = 0;
         let settled = false;
         let timedOut = false;
         let childError: Error | undefined;
+        let nativeFailure: { status: number | null; signal: NodeJS.Signals | null } | undefined;
         let cleanup: BrokerProcessTreeCleanup | undefined;
         let timer: NodeJS.Timeout | undefined;
         let forceSettleTimer: NodeJS.Timeout | undefined;
-        const cleanupGraceMs = Math.min(10000, Math.max(1, options.cleanupGraceMs ?? 1000));
         const cleanupFailureError = () => cleanup && !cleanup.ok
             ? `process-tree cleanup failed${cleanup.error ? `: ${cleanup.error}` : ""}`
             : null;
         const terminateTree = () => {
-            if (!cleanup) cleanup = options.terminateTree
+            if (cleanup) return;
+            cleanup = options.terminateTree && completionRemainingMs()
                 ? options.terminateTree(child.pid)
                 : terminateBrokerSpawnedProcessTree(child.pid, {
                     expectedIdentity: spawnedProcessIdentity,
                     requireIdentity: true,
+                    remainingMs: completionRemainingMs,
                 });
             const cleanupFailure = cleanupFailureError();
             if (cleanupFailure) {
@@ -7697,12 +7743,18 @@ export function runBrokerBackendChild(
                     child.stderr?.destroy();
                     child.unref();
                     finish(null, null);
-                }, cleanupGraceMs);
+                }, Math.min(allowance.cleanupGraceMs, completionRemainingMs()));
                 forceSettleTimer.unref();
             }
         };
         const finish = (status: number | null, signal: NodeJS.Signals | null) => {
             if (settled) return;
+            if (!childError && !nativeFailure && !timedOut && status === 0 && !commandRemainingMs()) {
+                timedOut = true;
+                childError = timeoutError();
+                terminateTree();
+            }
+            if (nativeFailure && !timedOut && status === null) ({ status, signal } = nativeFailure);
             settled = true;
             if (timer) clearTimeout(timer);
             if (forceSettleTimer) clearTimeout(forceSettleTimer);
@@ -7732,16 +7784,26 @@ export function runBrokerBackendChild(
         child.stdout?.on("data", (chunk: Buffer) => append("stdout", chunk));
         child.stderr?.on("data", (chunk: Buffer) => append("stderr", chunk));
         child.once("error", (error) => {
-            childError = error;
+            if (!childError) childError = error;
             finish(null, null);
         });
+        child.once("exit", (status, signal) => {
+            if (!timedOut && !childError && (status !== 0 || signal)) nativeFailure = { status, signal };
+        });
         child.once("close", finish);
-        timer = setTimeout(() => {
-            timedOut = true;
-            childError = new Error(`device-lab backend tool timed out after ${options.timeoutMs}ms`);
+        const expire = () => {
+            if (!childError && !nativeFailure) {
+                timedOut = true;
+                childError = timeoutError();
+            }
             terminateTree();
-        }, options.timeoutMs);
-        child.stdin?.end(input);
+        };
+        const remaining = commandRemainingMs();
+        if (remaining) {
+            timer = setTimeout(expire, remaining);
+            child.stdin?.end(input);
+        }
+        else expire();
     });
 }
 
@@ -7958,23 +8020,48 @@ const payload = workerData.payload;
 const control = new Int32Array(workerData.shared, 0, 4);
 const transport = new Uint8Array(workerData.shared, 16);
 const identityTransport = new Uint8Array(workerData.identityShared);
+// Admission state: 3 pre-dispatch, 4 spawn/publication in flight, 5 publication settled, -1 revoked.
+const admission = workerData.admissionShared ? new Int32Array(workerData.admissionShared, 0, 5) : null;
+const failureTransport = admission ? new Uint8Array(workerData.admissionShared, 20) : null;
 const windowsTerminationScript = ${windowsTerminationScript};
 const outputLimit = Math.max(1, Number(payload.outputLimit) || 1);
-const cleanupGraceMs = Math.max(1, Number(payload.cleanupGraceMs) || 1000);
+const cleanupGraceMs = Math.min(10000, Math.max(1, Number(payload.cleanupGraceMs) || 1000));
+const startedAt = performance.now();
+let commandDeadlineAt = startedAt + Math.max(1, Number(payload.timeoutMs) || 1);
+let completionDeadlineAt = commandDeadlineAt + 15000 + cleanupGraceMs;
 let stdout = Buffer.alloc(0);
 let stderr = Buffer.alloc(0);
 let outputBytes = 0;
 let commandError;
+let nativeFailure;
 let timedOut = false;
 let outputLimitExceeded = false;
 let cleanup;
 let settled = false;
 let timer;
 let forceSettleTimer;
+let child;
+let spawnedIdentity;
+
+function remainingMs(deadlineAt) {
+    const remaining = deadlineAt - performance.now();
+    return Number.isFinite(remaining) && remaining >= 1 ? Math.floor(remaining) : 0;
+}
+const commandRemainingMs = () => remainingMs(commandDeadlineAt);
+const completionRemainingMs = () => remainingMs(completionDeadlineAt);
+const cancelled = () => admission && Atomics.load(admission, 3) !== 0;
 
 function boundedText(value, limit = 8192) {
     const input = String(value || "");
     return Buffer.byteLength(input) <= limit ? input : Buffer.from(input).subarray(0, limit).toString("utf8");
+}
+
+function recordFailure(failure) {
+    if (!admission || Atomics.load(admission, 4) !== 0) return;
+    const encoded = Buffer.from(JSON.stringify(failure), "utf8");
+    if (encoded.length > failureTransport.length) return;
+    failureTransport.set(encoded);
+    Atomics.store(admission, 4, encoded.length);
 }
 
 function append(current, chunk) {
@@ -7984,13 +8071,22 @@ function append(current, chunk) {
     if (remaining > 0) current = Buffer.concat([current, value.subarray(0, remaining)]);
     if (outputBytes > outputLimit) {
         outputLimitExceeded = true;
-        if (!commandError) commandError = "spawn ENOBUFS: device-lab provider output exceeded limit";
+        if (!commandError) {
+            commandError = "spawn ENOBUFS: device-lab provider output exceeded limit";
+            recordFailure({ error: commandError, outputLimitExceeded: true });
+        }
     }
     return current;
 }
 
-function processIdentity(pid) {
+function processIdentity(pid, remainingMs) {
+    function probeTimeout() {
+        if (!remainingMs) return 5000;
+        const remaining = remainingMs();
+        return Number.isFinite(remaining) && remaining >= 1 ? Math.min(5000, Math.floor(remaining)) : 0;
+    }
     try {
+        if (!probeTimeout()) return null;
         let startToken = "";
         let commandLine = "";
         if (process.platform === "linux") {
@@ -7998,21 +8094,28 @@ function processIdentity(pid) {
             const close = stat.lastIndexOf(")");
             const fields = close >= 0 ? stat.slice(close + 1).trim().split(/\s+/) : [];
             startToken = fields[19] ? "linux:" + fields[19] : "";
+            if (!probeTimeout()) return null;
             commandLine = readFileSync("/proc/" + pid + "/cmdline").toString("utf8").split("\0").filter(Boolean).join(" ");
         } else if (process.platform === "win32") {
             if (typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) return null;
             const script = "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + pid + "' -ErrorAction SilentlyContinue; $H = Get-Process -Id " + pid + " -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = ${windowsStartTokenExpression("$H")}; commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
-            const observed = spawnSync(payload.windowsPowerShellPath, ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 5000, windowsHide: true });
+            const timeout = probeTimeout();
+            if (!timeout) return null;
+            const observed = spawnSync(payload.windowsPowerShellPath, ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout, windowsHide: true });
             const parsed = observed.status === 0 && observed.stdout && observed.stdout.trim() ? JSON.parse(observed.stdout) : null;
             startToken = parsed && typeof parsed.startToken === "string" ? "windows:" + parsed.startToken : "";
             commandLine = parsed && typeof parsed.commandLine === "string" ? parsed.commandLine : "";
         } else {
-            const started = spawnSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", timeout: 5000, windowsHide: true });
-            const command = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout: 5000, windowsHide: true });
+            let timeout = probeTimeout();
+            if (!timeout) return null;
+            const started = spawnSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", timeout, windowsHide: true });
+            timeout = probeTimeout();
+            if (!timeout) return null;
+            const command = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout, windowsHide: true });
             startToken = started.status === 0 && started.stdout ? "ps:" + started.stdout.trim() : "";
             commandLine = command.status === 0 && command.stdout ? command.stdout.trim() : "";
         }
-        if (!startToken || !commandLine) return null;
+        if (!startToken || !commandLine || !probeTimeout()) return null;
         return { pid, startToken, commandHash: createHash("sha256").update(commandLine).digest("hex") };
     } catch {
         return null;
@@ -8035,9 +8138,12 @@ function terminateTree(pid, expectedIdentity) {
     if (!expectedIdentity) {
         return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-missing" };
     }
-    const currentIdentity = processIdentity(pid);
+    if (!completionRemainingMs()) {
+        return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-unavailable" };
+    }
+    const currentIdentity = processIdentity(pid, completionRemainingMs);
     if (!currentIdentity) {
-        if (child.exitCode !== null || child.signalCode !== null) {
+        if (completionRemainingMs() && child && (child.exitCode !== null || child.signalCode !== null)) {
             return { attempted: false, ok: true, stale: true, pid, signal: "SIGKILL", platform: process.platform };
         }
         return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-unavailable" };
@@ -8047,6 +8153,10 @@ function terminateTree(pid, expectedIdentity) {
         || currentIdentity.commandHash !== expectedIdentity.commandHash) {
         return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-mismatch" };
     }
+    const remaining = completionRemainingMs();
+    if (!remaining) {
+        return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-unavailable" };
+    }
     if (process.platform === "win32") {
         if (typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) {
             return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "windows-system-powershell-unavailable" };
@@ -8054,16 +8164,16 @@ function terminateTree(pid, expectedIdentity) {
         const result = spawnSync(payload.windowsPowerShellPath, ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", windowsTerminationScript], {
             encoding: "utf8",
             windowsHide: true,
-            timeout: 11000,
+            timeout: Math.min(11000, remaining),
             env: {
                 ...process.env,
                 CCC_WINDOWS_TERMINATE_PID: String(pid),
                 CCC_WINDOWS_TERMINATE_START_TOKEN: expectedIdentity.startToken,
-                CCC_WINDOWS_TERMINATE_TIMEOUT_MS: "10000",
+                CCC_WINDOWS_TERMINATE_TIMEOUT_MS: String(Math.min(10000, remaining)),
             },
         });
         const output = boundedText(String(result.stdout || "") + "\n" + String(result.stderr || ""));
-        const ok = result.status === 0;
+        const ok = result.status === 0 && completionRemainingMs() > 0;
         return {
             attempted: true,
             ok,
@@ -8073,6 +8183,7 @@ function terminateTree(pid, expectedIdentity) {
             ...(ok ? {} : {
                 error: result.status === 3
                     ? "spawned-process-identity-mismatch"
+                    : result.status === 0 ? "process-termination-timeout"
                     : output.trim() || (result.error && result.error.message) || "process handle termination failed",
             }),
         };
@@ -8094,8 +8205,37 @@ function terminateTree(pid, expectedIdentity) {
     }
 }
 
+function terminateForFailure() {
+    if (cleanup) return;
+    cleanup = terminateTree(child && child.pid, spawnedIdentity);
+    if (!cleanup.ok) {
+        const detail = cleanup.error ? ": " + cleanup.error : "";
+        commandError = boundedText((commandError ? commandError + "; " : "") + "process-tree cleanup failed" + detail);
+    }
+    forceSettleTimer = setTimeout(() => {
+        if (!commandError && !nativeFailure) commandError = "device-lab provider child did not close after process-tree cleanup";
+        publish(null, null);
+    }, Math.min(cleanupGraceMs, completionRemainingMs()));
+}
+
+function expire() {
+    if (settled) return;
+    if (!commandError && !nativeFailure) {
+        timedOut = true;
+        commandError = "device-lab provider command timed out after " + payload.timeoutMs + "ms";
+    }
+    terminateForFailure();
+}
+
+function settleSpawnPublication() {
+    if (admission && Atomics.compareExchange(admission, 0, 4, 5) === 4) Atomics.notify(admission, 0);
+}
+
 function publish(status, signal) {
     if (settled) return;
+    settleSpawnPublication();
+    if (!commandError && !timedOut && status === 0 && (!commandRemainingMs() || cancelled())) expire();
+    if (nativeFailure && !timedOut && status === null) ({ status, signal } = nativeFailure);
     settled = true;
     clearTimeout(timer);
     clearTimeout(forceSettleTimer);
@@ -8128,57 +8268,114 @@ function publish(status, signal) {
     if (parentPort) parentPort.postMessage({ done: true });
 }
 
-const child = spawn(payload.executable, payload.args, {
-    cwd: payload.cwd || undefined,
-    env: { ...process.env, ...(payload.env || {}) },
-    detached: process.platform !== "win32",
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"],
-});
-Atomics.store(control, 2, Number.isInteger(child.pid) ? child.pid : 0);
-const spawnedIdentity = processIdentity(child.pid);
-publishIdentity(spawnedIdentity);
-Atomics.notify(control, 2);
-if (parentPort) parentPort.postMessage({ spawned: true, pid: child.pid });
-if (!spawnedIdentity) {
-    setTimeout(() => {
-        if (settled) return;
-        commandError = "device-lab provider process identity could not be established";
-        terminateForFailure();
-    }, 100);
-}
-
-function terminateForFailure() {
-    if (cleanup) return;
-    cleanup = terminateTree(child.pid, spawnedIdentity);
-    if (!cleanup.ok) {
-        const detail = cleanup.error ? ": " + cleanup.error : "";
-        commandError = boundedText((commandError ? commandError + "; " : "") + "process-tree cleanup failed" + detail);
+function admit() {
+    if (!admission) {
+        if (commandRemainingMs()) return true;
+        expire(); publish(null, null); return false;
     }
-    forceSettleTimer = setTimeout(() => {
-        if (!commandError) commandError = "device-lab provider child did not close after process-tree cleanup";
+    if (cancelled()) { expire(); publish(null, null); return false; }
+    const requestedAt = performance.now();
+    if (Atomics.compareExchange(admission, 0, 0, 1) !== 0) {
+        commandError = "device-lab provider runner returned invalid admission";
+        recordFailure({ error: commandError });
         publish(null, null);
-    }, cleanupGraceMs);
+        return false;
+    }
+    Atomics.compareExchange(control, 0, 0, 2);
+    Atomics.notify(control, 0);
+    if (parentPort) parentPort.postMessage({ admission: true });
+    Atomics.wait(admission, 0, 1, Math.max(1, Number(payload.timeoutMs) || 1));
+    if (cancelled()) { expire(); publish(null, null); return false; }
+    const commandMs = Atomics.load(admission, 1);
+    const completionMs = Atomics.load(admission, 2);
+    if (commandMs <= 0 || completionMs < commandMs || Atomics.compareExchange(admission, 0, 2, 3) !== 2) {
+        if (Atomics.load(admission, 0) === 1) expire();
+        else {
+            commandError = "device-lab provider runner returned invalid admission";
+            recordFailure({ error: commandError });
+        }
+        publish(null, null);
+        return false;
+    }
+    const admittedAt = performance.now();
+    // Charging the whole local request round trip also covers grant delivery
+    // while the parent event loop cannot publish cancellation.
+    const transportMs = Math.max(0, admittedAt - requestedAt);
+    commandDeadlineAt = admittedAt + Math.max(0, commandMs - transportMs);
+    completionDeadlineAt = admittedAt + Math.max(0, completionMs - transportMs);
+    return true;
 }
 
-child.stdout.on("data", (chunk) => {
-    stdout = append(stdout, chunk);
-    if (outputBytes > outputLimit) terminateForFailure();
-});
-child.stderr.on("data", (chunk) => {
-    stderr = append(stderr, chunk);
-    if (outputBytes > outputLimit) terminateForFailure();
-});
-child.once("error", (error) => {
-    commandError = error instanceof Error ? error.message : String(error);
-});
-child.once("close", publish);
-timer = setTimeout(() => {
-    timedOut = true;
-    commandError = "device-lab provider command timed out after " + payload.timeoutMs + "ms";
-    terminateForFailure();
-}, payload.timeoutMs);
-child.stdin.end(payload.input === undefined ? undefined : payload.input);
+if (admit()) {
+    const spawnOptions = {
+        cwd: payload.cwd || undefined,
+        env: { ...process.env, ...(payload.env || {}) },
+        detached: process.platform !== "win32",
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+    };
+    if (cancelled() || !commandRemainingMs() || (admission && Atomics.compareExchange(admission, 0, 3, 4) !== 3)) {
+        expire();
+        publish(null, null);
+    } else {
+        try {
+            child = spawn(payload.executable, payload.args, spawnOptions);
+        } catch (error) {
+            commandError = boundedText(error instanceof Error ? error.message : String(error));
+            recordFailure({ error: commandError });
+            publish(null, null);
+        }
+        if (child) {
+            Atomics.store(control, 2, Number.isInteger(child.pid) ? child.pid : 0);
+            spawnedIdentity = processIdentity(child.pid, commandRemainingMs);
+            publishIdentity(spawnedIdentity);
+            settleSpawnPublication();
+            Atomics.notify(control, 2);
+            if (parentPort) parentPort.postMessage({ spawned: true, pid: child.pid });
+            child.stdout.on("data", (chunk) => {
+                stdout = append(stdout, chunk);
+                if (outputBytes > outputLimit) terminateForFailure();
+            });
+            child.stderr.on("data", (chunk) => {
+                stderr = append(stderr, chunk);
+                if (outputBytes > outputLimit) terminateForFailure();
+            });
+            child.once("error", (error) => {
+                if (cancelled()) expire();
+                if (!commandError) {
+                    commandError = boundedText(error instanceof Error ? error.message : String(error));
+                    recordFailure({ error: commandError });
+                }
+            });
+            child.once("exit", (status, signal) => {
+                if (cancelled()) expire();
+                if (!timedOut && !commandError && (status !== 0 || signal)) {
+                    nativeFailure = { status, signal };
+                    recordFailure(nativeFailure);
+                }
+            });
+            child.once("close", publish);
+            if (!spawnedIdentity && commandRemainingMs()) {
+                setTimeout(() => {
+                    if (settled) return;
+                    if (!commandRemainingMs()) { expire(); return; }
+                    if (!commandError && !nativeFailure) {
+                        commandError = "device-lab provider process identity could not be established";
+                        recordFailure({ error: commandError });
+                    }
+                    terminateForFailure();
+                }, Math.min(100, commandRemainingMs()));
+            }
+            const remaining = commandRemainingMs();
+            if (remaining && !cancelled()) {
+                timer = setTimeout(expire, remaining);
+                child.stdin.end(payload.input === undefined ? undefined : payload.input);
+            }
+            else expire();
+            if (parentPort && admission) parentPort.on("message", () => { if (cancelled()) expire(); });
+        }
+    }
+}
 `;
 }
 
@@ -8201,6 +8398,50 @@ function providerProcessIdentityFromShared(control: Int32Array, identityTranspor
     }
 }
 
+function serviceProviderWorkerAdmission(control: Int32Array, admission: Int32Array, allowance: ReturnType<typeof captureBrokerCommandAllowance>) {
+    Atomics.compareExchange(control, 0, 2, 0);
+    if (Atomics.load(admission, 0) !== 1) return;
+    const observedAt = performance.now();
+    const commandMs = allowance.remainingMs(allowance.commandDeadlineAt, observedAt);
+    const completionMs = allowance.remainingMs(allowance.completionDeadlineAt, observedAt);
+    if (!commandMs || !completionMs || !allowance.remainingMs(allowance.wrapperDeadlineAt, observedAt) || Atomics.load(admission, 3)) {
+        Atomics.store(admission, 3, 1);
+    } else {
+        Atomics.store(admission, 1, commandMs);
+        Atomics.store(admission, 2, completionMs);
+        Atomics.compareExchange(admission, 0, 1, 2);
+    }
+    Atomics.notify(admission, 0);
+}
+
+function cancelProviderWorker(admission: Int32Array, worker: Worker) {
+    Atomics.store(admission, 3, 1);
+    Atomics.compareExchange(admission, 0, 3, -1);
+    Atomics.notify(admission, 0);
+    worker.postMessage({ cancel: true });
+}
+
+function providerWorkerPrimaryFailure(admission: Int32Array, failureTransport: Uint8Array): Partial<ProviderCommandResult> | null {
+    const length = Atomics.load(admission, 4);
+    if (length <= 0 || length > failureTransport.length) return null;
+    try {
+        const failure = JSON.parse(Buffer.from(failureTransport.subarray(0, length)).toString("utf8")) as Partial<ProviderCommandResult>;
+        return failure && typeof failure === "object"
+            && (typeof failure.error === "string" || (typeof failure.status === "number" && failure.status !== 0) || typeof failure.signal === "string")
+            ? failure : null;
+    } catch {
+        return null;
+    }
+}
+
+function providerWorkerExecution(control: Int32Array, transport: Uint8Array): Partial<ProviderCommandResult> {
+    const length = Atomics.load(control, 1);
+    if (length <= 0 || length > transport.length) throw new Error("invalid transport length");
+    const execution = JSON.parse(Buffer.from(transport.subarray(0, length)).toString("utf8")) as Partial<ProviderCommandResult>;
+    if (!execution || typeof execution !== "object" || Array.isArray(execution)) throw new Error("invalid transport result");
+    return execution;
+}
+
 export function defaultProviderCommandRunner(command: ProviderCommand, options: ProviderCommandRunnerOptions): ProviderCommandResult {
     if (command.mode === "noop") {
         return { mode: "noop", provider: command.provider, stdout: command.reason || "", stderr: "", status: 0 };
@@ -8208,8 +8449,8 @@ export function defaultProviderCommandRunner(command: ProviderCommand, options: 
     if (!command.executable) {
         return { mode: command.mode, provider: command.provider, error: "missing-executable", status: null };
     }
-    const commandEnv = hiddenProviderCommandEnv(command.env);
     if (command.mode === "detached") {
+        const commandEnv = hiddenProviderCommandEnv(command.env);
         if (!executableExists(command.executable)) {
             return { mode: "detached", provider: command.provider, executable: command.executable, args: command.args || [], status: null, error: "executable-not-found" };
         }
@@ -8235,6 +8476,8 @@ export function defaultProviderCommandRunner(command: ProviderCommand, options: 
             return { mode: "detached", provider: command.provider, executable: command.executable, args: command.args || [], status: null, error: error instanceof Error ? error.message : String(error) };
         }
     }
+    const allowance = captureBrokerCommandAllowance(options);
+    const commandEnv = hiddenProviderCommandEnv(command.env);
     let invocation: ReturnType<typeof providerCommandSpawn>;
     try {
         invocation = providerCommandSpawn(command);
@@ -8248,17 +8491,21 @@ export function defaultProviderCommandRunner(command: ProviderCommand, options: 
             error: error instanceof Error ? error.message : String(error),
         };
     }
-    const timeoutMs = Math.max(1, options.timeoutMs);
+    const { timeoutMs, cleanupGraceMs, wrapperTimeoutMs } = allowance;
     const outputLimit = Math.max(1, Math.floor(options.outputLimit));
-    const cleanupGraceMs = Math.min(10000, Math.max(1, options.cleanupGraceMs ?? 1000));
     // JSON can expand each raw control byte to a six-byte \\u00xx escape. The
     // fixed shared transport therefore reserves the exact bounded worst case.
     const transportCapacity = (outputLimit * 6) + (64 * 1024);
     const shared = new SharedArrayBuffer(16 + transportCapacity);
     const identityShared = new SharedArrayBuffer(4096);
+    // The immutable first failure fits the existing 8192-byte diagnostic bound,
+    // including the worst-case JSON escaping, independently of the final result.
+    const admissionShared = new SharedArrayBuffer(20 + (64 * 1024));
     const control = new Int32Array(shared, 0, 4);
     const transport = new Uint8Array(shared, 16);
     const identityTransport = new Uint8Array(identityShared);
+    const admission = new Int32Array(admissionShared, 0, 5);
+    const failureTransport = new Uint8Array(admissionShared, 20);
     let worker: Worker;
     try {
         worker = new Worker(boundedProviderCommandRunnerScript(), {
@@ -8266,6 +8513,7 @@ export function defaultProviderCommandRunner(command: ProviderCommand, options: 
             workerData: {
                 shared,
                 identityShared,
+                admissionShared,
                 payload: {
                     executable: invocation.executable || command.executable,
                     args: invocation.args,
@@ -8293,41 +8541,53 @@ export function defaultProviderCommandRunner(command: ProviderCommand, options: 
             error: error instanceof Error ? error.message : String(error),
         };
     }
-    const wrapperTimeoutMs = Math.max(1, options.wrapperTimeoutMs ?? (timeoutMs + cleanupGraceMs + 15000));
-    const waitResult = Atomics.wait(control, 0, 0, wrapperTimeoutMs);
-    if (waitResult === "timed-out") {
-        const providerPid = Atomics.load(control, 2);
-        const cleanup = terminateBrokerSpawnedProcessTree(providerPid, {
+    const cleanupProvider = () => {
+        cancelProviderWorker(admission, worker);
+        while (Atomics.load(admission, 0) === 4) {
+            const remaining = allowance.remainingMs(allowance.fallbackDeadlineAt);
+            if (!remaining) break;
+            Atomics.wait(admission, 0, 4, remaining);
+        }
+        return terminateBrokerSpawnedProcessTree(Atomics.load(control, 2), {
             expectedIdentity: providerProcessIdentityFromShared(control, identityTransport),
             requireIdentity: true,
+            remainingMs: () => allowance.remainingMs(allowance.fallbackDeadlineAt),
         });
-        void worker.terminate();
-        return {
-            mode: "exec",
-            provider: command.provider,
-            executable: command.executable,
-            args: command.args || [],
-            status: null,
-            stdout: "",
-            stderr: "",
-            error: `device-lab provider wrapper timed out after ${wrapperTimeoutMs}ms`,
-            timedOut: true,
-            cleanup,
-        };
-    }
-    const resultLength = Atomics.load(control, 1);
+    };
+    const wrapperExpired = (execution: Partial<ProviderCommandResult> = { status: null, stdout: "", stderr: "" }) => {
+        cancelProviderWorker(admission, worker);
+        const cleanup = execution.cleanup || cleanupProvider();
+        const primary = providerWorkerPrimaryFailure(admission, failureTransport);
+        const error = `device-lab provider wrapper timed out after ${wrapperTimeoutMs}ms`;
+        return { ...execution, ...primary, error: primary?.error ? `${primary.error}; ${error}` : error, timedOut: !primary, cleanup };
+    };
     let execution: Partial<ProviderCommandResult>;
-    try {
-        if (resultLength <= 0 || resultLength > transport.length) throw new Error("invalid transport length");
-        execution = JSON.parse(Buffer.from(transport.subarray(0, resultLength)).toString("utf8")) as Partial<ProviderCommandResult>;
-    } catch {
-        execution = {
-            status: null,
-            stdout: "",
-            stderr: "",
-            error: "device-lab provider runner returned invalid output",
-        };
+    while (Atomics.load(control, 0) !== 1) {
+        serviceProviderWorkerAdmission(control, admission, allowance);
+        const commandRemaining = allowance.remainingMs(allowance.commandDeadlineAt);
+        if (!commandRemaining && !Atomics.load(admission, 3)) cancelProviderWorker(admission, worker);
+        const wrapperRemaining = allowance.remainingMs(allowance.wrapperDeadlineAt);
+        if (!wrapperRemaining) break;
+        Atomics.wait(control, 0, 0, Math.min(wrapperRemaining, commandRemaining || wrapperRemaining));
     }
+    if (Atomics.load(control, 0) !== 1) execution = wrapperExpired();
+    else {
+        try {
+            execution = providerWorkerExecution(control, transport);
+            if (execution.timedOut && !allowance.remainingMs(allowance.wrapperDeadlineAt) && !providerWorkerPrimaryFailure(admission, failureTransport)) execution = wrapperExpired(execution);
+            else if (execution.status === 0 && !execution.error && !execution.timedOut) {
+                if (!allowance.remainingMs(allowance.wrapperDeadlineAt)) execution = wrapperExpired(execution);
+                else if (!allowance.remainingMs(allowance.commandDeadlineAt)) {
+                    cancelProviderWorker(admission, worker);
+                    execution = { ...execution, error: `device-lab provider command timed out after ${timeoutMs}ms`, timedOut: true, cleanup: cleanupProvider() };
+                }
+            }
+        } catch {
+            cancelProviderWorker(admission, worker);
+            execution = { status: null, stdout: "", stderr: "", error: "device-lab provider runner returned invalid output", cleanup: cleanupProvider() };
+        }
+    }
+    cancelProviderWorker(admission, worker);
     void worker.terminate();
     return {
         mode: "exec",
@@ -8336,36 +8596,42 @@ export function defaultProviderCommandRunner(command: ProviderCommand, options: 
         args: command.args || [],
         ...(command.input !== undefined ? { input: command.input } : {}),
         ...execution,
-        stdout: truncateOutput(execution.stdout, options.outputLimit),
-        stderr: truncateOutput(execution.stderr, options.outputLimit),
+        stdout: truncateOutput(execution.stdout, outputLimit),
+        stderr: truncateOutput(execution.stderr, outputLimit),
     };
 }
 
 export async function defaultProviderCommandRunnerAsync(command: ProviderCommand, options: ProviderCommandRunnerOptions): Promise<ProviderCommandResult> {
     if (command.mode !== "exec") return defaultProviderCommandRunner(command, options);
     if (!command.executable) return { mode: command.mode, provider: command.provider, error: "missing-executable", status: null };
+    const allowance = captureBrokerCommandAllowance(options);
     let invocation: ReturnType<typeof providerCommandSpawn>;
     try {
         invocation = providerCommandSpawn(command);
     } catch (error) {
         return { mode: "exec", provider: command.provider, executable: command.executable, args: command.args || [], status: null, error: error instanceof Error ? error.message : String(error) };
     }
-    const timeoutMs = Math.max(1, options.timeoutMs);
+    const { timeoutMs, cleanupGraceMs, wrapperTimeoutMs } = allowance;
     const outputLimit = Math.max(1, Math.floor(options.outputLimit));
-    const cleanupGraceMs = Math.min(10000, Math.max(1, options.cleanupGraceMs ?? 1000));
-    const wrapperTimeoutMs = Math.max(1, options.wrapperTimeoutMs ?? (timeoutMs + cleanupGraceMs + 15000));
     const transportCapacity = (outputLimit * 6) + (64 * 1024);
     const shared = new SharedArrayBuffer(16 + transportCapacity);
     const identityShared = new SharedArrayBuffer(4096);
+    const admissionShared = new SharedArrayBuffer(20 + (64 * 1024));
     const control = new Int32Array(shared, 0, 4);
     const transport = new Uint8Array(shared, 16);
     const identityTransport = new Uint8Array(identityShared);
+    const admission = new Int32Array(admissionShared, 0, 5);
+    const failureTransport = new Uint8Array(admissionShared, 20);
     const commandEnv = hiddenProviderCommandEnv(command.env);
 
     return await new Promise<ProviderCommandResult>((resolveResult) => {
         let worker: Worker;
         let settled = false;
         let timer: NodeJS.Timeout | undefined;
+        let commandTimer: NodeJS.Timeout | undefined;
+        let handoffTimer: NodeJS.Timeout | undefined;
+        let pendingCleanup: (() => void) | undefined;
+        let workerUnavailable = false;
         const result = (execution: Partial<ProviderCommandResult>): ProviderCommandResult => ({
             mode: "exec",
             provider: command.provider,
@@ -8380,21 +8646,62 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
             if (settled) return;
             settled = true;
             if (timer) clearTimeout(timer);
+            if (commandTimer) clearTimeout(commandTimer);
+            if (handoffTimer) clearTimeout(handoffTimer);
+            cancelProviderWorker(admission, worker);
             void worker.terminate();
             resolveResult(result(execution));
         };
         const cleanupProvider = () => terminateBrokerSpawnedProcessTree(Atomics.load(control, 2), {
             expectedIdentity: providerProcessIdentityFromShared(control, identityTransport),
             requireIdentity: true,
+            remainingMs: () => allowance.remainingMs(allowance.fallbackDeadlineAt),
         });
-        const finishFromTransport = (cleanupOnInvalid = false) => {
-            const resultLength = Atomics.load(control, 1);
+        const finishHandoff = (waitExpired = false) => {
+            if (!pendingCleanup) return false;
+            if (!waitExpired && !workerUnavailable && Atomics.load(admission, 0) === 4 && allowance.remainingMs(allowance.fallbackDeadlineAt)) return true;
+            const complete = pendingCleanup;
+            pendingCleanup = undefined;
+            if (handoffTimer) clearTimeout(handoffTimer);
+            complete();
+            return false;
+        };
+        const afterSpawnPublication = (complete: () => void) => {
+            if (settled || pendingCleanup) return;
+            cancelProviderWorker(admission, worker);
+            pendingCleanup = complete;
+            if (finishHandoff()) {
+                const remaining = allowance.remainingMs(allowance.fallbackDeadlineAt);
+                if (!remaining) finishHandoff();
+                else {
+                    handoffTimer = setTimeout(() => finishHandoff(true), remaining);
+                    handoffTimer.unref();
+                }
+            }
+        };
+        const wrapperExpired = (execution: Partial<ProviderCommandResult> = { status: null, stdout: "", stderr: "" }) => {
+            afterSpawnPublication(() => {
+                const cleanup = execution.cleanup || cleanupProvider();
+                const primary = providerWorkerPrimaryFailure(admission, failureTransport);
+                const error = `device-lab provider wrapper timed out after ${wrapperTimeoutMs}ms`;
+                finish({ ...execution, ...primary, error: primary?.error ? `${primary.error}; ${error}` : error, timedOut: !primary, cleanup });
+            });
+        };
+        const finishFromTransport = () => {
+            if (settled || pendingCleanup) return;
             try {
-                if (resultLength <= 0 || resultLength > transport.length) throw new Error("invalid transport length");
-                finish(JSON.parse(Buffer.from(transport.subarray(0, resultLength)).toString("utf8")) as Partial<ProviderCommandResult>);
+                let execution = providerWorkerExecution(control, transport);
+                if (execution.timedOut && !allowance.remainingMs(allowance.wrapperDeadlineAt) && !providerWorkerPrimaryFailure(admission, failureTransport)) { wrapperExpired(execution); return; }
+                if (execution.status === 0 && !execution.error && !execution.timedOut) {
+                    if (!allowance.remainingMs(allowance.wrapperDeadlineAt)) { wrapperExpired(execution); return; }
+                    if (!allowance.remainingMs(allowance.commandDeadlineAt)) {
+                        afterSpawnPublication(() => finish({ ...execution, error: `device-lab provider command timed out after ${timeoutMs}ms`, timedOut: true, cleanup: cleanupProvider() }));
+                        return;
+                    }
+                }
+                finish(execution);
             } catch {
-                const cleanup = cleanupOnInvalid ? cleanupProvider() : undefined;
-                finish({ status: null, stdout: "", stderr: "", error: "device-lab provider runner returned invalid output", ...(cleanup ? { cleanup } : {}) });
+                afterSpawnPublication(() => finish({ status: null, stdout: "", stderr: "", error: "device-lab provider runner returned invalid output", cleanup: cleanupProvider() }));
             }
         };
         try {
@@ -8403,6 +8710,7 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
                 workerData: {
                     shared,
                     identityShared,
+                    admissionShared,
                     payload: {
                         executable: invocation.executable || command.executable,
                         args: invocation.args,
@@ -8423,18 +8731,39 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
             return;
         }
         worker.on("message", (message: unknown) => {
-            if (message && typeof message === "object" && (message as { done?: unknown }).done === true) finishFromTransport();
+            finishHandoff();
+            if (settled || pendingCleanup || !message || typeof message !== "object") return;
+            if ((message as { admission?: unknown }).admission === true) serviceProviderWorkerAdmission(control, admission, allowance);
+            if ((message as { done?: unknown }).done === true) finishFromTransport();
         });
-        worker.once("error", (error) => finish({ status: null, stdout: "", stderr: "", error: error.message, cleanup: cleanupProvider() }));
+        worker.once("error", (error) => {
+            if (settled) return;
+            workerUnavailable = true;
+            if (pendingCleanup) { finishHandoff(); return; }
+            afterSpawnPublication(() => {
+                const primary = providerWorkerPrimaryFailure(admission, failureTransport);
+                finish({ status: null, stdout: "", stderr: "", ...primary, error: primary?.error || error.message, cleanup: cleanupProvider() });
+            });
+        });
         worker.once("exit", () => {
-            if (!settled) finishFromTransport(true);
+            workerUnavailable = true;
+            if (pendingCleanup) finishHandoff();
+            else if (!settled) finishFromTransport();
         });
         worker.unref();
-        timer = setTimeout(() => {
-            const cleanup = cleanupProvider();
-            finish({ status: null, stdout: "", stderr: "", error: `device-lab provider wrapper timed out after ${wrapperTimeoutMs}ms`, timedOut: true, cleanup });
-        }, wrapperTimeoutMs);
-        timer.unref();
+        const commandRemaining = allowance.remainingMs(allowance.commandDeadlineAt);
+        if (commandRemaining) {
+            commandTimer = setTimeout(() => cancelProviderWorker(admission, worker), commandRemaining);
+            commandTimer.unref();
+        } else cancelProviderWorker(admission, worker);
+        const wrapperRemaining = allowance.remainingMs(allowance.wrapperDeadlineAt);
+        if (wrapperRemaining) {
+            timer = setTimeout(() => {
+                if (Atomics.load(control, 0) === 1) finishFromTransport();
+                else wrapperExpired();
+            }, wrapperRemaining);
+            timer.unref();
+        } else wrapperExpired();
     });
 }
 
