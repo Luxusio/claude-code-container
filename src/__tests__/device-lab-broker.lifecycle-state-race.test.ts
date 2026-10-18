@@ -327,6 +327,10 @@ describe.each(["source", "emitted"] as const)("actual authenticated %s broker li
         expect(observed.ownerPublicationsAfterRace).toBe(0); expect(observed.temporaryOwnerWritesAfterRace).toBe(0);
         expect(observed.publicationBuilderClockReads, "replacement builder does not materialize a new updatedAt on refusal").toBe(0);
         expect(payload.result).not.toHaveProperty("leaseRollback");
+        if (scenario.backend === "macos-vm" && scenario.command === "device_start") {
+            expect(payload.result).toHaveProperty("execution.mutatesHost", true);
+            expect(observed.calls.filter(call => call.provider === "tart" && call.args[0] === "stop")).toEqual([]);
+        }
         const publicBytes = JSON.stringify(payload);
         for (const secret of ["original-private-secret", "successor-private-secret", "fixture-private-provider-output", "guest.credential.xml"]) expect(publicBytes).not.toContain(secret);
         if (scenario.backend === "windows-vm") {

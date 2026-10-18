@@ -1,10 +1,10 @@
 import type { Server } from "node:http";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-environment.js";
-import { ANDROID_SYSTEM_IMAGE, androidRawState, privateBrokerHome } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { ANDROID_SYSTEM_IMAGE, androidRawState, androidStatePath, privateBrokerHome } from "../helpers/android-emulator-lifecycle-fixture.js";
 
 type NativeCommand = { mode: string; provider: string; executable?: string; args?: string[]; input?: string; reason?: string; [key: string]: unknown };
 type NativeResult = NativeCommand & { status: number | null; stdout: string; stderr: string; error?: string };
@@ -19,6 +19,7 @@ type Rpc = { status: number; body: Record<string, unknown> };
 type BrokerControl = {
     ownerId: string; home: string; calls: Array<{ command: NativeCommand; options: { timeoutMs: number; outputLimit: number } }>;
     denied: { provider: number }; rpc(params: Record<string, unknown>, authenticated?: boolean): Promise<Rpc>;
+    cleanup(): Promise<Rpc>;
     write(devices: unknown[]): void; setRunner(runner: Runner): void;
 };
 const project = fileURLToPath(new URL("../../../", import.meta.url));
@@ -60,6 +61,11 @@ async function withBroker(name: string, check: (c: BrokerControl) => Promise<voi
         const control: BrokerControl = {
             ownerId, home: fixture.home, calls, denied, write: devices => { host!.writeBrokerDevices(ownerId, "android", devices); },
             setRunner: runner => { effect = runner; },
+            cleanup: async () => {
+                const response = await fetch(endpoint, { method: "POST", headers,
+                    body: JSON.stringify({ method: "broker.cleanup.owner", params: { backend: "android-emulator", stopDevices: true } }) });
+                return { status: response.status, body: await response.json() as Record<string, unknown> };
+            },
             rpc: async (params, authenticated = true) => {
                 const response = await fetch(endpoint, { method: "POST", headers: authenticated ? headers : { "content-type": "application/json" },
                     body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "android-emulator", ...params } }) });
@@ -190,7 +196,150 @@ describe("Android emulator lifecycle original authenticated broker witnesses", (
             for (const field of ["reason", "serial", "last"]) expect(payload.execution.command.androidBoot).not.toHaveProperty(field);
             if (timedOut === undefined) expect(payload.boot.error).not.toHaveProperty("timedOut");
             else expect(payload.boot.error.timedOut).toBe(true);
-            expect(androidRawState(c.home, c.ownerId).devices).toEqual([original]);
+            expect(result).toHaveProperty("body.result.execution.mutatesHost", true);
+            expect(androidRawState(c.home, c.ownerId).devices).toEqual([expect.objectContaining({ ...original, status: "starting",
+                lifecycle: { runtimeId: expect.any(String), operation: "start", claimedAt: expect.any(String) } })]);
+        });
+    });
+
+    it.each([true, false])("retains a timed-out start for fresh owner cleanup; confirmed stop=%s", async confirmed => {
+        await withBroker("broker-start-recovery", async c => {
+            const original = { id: "android-recoverable", backend: "android-emulator", avdName: `ccc-${c.ownerId}-recoverable`, port: 5672, status: "stopped",
+                preferences: { keep: "original" }, ssh: { password: "android-recovery-secret" } };
+            c.write([original]);
+            c.setRunner(command => ({ ...command, status: 0, stderr: "", stdout: command.args?.[0] === "devices" ? "List of devices attached\n" : command.args?.includes("sys.boot_completed") ? "0\n" : "" }));
+            const failed = await c.rpc({ command: "device_start", deviceId: original.id, waitForBoot: true, bootTimeoutMs: 1000 });
+            expect(failed).toMatchObject({ status: 502, body: { ok: false, result: { device: { status: "starting" }, execution: { mutatesHost: true } } } });
+            const pending = androidRawState(c.home, c.ownerId).devices[0];
+            expect(pending).toMatchObject({ ...original, status: "starting", lifecycle: { runtimeId: expect.any(String), operation: "start", claimedAt: expect.any(String) } });
+            expect(JSON.stringify(failed.body)).not.toContain("android-recovery-secret");
+            const launchCount = c.calls.filter(row => row.command.provider === "emulator").length;
+            const repeated = await c.rpc({ command: "device_start", deviceId: original.id, waitForBoot: false });
+            expect(repeated.status).toBe(409);
+            expect(c.calls.filter(row => row.command.provider === "emulator")).toHaveLength(launchCount);
+            expect(androidRawState(c.home, c.ownerId).devices).toEqual([pending]);
+            c.setRunner(command => ({ ...command, status: command.args?.includes("kill") && !confirmed ? 7 : 0, stderr: "",
+                stdout: command.args?.[0] === "devices" ? `List of devices attached\n${confirmed ? "" : "emulator-5672 device\n"}` : "" }));
+            const cleanup = await c.cleanup();
+            expect(cleanup).toMatchObject({ status: 200, body: { ok: confirmed, result: { failed: confirmed ? 0 : 1 } } });
+            expect(c.calls.filter(row => row.command.args?.includes("kill"))).toHaveLength(1);
+            if (confirmed) {
+                expect(androidRawState(c.home, c.ownerId).devices[0]).toMatchObject({ id: original.id, status: "stopped", preferences: original.preferences });
+                expect(androidRawState(c.home, c.ownerId).devices[0].lifecycle ?? null).toBeNull();
+                c.setRunner(command => { if (command.provider === "emulator") throw Error("second-owned-launch"); return { ...command, status: 0, stdout: "List of devices attached\n", stderr: "" }; });
+                await c.rpc({ command: "device_start", deviceId: original.id, waitForBoot: false });
+                expect((androidRawState(c.home, c.ownerId).devices[0].lifecycle as {runtimeId: string}).runtimeId).not.toBe((pending.lifecycle as {runtimeId: string}).runtimeId);
+            } else expect(androidRawState(c.home, c.ownerId).devices).toEqual([pending]);
+        });
+    });
+
+    it("redacts an unknown native start throw while retaining dispatched recovery facts", async () => {
+        await withBroker("broker-start-throw", async c => {
+            const original = { id: "android-start-throw", backend: "android-emulator", avdName: `ccc-${c.ownerId}-throw`, port: 5672, status: "stopped" };
+            c.write([original]);
+            c.setRunner(command => { if (command.provider === "emulator") throw Error("private-native-launch-secret"); return { ...command, status: 0, stdout: "List of devices attached\n", stderr: "" }; });
+            const result = await c.rpc({ command: "device_start", deviceId: original.id, waitForBoot: false });
+            expect(result).toMatchObject({ status: 502, body: { ok: false, result: { device: { status: "starting" }, invoked: true, execution: { mutatesHost: true } } } });
+            expect(JSON.stringify(result.body)).not.toContain("private-native-launch-secret");
+            expect(result.body).not.toHaveProperty("cause");
+            expect(androidRawState(c.home, c.ownerId).devices[0]).toHaveProperty("lifecycle.operation", "start");
+        });
+    });
+
+    it.each([["invalid", 409, "owner-devices-state-invalid"], ["large", 413, "owner-devices-file-too-large"]] as const)("keeps known %s reservation status before detached launch", async (fault, status, error) => {
+        await withBroker("broker-start-reservation-error", async c => {
+            const secret = "private-android-reservation-secret";
+            const original = {id: "android-reservation-error", backend: "android-emulator", avdName: `ccc-${c.ownerId}-reservation-error`, port: 5672, status: "stopped", ssh: {password: secret}};
+            c.write([original]);
+            const path = androidStatePath(c.home, c.ownerId), poisoned = fault === "invalid" ? "{" + secret : secret + " ".repeat(256 * 1024 + 1);
+            c.setRunner(command => {
+                if (command.provider === "adb" && command.args?.[0] === "devices") writeFileSync(path, poisoned);
+                return {...command, status: 0, stdout: "List of devices attached\n", stderr: ""};
+            });
+            const result = await c.rpc({command: "device_start", deviceId: original.id, waitForBoot: false});
+            expect(result).toMatchObject({status, body: {ok: false, error, result: {invoked: false, execution: {mutatesHost: false}}}});
+            expect(c.calls.filter(row => row.command.provider === "emulator")).toEqual([]);
+            expect(c.calls.filter(row => row.command.provider === "adb" && row.command.args?.[0] === "devices")).toHaveLength(1);
+            expect(readFileSync(path, "utf8")).toBe(poisoned);
+            expect(result.body).not.toHaveProperty("cause");
+            expect(JSON.stringify(result.body)).not.toContain(secret);
+            expect(JSON.stringify(result.body)).not.toContain(c.home);
+        });
+    });
+
+    it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)("keeps known unreadable reservation status503 before detached launch", async () => {
+        await withBroker("broker-start-reservation-unreadable", async c => {
+            const secret = "private-android-unreadable-reservation-secret";
+            const original = {id: "android-reservation-unreadable", backend: "android-emulator", avdName: `ccc-${c.ownerId}-reservation-unreadable`, port: 5672, status: "stopped", ssh: {password: secret}};
+            c.write([original]);
+            const path = androidStatePath(c.home, c.ownerId), before = readFileSync(path, "utf8");
+            c.setRunner(command => {
+                if (command.provider === "adb" && command.args?.[0] === "devices") chmodSync(path, 0);
+                return {...command, status: 0, stdout: "List of devices attached\n", stderr: ""};
+            });
+            try {
+                const result = await c.rpc({command: "device_start", deviceId: original.id, waitForBoot: false});
+                expect(result).toMatchObject({status: 503, body: {ok: false, error: "owner-devices-state-read-failed", result: {invoked: false, execution: {mutatesHost: false}}}});
+                expect(c.calls.filter(row => row.command.provider === "emulator")).toEqual([]);
+                expect(c.calls.filter(row => row.command.provider === "adb" && row.command.args?.[0] === "devices")).toHaveLength(1);
+                expect(result.body).not.toHaveProperty("cause");
+                expect(JSON.stringify(result.body)).not.toContain(secret);
+                expect(JSON.stringify(result.body)).not.toContain(c.home);
+            } finally {chmodSync(path, 0o600);}
+            expect(readFileSync(path, "utf8")).toBe(before);
+        });
+    });
+
+    it("rejects legitimate near-limit reservation growth with413 and no detached launch", async () => {
+        await withBroker("broker-start-reservation-growth", async c => {
+            const secret = "private-android-reservation-growth-secret", limit = 256 * 1024;
+            const original = {id: "android-reservation-growth", backend: "android-emulator", avdName: `ccc-${c.ownerId}-reservation-growth`, port: 5672, status: "stopped", ssh: {password: secret}};
+            const sibling = {id: "unrelated-padding", status: "stopped", padding: ""};
+            const records = [original, sibling];
+            sibling.padding = "x".repeat(limit - 16 - Buffer.byteLength(JSON.stringify({devices: records}, null, 2)));
+            expect(Buffer.byteLength(JSON.stringify({devices: records}, null, 2))).toBe(limit - 16);
+            c.write(records);
+            const path = androidStatePath(c.home, c.ownerId), before = readFileSync(path, "utf8");
+            const result = await c.rpc({command: "device_start", deviceId: original.id, waitForBoot: false});
+            expect(result).toMatchObject({status: 413, body: {ok: false, error: "owner-devices-file-too-large", result: {invoked: false, execution: {mutatesHost: false}}}});
+            expect(c.calls.filter(row => row.command.provider === "emulator")).toEqual([]);
+            expect(readFileSync(path, "utf8")).toBe(before);
+            expect(androidRawState(c.home, c.ownerId).devices).toEqual(records);
+            expect(result.body).not.toHaveProperty("cause");
+            expect(JSON.stringify(result.body)).not.toContain(secret);
+        });
+    });
+
+    it.each([["invalid", 409, "owner-devices-state-invalid"], ["large", 413, "owner-devices-file-too-large"]] as const)("keeps known %s publication status with partial launch evidence", async (fault, status, error) => {
+        await withBroker("broker-start-state-error", async c => {
+            const original = { id: "android-start-state-error", backend: "android-emulator", avdName: `ccc-${c.ownerId}-state-error`, port: 5672, status: "stopped" };
+            c.write([original]);
+            c.setRunner(command => {
+                if (command.provider === "emulator") {
+                    const path = androidStatePath(c.home, c.ownerId);
+                    writeFileSync(path, fault === "invalid" ? "{" : " ".repeat(256 * 1024 + 1));
+                }
+                return { ...command, status: 0, stdout: "List of devices attached\n", stderr: "" };
+            });
+            const result = await c.rpc({ command: "device_start", deviceId: original.id, waitForBoot: false });
+            expect(result).toMatchObject({ status, body: { ok: false, error, result: { invoked: true, execution: { mutatesHost: true } } } });
+            expect(c.calls.filter(row => row.command.args?.includes("kill"))).toEqual([]);
+        });
+    });
+    it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)("keeps known unreadable publication status503 with partial launch evidence", async () => {
+        await withBroker("broker-start-state-unreadable", async c => {
+            const original = {id: "android-start-unreadable", backend: "android-emulator", avdName: `ccc-${c.ownerId}-unreadable`, port: 5672, status: "stopped"};
+            c.write([original]);
+            const path = androidStatePath(c.home, c.ownerId);
+            c.setRunner(command => {
+                if (command.provider === "emulator") chmodSync(path, 0);
+                return {...command, status: 0, stdout: "List of devices attached\n", stderr: ""};
+            });
+            try {
+                expect(await c.rpc({command: "device_start", deviceId: original.id, waitForBoot: false})).toMatchObject({status: 503, body: {ok: false,
+                    error: "owner-devices-state-read-failed", result: {invoked: true, execution: {mutatesHost: true}}}});
+                expect(c.calls.filter(row => row.command.args?.includes("kill"))).toEqual([]);
+            } finally {chmodSync(path, 0o600);}
         });
     });
 

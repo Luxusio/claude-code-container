@@ -32,6 +32,7 @@ export interface BrokerAndroidEmulatorLifecyclePorts<Effect, Receipt> {
     readonly now: () => number;
     readonly sleep: (milliseconds: number) => undefined | PromiseLike<void>;
     readonly timestamp: () => string;
+    readonly runtimeId: () => string;
     readonly avdHome: () => string;
     readonly validPort: (port: unknown) => boolean;
     readonly livePorts: () => BrokerAndroidLivePorts | PromiseLike<BrokerAndroidLivePorts>;

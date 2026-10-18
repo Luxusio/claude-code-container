@@ -65,7 +65,7 @@ export interface BrokerAndroidAuxiliaryCleanup {
 export interface BrokerAndroidOutcomeFacts<Effect, Receipt> {
     ownerId?: string; backend?: string; deviceId?: string; plan?: BrokerAndroidLifecyclePlan<Effect> | null;
     device?: unknown; error?: string; detail?: string; missing?: string[]; field?: string; value?: unknown; existing?: unknown; found?: boolean;
-    rollback?: BrokerAndroidRollback; stateError?: string; boot?: BrokerAndroidBoot<Receipt>;
+    rollback?: BrokerAndroidRollback; stateError?: string; stateCause?: unknown; boot?: BrokerAndroidBoot<Receipt>;
     auxiliaryCleanup?: BrokerAndroidAuxiliaryCleanup["result"];
     execution?: BrokerAndroidProviderResult<Receipt>; invoked?: boolean; mutatesHost?: boolean;
 }
@@ -74,7 +74,7 @@ export type BrokerAndroidLifecycleOutcome<Effect, Receipt> = BrokerAndroidOutcom
     | {kind: "completed"; device: unknown; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: boolean}
     | {kind: "refused"; reason: BrokerAndroidFailureReason; error: string}
     | {kind: "state-exception"; cause: unknown; rollback: BrokerAndroidRollback; backend: string; stateKey: string}
-    | {kind: "provider-failed"; error: string; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: false}
+    | {kind: "provider-failed"; error: string; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: boolean}
     | {kind: "auxiliary-failed"; error: "auxiliary-runtime-cleanup-failed"; device: unknown; auxiliaryCleanup: BrokerAndroidAuxiliaryCleanup["result"]; invoked: false; mutatesHost: boolean}
     | {kind: "stop-unconfirmed"; error: "android-emulator-stop-unconfirmed"; detail: string; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: true}
     | {kind: "publication-conflict"; error: "owner-device-state-conflict"; found: boolean; device: unknown; execution: BrokerAndroidProviderResult<Receipt>; invoked: true; mutatesHost: boolean});
@@ -100,7 +100,7 @@ export function brokerAndroidSerial(device: unknown): string | null {
 }
 
 export function brokerAndroidCommandSucceeded(result: BrokerAndroidProviderResult<unknown>): boolean {
-    return result.ok;
+    return result.ok === true;
 }
 
 export function brokerAndroidAvdName(ownerId: string, create: Record<string, unknown>, fallbackName: string): string {
@@ -121,7 +121,7 @@ export function brokerAndroidRecord(ownerId: string, parsed: BrokerAndroidLifecy
 
 export function brokerAndroidReplacement(candidate: Record<string, unknown>, parsed: BrokerAndroidLifecycleRequest, boot: BrokerAndroidBoot<unknown> | null) {
     if (parsed.command === "device_delete") return null;
-    return {
+    const replacement: Record<string, unknown> = {
         ...candidate,
         status: parsed.command === "device_start" || parsed.command === "device_reboot" ? "running" : "stopped",
         ...(parsed.command === "device_start" && boot?.ok ? {
@@ -130,4 +130,6 @@ export function brokerAndroidReplacement(candidate: Record<string, unknown>, par
         } : {}),
         ...(parsed.command === "device_stop" ? { bootReady: false, lastBootCheck: null } : {}),
     };
+    if (parsed.command === "device_start" || parsed.command === "device_stop") delete replacement.lifecycle;
+    return replacement;
 }

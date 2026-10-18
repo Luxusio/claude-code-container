@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-environment.js";
-import { privateBrokerHome } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { brokerLifecyclePorts, privateBrokerHome } from "../helpers/android-emulator-lifecycle-fixture.js";
 import { addAndroidEmulatorUsedPorts, selectAndroidEmulatorPort, validateAndroidEmulatorPortRequest } from "../../../packages/device-lab/providers/domain/lifecycle/android-emulator-lifecycle.mjs";
+import { createBrokerAndroidEmulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.js";
 
 type Allocation = { ok: true; port: number } | { ok: false; error: string; detail?: string; allowed?: string };
 type NativeAllocation = { resolveAndroidEmulatorPort(owner: string, id: string, requested?: number, additional?: Iterable<number>): Allocation };
@@ -81,5 +82,72 @@ describe("Android emulator current allocation and native refusals", () => {
             childProcess.spawn = savedSpawn; childProcess.spawnSync = savedSpawnSync; process.kill = savedKill;
             syncBuiltinESMExports(); restore(); fixture.remove();
         }
+    });
+});
+
+describe("Android broker pending launch recovery replay", () => {
+    const device = () => ({ id: "android-unit", backend: "android-emulator", avdName: "ccc-owner-unit", port: 5630, status: "stopped", extra: { retained: true } });
+
+    it("failed launch survives refused stop, confirmed stop clears recovery, and the next start has a fresh identity", async () => {
+        const original = device(), f = brokerLifecyclePorts(original), execute = f.ports.executePrepared;
+        let launchSucceeds = false, stopSucceeds = false;
+        const seenRuntimeIds: unknown[] = [];
+        f.ports.executePrepared = async (effect, options) => {
+            const native = await execute(effect, options);
+            if (effect.action === "start") {
+                seenRuntimeIds.push((f.current()?.lifecycle as Record<string, unknown> | undefined)?.runtimeId);
+                return { ...native, ok: launchSucceeds };
+            }
+            return { ...native, ok: effect.action === "stop" ? stopSucceeds : native.ok };
+        };
+        const app = createBrokerAndroidEmulatorLifecycle(f.ports);
+        expect(await app.start(f.input("device_start", { waitForBoot: false }))).toMatchObject({ kind: "provider-failed", invoked: true, mutatesHost: true });
+        const reservation = f.current();
+        expect(reservation).toMatchObject({ status: "starting", lifecycle: { runtimeId: "android-broker-runtime-1", operation: "start", claimedAt: "native-timestamp" } });
+
+        expect(await app.stop(f.input("device_stop"))).toMatchObject({ kind: "provider-failed" });
+        expect(f.current()).toBe(reservation); expect(f.publications).toEqual([original]);
+
+        stopSucceeds = true;
+        expect(await app.stop(f.input("device_stop"))).toMatchObject({ kind: "completed", device: { status: "stopped", bootReady: false, extra: original.extra } });
+        expect(f.current()?.lifecycle).toBeFalsy();
+        expect(f.commands.filter(command => command.effect.action === "stop")).toHaveLength(2);
+        expect(f.trace).toContain("processes");
+
+        launchSucceeds = true;
+        expect(await app.start(f.input("device_start", { waitForBoot: false }))).toMatchObject({ kind: "completed", device: { status: "running", bootReady: false } });
+        expect(seenRuntimeIds).toEqual(["android-broker-runtime-1", "android-broker-runtime-2"]);
+        expect(f.current()?.lifecycle).toBeFalsy();
+    });
+
+    it("unconfirmed cleanup stop retains the pending marker until native absence is confirmed", async () => {
+        const f = brokerLifecyclePorts(device());
+        f.ports.prepareBootProbe = () => ({ kind: "unavailable", observation: { ok: false, mode: "noop", provider: "adb" } });
+        const app = createBrokerAndroidEmulatorLifecycle(f.ports);
+        await app.start(f.input("device_start", { waitForBoot: true }));
+        const reservation = f.current();
+        expect(reservation).toMatchObject({ status: "starting", lifecycle: { runtimeId: "android-broker-runtime-1" } });
+        const inventory = f.ports.observeStopInventory;
+        f.ports.observeStopInventory = () => ({ ok: false, mode: "exec", provider: "adb", available: false, serialPresent: false });
+        expect(await app.stop(f.input("device_stop"))).toMatchObject({ kind: "stop-unconfirmed", invoked: true, mutatesHost: true });
+        expect(f.current()).toBe(reservation); expect(f.publications).toHaveLength(1);
+        f.ports.observeStopInventory = inventory;
+        expect(await app.stop(f.input("device_stop"))).toMatchObject({ kind: "completed", device: { status: "stopped" } });
+        expect(f.current()?.lifecycle).toBeFalsy();
+    });
+
+    it("confirmed predecessor stop cannot clear a same-target successor reservation", async () => {
+        const f = brokerLifecyclePorts(device()), execute = f.ports.executePrepared;
+        f.ports.prepareBootProbe = () => ({ kind: "unavailable", observation: { ok: false, mode: "noop", provider: "adb" } });
+        const app = createBrokerAndroidEmulatorLifecycle(f.ports);
+        await app.start(f.input("device_start", { waitForBoot: true }));
+        const reservation = f.current();
+        expect(reservation).toMatchObject({ status: "starting", lifecycle: { runtimeId: "android-broker-runtime-1" } });
+        const successor = { ...device(), status: "starting", lifecycle: { runtimeId: "successor", operation: "start", claimedAt: "later" } };
+        f.ports.executePrepared = async (effect, options) => { const result = await execute(effect, options); if (effect.action === "stop") f.replace(successor); return result; };
+        const result = await app.stop(f.input("device_stop"));
+        expect(result).toMatchObject({ kind: "publication-conflict", invoked: true, mutatesHost: true });
+        expect(f.current()).toBe(successor); expect(f.publications.at(-1)).toEqual(reservation);
+        expect(f.commands.filter(command => command.effect.action === "stop")).toHaveLength(1);
     });
 });

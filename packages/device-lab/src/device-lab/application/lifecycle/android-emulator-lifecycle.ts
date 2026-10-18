@@ -1,5 +1,5 @@
 import { brokerAndroidAvdName, brokerAndroidCommandSucceeded, brokerAndroidField, brokerAndroidNumber, brokerAndroidRecord, brokerAndroidReplacement, brokerAndroidSerial } from "../../domain/lifecycle/android-emulator-lifecycle.js";
-import type { BrokerAndroidBoot, BrokerAndroidLifecycleInput, BrokerAndroidLifecycleRequest, BrokerAndroidLifecycleOutcome, BrokerAndroidOutcomeFacts, BrokerAndroidPreparation, BrokerAndroidRollback, BrokerAndroidFailureReason, BrokerAndroidProviderResult } from "../../domain/lifecycle/android-emulator-lifecycle.js";
+import type { BrokerAndroidBoot, BrokerAndroidLifecycleInput, BrokerAndroidLifecycleRequest, BrokerAndroidLifecycleOutcome, BrokerAndroidOutcomeFacts, BrokerAndroidPreparation, BrokerAndroidRollback, BrokerAndroidFailureReason, BrokerAndroidProviderResult, BrokerAndroidPublication } from "../../domain/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidCreatePortAllocation, BrokerAndroidCreatePortAllocationPorts, BrokerAndroidEmulatorLifecyclePorts, BrokerAndroidPreparationPorts } from "../../ports/lifecycle/android-emulator-lifecycle.js";
 
 /** Live augmentation reuses the broker's already inward preview allocator. */
@@ -159,18 +159,88 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
     async function confirmBoot(parsed: BrokerAndroidLifecycleRequest, device: unknown): Promise<BrokerAndroidBoot<Receipt>> {
         if (parsed.waitForBoot !== true) return {ok: true, ready: false, skipped: true};
         const serial = brokerAndroidSerial(device);
-        const preparation = ports.prepareBootProbe(serial);
-        if (preparation.kind === "unavailable") return {ok: false, ready: false, reason: "probe-unavailable", error: preparation.observation};
         const timeout = Number.isFinite(parsed.bootTimeoutMs) ? Math.min(600000, Math.max(1000, Number(parsed.bootTimeoutMs))) : 60000;
         const deadline = ports.now() + timeout;
+        const preparation = ports.prepareBootProbe(serial);
+        if (preparation.kind === "unavailable") return {ok: false, ready: false, reason: "probe-unavailable", error: preparation.observation};
         const attempts: BrokerAndroidProviderResult<Receipt>[] = [];
-        while (ports.now() < deadline) {
-            const result = await ports.observeBootProbe(preparation.effect, {timeoutMs: Math.min(ports.commandTimeoutMs, Math.max(1000, deadline - ports.now())), outputLimit: ports.outputLimit});
+        while (true) {
+            const remaining = deadline - ports.now();
+            if (remaining <= 0) break;
+            const result = await ports.observeBootProbe(preparation.effect, {timeoutMs: Math.min(ports.commandTimeoutMs, remaining), outputLimit: ports.outputLimit});
+            if (!result || typeof result.ok !== "boolean" || typeof result.ready !== "boolean" || typeof result.mode !== "string" || typeof result.provider !== "string") throw new Error("android-emulator-boot-probe-invalid-result");
             attempts.push(result);
+            if (ports.now() >= deadline) break;
             if (result.ok && result.ready) return {ok: true, ready: true, result, attempts: attempts.slice(-4)};
-            await ports.sleep(Math.min(1000, Math.max(0, deadline - ports.now())));
+            const pacingRemaining = deadline - ports.now();
+            if (pacingRemaining <= 0) break;
+            await ports.sleep(Math.min(1000, pacingRemaining));
         }
         return {ok: false, ready: false, reason: "deadline-exceeded", serial, last: attempts.at(-1), attempts: attempts.slice(-8)};
+    }
+
+    async function start(input: BrokerAndroidLifecycleInput<Effect>): Promise<BrokerAndroidLifecycleOutcome<Effect, Receipt>> {
+        const {ownerId, parsed, plan, expectedDevice} = input;
+        const preparation = plan?.preparation;
+        if (!preparation || preparation.kind !== "ready") return refusal(input, "invalid", preparation?.kind === "unavailable" ? preparation.error : "missing-provider-command", {
+            missing: preparation?.kind === "unavailable" ? preparation.missing : [], plan: plan || null, invoked: false, mutatesHost: false,
+        });
+        const lifecycle = expectedDevice && typeof expectedDevice === "object" ? (expectedDevice as Record<string, unknown>).lifecycle : null;
+        if (brokerAndroidField(expectedDevice, "status") === "starting" || brokerAndroidField(lifecycle, "operation") === "start") return refusal(input, "conflict", "android-emulator-start-recovery-required", {
+            device: expectedDevice, invoked: false, mutatesHost: false,
+        });
+        try {
+            const port = brokerAndroidNumber(plan?.device, "port");
+            if (ports.validPort(port)) {
+                const live = await ports.livePorts();
+                if (!live.ok) return refusal(input, live.reason, live.error, {detail: live.detail, invoked: false, mutatesHost: false});
+                if (port !== null && live.ports.has(port)) return refusal(input, "conflict", "android-emulator-port-conflict", {detail: `port-${port}-already-in-use`, invoked: false, mutatesHost: false});
+            }
+        } catch { return refusal(input, "provider-failed", "android-emulator-start-preflight-failed", {invoked: false, mutatesHost: false}); }
+        let reservation: BrokerAndroidPublication;
+        try {
+            const marker = {runtimeId: ports.runtimeId(), operation: "start", claimedAt: ports.timestamp()};
+            reservation = ports.transition(ownerId, parsed, expectedDevice, candidate => ({...candidate, status: "starting", bootReady: false, lastBootCheck: null, lifecycle: marker, updatedAt: ports.timestamp()}));
+        } catch (error) {
+            let stateError: string | null = null;
+            try { stateError = ports.stateErrorCode(error); } catch { /* Unknown failures retain only fixed semantic evidence. */ }
+            return refusal(input, "state-write-failed", "owner-device-state-reservation-failed", {
+                stateError: stateError || "owner-state-write-failed", ...(stateError ? {stateCause: error} : {}), invoked: false, mutatesHost: false,
+            });
+        }
+        if (!reservation.matched) return refusal(input, "conflict", "owner-device-state-conflict", {found: reservation.found, device: reservation.device, invoked: false, mutatesHost: false});
+
+        let execution: BrokerAndroidProviderResult<Receipt> = {ok: false, mode: preparation.mode, provider: preparation.provider};
+        let boot: BrokerAndroidBoot<Receipt> | null = null;
+        let phase: "execution" | "boot-confirmation" | "publication" = "execution";
+        const observed = () => ({plan: plan || null, device: reservation.device, ...(boot ? {boot} : {}), invoked: true as const, mutatesHost: true, execution});
+        try {
+            const result = await ports.executePrepared(preparation.effect, {timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
+            if (!result || typeof result.ok !== "boolean" || typeof result.mode !== "string" || typeof result.provider !== "string") return {
+                kind: "provider-failed", error: "provider-command-failed", detail: "android-emulator-execution-invalid-result", ...observed(),
+            };
+            execution = result;
+            if (!brokerAndroidCommandSucceeded(execution)) return {kind: "provider-failed", error: "provider-command-failed", ...observed()};
+            phase = "boot-confirmation";
+            boot = await confirmBoot(parsed, reservation.device);
+            if (!boot.ok) return {kind: "provider-failed", error: "provider-command-failed", detail: "android-emulator-boot-confirmation-failed", ...observed()};
+            phase = "publication";
+            const publication = ports.transition(ownerId, parsed, reservation.device, candidate => ({...brokerAndroidReplacement(candidate, parsed, boot), updatedAt: ports.timestamp()}));
+            if (!publication.matched) return {
+                kind: "publication-conflict", error: "owner-device-state-conflict", ownerId, backend: parsed.backend, deviceId: parsed.deviceId,
+                found: publication.found, ...observed(), device: publication.device,
+            };
+            return {kind: "completed", ...observed(), device: publication.device};
+        } catch (error) {
+            let stateError: string | null = null;
+            if (phase === "publication") {
+                try { stateError = ports.stateErrorCode(error); } catch { /* Unknown failures retain only fixed semantic evidence. */ }
+            }
+            return {
+                kind: "provider-failed", error: phase === "publication" ? "owner-device-state-publication-failed" : "provider-command-failed",
+                detail: `android-emulator-${phase}-failed`, ...(phase === "publication" ? {stateError: stateError || "owner-state-write-failed", ...(stateError ? {stateCause: error} : {})} : {}), ...observed(),
+            };
+        }
     }
 
     async function invoke(input: BrokerAndroidLifecycleInput<Effect>): Promise<BrokerAndroidLifecycleOutcome<Effect, Receipt>> {
@@ -181,14 +251,6 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
             kind: "refused", reason: "invalid", error: preparation?.error || "missing-provider-command",
             missing: preparation?.missing || [], plan: plan || null,
         };
-        if (parsed.command === "device_start") {
-            const port = brokerAndroidNumber(plan?.device, "port");
-            if (ports.validPort(port)) {
-                const live = await ports.livePorts();
-                if (!live.ok) return refusal(input, live.reason, live.error, {detail: live.detail});
-                if (port !== null && live.ports.has(port)) return refusal(input, "conflict", "android-emulator-port-conflict", {detail: `port-${port}-already-in-use`});
-            }
-        }
         const deletingArtifacts = parsed.command === "device_delete" && parsed.deleteAvd !== false;
         if (deletingArtifacts) {
             const name = brokerAndroidField(plan?.device, "avdName");
@@ -228,12 +290,10 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
                 success = true;
             } catch { return refusal(input, "provider-failed", "android-avd-artifact-cleanup-failed"); }
         }
-        let boot: BrokerAndroidBoot<Receipt> | null = null;
-        if (success && parsed.command === "device_start") {boot = await confirmBoot(parsed, plan?.device); if (!boot.ok) success = false;}
-        const publication = success ? ports.transition(ownerId, parsed, expectedDevice, candidate => parsed.command === "device_delete" ? null : {...brokerAndroidReplacement(candidate, parsed, boot), updatedAt: ports.timestamp()}) : null;
+        const publication = success ? ports.transition(ownerId, parsed, expectedDevice, candidate => parsed.command === "device_delete" ? null : {...brokerAndroidReplacement(candidate, parsed, null), updatedAt: ports.timestamp()}) : null;
         const observed = {
             plan: plan || null, device: success ? publication?.device : plan?.device,
-            ...(boot ? {boot} : {}), ...(auxiliary ? {auxiliaryCleanup: auxiliary.result} : {}),
+            ...(auxiliary ? {auxiliaryCleanup: auxiliary.result} : {}),
             invoked: true as const, mutatesHost: success, execution,
         };
         if (publication && !publication.matched) return {
@@ -243,7 +303,6 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
         return {kind: "completed", ...observed};
     }
 
-    function start(input: BrokerAndroidLifecycleInput<Effect>) {return invoke(input);}
     function stop(input: BrokerAndroidLifecycleInput<Effect>) {return invoke(input);}
     function deleteDevice(input: BrokerAndroidLifecycleInput<Effect>) {return invoke(input);}
     return {create, start, stop, delete: deleteDevice};

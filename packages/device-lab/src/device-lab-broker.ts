@@ -4701,7 +4701,7 @@ async function liveAndroidEmulatorPortsForAllocation(normalized: NormalizedBroke
     | { ok: false; status: number; error: string; detail: string }> {
     const adb = providerExecutable("adb", normalized);
     if (!adb) return { ok: true, ports: new Set() };
-    const result = await runAndroidProviderCommand(normalized, { mode: "exec", provider: "adb", executable: adb, args: ["devices", "-l"] }, {
+    const result = await runBudgetedProviderCommand(normalized, { mode: "exec", provider: "adb", executable: adb, args: ["devices", "-l"] }, {
         timeoutMs: 10000,
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     });
@@ -4728,7 +4728,7 @@ async function liveAndroidAvdNames(normalized: NormalizedBrokerOptions): Promise
             detail: "missing-adb",
         };
     }
-    const inventory = await runAndroidProviderCommand(normalized, {
+    const inventory = await runBudgetedProviderCommand(normalized, {
         mode: "exec",
         provider: "adb",
         executable: adb,
@@ -4768,7 +4768,7 @@ async function liveAndroidAvdNames(normalized: NormalizedBrokerOptions): Promise
                 detail: "invalid-emulator-serial",
             };
         }
-        const identity = await readAndroidAvdIdentityAsync(serial, args => runAndroidProviderCommand(normalized, {
+        const identity = await readAndroidAvdIdentityAsync(serial, args => runBudgetedProviderCommand(normalized, {
             mode: "exec",
             provider: "adb",
             executable: adb,
@@ -4823,7 +4823,7 @@ async function androidAvdProcessState(avdName: string, normalized: NormalizedBro
             executable: "/bin/ps",
             args: ["-eo", "args="],
         };
-    const result = await runAndroidProviderCommand(normalized, command, {
+    const result = await runBudgetedProviderCommand(normalized, command, {
         timeoutMs,
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     });
@@ -6613,7 +6613,7 @@ function brokerOwnerCleanupApplication(normalized: NormalizedBrokerOptions) {
         restoreLease: restoreCleanupLease,
         terminateAppium: (runtime, stillCurrent) => cleanupAppiumTermination(runtime, deviceOptions, stillCurrent),
         signalRecording: (runtime, stillCurrent) => cleanupRecordingTermination(runtime, deviceOptions, stillCurrent),
-        auxiliaryAsyncEffects: target => target.stateKey === "android" ? {
+        auxiliaryAsyncEffects: target => target.stateKey === "android" || target.stateKey === "macos" ? {
             terminateAppium: (runtime, current) => cleanupAppiumTerminationAsync(runtime, deviceOptions, current),
             signalRecording: (runtime, current) => cleanupRecordingTerminationAsync(runtime, deviceOptions, current),
         } : null,
@@ -9167,7 +9167,7 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
     });
 }
 
-async function runAndroidProviderCommand(normalized: NormalizedBrokerOptions, command: ProviderCommand, settings: ProviderCommandRunnerOptions): Promise<ProviderCommandResult> {
+async function runBudgetedProviderCommand(normalized: NormalizedBrokerOptions, command: ProviderCommand, settings: ProviderCommandRunnerOptions): Promise<ProviderCommandResult> {
     if (normalized.cleanupDeadlineAt !== undefined) {
         assertCleanupDeadline(normalized);
         const available = Math.floor(cleanupExitBudget(normalized, Infinity));
@@ -9699,9 +9699,9 @@ function nativeAndroidFailureReason(status: number) {
 }
 function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerAndroidEmulatorLifecyclePorts<NativeProviderLifecycleEffect, NativeBrokerExecutionReceipt> {
     return {
-        executePrepared: async (effect, options) => { const receipt = await runAndroidProviderCommand(normalized, effect.command, options); if (normalized.cleanupObservation) normalized.cleanupObservation.execution = receipt; return nativeLifecycleObservation(receipt); },
+        executePrepared: async (effect, options) => { const receipt = await runBudgetedProviderCommand(normalized, effect.command, options); if (normalized.cleanupObservation) normalized.cleanupObservation.execution = receipt; return nativeLifecycleObservation(receipt); },
         observeStopInventory: async (effect, serial, options) => {
-            const receipt = await runAndroidProviderCommand(normalized, effect.command, options);
+            const receipt = await runBudgetedProviderCommand(normalized, effect.command, options);
             const lines = String(receipt.stdout || "").split(/\r?\n/).map(line => line.trim());
             return { ...nativeLifecycleObservation(receipt),
                 available: !receipt.timedOut && !receipt.outputLimitExceeded && lines.includes("List of devices attached"),
@@ -9709,7 +9709,7 @@ function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
             };
         },
         observeBootProbe: async (effect, options) => {
-            const receipt = await runAndroidProviderCommand(normalized, effect.command, options);
+            const receipt = await runBudgetedProviderCommand(normalized, effect.command, options);
             return { ...nativeLifecycleObservation(receipt), ready: String(receipt.stdout || "").trim() === "1" };
         },
         metadataObservation: (purpose, options) => purpose === "create" ? nativeLifecycleObservation({ mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" })
@@ -9720,7 +9720,7 @@ function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
             return adb && serial ? { kind: "ready", effect: new NativeProviderLifecycleEffect({ mode: "exec", provider: "adb", executable: adb, args: ["-s", serial, "shell", "getprop", "sys.boot_completed"] }) }
                 : { kind: "unavailable", observation: nativeLifecycleObservation({ mode: "exec", provider: "adb", executable: adb || undefined, args: serial ? ["-s", serial, "shell", "getprop", "sys.boot_completed"] : [], status: null, stdout: "", stderr: "", error: serial ? "missing-executable: adb" : "missing-provider-metadata: serial or port" }) };
         },
-        now: () => performance.now(), sleep, timestamp: () => new Date().toISOString(), avdHome: androidAvdHome,
+        now: () => performance.now(), sleep, timestamp: () => new Date().toISOString(), runtimeId: randomUUID, avdHome: androidAvdHome,
         validPort: validAndroidEmulatorPort,
         livePorts: async () => { const result = await liveAndroidEmulatorPortsForAllocation(normalized); if (result.ok)
             return result; const { status, ...facts } = result; return { ...facts, reason: nativeAndroidFailureReason(status) }; },
@@ -9889,8 +9889,16 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
         return { ...nativeLifecycleObservation(receipt), resourceMissing: output.includes("does not exist") || output.includes("not found") };
     };
     return {
-        executeMetadata: (purpose, options) => observed(normalized.commandRunner({ mode: "noop", provider: "host-broker-state", reason: nativeMetadataDescription(purpose) }, options)),
-        execute: (effect, options) => observed(runLifecycleEffect(normalized, effect.command, options)),
+        executeMetadata: async (purpose, options) => {
+            const receipt = await runBudgetedProviderCommand(normalized, { mode: "noop", provider: "host-broker-state", reason: nativeMetadataDescription(purpose) }, options);
+            if (normalized.cleanupObservation) normalized.cleanupObservation.execution = receipt;
+            return observed(receipt);
+        },
+        execute: async (effect, options) => {
+            const receipt = await runBudgetedProviderCommand(normalized, effect.command, options);
+            if (normalized.cleanupObservation) normalized.cleanupObservation.execution = receipt;
+            return observed(receipt);
+        },
         prepareCreate: ({ provider, image, instance }) => {
             const command: ProviderCommand = { mode: "exec", provider, executable: executableFor(provider, normalized), args: ["clone", image, instance] };
             return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider, canCompensate: Boolean(command.executable), bootEligible: false };
@@ -9903,18 +9911,18 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
             return { kind: "ready", effect: new NativeProviderLifecycleEffect(command), provider, canCompensate: Boolean(executable), bootEligible: command.mode === "detached" && Boolean(executable) };
         },
         prepareDelete: (effect, target) => new NativeProviderLifecycleEffect({ mode: "exec", provider: effect.command.provider, executable: effect.command.executable, args: ["delete", target] }),
-        observeIp: (effect, instance, resolver, options) => {
-            const receipt = normalized.commandRunner({ mode: "exec", provider: "tart", executable: effect.command.executable, args: resolver === "arp" ? ["ip", "--resolver=arp", instance] : ["ip", instance] }, options);
+        observeIp: async (effect, instance, resolver, options) => {
+            const receipt = await runBudgetedProviderCommand(normalized, { mode: "exec", provider: "tart", executable: effect.command.executable, args: resolver === "arp" ? ["ip", "--resolver=arp", instance] : ["ip", instance] }, options);
             return { ...observed(receipt), address: String(receipt.stdout || "").trim() || null };
         },
-        timestamp: () => new Date().toISOString(), now: () => performance.now(), sleep: milliseconds => { sleepSync(milliseconds); return undefined; },
+        timestamp: () => new Date().toISOString(), runtimeId: randomUUID, now: () => performance.now(), sleep,
         claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
-        cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
+        cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntimeAsync(owner, parsed, normalized, expected),
         publish: (owner, state, id, expected, change) => publishLifecycleDevice(normalized, owner, state, id, expected, candidate => {
             const replacement = brokerMacosReplacement(candidate, change);
             if (replacement === null)
                 return null;
-            if (cleanupRecord(replacement.lastBootCheck) && change.boot?.ok && change.boot.result)
+            if (change.kind === "start" && cleanupRecord(replacement.lastBootCheck) && change.boot?.ok && change.boot.result)
                 replacement.lastBootCheck.result = change.boot.result.receipt instanceof NativeBrokerExecutionReceipt ? change.boot.result.receipt.value : change.boot.result;
             return { ...replacement, updatedAt: new Date().toISOString() };
         }),
@@ -9986,7 +9994,7 @@ function brokerDeviceStatusApplication(normalized: NormalizedBrokerOptions) {
     return createBrokerDeviceStatus<NativeStatusConnection, ProviderCommandResult>({
         preview: (owner, _request, params) => nativeStatusPreview(owner, params, normalized),
         refreshPhysicalLease: (owner, request, device) => nativePhysicalAdmission(owner, { stateKey: request.stateKey, backend: request.backend, device }, request.deviceId),
-        observe: async connection => { const options = { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }; const receipt = connection.command.provider === "adb" ? await runAndroidProviderCommand(normalized, connection.command, options) : normalized.commandRunner(connection.command, options); return observed(receipt); },
+        observe: async connection => { const options = { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }; const receipt = connection.command.provider === "adb" ? await runBudgetedProviderCommand(normalized, connection.command, options) : normalized.commandRunner(connection.command, options); return observed(receipt); },
         observeHyperVFallback: async (connection, deadline) => { const receipt = await hyperVProviderCommandRunner(normalized, connection.command, { timeoutMs: hyperVRemainingTimeout(deadline, 120000, normalized.hyperVMonotonicNow), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt, true); },
         typedStatus: async (connection, identity, deadline) => { const receipt = await hyperVTypedStatusExecution(normalized, { ...identity, executable: connection.command.executable || "powershell.exe" }, deadline, 120000, false, normalized.hyperVMonotonicNow); return observed(receipt, true); },
         incarnation: hyperVDeviceIncarnationId, validIncarnation: validHyperVIncarnationId,

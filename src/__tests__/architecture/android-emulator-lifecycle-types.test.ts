@@ -75,6 +75,7 @@ function brokerOperationContractPositives(broker: BrokerAndroidEmulatorLifecycle
             return await broker.removeAvdArtifacts(name, owner, root, async () => await verifyInactive());
         },
         cleanupAuxiliary: async (...args) => await broker.cleanupAuxiliary(...args),
+        runtimeId: () => "fresh-broker-runtime",
     };
     const pendingSleep: PromiseLike<void> = Promise.resolve();
     const thenablePacing: BrokerAndroidEmulatorLifecyclePorts = { ...broker, sleep: () => pendingSleep };
@@ -106,6 +107,13 @@ function brokerOperationContractNegatives(broker: BrokerAndroidEmulatorLifecycle
     const { now, ...withoutClock } = broker; void now;
     // @ts-expect-error native capacity clock is required even with every other step present
     const missingClock: BrokerAndroidEmulatorLifecyclePorts = withoutClock;
+    const { runtimeId, ...withoutRuntimeId } = broker;
+    // @ts-expect-error each broker start requires an injected synchronous reservation identity
+    createBrokerAndroidEmulatorLifecycle(withoutRuntimeId);
+    // @ts-expect-error reservation identities are synchronous before native dispatch
+    const asyncRuntimeId: BrokerAndroidEmulatorLifecyclePorts = { ...broker, runtimeId: async () => "runtime" };
+    // @ts-expect-error runtime identity must be a string, never a native handle or receipt
+    const numericRuntimeId: BrokerAndroidEmulatorLifecyclePorts = { ...broker, runtimeId: () => 1234 };
     const { observeStopInventory, ...withoutStopInventory } = broker;
     // @ts-expect-error stop requires a settled native inventory observation
     createBrokerAndroidEmulatorLifecycle(withoutStopInventory);
@@ -121,7 +129,7 @@ function brokerOperationContractNegatives(broker: BrokerAndroidEmulatorLifecycle
     const allocation: BrokerAndroidCreatePortAllocationPorts = { previewAllocation: () => ({ ok: true, port: 5630 }), livePorts: async () => ({ ok: true, ports: new Set<number>() }) };
     // @ts-expect-error pure preview allocation remains synchronous
     const asyncPreview: BrokerAndroidCreatePortAllocationPorts = { ...allocation, previewAllocation: async () => ({ ok: true, port: 5630 }) };
-    void [malformedSleep, malformedAsyncExecution, weakCleanup, asyncPublication, asyncClaim, asyncPreparation, malformedAsyncInventory, malformedAsyncCleanup, malformedAsyncRemoval, weakInventory, missingClock, observeStopInventory, observeBootProbe, rawExecution, weakStopInventory, weakBootProbe, asyncPreview];
+    void [malformedSleep, malformedAsyncExecution, weakCleanup, asyncPublication, asyncClaim, asyncPreparation, malformedAsyncInventory, malformedAsyncCleanup, malformedAsyncRemoval, weakInventory, missingClock, runtimeId, asyncRuntimeId, numericRuntimeId, observeStopInventory, observeBootProbe, rawExecution, weakStopInventory, weakBootProbe, asyncPreview];
 }
 void brokerOperationContractNegatives;
 

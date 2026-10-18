@@ -134,7 +134,7 @@ export type BrokerAndroidTestReceipt = { sequence: number; native?: object };
 export type BrokerAndroidTestPorts = BrokerAndroidEmulatorLifecyclePorts<BrokerAndroidTestEffect, BrokerAndroidTestReceipt>;
 
 export function brokerLifecyclePorts(initial: Record<string, unknown> | undefined = undefined) {
-    let current = initial, time = 0;
+    let current = initial, time = 0, runtimeSequence = 0;
     const trace: string[] = [], publications: unknown[] = [], commands: Array<{ effect: BrokerAndroidTestEffect; timeoutMs: number }> = [];
     const observeEffect = (effect: BrokerAndroidTestEffect, options: {timeoutMs: number; outputLimit: number}): Awaited<ReturnType<BrokerAndroidTestPorts["executePrepared"]>> => {
         const provider = effect.action === "create" || effect.action === "delete" ? "avdmanager" : effect.action === "start" ? "emulator" : "adb";
@@ -151,6 +151,7 @@ export function brokerLifecyclePorts(initial: Record<string, unknown> | undefine
         now: () => time,
         sleep: ms => { time += ms; trace.push("sleep:" + ms); return undefined; },
         timestamp: () => { trace.push("timestamp"); return "native-timestamp"; },
+        runtimeId: () => "android-broker-runtime-" + ++runtimeSequence,
         avdHome: () => "/owned-avd",
         validPort: port => typeof port === "number" && port % 2 === 0 && port >= 5554 && port <= 5682,
         livePorts: () => { trace.push("live-ports"); return { ok: true, ports: new Set() }; },
@@ -171,7 +172,7 @@ export function brokerLifecyclePorts(initial: Record<string, unknown> | undefine
             else throw Error("Invalid policy replacement");
             return { found: true, matched: true, device: current || null };
         },
-        stateErrorCode: error => error instanceof Error ? error.message : null,
+        stateErrorCode: () => null,
         commandTimeoutMs: 5000,
         outputLimit: 32768,
     };
@@ -182,7 +183,7 @@ export function brokerLifecyclePorts(initial: Record<string, unknown> | undefine
         return { ownerId: "owner", parsed, expectedDevice: current, createAvdRoot: "/owned-avd",
             plan: { device: plannedDevice, create: parsed.create, preparation: { kind: "ready", mode: command === "device_start" ? "detached" : "exec", provider: command === "device_create" || command === "device_delete" ? "avdmanager" : command === "device_start" ? "emulator" : "adb", effect: { action: command === "device_create" ? "create" : command === "device_start" ? "start" : command === "device_stop" ? "stop" : "delete" } } } };
     };
-    return { ports, input, trace, publications, commands, current: () => current, replace: (next: Record<string, unknown> | undefined) => { current = next; } };
+    return { ports, input, trace, publications, commands, current: () => current, replace: (next: Record<string, unknown> | undefined) => { current = next; }, advanceTime: (milliseconds: number) => { time += milliseconds; } };
 }
 
 /** A held native effect; tests release every gate even when an assertion fails. */

@@ -297,16 +297,29 @@ export function renderBrokerAndroidLifecycle(outcome: BrokerAndroidLifecycleOutc
     const base = { ownerId: context.ownerId, backend: context.backend, deviceId: context.deviceId };
     switch (outcome.kind) {
         case "refused": {
-            const { kind: _kind, reason, plan: _plan, device, existing, execution: _execution, boot: _boot, auxiliaryCleanup: _auxiliary, invoked: _invoked, mutatesHost: _mutates, ...facts } = outcome;
+            const { kind: _kind, reason, plan: _plan, device, existing, stateCause, execution: _execution, boot: _boot, auxiliaryCleanup: _auxiliary, invoked: _invoked, mutatesHost: _mutates, ...facts } = outcome;
             const status = refusalStatus(reason, outcome.error);
-            return { status: outcome.error === "owner-device-state-rollback-failed" || outcome.error === "owner-device-conflict-rollback-failed" ? 502 : status,
-                payload: { ok: false, ...facts, ...("existing" in outcome ? { existing: redactDevice(existing) } : {}), ...(device !== undefined ? { device: redactDevice(device) } : {}), ...(outcome.plan ? { plan: { ...context.plan, device: redactDevice(outcome.plan.device) } } : {}) } };
+            let failure: ReturnType<typeof stateFailure> | undefined;
+            if (outcome.stateError && stateCause !== undefined) {
+                try { failure = stateFailure(stateCause, { backend: context.backend, stateKey: context.stateKey }); }
+                catch { /* Retain the fixed semantic refusal if diagnostic classification fails. */ }
+            }
+            return { status: failure?.status ?? (outcome.error === "owner-device-state-rollback-failed" || outcome.error === "owner-device-conflict-rollback-failed" ? 502 : status),
+                payload: { ok: false, ...facts, ...(failure ? failure.payload : {}), ...("existing" in outcome ? { existing: redactDevice(existing) } : {}), ...(device !== undefined ? { device: redactDevice(device) } : {}), ...(outcome.plan ? { plan: { ...context.plan, device: redactDevice(outcome.plan.device) } } : {}),
+                    ...(outcome.invoked !== undefined ? { result: { ...lifecycleResult(context, redactDevice(device ?? outcome.plan?.device), outcome.execution, outcome.invoked, outcome.mutatesHost === true),
+                        ...(!outcome.invoked ? { execution: { mode: "preflight", providerExecution: "blocked", mutatesHost: outcome.mutatesHost === true } } : {}) } } : {}) } };
         }
-        case "provider-failed": return { status: 502, payload: { ok: false, error: outcome.error,
-                detail: failureDetail(renderBrokerLifecycleObservation(outcome.execution)), ...(outcome.rollback ? { rollback: outcome.rollback } : {}), result: { ...lifecycleResult(context, redactDevice(outcome.device ?? outcome.plan?.device), outcome.execution, true, false),
+        case "provider-failed": {
+            const failure = outcome.stateError && outcome.stateCause !== undefined
+                ? stateFailure(outcome.stateCause, { backend: context.backend, stateKey: context.stateKey })
+                : { status: 502, payload: { ok: false, error: outcome.error } };
+            return { ...failure, payload: { ...failure.payload,
+                detail: outcome.detail || failureDetail(renderBrokerLifecycleObservation(outcome.execution)), ...(outcome.stateError ? { stateError: outcome.stateError } : {}), ...(outcome.rollback ? { rollback: outcome.rollback } : {}),
+                result: { ...lifecycleResult(context, redactDevice(outcome.device ?? outcome.plan?.device), outcome.execution, outcome.invoked, outcome.mutatesHost),
                     ...(outcome.boot ? { boot: outcome.boot.ok ? { ready: outcome.boot.ready, skipped: outcome.boot.skipped === true, provider: "adb", result: outcome.boot.result ? renderBrokerLifecycleObservation(outcome.boot.result) : null } : { ready: false, skipped: false, provider: "adb", error: androidBootFailure(outcome.boot) } } : {}),
-                    ...(outcome.boot && !outcome.boot.ok ? { execution: { mode: outcome.execution.mode, providerExecution: "executed", mutatesHost: false, command: { ...renderBrokerLifecycleObservation(outcome.execution), registration: null, macosBoot: null, androidBoot: androidBoot(outcome.boot) } } } : {}),
+                    ...(outcome.boot && !outcome.boot.ok ? { execution: { mode: outcome.execution.mode, providerExecution: "executed", mutatesHost: outcome.mutatesHost, command: { ...renderBrokerLifecycleObservation(outcome.execution), registration: null, macosBoot: null, androidBoot: androidBoot(outcome.boot) } } } : {}),
                     ...(outcome.auxiliaryCleanup ? { auxiliaryCleanup: outcome.auxiliaryCleanup } : {}) } } };
+        }
         case "auxiliary-failed": return { status: 502, payload: { ok: false, error: outcome.error,
                 result: { ...lifecycleResult(context, redactDevice(outcome.device), undefined, false, outcome.mutatesHost === true), auxiliaryCleanup: outcome.auxiliaryCleanup, execution: { mode: "preflight", providerExecution: "blocked", mutatesHost: outcome.mutatesHost === true } } } };
         case "stop-unconfirmed": return { status: 502, payload: { ok: false, error: outcome.error, detail: outcome.detail, ...base,
@@ -330,10 +343,18 @@ export function renderBrokerIosMacosLifecycle(outcome: BrokerIosLifecycleRespons
 }, failureDetail: (result: ProviderCommandResult) => string): WireResult {
     const base = { ownerId: context.ownerId, backend: context.backend, deviceId: context.deviceId };
     switch (outcome.kind) {
-        case "refused": return { status: 400, payload: { ok: false, error: outcome.error, missing: outcome.missing, plan: outcome.plan ? { ...context.plan, device: redactDevice(outcome.plan.device) } : null } };
+        case "refused": return { status: context.backend === "macos-vm" && outcome.error === "device-start-recovery-required" ? 409 : 400, payload: { ok: false, error: outcome.error, missing: outcome.missing, plan: outcome.plan ? { ...context.plan, device: redactDevice(outcome.plan.device) } : null } };
         case "state-failed": {
-            const failure = stateFailure(outcome.cause, { backend: context.backend, stateKey: context.stateKey });
-            return { ...failure, payload: { ...failure.payload, rollback: renderBrokerProviderRollback(outcome.rollback) } };
+            const reservationFailed = context.backend === "macos-vm" && context.command === "device_start";
+            let failure;
+            try { failure = stateFailure(outcome.cause, { backend: context.backend, stateKey: context.stateKey }); }
+            catch (cause) {
+                if (!reservationFailed) throw cause;
+                failure = { status: 502, payload: { ok: false, error: "owner-device-state-reservation-failed", detail: "macos-vm-start-reservation-failed" } };
+            }
+            return { ...failure, payload: { ...failure.payload, rollback: renderBrokerProviderRollback(outcome.rollback),
+                ...(reservationFailed ? { result: { ...lifecycleResult(context, redactDevice(context.plan?.device), undefined, false, false), recoveryRequired: false,
+                    execution: { mode: "preflight", providerExecution: "blocked", mutatesHost: false } } } : {}) } };
         }
         case "rollback-failed": return { status: 502, payload: { ok: false, ...base, error: outcome.error, stateError: outcome.stateError, rollback: renderBrokerProviderRollback(outcome.rollback) } };
         case "claim-conflict": return { status: outcome.rollback.ok ? 409 : 502, payload: { ok: false, ...base, error: outcome.error, field: outcome.field, value: outcome.value, existing: redactDevice(outcome.existing), rollback: renderBrokerProviderRollback(outcome.rollback) } };
@@ -345,9 +366,18 @@ export function renderBrokerIosMacosLifecycle(outcome: BrokerIosLifecycleRespons
         case "state-conflict":
         case "operation-failed": {
             const boot = "boot" in outcome && outcome.boot && context.plan && cleanupCommand(context.plan.providerCommand) ? renderBrokerMacosBoot(outcome.boot, context.plan.providerCommand) : undefined;
-            return { status: outcome.kind === "state-conflict" ? 409 : outcome.success ? 200 : 502, payload: { ok: outcome.success && outcome.kind !== "state-conflict",
-                    ...(outcome.kind === "state-conflict" ? { error: "owner-device-state-conflict", ...base, found: outcome.publication?.found } : !outcome.success ? { error: "provider-command-failed", detail: failureDetail(renderBrokerLifecycleObservation(outcome.execution)) } : {}),
-                    result: { ...lifecycleResult(context, redactDevice(outcome.device), outcome.execution, true, outcome.success), ...(outcome.auxiliary ? { auxiliaryCleanup: outcome.auxiliary } : {}), ...(boot && !boot.ok ? { execution: { mode: outcome.execution.mode, providerExecution: "executed", mutatesHost: outcome.success, command: { ...renderBrokerLifecycleObservation(outcome.execution), registration: null, macosBoot: boot, androidBoot: null } } } : {}) } } };
+            const invoked = "invoked" in outcome ? outcome.invoked : true;
+            const mutatesHost = "mutatesHost" in outcome ? outcome.mutatesHost : outcome.success;
+            const failure = "stateError" in outcome && outcome.stateError && outcome.cause !== undefined
+                ? stateFailure(outcome.cause, { backend: context.backend, stateKey: context.stateKey }) : undefined;
+            return { status: failure?.status ?? (outcome.kind === "state-conflict" ? 409 : outcome.success ? 200 : 502), payload: { ok: outcome.success && outcome.kind !== "state-conflict",
+                    ...(failure ? failure.payload : outcome.kind === "state-conflict" ? { error: "owner-device-state-conflict", ...base, found: outcome.publication?.found } : !outcome.success ? { error: "provider-command-failed" } : {}),
+                    ...(!outcome.success && outcome.kind !== "state-conflict" ? { detail: "failure" in outcome && outcome.failure ? outcome.failure : failureDetail(renderBrokerLifecycleObservation(outcome.execution)) } : {}),
+                    ...("stateError" in outcome && outcome.stateError ? { stateError: outcome.stateError } : {}),
+                    result: { ...lifecycleResult(context, redactDevice(outcome.device), outcome.execution, invoked, mutatesHost),
+                        ...("recoveryRequired" in outcome ? { recoveryRequired: outcome.recoveryRequired } : {}), ...(outcome.auxiliary ? { auxiliaryCleanup: outcome.auxiliary } : {}),
+                        ...(!invoked ? { execution: { mode: "preflight", providerExecution: "blocked", mutatesHost } } : {}),
+                        ...(boot && !boot.ok ? { execution: { mode: outcome.execution.mode, providerExecution: "executed", mutatesHost, command: { ...renderBrokerLifecycleObservation(outcome.execution), registration: null, macosBoot: boot, androidBoot: null } } } : {}) } } };
         }
     }
 }

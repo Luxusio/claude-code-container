@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDeviceBrokerServer, type DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
@@ -23,7 +23,7 @@ const stateFile = () => join(backendRoot(owner, "macos"), "devices.json");
 const devices = (): Array<Record<string, unknown>> => JSON.parse(readFileSync(stateFile(), "utf8")).devices;
 const device = () => ({ id: "unit", name: "Unit", backend: "macos-vm", provider: "tart", providerInstance: "owned-unit", status: "stopped", createdAt: "2026-10-10T00:00:00.000Z", recording: null });
 async function start(runner: NonNullable<DeviceBrokerOptions["commandRunner"]>) {
-    server = createDeviceBrokerServer({ cwd: home, host: "127.0.0.1", port: 0, platform: "darwin", providerPaths: { tart: "/fixture/tart" }, commandRunner: runner });
+    server = createDeviceBrokerServer({ cwd: home, host: "127.0.0.1", port: 0, platform: "darwin", providerPaths: { tart: "/fixture/tart", vz: "/fixture/vz", utmctl: "/fixture/utmctl" }, commandRunner: runner });
     return listen(server);
 }
 async function invoke(base: string, command: string, extra: Record<string, unknown> = {}, authenticated = true) {
@@ -31,6 +31,11 @@ async function invoke(base: string, command: string, extra: Record<string, unkno
         method: "POST", headers: authenticated ? ownerRpcHeaders(owner) : { "content-type": "application/json" },
         body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "macos-vm", command, ...(command === "device_create" ? {} : { deviceId: "unit" }), ...extra } }),
     });
+    return { status: response.status, body: await response.json() };
+}
+async function cleanup(base: string) {
+    const response = await fetch(ownerRpcEndpoint(base, owner), { method: "POST", headers: ownerRpcHeaders(owner),
+        body: JSON.stringify({ method: "broker.cleanup.owner", params: { backend: "macos-vm", stopDevices: true } }) });
     return { status: response.status, body: await response.json() };
 }
 const successfulRunner = (): NonNullable<DeviceBrokerOptions["commandRunner"]> => command => ({ ...command, status: 0, stdout: "", stderr: "" });
@@ -83,6 +88,22 @@ describe("authenticated macOS broker lifecycle", () => {
         expect(devices()).toEqual([]);
         expect(runner.mock.calls.map(([command]) => command.args?.[0])).toEqual(["clone", "run", "ip", "stop", "delete"]);
     });
+    it.each(["vz", "utmctl"] as const)("finalizes a successful finite %s start with explicitly skipped readiness", async provider => {
+        const original = {...device(), provider};
+        writeBrokerDevices(owner, "macos", [original]);
+        const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => {
+            expect(devices()[0]).toMatchObject({status: "starting", lifecycle: {runtimeId: expect.any(String), operation: "start", claimedAt: expect.any(String)}});
+            return {...command, status: 0, stdout: "", stderr: ""};
+        });
+        const base = await start(runner), result = await invoke(base, "device_start", {waitForBoot: true, bootTimeoutMs: 1000});
+        expect(result).toMatchObject({status: 200, body: {ok: true, result: {invoked: true,
+            device: {id: original.id, status: "running", bootReady: false, lastBootCheck: {ready: false, skipped: true}},
+            execution: {mode: "exec", mutatesHost: true}}}});
+        expect(devices()[0]).toMatchObject({...original, status: "running", bootReady: false, lastBootCheck: {ready: false, skipped: true}});
+        expect(devices()[0].lifecycle ?? null).toBeNull();
+        expect(runner).toHaveBeenCalledOnce();
+        expect(runner.mock.calls[0][0]).toMatchObject({mode: "exec", provider, executable: "/fixture/" + provider, args: ["start", original.providerInstance]});
+    });
     it("rejects unauthenticated mutation before invoking a provider", async () => {
         writeBrokerDevices(owner, "macos", [device()]);
         const runner = vi.fn(successfulRunner()), base = await start(runner);
@@ -111,12 +132,75 @@ describe("authenticated macOS broker lifecycle", () => {
         expect(result.body).not.toHaveProperty("cause");
         expect(JSON.stringify(result.body)).not.toContain(password);
     });
-    it("keeps the current record when the provider refuses start", async () => {
+    it("keeps an owned pending record when the provider refuses start after possible dispatch", async () => {
         writeBrokerDevices(owner, "macos", [device()]);
         const base = await start(command => ({ ...command, status: 7, stdout: "", stderr: "provider refused" }));
         const result = await invoke(base, "device_start", { waitForBoot: false });
         expect(result.status).toBe(502); expect(result.body.error).toBe("provider-command-failed");
-        expect(devices()[0]).toMatchObject({ status: "stopped", providerInstance: "owned-unit" });
+        expect(result.body.result).toMatchObject({ invoked: true, execution: { mutatesHost: true }, device: { status: "starting" } });
+        expect(devices()[0]).toMatchObject({ status: "starting", providerInstance: "owned-unit",
+            lifecycle: { runtimeId: expect.any(String), operation: "start", claimedAt: expect.any(String) } });
+    });
+    it.each([true, false])("retains a timed-out start for fresh owner cleanup; confirmed stop=%s", async confirmed => {
+        const original = { ...device(), preferences: { keep: "original" }, ssh: { password: "macos-recovery-private-secret" } };
+        writeBrokerDevices(owner, "macos", [original]);
+        const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => ({ ...command,
+            status: command.args?.[0] === "stop" && !confirmed ? 7 : 0, stdout: "", stderr: "" }));
+        const base = await start(runner);
+        const failed = await invoke(base, "device_start", { waitForBoot: true, bootTimeoutMs: 1000 });
+        expect(failed).toMatchObject({ status: 502, body: { ok: false, error: "provider-command-failed",
+            result: { invoked: true, device: { status: "starting" }, execution: { mutatesHost: true } } } });
+        const pending = devices()[0];
+        expect(pending).toMatchObject({ ...original, status: "starting", lifecycle: { runtimeId: expect.any(String), operation: "start", claimedAt: expect.any(String) } });
+        expect(JSON.stringify(failed.body)).not.toContain("macos-recovery-private-secret");
+        const beforeRepeated = runner.mock.calls.length;
+        expect((await invoke(base, "device_start", { waitForBoot: false })).status).toBe(409);
+        expect(runner).toHaveBeenCalledTimes(beforeRepeated);
+        expect(devices()).toEqual([pending]);
+        const stopped = await cleanup(base);
+        expect(stopped).toMatchObject({ status: 200, body: { ok: confirmed, result: { failed: confirmed ? 0 : 1 } } });
+        expect(runner.mock.calls.filter(([command]) => command.args?.[0] === "stop")).toHaveLength(1);
+        if (confirmed) {
+            expect(devices()[0]).toMatchObject({ id: "unit", status: "stopped", preferences: original.preferences });
+            expect(devices()[0].lifecycle ?? null).toBeNull();
+            runner.mockImplementation(command => ({ ...command, status: 7, stdout: "", stderr: "" }));
+            await invoke(base, "device_start", { waitForBoot: false });
+            expect((devices()[0].lifecycle as {runtimeId: string}).runtimeId).not.toBe((pending.lifecycle as {runtimeId: string}).runtimeId);
+        } else expect(devices()).toEqual([pending]);
+    });
+    it("redacts an unknown native start throw while retaining dispatched recovery facts", async () => {
+        writeBrokerDevices(owner, "macos", [device()]);
+        const base = await start(() => { throw Error("private-macos-native-launch-secret"); });
+        const result = await invoke(base, "device_start", { waitForBoot: false });
+        expect(result).toMatchObject({ status: 502, body: { ok: false, result: { invoked: true, device: { status: "starting" }, execution: { mutatesHost: true } } } });
+        expect(JSON.stringify(result.body)).not.toContain("private-macos-native-launch-secret");
+        expect(result.body).not.toHaveProperty("cause");
+        expect(devices()[0]).toHaveProperty("lifecycle.operation", "start");
+    });
+    it.each([["invalid", 409, "owner-devices-state-invalid"], ["large", 413, "owner-devices-file-too-large"]] as const)("keeps known %s publication status with partial launch evidence", async (fault, status, error) => {
+        writeBrokerDevices(owner, "macos", [device()]);
+        const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => {
+            if (command.args?.[0] === "run") {
+                writeFileSync(stateFile(), fault === "invalid" ? "{" : " ".repeat(256 * 1024 + 1));
+            }
+            return { ...command, status: 0, stdout: "", stderr: "" };
+        });
+        const base = await start(runner), result = await invoke(base, "device_start", { waitForBoot: false });
+        expect(result).toMatchObject({ status, body: { ok: false, error, result: { invoked: true, execution: { mutatesHost: true } } } });
+        expect(runner.mock.calls.map(([command]) => command.args?.[0])).toEqual(["run"]);
+    });
+    it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)("keeps known unreadable publication status503 with partial launch evidence", async () => {
+        writeBrokerDevices(owner, "macos", [device()]);
+        const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => {
+            if (command.args?.[0] === "run") chmodSync(stateFile(), 0);
+            return {...command, status: 0, stdout: "", stderr: ""};
+        });
+        const base = await start(runner);
+        try {
+            expect(await invoke(base, "device_start", {waitForBoot: false})).toMatchObject({status: 503, body: {ok: false,
+                error: "owner-devices-state-read-failed", result: {invoked: true, execution: {mutatesHost: true}}}});
+            expect(runner.mock.calls.map(([command]) => command.args?.[0])).toEqual(["run"]);
+        } finally {chmodSync(stateFile(), 0o600);}
     });
     it("refuses to publish over a successor after provider execution", async () => {
         writeBrokerDevices(owner, "macos", [device()]);
@@ -127,6 +211,7 @@ describe("authenticated macOS broker lifecycle", () => {
         });
         const result = await invoke(base, "device_start", { waitForBoot: false });
         expect(result.status).toBe(409); expect(result.body.error).toBe("owner-device-state-conflict");
+        expect(result.body.result).toMatchObject({ invoked: true, execution: { mutatesHost: true } });
         expect(devices()).toEqual([successor]);
     });
     it("blocks an unowned recording before stop and provider effects", async () => {

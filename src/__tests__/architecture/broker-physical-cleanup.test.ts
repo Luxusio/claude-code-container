@@ -293,6 +293,25 @@ function cleanupPorts(): BrokerOwnerCleanupPorts<string, { observed: boolean }> 
 }
 
 describe("broker owner cleanup", () => {
+    it.each(["android", "macos"])("admits pending %s start recovery through canonical stop under the device operation", async stateKey => {
+        const ports = cleanupPorts(), backend = stateKey === "android" ? "android-emulator" : "macos-vm";
+        const pending = {id: "pending-start", backend, status: "starting", lifecycle: {runtimeId: "owned-start", operation: "start", claimedAt: "then"}};
+        ports.stateKeys = [stateKey]; ports.stateBackends = new Map([[stateKey, backend]]); ports.backendAliases = new Map([[backend, stateKey]]); ports.read = () => [pending];
+        let operationHeld = false;
+        ports.withDeviceOperation = async (_owner, _state, _id, operation) => {
+            operationHeld = true;
+            try { return await operation(); } finally { operationHeld = false; }
+        };
+        const stop = vi.fn<BrokerOwnerCleanupPorts<string, {observed: boolean}>["stopLocked"]>(async (_owner, _target, expected) => {
+            expect(operationHeld).toBe(true); expect(expected).toBe(pending);
+            return {attempted: true as const, ok: false, changed: false, observation: {ok: false, operationKind: "runtime-stop" as const, receipt: {observed: true}}};
+        });
+        ports.stopLocked = stop;
+        expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", {backend})).toMatchObject({kind: "cleaned", failed: 1, changedDevices: 0,
+            results: [{stateKey, devices: [{deviceId: pending.id, stop: {attempted: true, ok: false}}]}]});
+        expect(stop).toHaveBeenCalledOnce();
+        expect(pending.lifecycle).toEqual({runtimeId: "owned-start", operation: "start", claimedAt: "then"});
+    });
     it("refuses stale auxiliary cleanup before signaling successor runtime", () => {
         const ports = cleanupPorts(), expected = { id: "sim", appium: { serverPid: 21 } }, successor = { id: "sim", appium: { serverPid: 31 } };
         ports.read = () => [successor];

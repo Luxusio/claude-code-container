@@ -9436,7 +9436,6 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
         const root = writeBrokerDevices(ownerId, "android", [{
             id: deviceId, backend: "android-emulator", status: "stopped", avdName: `ccc-${ownerId}-boot-native-failure`, port: 5580,
         }]);
-        const before = readFileSync(join(root, "devices.json"), "utf8");
         const nativeBoot = {
             mode: "exec" as const, provider: "adb", executable: "/fake/adb",
             args: ["-s", serial, "shell", "getprop", "sys.boot_completed"],
@@ -9467,7 +9466,10 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             expect(result.boot.error).toEqual(error);
             expect(result.boot.error).not.toHaveProperty("signal");
             expect(result.execution.command.androidBoot).toEqual({ ok: false, ready: false, error, attempts: [nativeBoot] });
-            expect(readFileSync(join(root, "devices.json"), "utf8")).toBe(before);
+            expect(result.execution.mutatesHost).toBe(true);
+            expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8")).devices).toEqual([expect.objectContaining({
+                id: deviceId, status: "starting", lifecycle: { runtimeId: expect.any(String), operation: "start", claimedAt: expect.any(String) },
+            })]);
             expect(commandRunner.mock.calls.filter(([command]) => command.args?.includes("sys.boot_completed"))).toHaveLength(1);
         } finally { clock.mockRestore(); await close(server); cleanupOwner(ownerId); }
     });
@@ -11539,7 +11541,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
         }
     });
 
-    it("reports detached provider startup failures before mutating owner state", async () => {
+    it("retains pending recovery and possible host mutation for failed detached provider startup", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-detached-failure-test");
         const ownerStateRoot = ownerRoot(ownerId);
         const androidRoot = writeBrokerDevices(ownerId, "android", [{ id: "android-detached-missing", backend: "android-emulator", status: "stopped", avdName: "ccc-missing-provider", port: 5592 }]);
@@ -11566,10 +11568,10 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 ok: false,
                 error: "provider-command-failed",
                 result: expect.objectContaining({
-                    device: expect.objectContaining({ id: "android-detached-missing", status: "stopped" }),
+                    device: expect.objectContaining({ id: "android-detached-missing", status: "starting" }),
                     execution: expect.objectContaining({
                         mode: "detached",
-                        mutatesHost: false,
+                        mutatesHost: true,
                         command: expect.objectContaining({
                             provider: "emulator",
                             error: "executable-not-found",
@@ -11579,7 +11581,8 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 }),
             }));
             const state = JSON.parse(readFileSync(join(androidRoot, "devices.json"), "utf8")) as { devices: Array<{ id: string; status: string }> };
-            expect(state.devices).toEqual([expect.objectContaining({ id: "android-detached-missing", status: "stopped" })]);
+            expect(state.devices).toEqual([expect.objectContaining({ id: "android-detached-missing", status: "starting",
+                lifecycle: {runtimeId: expect.any(String), operation: "start", claimedAt: expect.any(String)} })]);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -11663,7 +11666,7 @@ vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import
 
 // The controller lives outside the broker process. A synchronous native wait cannot
 // delay this controller's deadline or release the gate before responsiveness is proved.
-type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop";
+type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup";
 type AndroidHttpFixtureReply = { status: number; body: Record<string, any> };
 type AndroidHttpFixtureReady = { baseUrl: string; owners: Array<{ id: string; token: string; file: string }>; initial: Record<string, unknown> };
 
@@ -11686,6 +11689,27 @@ async function gate(name) {
     }
 }
 async function main() {
+    if (tool === 'tart') {
+        if (args[0] === 'run') {
+            fs.writeFileSync(file('active-macos'), '');
+            const deadline = Date.now() + 20000;
+            while (has('active-macos') && !has('shutdown') && Date.now() < deadline) await pause(10);
+            return;
+        }
+        if (args[0] === 'ip') {
+            await gate('macos-boot');
+            console.log('192.0.2.20');
+            return;
+        }
+        if (args[0] === 'stop') {
+            await gate('macos-owner-cleanup');
+            fs.rmSync(file('active-macos'), {force: true});
+            fs.writeFileSync(file('stop-requested'), '');
+            return;
+        }
+        if (args[0] === 'get') { console.log(JSON.stringify({State: has('active-macos') ? 'running' : 'stopped'})); return; }
+        throw Error('unallocated owned Tart operation: ' + args[0]);
+    }
     if (tool === 'avdmanager') {
         if (args[0] === 'create') {
             await gate('create');
@@ -11756,12 +11780,16 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
     // This is a normal Node import of the current emitted package graph. No test
     // runner, TypeScript loader, commandRunner or in-broker release timer is used.
     const broker = await import(settings.brokerModule), owner = await import(settings.ownerModule);
+    const macos = settings.phase.startsWith('macos-');
     const owners = settings.projects.map(project => {
         const id = owner.deviceLabOwnerId(project);
         broker.registerDeviceBrokerOwner(project);
-        return {id, token: broker.deviceBrokerOwnerToken(id), file: path.join(settings.home, '.ccc', 'devices', 'owners', id, 'android', 'devices.json')};
+        return {id, token: broker.deviceBrokerOwnerToken(id), file: path.join(settings.home, '.ccc', 'devices', 'owners', id, macos ? 'macos' : 'android', 'devices.json')};
     });
-    const initial = {id: 'responsive-pixel', backend: 'android-emulator', status: ['boot', 'auxiliary-stopped'].includes(settings.phase) ? 'stopped' : 'running',
+    const initial = macos ? {id: 'responsive-mac', backend: 'macos-vm', provider: 'tart', providerInstance: 'ccc-' + owners[0].id + '-responsive-mac',
+        status: settings.phase === 'macos-boot' ? 'stopped' : 'starting', name: 'Responsive Mac', createdAt: '2026-10-19T00:00:00.000Z',
+        preferences: {keep: 'exact-publication-witness'}, ...(settings.phase === 'macos-owner-cleanup' ? {lifecycle: {runtimeId: 'owned-pending-mac', operation: 'start', claimedAt: '2026-10-19T00:00:01.000Z'}} : {})}
+        : {id: 'responsive-pixel', backend: 'android-emulator', status: ['boot', 'auxiliary-stopped'].includes(settings.phase) ? 'stopped' : 'running',
         name: 'Responsive Pixel', port: 5586, serial: 'emulator-5586', avdName: 'ccc-' + owners[0].id + '-responsive-pixel',
         avdRoot: path.join(settings.home, '.android', 'avd'), createdAt: '2026-10-19T00:00:00.000Z',
         preferences: {keep: 'exact-publication-witness'}, ...(settings.phase === 'owner-cleanup' ? {appium: {sessionId: 'owned-association'}} : {})};
@@ -11784,12 +11812,16 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
     if (settings.phase !== 'create') {
         fs.mkdirSync(path.dirname(owners[0].file), {recursive: true});
         fs.writeFileSync(owners[0].file, JSON.stringify({devices: [initial]}));
-        fs.writeFileSync(path.join(settings.home, 'avd-name'), initial.avdName);
-        if (initial.status === 'running') fs.writeFileSync(path.join(settings.home, 'active-emulator-5586'), '');
+        if (macos) { if (initial.status === 'starting') fs.writeFileSync(path.join(settings.home, 'active-macos'), ''); }
+        else {
+            fs.writeFileSync(path.join(settings.home, 'avd-name'), initial.avdName);
+            if (initial.status === 'running') fs.writeFileSync(path.join(settings.home, 'active-emulator-5586'), '');
+        }
     }
     server = broker.createDeviceBrokerServer({cwd: settings.projects[0], host: '127.0.0.1', port: 0,
-        commandTimeoutMs: settings.phase === 'owner-cleanup' ? 2000 : 10000,
-        providerPaths: Object.fromEntries(['adb', 'emulator', 'avdmanager'].map(tool => [tool, path.join(settings.bin, tool)]))});
+        ...(macos ? {platform: 'darwin'} : {}),
+        commandTimeoutMs: ['owner-cleanup', 'macos-owner-cleanup'].includes(settings.phase) ? 2000 : 10000,
+        providerPaths: Object.fromEntries(['adb', 'emulator', 'avdmanager', 'tart'].map(tool => [tool, path.join(settings.bin, tool)]))});
     await new Promise((resolve, reject) => {server.once('error', reject); server.listen(0, '127.0.0.1', resolve);});
     process.send({baseUrl: 'http://127.0.0.1:' + server.address().port, owners, initial});
     const shutdown = async () => {
@@ -11834,7 +11866,7 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
     writeFileSync(join(root, 'package.json'), JSON.stringify({type: 'commonjs'}));
     const brokerModule = import.meta.resolve('@ccc/device-lab/device-lab-broker.js');
     expect(new URL(brokerModule).pathname, 'current emitted broker is required').toMatch(/\/dist\/device-lab-broker\.js$/);
-    for (const tool of ['adb', 'emulator', 'avdmanager']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
+    for (const tool of ['adb', 'emulator', 'avdmanager', 'tart']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
     const preload = join(root, 'fixture-preload.cjs'), worker = join(root, 'broker.cjs'), settings = join(root, 'settings.json'), appiumFixture = join(root, 'appium.cjs');
     writeFileSync(preload, nodeProviderFixturePreloadSource(bin) + fakeAndroidLauncherPreloadSource(bin));
     writeFileSync(worker, androidHttpFixtureBroker);
@@ -11855,7 +11887,7 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
     const exited = new Promise<void>((resolveExit, reject) => child.once('close', code => code === 0 ? resolveExit() : reject(spawnError || new Error('owned broker exited ' + code + ': ' + diagnostics))));
     void exited.catch(() => undefined);
     const requests: Promise<AndroidHttpFixtureReply>[] = [];
-    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup', 'auxiliary-stopped', 'auxiliary-no-stop']) writeFileSync(join(home, 'release-' + name), '');};
+    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup', 'auxiliary-stopped', 'auxiliary-no-stop', 'macos-boot', 'macos-owner-cleanup']) writeFileSync(join(home, 'release-' + name), '');};
     const dispose = async () => {
         release();
         writeFileSync(join(home, 'shutdown'), '');
@@ -11906,7 +11938,7 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
             expect(pending.settled(), 'lifecycle request is still held at native gate').toBe(false);
             const health = fetch(ready.baseUrl + '/health', {signal: AbortSignal.timeout(1000)}).then(async response => ({status: response.status, body: await response.json()}));
             const echo = rpc(1, 'broker.echo', {externalGate: phase});
-            const [healthReply, echoReply] = await androidHttpFixtureBounded(Promise.all([health, echo.result]), 1500, 'native Android gate blocked health or second-owner RPC');
+            const [healthReply, echoReply] = await androidHttpFixtureBounded(Promise.all([health, echo.result]), 1500, 'native gate blocked health or second-owner RPC');
             expect(healthReply.status).toBe(200);
             expect(echoReply).toMatchObject({status: 200, body: {ok: true, result: {ownerId: ready.owners[1].id, params: {externalGate: phase}}}});
             expect(existsSync(join(home, 'release-' + phase))).toBe(false);
@@ -11949,7 +11981,9 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             const stop = fixture.rpc(0, 'broker.command.invoke', {backend: 'android-emulator', command: 'device_stop', deviceId: 'responsive-pixel'});
             await fixture.assertResponsive(start);
             expect(stop.settled()).toBe(false);
-            expect(fixture.records()).toEqual([fixture.initial]);
+            expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, status: 'starting', lifecycle: {
+                runtimeId: expect.any(String), operation: 'start', claimedAt: expect.any(String),
+            }})]);
             expect(fixture.nativeCalls().some(call => call.tool === 'adb' && call.args.at(-1) === 'kill')).toBe(false);
             fixture.release();
             expect(await start.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'running', bootReady: true}, boot: {ready: true}}}});
@@ -12034,6 +12068,64 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null})]);
             expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
             expect(fixture.nativeCalls().filter(call => call.tool !== 'owned-appium')).toEqual([]);
+        } finally {await fixture.dispose();}
+    });
+});
+
+describe('emitted default-runner macOS HTTP responsiveness', () => {
+    it('yields during the native IP probe while a reserved start retains the same-device operation lock', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('macos-boot');
+        try {
+            const start = fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: 'responsive-mac', waitForBoot: true, bootTimeoutMs: 10000});
+            await fixture.waitForGate(start);
+            const stop = fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_stop', deviceId: 'responsive-mac'});
+            await fixture.assertResponsive(start);
+            expect(stop.settled()).toBe(false);
+            expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, status: 'starting', lifecycle: {
+                runtimeId: expect.any(String), operation: 'start', claimedAt: expect.any(String),
+            }})]);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'tart' && call.args[0] === 'stop')).toHaveLength(0);
+            fixture.release();
+            expect(await start.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'running', bootReady: true}, execution: {mutatesHost: true}}}});
+            expect(await stop.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped'}}}});
+            expect(fixture.records()[0]).toMatchObject({...fixture.initial, status: 'stopped'});
+            expect(fixture.records()[0].lifecycle ?? null).toBeNull();
+            expect(fixture.nativeCalls().filter(call => call.tool === 'tart' && call.args[0] === 'stop')).toHaveLength(1);
+        } finally {await fixture.dispose();}
+    });
+
+    it('settles a held native owner-cleanup stop before replying and preserves pending recovery through its captured deadline', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('macos-owner-cleanup');
+        try {
+            const startedAt = performance.now();
+            const cleanup = fixture.rpc(0, 'broker.cleanup.owner', {backend: 'macos-vm', stopDevices: true});
+            await fixture.waitForGate(cleanup);
+            const {pid: nativePid} = JSON.parse(readFileSync(join(fixture.home, 'entered-macos-owner-cleanup'), 'utf8')) as {pid: number};
+            expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
+            const nativeEndedAtReply = cleanup.result.then(() => !androidHttpFixtureProcessRunning(nativePid), () => false);
+            await fixture.assertResponsive(cleanup);
+            expect(fixture.records()).toEqual([fixture.initial]);
+            const reply = await androidHttpFixtureBounded(cleanup.result, 6000, 'owner cleanup reset its captured macOS execution allowance');
+            expect(performance.now() - startedAt).toBeLessThan(7000);
+            expect(existsSync(join(fixture.home, 'release-macos-owner-cleanup'))).toBe(false);
+            expect(await nativeEndedAtReply, 'cleanup must settle its finite native stop before replying or releasing the operation lock').toBe(true);
+            expect(reply).toMatchObject({status: 200, body: {ok: false, result: {changedDevices: 0, failed: 1,
+                results: [{stateKey: 'macos', devices: [{deviceId: 'responsive-mac', stop: {attempted: true, ok: false,
+                    execution: {provider: 'tart', timedOut: true, status: null}}}]}]}}});
+            expect(fixture.records()).toEqual([fixture.initial]);
+            expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
+            expect(existsSync(join(fixture.home, 'active-macos'))).toBe(true);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'tart' && call.args[0] === 'stop')).toHaveLength(1);
+            // A later same-device command crosses the released operation lock while
+            // the failed stop gate is still closed, after its owned process has ended.
+            const pendingStart = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: 'responsive-mac', waitForBoot: false}).result;
+            expect(pendingStart).toMatchObject({status: 409, body: {ok: false}});
+            fixture.release();
+            expect(await fixture.rpc(1, 'broker.echo', {afterCleanupReply: true}).result).toMatchObject({status: 200, body: {ok: true}});
+            expect(androidHttpFixtureProcessRunning(nativePid)).toBe(false);
+            expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
+            expect(existsSync(join(fixture.home, 'active-macos'))).toBe(true);
+            expect(fixture.records()).toEqual([fixture.initial]);
         } finally {await fixture.dispose();}
     });
 });

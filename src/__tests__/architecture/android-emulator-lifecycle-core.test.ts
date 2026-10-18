@@ -4,7 +4,7 @@ import type { LifecyclePreviewRequest } from "../../../packages/device-lab/src/d
 import type { AndroidPreviewPortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-observation.js";
 import { createAndroidEmulatorLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/android-emulator-lifecycle.mjs";
 import type { AndroidEmulatorDevice } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
-import { brokerLifecyclePorts, deferredAndroidEffect, directLifecyclePorts } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { brokerLifecyclePorts, deferredAndroidEffect, directLifecyclePorts, type BrokerAndroidTestPorts } from "../helpers/android-emulator-lifecycle-fixture.js";
 import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidCreatePortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 
@@ -92,7 +92,7 @@ describe("distinct canonical authenticated broker Android policy", () => {
         } finally { execution.resolve(failure); removal.resolve(); }
     });
     it("start awaits execution, each boot observation and pacing before publishing readiness", async () => {
-        const original = brokerDevice(), f = brokerLifecyclePorts(original);
+        const original: Record<string, unknown> = { ...brokerDevice(), bootReady: true, lastBootCheck: { ready: true, skipped: false } }, f = brokerLifecyclePorts(original);
         const execution = deferredAndroidEffect<Awaited<ReturnType<typeof f.ports.executePrepared>>>(), executing = deferredAndroidEffect<void>();
         const probe = deferredAndroidEffect<Awaited<ReturnType<typeof f.ports.observeBootProbe>>>(), probing = deferredAndroidEffect<void>();
         const pacing = deferredAndroidEffect<void>(), sleeping = deferredAndroidEffect<void>();
@@ -109,18 +109,20 @@ describe("distinct canonical authenticated broker Android policy", () => {
         void pending.catch(() => undefined);
         try {
             await Promise.race([executing.promise, pending.then(() => { throw Error("Start settled before native execution"); })]); await new Promise<void>(resolve => setImmediate(resolve));
-            expect(settled).toBe(false); expect(probes).toBe(0); expect(f.publications).toEqual([]); expect(f.current()).toBe(original);
+            expect(settled).toBe(false); expect(probes).toBe(0); expect(f.publications).toEqual([original]);
+            const reservation = f.current();
+            expect(reservation).toMatchObject({ status: "starting", bootReady: false, lastBootCheck: null, lifecycle: { runtimeId: "android-broker-runtime-1", operation: "start", claimedAt: "native-timestamp" } });
             execution.resolve({ ok: true, mode: "detached", provider: "emulator", receipt: { sequence: 1 } });
             await Promise.race([probing.promise, pending.then(() => { throw Error("Start settled before boot observation"); })]);
             await new Promise<void>(resolve => setImmediate(resolve));
-            expect(settled).toBe(false); expect(probes).toBe(1); expect(f.trace.some(step => step.startsWith("sleep:"))).toBe(false); expect(f.publications).toEqual([]);
+            expect(settled).toBe(false); expect(probes).toBe(1); expect(f.trace.some(step => step.startsWith("sleep:"))).toBe(false); expect(f.publications).toEqual([original]); expect(f.current()).toBe(reservation);
             probe.resolve({ ok: true, ready: false, mode: "exec", provider: "adb", receipt: { sequence: 2 } });
             await Promise.race([sleeping.promise, pending.then(() => { throw Error("Start settled before boot pacing"); })]);
             await new Promise<void>(resolve => setImmediate(resolve));
-            expect(settled).toBe(false); expect(probes).toBe(1); expect(f.publications).toEqual([]); expect(f.current()).toBe(original);
+            expect(settled).toBe(false); expect(probes).toBe(1); expect(f.publications).toEqual([original]); expect(f.current()).toBe(reservation);
             pacing.resolve();
             expect(await pending).toMatchObject({ kind: "completed", device: { status: "running", bootReady: true }, boot: { ok: true, ready: true } });
-            expect(probes).toBe(2); expect(f.publications).toEqual([original]);
+            expect(probes).toBe(2); expect(f.publications).toEqual([original, reservation]); expect(f.current()?.lifecycle).toBeFalsy();
         } finally {
             execution.resolve({ ok: true, mode: "detached", provider: "emulator" });
             probe.resolve({ ok: true, ready: false, mode: "exec", provider: "adb" }); pacing.resolve();
@@ -197,15 +199,16 @@ describe("distinct canonical authenticated broker Android policy", () => {
         expect(result).toMatchObject({ kind: "auxiliary-failed", error: "auxiliary-runtime-cleanup-failed", invoked: false, mutatesHost: true });
         expect(f.commands).toEqual([]); expect(f.publications).toEqual([]); expect(f.current()).toBe(changed);
     });
-    it("a broker start boot failure leaves the original record while reporting the completed provider effect", async () => {
+    it("a broker start boot failure retains its recovery reservation and reports possible host mutation", async () => {
         const original = brokerDevice(), f = brokerLifecyclePorts(original);
         const unavailable = { ok: false, mode: "noop", provider: "adb", receipt: { sequence: 0, native: { status: null, error: "missing-adb" } } };
         f.ports.prepareBootProbe = () => ({ kind: "unavailable", observation: unavailable });
         const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }));
-        expect(result).toMatchObject({ kind: "provider-failed", error: "provider-command-failed", invoked: true, mutatesHost: false, boot: { ok: false } });
+        expect(result).toMatchObject({ kind: "provider-failed", error: "provider-command-failed", invoked: true, mutatesHost: true, boot: { ok: false } });
         expect(result.boot).toMatchObject({ reason: "probe-unavailable", error: unavailable });
         expect(result.boot && !result.boot.ok && result.boot.reason === "probe-unavailable" ? result.boot.error : null).toBe(unavailable);
-        expect(f.current()).toBe(original); expect(f.publications).toEqual([]); expect(f.commands).toHaveLength(1);
+        expect(f.current()).toMatchObject({ status: "starting", lifecycle: { runtimeId: "android-broker-runtime-1", operation: "start" } });
+        expect(f.current()).not.toBe(original); expect(f.publications).toEqual([original]); expect(f.commands).toHaveLength(1);
     });
     it("stop inventory uncertainty refuses final publication; a successful native effect cannot replace a successor", async () => {
         const original = { ...brokerDevice(), status: "running" }, f = brokerLifecyclePorts(original), app = createBrokerAndroidEmulatorLifecycle(f.ports);
@@ -253,6 +256,178 @@ describe("distinct canonical authenticated broker Android policy", () => {
         f.ports.liveAvds = () => ({ ok: true, names: new Set() }); f.ports.approvedAvdRoot = () => null;
         const root = await app.delete(f.input("device_delete", { deleteAvd: true }));
         expect(root).toMatchObject({ kind: "refused", reason: "conflict", error: "android-avd-root-unavailable" }); expect(f.commands).toEqual([]); expect(f.current()).toBe(original);
+    });
+});
+
+function expectBrokerStartReservation(f: ReturnType<typeof brokerLifecyclePorts>) {
+    const reservation = f.current();
+    expect(reservation).toMatchObject({ status: "starting", bootReady: false, lastBootCheck: null, lifecycle: { runtimeId: "android-broker-runtime-1", operation: "start", claimedAt: "native-timestamp" } });
+    if (!reservation) throw Error("Start recovery reservation is missing");
+    expect(Object.keys(reservation.lifecycle as object).sort()).toEqual(["claimedAt", "operation", "runtimeId"]);
+    return reservation;
+}
+
+describe("authenticated Android launch recovery responsibility", () => {
+    it.each(["refused", "throw"] as const)("reservation %s dispatches no native launch and preserves the current record", async mode => {
+        const original = brokerDevice(), successor = { ...original, extra: { raw: "successor" } }, f = brokerLifecyclePorts(original);
+        f.ports.transition = () => {
+            if (mode === "throw") throw Error("private reservation exception credential=reserve-secret");
+            f.replace(successor); return { found: true, matched: false, device: successor };
+        };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start"));
+        expect(result).toMatchObject({ kind: "refused", invoked: false, mutatesHost: false });
+        expect(f.commands).toEqual([]); expect(f.current()).toBe(mode === "throw" ? original : successor);
+        expect(JSON.stringify(result)).not.toContain("reserve-secret"); expect(result).not.toHaveProperty("cause");
+    });
+
+    it("a throwing admission observation refuses before reservation and dispatch", async () => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original);
+        f.ports.livePorts = () => { throw Error("private admission exception password=admission-secret"); };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start"));
+        expect(result).toMatchObject({ kind: "refused", invoked: false, mutatesHost: false });
+        expect(f.publications).toEqual([]); expect(f.commands).toEqual([]); expect(f.current()).toBe(original);
+        expect(JSON.stringify(result)).not.toContain("admission-secret");
+    });
+
+    it("unavailable launch preparation cannot reserve or execute", async () => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original), input = f.input("device_start");
+        input.plan!.preparation = { kind: "unavailable", error: "missing-provider-command", missing: ["emulator"] };
+        expect(await createBrokerAndroidEmulatorLifecycle(f.ports).start(input)).toMatchObject({ kind: "refused", error: "missing-provider-command" });
+        expect(f.publications).toEqual([]); expect(f.commands).toEqual([]); expect(f.current()).toBe(original);
+    });
+
+    it.each([
+        { status: "starting" },
+        { status: "stopped", lifecycle: { runtimeId: "prior-runtime", operation: "start", claimedAt: "prior-time" } },
+    ])("a prior unresolved start requires recovery: %j", async pending => {
+        const original = { ...brokerDevice(), ...pending }, f = brokerLifecyclePorts(original);
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start"));
+        expect(result).toMatchObject({ kind: "refused", reason: "conflict", invoked: false, mutatesHost: false });
+        expect(f.commands).toEqual([]); expect(f.publications).toEqual([]); expect(f.current()).toBe(original);
+    });
+
+    it.each(["nonzero", "throw", "rejection", "null", "missing-ok", "missing-provider"] as const)("%s launch result retains a bounded recovery marker and reports possible mutation", async mode => {
+        const original: Record<string, unknown> = { ...brokerDevice(), bootReady: true, lastBootCheck: { ready: true, skipped: false } }, f = brokerLifecyclePorts(original);
+        const failed = { ok: false, mode: "detached", provider: "emulator", receipt: { sequence: 1, native: { status: 17 } } };
+        let dispatched = 0;
+        f.ports.executePrepared = () => {
+            dispatched++;
+            if (mode === "throw") throw Error("private native exception token=launch-secret");
+            if (mode === "rejection") return Promise.reject(Error("private native exception token=launch-secret"));
+            if (mode === "nonzero") return failed;
+            return (mode === "null" ? null : mode === "missing-ok" ? { mode: "detached", provider: "emulator" } : { ok: true }) as unknown as Awaited<ReturnType<BrokerAndroidTestPorts["executePrepared"]>>;
+        };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }));
+        expect(result).toMatchObject({ kind: "provider-failed", invoked: true, mutatesHost: true });
+        expect(dispatched).toBe(1); expect(f.publications).toEqual([original]);
+        const reservation = expectBrokerStartReservation(f);
+        expect(reservation.extra).toBe(original.extra); expect(f.trace).not.toContain("execute:adb");
+        expect(reservation.lifecycle).not.toHaveProperty("receipt"); expect(reservation.lifecycle).not.toHaveProperty("cause");
+        expect(JSON.stringify(reservation.lifecycle)).not.toContain("launch-secret");
+        expect(JSON.stringify(result)).not.toContain("launch-secret"); expect(result).not.toHaveProperty("cause");
+    });
+
+    it.each(["prepare-throw", "probe-throw", "probe-rejection", "sleep-rejection"] as const)("%s after dispatch becomes a redacted semantic partial effect", async mode => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original), secret = "post-launch-private-command-password";
+        if (mode === "prepare-throw") f.ports.prepareBootProbe = () => { throw Error(secret); };
+        if (mode === "probe-throw") f.ports.observeBootProbe = () => { throw Error(secret); };
+        if (mode === "probe-rejection") f.ports.observeBootProbe = () => Promise.reject(Error(secret));
+        if (mode === "sleep-rejection") {
+            f.ports.observeBootProbe = () => ({ ok: true, ready: false, mode: "exec", provider: "adb" });
+            f.ports.sleep = () => Promise.reject(Error(secret));
+        }
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true, bootTimeoutMs: 1000 }));
+        expect(result).toMatchObject({ kind: "provider-failed", invoked: true, mutatesHost: true });
+        expectBrokerStartReservation(f); expect(f.publications).toEqual([original]);
+        expect(f.commands.filter(command => command.effect.action === "start")).toHaveLength(1);
+        expect(JSON.stringify(result)).not.toContain(secret); expect(result).not.toHaveProperty("cause");
+    });
+
+    it.each([false, true])("waitForBoot=%s finalizes the complete reservation returned by storage", async waitForBoot => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original), transition = f.ports.transition;
+        let returnedReservation: Record<string, unknown> | undefined;
+        f.ports.transition = (...args) => {
+            const publication = transition(...args);
+            if (!returnedReservation && publication.matched) {
+                returnedReservation = { ...(publication.device as Record<string, unknown>), repositoryFact: "returned-reservation" };
+                f.replace(returnedReservation); return { ...publication, device: returnedReservation };
+            }
+            return publication;
+        };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot }));
+        expect(result).toMatchObject({ kind: "completed", invoked: true, mutatesHost: true, device: { status: "running", bootReady: waitForBoot, repositoryFact: "returned-reservation", extra: original.extra } });
+        expect(f.publications).toEqual([original, returnedReservation]); expect(returnedReservation?.status).toBe("starting");
+        expect(f.current()?.lifecycle).toBeFalsy();
+        expect(f.commands.filter(command => command.effect.action === "boot-probe")).toHaveLength(waitForBoot ? 1 : 0);
+    });
+
+    it("final publication throw preserves starting and reports redacted partial execution", async () => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original), transition = f.ports.transition;
+        let publications = 0;
+        f.ports.transition = (...args) => {
+            if (++publications === 2) throw Error("final-cas-private-record-and-credential");
+            return transition(...args);
+        };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: false }));
+        expect(result).toMatchObject({ kind: "provider-failed", invoked: true, mutatesHost: true });
+        expect(publications).toBe(2); expectBrokerStartReservation(f);
+        expect(JSON.stringify(result)).not.toContain("final-cas-private-record-and-credential"); expect(result).not.toHaveProperty("cause");
+        expect(f.commands.map(command => command.effect.action)).toEqual(["start"]);
+    });
+
+    it("a classified final publication exception retains its known state code and partial execution", async () => {
+        const f = brokerLifecyclePorts(brokerDevice()), transition = f.ports.transition, failure = Error("private state-file details");
+        let publications = 0;
+        f.ports.stateErrorCode = error => error === failure ? "owner-devices-state-invalid" : null;
+        f.ports.transition = (...args) => {
+            if (++publications === 2) throw failure;
+            return transition(...args);
+        };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: false }));
+        expect(result).toMatchObject({ kind: "provider-failed", stateError: "owner-devices-state-invalid", invoked: true, mutatesHost: true });
+        expectBrokerStartReservation(f); expect(publications).toBe(2);
+        expect(JSON.stringify(f.current()?.lifecycle)).not.toContain("private state-file details");
+    });
+
+    it.each([false, true])("a same-target successor during waitForBoot=%s survives without name-based compensation", async waitForBoot => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original), execute = f.ports.executePrepared;
+        const successor = { ...original, status: "running", lifecycle: { runtimeId: "successor-runtime", operation: "start", claimedAt: "later" } };
+        f.ports.executePrepared = (effect, options) => { const result = execute(effect, options); f.replace(successor); return result; };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot }));
+        expect(result).toMatchObject({ kind: "publication-conflict", invoked: true, mutatesHost: true });
+        expect(f.current()).toBe(successor); expect(f.publications).toHaveLength(2);
+        expect(f.commands.some(command => command.effect.action === "stop")).toBe(false);
+        expect(f.trace).not.toContain("cleanup"); expect(f.trace).not.toContain("remove-avd");
+    });
+
+    it("each boot probe receives the captured monotonic remainder, including less than one second", async () => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original), allowances: number[] = [], pacing: number[] = [];
+        f.ports.observeBootProbe = (_effect, options) => {
+            allowances.push(options.timeoutMs);
+            if (allowances.length === 1) { f.advanceTime(400); return { ok: true, ready: false, mode: "exec", provider: "adb" }; }
+            f.advanceTime(1); return { ok: true, ready: true, mode: "exec", provider: "adb" };
+        };
+        f.ports.sleep = milliseconds => { pacing.push(milliseconds); f.advanceTime(200); return undefined; };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true, bootTimeoutMs: 1000 }));
+        expect(result).toMatchObject({ kind: "completed", boot: { ok: true, ready: true } });
+        expect(allowances).toEqual([1000, 400]); expect(pacing).toEqual([600]);
+    });
+
+    it.each([1000, 1001])("readiness observed at monotonic elapsed %i is too late and remains recoverable", async elapsed => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original);
+        f.ports.observeBootProbe = () => { f.advanceTime(elapsed); return { ok: true, ready: true, mode: "exec", provider: "adb" }; };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true, bootTimeoutMs: 1000 }));
+        expect(result).toMatchObject({ kind: "provider-failed", invoked: true, mutatesHost: true, boot: { ok: false, ready: false, reason: "deadline-exceeded" } });
+        expectBrokerStartReservation(f); expect(f.publications).toEqual([original]);
+    });
+
+    it("expired pacing cannot authorize a further boot probe or finalize stopped state", async () => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original); let probes = 0;
+        f.ports.observeBootProbe = () => { probes++; f.advanceTime(300); return { ok: true, ready: false, mode: "exec", provider: "adb" }; };
+        f.ports.sleep = milliseconds => { expect(milliseconds).toBe(700); f.advanceTime(700); return undefined; };
+        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true, bootTimeoutMs: 1000 }));
+        expect(result).toMatchObject({ kind: "provider-failed", invoked: true, mutatesHost: true, boot: { ok: false, reason: "deadline-exceeded" } });
+        expect(probes).toBe(1); expectBrokerStartReservation(f); expect(f.publications).toEqual([original]);
     });
 });
 
