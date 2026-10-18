@@ -3,7 +3,7 @@ import type {
     MountPresencePolicy,
     MountVerification,
     ObservedMountContract,
-} from "../bind-mount-verification.js";
+} from "../domain/container/mount-verification.js";
 
 export type MountSourceMatch = "match" | "mismatch" | "unavailable";
 

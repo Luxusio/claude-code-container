@@ -6,7 +6,7 @@ import {
     type MountVerification,
     type ObservedMountContract,
     type RequiredMountContract,
-} from "../bind-mount-verification.js";
+} from "../domain/container/mount-verification.js";
 import type {
     ContainerMountVerification,
     ContainerMountVerificationPorts,
