@@ -2132,7 +2132,7 @@ describe("device-lab host broker Appium session authority", () => {
                 signal: expect.objectContaining({ attempted: true, ok: true, pid: process.pid }),
             }));
             if (process.platform === "win32") {
-                expect(windowsStop).toHaveBeenCalledWith(process.pid, previousProcessIdentity.startToken);
+                expect(windowsStop).toHaveBeenCalledWith(process.pid, previousProcessIdentity.startToken, 10000, undefined, undefined);
             } else {
                 expect(killSpy).toHaveBeenCalledWith(process.pid, "SIGTERM");
                 expect(windowsStop).not.toHaveBeenCalled();
@@ -4071,7 +4071,7 @@ describe("device-lab host broker Appium session authority", () => {
                 body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "android", stopDevices: false}})});
             expect(cleanup.status).toBe(200);
             expect(await cleanup.json()).toMatchObject({ok: false, result: {changedDevices: 0, failed: 1}});
-            expect(terminate).toHaveBeenCalledWith(process.pid, original.appium.processIdentity.startToken);
+            expect(terminate).toHaveBeenCalledWith(process.pid, original.appium.processIdentity.startToken, 10000, undefined, undefined);
             expect(readFileSync(file, "utf8")).toBe(before);
         } finally { await close(server); cleanupOwner(ownerId); }
     });

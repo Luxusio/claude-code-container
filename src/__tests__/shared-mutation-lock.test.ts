@@ -1659,6 +1659,7 @@ describe("device-lab shared mutation lock", () => {
 
     it("never restores a mismatched moved lock over a live successor", async () => {
         const file = lockPath();
+        let raceInjections = 0;
         const stale = { token: testToken(), pid: 2147483647, host: hostname() };
         const movedMismatch = { token: testToken(), pid: process.pid, host: hostname() };
         const successor = { token: testToken(), pid: process.pid, host: hostname() };
@@ -1673,6 +1674,7 @@ describe("device-lab shared mutation lock", () => {
                 ...actual,
                 renameSync(source: string, destination: string) {
                     if (source === file && destination.startsWith(`${file}.`) && destination.endsWith(".stale")) {
+                        raceInjections += 1;
                         writeFileSync(file, JSON.stringify(movedMismatch));
                         actual.renameSync(source, destination);
                         writeFileSync(file, JSON.stringify(successor));
@@ -1688,7 +1690,8 @@ describe("device-lab shared mutation lock", () => {
             let entered = false;
             expect(() => racedModule.withSharedMutationLock(file, () => {
                 entered = true;
-            }, { waitMs: 30, staleMs: 1 })).toThrow(/Timed out acquiring shared mutation lock/);
+            }, { waitMs: 0, staleMs: 1 })).toThrow(/Timed out acquiring shared mutation lock/);
+            expect(raceInjections).toBe(1);
             expect(entered).toBe(false);
             expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(successor);
         } finally {

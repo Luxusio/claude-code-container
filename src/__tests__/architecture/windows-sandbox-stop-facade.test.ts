@@ -124,7 +124,8 @@ import path from 'node:path';
 import {syncBuiltinESMExports} from 'node:module';
 const mode=process.argv[2],guid=${JSON.stringify(guid)},other='22222222-2222-4222-8222-222222222222',third='33333333-3333-4333-8333-333333333333';
 const trace=[];let launched=false,lists=0,state,owner,scratch,lock;
-const nativeRm=fs.rmSync;
+const nativeRm=fs.rmSync,nativeSpawnSync=cp.spawnSync;
+const identityArgs=['-WindowStyle','Hidden','-NoProfile','-NonInteractive','-Command',"$P = Get-CimInstance Win32_Process -Filter 'ProcessId = "+process.pid+"' -ErrorAction SilentlyContinue; $H = Get-Process -Id "+process.pid+" -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }"];
 fs.rmSync=function(file,options){if(mode==='delete-scratch-throw'&&file===scratch&&options?.recursive)throw Error('scratch denied');return nativeRm(file,options)};
 cp.spawn=function(command,args){throw Error('unexpected detached native command: '+command+' '+JSON.stringify(args))};
 cp.spawnSync=function(command,args=[],options={}){
@@ -156,6 +157,10 @@ cp.spawnSync=function(command,args=[],options={}){
   }
  }
  if(/powershell(?:\\.exe)?$/i.test(String(command))){
+  if(args.length===identityArgs.length&&args.every((arg,index)=>arg===identityArgs[index])){
+   assert.equal(options.windowsHide,true);assert.ok(Number.isInteger(options.timeout)&&options.timeout>0&&options.timeout<=5000);
+   return nativeSpawnSync(command,args,options); // Exact read-only own-process identity query on native Windows.
+  }
   assert.equal(options.timeout,120000);assert.equal(options.windowsHide,true);
   trace.push({command,args,timeout:options.timeout});launched=true;
   return {status:mode==='start-launch-failure'?7:0,stdout:'launch stdout',stderr:mode==='start-launch-failure'?'launch stderr':'',error:new Error('launch error')};
