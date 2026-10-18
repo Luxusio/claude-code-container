@@ -53,6 +53,17 @@ Paths inside the container do not change.
    `~/.ccc/profiles/<name>/claude`. The remote host's `~/.ccc/remote-runtime` stays
    where it is: it holds the lock that clients of different ccc versions share.
 
+6. Profile names contain 1..64 ASCII characters: a lowercase letter or digit
+   first, then lowercase letters, digits, `.`, `_`, or `-`. Names are never
+   trimmed, normalized, or interpreted as filesystem paths.
+   - Invalid names make existence and built-in membership queries return false
+     without reading the filesystem or built-in settings.
+   - Creating, ensuring, or removing an invalid name fails before any filesystem
+     access or settings evaluation. This also refuses `..` and aliases such as
+     `./default`; the reserved account cannot be removed through a path alias.
+   - `ccc profile rm <invalid-name>` exits nonzero with an invalid-name error.
+     Valid named profiles and the reserved `default` rules above stay unchanged.
+
 ## Migration of an existing ~/.ccc
 
 On the first host-side ccc start after the update, ccc moves the old entries:
@@ -114,3 +125,5 @@ On the first host-side ccc start after the update, ccc moves the old entries:
 - `ccc profile list` includes `default`.
 - `docker inspect <container>` shows `/home/ccc/.codex` mounted from
   `~/.ccc/profiles/<profile>/codex`.
+- Invalid profile deletion preserves the default credentials and parent
+  directory contents. Direct profile APIs enforce the same admission as the CLI.

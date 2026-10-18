@@ -22,10 +22,11 @@ export function createProfileCatalog(ports: ProfileCatalogPorts, defaultProfileN
     }
 
     function exists(name: string): boolean {
-        return name === defaultProfileName || ports.profileEntryExists(name);
+        return validateProfileName(name) && (name === defaultProfileName || ports.profileEntryExists(name));
     }
 
     function create(name: string, settings?: ProfileSettings): void {
+        if (!validateProfileName(name)) throw new Error(`Invalid profile name "${name}".`);
         if (name === defaultProfileName) throw new Error(`Profile "${defaultProfileName}" is reserved.`);
         ports.writeProfile(name, settings);
     }
@@ -41,12 +42,13 @@ export function createProfileCatalog(ports: ProfileCatalogPorts, defaultProfileN
         exists,
 
         isBuiltin(name) {
-            return ports.hasBuiltinProfile(name);
+            return validateProfileName(name) && ports.hasBuiltinProfile(name);
         },
 
         create,
 
         ensure(name) {
+            if (!validateProfileName(name)) throw new Error(`Invalid profile name "${name}".`);
             if (exists(name)) return false;
             if (!ports.hasBuiltinProfile(name)) {
                 throw new Error(`Profile "${name}" does not exist. Create it with: ccc profile add ${name}`);
@@ -56,6 +58,7 @@ export function createProfileCatalog(ports: ProfileCatalogPorts, defaultProfileN
         },
 
         remove(name) {
+            if (!validateProfileName(name)) throw new Error(`Invalid profile name "${name}".`);
             if (name === defaultProfileName) throw new Error(`Profile "${defaultProfileName}" cannot be removed.`);
             ports.removeProfileDirectory(name);
         },

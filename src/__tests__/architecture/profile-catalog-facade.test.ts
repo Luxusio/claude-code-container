@@ -141,6 +141,33 @@ describe("profile catalog public native facade compatibility", () => {
         let thrown: unknown; try { if (name === "rmSync") profile.removeProfile("work"); else profile.listProfiles(); } catch (error) { thrown = error; }
         expect(thrown).toBe(fixture.error);
     });
+    it.each(["..", "./default"])("refuses removal of %j while preserving default credentials and the parent sentinel", name => {
+        // Both aliases resolve inside this test's entirely owned root, even on the unfixed facade.
+        const credentials = join(fixture.root, "default", "claude.json");
+        const sentinel = join(root, "parent-sentinel.txt");
+        nativeFs.mkdirSync(join(fixture.root, "default"), { recursive: true });
+        nativeFs.writeFileSync(credentials, '{"fixture":"default credentials"}');
+        nativeFs.writeFileSync(sentinel, "owned parent sentinel");
+
+        expect(() => profile.removeProfile(name)).toThrow(`Invalid profile name "${name}".`);
+
+        expect(nativeFs.readFileSync(credentials, "utf8")).toBe('{"fixture":"default credentials"}');
+        expect(nativeFs.readFileSync(sentinel, "utf8")).toBe("owned parent sentinel");
+        expect(fixture.trace).toEqual([]);
+    });
+    it("removes an admitted custom profile while preserving default credentials", () => {
+        const credentials = join(fixture.root, "default", "claude.json");
+        const custom = join(fixture.root, "work");
+        nativeFs.mkdirSync(join(fixture.root, "default"), { recursive: true });
+        nativeFs.mkdirSync(custom);
+        nativeFs.writeFileSync(credentials, '{"fixture":"default credentials"}');
+        nativeFs.writeFileSync(join(custom, "claude.json"), '{"fixture":"custom credentials"}');
+
+        profile.removeProfile("work");
+
+        expect(nativeFs.existsSync(custom)).toBe(false);
+        expect(nativeFs.readFileSync(credentials, "utf8")).toBe('{"fixture":"default credentials"}');
+    });
     it("removes with recursive force without an existence probe", () => {
         profile.removeProfile("absent");
         expect(fixture.trace).toEqual([["root"], ["rmSync", join(fixture.root, "absent"), { recursive: true, force: true }]]);

@@ -1202,6 +1202,10 @@ export async function main(): Promise<void> {
                         console.error("Usage: ccc profile rm <name>");
                         process.exit(1);
                     }
+                    if (!validateProfileName(name)) {
+                        console.error(`Error: Invalid profile name "${name}".`);
+                        process.exit(1);
+                    }
                     if (name === DEFAULT_PROFILE_NAME) {
                         console.error(`Error: the "${DEFAULT_PROFILE_NAME}" profile cannot be removed; it holds the credentials used without CCC_PROFILE.`);
                         process.exit(1);

@@ -49,6 +49,24 @@ describe("profile catalog pure policy", () => {
         expect(createProfileCatalog(bindings, defaultName).validate(name)).toBe(false);
         untouched(bindings);
     });
+    it.each(["..", "../outside", "./default", "a/b", "a\\b", "/absolute", "C:\\absolute", "", "UPPER", "a".repeat(65)])("refuses invalid identity %j before native ports or settings evaluation", name => {
+        const bindings = ports();
+        const settingsRead = vi.fn(() => { throw new Error("must not evaluate invalid profile settings"); });
+        const settings = Object.defineProperties({}, {
+            env: { get: settingsRead },
+            toJSON: { get: settingsRead },
+        }) as ProfileSettings;
+        const app = createProfileCatalog(bindings, defaultName);
+
+        expect(app.exists(name)).toBe(false);
+        expect(app.isBuiltin(name)).toBe(false);
+        const message = `Invalid profile name "${name}".`;
+        expect(() => app.create(name, settings)).toThrow(message);
+        expect(() => app.ensure(name)).toThrow(message);
+        expect(() => app.remove(name)).toThrow(message);
+        expect(settingsRead).not.toHaveBeenCalled();
+        untouched(bindings);
+    });
     it("prepends the injected default, filtering only exact default entries without sorting or deduplication", () => {
         const bindings = ports();
         const names = ["z", defaultName, "a", "z", "default", defaultName];
@@ -70,8 +88,8 @@ describe("profile catalog pure policy", () => {
     it.each([false, true])("returns native existence %s and forwards names unchanged", exists => {
         const bindings = ports();
         bindings.profileEntryExists.mockReturnValue(exists);
-        expect(createProfileCatalog(bindings, defaultName).exists(" ../plain-file ")).toBe(exists);
-        expect(bindings.profileEntryExists).toHaveBeenCalledExactlyOnceWith(" ../plain-file ");
+        expect(createProfileCatalog(bindings, defaultName).exists("plain-file")).toBe(exists);
+        expect(bindings.profileEntryExists).toHaveBeenCalledExactlyOnceWith("plain-file");
     });
     it.each([false, true])("delegates built-in membership %s without reading settings", builtin => {
         const bindings = ports();
@@ -89,16 +107,16 @@ describe("profile catalog pure policy", () => {
     });
     it.each([undefined, { env: { EXAMPLE: "fixture" }, extra: { nested: true } }])("passes supplied settings by identity without validation or cloning", settings => {
         const bindings = ports();
-        expect(createProfileCatalog(bindings, defaultName).create(" ../raw-name ", settings)).toBeUndefined();
-        expect(bindings.writeProfile).toHaveBeenCalledExactlyOnceWith(" ../raw-name ", settings);
+        expect(createProfileCatalog(bindings, defaultName).create("named-profile", settings)).toBeUndefined();
+        expect(bindings.writeProfile).toHaveBeenCalledExactlyOnceWith("named-profile", settings);
         expect(bindings.writeProfile.mock.calls[0][1]).toBe(settings);
         expect(bindings.profileEntryExists).not.toHaveBeenCalled();
         expect(bindings.hasBuiltinProfile).not.toHaveBeenCalled();
     });
-    it("removes without probing existence or validating names", () => {
+    it("removes an admitted name without probing existence", () => {
         const bindings = ports();
-        expect(createProfileCatalog(bindings, defaultName).remove(" ../raw-name ")).toBeUndefined();
-        expect(bindings.removeProfileDirectory).toHaveBeenCalledExactlyOnceWith(" ../raw-name ");
+        expect(createProfileCatalog(bindings, defaultName).remove("named-profile")).toBeUndefined();
+        expect(bindings.removeProfileDirectory).toHaveBeenCalledExactlyOnceWith("named-profile");
         expect(bindings.profileEntryExists).not.toHaveBeenCalled();
     });
     it("returns false for an existing entry without inspecting built-ins", () => {
@@ -115,9 +133,9 @@ describe("profile catalog pure policy", () => {
         const trace: string[] = [];
         bindings.profileEntryExists.mockImplementation(() => { trace.push("exists"); return false; });
         bindings.hasBuiltinProfile.mockImplementation(() => { trace.push("membership"); return false; });
-        const error = thrown(() => createProfileCatalog(bindings, defaultName).ensure(" unknown "));
+        const error = thrown(() => createProfileCatalog(bindings, defaultName).ensure("unknown"));
         expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toBe('Profile " unknown " does not exist. Create it with: ccc profile add  unknown ');
+        expect((error as Error).message).toBe('Profile "unknown" does not exist. Create it with: ccc profile add unknown');
         expect(trace).toEqual(["exists", "membership"]);
         expect(bindings.readBuiltinSettings).not.toHaveBeenCalled();
         expect(bindings.writeProfile).not.toHaveBeenCalled();
