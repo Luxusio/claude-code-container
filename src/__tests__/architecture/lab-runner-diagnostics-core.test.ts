@@ -4,7 +4,7 @@ import type { LabRunnerConfigObservation } from "../../domain/lab-runner-diagnos
 
 const config = (status: "ready" | "unsupported" = "ready"): LabRunnerConfigObservation => ({ status, stateVolumeName: "state", stateContainerDir: "/private/state", networkMode: "user", kvmGroupId: 0, kvmDevicePath: "/private/kvm" });
 function fixture() {
-    const trace: unknown[] = [], output: string[] = [];
+    const trace: unknown[] = [];
     const ports = {
         resolveProjectPath: (cwd: string) => { trace.push(["resolve", cwd]); return "/private/project"; },
         containerName: (path: string, profile?: string) => { trace.push(["name", path, profile]); return profile ? "lab" : "default"; },
@@ -14,10 +14,8 @@ function fixture() {
         stateVolumeName: (name: string) => { trace.push(["volume", name]); return "lab-state"; },
         stateContainerDir: () => { trace.push("directory"); return "/private/state"; },
         runtimeSummary: () => { trace.push("runtime"); return "fixture runtime"; },
-        publishOutput: (message: string): undefined => { output.push(message); return undefined; },
-        publishUsage: (message: string): undefined => { output.push(message); return undefined; },
     };
-    return { ports, trace, output };
+    return { ports, trace };
 }
 
 describe("whole inward lab diagnostics", () => {
@@ -37,26 +35,17 @@ describe("whole inward lab diagnostics", () => {
         expect(f.trace.filter(x => Array.isArray(x) && x[0] === "config")).toEqual([["config", "default"], ["config", "lab"]]);
     });
 
-    it.each(["status", "doctor", "smoke", ""])("dispatches %j synchronously with non-starting diagnostic text", command => {
-        const f = fixture(); f.ports.containerVmConfig = () => config("unsupported"); f.ports.labRunnerVmConfig = () => config("unsupported");
-        expect(createLabRunnerDiagnostics(f.ports).cli([command], "cwd")).toBe(0);
-        expect(f.output[0]).toContain(command === "smoke" ? "result: SKIP" : "this status check does not start labs or VMs");
-    });
     it.each([["ready", "ready"], ["ready", "unsupported"], ["unsupported", "ready"], ["unsupported", "unsupported"]] as const)("preserves independent default %s and lab %s readiness", (defaultStatus, labStatus) => {
         const f = fixture(); f.ports.containerVmConfig = () => config(defaultStatus); f.ports.labRunnerVmConfig = () => config(labStatus);
-        const app = createLabRunnerDiagnostics(f.ports), snapshot = app.snapshot("cwd");
+        const snapshot = createLabRunnerDiagnostics(f.ports).snapshot("cwd");
         expect(snapshot.defaultContainer.status).toBe(defaultStatus); expect(snapshot.status).toBe(labStatus);
-        expect(app.formatSmoke("cwd")).toContain(`result: ${defaultStatus === "ready" && labStatus === "ready" ? "PASS" : "SKIP"}`);
-        expect(app.formatStatus("cwd")).toContain("group=0");
+        expect(snapshot.labRunnerProfile.status).toBe(labStatus);
+        expect(snapshot.kvmGroupId).toBe(0);
     });
     it.each([undefined, 0, 7])("retains nullish group projection for %j while empty text becomes null", group => {
         const f = fixture(); f.ports.labRunnerVmConfig = () => ({ ...config(), unsupportedReason: "", kvmDevicePath: "", kvmGroupId: group });
         const snapshot = createLabRunnerDiagnostics(f.ports).snapshot("cwd");
         expect(snapshot.kvmGroupId).toBe(group ?? null); expect(snapshot.unsupportedReason).toBeNull(); expect(snapshot.kvmDevicePath).toBeNull();
-    });
-    it("unknown dispatch never observes native configuration", () => {
-        const f = fixture(); expect(createLabRunnerDiagnostics(f.ports).cli([" STATUS "], "cwd")).toBe(1);
-        expect(f.trace).toEqual([]); expect(f.output).toEqual(["Usage: ccc labs <status|doctor|smoke|shell|run>"]);
     });
 
     it.each(Object.keys(fixture().ports))("rejects missing or noncallable data port %s without effects", key => {
@@ -66,11 +55,11 @@ describe("whole inward lab diagnostics", () => {
             expect(() => createLabRunnerDiagnostics(ports)).toThrow(); expect(f.trace).toEqual([]);
         }
     });
-    it("preserves raw thrown values without fallback or publication", () => {
+    it("preserves raw thrown values without fallback or later observations", () => {
         const f = fixture(), fault = {};
         f.ports.labRunnerVmConfig = () => { throw fault; };
-        try { createLabRunnerDiagnostics(f.ports).cli(["status"], "cwd"); throw new Error("expected raw failure"); }
+        try { createLabRunnerDiagnostics(f.ports).snapshot("cwd"); throw new Error("expected raw failure"); }
         catch (error) { expect(error).toBe(fault); }
-        expect(f.output).toEqual([]); expect(f.trace).not.toContain("runtime");
+        expect(f.trace).not.toContain("runtime");
     });
 });

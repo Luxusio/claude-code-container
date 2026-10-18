@@ -141,4 +141,72 @@ describe("lab-runner admin CLI helpers", () => {
         expect(labsCli(["unknown"], "/project/example")).toBe(1);
         expect(errorSpy).toHaveBeenLastCalledWith("Usage: ccc labs <status|doctor|smoke|shell|run>");
     });
+
+    it.each([{ args: [] }, { args: [""] }, { args: ["status"] }, { args: ["doctor"] }, { args: ["smoke"] }])("publishes the complete diagnostic output synchronously for %j", ({ args }) => {
+        const expected = args[0] === "smoke" ? formatLabRunnerSmoke("/project/example") : formatLabRunnerStatus("/project/example");
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        expect(labsCli(args, "/project/example")).toBe(0);
+        expect(logSpy).toHaveBeenCalledExactlyOnceWith(expected);
+        expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it.each(["status", "doctor", "smoke", ""])("keeps unsupported %j diagnostics successful and non-starting", command => {
+        mockExistsSync.mockReturnValue(false);
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        expect(labsCli([command], "/project/example")).toBe(0);
+        expect(logSpy).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(command === "smoke"
+            ? "result: SKIP" : "this status check does not start labs or VMs"));
+    });
+
+    it.each(["unknown", " STATUS ", "shell", "run"])("returns usage for %j without observing native configuration", command => {
+        mockExistsSync.mockImplementation(() => { throw new Error("native observation forbidden"); });
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        expect(labsCli([command], "/project/example")).toBe(1);
+        expect(errorSpy).toHaveBeenCalledExactlyOnceWith("Usage: ccc labs <status|doctor|smoke|shell|run>");
+        expect(logSpy).not.toHaveBeenCalled();
+        expect(mockExistsSync).not.toHaveBeenCalled();
+        expect(mockStatSync).not.toHaveBeenCalled();
+    });
+
+    it("keeps group zero visible in the public snapshot and terminal diagnostics", () => {
+        mockStatSync.mockReturnValue({ gid: 0 });
+        expect(labRunnerSnapshot("/project/example").kvmGroupId).toBe(0);
+        expect(formatLabRunnerStatus("/project/example")).toContain("kvm: /dev/kvm group=0");
+        expect(formatLabRunnerSmoke("/project/example")).toContain("nested-kvm: PASS /dev/kvm group=0");
+    });
+
+    it("uses the current directory by default for each public diagnostic", () => {
+        expect(labRunnerSnapshot()).toEqual(labRunnerSnapshot(process.cwd()));
+        expect(formatLabRunnerStatus()).toBe(formatLabRunnerStatus(process.cwd()));
+        expect(formatLabRunnerSmoke()).toBe(formatLabRunnerSmoke(process.cwd()));
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        expect(labsCli([])).toBe(0);
+        expect(logSpy).toHaveBeenCalledExactlyOnceWith(formatLabRunnerStatus(process.cwd()));
+    });
+
+    it("captures the console callee before observing native configuration", () => {
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        const replacement = vi.fn();
+        mockExistsSync.mockImplementation((path: string) => {
+            console.log = replacement;
+            return path === "/dev/kvm";
+        });
+        expect(labsCli(["status"], "/project/example")).toBe(0);
+        expect(logSpy).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("=== CCC Lab Runner ==="));
+        expect(replacement).not.toHaveBeenCalled();
+    });
+
+    it("propagates raw native observation failures without publishing diagnostics", () => {
+        const fault = {};
+        mockExistsSync.mockImplementation(() => { throw fault; });
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        let caught: unknown;
+        try { labsCli(["status"], "/project/example"); } catch (error) { caught = error; }
+        expect(caught).toBe(fault);
+        expect(logSpy).not.toHaveBeenCalled();
+        expect(errorSpy).not.toHaveBeenCalled();
+    });
 });

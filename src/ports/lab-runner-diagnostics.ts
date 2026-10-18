@@ -9,6 +9,4 @@ export interface LabRunnerDiagnosticsPorts {
     readonly stateVolumeName: (container: string) => string;
     readonly stateContainerDir: () => string;
     readonly runtimeSummary: () => string;
-    readonly publishOutput: (message: string) => undefined;
-    readonly publishUsage: (message: string) => undefined;
 }
