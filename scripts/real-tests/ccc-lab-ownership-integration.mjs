@@ -25,7 +25,7 @@ function run(command, args = []) {
 }
 function volume(suffix) {
     const name = `${runId}-${suffix}`;
-    assert.notEqual(spawnSync('docker', ['volume', 'inspect', name], { stdio: 'ignore' }).status, 0);
+    assert.ok(!docker(['volume', 'ls', '--format', '{{.Name}}']).split('\n').includes(name));
     volumes.push(name); record();
     docker(['volume', 'create', '--label', `ccc.lab.test=${runId}`, name]);
     return name;
@@ -68,19 +68,31 @@ try {
     assert.equal(run(inspect, mount(retained)), after);
     docker(['rm', '-f', busy]);
     const missing = `${runId}-missing`;
+    assert.ok(!docker(['volume', 'ls', '--format', '{{.Name}}']).split('\n').includes(missing));
+    volumes.push(missing); record();
     const absent = prepare(missing, identity);
     assert.equal(absent.status, 0, absent.stderr);
-    assert.notEqual(spawnSync('docker', ['volume', 'inspect', missing], { stdio: 'ignore' }).status, 0);
+    assert.ok(!docker(['volume', 'ls', '--format', '{{.Name}}']).split('\n').includes(missing));
     assert.equal(docker(['image', 'inspect', base, '--format', '{{.Id}}']), originalId);
     console.log('PASS: active volume refused without writes; missing volume not created; immutable base preserved');
 } finally {
     const failures = [];
-    for (const name of containers) {
-        if (spawnSync('docker', ['container', 'inspect', name], { stdio: 'ignore' }).status === 0) {
+    let existingContainers;
+    try { existingContainers = new Set(docker(['container', 'ls', '--all', '--format', '{{.Names}}']).split('\n')); }
+    catch (error) { failures.push(String(error)); }
+    if (existingContainers) for (const name of containers) {
+        if (existingContainers.has(name)) {
             try { docker(['rm', '-f', name]); } catch (error) { failures.push(String(error)); }
         }
     }
-    for (const name of volumes) { try { docker(['volume', 'rm', name]); } catch (error) { failures.push(String(error)); } }
+    let existingVolumes;
+    try { existingVolumes = new Set(docker(['volume', 'ls', '--format', '{{.Name}}']).split('\n')); }
+    catch (error) { failures.push(String(error)); }
+    if (existingVolumes) for (const name of volumes) {
+        if (existingVolumes.has(name)) {
+            try { docker(['volume', 'rm', name]); } catch (error) { failures.push(String(error)); }
+        }
+    }
     if (failures.length) { console.error(`Cleanup incomplete; resource record: ${home}/owned-resources.json`); throw new AggregateError(failures); }
     rmSync(home, { recursive: true, force: true });
 }

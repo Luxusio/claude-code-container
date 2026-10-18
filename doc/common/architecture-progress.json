@@ -4776,6 +4776,35 @@
         "retainedFailure": "Initial strict TS2345 preserved; one outward type-compatible identical-predicate correction; only failed strict command rerun and passed.",
         "scope": "Genuine Linux Node/artifacts with fake SDK/Tart/SSH/native runners; qualified working Source includes protected originaldirty inputs. Main dist/global install unchanged. No real provider/nativeWindows/macOS/fullGoal/full-build/reliability/exhaustive/formal certification."
       }
+    },
+    {
+      "id": "native-docker-lab-ownership-current",
+      "taskId": "TASK__architecture-native-runtime-acceptance-20261018",
+      "coveredOperationIds": [],
+      "status": "Actual independent Code/Security and native Docker QA PASS. Existing packaged retained-lab-state ownership witness exited0 in8086ms; migration, preservation, reuse, missing-provenance/busy refusal and exact-owned cleanup passed. One offline archive1236files/1058dist authenticated; no new resource/helper survivors observed. Two proven existing witness observation/cleanup defects corrected; R1 review failures and auxiliary observer exit1 retained. Zero operation/group/gate credit; structural25/25 unchanged. Full Docker lifecycle, Podman, macOS, reliability and formal/whole-Goal acceptance remain separate.",
+      "qualification": {
+        "workingHead": "4c3e86620a95b5b87c1842dfccecaa159356d884",
+        "facts": {
+          "path": "results/native-runtime-14eb0-20261018/qa-r2/native-facts.json",
+          "sha256": "73ff4627154561e8cbd1203eb44ef81e4474128056d7fa573e18dcd3fc756f17"
+        },
+        "witnessSha256": "466fa25f442005a0f7a1cc90776e75bd6c6ced3a7b2309f7fdbd936ec1390301",
+        "archiveSha256": "0bf324596c55f04e34d39c23efcc386b0e6b57317297dc3f807fb1f5cce2986c",
+        "image": "sha256:e28fc6f037f3e276f00a8981153c148e3e453390acad770687c9c7792a8e387e",
+        "packageFiles": 1236,
+        "distFiles": 1058,
+        "runtimeModules": 30,
+        "nativeExitCode": 0,
+        "nativeElapsedMs": 8086,
+        "originalPassSignals": 3,
+        "successfulBeforeAfterInventories": 6,
+        "observedResourceRecordVersions": 8,
+        "newlyObservedOwnedSurvivors": 0,
+        "manualCleanup": false,
+        "preservedObserverExit": 1,
+        "observerDisposition": "Before/after share the same pre-existing npm node-compile-cache; no new TMP entries or owned UUID home remain. Actual native exit0 is unchanged; no replay.",
+        "scope": "Retained-lab-state native ownership slice only; no fullM10 lifecycle/Podman/macOS/reliability/fullGoal or automatic attestation credit."
+      }
     }
   ],
   "currentSourceQualificationAudit": {
