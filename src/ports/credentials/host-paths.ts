@@ -4,8 +4,7 @@ export interface CredentialDirectoryOptions {
 }
 
 export interface HostCredentialPathPorts {
-    readonly readContainerEnvironment: () => string | undefined;
-    readonly readVitestEnvironment: () => string | undefined;
+    readonly executionContext: () => "host" | "container";
     readonly claudeProfilePath: (profile?: string) => string;
     readonly codexProfilePath: (profile?: string) => string;
     readonly homeDirectory: () => string;

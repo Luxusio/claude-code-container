@@ -3,7 +3,7 @@ import type { HostCredentialPathPorts } from "../../ports/credentials/host-paths
 
 export function createHostCredentialPaths(ports: HostCredentialPathPorts, codexPackagesContainerDir: string) {
     for (const name of [
-        "readContainerEnvironment", "readVitestEnvironment", "claudeProfilePath",
+        "executionContext", "claudeProfilePath",
         "codexProfilePath", "homeDirectory", "joinHostPath", "createDirectory",
         "packageParentPath", "packageBasename",
     ] as const) {
@@ -13,7 +13,7 @@ export function createHostCredentialPaths(ports: HostCredentialPathPorts, codexP
     }
 
     function resolveCredentialHostPath(mount: CredentialMount, profile?: string): string {
-        if (!profile && ports.readContainerEnvironment() === "docker" && !ports.readVitestEnvironment()) {
+        if (!profile && ports.executionContext() === "container") {
             return mount.containerDir;
         }
         if (mount.containerDir === "/home/ccc/.claude") return ports.claudeProfilePath(profile);

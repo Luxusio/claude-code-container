@@ -18,7 +18,7 @@ const claude = { hostDir: ".claude", containerDir: "/home/ccc/.claude" };
 const codex = { hostDir: ".codex", containerDir: "/home/ccc/.codex" };
 beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "ccc-host-paths-")); native.home = root; native.faultPath = "";
-    for (const key of Object.keys(process.env)) if (key === "container" || key === "VITEST" || key.startsWith("VITEST_")) vi.stubEnv(key, undefined);
+    vi.stubEnv("container", "");
     // Initialize private homedir BEFORE importing utils' top-level DATA_DIR and Docker.
     api = await import("../../docker.js"); utils = await import("../../utils.js");
 });
@@ -39,15 +39,71 @@ describe("actual native host credential facade", () => {
         expect(api.resolveCredentialHostPath(codex)).toBe(join(root, ".ccc", "profiles", "default", "codex"));
         expect(api.resolveCredentialHostPath(claude)).toBe(join(root, ".ccc", "claude"));
     });
-    it("keeps application single VITEST and retained helper any-VITEST policies live", () => {
-        vi.stubEnv("container", "docker"); vi.stubEnv("VITEST_WORKER_ID", "fixture");
+    it.each([undefined, "", "podman", "Docker", "docker "])("uses host paths for non-CCC marker %s with runner flags present", marker => {
+        vi.stubEnv("container", marker); vi.stubEnv("VITEST", "1"); vi.stubEnv("VITEST_CREDENTIAL_CONTEXT", "");
+        for (const profile of [undefined, "", "default", "work", " work ", " "]) {
+            const name = profile && profile !== "default" ? profile : "default";
+            const profileRoot = join(root, ".ccc", "profiles", name);
+            expect(api.resolveCredentialHostPath(claude, profile)).toBe(join(profileRoot, "claude"));
+            expect(api.resolveCredentialHostPath(codex, profile)).toBe(join(profileRoot, "codex"));
+            expect(utils.getClaudeDir(profile)).toBe(join(profileRoot, "claude"));
+            expect(utils.getClaudeJsonFile(profile)).toBe(join(profileRoot, "claude.json"));
+            expect(utils.getCodexDir(profile)).toBe(join(profileRoot, "codex"));
+            expect(utils.getCodexConfigFile(profile)).toBe(join(profileRoot, "codex", "config.toml"));
+        }
+    });
+    it.each(["", "1", "0", "false"])("keeps literal container mounts with runner value %j", runnerValue => {
+        vi.stubEnv("container", "docker"); vi.stubEnv("VITEST", runnerValue); vi.stubEnv("VITEST_CREDENTIAL_CONTEXT", runnerValue);
+        const custom = { hostDir: ".custom", containerDir: "/mounted/custom" };
+        for (const profile of [undefined, ""]) {
+            for (const mount of [claude, codex, custom]) {
+                expect(api.resolveCredentialHostPath(mount, profile)).toBe(mount.containerDir);
+            }
+        }
+        expect(process.env.VITEST).toBe(runnerValue);
+        expect(process.env.VITEST_CREDENTIAL_CONTEXT).toBe(runnerValue);
+    });
+    it("uses mounted Codex paths for named profiles with runner flags present", () => {
+        vi.stubEnv("container", "docker"); vi.stubEnv("VITEST", "1"); vi.stubEnv("VITEST_CREDENTIAL_CONTEXT", "");
+        for (const profile of ["default", "work", " work ", " "]) {
+            expect(api.resolveCredentialHostPath(codex, profile)).toBe(join(root, ".codex"));
+            expect(utils.getCodexDir(profile)).toBe(join(root, ".codex"));
+            expect(utils.getCodexConfigFile(profile)).toBe(join(root, ".codex", "config.toml"));
+        }
+    });
+    it("normalizes Claude defaults while retaining named paths with runner flags present", () => {
+        vi.stubEnv("container", "docker"); vi.stubEnv("VITEST", ""); vi.stubEnv("VITEST_CREDENTIAL_CONTEXT", "present");
+        expect(api.resolveCredentialHostPath(claude, "default")).toBe(join(root, ".claude"));
+        for (const profile of [undefined, "", "default"]) {
+            expect(utils.getClaudeDir(profile)).toBe(join(root, ".claude"));
+            expect(utils.getClaudeJsonFile(profile)).toBe(join(root, ".claude.json"));
+        }
+        for (const profile of ["work", " work ", " "]) {
+            const profileRoot = join(root, ".ccc", "profiles", profile);
+            expect(api.resolveCredentialHostPath(claude, profile)).toBe(join(profileRoot, "claude"));
+            expect(utils.getClaudeDir(profile)).toBe(join(profileRoot, "claude"));
+            expect(utils.getClaudeJsonFile(profile)).toBe(join(profileRoot, "claude.json"));
+        }
+    });
+    it("uses host fallback for truthy profiles on custom container mounts", () => {
+        const custom = { hostDir: "relative\\tool", containerDir: "/mounted/custom" };
+        vi.stubEnv("container", "docker"); vi.stubEnv("VITEST", "1");
+        for (const profile of ["default", "work", " "]) {
+            expect(api.resolveCredentialHostPath(custom, profile)).toBe(join(root, custom.hostDir));
+        }
+    });
+    it("observes live host/container changes on the same public facade with runner flags present", () => {
+        vi.stubEnv("VITEST", "1"); vi.stubEnv("VITEST_CREDENTIAL_CONTEXT", "present");
+        const hostCodex = join(root, ".ccc", "profiles", "default", "codex");
+        expect(api.resolveCredentialHostPath(codex)).toBe(hostCodex);
+        vi.stubEnv("container", "docker");
         expect(api.resolveCredentialHostPath(codex)).toBe(codex.containerDir);
-        expect(api.resolveCredentialHostPath(codex, "work")).toBe(join(root, ".ccc", "profiles", "work", "codex"));
-        vi.stubEnv("VITEST_WORKER_ID", undefined);
         expect(api.resolveCredentialHostPath(codex, "work")).toBe(join(root, ".codex"));
-        expect(api.resolveCredentialHostPath(claude, "work")).toBe(join(root, ".ccc", "profiles", "work", "claude"));
-        vi.stubEnv("VITEST", "1");
-        expect(api.resolveCredentialHostPath(codex)).toBe(join(root, ".ccc", "profiles", "default", "codex"));
+        expect(api.resolveCredentialHostPath(claude, "default")).toBe(join(root, ".claude"));
+        vi.stubEnv("container", "podman");
+        expect(api.resolveCredentialHostPath(codex)).toBe(hostCodex);
+        expect(api.resolveCredentialHostPath(codex, "work")).toBe(join(root, ".ccc", "profiles", "work", "codex"));
+        expect(api.resolveCredentialHostPath(claude, "default")).toBe(join(root, ".ccc", "profiles", "default", "claude"));
     });
     it("uses current home and host join independently of POSIX package metadata", () => {
         const next = join(root, "next"); native.home = next;

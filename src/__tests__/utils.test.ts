@@ -23,7 +23,7 @@ import {
     writeOwnedEnvFile,
 } from '../utils.js';
 import { homedir, tmpdir } from 'os';
-import { mkdtempSync, readFileSync, statSync, existsSync, unlinkSync, rmSync, realpathSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, statSync, existsSync, unlinkSync, rmSync, realpathSync } from 'fs';
 import { join, basename, dirname } from 'path';
 
 // Keep the native environment proxy: older suites replace process.env with snapshots.
@@ -43,21 +43,40 @@ vi.mock('readline', () => ({
 }));
 
 describe('utils constants', () => {
-    const originalEnv = { ...process.env };
     const temporaryHomes: string[] = [];
     const isolateHome = () => {
         const home = mkdtempSync(join(tmpdir(), 'ccc-utils-home-'));
         temporaryHomes.push(home);
-        process.env.HOME = home;
-        process.env.USERPROFILE = home;
+        vi.stubEnv('HOME', home);
+        vi.stubEnv('USERPROFILE', home);
         expect(homedir()).toBe(home);
         return home;
     };
 
+    const expectCredentialPaths = (
+        profile: string | undefined,
+        claudeDir: string,
+        claudeJson: string,
+        codexDir: string,
+    ) => {
+        expect(getClaudeDir(profile)).toBe(claudeDir);
+        expect(getClaudeJsonFile(profile)).toBe(claudeJson);
+        expect(getCodexDir(profile)).toBe(codexDir);
+        expect(getCodexConfigFile(profile)).toBe(join(codexDir, 'config.toml'));
+    };
+
+    const expectMountedCredentialPaths = (home: string) => {
+        for (const profile of [undefined, '', 'default']) {
+            expectCredentialPaths(profile, join(home, '.claude'), join(home, '.claude.json'), join(home, '.codex'));
+        }
+        for (const profile of ['work', ' work ', ' default ', ' ']) {
+            const profileRoot = join(home, '.ccc', 'profiles', profile);
+            expectCredentialPaths(profile, join(profileRoot, 'claude'), join(profileRoot, 'claude.json'), join(home, '.codex'));
+        }
+    };
+
     afterEach(() => {
-        // Keep Node's native environment object: os.homedir reads the native HOME.
-        for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
-        Object.assign(process.env, originalEnv);
+        vi.unstubAllEnvs();
         for (const home of temporaryHomes.splice(0)) rmSync(home, { recursive: true, force: true });
     });
 
@@ -85,49 +104,80 @@ describe('utils constants', () => {
     });
 
     it('uses the default profile credential paths on the host', () => {
-        delete process.env.container;
+        vi.stubEnv('container', '');
         const home = isolateHome();
         const profileRoot = join(home, '.ccc', 'profiles', 'default');
-        expect(getClaudeDir()).toBe(join(profileRoot, 'claude'));
-        expect(getClaudeJsonFile()).toBe(join(profileRoot, 'claude.json'));
-        expect(getCodexDir()).toBe(join(profileRoot, 'codex'));
-        expect(getCodexConfigFile()).toBe(join(profileRoot, 'codex', 'config.toml'));
-        expect(getClaudeDir('default')).toBe(join(profileRoot, 'claude'));
+        for (const profile of [undefined, '', 'default']) {
+            expectCredentialPaths(profile, join(profileRoot, 'claude'), join(profileRoot, 'claude.json'), join(profileRoot, 'codex'));
+        }
     });
 
     it('uses per-profile claude and codex paths for a named profile', () => {
-        delete process.env.container;
+        vi.stubEnv('container', '');
         const home = isolateHome();
-        const profileRoot = join(home, '.ccc', 'profiles', 'work');
-        expect(getClaudeDir('work')).toBe(join(profileRoot, 'claude'));
-        expect(getClaudeJsonFile('work')).toBe(join(profileRoot, 'claude.json'));
-        expect(getCodexDir('work')).toBe(join(profileRoot, 'codex'));
-        expect(getCodexConfigFile('work')).toBe(join(profileRoot, 'codex', 'config.toml'));
-    });
-
-    it('uses mounted credential paths inside a real ccc container', () => {
-        process.env.container = CONTAINER_ENV_VALUE;
-        delete process.env.VITEST;
-        for (const key of Object.keys(process.env)) {
-            if (key.startsWith('VITEST_')) delete process.env[key];
+        for (const profile of ['work', ' work ', ' default ', ' ']) {
+            const profileRoot = join(home, '.ccc', 'profiles', profile);
+            expectCredentialPaths(profile, join(profileRoot, 'claude'), join(profileRoot, 'claude.json'), join(profileRoot, 'codex'));
         }
-
-        expect(getClaudeDir()).toBe(join(homedir(), '.claude'));
-        expect(getClaudeJsonFile()).toBe(join(homedir(), '.claude.json'));
-        expect(getCodexDir()).toBe(join(homedir(), '.codex'));
-        expect(getCodexConfigFile()).toBe(join(homedir(), '.codex', 'config.toml'));
     });
 
-    it('keeps host-style credential paths inside Vitest even when container env is set', () => {
-        process.env.container = CONTAINER_ENV_VALUE;
-        process.env.VITEST_POOL_ID = '1';
+    it('retains legacy host credential paths for normalized default profiles', () => {
+        vi.stubEnv('container', '');
+        const home = isolateHome();
+        const legacyRoot = join(home, '.ccc');
+        mkdirSync(join(legacyRoot, 'claude'), { recursive: true });
+        for (const profile of [undefined, '', 'default']) {
+            expectCredentialPaths(profile, join(legacyRoot, 'claude'), join(legacyRoot, 'claude.json'), join(legacyRoot, 'codex'));
+        }
+        const profileRoot = join(home, '.ccc', 'profiles', 'work');
+        expectCredentialPaths('work', join(profileRoot, 'claude'), join(profileRoot, 'claude.json'), join(profileRoot, 'codex'));
+    });
+
+    it('uses mounted credential helpers for default, named and spaced profiles with the real runner environment intact', () => {
+        vi.stubEnv('container', 'docker');
+        expectMountedCredentialPaths(isolateHome());
+    });
+
+    it.each([
+        ['VITEST unset', 'VITEST', undefined],
+        ['VITEST empty', 'VITEST', ''],
+        ['VITEST set', 'VITEST', '1'],
+        ['VITEST zero', 'VITEST', '0'],
+        ['VITEST false', 'VITEST', 'false'],
+        ['VITEST_* unset', 'VITEST_CREDENTIAL_CONTEXT', undefined],
+        ['VITEST_* empty', 'VITEST_CREDENTIAL_CONTEXT', ''],
+        ['VITEST_* set', 'VITEST_CREDENTIAL_CONTEXT', '1'],
+        ['VITEST_* zero', 'VITEST_CREDENTIAL_CONTEXT', '0'],
+        ['VITEST_* false', 'VITEST_CREDENTIAL_CONTEXT', 'false'],
+    ] as const)('uses mounted credential helpers with %s', (_label, key, value) => {
+        vi.stubEnv('container', CONTAINER_ENV_VALUE);
+        vi.stubEnv(key, value);
+        expectMountedCredentialPaths(isolateHome());
+    });
+
+    it.each([undefined, '', 'podman', 'Docker', 'DOCKER', 'docker ', ' docker', 'docker-extra', '0', 'false'])(
+        'keeps host credential helpers for the non-CCC marker %j',
+        (marker) => {
+            vi.stubEnv('container', marker);
+            const home = isolateHome();
+            for (const profile of [undefined, '', 'default']) {
+                const profileRoot = join(home, '.ccc', 'profiles', 'default');
+                expectCredentialPaths(profile, join(profileRoot, 'claude'), join(profileRoot, 'claude.json'), join(profileRoot, 'codex'));
+            }
+            const profileRoot = join(home, '.ccc', 'profiles', 'work');
+            expectCredentialPaths('work', join(profileRoot, 'claude'), join(profileRoot, 'claude.json'), join(profileRoot, 'codex'));
+        },
+    );
+
+    it('observes host and mounted credential context changes between helper calls', () => {
         const home = isolateHome();
         const profileRoot = join(home, '.ccc', 'profiles', 'default');
-
-        expect(getClaudeDir()).toBe(join(profileRoot, 'claude'));
-        expect(getClaudeJsonFile()).toBe(join(profileRoot, 'claude.json'));
-        expect(getCodexDir()).toBe(join(profileRoot, 'codex'));
-        expect(getCodexConfigFile()).toBe(join(profileRoot, 'codex', 'config.toml'));
+        vi.stubEnv('container', '');
+        expectCredentialPaths(undefined, join(profileRoot, 'claude'), join(profileRoot, 'claude.json'), join(profileRoot, 'codex'));
+        vi.stubEnv('container', CONTAINER_ENV_VALUE);
+        expectMountedCredentialPaths(home);
+        vi.stubEnv('container', '');
+        expectCredentialPaths(undefined, join(profileRoot, 'claude'), join(profileRoot, 'claude.json'), join(profileRoot, 'codex'));
     });
 });
 

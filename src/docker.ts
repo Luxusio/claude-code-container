@@ -47,6 +47,7 @@ import {
     getCodexDir,
     getCodexConfigFile,
     IMAGE_NAME,
+    CONTAINER_ENV_VALUE,
     CONTAINER_PID_LIMIT,
     CODEX_PACKAGES_VOLUME_NAME,
     CODEX_PACKAGES_CONTAINER_DIR,
@@ -649,8 +650,7 @@ export function isDockerDesktop(): boolean {
 }
 
 const hostCredentialPaths = createHostCredentialPaths({
-    readContainerEnvironment: () => process.env.container,
-    readVitestEnvironment: () => process.env.VITEST,
+    executionContext: () => process.env.container === CONTAINER_ENV_VALUE ? "container" : "host",
     claudeProfilePath: (profile) => getClaudeDir(profile),
     codexProfilePath: (profile) => getCodexDir(profile),
     homeDirectory: () => homedir(),

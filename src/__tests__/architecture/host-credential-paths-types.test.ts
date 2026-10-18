@@ -5,14 +5,13 @@ import type { CredentialMount } from "../../domain/tool-registry.js";
 import type * as facade from "../../docker.js";
 
 function contracts(ports: HostCredentialPathPorts, mount: CredentialMount, publicApi: typeof facade) {
-    type Names = "readContainerEnvironment" | "readVitestEnvironment" | "claudeProfilePath" | "codexProfilePath" | "homeDirectory" | "joinHostPath" | "createDirectory" | "packageParentPath" | "packageBasename";
+    type Names = "executionContext" | "claudeProfilePath" | "codexProfilePath" | "homeDirectory" | "joinHostPath" | "createDirectory" | "packageParentPath" | "packageBasename";
     expectTypeOf<keyof HostCredentialPathPorts>().toEqualTypeOf<Names>();
     expectTypeOf<HostCredentialPathPorts>().toEqualTypeOf<Readonly<HostCredentialPathPorts>>();
     expectTypeOf<HostCredentialPathPorts>().toEqualTypeOf<Required<HostCredentialPathPorts>>();
     expectTypeOf<CredentialDirectoryOptions>().toEqualTypeOf<{ readonly recursive: true; readonly mode?: number }>();
     expectTypeOf<HostCredentialPathPorts["createDirectory"]>().toEqualTypeOf<(path: string, options: CredentialDirectoryOptions) => undefined>();
-    expectTypeOf<HostCredentialPathPorts["readContainerEnvironment"]>().toEqualTypeOf<() => string | undefined>();
-    expectTypeOf<HostCredentialPathPorts["readVitestEnvironment"]>().toEqualTypeOf<() => string | undefined>();
+    expectTypeOf<HostCredentialPathPorts["executionContext"]>().toEqualTypeOf<() => "host" | "container">();
     expectTypeOf<HostCredentialPathPorts["claudeProfilePath"]>().toEqualTypeOf<(profile?: string) => string>();
     expectTypeOf<HostCredentialPathPorts["codexProfilePath"]>().toEqualTypeOf<(profile?: string) => string>();
     expectTypeOf<HostCredentialPathPorts["homeDirectory"]>().toEqualTypeOf<() => string>();
@@ -31,12 +30,18 @@ function contracts(ports: HostCredentialPathPorts, mount: CredentialMount, publi
     createHostCredentialPaths(ports, undefined);
     // @ts-expect-error No async filesystem capability.
     createHostCredentialPaths({ ...ports, createDirectory: async () => undefined }, "/packages");
-    // @ts-expect-error No async environment capability.
-    createHostCredentialPaths({ ...ports, readContainerEnvironment: async () => "docker" }, "/packages");
+    // @ts-expect-error Execution context must be synchronous.
+    createHostCredentialPaths({ ...ports, executionContext: async () => "host" }, "/packages");
+    // @ts-expect-error Native marker values are not semantic context values.
+    createHostCredentialPaths({ ...ports, executionContext: () => "docker" }, "/packages");
+    // @ts-expect-error Context cannot be missing or return undefined.
+    createHostCredentialPaths({ ...ports, executionContext: () => undefined }, "/packages");
     // @ts-expect-error Every port is required.
     createHostCredentialPaths({}, "/packages");
     // @ts-expect-error Ports are readonly.
     ports.homeDirectory = () => "/replacement";
+    // @ts-expect-error Context is also a readonly port.
+    ports.executionContext = () => "container";
     // @ts-expect-error Recursive must be the true literal.
     const options: CredentialDirectoryOptions = { recursive: false };
     void options;

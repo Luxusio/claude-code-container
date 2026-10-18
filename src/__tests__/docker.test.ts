@@ -557,6 +557,7 @@ describe("docker.ts module exports", () => {
         mountChallengePaths.clear();
         mismatchingMountChallengeContainerIds.clear();
         delete process.env.SSH_AUTH_SOCK;
+        vi.stubEnv("container", "");
         vi.stubEnv("DOCKER_CONTEXT", "");
         mockCleanupOwnerDevices.mockReset();
         mockGetSessionLockClaimsForContainer.mockReset().mockReturnValue([]);

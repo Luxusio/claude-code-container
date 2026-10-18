@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../codex-config-lock.js", () => ({ withCodexConfigLock: vi.fn((operation: () => unknown) => operation()) }));
 
@@ -149,6 +149,7 @@ describe("buildMcpConfig", () => {
     }
 
     beforeEach(async () => {
+        vi.stubEnv("container", "");
         vi.resetModules();
         fsMock = await import("fs");
         existsSync = fsMock.existsSync as ReturnType<typeof vi.fn>;
@@ -162,6 +163,10 @@ describe("buildMcpConfig", () => {
         writeFileSync.mockImplementation(() => undefined);
         const mod = await import("../mcp-forward.js");
         buildMcpConfig = mod.buildMcpConfig;
+    });
+
+    afterEach(() => {
+        vi.unstubAllEnvs();
     });
 
     it("restores host access and writes under the selected profile lock", async () => {

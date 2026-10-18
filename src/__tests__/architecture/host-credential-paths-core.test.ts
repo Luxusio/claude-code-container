@@ -6,15 +6,14 @@ import type { CredentialMount } from "../../domain/tool-registry.js";
 const packages = "/home/ccc/.codex/packages";
 function fixture() {
     const trace: unknown[][] = [];
-    const state = { container: undefined as string | undefined, vitest: undefined as string | undefined, fault: "", error: {} };
+    const state = { context: "host" as "host" | "container", fault: "", error: {} };
     const call = <T>(name: string, result: T, ...args: unknown[]): T => {
         trace.push([name, ...args]);
         if (state.fault === name) throw state.error;
         return result;
     };
     const ports: HostCredentialPathPorts = {
-        readContainerEnvironment: () => call("container", state.container),
-        readVitestEnvironment: () => call("vitest", state.vitest),
+        executionContext: () => call("context", state.context),
         claudeProfilePath: profile => call("claude", "claude-result", profile),
         codexProfilePath: profile => call("codex", "codex-result", profile),
         homeDirectory: () => call("home", "/host"),
@@ -36,26 +35,47 @@ describe("complete host credential operations", () => {
         expect(f.trace).toEqual([]);
         expect(Object.keys(f.api).sort()).toEqual(["ensureCredentialHostDir", "resolveCredentialHostPath"]);
     });
-    it.each([undefined, "", "0", "false"])("uses single VITEST truthiness: %s", vitest => {
-        const f = fixture(); f.state.container = "docker"; f.state.vitest = vitest;
-        const values = vitest ? ["other", "other"] : ["mounted"];
-        expect(f.api.resolveCredentialHostPath(f.mount(values))).toBe(vitest ? "/host/.other" : "mounted");
-        expect(f.trace.slice(0, 2)).toEqual([["container"], ["vitest"]]);
+    it.each([undefined, ""])("returns a literal custom mount in container context for raw profile %s", profile => {
+        const f = fixture(); f.state.context = "container";
+        expect(f.api.resolveCredentialHostPath(f.mount(["/custom/mounted"]), profile)).toBe("/custom/mounted");
+        expect(f.trace).toEqual([["context"], ["mount", "/custom/mounted"]]);
     });
-    it("resolves non-profile mounts outside Docker", () => {
-        const f = fixture(); expect(f.api.resolveCredentialHostPath(f.mount(["one"]))).toBe("/host/.other");
-    });
-    it.each(["default", " work ", "work"])("resolves credential profiles %s", profile => {
+    it.each([undefined, ""])("delegates raw default profiles in host context: %s", profile => {
         const f = fixture();
         expect(f.api.resolveCredentialHostPath(f.mount(["/home/ccc/.codex"]), profile)).toBe("codex-result");
+        expect(f.trace).toContainEqual(["context"]);
+        expect(f.trace).toContainEqual(["codex", profile]);
         f.trace.length = 0;
         expect(f.api.resolveCredentialHostPath(f.mount(["/home/ccc/.claude"]), profile)).toBe("claude-result");
+        expect(f.trace).toContainEqual(["claude", profile]);
     });
-    it("reads live environments on subsequent calls", () => {
-        const f = fixture(); f.state.container = "docker";
-        expect(f.api.resolveCredentialHostPath(f.mount(["mounted"]))).toBe("mounted");
-        f.state.vitest = "1";
-        expect(f.api.resolveCredentialHostPath(f.mount(["/home/ccc/.claude"]))).toBe("claude-result");
+    it.each(["default", " work ", "work", " "])("delegates truthy raw profiles unchanged without observing context: %s", profile => {
+        for (const context of ["host", "container"] as const) {
+            const f = fixture(); f.state.context = context; f.state.fault = "context";
+            expect(f.api.resolveCredentialHostPath(f.mount(["/home/ccc/.codex"]), profile)).toBe("codex-result");
+            expect(f.trace).toContainEqual(["codex", profile]);
+            f.trace.length = 0;
+            expect(f.api.resolveCredentialHostPath(f.mount(["/home/ccc/.claude"]), profile)).toBe("claude-result");
+            expect(f.trace).toContainEqual(["claude", profile]);
+            expect(f.trace).not.toContainEqual(["context"]);
+        }
+    });
+    it("uses the host fallback for custom mounts on host and truthy profiles in container context", () => {
+        const f = fixture();
+        expect(f.api.resolveCredentialHostPath(f.mount(["other"]))).toBe("/host/.other");
+        f.state.context = "container"; f.trace.length = 0;
+        expect(f.api.resolveCredentialHostPath(f.mount(["other"]), "default")).toBe("/host/.other");
+        expect(f.trace).not.toContainEqual(["context"]);
+        expect(f.trace).toContainEqual(["join", "/host", ".other"]);
+    });
+    it("reads live semantic context on subsequent calls", () => {
+        const f = fixture(); const mount = f.mount(["mounted"]);
+        expect(f.api.resolveCredentialHostPath(mount)).toBe("/host/.other");
+        f.state.context = "container";
+        expect(f.api.resolveCredentialHostPath(mount)).toBe("mounted");
+        f.state.context = "host";
+        expect(f.api.resolveCredentialHostPath(mount)).toBe("/host/.other");
+        expect(f.trace.filter(row => row[0] === "context")).toHaveLength(3);
     });
     it("creates private credential directories", () => {
         const f = fixture();
@@ -67,8 +87,8 @@ describe("complete host credential operations", () => {
         expect(f.trace.filter(row => row[0] === "mkdir")).toEqual([["mkdir", "/host/.other", { recursive: true }]]);
         expect(f.trace.some(row => row[0] === "basename")).toBe(false);
     });
-    it.each(["container", "vitest", "mount", "claude", "codex", "home", "hostDir", "join", "mkdir", "parent", "basename"])("propagates %s identity and stops immediately", fault => {
-        const f = fixture(); f.state.fault = fault; f.state.container = "docker"; f.state.vitest = "1";
+    it.each(["context", "mount", "claude", "codex", "home", "hostDir", "join", "mkdir", "parent", "basename"])("propagates %s identity and stops immediately", fault => {
+        const f = fixture(); f.state.fault = fault;
         const path = fault === "claude" ? "/home/ccc/.claude" : ["codex", "basename", "parent", "mkdir"].includes(fault) ? "/home/ccc/.codex" : "other";
         let caught: unknown;
         try { f.api.ensureCredentialHostDir(f.mount(Array(10).fill(path))); } catch (error) { caught = error; }
@@ -88,7 +108,7 @@ describe("complete host credential operations", () => {
         const f = fixture();
         for (const name of Object.keys(f.ports)) {
             const ports = { ...f.ports, [name]: undefined } as unknown as HostCredentialPathPorts;
-            expect(() => createHostCredentialPaths(ports, packages)).toThrow();
+            expect(() => createHostCredentialPaths(ports, packages)).toThrow(new TypeError(`Host credential paths requires a callable ${name} port.`));
         }
         expect(f.trace).toEqual([]);
     });

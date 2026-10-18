@@ -14,8 +14,7 @@ export const DATA_DIR = join(homedir(), ".ccc");
 export const CLIPBOARD_FILES_CONTAINER_DIR = "/run/ccc/clipboard-files";
 
 function useMountedCredentialPaths(): boolean {
-    return process.env.container === CONTAINER_ENV_VALUE
-        && !Object.keys(process.env).some((key) => key === "VITEST" || key.startsWith("VITEST_"));
+    return process.env.container === CONTAINER_ENV_VALUE;
 }
 
 // Host paths come from home-layout.ts (doc/common/REQ__ccc-home-layout.md).
