@@ -8845,6 +8845,9 @@ export function defaultProviderCommandRunner(command: ProviderCommand, options: 
             scheduleWindowsLauncherCleanup(invocation.cleanupPath, child);
             child.once("error", () => undefined);
             child.unref();
+            if (child.pid === undefined) {
+                return { mode: "detached", provider: command.provider, executable: command.executable, args: command.args || [], status: null, error: "detached-provider-launch-unconfirmed" };
+            }
             return { mode: "detached", provider: command.provider, executable: command.executable, args: command.args || [], pid: child.pid, status: 0 };
         } catch (error) {
             return { mode: "detached", provider: command.provider, executable: command.executable, args: command.args || [], status: null, error: error instanceof Error ? error.message : String(error) };

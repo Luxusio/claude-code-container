@@ -11666,7 +11666,7 @@ vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import
 
 // The controller lives outside the broker process. A synchronous native wait cannot
 // delay this controller's deadline or release the gate before responsiveness is proved.
-type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup";
+type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup" | "macos-spawn-error";
 type AndroidHttpFixtureReply = { status: number; body: Record<string, any> };
 type AndroidHttpFixtureReady = { baseUrl: string; owners: Array<{ id: string; token: string; file: string }>; initial: Record<string, unknown> };
 
@@ -11787,7 +11787,7 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
         return {id, token: broker.deviceBrokerOwnerToken(id), file: path.join(settings.home, '.ccc', 'devices', 'owners', id, macos ? 'macos' : 'android', 'devices.json')};
     });
     const initial = macos ? {id: 'responsive-mac', backend: 'macos-vm', provider: 'tart', providerInstance: 'ccc-' + owners[0].id + '-responsive-mac',
-        status: settings.phase === 'macos-boot' ? 'stopped' : 'starting', name: 'Responsive Mac', createdAt: '2026-10-19T00:00:00.000Z',
+        status: ['macos-boot', 'macos-spawn-error'].includes(settings.phase) ? 'stopped' : 'starting', name: 'Responsive Mac', createdAt: '2026-10-19T00:00:00.000Z',
         preferences: {keep: 'exact-publication-witness'}, ...(settings.phase === 'macos-owner-cleanup' ? {lifecycle: {runtimeId: 'owned-pending-mac', operation: 'start', claimedAt: '2026-10-19T00:00:01.000Z'}} : {})}
         : {id: 'responsive-pixel', backend: 'android-emulator', status: ['boot', 'auxiliary-stopped'].includes(settings.phase) ? 'stopped' : 'running',
         name: 'Responsive Pixel', port: 5586, serial: 'emulator-5586', avdName: 'ccc-' + owners[0].id + '-responsive-pixel',
@@ -11867,6 +11867,12 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
     const brokerModule = import.meta.resolve('@ccc/device-lab/device-lab-broker.js');
     expect(new URL(brokerModule).pathname, 'current emitted broker is required').toMatch(/\/dist\/device-lab-broker\.js$/);
     for (const tool of ['adb', 'emulator', 'avdmanager', 'tart']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
+    if (phase === 'macos-spawn-error') {
+        // An existing executable reaches the real POSIX spawn boundary, whose
+        // missing interpreter yields an error event without assigning a PID.
+        // Its shebang deliberately bypasses the Node-script fixture routing.
+        writeFileSync(join(bin, 'tart'), '#!' + join(root, 'missing-fixture-interpreter') + '\n', {mode: 0o700});
+    }
     const preload = join(root, 'fixture-preload.cjs'), worker = join(root, 'broker.cjs'), settings = join(root, 'settings.json'), appiumFixture = join(root, 'appium.cjs');
     writeFileSync(preload, nodeProviderFixturePreloadSource(bin) + fakeAndroidLauncherPreloadSource(bin));
     writeFileSync(worker, androidHttpFixtureBroker);
@@ -12073,6 +12079,25 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
 });
 
 describe('emitted default-runner macOS HTTP responsiveness', () => {
+    it.runIf(process.platform !== 'win32')('retains recovery when default detached launch cannot obtain a native PID', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('macos-spawn-error');
+        try {
+            const start = fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: 'responsive-mac', waitForBoot: false});
+            const reply = await androidHttpFixtureBounded(start.result, 5000, 'default detached spawn error did not settle');
+            expect(reply).toMatchObject({status: 502, body: {ok: false, error: 'provider-command-failed', result: {invoked: true,
+                device: {status: 'starting', lifecycle: {runtimeId: expect.any(String), operation: 'start', claimedAt: expect.any(String)}},
+                execution: {mode: 'detached', mutatesHost: true, command: {provider: 'tart', status: null, error: 'detached-provider-launch-unconfirmed'}}}}});
+            expect(reply.body.result.execution.command).not.toHaveProperty('pid');
+            expect(reply.body).not.toHaveProperty('cause');
+            expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, status: 'starting', lifecycle: {
+                runtimeId: expect.any(String), operation: 'start', claimedAt: expect.any(String),
+            }})]);
+            expect(fixture.nativeCalls(), 'the invalid-shebang executable never entered an owned native actor').toEqual([]);
+            expect(existsSync(join(fixture.home, 'active-macos'))).toBe(false);
+            expect(await fixture.rpc(1, 'broker.echo', {afterNativeSpawnError: true}).result).toMatchObject({status: 200, body: {ok: true}});
+        } finally {await fixture.dispose();}
+    });
+
     it('yields during the native IP probe while a reserved start retains the same-device operation lock', {timeout: 30000}, async () => {
         const fixture = await createAndroidHttpFixture('macos-boot');
         try {
