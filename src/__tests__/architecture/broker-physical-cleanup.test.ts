@@ -530,6 +530,13 @@ function deferredCleanup<T>() {
     return { promise, resolve };
 }
 
+async function awaitCleanupEffect(entered: Promise<void>, pending: Promise<unknown>, effect: string) {
+    await Promise.race([
+        entered,
+        pending.then(() => { throw new Error(`Owner cleanup settled before ${effect} entered.`); }),
+    ]);
+}
+
 describe("asynchronous owner auxiliary cleanup", () => {
     const target = { backend: "android-emulator", stateKey: "android", deviceId: "emu" };
     const ended: CleanupTermination = { ok: true, ended: true, receipt: { attempted: true, ok: true } };
@@ -689,6 +696,124 @@ describe("asynchronous owner auxiliary cleanup", () => {
         expect(publish).toHaveBeenCalledOnce();
         expect(current).toBe(successor);
         expect(initial.appium).toEqual({ serverPid: 21 }); expect(initial.recording).toEqual({ pid: 22 });
+    });
+});
+
+describe("asynchronous owner cleanup selection", () => {
+    const target = { backend: "android-emulator", stateKey: "android", deviceId: "emu" };
+    const ended: CleanupTermination = { ok: true, ended: true, receipt: { attempted: true, ok: true } };
+    const selections = [
+        { name: "a stopped Android device", status: "stopped", params: {} },
+        { name: "stopDevices false", status: "running", params: { stopDevices: false } },
+    ];
+
+    it.each(selections)("awaits selected native effects under the device operation for $name", async ({ status, params }) => {
+        const ports = cleanupPorts(), initial = { id: "emu", status, appium: { serverPid: 21 }, recording: { pid: 22 } };
+        const appium = deferredCleanup<CleanupTermination>(), recording = deferredCleanup<CleanupTermination>();
+        const appiumEntered = deferredCleanup<void>(), recordingEntered = deferredCleanup<void>(), events: string[] = [];
+        let lockHeld = false;
+        ports.stateKeys = ["android"]; ports.read = () => [initial];
+        ports.withDeviceOperation = async (_owner, _state, _id, operation) => {
+            expect(lockHeld).toBe(false); lockHeld = true; events.push("lock");
+            try { return await operation(); } finally { lockHeld = false; events.push("unlock"); }
+        };
+        ports.stopLocked = async () => { throw new Error("auxiliary-only-cleanup-must-not-stop-device"); };
+        ports.terminateAppium = () => { throw new Error("selected-Android-cleanup-must-not-use-sync-Appium"); };
+        ports.signalRecording = () => { throw new Error("selected-Android-cleanup-must-not-use-sync-recorder"); };
+        const effects: BrokerOwnerAuxiliaryAsyncPorts = {
+            terminateAppium: (_runtime, stillCurrent) => {
+                expect(lockHeld).toBe(true); expect(stillCurrent()).toBe(true);
+                events.push("appium"); appiumEntered.resolve(undefined); return appium.promise;
+            },
+            signalRecording: (_runtime, stillCurrent) => {
+                expect(lockHeld).toBe(true); expect(stillCurrent()).toBe(true);
+                events.push("recording"); recordingEntered.resolve(undefined); return recording.promise;
+            },
+        };
+        const select = vi.fn((selected: typeof target) => { expect(selected).toEqual(target); return effects; });
+        ports.auxiliaryAsyncEffects = select;
+        const publish = vi.fn(ports.publish);
+        ports.publish = (...args) => { expect(lockHeld).toBe(true); events.push("publish"); return publish(...args); };
+        const pending = createBrokerOwnerCleanupApplication(ports).cleanup("owner", params);
+        try {
+            await awaitCleanupEffect(appiumEntered.promise, pending, "Appium termination");
+            expect(events).toEqual(["lock", "appium"]); expect(lockHeld).toBe(true); expect(publish).not.toHaveBeenCalled();
+            appium.resolve(ended);
+            await awaitCleanupEffect(recordingEntered.promise, pending, "recorder termination");
+            expect(events).toEqual(["lock", "appium", "recording"]); expect(lockHeld).toBe(true); expect(publish).not.toHaveBeenCalled();
+            recording.resolve(ended);
+            expect(await pending).toMatchObject({ kind: "cleaned", changedDevices: 1, failed: 0, results: [{
+                stateKey: "android", changed: true, devices: [{ deviceId: "emu", changed: true, appium: { cleared: true }, recording: { cleared: true } }],
+            }] });
+            expect(events).toEqual(["lock", "appium", "recording", "publish", "unlock"]);
+            expect(lockHeld).toBe(false); expect(select).toHaveBeenCalledExactlyOnceWith(target);
+            expect(publish).toHaveBeenCalledExactlyOnceWith("owner", "android", "emu", initial, { ...initial, appium: null, recording: null, updatedAt: "now" });
+        } finally {
+            appium.resolve(ended); recording.resolve(ended);
+            await pending.catch(() => undefined);
+        }
+    });
+
+    it.each(selections)("preserves the successor and withholds publication after selected cleanup waits for $name", async ({ status, params }) => {
+        const ports = cleanupPorts(), initial = {
+            id: "emu", status, appium: { serverPid: 21 }, recording: { pid: 22 },
+            minimizeWatchdog: { processOwner: "host-broker", startedBy: "broker.windows-sandbox.minimize-watchdog" },
+        };
+        const successor = { ...initial, generation: "new", recording: { pid: 32 } };
+        const recording = deferredCleanup<CleanupTermination>(), entered = deferredCleanup<void>();
+        let current = initial, lockHeld = false;
+        ports.stateKeys = ["android"]; ports.read = () => [current];
+        ports.withDeviceOperation = async (_owner, _state, _id, operation) => {
+            lockHeld = true;
+            try { return await operation(); } finally { lockHeld = false; }
+        };
+        ports.stopLocked = async () => { throw new Error("auxiliary-only-cleanup-must-not-stop-device"); };
+        ports.terminateAppium = () => { throw new Error("selected-Android-cleanup-must-not-use-sync-Appium"); };
+        ports.signalRecording = () => { throw new Error("selected-Android-cleanup-must-not-use-sync-recorder"); };
+        ports.auxiliaryAsyncEffects = () => ({
+            terminateAppium: async () => ended,
+            signalRecording: () => { expect(lockHeld).toBe(true); entered.resolve(undefined); return recording.promise; },
+        });
+        const publish = vi.fn(ports.publish), watchdog = vi.fn(ports.cancelWatchdog);
+        ports.publish = publish; ports.cancelWatchdog = watchdog;
+        const pending = createBrokerOwnerCleanupApplication(ports).cleanup("owner", params);
+        try {
+            await awaitCleanupEffect(entered.promise, pending, "recorder termination");
+            expect(lockHeld).toBe(true); expect(publish).not.toHaveBeenCalled(); expect(watchdog).not.toHaveBeenCalled();
+            current = successor;
+            recording.resolve(ended);
+            expect(await pending).toMatchObject({ kind: "cleaned", changedDevices: 0, failed: 1, results: [{
+                changed: false, devices: [{ deviceId: "emu", changed: false, stateConflict: true, appium: { cleared: true }, recording: { cleared: true } }],
+            }] });
+            expect(lockHeld).toBe(false); expect(current).toBe(successor);
+            expect(publish).not.toHaveBeenCalled(); expect(watchdog).not.toHaveBeenCalled();
+        } finally {
+            recording.resolve(ended);
+            await pending.catch(() => undefined);
+        }
+    });
+
+    it.each([false, true])("keeps physical native cleanup synchronous without consulting the async selector (detachPhysical=%s)", async detachPhysical => {
+        const ports = cleanupPorts(), initial = { id: "phone", status: "attached", serial: "usb", appium: { serverPid: 21 } };
+        let guardHeld = false, guardCalls = 0;
+        ports.stateKeys = ["android-device"]; ports.read = () => [initial];
+        ports.auxiliaryAsyncEffects = () => { throw new Error("physical-cleanup-must-not-select-async-effects"); };
+        ports.withLeaseGuard = (_owner, _state, _record, operation) => {
+            guardCalls += 1; guardHeld = true;
+            try {
+                const result = operation({ handle: "claim", attempted: true, admission: { kind: "exact" }, canRestore: true });
+                expect(result).not.toBeInstanceOf(Promise);
+                return result;
+            } finally { guardHeld = false; }
+        };
+        const terminate = vi.fn(() => { expect(guardHeld).toBe(detachPhysical); return ended; });
+        const release = vi.fn(ports.releaseLease), publish = vi.fn(ports.publish);
+        ports.terminateAppium = terminate; ports.releaseLease = release;
+        ports.publish = (...args) => { expect(guardHeld).toBe(detachPhysical); return publish(...args); };
+        expect(await createBrokerOwnerCleanupApplication(ports).cleanup("owner", { detachPhysical })).toMatchObject({ kind: "cleaned", changedDevices: 1, failed: 0 });
+        expect(guardCalls).toBe(detachPhysical ? 1 : 0); expect(guardHeld).toBe(false);
+        expect(terminate).toHaveBeenCalledOnce(); expect(publish).toHaveBeenCalledOnce();
+        expect(release).toHaveBeenCalledTimes(detachPhysical ? 1 : 0);
     });
 });
 

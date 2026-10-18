@@ -115,6 +115,17 @@ export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevices
     owner.auxiliaryAsync("owner", target, {}, withoutAsyncRecording);
     // @ts-expect-error an awaited successful signal still requires semantic exit proof
     owner.auxiliaryAsync("owner", target, {}, { ...asyncEffects, signalRecording: async () => ({ ok: true, receipt: { ok: true } }) });
+    createBrokerOwnerCleanupApplication({ ...cleanup, auxiliaryAsyncEffects: selected => {
+        const backend: string = selected.backend, stateKey: string = selected.stateKey, deviceId: string = selected.deviceId;
+        void [backend, deviceId];
+        return stateKey === "android" ? asyncEffects : null;
+    } });
+    // @ts-expect-error selecting native effects is synchronous before awaiting an auxiliary-only cleanup
+    createBrokerOwnerCleanupApplication({ ...cleanup, auxiliaryAsyncEffects: async () => asyncEffects });
+    // @ts-expect-error a selected async cleanup still requires both native termination capabilities
+    createBrokerOwnerCleanupApplication({ ...cleanup, auxiliaryAsyncEffects: () => ({ terminateAppium: asyncEffects.terminateAppium }) });
+    // @ts-expect-error the physical lease guard must return the caller's synchronous transaction value
+    createBrokerOwnerCleanupApplication({ ...cleanup, withLeaseGuard: async (ownerId, stateKey, record, operation) => cleanup.withLeaseGuard(ownerId, stateKey, record, operation) });
     void [synchronousAuxiliary, synchronousCleanupDevice, asynchronousAuxiliary, synchronousEffectsAccepted, asyncAppium, asyncRecording];
     const { observePhysicalStop, ...withoutObservation } = physical;
     // @ts-expect-error the physical stop observation is required

@@ -82,7 +82,7 @@ export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: Brok
     function auxiliary(ownerId: string, target: CleanupCommandTarget, expected: unknown): AuxiliaryOutcome {
         return publishAuxiliary(ownerId, target, expected, inspectAuxiliary(ownerId, target, expected));
     }
-    async function auxiliaryAsync(ownerId: string, target: CleanupCommandTarget, expected: unknown, effects: BrokerOwnerAuxiliaryAsyncPorts): Promise<AuxiliaryOutcome> {
+    async function prepareAuxiliaryAsync(ownerId: string, target: CleanupCommandTarget, expected: unknown, effects: BrokerOwnerAuxiliaryAsyncPorts) {
         const inspection = captureAuxiliary(ownerId, target, expected);
         let appiumSignal: CleanupSignal | null = null;
         if (inspection.record?.appium != null && inspection.stillCurrent()) {
@@ -99,8 +99,11 @@ export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: Brok
                 recordingSignal = settledRecordingSignal(inspection.recording, termination);
             }
         }
-        const pending = inspection.finish(appiumSignal, recordingSignal, inspection.cancelWatchdog());
-        return publishAuxiliary(ownerId, target, expected, pending);
+        return () => inspection.finish(appiumSignal, recordingSignal, inspection.cancelWatchdog());
+    }
+    async function auxiliaryAsync(ownerId: string, target: CleanupCommandTarget, expected: unknown, effects: BrokerOwnerAuxiliaryAsyncPorts): Promise<AuxiliaryOutcome> {
+        const complete = await prepareAuxiliaryAsync(ownerId, target, expected, effects);
+        return publishAuxiliary(ownerId, target, expected, complete());
     }
     function cleanupDevice(ownerId: string, stateKey: string, device: unknown, options: CleanupOptions, guard?: CleanupLeaseGuard<Handle>): CleanupDeviceOutcome<Receipt> {
         if (!cleanupRecord(device) || typeof device.id !== 'string' || !device.id)
@@ -115,7 +118,11 @@ export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: Brok
             return {device, changed: false, result: {stateKey, backend, deviceId, changed: false,
                 physical: {detached: false, poweredOff: false, disconnected: false, lease: ports.releaseLease(ownerId, guard)}}};
         }
-        const pending = inspectAuxiliary(ownerId, target, device);
+        return finishCleanupDevice(ownerId, target, device, options, inspectAuxiliary(ownerId, target, device), guard);
+    }
+    function finishCleanupDevice(ownerId: string, target: CleanupCommandTarget, device: PhysicalRecord, options: CleanupOptions, pending: {result: AuxiliaryCleanup; device: unknown; changed: boolean}, guard?: CleanupLeaseGuard<Handle>): CleanupDeviceOutcome<Receipt> {
+        const {stateKey, backend, deviceId} = target;
+        const physical = isPhysicalState(stateKey);
         const result: CleanupDeviceReport<Receipt> = {
             stateKey, backend, deviceId, changed: pending.changed,
             ...(device.appium != null ? {appium: pending.result.appium} : {}),
@@ -180,6 +187,7 @@ export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: Brok
                                     stateKey, backend: ports.stateBackends.get(stateKey) || stateKey, deviceId, skipped: true, reason: 'device-no-longer-present'
                                 }
                             };
+                        const target = {backend: ports.stateBackends.get(stateKey) || stateKey, stateKey, deviceId};
                         if (stopDevices && shouldStopOwnerDevice(stateKey, latest.status)) {
                             const backend = ports.stateBackends.get(stateKey) || stateKey;
                             const stopped = await ports.stopLocked(ownerId, {backend, stateKey, deviceId}, latest);
@@ -194,10 +202,12 @@ export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: Brok
                                 ...(stopped.stateConflict || stopped.auxiliary?.stateConflict ? {stateConflict: true} : {}),
                             }};
                         }
+                        const effects = !isPhysicalState(stateKey) ? ports.auxiliaryAsyncEffects?.(target) : null;
+                        const completeAuxiliary = effects ? await prepareAuxiliaryAsync(ownerId, target, latest, effects) : null;
                         const cleanupAndPersist = (guard?: CleanupLeaseGuard<Handle>): {changed:boolean;result:CleanupDeviceReport<Receipt>} => {
-                            const runtime = cleanupDevice(ownerId, stateKey, latest, {
-                                stopDevices, detachPhysical
-                            }, guard);
+                            const runtime = completeAuxiliary
+                                ? finishCleanupDevice(ownerId, target, latest, {stopDevices, detachPhysical}, completeAuxiliary())
+                                : cleanupDevice(ownerId, stateKey, latest, {stopDevices, detachPhysical}, guard);
                             let persisted = !runtime.changed, stateConflict = false;
                             if (runtime.changed) {
                                 try {

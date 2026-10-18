@@ -172,12 +172,20 @@ describe("Android emulator lifecycle original authenticated broker witnesses", (
             const error = `Timed out waiting for Android emulator emulator-${original.port} to boot`;
             expect(result).toMatchObject({ status: 502, body: { ok: false, result: {
                 boot: { ready: false, skipped: false, provider: "adb", error: { mode: "exec", provider: "adb", status: 0, stdout: "0\n", stderr: "native boot stderr", error, executable: "/native/adb", pid: 2718, signal: "SIGTERM", outputLimitExceeded: true } },
-                execution: { command: { androidBoot: { ok: false, ready: false, error: { error }, attempts: [{ status: 0, stdout: "0\n" }] } } },
+                execution: { command: { androidBoot: { ok: false, ready: false, error: { error } } } },
             } } });
             const payload = result.body.result as { boot: { error: Record<string, unknown> }; execution: { command: { androidBoot: Record<string, unknown> & { attempts: Record<string, unknown>[] } } } };
-            for (const field of ["ok", "available", "serialPresent", "ready", "receipt"]) {
-                expect(payload.boot.error).not.toHaveProperty(field);
-                expect(payload.execution.command.androidBoot.attempts[0]).not.toHaveProperty(field);
+            for (const field of ["ok", "available", "serialPresent", "ready", "receipt"]) expect(payload.boot.error).not.toHaveProperty(field);
+            const attempts = payload.execution.command.androidBoot.attempts;
+            // Native pacing may wake before a fractional deadline; only retained evidence is bounded.
+            expect(attempts.length).toBeGreaterThan(0); expect(attempts.length).toBeLessThanOrEqual(8);
+            for (const attempt of attempts) {
+                expect(attempt).toMatchObject({ mode: "exec", provider: "adb", executable: "/native/adb",
+                    args: ["-s", `emulator-${original.port}`, "shell", "getprop", "sys.boot_completed"],
+                    status: 0, stdout: "0\n", stderr: "native boot stderr", pid: 2718, signal: "SIGTERM", outputLimitExceeded: true });
+                for (const field of ["ok", "available", "serialPresent", "ready", "receipt"]) expect(attempt).not.toHaveProperty(field);
+                if (timedOut === undefined) expect(attempt).not.toHaveProperty("timedOut");
+                else expect(attempt.timedOut).toBe(true);
             }
             for (const field of ["reason", "serial", "last"]) expect(payload.execution.command.androidBoot).not.toHaveProperty(field);
             if (timedOut === undefined) expect(payload.boot.error).not.toHaveProperty("timedOut");

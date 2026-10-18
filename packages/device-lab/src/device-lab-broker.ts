@@ -6613,6 +6613,10 @@ function brokerOwnerCleanupApplication(normalized: NormalizedBrokerOptions) {
         restoreLease: restoreCleanupLease,
         terminateAppium: (runtime, stillCurrent) => cleanupAppiumTermination(runtime, deviceOptions, stillCurrent),
         signalRecording: (runtime, stillCurrent) => cleanupRecordingTermination(runtime, deviceOptions, stillCurrent),
+        auxiliaryAsyncEffects: target => target.stateKey === "android" ? {
+            terminateAppium: (runtime, current) => cleanupAppiumTerminationAsync(runtime, deviceOptions, current),
+            signalRecording: (runtime, current) => cleanupRecordingTerminationAsync(runtime, deviceOptions, current),
+        } : null,
         cancelWatchdog: (ownerId, deviceId) => cleanupExitBudget(deviceOptions, 1) > 0
             ? cancelBrokerWindowsMinimizeWatchdog(ownerId, deviceId)
             : { attempted: false, ok: false, reason: "cleanup-operation-deadline-exceeded" },
@@ -9166,7 +9170,14 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
 async function runAndroidProviderCommand(normalized: NormalizedBrokerOptions, command: ProviderCommand, settings: ProviderCommandRunnerOptions): Promise<ProviderCommandResult> {
     if (normalized.cleanupDeadlineAt !== undefined) {
         assertCleanupDeadline(normalized);
-        settings = { ...settings, timeoutMs: Math.max(1, Math.floor(cleanupExitBudget(normalized, settings.timeoutMs))), remainingMs: () => cleanupExitBudget(normalized, Infinity) };
+        const available = Math.floor(cleanupExitBudget(normalized, Infinity));
+        // Keep the existing native cleanup grace INSIDE the captured parent
+        // allowance; spending it all on execution would leave no kill authority.
+        const cleanupReserve = normalized.usesDefaultCommandRunner && command.mode === "exec"
+            ? Math.min(10000, Math.max(1, Math.floor(settings.cleanupGraceMs ?? 1000))) : 0;
+        if (cleanupReserve && available <= cleanupReserve + 1) throw new CleanupOperationDeadlineError();
+        settings = { ...settings, timeoutMs: Math.max(1, Math.min(settings.timeoutMs, available - cleanupReserve)),
+            remainingMs: () => cleanupExitBudget(normalized, Infinity) };
     }
     return hyperVProviderCommandRunner(normalized, command, settings);
 }

@@ -11663,7 +11663,7 @@ vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import
 
 // The controller lives outside the broker process. A synchronous native wait cannot
 // delay this controller's deadline or release the gate before responsiveness is proved.
-type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup";
+type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop";
 type AndroidHttpFixtureReply = { status: number; body: Record<string, any> };
 type AndroidHttpFixtureReady = { baseUrl: string; owners: Array<{ id: string; token: string; file: string }>; initial: Record<string, unknown> };
 
@@ -11724,10 +11724,33 @@ async function main() {
 main().catch(error => {console.error(error); process.exitCode = 1;});
 `;
 
+const androidHttpFixtureAppium = String.raw`
+const fs = require('node:fs'), path = require('node:path');
+const home = process.argv[2], phase = process.argv[3];
+const file = name => path.join(home, name);
+let stopping = false;
+process.on('SIGTERM', () => {
+    if (stopping) return;
+    stopping = true;
+    fs.writeFileSync(file('entered-' + phase), JSON.stringify({pid: process.pid, tool: 'owned-appium'}));
+});
+process.once('disconnect', () => process.exit(0));
+const timer = setInterval(() => {
+    if (fs.existsSync(file('shutdown')) || stopping && fs.existsSync(file('release-' + phase))) {
+        clearInterval(timer);
+        process.exit(0);
+    }
+}, 10);
+setTimeout(() => {console.error('owned auxiliary fixture deadline exceeded'); process.exit(1);}, 20000).unref();
+fs.writeFileSync(file('native-' + process.pid + '.json'), JSON.stringify({pid: process.pid, tool: 'owned-appium', args: []}));
+fs.appendFileSync(file('native.log'), JSON.stringify({pid: process.pid, tool: 'owned-appium', args: []}) + '\n');
+process.send({ready: true});
+`;
+
 const androidHttpFixtureBroker = String.raw`
 const fs = require('node:fs'), path = require('node:path');
 const settings = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-let server;
+let server, appiumChild, appiumExit;
 const deadline = setTimeout(() => { console.error('owned broker fixture deadline exceeded'); process.exit(1); }, 25000);
 (async () => {
     // This is a normal Node import of the current emitted package graph. No test
@@ -11738,15 +11761,31 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
         broker.registerDeviceBrokerOwner(project);
         return {id, token: broker.deviceBrokerOwnerToken(id), file: path.join(settings.home, '.ccc', 'devices', 'owners', id, 'android', 'devices.json')};
     });
-    const initial = {id: 'responsive-pixel', backend: 'android-emulator', status: settings.phase === 'boot' ? 'stopped' : 'running',
+    const initial = {id: 'responsive-pixel', backend: 'android-emulator', status: ['boot', 'auxiliary-stopped'].includes(settings.phase) ? 'stopped' : 'running',
         name: 'Responsive Pixel', port: 5586, serial: 'emulator-5586', avdName: 'ccc-' + owners[0].id + '-responsive-pixel',
         avdRoot: path.join(settings.home, '.android', 'avd'), createdAt: '2026-10-19T00:00:00.000Z',
         preferences: {keep: 'exact-publication-witness'}, ...(settings.phase === 'owner-cleanup' ? {appium: {sessionId: 'owned-association'}} : {})};
+    if (settings.phase.startsWith('auxiliary-')) {
+        appiumChild = require('node:child_process').spawn(process.execPath, [settings.appiumFixture, settings.home, settings.phase],
+            {windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc']});
+        appiumExit = new Promise(resolve => appiumChild.once('close', resolve));
+        const started = new Promise((resolve, reject) => {
+            appiumChild.once('error', reject);
+            appiumChild.once('message', message => message?.ready === true ? resolve() : reject(Error('invalid owned Appium readiness')));
+            appiumChild.once('exit', () => reject(Error('owned Appium exited before readiness')));
+        });
+        await started;
+        const identity = await import(settings.identityModule);
+        const processIdentity = await identity.readDeviceRuntimeProcessIdentityAsync(appiumChild.pid);
+        if (!processIdentity || appiumChild.exitCode !== null || appiumChild.signalCode !== null) throw Error('owned Appium identity unavailable');
+        initial.appium = {authority: 'host-broker', processOwner: 'host-broker', startedBy: 'broker.appium.start',
+            runtimeId: 'owned-auxiliary-appium', serverPid: appiumChild.pid, processIdentity};
+    }
     if (settings.phase !== 'create') {
         fs.mkdirSync(path.dirname(owners[0].file), {recursive: true});
         fs.writeFileSync(owners[0].file, JSON.stringify({devices: [initial]}));
         fs.writeFileSync(path.join(settings.home, 'avd-name'), initial.avdName);
-        if (settings.phase !== 'boot') fs.writeFileSync(path.join(settings.home, 'active-emulator-5586'), '');
+        if (initial.status === 'running') fs.writeFileSync(path.join(settings.home, 'active-emulator-5586'), '');
     }
     server = broker.createDeviceBrokerServer({cwd: settings.projects[0], host: '127.0.0.1', port: 0,
         commandTimeoutMs: settings.phase === 'owner-cleanup' ? 2000 : 10000,
@@ -11755,13 +11794,17 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
     process.send({baseUrl: 'http://127.0.0.1:' + server.address().port, owners, initial});
     const shutdown = async () => {
         fs.writeFileSync(path.join(settings.home, 'shutdown'), '');
+        if (appiumChild && appiumChild.exitCode === null && appiumChild.signalCode === null) {
+            const fallback = setTimeout(() => appiumChild.kill('SIGKILL'), 1000);
+            try {await appiumExit;} finally {clearTimeout(fallback);}
+        }
         await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
         clearTimeout(deadline);
         if (process.connected) process.disconnect();
     };
     process.once('message', () => {void shutdown().catch(error => {console.error(error); process.exit(1);});});
     process.once('disconnect', () => {if (server.listening) void shutdown();});
-})().catch(error => {console.error(error); clearTimeout(deadline); process.exitCode = 1; if (process.connected) process.disconnect();});
+})().catch(error => {console.error(error); clearTimeout(deadline); process.exitCode = 1; if (appiumChild && appiumChild.exitCode === null) appiumChild.kill('SIGKILL'); if (process.connected) process.disconnect();});
 `;
 
 async function androidHttpFixtureBounded<T>(operation: Promise<T>, milliseconds: number, label: string): Promise<T> {
@@ -11769,6 +11812,17 @@ async function androidHttpFixtureBounded<T>(operation: Promise<T>, milliseconds:
     try {
         return await Promise.race([operation, new Promise<never>((_, reject) => {timer = setTimeout(() => reject(new Error(label)), milliseconds);})]);
     } finally { if (timer) clearTimeout(timer); }
+}
+
+function androidHttpFixtureProcessRunning(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        // A zombie cannot resume the held command or perform its delayed stop effect.
+        return process.platform !== 'linux' || !/\) Z /.test(readFileSync('/proc/' + pid + '/stat', 'utf8'));
+    } catch (error) {
+        if (['ESRCH', 'ENOENT'].includes(String((error as NodeJS.ErrnoException).code))) return false;
+        throw error;
+    }
 }
 
 async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
@@ -11781,11 +11835,13 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
     const brokerModule = import.meta.resolve('@ccc/device-lab/device-lab-broker.js');
     expect(new URL(brokerModule).pathname, 'current emitted broker is required').toMatch(/\/dist\/device-lab-broker\.js$/);
     for (const tool of ['adb', 'emulator', 'avdmanager']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
-    const preload = join(root, 'fixture-preload.cjs'), worker = join(root, 'broker.cjs'), settings = join(root, 'settings.json');
+    const preload = join(root, 'fixture-preload.cjs'), worker = join(root, 'broker.cjs'), settings = join(root, 'settings.json'), appiumFixture = join(root, 'appium.cjs');
     writeFileSync(preload, nodeProviderFixturePreloadSource(bin) + fakeAndroidLauncherPreloadSource(bin));
     writeFileSync(worker, androidHttpFixtureBroker);
+    writeFileSync(appiumFixture, androidHttpFixtureAppium);
     writeFileSync(settings, JSON.stringify({brokerModule, ownerModule: import.meta.resolve('@ccc/device-lab/device-lab-owner.js'),
-        home, bin, phase, projects: [join(root, 'project-a'), join(root, 'project-b')]}));
+        identityModule: import.meta.resolve('@ccc/device-lab/device-lab-process-identity.js'),
+        home, bin, phase, appiumFixture, projects: [join(root, 'project-a'), join(root, 'project-b')]}));
     const env: NodeJS.ProcessEnv = {...process.env, ...deviceLabTestHomeEnvironment(home), TMPDIR: temporary, TMP: temporary, TEMP: temporary};
     for (const key of Object.keys(env)) if (/^(?:CCC_|ANDROID_)/i.test(key)) delete env[key];
     Object.assign(env, {ANDROID_AVD_HOME: join(home, '.android', 'avd'), CCC_ANDROID_HTTP_PHASE: phase, FAKE_ANDROID_LOG: join(home, 'launcher.log')});
@@ -11799,7 +11855,7 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
     const exited = new Promise<void>((resolveExit, reject) => child.once('close', code => code === 0 ? resolveExit() : reject(spawnError || new Error('owned broker exited ' + code + ': ' + diagnostics))));
     void exited.catch(() => undefined);
     const requests: Promise<AndroidHttpFixtureReply>[] = [];
-    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup']) writeFileSync(join(home, 'release-' + name), '');};
+    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup', 'auxiliary-stopped', 'auxiliary-no-stop']) writeFileSync(join(home, 'release-' + name), '');};
     const dispose = async () => {
         release();
         writeFileSync(join(home, 'shutdown'), '');
@@ -11810,14 +11866,7 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
             await vi.waitFor(() => {
                 for (const name of readdirSync(home).filter(name => /^native-\d+\.json$/.test(name))) {
                     const {pid} = JSON.parse(readFileSync(join(home, name), 'utf8')) as {pid: number};
-                    let running = false;
-                    try {
-                        process.kill(pid, 0);
-                        running = process.platform !== 'linux' || !/\) Z /.test(readFileSync('/proc/' + pid + '/stat', 'utf8'));
-                    } catch (error) {
-                        if (!['ESRCH', 'ENOENT'].includes(String((error as NodeJS.ErrnoException).code))) throw error;
-                    }
-                    expect(running, 'owned fake native process ' + pid + ' survived fixture release').toBe(false);
+                    expect(androidHttpFixtureProcessRunning(pid), 'owned fake native process ' + pid + ' survived fixture release').toBe(false);
                 }
             }, {timeout: 5000, interval: 10});
         } finally {
@@ -11929,6 +11978,9 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             const startedAt = performance.now();
             const cleanup = fixture.rpc(0, 'broker.cleanup.owner', {backend: 'android-emulator', stopDevices: true});
             await fixture.waitForGate(cleanup);
+            const {pid: nativePid} = JSON.parse(readFileSync(join(fixture.home, 'entered-owner-cleanup'), 'utf8')) as {pid: number};
+            expect(Number.isSafeInteger(nativePid) && nativePid > 0).toBe(true);
+            const nativeEndedAtReply = cleanup.result.then(() => !androidHttpFixtureProcessRunning(nativePid), () => false);
             await fixture.assertResponsive(cleanup);
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null, status: 'running'})]);
             // Keep the native gate CLOSED. The original parent allowance must bound
@@ -11936,6 +11988,9 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             const reply = await androidHttpFixtureBounded(cleanup.result, 6000, 'owner cleanup reset its captured Android execution allowance');
             expect(performance.now() - startedAt).toBeLessThan(7000);
             expect(existsSync(join(fixture.home, 'release-owner-cleanup'))).toBe(false);
+            expect(await nativeEndedAtReply, 'cleanup RPC must not return and release its device lock while its native stop can still resume').toBe(true);
+            expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
+            expect(existsSync(join(fixture.home, 'active-emulator-5586'))).toBe(true);
             expect(reply).toMatchObject({status: 200, body: {ok: false, result: {changedDevices: 1, failed: 1,
                 results: [{stateKey: 'android', devices: [{deviceId: 'responsive-pixel', appium: {cleared: true},
                     stop: {attempted: true, ok: false, execution: {provider: 'adb', timedOut: true, status: null}}}]}]}}});
@@ -11944,6 +11999,41 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null, status: 'running'})]);
             expect(fixture.nativeCalls().filter(call => call.tool === 'adb' && call.args.at(-1) === 'kill')).toHaveLength(1);
             expect(fixture.nativeCalls().some(call => call.tool === 'adb' && call.args[0] === 'devices')).toBe(false);
+            // Releasing the external gate after the reply must not resurrect the
+            // timed-out native command and mutate the runtime after lock release.
+            fixture.release();
+            expect(await fixture.rpc(1, 'broker.echo', {afterCleanupReply: true}).result).toMatchObject({status: 200, body: {ok: true}});
+            expect(androidHttpFixtureProcessRunning(nativePid)).toBe(false);
+            expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
+            expect(existsSync(join(fixture.home, 'active-emulator-5586'))).toBe(true);
+            expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null, status: 'running'})]);
+        } finally {await fixture.dispose();}
+    });
+
+    // POSIX delivers SIGTERM to the owned Node fixture's handler. Windows native
+    // process termination does not provide this externally held handler boundary.
+    it.runIf(process.platform !== 'win32').each(['auxiliary-stopped', 'auxiliary-no-stop'] as const)(
+        'yields through native auxiliary exit during owner cleanup of %s without early metadata publication', {timeout: 30000}, async phase => {
+        const fixture = await createAndroidHttpFixture(phase);
+        try {
+            const stopDevices = phase === 'auxiliary-stopped';
+            const cleanup = fixture.rpc(0, 'broker.cleanup.owner', {backend: 'android-emulator', stopDevices});
+            await fixture.waitForGate(cleanup);
+            const {pid} = JSON.parse(readFileSync(join(fixture.home, 'entered-' + phase), 'utf8')) as {pid: number};
+            expect(pid).toBe((fixture.initial.appium as {serverPid: number}).serverPid);
+            expect(androidHttpFixtureProcessRunning(pid)).toBe(true);
+            await fixture.assertResponsive(cleanup);
+            expect(fixture.records(), 'held native exit must retain the exact owned auxiliary metadata').toEqual([fixture.initial]);
+            expect(fixture.nativeCalls().filter(call => call.tool !== 'owned-appium')).toEqual([]);
+            fixture.release();
+            const reply = await androidHttpFixtureBounded(cleanup.result, 6000, 'auxiliary cleanup did not settle after native exit release');
+            expect(reply).toMatchObject({status: 200, body: {ok: true, result: {stopDevices, changedDevices: 1, failed: 0,
+                results: [{stateKey: 'android', devices: [{deviceId: 'responsive-pixel', appium: {cleared: true, signal: {attempted: true, ok: true}}}]}]}}});
+            expect(reply.body.result.results[0].devices[0]).not.toHaveProperty('stop');
+            expect(androidHttpFixtureProcessRunning(pid), 'auxiliary publication follows actual native exit').toBe(false);
+            expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null})]);
+            expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
+            expect(fixture.nativeCalls().filter(call => call.tool !== 'owned-appium')).toEqual([]);
         } finally {await fixture.dispose();}
     });
 });

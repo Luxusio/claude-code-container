@@ -16,6 +16,7 @@ export interface BrokerOwnerCleanupPorts<Handle, Receipt> {
     restoreLease(ownerId: string, guard: CleanupLeaseGuard<Handle>): CleanupRollback;
     terminateAppium(runtime: unknown, stillCurrent: () => boolean): CleanupTermination;
     signalRecording(runtime: PhysicalRecord, stillCurrent: () => boolean): CleanupTermination;
+    auxiliaryAsyncEffects?(target: CleanupCommandTarget): BrokerOwnerAuxiliaryAsyncPorts | null;
     cancelWatchdog(ownerId: string, deviceId: string): CleanupSignal;
     stopLocked(ownerId: string, target: CleanupCommandTarget, current: PhysicalRecord): Promise<CleanupStopOutcome<Receipt>>;
     timestamp(): string;

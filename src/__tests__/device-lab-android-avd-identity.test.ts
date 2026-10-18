@@ -1,3 +1,4 @@
+import { promises as fsPromises } from "node:fs";
 import { mkdir, mkdtemp, lstat, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -201,6 +202,7 @@ describe("owned Android AVD artifact storage", () => {
     });
 
     afterEach(async () => {
+        vi.restoreAllMocks();
         await rm(fixtureRoot, { recursive: true, force: true });
     });
 
@@ -417,6 +419,103 @@ describe("owned Android AVD artifact storage", () => {
             await pending.catch(() => {});
         }
     });
+
+    it.each(["a replacement storage root", "a replacement staged inode", "a successor destination"] as const)(
+        "preserves %s when rollback's destination lookup resumes with stale absence",
+        async change => {
+            await seedAvd();
+            const lookupEntered = deferred<{ originalPath: string; quarantinePath: string }>();
+            const lookupRelease = deferred<void>();
+            const cleanupError = new Error("fixture-quarantine-failure-before-rollback");
+            const realLstat = fsPromises.lstat.bind(fsPromises);
+            let rollbackArtifact: { originalPath: string; quarantinePath: string } | undefined;
+            let held = false;
+            vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => {
+                try {
+                    return await realLstat(...args);
+                } catch (error) {
+                    if (rollbackArtifact && !held && String(args[0]) === iniPath
+                        && (error as NodeJS.ErrnoException).code === "ENOENT") {
+                        held = true;
+                        // Capture the native absence result after rollback checked its
+                        // root, quarantine and staged entry, then delay its delivery.
+                        lookupEntered.resolve(rollbackArtifact);
+                        await lookupRelease.promise;
+                    }
+                    throw error;
+                }
+            }) as typeof fsPromises.lstat);
+            const pending = removeOwnedAndroidAvdArtifactsAsync(name, owner, {
+                root,
+                verifyInactive: async () => true,
+                onArtifactQuarantined: artifact => {
+                    if (artifact.originalPath === iniPath) {
+                        rollbackArtifact = artifact;
+                        throw cleanupError;
+                    }
+                },
+            });
+            void pending.catch(() => {});
+            try {
+                const artifact = await lookupEntered.promise;
+                expect(held).toBe(true);
+                const quarantine = dirname(artifact.quarantinePath);
+                const capturedQuarantine = await lstat(quarantine);
+                const capturedRegistration = await lstat(artifact.quarantinePath);
+                let recoveryRoot = quarantine;
+                let recoveryPath = artifact.quarantinePath;
+                let recoveryDataPath = join(dataPath, "config.ini");
+                const replacements: Array<{ path: string; content: string; dev: number; ino: number }> = [];
+                const replacementDirectories: Array<{ path: string; dev: number; ino: number }> = [];
+                async function writeReplacement(path: string, content: string) {
+                    await writeFile(path, content);
+                    const { dev, ino } = await lstat(path);
+                    replacements.push({ path, content, dev, ino });
+                }
+                if (change === "a replacement storage root") {
+                    const displacedRoot = join(fixtureRoot, "captured-rollback-root");
+                    await rename(root, displacedRoot);
+                    await mkdir(root);
+                    await mkdir(quarantine);
+                    await mkdir(dataPath);
+                    for (const path of [root, quarantine, dataPath]) {
+                        const { dev, ino } = await lstat(path);
+                        replacementDirectories.push({ path, dev, ino });
+                    }
+                    await writeReplacement(artifact.quarantinePath, "foreign-root-registration");
+                    await writeReplacement(join(dataPath, "config.ini"), "foreign-root-data");
+                    recoveryRoot = join(displacedRoot, basename(quarantine));
+                    recoveryPath = join(recoveryRoot, basename(artifact.quarantinePath));
+                    recoveryDataPath = join(displacedRoot, `${name}.avd`, "config.ini");
+                } else if (change === "a replacement staged inode") {
+                    recoveryPath = join(quarantine, "captured-registration.ini");
+                    await rename(artifact.quarantinePath, recoveryPath);
+                    await writeReplacement(artifact.quarantinePath, "foreign-staged-registration");
+                } else {
+                    await writeReplacement(iniPath, "foreign-successor-registration");
+                }
+                lookupRelease.resolve(undefined);
+                await expect(pending).rejects.toBe(cleanupError);
+                for (const replacement of replacements) {
+                    expect(await readFile(replacement.path, "utf8")).toBe(replacement.content);
+                    expect(await lstat(replacement.path)).toMatchObject({ dev: replacement.dev, ino: replacement.ino });
+                }
+                for (const replacement of replacementDirectories) {
+                    expect(await lstat(replacement.path)).toMatchObject({ dev: replacement.dev, ino: replacement.ino });
+                }
+                expect(await lstat(recoveryRoot)).toMatchObject({ dev: capturedQuarantine.dev, ino: capturedQuarantine.ino });
+                expect(await lstat(recoveryPath)).toMatchObject({ dev: capturedRegistration.dev, ino: capturedRegistration.ino });
+                expect(await readFile(recoveryPath, "utf8")).toBe("registration:owned-data");
+                expect(await readFile(recoveryDataPath, "utf8")).toBe("owned-data");
+                if (change !== "a successor destination") {
+                    await expect(lstat(iniPath)).rejects.toMatchObject({ code: "ENOENT" });
+                }
+            } finally {
+                lookupRelease.resolve(undefined);
+                await pending.catch(() => {});
+            }
+        },
+    );
 
     it("rechecks an existing quarantine inode after fresh inactivity settles", async () => {
         const quarantine = join(root, `.ccc-avd-delete-${name}-${"b".repeat(32)}`);

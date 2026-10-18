@@ -397,6 +397,29 @@ export async function listOwnedAndroidAvdArtifactsAsync(ownerId, options = {}) {
     return artifacts.sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function rollbackRenameQualified(artifact, quarantine, quarantineIdentity, entry, options) {
+    try {
+        for (const current of [
+            { path: artifact.root, identity: artifact.rootIdentity },
+            { path: quarantine, identity: quarantineIdentity },
+            { path: entry.stagedPath, identity: entry.identity },
+        ]) {
+            if (!sameIdentity(current.path, current.identity)
+                || comparablePath(realpathSync.native(current.path), options.platform)
+                    !== comparablePath(current.path, options.platform)) return false;
+        }
+        // lstat treats a broken symbolic successor as an occupied destination.
+        try {
+            lstatSync(entry.originalPath);
+            return false;
+        } catch (error) {
+            return error.code === "ENOENT";
+        }
+    } catch {
+        return false;
+    }
+}
+
 async function rollbackStagedArtifacts(artifact, quarantine, quarantineIdentity, staged, options) {
     for (const entry of [...staged].reverse()) {
         try {
@@ -405,7 +428,10 @@ async function rollbackStagedArtifacts(artifact, quarantine, quarantineIdentity,
                 { path: entry.stagedPath, identity: entry.identity },
             ], options);
             // A successor at the original path owns that path; never replace it.
-            if (!await pathMetadata(entry.originalPath)) {
+            if (!await pathMetadata(entry.originalPath)
+                // This rare recovery fence has no JavaScript await before dispatch.
+                // It closes the yielded observation gap, not an external OS race.
+                && rollbackRenameQualified(artifact, quarantine, quarantineIdentity, entry, options)) {
                 await asyncFs.rename(entry.stagedPath, entry.originalPath);
             }
         } catch {
