@@ -4898,6 +4898,92 @@
         ],
         "sourceUniverseCertified": false
       }
+    },
+    {
+      "id": "affected-package-continuity-current",
+      "taskId": "TASK__architecture-affected-package-continuity-20261018",
+      "coveredOperationIds": [],
+      "status": "Current affected npm/Unix continuity independently Code/Security reviewed and qa-cli PASS. Four genuine Root generation commands and one actual consumer with13 successful child commands; archive1238/Unix1209 files each1060 matching dist. Both actual CLI/exports/MCP/affected runtime/strict declarations passed. Zero group/operation/gate credit;25/25 unchanged. Native/provider/fullhost/reliability/formal/wholeGoal acceptance remains separate.",
+      "qualification": {
+        "sourceHead": "8acd59df1acd7180cf7bac7864881cf6968ce3b3",
+        "facts": {
+          "path": "results/affected-package-14f29-20261018/qa-r2/final-facts.json",
+          "sha256": "7ebbe258177063df3138bc7015a99c327ce3f1ffb41be2751dc85c7bfa8c5d36"
+        },
+        "producerManifest": {
+          "path": "results/affected-package-14f29-20261018/producer/manifest.json",
+          "sha256": "f9f24d8034096b5dbe4692cc0737f3f8a45f0b58e966ef9a2d8f7fef8c401fad"
+        },
+        "producerAuthentication": {
+          "path": "results/affected-package-14f29-20261018/producer/authentication.json",
+          "sha256": "3fd0eb8becd004f9f8bfb80a709c84431cd27a4db6acc1bff88cd8fcbb4687bd"
+        },
+        "currentSourceInputs": 636,
+        "stagedInputs": 1446,
+        "genuineRootProductionCommands": 4,
+        "assembledOutputs": 1060,
+        "addedOutputs": 2,
+        "changedOutputs": 25,
+        "unchangedOutputs": 1033,
+        "removedOutputs": 0,
+        "authenticatedRawDependencyOutputs": {
+          "deviceLab": 274,
+          "hyperV": 44
+        },
+        "consumerExit": 0,
+        "consumerSeconds": 195.35749907599893,
+        "successfulRecordedChildCommands": 13,
+        "archiveSha256": "fecdb972c9c2976707cf2c64fabaf78031997214fa2249be42cde9f6b5f6d557",
+        "payloads": [
+          {
+            "kind": "archive",
+            "physicalFiles": 1238,
+            "distFiles": 1060,
+            "symlinks": 0,
+            "unexpectedFiles": 0,
+            "currentDistMatchesProducer": true
+          },
+          {
+            "kind": "unix",
+            "physicalFiles": 1209,
+            "distFiles": 1060,
+            "symlinks": 0,
+            "unexpectedFiles": 0,
+            "currentDistMatchesProducer": true
+          }
+        ],
+        "publicConsumers": "Both ordinary CLI help/version, public exports, guarded six-module smoke and strict actual-payload declarations passed. Each MCP initialize/list59/ping/ordinaryEOF0; no provider toolcalls.",
+        "strictDeclarations": {
+          "payloadForms": 2,
+          "expectedNegativeDirectivesPerForm": 77,
+          "skipLibCheck": false,
+          "sourceAliases": 0
+        },
+        "source355Replayed": false,
+        "protectedEntries": 1833,
+        "observedProcessesAbsent": 23,
+        "preservation": "All1833 protected entries/four links/index/staging/status/metadata exact through runtime QA. Authorized final documentation commit updates index normally.",
+        "limits": "Clean/proxy public imports only; existing355 Source behavior retained separately. No main CLI invalid-runtime or unknown MCP method test in this consumer. Nested invalid-recovery child PIDs not instrumented; synchronous exact failures checked.",
+        "retainedFailures": {
+          "qa1": {
+            "path": "results/affected-package-14f29-20261018/qa/final-facts.json",
+            "sha256": "05d73b38d331c225744801b77e63ef1c3dbba184e450cbb0a2f610d2488d41e2",
+            "cause": "First npm pack rejected same /dev/null user/global config before archive; only private consumer config paths corrected; producer not replayed."
+          },
+          "qa2Observer": {
+            "path": "results/affected-package-14f29-20261018/qa-r2/postflight-audit-failure.json",
+            "sha256": "b7ec5de4cc75db5ab36bb01ea11f038a56db8b4c0268bc53de5b864d35dc0b8f",
+            "cause": "Audit-only import classification rejected declared node:net; corrected without runtime replay or payload-binding assertion removal."
+          }
+        },
+        "remainingOriginalAcceptance": [
+          "Native macOS clipboard/runtime",
+          "Native Podman and full host-namespace CCC session/runtime lifecycle",
+          "Current real Sandbox/Hyper-V/provider payload and lifecycle residue/process/memory qualification",
+          "Automatic formal attestation"
+        ],
+        "sourceUniverseCertified": false
+      }
     }
   ],
   "currentSourceQualificationAudit": {
