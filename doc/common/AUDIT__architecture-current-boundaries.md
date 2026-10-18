@@ -406,3 +406,39 @@ Facts: results/native-runtime-14eb0-20261018/qa-r2/native-facts.json, SHA25673ff
 The auxiliary observer exit1 is retained: it incorrectly expected the entire private TMPDIR to become empty. Before/after records prove the same pre-existing npm node-compile-cache remained, with no added TMP entry and no owned UUID home. The native child exited0; no command was rerun to replace that observer result.
 
 This supplies actual native retained-lab-state ownership evidence only. Structural WBS stays25/25; operation218/219 and75packet-gate accounting are unchanged. Full Docker create/exec/stop/remove, Podman, native macOS, current reliability and whole-Goal/formal acceptance remain separate original requirements. No image build/pull/tag, host bind, user resource, provider/GUI/VM action, hosted CI or global installation ran.
+
+
+## Original architecture requirement audit and remaining boundary corrections (2026-10-18)
+
+The original sixteen ADR subsystem families were reconciled against current construction, required ports, inward callers and retained evidence. This was a finite original-requirement audit, not a census of every function. It identified native process interpretation in Codex resume and proxy verification, inward Lab/Clean CLI presentation, the MCP snapshot-policy import/guard mismatch, and two mount-policy dependency-direction violations.
+
+Six normal local Source commits resolve those boundaries, ending at `dcc354a6`. Resume now relays opaque evidence and asks native semantic queries at the original branch points. Proxy normalizes listener success outward and renders notifications outside its verifier. Lab keeps configuration projection inward while its facade owns CLI/rendering/start hints. Clean emits closed progress/failure facts while retaining admission, claims, locks, captured IDs and fail-fast policy. The exact MCP shared pure snapshot-policy edge is documented and narrowly admitted; no policy values were duplicated or generic effect port introduced. The 174-line mount policy moved byte-exact into the domain with its old public module forwarding exports.
+
+| Original production family | Current disposition |
+| --- | --- |
+| CLI/admin/diagnostics/Clean | Existing administration/Doctor qualification retained; Lab/Clean presentation corrected and qualified here. |
+| Container/runtime/setup/mounts | Existing runtime and identity policy qualification retained; mount dependency direction corrected without changing predicates. Full host runtime acceptance remains separate. |
+| Session/workspace/profile/home/scanner | Existing construction, ownership, locks and file-preserving repair qualification retained. |
+| Tool registry/credentials | Existing semantic catalog/transfer/account ownership and controlled Windows qualification retained. |
+| Codex launch/resume/attachment | Launch/attachment qualification retained; resume now excludes native process shape inward. |
+| Clipboard/proxy/network/remote services | Existing bounded transport/clipboard qualification retained; proxy verification corrected. Native Mac acceptance remains separate. |
+| MCP presentation/routing | Current request factory and normalization retained; one explicit shared pure-policy edge reconciled with its guard. |
+| Broker hosting/workflows | Existing explicit workflow factories retained. Direct/admin/physical/Appium paths have one acquiring owner; no universal registry rewrite required. |
+| Identity/repositories/locks/storage | Existing generation/CAS/journal/refusal and shared-lock qualification retained. |
+| Shared provider applications | Existing semantic contracts and application/native split retained. |
+| Windows Sandbox/control | Existing Source/controlled Windows qualification retained; current real window/control proof remains separate. |
+| Provider-specific capabilities | Existing Android/iOS/macOS/QEMU/X11/Appium boundaries retained without a universal provider interface. Native/provider ceilings remain. |
+| CCC Hyper-V orchestration | Existing CCC image/network/ownership versus native-library split retained. |
+| Independent Hyper-V library | Existing typed planners, low-level/native contracts and no-CCC ownership direction retained. |
+| Build/distribution/composition | Existing package direction retained; six affected private outputs genuinely regenerated and exercised as described below. |
+| Enforcement/reliability | Existing invariant/race/fault and installed Linux reliability evidence retained with its original scope. |
+
+Actual independent Code DEEP and Security review passed before independent qa-cli. One combined run passed **15 whole files /355 assertion invocations /0 failures /0 skips**. The original full architecture typecheck program also passed when its package imports resolved to current Source; includes, strictness, checkJs and noEmit were unchanged. The earlier standalone failure's26 diagnostics all came from stale workspace declarations; the two suspected broker fixtures were already correct and were not edited.
+
+Three production ESBuild commands generated six private outputs. The actual emitted public consumer passed mount predicates, exact recovery embedding/passthrough, malformed runtime refusal and unknown Lab CLI usage; Clean/proxy exports loaded. It observed zero native child/network calls. QA authenticated the outputs, Node/ESBuild provenance and540 retained compiled dependency files. These are affected-output results, not a fresh full npm/Unix installation. The earlier635-input package continuity statement belongs to its pre-remediation Source; the changed Root files must not be silently promoted into that old package/native cohort.
+
+Facts: `results/original-boundaries-14ef0-20261018/qa/qualification-summary.json`, SHA256 `cd04e873404430d1a54ecd99c70c762b593d9cf0d0ac7b53a040b33686fa3bf8`. All1832 original protected entries were preserved outside the authorized changes; approved inode/UID/GID/mode and original index/staging remained exact through QA. Ordinary authorized commits subsequently update the index normally. Initial fixture/environment/compiler diagnostics remain retained; none was converted to a product failure or erased.
+
+### Known ceiling
+
+Confirmed structural WBS remains25/25 and known in-scope operations218/218, with one excluded OpenCode operation and no new operation/group/gate credit. This does not certify every Source function or complete the Goal. Full current affected package/installed continuity, native macOS clipboard/runtime, Podman/full host session-runtime lifecycle, current real Sandbox/Hyper-V/provider payload and lifecycle residue/process/memory acceptance remain separate original requirements. No hosted CI, push, global installation, VM power or real provider action ran.

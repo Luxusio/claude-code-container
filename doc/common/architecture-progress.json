@@ -4855,6 +4855,49 @@
         "observerDisposition": "Before/after share the same pre-existing npm node-compile-cache; no new TMP entries or owned UUID home remain. Actual native exit0 is unchanged; no replay.",
         "scope": "Retained-lab-state native ownership slice only; no fullM10 lifecycle/Podman/macOS/reliability/fullGoal or automatic attestation credit."
       }
+    },
+    {
+      "id": "original-completion-boundaries-current",
+      "taskId": "TASK__architecture-original-completion-audit-20261018",
+      "coveredOperationIds": [],
+      "status": "Original sixteen-family audit led to six narrow boundary corrections: opaque Codex resume observations, semantic proxy verification, outward Lab/Clean presentation, exact shared snapshot-policy dependency, and pure mount-policy ownership. Actual independent Code/Security and qa-cli PASS;15 whole files355 assertions, full original architecture program with current Source package paths exit0, fresh emitted public consumer exit0. Six local Source commits through dcc354a6. Structural25/25 and known in-scope218/218 unchanged; no new group/operation/gate or full-Goal/native credit.",
+      "qualification": {
+        "base": "5939367d0d840180765d1868aec13c2e78a25db6",
+        "acceptedIntegrationCommit": "dcc354a68f49689bc4c824a68dcf347399aecacf",
+        "sourceCommitsPath": "results/original-boundaries-14ef0-20261018/source-commits.json",
+        "facts": {
+          "path": "results/original-boundaries-14ef0-20261018/qa/qualification-summary.json",
+          "sha256": "cd04e873404430d1a54ecd99c70c762b593d9cf0d0ac7b53a040b33686fa3bf8"
+        },
+        "wholeFiles": 15,
+        "assertionInvocationsPassed": 355,
+        "failed": 0,
+        "skipped": 0,
+        "fullOriginalArchitectureSourceMappedExit": 0,
+        "publicEmittedConsumerExit": 0,
+        "preservation": {
+          "entries": 1832,
+          "facts": "results/original-boundaries-14ef0-20261018/qa/preservation-final.json",
+          "sha256": "364d9b1badc068a439f11f6a60ea78eec840bbfbdbfc6a2bdd82c8c2b21d411a"
+        },
+        "productionGeneration": {
+          "commands": 3,
+          "outputs": 6,
+          "facts": "results/original-boundaries-14ef0-20261018/producer-provenance.json",
+          "sha256": "cfe1c666bebf1b7603600e440551742a603596e2f4e0e0b0fc6efc144fba29a6"
+        },
+        "originalFamilyAudit": "All sixteen original ADR subsystem families mapped to live construction/ports/callers and bounded accepted evidence. Direct/admin/physical/Appium single-acquirer ownership confirmed; no universal registry rewrite or every-helper census required.",
+        "preservedFailures": "Initial TMP ESM fake-executable, stale prepared-startup fixture, new test row/getter typing and standalone stale declaration failures retained with specific corrections. No valid broker fixture rewritten.",
+        "priorPackageContinuity": "Historical635-input full-package match applies to its original qualified pre-remediation Source. Changed Root Source is qualified by current focused tests, strict Source program and six new private outputs; full current npm/Unix/global installation and new Windows/native execution are not claimed.",
+        "remainingOriginalAcceptance": [
+          "Full current affected package/installed continuity",
+          "Native macOS clipboard/runtime",
+          "Native Podman and full host-namespace CCC session/runtime lifecycle",
+          "Current real Sandbox/Hyper-V/provider payload and lifecycle residue/process/memory qualification",
+          "Automatic formal attestation"
+        ],
+        "sourceUniverseCertified": false
+      }
     }
   ],
   "currentSourceQualificationAudit": {
