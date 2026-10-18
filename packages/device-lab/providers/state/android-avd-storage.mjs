@@ -397,26 +397,29 @@ export async function listOwnedAndroidAvdArtifactsAsync(ownerId, options = {}) {
     return artifacts.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-function rollbackRenameQualified(artifact, quarantine, quarantineIdentity, entry, options) {
-    try {
-        for (const current of [
-            { path: artifact.root, identity: artifact.rootIdentity },
-            { path: quarantine, identity: quarantineIdentity },
-            { path: entry.stagedPath, identity: entry.identity },
-        ]) {
-            if (!sameIdentity(current.path, current.identity)
-                || comparablePath(realpathSync.native(current.path), options.platform)
-                    !== comparablePath(current.path, options.platform)) return false;
+// Keep this finite fence next to native mutation dispatch, with no intervening
+// JavaScript await. Tree walks stay async; this closes yielded identity/absence
+// observations without promising atomic protection against external OS races.
+function assertNativeMutationFence(artifact, entries, options, destination) {
+    for (const current of [
+        { path: artifact.root, identity: artifact.rootIdentity },
+        ...entries,
+    ]) {
+        if (!sameIdentity(current.path, current.identity)
+            || comparablePath(realpathSync.native(current.path), options.platform)
+                !== comparablePath(current.path, options.platform)) {
+            throw new Error(`Android AVD artifact identity changed before mutation: ${current.path}`);
         }
-        // lstat treats a broken symbolic successor as an occupied destination.
+    }
+    if (destination) {
+        // A broken symbolic successor is still an occupied lexical destination.
         try {
-            lstatSync(entry.originalPath);
-            return false;
+            lstatSync(destination);
         } catch (error) {
-            return error.code === "ENOENT";
+            if (error.code === "ENOENT") return;
+            throw error;
         }
-    } catch {
-        return false;
+        throw new Error(`Android AVD mutation destination is occupied: ${destination}`);
     }
 }
 
@@ -428,10 +431,11 @@ async function rollbackStagedArtifacts(artifact, quarantine, quarantineIdentity,
                 { path: entry.stagedPath, identity: entry.identity },
             ], options);
             // A successor at the original path owns that path; never replace it.
-            if (!await pathMetadata(entry.originalPath)
-                // This rare recovery fence has no JavaScript await before dispatch.
-                // It closes the yielded observation gap, not an external OS race.
-                && rollbackRenameQualified(artifact, quarantine, quarantineIdentity, entry, options)) {
+            if (!await pathMetadata(entry.originalPath)) {
+                assertNativeMutationFence(artifact, [
+                    { path: quarantine, identity: quarantineIdentity },
+                    { path: entry.stagedPath, identity: entry.identity },
+                ], options, entry.originalPath);
                 await asyncFs.rename(entry.stagedPath, entry.originalPath);
             }
         } catch {
@@ -443,6 +447,7 @@ async function rollbackStagedArtifacts(artifact, quarantine, quarantineIdentity,
         if ((await asyncFs.readdir(quarantine)).length === 0) {
             await assertArtifactIdentitiesAsync(artifact, [{ path: quarantine, identity: quarantineIdentity }], options);
             // rmdir refuses new contents added after the emptiness observation.
+            assertNativeMutationFence(artifact, [{ path: quarantine, identity: quarantineIdentity }], options);
             await asyncFs.rmdir(quarantine);
         }
     } catch {
@@ -470,6 +475,7 @@ export async function removeOwnedAndroidAvdArtifactsAsync(name, ownerId, options
             await assertArtifactIdentitiesAsync(artifact, [quarantine], options);
             await assertSafeRemovalTreeAsync(quarantine.path, artifact.rootIdentity, mountPoints, options);
             await assertArtifactIdentitiesAsync(artifact, [quarantine], options);
+            assertNativeMutationFence(artifact, [quarantine], options);
             await asyncFs.rm(quarantine.path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
             await assertArtifactIdentitiesAsync(artifact, [], options);
             if (await pathMetadata(quarantine.path)) {
@@ -483,6 +489,7 @@ export async function removeOwnedAndroidAvdArtifactsAsync(name, ownerId, options
             throw new Error("Android AVD quarantine path is unavailable");
         }
         await assertArtifactIdentitiesAsync(artifact, sources, options);
+        assertNativeMutationFence(artifact, sources, options, quarantine);
         await asyncFs.mkdir(quarantine);
         const quarantineIdentity = await asyncFs.lstat(quarantine);
         // Never remove a path through a root that changed during mkdir/lstat.
@@ -505,6 +512,7 @@ export async function removeOwnedAndroidAvdArtifactsAsync(name, ownerId, options
                     throw new Error("Android AVD staged artifact path is unavailable");
                 }
                 await assertArtifactIdentitiesAsync(artifact, [...stagedEntries(), source], options);
+                assertNativeMutationFence(artifact, [...stagedEntries(), source], options, stagedPath);
                 await asyncFs.rename(source.path, stagedPath);
                 staged.push({ originalPath: source.path, stagedPath, identity: source.identity });
                 await assertArtifactIdentitiesAsync(artifact, stagedEntries(), options);
@@ -517,6 +525,7 @@ export async function removeOwnedAndroidAvdArtifactsAsync(name, ownerId, options
             await assertArtifactIdentitiesAsync(artifact, stagedEntries(), options);
             await assertSafeRemovalTreeAsync(quarantine, artifact.rootIdentity, mountPoints, options);
             await assertArtifactIdentitiesAsync(artifact, stagedEntries(), options);
+            assertNativeMutationFence(artifact, stagedEntries(), options);
             await asyncFs.rm(quarantine, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
         } catch (error) {
             await rollbackStagedArtifacts(artifact, quarantine, quarantineIdentity, staged, options);

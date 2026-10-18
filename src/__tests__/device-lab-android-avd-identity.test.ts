@@ -26,6 +26,16 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
+function observeBeforeSettlement<T>(observation: Promise<T>, operation: Promise<unknown>): Promise<T> {
+    return Promise.race([
+        observation,
+        operation.then(
+            () => { throw new Error("cleanup settled before the held native observation"); },
+            error => { throw new Error("cleanup failed before the held native observation", { cause: error }); },
+        ),
+    ]);
+}
+
 describe("Android console AVD identity", () => {
     const serial = "emulator-5638";
     const normal = ["-s", serial, "emu", "avd", "name"];
@@ -543,6 +553,267 @@ describe("owned Android AVD artifact storage", () => {
             expect(await readFile(join(displacedQuarantine, "registration.ini"), "utf8")).toBe("recoverable-registration");
         } finally {
             check.resolve(false);
+            await pending.catch(() => {});
+        }
+    });
+
+    it.each(["existing", "newly staged"] as const)(
+        "preserves a replacement %s quarantine after the final root observation before recursive removal",
+        async kind => {
+            let quarantine: string | undefined;
+            if (kind === "existing") {
+                quarantine = join(root, `.ccc-avd-delete-${name}-${"c".repeat(32)}`);
+                await mkdir(quarantine);
+                await writeFile(join(quarantine, "registration.ini"), "recoverable-registration");
+            } else {
+                await seedAvd();
+            }
+            const observationEntered = deferred<string>();
+            const observationRelease = deferred<void>();
+            const realLstat = fsPromises.lstat.bind(fsPromises);
+            const realReaddir = fsPromises.readdir.bind(fsPromises);
+            let treeEnumerated = false;
+            let treePayloadObserved = false;
+            let quarantineChecked = false;
+            let rootReads = 0;
+            let held = false;
+            vi.spyOn(fsPromises, "readdir").mockImplementation((async (...args: Parameters<typeof fsPromises.readdir>) => {
+                const entries = await realReaddir(...args);
+                if (quarantine && String(args[0]) === quarantine) treeEnumerated = true;
+                return entries;
+            }) as typeof fsPromises.readdir);
+            vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => {
+                const metadata = await realLstat(...args);
+                const path = String(args[0]);
+                if (quarantine && treeEnumerated && path === join(quarantine, "registration.ini")) treePayloadObserved = true;
+                if (quarantine && treePayloadObserved && path === quarantine) {
+                    quarantineChecked = true;
+                    rootReads = 0;
+                }
+                if (quarantine && quarantineChecked && path === root && !held && ++rootReads === 2) {
+                    held = true;
+                    observationEntered.resolve(quarantine);
+                    await observationRelease.promise;
+                }
+                return metadata;
+            }) as typeof fsPromises.lstat);
+            const pending = removeOwnedAndroidAvdArtifactsAsync(name, owner, {
+                root,
+                verifyInactive: async () => true,
+                onArtifactQuarantined: artifact => { quarantine = dirname(artifact.quarantinePath); },
+            });
+            void pending.catch(() => {});
+            try {
+                const observedQuarantine = await observeBeforeSettlement(observationEntered.promise, pending);
+                expect(treeEnumerated && treePayloadObserved && quarantineChecked && held).toBe(true);
+                const capturedDirectory = await lstat(observedQuarantine);
+                const capturedRegistration = await lstat(join(observedQuarantine, "registration.ini"));
+                const registrationBytes = await readFile(join(observedQuarantine, "registration.ini"), "utf8");
+                expect(registrationBytes).toBe(kind === "existing" ? "recoverable-registration" : "registration:owned-data");
+                const retainedQuarantine = join(fixtureRoot, "captured-recursive-quarantine");
+                await rename(observedQuarantine, retainedQuarantine);
+                await mkdir(observedQuarantine);
+                const foreignPath = join(observedQuarantine, "foreign.txt");
+                await writeFile(foreignPath, "foreign-quarantine-successor");
+                const replacementDirectory = await lstat(observedQuarantine);
+                const replacementFile = await lstat(foreignPath);
+                observationRelease.resolve(undefined);
+                await expect(pending).rejects.toThrow(/identity changed/i);
+                expect(await lstat(observedQuarantine)).toMatchObject({ dev: replacementDirectory.dev, ino: replacementDirectory.ino });
+                expect(await lstat(foreignPath)).toMatchObject({ dev: replacementFile.dev, ino: replacementFile.ino });
+                expect(await readFile(foreignPath, "utf8")).toBe("foreign-quarantine-successor");
+                expect(await lstat(retainedQuarantine)).toMatchObject({ dev: capturedDirectory.dev, ino: capturedDirectory.ino });
+                expect(await lstat(join(retainedQuarantine, "registration.ini"))).toMatchObject({ dev: capturedRegistration.dev, ino: capturedRegistration.ino });
+                expect(await readFile(join(retainedQuarantine, "registration.ini"), "utf8")).toBe(registrationBytes);
+                if (kind === "newly staged") {
+                    expect(await readFile(join(retainedQuarantine, "data.avd", "config.ini"), "utf8")).toBe("owned-data");
+                }
+            } finally {
+                observationRelease.resolve(undefined);
+                await pending.catch(() => {});
+            }
+        },
+    );
+
+    it.each(["source inode", "staged destination"] as const)(
+        "preserves a replacement %s after the final root observation before forward rename",
+        async kind => {
+            await seedAvd();
+            const ownedRegistration = await lstat(iniPath);
+            const observationEntered = deferred<string>();
+            const observationRelease = deferred<void>();
+            const realLstat = fsPromises.lstat.bind(fsPromises);
+            let stagedPath: string | undefined;
+            let sourceChecked = false;
+            let rootReads = 0;
+            let held = false;
+            vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => {
+                const path = String(args[0]);
+                let metadata;
+                try {
+                    metadata = await realLstat(...args);
+                } catch (error) {
+                    if (!stagedPath && basename(path) === "registration.ini"
+                        && basename(dirname(path)).startsWith(`.ccc-avd-delete-${name}-`)
+                        && dirname(dirname(path)) === root && (error as NodeJS.ErrnoException).code === "ENOENT") {
+                        stagedPath = path;
+                    }
+                    throw error;
+                }
+                if (stagedPath && path === iniPath) {
+                    sourceChecked = true;
+                    rootReads = 0;
+                }
+                if (stagedPath && sourceChecked && path === root && !held && ++rootReads === 2) {
+                    held = true;
+                    observationEntered.resolve(stagedPath);
+                    await observationRelease.promise;
+                }
+                return metadata;
+            }) as typeof fsPromises.lstat);
+            const pending = removeOwnedAndroidAvdArtifactsAsync(name, owner, { root, verifyInactive: async () => true });
+            void pending.catch(() => {});
+            try {
+                const observedStagedPath = await observeBeforeSettlement(observationEntered.promise, pending);
+                expect(sourceChecked && held).toBe(true);
+                let retainedRegistration = iniPath;
+                const replacementPath = kind === "source inode" ? iniPath : observedStagedPath;
+                if (kind === "source inode") {
+                    retainedRegistration = join(fixtureRoot, "captured-forward-registration.ini");
+                    await rename(iniPath, retainedRegistration);
+                }
+                await writeFile(replacementPath, "foreign-forward-successor");
+                const replacement = await lstat(replacementPath);
+                observationRelease.resolve(undefined);
+                await expect(pending).rejects.toThrow(/identity changed|destination.*occupied/i);
+                expect(await lstat(replacementPath)).toMatchObject({ dev: replacement.dev, ino: replacement.ino });
+                expect(await readFile(replacementPath, "utf8")).toBe("foreign-forward-successor");
+                expect(await lstat(retainedRegistration)).toMatchObject({ dev: ownedRegistration.dev, ino: ownedRegistration.ino });
+                expect(await readFile(retainedRegistration, "utf8")).toBe("registration:owned-data");
+                expect(await readFile(join(dataPath, "config.ini"), "utf8")).toBe("owned-data");
+            } finally {
+                observationRelease.resolve(undefined);
+                await pending.catch(() => {});
+            }
+        },
+    );
+
+    it("preserves a replacement root after the final root observation before quarantine mkdir", async () => {
+        await seedAvd();
+        const observationEntered = deferred<string>();
+        const observationRelease = deferred<void>();
+        const realLstat = fsPromises.lstat.bind(fsPromises);
+        let proposedQuarantine: string | undefined;
+        let sourcesChecked = false;
+        let rootReads = 0;
+        let held = false;
+        vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => {
+            const path = String(args[0]);
+            let metadata;
+            try {
+                metadata = await realLstat(...args);
+            } catch (error) {
+                if (!proposedQuarantine && dirname(path) === root && basename(path).startsWith(`.ccc-avd-delete-${name}-`)
+                    && (error as NodeJS.ErrnoException).code === "ENOENT") proposedQuarantine = path;
+                throw error;
+            }
+            if (proposedQuarantine && path === dataPath) {
+                sourcesChecked = true;
+                rootReads = 0;
+            }
+            if (proposedQuarantine && sourcesChecked && path === root && !held && ++rootReads === 2) {
+                held = true;
+                observationEntered.resolve(proposedQuarantine);
+                await observationRelease.promise;
+            }
+            return metadata;
+        }) as typeof fsPromises.lstat);
+        const pending = removeOwnedAndroidAvdArtifactsAsync(name, owner, { root, verifyInactive: async () => true });
+        void pending.catch(() => {});
+        try {
+            const quarantine = await observeBeforeSettlement(observationEntered.promise, pending);
+            expect(sourcesChecked && held).toBe(true);
+            const retainedRoot = join(fixtureRoot, "captured-root-before-mkdir");
+            await rename(root, retainedRoot);
+            await mkdir(root);
+            await seedAvd(root, name, "foreign-root-before-mkdir");
+            const replacementRoot = await lstat(root);
+            const replacementRegistration = await lstat(iniPath);
+            const originalEntries = (await readdir(root)).sort();
+            observationRelease.resolve(undefined);
+            await expect(pending).rejects.toThrow(/identity changed/i);
+            expect(await lstat(root)).toMatchObject({ dev: replacementRoot.dev, ino: replacementRoot.ino });
+            expect(await lstat(iniPath)).toMatchObject({ dev: replacementRegistration.dev, ino: replacementRegistration.ino });
+            expect((await readdir(root)).sort()).toEqual(originalEntries);
+            await expect(lstat(quarantine)).rejects.toMatchObject({ code: "ENOENT" });
+            expect(await readFile(iniPath, "utf8")).toBe("registration:foreign-root-before-mkdir");
+            expect(await readFile(join(dataPath, "config.ini"), "utf8")).toBe("foreign-root-before-mkdir");
+            expect(await readFile(join(retainedRoot, `${name}.ini`), "utf8")).toBe("registration:owned-data");
+            expect(await readFile(join(retainedRoot, `${name}.avd`, "config.ini"), "utf8")).toBe("owned-data");
+        } finally {
+            observationRelease.resolve(undefined);
+            await pending.catch(() => {});
+        }
+    });
+
+    it("preserves a replacement empty quarantine after the final root observation before recovery rmdir", async () => {
+        await seedAvd();
+        const cleanupError = new Error("fixture-recovery-before-rmdir");
+        const observationEntered = deferred<string>();
+        const observationRelease = deferred<void>();
+        const realLstat = fsPromises.lstat.bind(fsPromises);
+        const realReaddir = fsPromises.readdir.bind(fsPromises);
+        let quarantine: string | undefined;
+        let emptyObserved = false;
+        let quarantineChecked = false;
+        let rootReads = 0;
+        let held = false;
+        vi.spyOn(fsPromises, "readdir").mockImplementation((async (...args: Parameters<typeof fsPromises.readdir>) => {
+            const entries = await realReaddir(...args);
+            if (quarantine && String(args[0]) === quarantine && entries.length === 0) emptyObserved = true;
+            return entries;
+        }) as typeof fsPromises.readdir);
+        vi.spyOn(fsPromises, "lstat").mockImplementation((async (...args: Parameters<typeof fsPromises.lstat>) => {
+            const metadata = await realLstat(...args);
+            const path = String(args[0]);
+            if (quarantine && emptyObserved && path === quarantine) {
+                quarantineChecked = true;
+                rootReads = 0;
+            }
+            if (quarantine && quarantineChecked && path === root && !held && ++rootReads === 2) {
+                held = true;
+                observationEntered.resolve(quarantine);
+                await observationRelease.promise;
+            }
+            return metadata;
+        }) as typeof fsPromises.lstat);
+        const pending = removeOwnedAndroidAvdArtifactsAsync(name, owner, {
+            root,
+            verifyInactive: async () => true,
+            onArtifactQuarantined: artifact => {
+                quarantine = dirname(artifact.quarantinePath);
+                throw cleanupError;
+            },
+        });
+        void pending.catch(() => {});
+        try {
+            const observedQuarantine = await observeBeforeSettlement(observationEntered.promise, pending);
+            expect(emptyObserved && quarantineChecked && held).toBe(true);
+            const capturedDirectory = await lstat(observedQuarantine);
+            const retainedQuarantine = join(fixtureRoot, "captured-empty-quarantine");
+            await rename(observedQuarantine, retainedQuarantine);
+            await mkdir(observedQuarantine);
+            const replacement = await lstat(observedQuarantine);
+            observationRelease.resolve(undefined);
+            await expect(pending).rejects.toBe(cleanupError);
+            expect(await lstat(observedQuarantine)).toMatchObject({ dev: replacement.dev, ino: replacement.ino });
+            expect(await readdir(observedQuarantine)).toEqual([]);
+            expect(await lstat(retainedQuarantine)).toMatchObject({ dev: capturedDirectory.dev, ino: capturedDirectory.ino });
+            expect(await readdir(retainedQuarantine)).toEqual([]);
+            expect(await readFile(iniPath, "utf8")).toBe("registration:owned-data");
+            expect(await readFile(join(dataPath, "config.ini"), "utf8")).toBe("owned-data");
+        } finally {
+            observationRelease.resolve(undefined);
             await pending.catch(() => {});
         }
     });
