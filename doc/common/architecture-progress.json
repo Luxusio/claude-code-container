@@ -4622,7 +4622,7 @@
       "id": "linux-installed-broker-reliability-current",
       "taskId": "TASK__architecture-linux-installed-broker-reliability-20261015",
       "coveredOperationIds": [],
-      "status": "Actual independent installed-Linux QA PASS: 40 rounds, 323 counted requests, three authenticated restart recoveries/four broker generations, reported RSS growth 3.9MiB and zero observed owned survivors. Runner elapsed878ms; bounded restart check, not long-soak, exhaustive process-monitoring or native proof. Zero operation/group credit; WBS15/23 and all75 delivery gates unchanged. ACC-M14-reliability, whole-source, native and formal acceptance remain unverified.",
+      "status": "Original installed-Linux qualification retained. Current installed cohort independently reviewed and actually requalified2026-10-18:40rounds/323requests/3authenticated restart recoveries across4broker generations, reported max RSSgrowth3.7MiB, observed survivors0; unchanged runner executed once, exit0. All1219payload/1058dist/635producerinputs/1832Main/20prior evidence preserved. Zero group/operation/gate credit; structural25/25 unchanged. Bounded Linux result only, not long-soak/fullM14/native/whole-Goal or formal attestation.",
       "qualification": {
         "baseHead": "4c7df3764b8fd89488bf761d3bd3b83f23758dba",
         "rounds": 40,
@@ -4641,7 +4641,57 @@
           "bytes": 1354242,
           "inventorySha256": "23d99db49001aa19997f29a95eab87bae0c3da08c4e657ded8d5be632bae2d9a"
         }
-      }
+      },
+      "currentInputRequalification20261018": {
+        "status": "qualified-bounded-current-installed",
+        "workingHead": "4556c08fefb854ab0504bf792212c96ae2fea382",
+        "reason": "Reached shared-lock startup/admission and status process identity bytes changed since original qualified cohort; no receipt-only rerun.",
+        "installedRoot": "/tmp/ccc-mcp-waits-01a1499a/qa/Unix payload with spaces",
+        "plannedExistingCommand": "40rounds/concurrency8/restartEvery10/requestTimeout3s/rssEvery5/maxRssGrowth128MiB/maxSurvivors0",
+        "originalHistoricalQualificationRetained": true,
+        "structuralGroupCredit": 0,
+        "operationCredit": 0,
+        "wholeGoalComplete": false,
+        "facts": {
+          "path": "results/linux-broker-reliability-current-01a13e56-20261018/qa/qa-final-facts.json",
+          "sha256": "0118d382509202cb20256cbd9ba98cf28d4096a3984687387ba17d3041dddb4c"
+        },
+        "metrics": {
+          "rounds": 40,
+          "requests": 323,
+          "restarts": 3,
+          "runnerElapsedMs": 5748,
+          "slowestMs": 128,
+          "maxPerGenerationRssGrowth": "3.7MiB",
+          "survivors": 0
+        },
+        "leader": {
+          "pid": 403413,
+          "ppid": 403163,
+          "pgid": 403413,
+          "sid": 403413,
+          "birth": 1993984,
+          "state": "R"
+        },
+        "supervisorElapsedMs": 6607.77,
+        "brokerGenerations": 4,
+        "observedPidBirthIdentities": 13,
+        "observedSurvivors": 0,
+        "ownedPrivateHomeRemoved": true,
+        "inputAuthentication": {
+          "beforeFailures": 0,
+          "afterFailures": 0,
+          "completePayloadFiles": 1219,
+          "completeDistFiles": 1058,
+          "producerInputs": 635,
+          "protectedMainEntries": 1832,
+          "retainedHistoricalFiles": 20,
+          "planSha256": "c58ccfe3b45f5bc12900bd2778304503adee09cc4020b6a883e977659237d0ca",
+          "head": "4556c08fefb854ab0504bf792212c96ae2fea382"
+        },
+        "scope": "Current bounded installed Linux restart/auth/RSS/residue qualification; original history preserved, no native/fullM14/wholeGoal/formal credit."
+      },
+      "historicalStatusBeforeCurrentInputRequalification20261018": "Actual independent installed-Linux QA PASS: 40 rounds, 323 counted requests, three authenticated restart recoveries/four broker generations, reported RSS growth 3.9MiB and zero observed owned survivors. Runner elapsed878ms; bounded restart check, not long-soak, exhaustive process-monitoring or native proof. Zero operation/group credit; WBS15/23 and all75 delivery gates unchanged. ACC-M14-reliability, whole-source, native and formal acceptance remain unverified."
     },
     {
       "id": "m14-existing-invariant-detection-current",
