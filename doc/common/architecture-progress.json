@@ -5159,6 +5159,31 @@
         "Whole-source/caller/export closure; native platform/provider/runtime; reliability and formal evidence"
       ],
       "sourceUniverseCertified": false
+    },
+    {
+      "id": "container-exec-owned-lifetime-current",
+      "taskId": "TASK__container-exec-owned-lifetime-20261019",
+      "coveredOperationIds": [],
+      "status": "Source 741916fb locally committed: complete post-fulfillment cleanup, new-acquisition rearming and owned signal registration disposal. Two actual Code FAIL1 findings corrected. Final independent Code DEEP/Security PASS0, then fresh qa-cli PASS290/290 in five complete owners; strict/genuine emission and actual isolated emitted CLI0/0/1 passed. Failing-before controls remain45/70,2/75,4/76. Tenpins/1828originals/1747non-owned index records unchanged; no owned command processes. Actual results remain non-attesting without hook receipts. Zero extra group/operation/gate credit; rejected acquisition, engine authority and whole/native/reliability/formal/Goal acceptance remain separate.",
+      "qualification": {
+        "sourceCommit": "741916fbf5ae5d4bdc634d35ce73cc6379835948",
+        "developmentEvidence": "results/container-exec-owned-lifetime-20261019/",
+        "structuralGroupCredit": 0,
+        "operationCredit": 0,
+        "deliveryGateCredit": 0,
+        "sourceUniverseCertified": false,
+        "nativeAcceptance": "unverified",
+        "formalClose": "unverified",
+        "codeReview": "Actual final independent DEEP Code PASS0 and Security PASS0, then independent qa-cli PASS290/290; formal hook attestation remains unverified.",
+        "qaEvidence": "results/container-exec-owned-lifetime-20261019/qa-final/"
+      },
+      "auditPath": "doc/common/AUDIT__architecture-current-boundaries.md",
+      "remainingOriginalAcceptance": [
+        "Rejected acquisition recovery after retained acknowledged receipt",
+        "Captured native runtime invocation/resource authority across inspect/start/exec/guardian and cross-engine claim accounting",
+        "Other current architecture audit findings; native platforms/providers/runtime, source/reliability/formal and full Goal acceptance"
+      ],
+      "sourceUniverseCertified": false
     }
   ],
   "currentSourceQualificationAudit": {
