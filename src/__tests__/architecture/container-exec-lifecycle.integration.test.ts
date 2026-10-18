@@ -8,6 +8,7 @@ const compositionUrl = new URL("../../../dist/composition/container-exec.js", im
 const sessionUrl = new URL("../../../dist/session.js", import.meta.url).href;
 const dockerUrl = new URL("../../../dist/docker.js", import.meta.url).href;
 const applicationUrl = new URL("../../../dist/application/container-exec.js", import.meta.url).href;
+const cleanupApplicationUrl = new URL("../../../dist/application/session-cleanup.js", import.meta.url).href;
 
 it("native exec lifecycle acquisition yields to the real owner's timer and enters only after release", async () => {
     const root = mkdtempSync(join(tmpdir(), "ccc-exec-lifecycle-"));
@@ -86,6 +87,153 @@ console.log(JSON.stringify({result, timerRan, ownerReleased, waiterEntered}));
     try {
         expect(await completed, stderr).toBe(0);
         expect(JSON.parse(stdout.trim())).toEqual({result: 0, timerRan: true, ownerReleased: true, waiterEntered: true});
+    } finally {
+        clearTimeout(timeout);
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        await completed.catch(() => undefined);
+        rmSync(root, {recursive: true, force: true});
+    }
+}, 20000);
+
+it.each(["reused", "owned", "stop-retry"] as const)("emitted library startup failure owns real session cleanup for %s", async scenario => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-exec-library-cleanup-"));
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+import {existsSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+const {createContainerExec} = await import(${JSON.stringify(applicationUrl)});
+const {createSessionCleanup} = await import(${JSON.stringify(cleanupApplicationUrl)});
+const root = ${JSON.stringify(root)}, scenario = ${JSON.stringify(scenario)};
+const reused = scenario === 'reused', retries = scenario === 'stop-retry';
+const claim = join(root, 'owned-session.lock'), unrelated = join(root, 'unrelated-receipt');
+writeFileSync(unrelated, 'preserve this receipt');
+const target = reused ? 'reused-exact-id' : 'started-exact-id';
+const startupFailure = new Error('initialization failed');
+const stopFailure = new Error('stop failed');
+const wrapped = new Error('Container setup failed', {cause: startupFailure});
+const events = [], targets = [], permissions = [];
+let stopAttempts = 0, removals = 0, commandCalls = 0, restoreCalls = 0, disposalCalls = 0;
+// The two emitted applications and the on-disk claim are real. Runtime, device,
+// guard and process leaves are explicit fakes; no provider or container is used.
+const cleanup = createSessionCleanup({
+ projectId: () => 'isolated-library',
+ withLifecycleLock(prefix, operation) {
+   if (prefix !== 'isolated-library') throw new Error('wrong cleanup family');
+   events.push('cleanup-guard'); return operation();
+ },
+ hasOtherClaims(prefix, ownPath) {
+   if (prefix !== 'isolated-library' || ownPath !== claim) throw new Error('wrong owned claim');
+   return false;
+ },
+ removeClaim(path) {
+   if (path !== claim) throw new Error('unrelated claim removal');
+   events.push('remove-claim'); removals++; rmSync(path); return undefined;
+ },
+ cleanupDevices(path, timeout, profile) {
+   if (path !== '/project/library-repo' || timeout !== 5000 || profile !== undefined) throw new Error('wrong device cleanup context');
+   events.push('devices'); return undefined;
+ },
+ reportDeviceCleanupFailure(error) { throw error; },
+ stopContainer(readTarget) {
+   const id = readTarget(); targets.push(id); stopAttempts++; events.push('stop');
+   if (id !== target) throw new Error('stopped a different container');
+   if (retries && stopAttempts === 1) throw stopFailure;
+   return undefined;
+ }
+});
+const noop = () => {};
+const unexpected = () => { throw new Error('unexpected post-startup operation'); };
+const ports = {
+ ensureRuntime: noop, resolveProject: () => '/project/library-repo', ensureDirectories: noop,
+ ensureProjectTools: async () => {}, projectId: () => 'isolated-library', debugEnabled: () => false,
+ terminalReady: () => false, runtime: () => 'docker', tool: () => undefined,
+ defaultTool: () => ({name: 'codex'}), isWorktreeWorkspace: () => false, assertWorkspace: unexpected,
+ familyLock: async (_id, operation) => operation(),
+ async acquireOwnership() {
+   writeFileSync(claim, 'owned claim');
+   cleanup.setSession(claim, '/project/library-repo', undefined, 'command');
+   cleanup.setSessionCleanupEnabled(false);
+   return {lockFile: claim, existingId: reused ? target : null};
+ },
+ inspectSessionContainer: () => ({known: true, containerId: reused ? target : null}),
+ ensureClipboard: async () => null, clipboardPortFile: () => join(root, 'clipboard.port'), clipboardConnection: () => ({}),
+ worktreeMounts: () => [], containerName: () => 'ccc-isolated-library',
+ containerStatus: () => ({exists: true, running: reused, containerId: target, imageId: 'fake-image'}),
+ sessionClaims: () => ['owned-session.lock'], lockName: () => 'owned-session.lock', prepareDeviceBroker: async () => {},
+ stateLock: async operation => operation(), lifecycleLock: async (_prefix, operation) => operation(),
+ setupLock: async (_prefix, operation) => operation(),
+ prepareContainer: () => ({
+   start(...args) {
+     if (!reused) args[9](target);
+     args[7](target, {startedByInvocation: !reused}); return 'ccc-isolated-library';
+   },
+   initialize(id) { if (id !== target) throw new Error('wrong initialized target'); throw startupFailure; }
+ }),
+ startContainer: unexpected,
+ setSessionContainer: id => cleanup.setSessionContainerId(id),
+ setCleanupEnabled(enabled) { permissions.push(enabled); cleanup.setSessionCleanupEnabled(enabled); },
+ confirmOwnership: async () => {}, configLock: operation => operation(),
+ restoreConfig() { restoreCalls++; }, ensureUv: unexpected, buildMcpConfig: unexpected, setupProxy: unexpected,
+ containerRunning: unexpected, installTools: unexpected, ensureClaude: unexpected,
+ prepareCodexConfig: unexpected, assertCodexState: unexpected, ensureCodexHarness: unexpected,
+ syncClipboard: unexpected, ensureSocketAccess: unexpected, isRestartRequired: () => false,
+ attachClipboardImage: unexpected, installProjectTools: unexpected, startClipboardBridge: unexpected,
+ observeCommandEnvironment: unexpected, prepareCommand: unexpected, prepareCodexCommand: unexpected,
+ launchCommand() { commandCalls++; return Promise.resolve(99); },
+ disposeCommand() { disposalCalls++; }, reportConversationFiles: unexpected,
+ setupFailure(cause) { if (cause !== startupFailure) throw new Error('lost startup cause'); return wrapped; },
+ setupToolFailure: unexpected, handoffFailure: unexpected, invalidRuntimeFailure: unexpected,
+ cleanupSession: () => cleanup.cleanupSession(), report: noop
+};
+let error, rejected = false;
+try { await createContainerExec(ports).exec('/repo', ['printf']); }
+catch (caught) { rejected = true; error = caught; }
+const first = {
+ rejected, claimExists: existsSync(claim), retained: cleanup.getCurrentSession().lockFile === claim,
+ stopAttempts, removals,
+ preservesPrimary: retries
+   ? error instanceof AggregateError && error.errors.length === 2 && error.errors[0] === wrapped && error.cause === wrapped
+   : error === wrapped,
+ preservesStop: !retries || (error instanceof AggregateError && error.errors[1] === stopFailure)
+};
+const beforeFallback = events.length;
+cleanup.cleanupSession();
+const afterFallback = events.length;
+cleanup.cleanupSession();
+console.log(JSON.stringify({
+ first, stopAttempts, targets, removals, permissions, events,
+ fallbackEffects: afterFallback - beforeFallback,
+ repeatedFallbackEffects: events.length - afterFallback,
+ claimExists: existsSync(claim), cleared: cleanup.getCurrentSession().lockFile === null,
+ unrelated: readFileSync(unrelated, 'utf8'), commandCalls, restoreCalls, disposalCalls
+}));
+`], {cwd: root, env: {...process.env, HOME: root, USERPROFILE: root, CCC_HOME: undefined, CCC_PROFILE: undefined}, stdio: ["ignore", "pipe", "pipe"]});
+    let stdout = "", stderr = "";
+    child.stdout.on("data", data => { stdout += String(data); });
+    child.stderr.on("data", data => { stderr += String(data); });
+    const completed = new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject); child.once("close", resolve);
+    });
+    const timeout = setTimeout(() => child.kill(), 15000);
+    try {
+        expect(await completed, stderr).toBe(0);
+        const retry = scenario === "stop-retry", reused = scenario === "reused";
+        const target = reused ? "reused-exact-id" : "started-exact-id";
+        expect(JSON.parse(stdout.trim())).toEqual({
+            first: {
+                rejected: true, claimExists: retry, retained: retry,
+                stopAttempts: reused ? 0 : 1, removals: retry ? 0 : 1,
+                preservesPrimary: true, preservesStop: true,
+            },
+            stopAttempts: reused ? 0 : retry ? 2 : 1,
+            targets: reused ? [] : retry ? [target, target] : [target],
+            removals: 1, permissions: reused ? [false] : [true, true],
+            events: reused ? ["cleanup-guard", "remove-claim"]
+                : retry ? ["cleanup-guard", "devices", "stop", "cleanup-guard", "devices", "stop", "remove-claim"]
+                : ["cleanup-guard", "devices", "stop", "remove-claim"],
+            fallbackEffects: retry ? 4 : 0, repeatedFallbackEffects: 0,
+            claimExists: false, cleared: true, unrelated: "preserve this receipt",
+            commandCalls: 0, restoreCalls: 0, disposalCalls: 0,
+        });
     } finally {
         clearTimeout(timeout);
         if (child.exitCode === null && child.signalCode === null) child.kill();

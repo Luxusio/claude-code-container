@@ -49,6 +49,335 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
     return {ports, entries, handle, events, exec: createContainerExec(ports).exec};
 }
 
+function deferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void, reject!: (cause: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise; });
+    return {promise, resolve, reject};
+}
+
+async function settled<T>(promise: Promise<T>) {
+    try { return {ok: true as const, value: await promise}; }
+    catch (error) { return {ok: false as const, error}; }
+}
+
+describe("acquired session lifetime", () => {
+    it.each([
+        "runtime", "resolve", "directories", "project-tools", "project-id", "tool-selection",
+        "workspace-detection", "family-before-acquire", "workspace-admission", "acquire", "family-acquire",
+    ] as const)("does not clean unrelated ownership when %s fails before successful acquisition", async checkpoint => {
+        const f = fixture(), failure = new Error(`pre-acquisition ${checkpoint}`);
+        f.ports.acquireOwnership = vi.fn(async () => ({lockFile: "/owned/session.lock", existingId: null}));
+        const fail = () => { throw failure; };
+        switch (checkpoint) {
+            case "runtime": f.ports.ensureRuntime = fail; break;
+            case "resolve": f.ports.resolveProject = fail; break;
+            case "directories": f.ports.ensureDirectories = fail; break;
+            case "project-tools": f.ports.ensureProjectTools = async () => { throw failure; }; break;
+            case "project-id": f.ports.projectId = fail; break;
+            case "tool-selection": f.ports.tool = fail; break;
+            case "workspace-detection": f.ports.isWorktreeWorkspace = fail; break;
+            case "family-before-acquire": f.ports.familyLock = async () => { throw failure; }; break;
+            case "workspace-admission": f.ports.assertWorkspace = fail; break;
+            case "acquire": case "family-acquire": f.ports.acquireOwnership = vi.fn(async () => { throw failure; }); break;
+        }
+        const worktreeWorkspace = ["family-before-acquire", "workspace-admission", "family-acquire"].includes(checkpoint);
+        await expect(f.exec("/repo", ["codex"], {worktreeWorkspace})).rejects.toBe(failure);
+        expect(f.ports.acquireOwnership).toHaveBeenCalledTimes(checkpoint === "acquire" || checkpoint === "family-acquire" ? 1 : 0);
+        expect(f.ports.cleanupSession).not.toHaveBeenCalled();
+        expect(f.ports.restoreConfig).not.toHaveBeenCalled();
+        expect(f.ports.disposeCommand).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])("retains cleanup responsibility after family release rejects (cleanup failure=%s)", async cleanupFails => {
+        const f = fixture(), primary = new Error("family release failed"), cleanup = new Error("cleanup failed");
+        let held = false;
+        f.ports.familyLock = async (_id, operation) => {
+            held = true;
+            try { await operation(); }
+            finally { held = false; f.events.push("family-release"); }
+            throw primary;
+        };
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => {
+            expect(held).toBe(false); f.events.push("cleanup"); if (cleanupFails) throw cleanup;
+        });
+        const result = await settled(f.exec("/repo", ["codex"], {worktreeWorkspace: true}));
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("family release failure was swallowed");
+        if (cleanupFails) {
+            expect(result.error).toBeInstanceOf(AggregateError);
+            expect(result.error).toMatchObject({errors: [primary, cleanup], cause: primary});
+        } else expect(result.error).toBe(primary);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        expect(f.events).toEqual(["family-release", "cleanup"]);
+        expect(f.ports.restoreConfig).not.toHaveBeenCalled();
+        expect(f.ports.disposeCommand).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+    });
+
+    const startupFaults: Array<{
+        name: string; wrapped: boolean; restores: number;
+        install(f: ReturnType<typeof fixture>, failure: Error): void;
+    }> = [
+        {name: "synchronous clipboard startup", wrapped: false, restores: 0, install: (f, failure) => { f.ports.ensureClipboard = () => { throw failure; }; }},
+        {name: "clipboard port lookup", wrapped: false, restores: 0, install: (f, failure) => { f.ports.clipboardPortFile = () => { throw failure; }; }},
+        {name: "mount discovery", wrapped: false, restores: 0, install: (f, failure) => { f.ports.worktreeMounts = () => { throw failure; }; }},
+        {name: "container name", wrapped: false, restores: 0, install: (f, failure) => { f.ports.containerName = () => { throw failure; }; }},
+        {name: "container inspection", wrapped: false, restores: 0, install: (f, failure) => { f.ports.containerStatus = () => { throw failure; }; }},
+        {name: "synchronous broker startup", wrapped: false, restores: 0, install: (f, failure) => { f.ports.prepareDeviceBroker = () => { throw failure; }; }},
+        {name: "synchronous setup guard", wrapped: false, restores: 0, install: (f, failure) => { f.ports.setupLock = () => { throw failure; }; }},
+        {name: "asynchronous setup guard", wrapped: true, restores: 0, install: (f, failure) => { f.ports.setupLock = async () => { throw failure; }; }},
+        {name: "container preparation", wrapped: true, restores: 0, install: (f, failure) => { f.ports.prepareContainer = () => { throw failure; }; }},
+        {name: "state admission", wrapped: true, restores: 0, install: (f, failure) => { f.ports.stateLock = async () => { throw failure; }; }},
+        {name: "lifecycle admission", wrapped: true, restores: 0, install: (f, failure) => { f.ports.lifecycleLock = async () => { throw failure; }; }},
+        {name: "startup initialization", wrapped: true, restores: 0, install: (f, failure) => { f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => { throw failure; }}); }},
+        {name: "asynchronous MCP setup", wrapped: true, restores: 1, install: (f, failure) => { vi.mocked(f.ports.buildMcpConfig).mockRejectedValue(failure); }},
+        {name: "project tool setup", wrapped: true, restores: 1, install: (f, failure) => { vi.mocked(f.ports.installProjectTools).mockImplementation(() => { throw failure; }); }},
+        {name: "Codex configuration", wrapped: true, restores: 1, install: (f, failure) => { vi.mocked(f.ports.prepareCodexConfig).mockImplementation(() => { throw failure; }); }},
+        {name: "clipboard synchronization", wrapped: true, restores: 1, install: (f, failure) => { vi.mocked(f.ports.syncClipboard).mockImplementation(() => { throw failure; }); }},
+        {name: "clipboard connection", wrapped: false, restores: 1, install: (f, failure) => { f.ports.clipboardConnection = () => { throw failure; }; }},
+        {name: "synchronous clipboard attachment", wrapped: false, restores: 1, install: (f, failure) => { vi.mocked(f.ports.attachClipboardImage).mockImplementation(() => { throw failure; }); }},
+        {name: "asynchronous clipboard attachment", wrapped: false, restores: 1, install: (f, failure) => { vi.mocked(f.ports.attachClipboardImage).mockRejectedValue(failure); }},
+        {name: "clipboard bridge", wrapped: false, restores: 1, install: (f, failure) => { vi.mocked(f.ports.startClipboardBridge).mockImplementation(() => { throw failure; }); }},
+        {name: "environment observation", wrapped: false, restores: 1, install: (f, failure) => { vi.mocked(f.ports.observeCommandEnvironment).mockImplementation(() => { throw failure; }); }},
+        {name: "environment report", wrapped: false, restores: 1, install: (f, failure) => {
+            vi.mocked(f.ports.observeCommandEnvironment).mockReturnValue({forwarded: [], skippedKeys: ["TOO_LARGE"], containerMarker: ["container", "docker"], hostLangPresent: true});
+            vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "environment-skipped") throw failure; });
+        }},
+    ];
+    it.each(startupFaults)("cleans once after $name failure using only its original restoration context", async fault => {
+        const f = fixture(), failure = new Error(fault.name);
+        fault.install(f, failure);
+        const result = await settled(f.exec("/repo", ["codex"], {}, "work"));
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("startup failure was swallowed");
+        if (fault.wrapped) expect(result.error).toMatchObject({message: "Container setup failed", cause: failure});
+        else expect(result.error).toBe(failure);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        expect(f.ports.restoreConfig).toHaveBeenCalledTimes(fault.restores);
+        for (const call of vi.mocked(f.ports.restoreConfig).mock.calls) expect(call).toEqual(["final-id", "work"]);
+        expect(f.ports.disposeCommand).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.events.at(-1)).toBe("cleanup");
+    });
+
+    it.each(["resolve", "reject"] as const)("does not clean a held acquisition before it can %s", async completion => {
+        const f = fixture(), gate = deferred<{lockFile: string; existingId: null}>(), entered = deferred<void>();
+        const failure = new Error("ownership refused");
+        f.ports.acquireOwnership = async () => { entered.resolve(); return gate.promise; };
+        const result = settled(f.exec("/repo", ["codex"]));
+        await entered.promise;
+        expect(f.ports.cleanupSession).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        if (completion === "resolve") gate.resolve({lockFile: "/owned/session.lock", existingId: null});
+        else gate.reject(failure);
+        const outcome = await result;
+        if (completion === "resolve") expect(outcome).toEqual({ok: true, value: 0});
+        else expect(outcome).toEqual({ok: false, error: failure});
+        expect(f.ports.cleanupSession).toHaveBeenCalledTimes(completion === "resolve" ? 1 : 0);
+    });
+
+    it.each(["setup", "startup-ack", "failure-ack", "command-ack", "command"] as const)("waits for held %s success and rejection before finalization", async checkpoint => {
+        for (const rejects of [false, true]) {
+            const f = fixture(), gate = deferred<void>(), entered = deferred<void>();
+            const primary = new Error("initialization failed"), failure = new Error(`${checkpoint} rejected`);
+            const wait = async () => { entered.resolve(); await gate.promise; };
+            if (checkpoint === "setup") vi.mocked(f.ports.buildMcpConfig).mockImplementation(async () => { await wait(); return []; });
+            else if (checkpoint === "command") vi.mocked(f.ports.launchCommand).mockImplementation(async () => { await wait(); return 29; });
+            else {
+                let acknowledgements = 0;
+                if (checkpoint === "failure-ack") {
+                    f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => { throw primary; }});
+                    vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "ownership-unconfirmed") throw new Error("report failed"); });
+                }
+                vi.mocked(f.ports.confirmOwnership).mockImplementation(async () => {
+                    acknowledgements++;
+                    if ((checkpoint === "startup-ack" && acknowledgements === 1)
+                        || (checkpoint === "failure-ack" && acknowledgements === 2)
+                        || (checkpoint === "command-ack" && vi.mocked(f.ports.prepareCommand).mock.calls.length > 0)) await wait();
+                });
+            }
+            const result = settled(f.exec("/repo", ["codex"]));
+            await entered.promise;
+            expect(f.ports.cleanupSession).not.toHaveBeenCalled();
+            expect(f.ports.disposeCommand).not.toHaveBeenCalled();
+            if (checkpoint !== "command") expect(f.ports.launchCommand).not.toHaveBeenCalled();
+            if (rejects) gate.reject(failure); else gate.resolve();
+            const outcome = await result;
+            if (checkpoint === "failure-ack") {
+                expect(outcome).toMatchObject({ok: false, error: {message: "Container setup failed", cause: primary}});
+                if (rejects) expect(f.ports.report).toHaveBeenCalledWith({kind: "ownership-unconfirmed"});
+            } else if (rejects) {
+                if (checkpoint === "setup" || checkpoint === "startup-ack") expect(outcome).toMatchObject({ok: false, error: {cause: failure}});
+                else expect(outcome).toEqual({ok: false, error: failure});
+            } else expect(outcome).toEqual({ok: true, value: checkpoint === "command" ? 29 : 0});
+            expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+            expect(f.ports.disposeCommand).toHaveBeenCalledTimes(checkpoint === "command" || checkpoint === "command-ack" || (!rejects && checkpoint !== "failure-ack") ? 1 : 0);
+        }
+    });
+
+    it("reused startup failure never grants permission to stop the joined container", async () => {
+        const f = fixture({running: true}), failure = new Error("join initialization failed");
+        f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => { throw failure; }});
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
+        expect(f.ports.setSessionContainer).toHaveBeenLastCalledWith("final-id");
+        expect(f.ports.setCleanupEnabled).toHaveBeenCalledWith(false);
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])("settles captured-start acknowledgement before cleanup after a synchronous start failure (ACK rejects=%s)", async rejects => {
+        const f = fixture(), gate = deferred<void>(), entered = deferred<void>();
+        const primary = new Error("start helper failed after creating container"), acknowledgement = new Error("ACK failed");
+        f.ports.startContainer = (...args) => { args[9]("partial-start-id"); throw primary; };
+        vi.mocked(f.ports.confirmOwnership).mockImplementation(async () => { entered.resolve(); await gate.promise; });
+        vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "ownership-unconfirmed") throw new Error("report failed"); });
+        const result = settled(f.exec("/repo", ["codex"]));
+        await entered.promise;
+        expect(f.ports.setSessionContainer).toHaveBeenLastCalledWith("partial-start-id");
+        expect(f.ports.setCleanupEnabled).toHaveBeenLastCalledWith(true);
+        expect(f.ports.cleanupSession).not.toHaveBeenCalled();
+        if (rejects) gate.reject(acknowledgement); else gate.resolve();
+        expect(await result).toMatchObject({ok: false, error: {message: "Container setup failed", cause: primary}});
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        expect(f.ports.restoreConfig).not.toHaveBeenCalled();
+        expect(f.ports.disposeCommand).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        if (rejects) expect(f.ports.report).toHaveBeenCalledWith({kind: "ownership-unconfirmed"});
+    });
+
+    it.each([undefined, "primitive failure", 17, {reason: "opaque failure"}])("preserves sole thrown value %j in startup and command including undefined", async failure => {
+        for (const checkpoint of ["startup", "command"]) {
+            const f = fixture();
+            if (checkpoint === "startup") vi.mocked(f.ports.observeCommandEnvironment).mockImplementation(() => { throw failure; });
+            else vi.mocked(f.ports.launchCommand).mockRejectedValue(failure);
+            expect(await settled(f.exec("/repo", ["codex"]))).toEqual({ok: false, error: failure});
+            expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        }
+    });
+
+    it.each([
+        {label: "undefined primary", primary: undefined, cleanup: new Error("cleanup failed")},
+        {label: "undefined cleanup", primary: "startup failed", cleanup: undefined},
+        {label: "both undefined", primary: undefined, cleanup: undefined},
+        {label: "opaque primary", primary: {reason: "startup failed"}, cleanup: "cleanup failed"},
+    ])("preserves ordered startup and cleanup failures for $label despite throwing diagnostics", async ({primary, cleanup}) => {
+        const f = fixture();
+        vi.mocked(f.ports.observeCommandEnvironment).mockImplementation(() => { throw primary; });
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw cleanup; });
+        vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "cleanup-failed") throw new Error("report failed"); });
+        const result = await settled(f.exec("/repo", ["codex"]));
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("startup and cleanup failures were swallowed");
+        expect(result.error).toBeInstanceOf(AggregateError);
+        const aggregate = result.error as AggregateError;
+        expect(aggregate.errors).toEqual([primary, cleanup]);
+        expect(aggregate.cause).toBe(primary);
+        expect(Object.hasOwn(aggregate, "cause")).toBe(true);
+        expect(f.ports.report).toHaveBeenCalledWith({kind: "cleanup-failed", cause: cleanup});
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        expect(f.ports.disposeCommand).not.toHaveBeenCalled();
+    });
+
+    it.each(["startup", "command"] as const)("keeps a caller AggregateError as one %s primary", async checkpoint => {
+        const f = fixture(), primary = new AggregateError([new Error("inner one"), undefined], "caller aggregate");
+        const cleanup = new Error("cleanup failed");
+        if (checkpoint === "startup") vi.mocked(f.ports.observeCommandEnvironment).mockImplementation(() => { throw primary; });
+        else vi.mocked(f.ports.launchCommand).mockRejectedValue(primary);
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw cleanup; });
+        const result = await settled(f.exec("/repo", ["codex"]));
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("caller aggregate was swallowed");
+        expect(result.error).toBeInstanceOf(AggregateError);
+        expect((result.error as AggregateError).errors).toEqual([primary, cleanup]);
+        expect((result.error as AggregateError).errors[0]).toBe(primary);
+        expect((result.error as AggregateError).cause).toBe(primary);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+
+    it("keeps undefined command, disposal and cleanup failures flat and ordered", async () => {
+        const f = fixture(), disposal = {reason: "disposal failed"};
+        vi.mocked(f.ports.launchCommand).mockRejectedValue(undefined);
+        vi.mocked(f.ports.disposeCommand).mockImplementation(() => { f.events.push("dispose"); throw disposal; });
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { f.events.push("cleanup"); throw undefined; });
+        const result = await settled(f.exec("/repo", ["codex"]));
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("command failures were swallowed");
+        expect(result.error).toBeInstanceOf(AggregateError);
+        expect((result.error as AggregateError).errors).toEqual([undefined, disposal, undefined]);
+        expect((result.error as AggregateError).cause).toBeUndefined();
+        expect(Object.hasOwn(result.error as AggregateError, "cause")).toBe(true);
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+
+    it("distinguishes cleanup throwing undefined from successful cleanup", async () => {
+        const f = fixture();
+        vi.mocked(f.ports.launchCommand).mockResolvedValue(41);
+        vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw undefined; });
+        expect(await settled(f.exec("/repo", ["codex"]))).toEqual({ok: false, error: undefined});
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+
+    it.each([false, true])("retains setupFailure's exact wrapper for undefined setup failure (cleanup failure=%s)", async cleanupFails => {
+        const f = fixture(), wrapper = new Error("wrapped undefined", {cause: undefined}), cleanup = new Error("cleanup failed");
+        f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => { throw undefined; }});
+        f.ports.setupFailure = vi.fn(() => wrapper);
+        if (cleanupFails) vi.mocked(f.ports.cleanupSession).mockImplementation(() => { throw cleanup; });
+        const result = await settled(f.exec("/repo", ["codex"]));
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("undefined setup failure was swallowed");
+        if (cleanupFails) expect(result.error).toMatchObject({errors: [wrapper, cleanup], cause: wrapper});
+        else expect(result.error).toBe(wrapper);
+        expect(f.ports.setupFailure).toHaveBeenCalledExactlyOnceWith(undefined);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+
+    it("retains a refused command's status and finalizes without granting reused-container stop permission", async () => {
+        const f = fixture({running: true});
+        vi.mocked(f.ports.prepareCodexCommand).mockReturnValue({ok: false, status: 7, reason: "engine-unavailable"});
+        await expect(f.exec("/repo", ["codex"])).resolves.toBe(7);
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.disposeCommand).toHaveBeenCalledExactlyOnceWith(f.handle);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+    });
+
+    it.each(["status", "command-failure", "cleanup-failure", "debug-failure"] as const)("keeps conversation reporting after cleanup for %s", async outcome => {
+        const f = fixture(), failure = new Error(outcome);
+        f.ports.debugEnabled = () => true;
+        vi.mocked(f.ports.launchCommand).mockResolvedValue(43);
+        if (outcome === "command-failure") vi.mocked(f.ports.launchCommand).mockRejectedValue(failure);
+        if (outcome === "cleanup-failure") vi.mocked(f.ports.cleanupSession).mockImplementation(() => { f.events.push("cleanup"); throw failure; });
+        vi.mocked(f.ports.reportConversationFiles).mockImplementation(() => {
+            expect(f.ports.cleanupSession).toHaveBeenCalledOnce(); f.events.push("conversation-report");
+            if (outcome === "debug-failure") throw failure;
+        });
+        const result = await settled(f.exec("/repo", ["codex"]));
+        expect(result).toEqual(outcome === "status" ? {ok: true, value: 43} : {ok: false, error: failure});
+        const reports = outcome === "status" || outcome === "debug-failure" ? 1 : 0;
+        expect(f.ports.reportConversationFiles).toHaveBeenCalledTimes(reports);
+        expect(f.events.slice(-3 - reports)).toEqual(["restore", "dispose", "cleanup", ...(reports ? ["conversation-report"] : [])]);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+
+    it("keeps rejected clipboard and broker startup nonfatal", async () => {
+        const f = fixture(), clipboard = new Error("clipboard unavailable"), broker = new Error("broker unavailable");
+        f.ports.ensureClipboard = vi.fn(async () => { throw clipboard; });
+        f.ports.prepareDeviceBroker = vi.fn(async () => { throw broker; });
+        f.ports.clipboardConnection = vi.fn(() => ({}));
+        vi.mocked(f.ports.launchCommand).mockResolvedValue(47);
+        await expect(f.exec("/repo", ["codex"])).resolves.toBe(47);
+        expect(f.ports.clipboardConnection).toHaveBeenCalledWith(null);
+        expect(f.ports.report).toHaveBeenCalledWith({kind: "broker-failed", cause: broker});
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
+    });
+});
+
 describe("container exec semantic workflow", () => {
     it("prepares once before mutation locks and initializes after release and ownership acknowledgement", async () => {
         const f = fixture();
@@ -336,6 +665,7 @@ describe("container exec semantic workflow", () => {
         vi.mocked(f.ports.installTools).mockImplementation(() => { throw failure; }); f.ports.isRestartRequired = error => error === failure;
         await expect(f.exec("/repo", ["codex"])).rejects.toBe(failure);
         expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
     });
 });
 
