@@ -8,6 +8,8 @@ Startup failure, clipboard attachment, environment/bridge failure, command prepa
 
 Command finalization keeps configuration restore, prepared-command disposal, then session cleanup in that order. Dispose only a successfully created command artifact; preserve existing restoration context and best-effort restoration diagnostics. A successful command retains its status unless finalization fails. A sole thrown value is preserved, including undefined. Multiple primary/disposal/cleanup errors retain their order with the first as cause; a caller-thrown AggregateError remains a single primary error. Reporting failures cannot replace the failure being reported.
 
+Each newly admitted native acquisition initializes a fresh cleanup lifetime before binding its reserved session. After one invocation is cleaned, a subsequent acquisition must remove its own claim and release its own handle without requiring caller-side context clearing. The existing low-level setSession/clearSession and failed-cleanup retry contracts remain unchanged.
+
 A caller can catch a startup rejection without a CLI error boundary and still observe this cleanup attempt. Successful native cleanup removes only its owned claim; a defensive repeated CLI cleanup is inert. Failed cleanup preserves the existing retry obligation and is reported alongside the original failure. No automatic retry or unconditional stop is added.
 
 ## Verification

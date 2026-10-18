@@ -149,6 +149,7 @@ export async function acquireHostSessionOwnership(
             withLifecycleLock: withContainerLifecycleLockAsync,
             reserve: sessionClaims.reserveSessionLockInHeldLifecycleLock,
             initializeCapture(binding, lockFile) {
+                sessionCleanup.clearSession();
                 sessionCleanup.setSession(lockFile, binding.projectPath, binding.profile, binding.toolName);
                 capturedContainerId = null;
                 sessionCleanupEnabled = false;

@@ -648,6 +648,62 @@ describe("host ownership acquisition through the facade", () => {
         expect(release).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+        { next: "failed join", authorized: false },
+        { next: "authorized captured target", authorized: true },
+    ])("rearms cleanup for a consecutive $next without caller context clearing", async ({ authorized }) => {
+        const nextRelease = vi.fn<SessionOwnershipHandle["release"]>().mockResolvedValue(undefined);
+        effects.arm.mockResolvedValueOnce(handle).mockResolvedValueOnce({ ...handle, release: nextRelease });
+        effects.capture.mockImplementation(path => ({
+            ...receiptFor(path), inode: String(effects.capture.mock.calls.length),
+        }));
+
+        const first = await session.acquireHostSessionOwnership(request, () => ({
+            known: true, containerId: "first-exact-id", runtime: "docker",
+        }));
+        session.setSessionCleanupEnabled(true);
+        await session.confirmSessionOwnership();
+        session.cleanupSession();
+        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(first.lockFile);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "first-exact-id"], stopOptions);
+        expect(session.getCurrentSession().lockFile).toBeNull();
+
+        const second = await session.acquireHostSessionOwnership(request, () => ({
+            known: true, containerId: "reused-exact-id", runtime: "docker",
+        }));
+        expect(second.lockFile).not.toBe(first.lockFile);
+        const [firstReceipt, secondReceipt] = effects.capture.mock.results.map(result => result.value as SessionOwnershipReceipt);
+        expect(secondReceipt).not.toEqual(firstReceipt);
+        expect(session.getCurrentSession().lockFile).toBe(second.lockFile);
+        expect(update).toHaveBeenLastCalledWith("reused-exact-id", "docker", false);
+        if (authorized) {
+            session.setSessionContainerId("replacement-exact-id");
+            await session.confirmSessionOwnership();
+            session.setSessionCleanupEnabled(true);
+            await session.confirmSessionOwnership();
+            expect(update).toHaveBeenLastCalledWith("replacement-exact-id", "docker", true);
+        }
+
+        session.cleanupSession();
+        expect(effects.unlink.mock.calls).toEqual([[first.lockFile], [second.lockFile]]);
+        expect(effects.authorize).toHaveBeenCalledWith(firstReceipt);
+        expect(effects.authorize).toHaveBeenCalledWith(secondReceipt);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(nextRelease).toHaveBeenCalledTimes(1);
+        expect(session.getCurrentSession().lockFile).toBeNull();
+        expect(effects.devices).toHaveBeenCalledTimes(authorized ? 2 : 1);
+        expect(effects.spawn.mock.calls).toEqual([
+            ["docker", ["stop", "first-exact-id"], stopOptions],
+            ...(authorized ? [["docker", ["stop", "replacement-exact-id"], stopOptions]] : []),
+        ]);
+        session.cleanupSession();
+        expect(effects.unlink).toHaveBeenCalledTimes(2);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(nextRelease).toHaveBeenCalledTimes(1);
+        expect(effects.spawn).toHaveBeenCalledTimes(authorized ? 2 : 1);
+    });
+
     it("confirmation waits for queued permission grants and revocations in order", async () => {
         await session.acquireHostSessionOwnership(request, () => ({ known: true, containerId: "existing-exact-id", runtime: "docker" }));
         let acknowledge!: () => void;
