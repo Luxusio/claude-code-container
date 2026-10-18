@@ -5114,6 +5114,51 @@
         "Whole-source/caller/export closure; native Windows/macOS/provider/runtime; reliability and formal evidence"
       ],
       "sourceUniverseCertified": false
+    },
+    {
+      "id": "broker-launch-recovery-current",
+      "taskId": "TASK__broker-launch-recovery-20261019",
+      "coveredOperationIds": [],
+      "status": "Source 29ac6982 (including a7ec4066) locally committed: recovery reservations, async four-operation macOS effects and unconfirmed detached spawn handling. Final independent Code DEEP/Security PASS0 preceded independent QA PASS: 581 whole-file cases plus 62 selected Source/emitted races, 643 executed passes, zero platform skips; 118 race cases deliberately filtered. Strict contracts/emission/lint, actual emitted CLI and preservation passed. Zero extra group/operation/gate credit; whole-source/native/reliability/formal/Goal acceptance remains separate.",
+      "qualification": {
+        "sourceCommit": "29ac69825a7b3ab3b8aad6f65f687d900aa1adfd",
+        "developmentEvidence": "results/broker-launch-recovery-20261019/",
+        "structuralGroupCredit": 0,
+        "operationCredit": 0,
+        "deliveryGateCredit": 0,
+        "sourceUniverseCertified": false,
+        "nativeAcceptance": "unverified",
+        "formalClose": "unverified",
+        "codeReview": "Actual final Code DEEP PASS0 and independent Security PASS0, followed by substantive independent QA PASS on Source 29ac6982.",
+        "independentQa": {
+          "evidence": "results/broker-launch-recovery-20261019/qa-final/",
+          "wholeFiles": 13,
+          "wholeFilePassed": 581,
+          "selectedRacePassed": 62,
+          "intentionallyFilteredRaceCases": 118,
+          "executedPassed": 643,
+          "platformSkipped": 0,
+          "strictContracts": "PASS",
+          "packageEmission": "PASS",
+          "scopedLint": "PASS",
+          "emittedDeviceLabFilesAuthenticated": 274,
+          "emittedHyperVFilesAuthenticated": 44,
+          "packageInputsAuthenticated": 381,
+          "pinnedInputsPreserved": 23,
+          "otherOriginalEntriesPreserved": 1813,
+          "ownedActorsRemaining": 0,
+          "actualEmittedCli": "health/echo 200; missing token 401; unknown method 404; actionable invalid usage"
+        }
+      },
+      "auditPath": "doc/common/AUDIT__architecture-current-boundaries.md",
+      "remainingOriginalAcceptance": [
+        "Asynchronous generic macOS device_status observation binding",
+        "Runtime engine/container lifetime and pinned authority",
+        "Direct provider observation and atomic installation publication",
+        "Test-runner policy and obsolete verifier cleanup",
+        "Whole-source/caller/export closure; native platform/provider/runtime; reliability and formal evidence"
+      ],
+      "sourceUniverseCertified": false
     }
   ],
   "currentSourceQualificationAudit": {

@@ -1,0 +1,3 @@
+# Broker launch recovery
+
+Android and macOS broker starts retain an owned recovery reservation after uncertain launch or failed readiness, including a native detached spawn with no assigned child PID. Confirmed cleanup clears the reservation; successor conflicts preserve the newer record. macOS create/start/stop/delete and readiness effects now yield under the existing operation locks and cleanup allowance. The [requirement and known limits](../device-lab/REQ__broker-launch-recovery.md) distinguish this repair from generic status responsiveness and real-platform acceptance; the [architecture audit](../common/AUDIT__architecture-current-boundaries.md) records verified evidence and remaining work.
