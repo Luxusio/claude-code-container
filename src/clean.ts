@@ -6,9 +6,41 @@ import { prompt, DOCKER_REGISTRY_IMAGE } from "./utils.js";
 import { getSessionLockClaimsForContainer, withContainerLifecycleLock } from "./session.js";
 import { createClean } from "./application/clean.js";
 import type { CleanMutationPorts, CleanPorts } from "./ports/clean.js";
-import type { CleanInventoryResult, ContainerInfo, ImageInfo } from "./domain/clean.js";
+import type { CleanFailure, CleanInventoryResult, CleanProgress, ContainerInfo, ImageInfo } from "./domain/clean.js";
 
 export type { CleanOptions } from "./domain/clean.js";
+
+function formatCleanProgress(progress: CleanProgress): string {
+    switch (progress.kind) {
+        case "nothing-to-clean": return "Nothing to clean.";
+        case "containers-to-stop": return "\nContainers to stop:";
+        case "containers-to-remove": return "\nContainers to remove:";
+        case "container-selected": return `  ${progress.name}  (${progress.status})`;
+        case "images-to-remove": return "\nImages to remove:";
+        case "image-selected": return `  ${progress.repository}  ${progress.id}  (${progress.size})`;
+        case "volumes-to-remove": return "\nVolumes to remove:";
+        case "volume-selected": return `  ${progress.name}`;
+        case "dry-run": return "\n(dry run - no changes made)";
+        case "aborted": return "Aborted.";
+        case "container-claimed": return `Skipping ${progress.name}: ${progress.claimCount} CCC session ownership claim(s).`;
+        case "stopping-container": return `Stopping ${progress.name}...`;
+        case "removing-container": return `Removing container ${progress.name}...`;
+        case "removing-image": return `Removing image ${progress.repository} (${progress.id})...`;
+        case "removing-volume": return `Removing volume ${progress.name}...`;
+        case "completed": return `\nDone. Removed ${progress.removed} item(s).`;
+    }
+}
+
+function formatCleanFailure(failure: CleanFailure): string {
+    switch (failure.kind) {
+        case "inventory-unavailable": return `Failed to list ${failure.inventory}; cleanup aborted.`;
+        case "unmanaged-container": return `Refusing to clean unmanaged container name: ${failure.name}`;
+        case "stop-container-failed": return `Failed to stop container ${failure.name}; cleanup aborted.`;
+        case "remove-container-failed": return `Failed to remove container ${failure.name}; cleanup aborted.`;
+        case "remove-image-failed": return `Failed to remove image ${failure.repository}; cleanup aborted.`;
+        case "remove-volume-failed": return `Failed to remove volume ${failure.name}; cleanup aborted.`;
+    }
+}
 
 const nativePorts: CleanPorts = {
     get ensureRuntimeReady() {
@@ -122,7 +154,15 @@ const nativePorts: CleanPorts = {
     capturePublication: () => {
         const receiver = console;
         const publish = receiver.log;
-        return (text: string) => { Reflect.apply(publish, receiver, [text]); return undefined; };
+        return (progress: CleanProgress) => {
+            const text = formatCleanProgress(progress);
+            Reflect.apply(publish, receiver, [text]);
+            return undefined;
+        };
+    },
+    get failureError() {
+        const Failure = Error;
+        return (failure: CleanFailure) => new Failure(formatCleanFailure(failure));
     },
     get exitSuccess() {
         const receiver = process;

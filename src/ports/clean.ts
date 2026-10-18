@@ -1,4 +1,4 @@
-import type { CleanInventoryResult, CleanMutationResult, ContainerInfo, ImageInfo } from "../domain/clean.js";
+import type { CleanFailure, CleanInventoryResult, CleanMutationResult, CleanProgress, ContainerInfo, ImageInfo } from "../domain/clean.js";
 
 /** Private captured runtime authority; getters select each native callee lazily. */
 export interface CleanMutationPorts {
@@ -19,6 +19,7 @@ export interface CleanPorts {
     readonly captureMutationRuntime: () => CleanMutationPorts;
     readonly withLifecycleLock: (prefix: string, operation: () => undefined) => undefined;
     readonly sessionClaims: (prefix: string) => string[];
-    readonly capturePublication: () => (computedText: string) => undefined;
+    readonly capturePublication: () => (progress: CleanProgress) => undefined;
+    readonly failureError: (failure: CleanFailure) => Error;
     readonly exitSuccess: () => never;
 }
