@@ -108,7 +108,7 @@ export interface HostBackendDiscoveryPorts {
 export interface BrokerDeviceStatusPorts<Connection, Receipt> {
     preview(owner: string, request: DeviceStatusRequest, params: unknown): DeviceStatusPreparation<Connection>;
     refreshPhysicalLease(owner: string, request: DeviceStatusRequest, device: Record<string, unknown>): DeviceStatusPhysicalAdmission;
-    observe(connection: Connection): DeviceStatusExecution<Receipt>;
+    observe(connection: Connection): DeviceStatusExecution<Receipt> | PromiseLike<DeviceStatusExecution<Receipt>>;
     observeHyperVFallback(connection: Connection, deadline: number): Promise<DeviceStatusExecution<Receipt>>;
     typedStatus(connection: Connection, identity: {ownerId: string; deviceId: string; incarnationId: string; vmId: string; vmName: string}, deadline: number): Promise<DeviceStatusExecution<Receipt>>;
     incarnation(device: Record<string, unknown>): string | null;

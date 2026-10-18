@@ -1,4 +1,4 @@
-import { waitForExpectedRuntimeExitSync } from "./device-lab/adapters/process/runtime-exit.js";
+import { waitForExpectedRuntimeExitSync, waitForExpectedRuntimeExitAsync } from "./device-lab/adapters/process/runtime-exit.js";
 import { readBrokerOwnerSecret } from "@ccc/device-lab/providers/state/broker-owner-secret.mjs";
 import {planBrokerAndroidCreate, planBrokerAndroidExisting} from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import {planBrokerIosCreateCommand as semanticIosCreate, planBrokerIosExistingCommand as semanticIosExisting} from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
@@ -71,8 +71,8 @@ import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolv
 import { fileURLToPath, pathToFileURL } from "url";
 import { isDeepStrictEqual } from "util";
 import { Worker } from "worker_threads";
-import { androidAvdHome, listOwnedAndroidAvdArtifacts, ownedAndroidAvdName, removeOwnedAndroidAvdArtifacts } from "@ccc/device-lab/providers/state/android-avd-storage.mjs";
-import { readAndroidAvdIdentity } from "@ccc/device-lab/providers/state/android-avd-identity.mjs";
+import { androidAvdHome, listOwnedAndroidAvdArtifactsAsync, ownedAndroidAvdName, removeOwnedAndroidAvdArtifactsAsync } from "@ccc/device-lab/providers/state/android-avd-storage.mjs";
+import { readAndroidAvdIdentityAsync } from "@ccc/device-lab/providers/state/android-avd-identity.mjs";
 import { androidCreationChoices } from "@ccc/device-lab/providers/backends/android-sdk-inventory.mjs";
 import { DEVICE_BROKER_PROTOCOL_VERSION, isCompatibleBrokerProtocol } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
 import { deviceLabOwnerFromProjectMountPath, deviceLabOwnerId as canonicalDeviceLabOwnerId, deviceLabProjectMountPath } from "./device-lab-owner.js";
@@ -80,9 +80,9 @@ import { assertOwnerDeviceStateWritable, ownerDeviceStateErrorCode, readOwnerDev
 import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePhysicalLease, validateWindowsSandboxLock } from "./device-lab-ownership-state.js";
 import { deviceLabProjectEnumerationErrorCode, enumerateDeviceProjectIds } from "./device-lab-project-state.js";
 import { assertDeviceLabPathWithinRoot, deviceLabStateFileErrorCode, readDeviceLabBinaryFile, readDeviceLabBinaryFileWithinRoot, readDeviceLabStateFile, readDeviceLabTextFile, withDeviceLabReadableFile, writeDeviceLabBinaryFile } from "./device-lab-state-file.js";
-import { deviceRuntimeProcessIdentityMatches, inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, readDeviceRuntimeProcessStartToken, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
+import { deviceRuntimeProcessIdentityMatches, inspectDeviceRuntimeProcessIdentity, inspectDeviceRuntimeProcessIdentityAsync, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, readDeviceRuntimeProcessIdentityAsync, readDeviceRuntimeProcessStartToken, signalDeviceRuntimeProcess, signalDeviceRuntimeProcessAsync, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
-import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs, terminateWindowsProcessByStartToken, windowsHandleBoundTerminationScript, windowsStartTokenExpression } from "./windows-system-powershell.js";
+import { canonicalWindowsPowerShellPath, canonicalWindowsPowerShellPathAsync, canonicalWindowsSystemExecutablePath, canonicalWindowsSystemExecutablePathAsync, hiddenWindowsPowerShellArgs, terminateWindowsProcessByStartToken, terminateWindowsProcessByStartTokenAsync, windowsHandleBoundTerminationScript, windowsStartTokenExpression } from "./windows-system-powershell.js";
 import { assertHyperVOperationDeadline, HyperVOperationDeadlineError, hyperVOperationDeadlineExpired, hyperVRemainingTimeout } from "./device-lab/broker/hyper-v/deadline.js";
 import { hyperVCreateVhdReadError, inspectHyperVCreateVhd } from "./device-lab/broker/hyper-v/vhd-create-inspection.js";
 import {
@@ -769,6 +769,7 @@ type ProviderCommandRunnerOptions = {
     outputLimit: number;
     wrapperTimeoutMs?: number;
     cleanupGraceMs?: number;
+    remainingMs?: () => number;
 };
 type ProviderCommandRunner = (command: ProviderCommand, options: ProviderCommandRunnerOptions) => ProviderCommandResult;
 type BrokerDeviceToolRunner = (ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions) => BrokerRpcResult | Promise<BrokerRpcResult>;
@@ -2187,12 +2188,7 @@ function discoverWindowsBrokerPortProcess(port: number, remainingMs?: () => numb
         : null;
     if (!listener) return null;
     const powershell = canonicalWindowsPowerShellPath();
-    const script = [
-        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${listener.pid}"`,
-        `$h = Get-Process -Id ${listener.pid} -ErrorAction SilentlyContinue`,
-        "if (-not $p -or -not $h) { exit 1 }",
-        `[pscustomobject]@{ pid = [int]$p.ProcessId; commandLine = [string]$p.CommandLine; startToken = ${windowsStartTokenExpression("$h")} } | ConvertTo-Json -Compress`,
-    ].join("; ");
+    const script = windowsBrokerPortProcessProbeScript(listener.pid);
     const timeout = Math.min(10000, brokerProcessRemainingMs(remainingMs));
     if (!timeout) return listener;
     const result = powershell ? spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]), {
@@ -2201,23 +2197,8 @@ function discoverWindowsBrokerPortProcess(port: number, remainingMs?: () => numb
         timeout,
     }) : { status: null, stdout: "" };
     if (result.status === 0 && result.stdout) {
-        try {
-            const parsed = JSON.parse(result.stdout) as { pid?: unknown; commandLine?: unknown; startToken?: unknown };
-            const pid = Number(parsed.pid);
-            const commandLine = typeof parsed.commandLine === "string" ? parsed.commandLine.replace(/\r?\n/g, " ").trim() : "";
-            const startToken = typeof parsed.startToken === "string" ? `windows:${parsed.startToken}` : "";
-            if (pid === listener.pid && commandLine && startToken) {
-                const processIdentity = { pid, startToken, commandHash: createHash("sha256").update(commandLine).digest("hex") };
-                return {
-                    pid,
-                    commandLine,
-                    processIdentity,
-                    processStartToken: startToken,
-                };
-            }
-        } catch {
-            // Fall through to the locale-independent netstat listener lookup.
-        }
+        const observed = parseWindowsBrokerPortProcessProbe(listener, result.stdout);
+        if (observed) return observed;
     }
     // One probe, not two, and one PRODUCER rather than two. `readDeviceRuntimeProcessIdentity`
     // returns the start token it derived; asking `readDeviceRuntimeProcessStartToken` for the
@@ -4715,12 +4696,12 @@ function androidEmulatorPortsFromAdbDevices(output: unknown): Set<number> {
     return ports;
 }
 
-function liveAndroidEmulatorPortsForAllocation(normalized: NormalizedBrokerOptions):
+async function liveAndroidEmulatorPortsForAllocation(normalized: NormalizedBrokerOptions): Promise<
     | { ok: true; ports: Set<number> }
-    | { ok: false; status: number; error: string; detail: string } {
+    | { ok: false; status: number; error: string; detail: string }> {
     const adb = providerExecutable("adb", normalized);
     if (!adb) return { ok: true, ports: new Set() };
-    const result = normalized.commandRunner({ mode: "exec", provider: "adb", executable: adb, args: ["devices", "-l"] }, {
+    const result = await runAndroidProviderCommand(normalized, { mode: "exec", provider: "adb", executable: adb, args: ["devices", "-l"] }, {
         timeoutMs: 10000,
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     });
@@ -4735,9 +4716,9 @@ function liveAndroidEmulatorPortsForAllocation(normalized: NormalizedBrokerOptio
     return { ok: true, ports: androidEmulatorPortsFromAdbDevices(result.stdout) };
 }
 
-function liveAndroidAvdNames(normalized: NormalizedBrokerOptions):
+async function liveAndroidAvdNames(normalized: NormalizedBrokerOptions): Promise<
     | { ok: true; names: Set<string> }
-    | { ok: false; status: number; error: string; detail: string } {
+    | { ok: false; status: number; error: string; detail: string }> {
     const adb = providerExecutable("adb", normalized);
     if (!adb) {
         return {
@@ -4747,7 +4728,7 @@ function liveAndroidAvdNames(normalized: NormalizedBrokerOptions):
             detail: "missing-adb",
         };
     }
-    const inventory = normalized.commandRunner({
+    const inventory = await runAndroidProviderCommand(normalized, {
         mode: "exec",
         provider: "adb",
         executable: adb,
@@ -4787,7 +4768,7 @@ function liveAndroidAvdNames(normalized: NormalizedBrokerOptions):
                 detail: "invalid-emulator-serial",
             };
         }
-        const identity = readAndroidAvdIdentity(serial, args => normalized.commandRunner({
+        const identity = await readAndroidAvdIdentityAsync(serial, args => runAndroidProviderCommand(normalized, {
             mode: "exec",
             provider: "adb",
             executable: adb,
@@ -4817,9 +4798,9 @@ function approvedAndroidAvdRoot(recordedRoot: unknown, platform: NodeJS.Platform
     return normalize(approved) === normalize(recorded) ? approved : null;
 }
 
-function androidAvdProcessState(avdName: string, normalized: NormalizedBrokerOptions, timeoutMs = 10000, registeredName = false):
+async function androidAvdProcessState(avdName: string, normalized: NormalizedBrokerOptions, timeoutMs = 10000, registeredName = false): Promise<
     | { ok: true; active: boolean }
-    | { ok: false; status: number; error: string; detail: string } {
+    | { ok: false; status: number; error: string; detail: string }> {
     if (!/^[A-Za-z0-9._-]+$/.test(avdName)
         || (!registeredName && !ownedAndroidAvdName(avdName, avdName.slice(4, 20)))) {
         return { ok: false, status: 409, error: "android-avd-identity-unavailable", detail: "invalid-avd-name" };
@@ -4842,7 +4823,7 @@ function androidAvdProcessState(avdName: string, normalized: NormalizedBrokerOpt
             executable: "/bin/ps",
             args: ["-eo", "args="],
         };
-    const result = normalized.commandRunner(command, {
+    const result = await runAndroidProviderCommand(normalized, command, {
         timeoutMs,
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     });
@@ -4862,12 +4843,12 @@ function androidAvdProcessState(avdName: string, normalized: NormalizedBrokerOpt
     };
 }
 
-function resolveAndroidEmulatorCreatePortForInvoke(
+async function resolveAndroidEmulatorCreatePortForInvoke(
     ownerId: string,
     parsed: CommandParamSuccess,
     normalized: NormalizedBrokerOptions,
-): AndroidEmulatorPortAllocation {
-    const observation = allocateBrokerAndroidCreatePort(ownerId, parsed, {
+): Promise<AndroidEmulatorPortAllocation> {
+    const observation = await allocateBrokerAndroidCreatePort(ownerId, parsed, {
         previewAllocation: (ownerId, parsed, additionalUsedPorts) => {const result = resolveAndroidEmulatorCreatePort(ownerId, parsed, additionalUsedPorts); if(result.ok) return result; const {status, ...facts} = result; return {...facts, reason: nativeAndroidFailureReason(status)};},
         livePorts: () => brokerAndroidLifecyclePorts(normalized).livePorts(),
     });
@@ -6005,6 +5986,315 @@ export function terminateBrokerSpawnedProcessTree(
     }
 }
 
+type BrokerProcessTreeCleanupAsyncOptions = Omit<BrokerProcessTreeCleanupOptions, "readIdentity" | "terminateWindowsTree"> & {
+    readIdentity?: (pid: number) => DeviceRuntimeProcessIdentity | null | PromiseLike<DeviceRuntimeProcessIdentity | null>;
+    terminateWindowsTree?: (pid: number) => { attempted?: boolean; ok: boolean; stale?: boolean; error?: string } | PromiseLike<{ attempted?: boolean; ok: boolean; stale?: boolean; error?: string }>;
+};
+
+/** Await exact native identity/termination without blocking the broker event loop. */
+export async function terminateBrokerSpawnedProcessTreeAsync(
+    pid: unknown,
+    options: BrokerProcessTreeCleanupAsyncOptions = {},
+): Promise<BrokerProcessTreeCleanup> {
+    const platform = options.platform || process.platform;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0)
+        return { attempted: false, ok: false, pid: 0, signal: "SIGKILL", platform, error: "spawned-process-pid-missing" };
+    const exhausted = (): BrokerProcessTreeCleanup => ({ attempted: false, ok: false, pid, signal: "SIGKILL", platform, error: "spawned-process-identity-unavailable" });
+    if (!brokerProcessRemainingMs(options.remainingMs)) return exhausted();
+    if (options.requireIdentity) {
+        if (!options.expectedIdentity)
+            return { attempted: false, ok: false, pid, signal: "SIGKILL", platform, error: "spawned-process-identity-missing" };
+        const observation = await inspectDeviceRuntimeProcessIdentityAsync(options.expectedIdentity, pid, {
+            platform, ...(options.readIdentity ? { readIdentity: options.readIdentity } : {}), remainingMs: options.remainingMs,
+        });
+        if (observation.status === "exited")
+            return { attempted: false, ok: true, stale: true, pid, signal: "SIGKILL", platform };
+        if (observation.status !== "match")
+            return { attempted: false, ok: false, pid, signal: "SIGKILL", platform,
+                error: observation.status === "mismatch" ? "spawned-process-identity-mismatch" : "spawned-process-identity-unavailable" };
+    }
+    if (!brokerProcessRemainingMs(options.remainingMs)) return exhausted();
+    if (platform === "win32") {
+        const outcome = await (options.terminateWindowsTree || ((value: number) => terminateWindowsProcessTreeAsync(
+            value, options.expectedIdentity || undefined, true, options.expectedIdentity?.startToken, undefined, options.remainingMs,
+        )))(pid);
+        return {
+            attempted: outcome.attempted !== false, ok: outcome.ok,
+            ...(outcome.stale === true ? { stale: true } : {}), pid, signal: "SIGKILL", platform,
+            ...("error" in outcome && outcome.error ? { error: outcome.error } : {}),
+        };
+    }
+    try {
+        (options.kill || process.kill)(-pid, "SIGKILL");
+        return { attempted: true, ok: true, pid, signal: "SIGKILL", platform };
+    } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : null;
+        return { attempted: true, ok: code === "ESRCH", ...(code === "ESRCH" ? { stale: true } : {}), pid, signal: "SIGKILL", platform,
+            ...(code === "ESRCH" ? {} : { error: error instanceof Error ? error.message : String(error) }) };
+    }
+}
+
+function windowsBrokerPortProcessProbeScript(pid: number): string {
+    return [
+        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"`,
+        `$h = Get-Process -Id ${pid} -ErrorAction SilentlyContinue`,
+        "if (-not $p -or -not $h) { exit 1 }",
+        `[pscustomobject]@{ pid = [int]$p.ProcessId; commandLine = [string]$p.CommandLine; startToken = ${windowsStartTokenExpression("$h")} } | ConvertTo-Json -Compress`,
+    ].join("; ");
+}
+
+function parseWindowsBrokerPortProcessProbe(listener: BrokerPortProcess, output: string): BrokerPortProcess | null {
+    try {
+        const parsed = JSON.parse(output) as { pid?: unknown; commandLine?: unknown; startToken?: unknown };
+        const pid = Number(parsed.pid);
+        const commandLine = typeof parsed.commandLine === "string" ? parsed.commandLine.replace(/\r?\n/g, " ").trim() : "";
+        const startToken = typeof parsed.startToken === "string" ? `windows:${parsed.startToken}` : "";
+        if (pid === listener.pid && commandLine && startToken) {
+            const processIdentity = { pid, startToken, commandHash: createHash("sha256").update(commandLine).digest("hex") };
+            return { pid, commandLine, processIdentity, processStartToken: startToken };
+        }
+    } catch {
+        // Fall through to the locale-independent netstat listener lookup.
+    }
+    return null;
+}
+
+async function discoverWindowsBrokerPortProcessAsync(port: number, parentRemainingMs?: () => number): Promise<BrokerPortProcess | null> {
+    const remainingMs = captureBrokerNativeRemainingMs(parentRemainingMs);
+    if (!brokerProcessRemainingMs(remainingMs)) return null;
+    const netstatPath = await canonicalWindowsSystemExecutablePathAsync("netstat.exe");
+    const netstatTimeout = Math.min(5000, brokerProcessRemainingMs(remainingMs));
+    if (!netstatTimeout) return null;
+    const netstat = netstatPath ? await defaultProviderCommandRunnerAsync({
+        mode: "exec", provider: "process-inventory", executable: netstatPath, args: ["-ano", "-p", "tcp"],
+    }, {
+        timeoutMs: netstatTimeout, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        ...(remainingMs ? { remainingMs } : {}),
+    }) : { status: null, stdout: "" };
+    if (!brokerProcessRemainingMs(remainingMs)) return null;
+    const listener = netstat.status === 0 ? parseWindowsBrokerNetstatListenerForTest(netstat.stdout || "", port) : null;
+    if (!listener) return null;
+    const powershell = await canonicalWindowsPowerShellPathAsync();
+    const timeout = Math.min(10000, brokerProcessRemainingMs(remainingMs));
+    if (!timeout) return listener;
+    const result = powershell ? await defaultProviderCommandRunnerAsync({
+        mode: "exec", provider: "process-inventory", executable: powershell,
+        args: hiddenWindowsPowerShellArgs(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", windowsBrokerPortProcessProbeScript(listener.pid)]),
+    }, {
+        timeoutMs: timeout, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        ...(remainingMs ? { remainingMs } : {}),
+    }) : { status: null, stdout: "" };
+    if (!brokerProcessRemainingMs(remainingMs)) return listener;
+    if (result.status === 0 && result.stdout) {
+        const observed = parseWindowsBrokerPortProcessProbe(listener, result.stdout);
+        if (observed) return observed;
+    }
+    const processIdentity = await readDeviceRuntimeProcessIdentityAsync(listener.pid, { platform: "win32", ...(remainingMs ? { remainingMs } : {}) });
+    if (!brokerProcessRemainingMs(remainingMs)) return listener;
+    return { ...listener, processIdentity, processStartToken: processIdentity?.startToken ?? null };
+}
+
+async function terminateWindowsProcessTreeAsync(
+    pid: number,
+    expectedIdentity?: DeviceRuntimeProcessIdentity,
+    forceTreeAttempt = false,
+    expectedStartToken?: string,
+    authorize: () => boolean = () => true,
+    remainingMs?: () => number,
+) {
+    const hasTime = () => brokerProcessRemainingMs(remainingMs) > 0;
+    const exhausted = () => ({ attempted: false, ok: false, stale: false, pid, signal: "SIGTERM" as const, status: null, error: "runtime-process-identity-unavailable" });
+    const unauthorized = () => ({ attempted: false, ok: false, stale: false, pid, reason: "runtime-termination-not-authorized" });
+    if (!hasTime()) return exhausted();
+    // Async callers carry the complete saved incarnation. Legacy token-only
+    // callers keep the synchronous entry; a token alone does not admit this path.
+    if (!expectedIdentity) return {
+        attempted: false, ok: false, stale: false, pid, signal: "SIGTERM" as const,
+        status: null, error: "runtime-process-start-token-unavailable",
+    };
+    const observation = await inspectDeviceRuntimeProcessIdentityAsync(expectedIdentity, pid, { platform: "win32", remainingMs });
+    if (!authorize()) return unauthorized();
+    if (!hasTime()) return exhausted();
+    if (observation.status === "exited" && !forceTreeAttempt) return {
+        attempted: false, ok: true, stale: true, pid, signal: "SIGTERM" as const,
+        status: null, observation, error: undefined,
+    };
+    if (observation.status !== "match") return {
+        attempted: false, ok: false, stale: false, pid, signal: "SIGTERM" as const, status: null, observation,
+        error: observation.status === "mismatch" ? "runtime-process-identity-mismatch" : "runtime-process-identity-unavailable",
+    };
+    if (!forceTreeAttempt && probeDeviceRuntimeProcessLiveness(pid) === "exited") return {
+        attempted: false, ok: true, stale: true, pid, signal: "SIGTERM" as const, status: null, error: undefined,
+    };
+    if (!hasTime()) return exhausted();
+    if (expectedStartToken && observation.current?.startToken !== expectedStartToken) return {
+        attempted: false, ok: false, stale: false, pid, signal: "SIGTERM" as const,
+        status: null, error: "runtime-process-start-token-mismatch",
+    };
+    const startToken = expectedStartToken || expectedIdentity.startToken;
+    if (!startToken) return {
+        attempted: false, ok: false, stale: false, pid, signal: "SIGTERM" as const,
+        status: null, error: "runtime-process-start-token-unavailable",
+    };
+    if (!authorize()) return unauthorized();
+    if (!hasTime()) return exhausted();
+    // The native helper awaits trusted executable resolution before signalling.
+    // Its later allowance check must recheck authority, not only elapsed time.
+    const nativeRemainingMs = captureBrokerNativeRemainingMs(() => authorize()
+        ? Math.min(11000, brokerProcessRemainingMs(remainingMs)) : 0)!;
+    const result = await terminateWindowsProcessByStartTokenAsync(pid, startToken, 10000, undefined, nativeRemainingMs);
+    const authorized = authorize();
+    const stale = probeDeviceRuntimeProcessLiveness(pid) === "exited";
+    return {
+        attempted: true, ok: result.ok && authorized, stale, pid, signal: "SIGTERM" as const,
+        status: result.status,
+        ...(!authorized ? { reason: "runtime-termination-not-authorized" } : {}),
+        error: result.ok && authorized ? undefined : !authorized ? "runtime-termination-not-authorized"
+            : result.reason || result.error || `process handle termination exited ${result.status}`,
+    };
+}
+
+async function terminateBrokerOwnedAppiumAsync(appium: unknown, normalized?: NormalizedBrokerOptions, stillCurrent: () => boolean = () => true) {
+    if (!stillCurrent()) return { attempted: false, ok: false, reason: "owner-device-state-conflict" };
+    const runtime = brokerOwnedAppiumRuntime(appium);
+    if (!runtime) return { attempted: false, ok: true };
+    if (normalized && !normalized.usesDefaultCommandRunner)
+        return { attempted: false, ok: true, simulated: true, reason: "injected-command-runner" };
+    const remainingMs = normalized?.cleanupDeadlineAt !== undefined
+        ? captureBrokerNativeRemainingMs(() => cleanupExitBudget(normalized, normalized.commandTimeoutMs)) : undefined;
+    const authorized = () => stillCurrent() && brokerProcessRemainingMs(remainingMs) > 0;
+    if (!authorized()) return { attempted: false, ok: false, reason: "runtime-termination-not-authorized" };
+    if (runtime.processIdentity != null && (!cleanupRecord(runtime.processIdentity) || runtime.processIdentity.pid !== runtime.pid))
+        return { attempted: false, ok: false, reason: "runtime-process-identity-unavailable" };
+    if (typeof runtime.runtimeId !== "string" || !runtime.processIdentity) {
+        const liveness = probeDeviceRuntimeProcessLiveness(runtime.pid);
+        if (liveness === "exited") return { attempted: false, ok: true, stale: true, reason: "runtime-process-exited" };
+        return {
+            attempted: false, ok: false,
+            reason: liveness === "alive" ? "runtime-process-identity-missing" : "runtime-process-identity-unavailable", liveness,
+        };
+    }
+    const serverPid = runtime.pid;
+    if (!cleanupRecord(runtime.processIdentity) || runtime.processIdentity.pid !== serverPid)
+        return { attempted: false, ok: false, reason: "runtime-process-identity-unavailable" };
+    if (process.platform === "win32") {
+        const port = brokerOwnedAppiumPort(appium);
+        const listener = port ? await discoverWindowsBrokerPortProcessAsync(port, () => authorized()
+            ? Math.min(Number.MAX_SAFE_INTEGER, brokerProcessRemainingMs(remainingMs)) : 0) : null;
+        if (!authorized()) return { attempted: false, ok: false, reason: "runtime-termination-not-authorized" };
+        const listenerIsManagedAppium = normalized && listener?.commandLine
+            ? managedAppiumCommandLine(listener.commandLine, packageRootForBroker(), brokerAppiumRuntimeRoot()) : false;
+        const separateManagedListener = listenerIsManagedAppium && listener && listener.pid !== serverPid ? listener : null;
+        const listenerIdentity = separateManagedListener
+            ? await readDeviceRuntimeProcessIdentityAsync(separateManagedListener.pid, { remainingMs }) : null;
+        if (!authorized()) return { attempted: false, ok: false, reason: "runtime-termination-not-authorized" };
+        if (separateManagedListener && !listenerIdentity) return {
+            attempted: false, ok: false, error: "appium-listener-process-identity-unavailable",
+            listener: separateManagedListener, listenerPort: port,
+        };
+        const processTree = await terminateWindowsProcessTreeAsync(serverPid, runtime.processIdentity as DeviceRuntimeProcessIdentity,
+            false, undefined, authorized, remainingMs);
+        if (!authorized()) return { ...processTree, ok: false, reason: "runtime-termination-not-authorized" };
+        if (!processTree.ok) {
+            const ended = await waitForExpectedRuntimeExitAsync(runtime.processIdentity,
+                normalized ? cleanupExitBudget(normalized, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS) : DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS,
+                normalized ? { now: normalized.hyperVMonotonicNow } : {}) === "ended";
+            if (!authorized()) return { ...processTree, ok: false, reason: "runtime-termination-not-authorized" };
+            // A listener discovered on the port is never independently owned.
+            return ended && !separateManagedListener ? { ...processTree, ok: true, stale: true } : processTree;
+        }
+        if (separateManagedListener && !processTree.attempted)
+            return { ...processTree, ok: false, reason: "appium-listener-runtime-unverified" };
+        const listenerEnded = listenerIdentity && separateManagedListener
+            ? await waitForExpectedRuntimeExitAsync(listenerIdentity,
+                normalized ? cleanupExitBudget(normalized, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS) : DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS,
+                normalized ? { now: normalized.hyperVMonotonicNow } : {}) === "ended" : true;
+        if (!authorized()) return { ...processTree, ok: false, reason: "runtime-termination-not-authorized" };
+        const listenerTree = separateManagedListener ? {
+            attempted: false, ok: listenerEnded, pid: separateManagedListener.pid,
+            ...(!listenerEnded ? { reason: "appium-listener-runtime-unverified" } : {}),
+        } : null;
+        return {
+            ...processTree, ok: processTree.ok && (!listenerTree || listenerTree.ok), processTree,
+            ...(listenerTree ? { listenerTree, listenerPort: port } : {}),
+        };
+    }
+    return signalDeviceRuntimeProcessAsync(runtime, "SIGTERM", { remainingMs, kill: (pid, signal) => {
+        if (!authorized()) throw new Error("runtime-termination-not-authorized");
+        process.kill(pid, signal);
+    } });
+}
+
+async function cleanupAppiumTerminationAsync(appium: unknown, normalized: NormalizedBrokerOptions, stillCurrent: () => boolean): Promise<CleanupTermination> {
+    const refused = (reason: string): CleanupTermination => ({ ok: false, ended: false, receipt: { attempted: false, ok: false, reason } });
+    const authorized = () => cleanupExitBudget(normalized, 1) > 0 && stillCurrent();
+    if (cleanupExitBudget(normalized, 1) <= 0) return refused("cleanup-operation-deadline-exceeded");
+    if (!stillCurrent()) return refused("owner-device-state-conflict");
+    const runtime = brokerOwnedAppiumRuntime(appium);
+    if (!runtime) {
+        const associationOnly = cleanupRecord(appium) && appium.serverPid == null && appium.pid == null
+            && appium.processIdentity == null && appium.processOwner == null && appium.startedBy == null
+            && (typeof appium.sessionId === "string" || typeof appium.serverUrl === "string");
+        return associationOnly ? { ok: true, ended: true, receipt: { attempted: false, ok: true } } : refused("runtime-process-metadata-unverified");
+    }
+    const receipt = await terminateBrokerOwnedAppiumAsync(appium, normalized, authorized);
+    if (!stillCurrent()) return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "owner-device-state-conflict" } };
+    if (cleanupExitBudget(normalized, 1) <= 0) return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "cleanup-operation-deadline-exceeded" } };
+    if (!normalized.usesDefaultCommandRunner) return { ok: receipt.ok, ended: receipt.ok, receipt };
+    if ("stale" in receipt && receipt.stale === true && receipt.ok) return { ok: true, ended: true, receipt };
+    if (!cleanupRecord(runtime.processIdentity) || runtime.processIdentity.pid !== runtime.pid)
+        return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "runtime-process-identity-unavailable" } };
+    if (process.platform === "win32" && !receipt.ok) return { ok: false, ended: false, receipt };
+    if (process.platform === "win32" && "processTree" in receipt && receipt.ok) return { ok: true, ended: true, receipt };
+    const observed = await waitForExpectedRuntimeExitAsync(runtime.processIdentity,
+        cleanupExitBudget(normalized, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS), { now: normalized.hyperVMonotonicNow });
+    if (!stillCurrent()) return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "owner-device-state-conflict" } };
+    if (cleanupExitBudget(normalized, 1) <= 0) return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "cleanup-operation-deadline-exceeded" } };
+    if (observed === "ended") return { ok: true, ended: true, receipt: { ...receipt, ok: true } };
+    if (!receipt.ok || observed !== "still-running") return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "runtime-process-exit-unverified" } };
+    if (!authorized() || cleanupExitBudget(normalized, 500) < 500)
+        return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "runtime-termination-not-authorized" } };
+    const force = await signalDeviceRuntimeProcessAsync(runtime, "SIGKILL", {
+        remainingMs: () => cleanupExitBudget(normalized, 500), kill: (pid, signal) => {
+            if (!authorized()) throw new Error("runtime-termination-not-authorized");
+            process.kill(pid, signal);
+        },
+    });
+    if (!authorized()) return { ok: false, ended: false, receipt: { ...receipt, ok: false, force, reason: "runtime-termination-not-authorized" } };
+    const ended = force.ok && await waitForExpectedRuntimeExitAsync(runtime.processIdentity,
+        cleanupExitBudget(normalized, 500), { now: normalized.hyperVMonotonicNow }) === "ended";
+    if (!authorized()) return { ok: false, ended: false, receipt: { ...receipt, ok: false, force, reason: "runtime-termination-not-authorized" } };
+    return { ok: ended, ended, receipt: { ...receipt, ok: ended, force, ...(!ended ? { reason: "runtime-process-exit-unverified" } : {}) } };
+}
+
+async function cleanupRecordingTerminationAsync(recording: Record<string, unknown>, normalized: NormalizedBrokerOptions, stillCurrent: () => boolean): Promise<CleanupTermination> {
+    const authorized = () => cleanupExitBudget(normalized, 1) > 0 && stillCurrent();
+    if (cleanupExitBudget(normalized, 1) <= 0) return { ok: false, ended: false, receipt: { attempted: false, ok: false, reason: "cleanup-operation-deadline-exceeded" } };
+    if (!stillCurrent()) return { ok: false, ended: false, receipt: { attempted: false, ok: false, reason: "owner-device-state-conflict" } };
+    const owned = recording.authority === "host-broker" && recording.processOwner === "host-broker"
+        && recording.startedBy === "broker.device.recording.start";
+    const receipt = !owned ? { attempted: false, ok: false, reason: "recording-process-not-broker-owned" }
+        : !normalized.usesDefaultCommandRunner ? { attempted: false, ok: true, simulated: true, reason: "injected-command-runner" }
+            : await signalDeviceRuntimeProcessAsync(recording, "SIGINT", {
+                remainingMs: () => cleanupExitBudget(normalized, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS), kill: (pid, signal) => {
+                    if (!authorized()) throw new Error("runtime-termination-not-authorized");
+                    process.kill(pid, signal);
+                },
+            });
+    if (!stillCurrent()) return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "owner-device-state-conflict" } };
+    if (cleanupExitBudget(normalized, 1) <= 0) return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "cleanup-operation-deadline-exceeded" } };
+    if (!normalized.usesDefaultCommandRunner) return { ok: receipt.ok, ended: receipt.ok, receipt };
+    if ("reason" in receipt && receipt.reason === "recording-process-not-broker-owned") return { ok: false, ended: false, receipt };
+    if (!cleanupRecord(recording.processIdentity) || recording.processIdentity.pid !== recording.pid)
+        return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "runtime-process-identity-unavailable" } };
+    if ("stale" in receipt && receipt.stale === true && receipt.ok) return { ok: true, ended: true, receipt };
+    const ended = await waitForExpectedRuntimeExitAsync(recording.processIdentity,
+        cleanupExitBudget(normalized, DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS), { now: normalized.hyperVMonotonicNow }) === "ended";
+    if (!stillCurrent()) return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "owner-device-state-conflict" } };
+    if (cleanupExitBudget(normalized, 1) <= 0) return { ok: false, ended: false, receipt: { ...receipt, ok: false, reason: "cleanup-operation-deadline-exceeded" } };
+    return { ok: ended, ended, receipt: { ...receipt, ok: ended, ...(!ended ? { reason: "runtime-process-exit-unverified" } : {}) } };
+}
+
 function normalizedWindowsCommandLine(value: string) {
     return value.replace(/\\/g, "/").toLowerCase();
 }
@@ -6129,7 +6419,7 @@ async function terminateBrokerOwnedAppiumAndWait(appium: unknown, normalized: No
         exited,
         exitVerified: true,
         force,
-        ...(!exited ? { error: force.error || "appium-process-still-running" } : {}),
+        ...(!exited ? { error: ("error" in force && force.error) || "appium-process-still-running" } : {}),
     };
 }
 
@@ -7743,7 +8033,7 @@ type BrokerBackendChildResult = {
     cleanup?: BrokerProcessTreeCleanup;
 };
 
-function captureBrokerCommandAllowance(options: Pick<ProviderCommandRunnerOptions, "timeoutMs" | "cleanupGraceMs" | "wrapperTimeoutMs">) {
+function captureBrokerCommandAllowance(options: Pick<ProviderCommandRunnerOptions, "timeoutMs" | "cleanupGraceMs" | "wrapperTimeoutMs" | "remainingMs">) {
     const startedAt = performance.now();
     const timeoutMs = Math.max(1, options.timeoutMs);
     const cleanupGraceMs = Math.min(10000, Math.max(1, options.cleanupGraceMs ?? 1000));
@@ -7754,7 +8044,10 @@ function captureBrokerCommandAllowance(options: Pick<ProviderCommandRunnerOption
     const fallbackDeadlineAt = Math.min(completionDeadlineAt, wrapperDeadlineAt + 15000 + cleanupGraceMs);
     const remainingMs = (deadlineAt: number, observedAt = performance.now()) => {
         const remaining = deadlineAt - observedAt;
-        return Number.isFinite(remaining) && remaining >= 1 ? Math.floor(remaining) : 0;
+        let parent = Infinity;
+        if (options.remainingMs) { try { parent = options.remainingMs(); } catch { parent = 0; } }
+        const bounded = Math.min(remaining, parent);
+        return Number.isFinite(bounded) && bounded >= 1 ? Math.floor(bounded) : 0;
     };
     return { timeoutMs, cleanupGraceMs, wrapperTimeoutMs, commandDeadlineAt, wrapperDeadlineAt, completionDeadlineAt, fallbackDeadlineAt, remainingMs };
 }
@@ -8700,6 +8993,7 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
     const admission = new Int32Array(admissionShared, 0, 5);
     const failureTransport = new Uint8Array(admissionShared, 20);
     const commandEnv = hiddenProviderCommandEnv(command.env);
+    const windowsPowerShellPath = process.platform === "win32" ? await canonicalWindowsPowerShellPathAsync() : null;
 
     return await new Promise<ProviderCommandResult>((resolveResult) => {
         let worker: Worker;
@@ -8707,7 +9001,8 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
         let timer: NodeJS.Timeout | undefined;
         let commandTimer: NodeJS.Timeout | undefined;
         let handoffTimer: NodeJS.Timeout | undefined;
-        let pendingCleanup: (() => void) | undefined;
+        let pendingCleanup: (() => Promise<void>) | undefined;
+        let cleanupInFlight = false;
         let workerUnavailable = false;
         const result = (execution: Partial<ProviderCommandResult>): ProviderCommandResult => ({
             mode: "exec",
@@ -8729,22 +9024,48 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
             void worker.terminate();
             resolveResult(result(execution));
         };
-        const cleanupProvider = () => terminateBrokerSpawnedProcessTree(Atomics.load(control, 2), {
-            expectedIdentity: providerProcessIdentityFromShared(control, identityTransport),
-            requireIdentity: true,
-            remainingMs: () => allowance.remainingMs(allowance.fallbackDeadlineAt),
-        });
+        const cleanupProvider = async (): Promise<BrokerProcessTreeCleanup> => {
+            const pid = Atomics.load(control, 2);
+            const expectedIdentity = providerProcessIdentityFromShared(control, identityTransport);
+            const fallback = await terminateBrokerSpawnedProcessTreeAsync(pid, {
+                expectedIdentity,
+                requireIdentity: true,
+                remainingMs: () => allowance.remainingMs(allowance.fallbackDeadlineAt),
+            });
+            if (fallback.ok || !expectedIdentity || expectedIdentity.pid !== pid) return fallback;
+            // Worker cancellation can finish its qualified tree cleanup while the
+            // parent awaits identity. Preserve that completed invocation's proof.
+            while (allowance.remainingMs(allowance.fallbackDeadlineAt)) {
+                if (Atomics.load(control, 0) === 1) {
+                    try {
+                        const published = providerWorkerExecution(control, transport).cleanup;
+                        if (published?.ok === true && published.pid === pid
+                            && published.platform === process.platform && published.signal === "SIGKILL"
+                            && (published.attempted === true || (published.attempted === false && published.stale === true))
+                            && allowance.remainingMs(allowance.fallbackDeadlineAt)) return published;
+                    } catch { /* Retain the failed fallback when transport is invalid. */ }
+                    return fallback;
+                }
+                if (workerUnavailable) return fallback;
+                await sleep(Math.min(10, allowance.remainingMs(allowance.fallbackDeadlineAt)));
+            }
+            return fallback;
+        };
         const finishHandoff = (waitExpired = false) => {
             if (!pendingCleanup) return false;
             if (!waitExpired && !workerUnavailable && Atomics.load(admission, 0) === 4 && allowance.remainingMs(allowance.fallbackDeadlineAt)) return true;
             const complete = pendingCleanup;
             pendingCleanup = undefined;
             if (handoffTimer) clearTimeout(handoffTimer);
-            complete();
+            cleanupInFlight = true;
+            void complete().catch(error => {
+                const primary = providerWorkerPrimaryFailure(admission, failureTransport);
+                finish({ status: null, stdout: "", stderr: "", ...primary, error: primary?.error || (error instanceof Error ? error.message : String(error)) });
+            });
             return false;
         };
-        const afterSpawnPublication = (complete: () => void) => {
-            if (settled || pendingCleanup) return;
+        const afterSpawnPublication = (complete: () => Promise<void>) => {
+            if (settled || pendingCleanup || cleanupInFlight) return;
             cancelProviderWorker(admission, worker);
             pendingCleanup = complete;
             if (finishHandoff()) {
@@ -8757,28 +9078,28 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
             }
         };
         const wrapperExpired = (execution: Partial<ProviderCommandResult> = { status: null, stdout: "", stderr: "" }) => {
-            afterSpawnPublication(() => {
-                const cleanup = execution.cleanup || cleanupProvider();
+            afterSpawnPublication(async () => {
+                const cleanup = execution.cleanup || await cleanupProvider();
                 const primary = providerWorkerPrimaryFailure(admission, failureTransport);
                 const error = `device-lab provider wrapper timed out after ${wrapperTimeoutMs}ms`;
                 finish({ ...execution, ...primary, error: primary?.error ? `${primary.error}; ${error}` : error, timedOut: !primary, cleanup });
             });
         };
         const finishFromTransport = () => {
-            if (settled || pendingCleanup) return;
+            if (settled || pendingCleanup || cleanupInFlight) return;
             try {
                 let execution = providerWorkerExecution(control, transport);
                 if (execution.timedOut && !allowance.remainingMs(allowance.wrapperDeadlineAt) && !providerWorkerPrimaryFailure(admission, failureTransport)) { wrapperExpired(execution); return; }
                 if (execution.status === 0 && !execution.error && !execution.timedOut) {
                     if (!allowance.remainingMs(allowance.wrapperDeadlineAt)) { wrapperExpired(execution); return; }
                     if (!allowance.remainingMs(allowance.commandDeadlineAt)) {
-                        afterSpawnPublication(() => finish({ ...execution, error: `device-lab provider command timed out after ${timeoutMs}ms`, timedOut: true, cleanup: cleanupProvider() }));
+                        afterSpawnPublication(async () => finish({ ...execution, error: `device-lab provider command timed out after ${timeoutMs}ms`, timedOut: true, cleanup: await cleanupProvider() }));
                         return;
                     }
                 }
                 finish(execution);
             } catch {
-                afterSpawnPublication(() => finish({ status: null, stdout: "", stderr: "", error: "device-lab provider runner returned invalid output", cleanup: cleanupProvider() }));
+                afterSpawnPublication(async () => finish({ status: null, stdout: "", stderr: "", error: "device-lab provider runner returned invalid output", cleanup: await cleanupProvider() }));
             }
         };
         try {
@@ -8797,9 +9118,7 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
                         timeoutMs,
                         outputLimit,
                         cleanupGraceMs,
-                        windowsPowerShellPath: process.platform === "win32"
-                            ? canonicalWindowsPowerShellPath()
-                            : null,
+                        windowsPowerShellPath,
                     },
                 },
             });
@@ -8809,23 +9128,23 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
         }
         worker.on("message", (message: unknown) => {
             finishHandoff();
-            if (settled || pendingCleanup || !message || typeof message !== "object") return;
+            if (settled || pendingCleanup || cleanupInFlight || !message || typeof message !== "object") return;
             if ((message as { admission?: unknown }).admission === true) serviceProviderWorkerAdmission(control, admission, allowance);
             if ((message as { done?: unknown }).done === true) finishFromTransport();
         });
         worker.once("error", (error) => {
-            if (settled) return;
+            if (settled || cleanupInFlight) return;
             workerUnavailable = true;
             if (pendingCleanup) { finishHandoff(); return; }
-            afterSpawnPublication(() => {
+            afterSpawnPublication(async () => {
                 const primary = providerWorkerPrimaryFailure(admission, failureTransport);
-                finish({ status: null, stdout: "", stderr: "", ...primary, error: primary?.error || error.message, cleanup: cleanupProvider() });
+                finish({ status: null, stdout: "", stderr: "", ...primary, error: primary?.error || error.message, cleanup: await cleanupProvider() });
             });
         });
         worker.once("exit", () => {
             workerUnavailable = true;
             if (pendingCleanup) finishHandoff();
-            else if (!settled) finishFromTransport();
+            else if (!settled && !cleanupInFlight) finishFromTransport();
         });
         worker.unref();
         const commandRemaining = allowance.remainingMs(allowance.commandDeadlineAt);
@@ -8842,6 +9161,14 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
             timer.unref();
         } else wrapperExpired();
     });
+}
+
+async function runAndroidProviderCommand(normalized: NormalizedBrokerOptions, command: ProviderCommand, settings: ProviderCommandRunnerOptions): Promise<ProviderCommandResult> {
+    if (normalized.cleanupDeadlineAt !== undefined) {
+        assertCleanupDeadline(normalized);
+        settings = { ...settings, timeoutMs: Math.max(1, Math.floor(cleanupExitBudget(normalized, settings.timeoutMs))), remainingMs: () => cleanupExitBudget(normalized, Infinity) };
+    }
+    return hyperVProviderCommandRunner(normalized, command, settings);
 }
 
 function hyperVProviderCommandRunner(normalized: NormalizedBrokerOptions, command: ProviderCommand, options: ProviderCommandRunnerOptions): Promise<ProviderCommandResult> {
@@ -9196,6 +9523,15 @@ function cleanupLifecycleAuxiliaryRuntime(ownerId: string, parsed: CommandParamS
     return outcome;
 }
 
+async function cleanupLifecycleAuxiliaryRuntimeAsync(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions, expected: unknown) {
+    const outcome = await brokerOwnerCleanupApplication(normalized).auxiliaryAsync(ownerId, parsed, expected, {
+        terminateAppium: (runtime, stillCurrent) => cleanupAppiumTerminationAsync(runtime, normalized, stillCurrent),
+        signalRecording: (runtime, stillCurrent) => cleanupRecordingTerminationAsync(runtime, normalized, stillCurrent),
+    });
+    if (normalized.cleanupObservation) normalized.cleanupObservation.auxiliary = outcome;
+    return outcome;
+}
+
 function redactBrokerDeviceSecrets(device: unknown) {
     if (!device || typeof device !== "object") return device;
     const record = device as Record<string, unknown>;
@@ -9352,17 +9688,17 @@ function nativeAndroidFailureReason(status: number) {
 }
 function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerAndroidEmulatorLifecyclePorts<NativeProviderLifecycleEffect, NativeBrokerExecutionReceipt> {
     return {
-        executePrepared: (effect, options) => nativeLifecycleObservation(runLifecycleEffect(normalized, effect.command, options)),
-        observeStopInventory: (effect, serial, options) => {
-            const receipt = normalized.commandRunner(effect.command, options);
+        executePrepared: async (effect, options) => { const receipt = await runAndroidProviderCommand(normalized, effect.command, options); if (normalized.cleanupObservation) normalized.cleanupObservation.execution = receipt; return nativeLifecycleObservation(receipt); },
+        observeStopInventory: async (effect, serial, options) => {
+            const receipt = await runAndroidProviderCommand(normalized, effect.command, options);
             const lines = String(receipt.stdout || "").split(/\r?\n/).map(line => line.trim());
             return { ...nativeLifecycleObservation(receipt),
                 available: !receipt.timedOut && !receipt.outputLimitExceeded && lines.includes("List of devices attached"),
                 serialPresent: lines.some(line => line.split(/\s+/)[0] === serial),
             };
         },
-        observeBootProbe: (effect, options) => {
-            const receipt = normalized.commandRunner(effect.command, options);
+        observeBootProbe: async (effect, options) => {
+            const receipt = await runAndroidProviderCommand(normalized, effect.command, options);
             return { ...nativeLifecycleObservation(receipt), ready: String(receipt.stdout || "").trim() === "1" };
         },
         metadataObservation: (purpose, options) => purpose === "create" ? nativeLifecycleObservation({ mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" })
@@ -9373,19 +9709,19 @@ function brokerAndroidLifecyclePorts(normalized: NormalizedBrokerOptions): Broke
             return adb && serial ? { kind: "ready", effect: new NativeProviderLifecycleEffect({ mode: "exec", provider: "adb", executable: adb, args: ["-s", serial, "shell", "getprop", "sys.boot_completed"] }) }
                 : { kind: "unavailable", observation: nativeLifecycleObservation({ mode: "exec", provider: "adb", executable: adb || undefined, args: serial ? ["-s", serial, "shell", "getprop", "sys.boot_completed"] : [], status: null, stdout: "", stderr: "", error: serial ? "missing-executable: adb" : "missing-provider-metadata: serial or port" }) };
         },
-        now: () => performance.now(), sleep: milliseconds => { sleepSync(milliseconds); return undefined; }, timestamp: () => new Date().toISOString(), avdHome: androidAvdHome,
+        now: () => performance.now(), sleep, timestamp: () => new Date().toISOString(), avdHome: androidAvdHome,
         validPort: validAndroidEmulatorPort,
-        livePorts: () => { const result = liveAndroidEmulatorPortsForAllocation(normalized); if (result.ok)
+        livePorts: async () => { const result = await liveAndroidEmulatorPortsForAllocation(normalized); if (result.ok)
             return result; const { status, ...facts } = result; return { ...facts, reason: nativeAndroidFailureReason(status) }; },
-        liveAvds: () => { const result = liveAndroidAvdNames(normalized); if (result.ok)
+        liveAvds: async () => { const result = await liveAndroidAvdNames(normalized); if (result.ok)
             return result; const { status, ...facts } = result; return { ...facts, reason: nativeAndroidFailureReason(status) }; },
-        avdProcesses: (name, timeout, registered) => { const result = androidAvdProcessState(name, normalized, timeout, registered); if (result.ok)
+        avdProcesses: async (name, timeout, registered) => { const result = await androidAvdProcessState(name, normalized, timeout, registered); if (result.ok)
             return result; const { status, ...facts } = result; return { ...facts, reason: nativeAndroidFailureReason(status) }; },
         ownedAvdName: ownedAndroidAvdName, approvedAvdRoot: root => approvedAndroidAvdRoot(root, normalized.platform),
-        avdArtifacts: (owner, root) => listOwnedAndroidAvdArtifacts(owner, { root }),
-        removeAvdArtifacts: (name, owner, root, verifyInactive) => removeOwnedAndroidAvdArtifacts(name, owner, { root, verifyInactive }),
+        avdArtifacts: (owner, root) => listOwnedAndroidAvdArtifactsAsync(owner, { root }),
+        removeAvdArtifacts: (name, owner, root, verifyInactive) => removeOwnedAndroidAvdArtifactsAsync(name, owner, { root, verifyInactive }),
         claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
-        cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
+        cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntimeAsync(owner, parsed, normalized, expected),
         transition: (owner, parsed, expected, replace) => publishLifecycleDevice(normalized, owner, parsed.stateKey, parsed.deviceId, expected, candidate => {
             const replacement = replace(candidate);
             if (cleanupRecord(replacement) && cleanupRecord(replacement.lastBootCheck)) {
@@ -9639,7 +9975,7 @@ function brokerDeviceStatusApplication(normalized: NormalizedBrokerOptions) {
     return createBrokerDeviceStatus<NativeStatusConnection, ProviderCommandResult>({
         preview: (owner, _request, params) => nativeStatusPreview(owner, params, normalized),
         refreshPhysicalLease: (owner, request, device) => nativePhysicalAdmission(owner, { stateKey: request.stateKey, backend: request.backend, device }, request.deviceId),
-        observe: connection => { const receipt = normalized.commandRunner(connection.command, { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt); },
+        observe: async connection => { const options = { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }; const receipt = connection.command.provider === "adb" ? await runAndroidProviderCommand(normalized, connection.command, options) : normalized.commandRunner(connection.command, options); return observed(receipt); },
         observeHyperVFallback: async (connection, deadline) => { const receipt = await hyperVProviderCommandRunner(normalized, connection.command, { timeoutMs: hyperVRemainingTimeout(deadline, 120000, normalized.hyperVMonotonicNow), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT }); return observed(receipt, true); },
         typedStatus: async (connection, identity, deadline) => { const receipt = await hyperVTypedStatusExecution(normalized, { ...identity, executable: connection.command.executable || "powershell.exe" }, deadline, 120000, false, normalized.hyperVMonotonicNow); return observed(receipt, true); },
         incarnation: hyperVDeviceIncarnationId, validIncarnation: validHyperVIncarnationId,
@@ -10225,7 +10561,7 @@ async function lifecycleCommandInvokeDeviceLocked(ownerId: string, params: unkno
                 if (parsed.command === "device_start") {
                     return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, hyperVDeadlineAt, hyperVCleanupDeadlineAt, parsed.deviceId);
                 }
-                const allocation = resolveAndroidEmulatorCreatePortForInvoke(ownerId, parsed, normalized);
+                const allocation = await resolveAndroidEmulatorCreatePortForInvoke(ownerId, parsed, normalized);
                 if (!allocation.ok) {
                     return {
                         status: allocation.status,

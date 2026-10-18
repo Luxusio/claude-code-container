@@ -5,9 +5,12 @@ import * as windowsSystem from "@ccc/device-lab/windows-system-powershell.js";
 import {
     deviceRuntimeProcessIdentityMatches,
     inspectDeviceRuntimeProcessIdentity,
+    inspectDeviceRuntimeProcessIdentityAsync,
     readDeviceRuntimeProcessIdentity,
+    readDeviceRuntimeProcessIdentityAsync,
     readDeviceRuntimeProcessStartToken,
     signalDeviceRuntimeProcess,
+    signalDeviceRuntimeProcessAsync,
     windowsProcessIdentityScriptForTest,
 } from "@ccc/device-lab/device-lab-process-identity.js";
 
@@ -41,6 +44,26 @@ function mockIdentityProbes(platform: "win32" | "darwin", afterProbe?: () => voi
 
 function probeTimeouts(spawn: ReturnType<typeof mockIdentityProbes>): unknown[] {
     return spawn.mock.calls.map((call) => (call[2] as childProcess.SpawnSyncOptions).timeout);
+}
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((complete) => { resolve = complete; });
+    return { promise, resolve };
+}
+
+function nextEventLoopTurn(): Promise<void> {
+    return new Promise(resolve => setImmediate(resolve));
+}
+
+function mockDeferredIdentityCommands() {
+    type Callback = (error: childProcess.ExecFileException | null, stdout: string, stderr: string) => void;
+    const requests: Array<{ args: readonly string[]; options: childProcess.ExecFileOptions; complete: Callback }> = [];
+    const execute = vi.spyOn(childProcess, "execFile").mockImplementation(((_file: string, args: readonly string[], options: childProcess.ExecFileOptions, complete: Callback) => {
+        requests.push({ args, options, complete });
+        return {} as childProcess.ChildProcess;
+    }) as typeof childProcess.execFile);
+    return { execute, requests };
 }
 
 describe("broker device runtime process identity", () => {
@@ -222,10 +245,10 @@ describe("native process identity remaining allowance", () => {
     it("shares the Windows allowance across successive token and identity observations", () => {
         let remaining = 120.9;
         const spawn = mockIdentityProbes("win32", () => { remaining = 42.8; });
-        spawn.mockImplementationOnce((() => {
+        spawn.mockImplementationOnce(() => {
             remaining = 42.8;
             return successfulProbe(windowsStartToken);
-        }) as typeof childProcess.spawnSync);
+        });
         const options = { platform: "win32" as const, remainingMs: () => remaining };
 
         expect(readDeviceRuntimeProcessStartToken(321, options)).toBe(`windows:${windowsStartToken}`);
@@ -271,10 +294,10 @@ describe("native process identity remaining allowance", () => {
     it.each(["win32", "darwin"] as const)("rejects native success observed after expiry on %s", (platform) => {
         let remaining = 50.9;
         const spawn = mockIdentityProbes(platform, () => { remaining = 0; });
-        if (platform === "win32") spawn.mockImplementationOnce((() => {
+        if (platform === "win32") spawn.mockImplementationOnce(() => {
             remaining = 0;
             return successfulProbe(windowsStartToken);
-        }) as typeof childProcess.spawnSync);
+        });
         const options = { platform, remainingMs: () => remaining };
 
         expect(readDeviceRuntimeProcessStartToken(321, options)).toBeNull();
@@ -366,5 +389,242 @@ describe("native process identity remaining allowance", () => {
 
         expect(result).toEqual(expect.objectContaining({ attempted: false, ok: false, reason: "runtime-process-identity-unavailable" }));
         expect(kill).not.toHaveBeenCalled();
+    });
+});
+
+describe("asynchronous broker process identity", () => {
+    const processIdentity = { pid: 321, startToken: "saved-birth", commandHash: "saved-hash" };
+    const runtime = { runtimeId: "runtime-321", pid: 321, processIdentity };
+
+    it.each([false, true])("awaits the default Linux proc read and charges its elapsed allowance (expired=%s)", async expired => {
+        const command = deferred<Buffer>();
+        const fields = Array<string>(20).fill("0");
+        fields[0] = "S";
+        fields[19] = "123";
+        const readFile = vi.spyOn(fileSystem.promises, "readFile").mockImplementation(((path: unknown) => {
+            return String(path) === "/proc/321/cmdline" ? command.promise : Promise.resolve(`321 (owned runtime) ${fields.join(" ")}`);
+        }) as typeof fileSystem.promises.readFile);
+        const synchronousRead = vi.spyOn(fileSystem, "readFileSync");
+        let remaining = 80;
+        let settled = false;
+        const pending = readDeviceRuntimeProcessIdentityAsync(321, { platform: "linux", remainingMs: () => remaining })
+            .then(result => { settled = true; return result; });
+
+        await nextEventLoopTurn();
+        expect(settled).toBe(false);
+        expect(readFile).toHaveBeenCalledTimes(1);
+        expect(readFile.mock.calls[0][0]).toBe("/proc/321/cmdline");
+        if (expired) remaining = 0;
+        command.resolve(Buffer.from("owned-runtime\0--private-argument\0"));
+
+        const actual = await pending;
+        if (expired) {
+            expect(actual).toBeNull();
+            expect(readFile).toHaveBeenCalledTimes(1);
+        } else {
+            expect(actual).toEqual(expect.objectContaining({ pid: 321, startToken: "linux:123", commandHash: expect.stringMatching(/^[a-f0-9]{64}$/) }));
+            expect(actual).not.toHaveProperty("commandLine");
+            expect(readFile).toHaveBeenCalledTimes(2);
+            expect(readFile.mock.calls[1][0]).toBe("/proc/321/stat");
+        }
+        expect(synchronousRead.mock.calls.filter(call => String(call[0]).startsWith("/proc/321/"))).toEqual([]);
+    });
+
+    it("awaits a native Windows identity command while the event loop continues", async () => {
+        vi.spyOn(windowsSystem, "canonicalWindowsPowerShellPathAsync").mockResolvedValue("trusted-powershell.exe");
+        const synchronousProbe = vi.spyOn(childProcess, "spawnSync");
+        const { execute, requests } = mockDeferredIdentityCommands();
+        let settled = false;
+        const pending = readDeviceRuntimeProcessIdentityAsync(321, { platform: "win32", remainingMs: () => 37.9 })
+            .then(result => { settled = true; return result; });
+
+        await nextEventLoopTurn();
+        expect(requests).toHaveLength(1);
+        expect(settled).toBe(false);
+        expect(synchronousProbe).not.toHaveBeenCalled();
+        expect(execute.mock.calls[0][0]).toBe("trusted-powershell.exe");
+        expect(requests[0].options).toEqual(expect.objectContaining({
+            timeout: 37, windowsHide: true, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
+        }));
+        expect(requests[0].args).toContain(windowsProcessIdentityScriptForTest(321));
+
+        requests[0].complete(null, JSON.stringify({ startToken: windowsStartToken, commandLine: "owned-runtime --private-argument" }), "");
+        const actual = await pending;
+        expect(actual).toEqual(expect.objectContaining({ pid: 321, startToken: `windows:${windowsStartToken}`, commandHash: expect.stringMatching(/^[a-f0-9]{64}$/) }));
+        expect(actual).not.toHaveProperty("commandLine");
+    });
+
+    it("charges sequential Darwin commands to the same parent allowance", async () => {
+        const { requests } = mockDeferredIdentityCommands();
+        let remaining = 80.9;
+        let settled = false;
+        const pending = readDeviceRuntimeProcessIdentityAsync(321, { platform: "darwin", remainingMs: () => remaining })
+            .then(result => { settled = true; return result; });
+
+        await nextEventLoopTurn();
+        expect(requests).toHaveLength(1);
+        expect(requests[0].options.timeout).toBe(80);
+        expect(settled).toBe(false);
+        remaining = 25.7;
+        requests[0].complete(null, requests[0].args.at(-1) === "lstart=" ? psStartToken : "owned-runtime", "");
+        await nextEventLoopTurn();
+        expect(requests).toHaveLength(2);
+        expect(requests[1].options.timeout).toBe(25);
+        expect(settled).toBe(false);
+        requests[1].complete(null, requests[1].args.at(-1) === "lstart=" ? psStartToken : "owned-runtime", "");
+
+        expect(await pending).toEqual(expect.objectContaining({ pid: 321, startToken: `ps:${psStartToken}` }));
+    });
+
+    it("does not dispatch another Darwin command after a deferred probe spends the allowance", async () => {
+        const { requests } = mockDeferredIdentityCommands();
+        let remaining = 80;
+        const pending = readDeviceRuntimeProcessIdentityAsync(321, { platform: "darwin", remainingMs: () => remaining });
+        await nextEventLoopTurn();
+        expect(requests).toHaveLength(1);
+        remaining = 0;
+        requests[0].complete(null, requests[0].args.at(-1) === "lstart=" ? psStartToken : "owned-runtime", "");
+
+        expect(await pending).toBeNull();
+        expect(requests).toHaveLength(1);
+    });
+
+    it("does not grant identity authority when a deferred reader finishes after expiry", async () => {
+        const gate = deferred<typeof processIdentity | null>();
+        let remaining = 80;
+        const readIdentity = vi.fn(() => gate.promise);
+        const pending = readDeviceRuntimeProcessIdentityAsync(321, { readIdentity, remainingMs: () => remaining });
+        await nextEventLoopTurn();
+        expect(readIdentity).toHaveBeenCalledWith(321);
+        remaining = 0;
+        gate.resolve({ ...processIdentity });
+        expect(await pending).toBeNull();
+    });
+
+    it.each([0, -1, 0.9, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+        "refuses unusable async parent allowance %s before native observation or signalling",
+        async remaining => {
+            const execute = vi.spyOn(childProcess, "execFile");
+            const readIdentity = vi.fn(async () => ({ ...processIdentity }));
+            const kill = vi.fn();
+            const probeLiveness = vi.fn(() => "exited" as const);
+            const options = { remainingMs: () => remaining, readIdentity, kill, probeLiveness };
+
+            expect(await readDeviceRuntimeProcessIdentityAsync(321, { platform: "darwin", remainingMs: () => remaining })).toBeNull();
+            expect(await readDeviceRuntimeProcessIdentityAsync(321, options)).toBeNull();
+            expect(await inspectDeviceRuntimeProcessIdentityAsync(processIdentity, 321, options))
+                .toEqual({ status: "unavailable", current: null, liveness: "unknown" });
+            expect(await signalDeviceRuntimeProcessAsync(runtime, "SIGTERM", options))
+                .toEqual(expect.objectContaining({ attempted: false, ok: false, reason: "runtime-process-identity-unavailable" }));
+            expect(execute).not.toHaveBeenCalled();
+            expect(readIdentity).not.toHaveBeenCalled();
+            expect(probeLiveness).not.toHaveBeenCalled();
+            expect(kill).not.toHaveBeenCalled();
+        },
+    );
+
+    it("waits for identity observation before the exact runtime can be signalled", async () => {
+        const gate = deferred<typeof processIdentity | null>();
+        const readIdentity = vi.fn(() => gate.promise);
+        const kill = vi.fn();
+        let settled = false;
+        const pending = signalDeviceRuntimeProcessAsync(runtime, "SIGTERM", { readIdentity, kill })
+            .then(result => { settled = true; return result; });
+
+        await nextEventLoopTurn();
+        expect(settled).toBe(false);
+        expect(readIdentity).toHaveBeenCalledTimes(1);
+        expect(kill).not.toHaveBeenCalled();
+        gate.resolve({ ...processIdentity });
+
+        expect(await pending).toEqual(expect.objectContaining({ attempted: true, ok: true, pid: 321, signal: "SIGTERM" }));
+        expect(kill).toHaveBeenCalledExactlyOnceWith(321, "SIGTERM");
+    });
+
+    it.each([false, true])("preserves a deferred reused-pid mismatch when allowance also expires=%s", async expire => {
+        const gate = deferred<typeof processIdentity | null>();
+        let remaining = 80;
+        const kill = vi.fn();
+        const probeLiveness = vi.fn(() => "exited" as const);
+        const pending = signalDeviceRuntimeProcessAsync(runtime, "SIGTERM", {
+            readIdentity: () => gate.promise, remainingMs: () => remaining, kill, probeLiveness,
+        });
+        await nextEventLoopTurn();
+        if (expire) remaining = 0;
+        const reusedIdentity = { ...processIdentity, startToken: "replacement-birth" };
+        gate.resolve(reusedIdentity);
+
+        expect(await pending).toEqual(expect.objectContaining({
+            attempted: false, ok: false, reason: "runtime-process-identity-mismatch",
+            observation: { status: "mismatch", current: reusedIdentity, liveness: "alive" },
+        }));
+        expect(kill).not.toHaveBeenCalled();
+        expect(probeLiveness).not.toHaveBeenCalled();
+    });
+
+    it.each(["alive", "unknown", "exited"] as const)("retains conservative %s liveness after a deferred unavailable identity", async liveness => {
+        const gate = deferred<typeof processIdentity | null>();
+        const probeLiveness = vi.fn(() => liveness);
+        const kill = vi.fn();
+        const pending = signalDeviceRuntimeProcessAsync(runtime, "SIGINT", { readIdentity: () => gate.promise, probeLiveness, kill });
+        await nextEventLoopTurn();
+        expect(probeLiveness).not.toHaveBeenCalled();
+        gate.resolve(null);
+
+        expect(await pending).toEqual(expect.objectContaining(liveness === "exited"
+            ? { attempted: false, ok: true, stale: true, reason: "runtime-process-exited" }
+            : { attempted: false, ok: false, reason: "runtime-process-identity-unavailable" }));
+        expect(probeLiveness).toHaveBeenCalledExactlyOnceWith(321);
+        expect(kill).not.toHaveBeenCalled();
+    });
+
+    it("refuses a deferred exact match whose parent allowance has already expired", async () => {
+        const gate = deferred<typeof processIdentity | null>();
+        let remaining = 80;
+        const kill = vi.fn();
+        const probeLiveness = vi.fn(() => "exited" as const);
+        const pending = signalDeviceRuntimeProcessAsync(runtime, "SIGTERM", {
+            readIdentity: () => gate.promise, remainingMs: () => remaining, kill, probeLiveness,
+        });
+        await nextEventLoopTurn();
+        remaining = 0;
+        gate.resolve({ ...processIdentity });
+
+        expect(await pending).toEqual(expect.objectContaining({ attempted: false, ok: false, reason: "runtime-process-identity-unavailable" }));
+        expect(kill).not.toHaveBeenCalled();
+        expect(probeLiveness).not.toHaveBeenCalled();
+    });
+
+    it("checks the allowance again immediately before signalling a matching observation", async () => {
+        let identityObserved = false;
+        let checksAfterObservation = 0;
+        const kill = vi.fn();
+        const result = await signalDeviceRuntimeProcessAsync(runtime, "SIGTERM", {
+            readIdentity: async () => { identityObserved = true; return { ...processIdentity }; },
+            remainingMs: () => !identityObserved || ++checksAfterObservation === 1 ? 80 : 0,
+            kill,
+        });
+
+        expect(result).toEqual(expect.objectContaining({ attempted: false, ok: false, reason: "runtime-process-identity-unavailable" }));
+        expect(kill).not.toHaveBeenCalled();
+    });
+
+    it("rechecks current authority in the signal closure after the deferred observation", async () => {
+        const gate = deferred<typeof processIdentity | null>();
+        let stillCurrent = true;
+        const nativeKill = vi.fn();
+        const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+            if (!stillCurrent) throw new Error("runtime-authority-changed");
+            nativeKill(pid, signal);
+        });
+        const pending = signalDeviceRuntimeProcessAsync(runtime, "SIGTERM", { readIdentity: () => gate.promise, kill });
+        await nextEventLoopTurn();
+        expect(kill).not.toHaveBeenCalled();
+        stillCurrent = false;
+        gate.resolve({ ...processIdentity });
+
+        expect(await pending).toEqual(expect.objectContaining({ attempted: true, ok: false, error: "runtime-authority-changed" }));
+        expect(kill).toHaveBeenCalledExactlyOnceWith(321, "SIGTERM");
+        expect(nativeKill).not.toHaveBeenCalled();
     });
 });

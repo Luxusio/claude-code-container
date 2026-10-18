@@ -6,22 +6,27 @@ import type { LifecyclePreviewRequest } from "@ccc/device-lab/device-lab/domain/
 import { coreBoundaryViolations } from "./core-boundary.js";
 import { createBrokerDeviceStatus } from "@ccc/device-lab/device-lab/application/broker-observation-status.js";
 import type { BrokerDeviceStatusPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
-import type { DeviceStatusRequest, DeviceStatusOutcome } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
+import type { DeviceStatusExecution, DeviceStatusRequest, DeviceStatusOutcome } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
 
 function consumedDeviceStatus<Connection, Receipt>(ports: BrokerDeviceStatusPorts<Connection, Receipt>, request: DeviceStatusRequest): void {
     const result: Promise<DeviceStatusOutcome<Connection, Receipt>> = createBrokerDeviceStatus(ports).invoke("owner", request, {}, 1000);
     const { typedStatus, ...withoutTypedObservation } = ports;
     // @ts-expect-error Exact typed VM observation is required for status.
     createBrokerDeviceStatus(withoutTypedObservation);
-    // @ts-expect-error Non-Hyper-V command execution must return a settled result.
-    createBrokerDeviceStatus({ ...ports, observe: async connection => ports.observe(connection) });
+    const asyncObservation: BrokerDeviceStatusPorts<Connection, Receipt> = { ...ports, observe: async connection => await ports.observe(connection) };
+    const thenableObservation: BrokerDeviceStatusPorts<Connection, Receipt> = { ...ports, observe: connection => {
+        const pending: PromiseLike<DeviceStatusExecution<Receipt>> = Promise.resolve(ports.observe(connection));
+        return pending;
+    } };
+    // @ts-expect-error A settled asynchronous status observation still needs command success and its receipt.
+    createBrokerDeviceStatus({ ...ports, observe: async () => ({ mode: "exec", provider: "adb", adbState: null, vm: null }) });
     // @ts-expect-error Deadline admission must complete before recovery effects.
     createBrokerDeviceStatus({ ...ports, assertDeadline: async () => undefined });
     // @ts-expect-error Device status does not expose a CCC HTTP response envelope.
     const payload = (outcome: DeviceStatusOutcome<Connection, Receipt>) => outcome.payload;
     // @ts-expect-error Captured status connections have no arbitrary native runner in the core.
     ports.execute({ executable: "provider", args: [] });
-    void [result, typedStatus, payload];
+    void [result, typedStatus, payload, asyncObservation, thenableObservation];
 }
 void consumedDeviceStatus;
 

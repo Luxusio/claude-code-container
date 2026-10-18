@@ -88,7 +88,7 @@ export function createBrokerDeviceStatus<Connection, Receipt>(ports: BrokerDevic
         };
         const execution = hyperV && device ? await ports.typedStatus(availability.connection, {
             ownerId, deviceId: request.deviceId, incarnationId: ports.incarnation(device) || "", vmId: text("vmId"), vmName: text("vmName"),
-        }, deadline) : hyperV ? await ports.observeHyperVFallback(availability.connection, deadline) : ports.observe(availability.connection);
+        }, deadline) : hyperV ? await ports.observeHyperVFallback(availability.connection, deadline) : await ports.observe(availability.connection);
         if (hyperV && ports.deadlineExpired(deadline)) return failure(ownerId, request, "deadline", "hyper-v-operation-deadline-exceeded");
         let success = execution.ok || deviceStatusStoppedAndroid(request, plan.device, execution);
         const observation = hyperV && success ? execution.vm : null;

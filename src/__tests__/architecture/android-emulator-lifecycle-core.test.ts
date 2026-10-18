@@ -4,7 +4,7 @@ import type { LifecyclePreviewRequest } from "../../../packages/device-lab/src/d
 import type { AndroidPreviewPortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-observation.js";
 import { createAndroidEmulatorLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/android-emulator-lifecycle.mjs";
 import type { AndroidEmulatorDevice } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
-import { brokerLifecyclePorts, directLifecyclePorts } from "../helpers/android-emulator-lifecycle-fixture.js";
+import { brokerLifecyclePorts, deferredAndroidEffect, directLifecyclePorts } from "../helpers/android-emulator-lifecycle-fixture.js";
 import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidCreatePortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 
@@ -27,21 +27,32 @@ describe("Android emulator allocation errors", () => {
 
 const brokerDevice = (): Record<string, unknown> => ({ id: "android-unit", backend: "android-emulator", avdName: "ccc-owner-unit", port: 5630, status: "stopped", extra: { raw: "retained" } });
 describe("distinct canonical authenticated broker Android policy", () => {
-    it("create allocation preserves preview refusal before live inventory and augments the same native live-port carrier", () => {
+    it("create allocation preserves preview refusal and awaits live inventory before augmenting the same carrier", async () => {
         const parsed = brokerLifecyclePorts().input("device_create").parsed, trace: string[] = [], live = new Set([5630]);
         const refusal = { ok: false as const, reason: "invalid" as const, error: "invalid-android-emulator-port" };
         const ports: BrokerAndroidCreatePortAllocationPorts = {
             previewAllocation: () => refusal,
             livePorts: () => { trace.push("live"); return { ok: true, ports: live }; },
         };
-        expect(allocateBrokerAndroidCreatePort("owner", parsed, ports)).toBe(refusal); expect(trace).toEqual([]);
+        expect(await allocateBrokerAndroidCreatePort("owner", parsed, ports)).toBe(refusal); expect(trace).toEqual([]);
         const preview = (owner: string, observed: typeof parsed, additional?: Iterable<number>) => {
             expect(owner).toBe("owner"); expect(observed).toBe(parsed); trace.push("allocate");
             if (additional) expect(additional).toBe(live);
             return { ok: true as const, port: additional ? 5632 : 5630 };
         };
-        expect(allocateBrokerAndroidCreatePort("owner", parsed, { ...ports, previewAllocation: preview })).toEqual({ ok: true, port: 5632 });
-        expect(trace).toEqual(["allocate", "live", "allocate"]);
+        const inventory = deferredAndroidEffect<Awaited<ReturnType<typeof ports.livePorts>>>();
+        let settled = false;
+        const pending = allocateBrokerAndroidCreatePort("owner", parsed, {
+            ...ports, previewAllocation: preview, livePorts: () => { trace.push("live"); return inventory.promise; },
+        }).then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(trace).toEqual(["allocate", "live"]);
+            inventory.resolve({ ok: true, ports: live });
+            expect(await pending).toEqual({ ok: true, port: 5632 });
+            expect(trace).toEqual(["allocate", "live", "allocate"]);
+        } finally { inventory.resolve({ ok: true, ports: live }); }
     });
     it("a live start port refuses before provider execution/publication", async () => {
         const f = brokerLifecyclePorts(brokerDevice());
@@ -51,14 +62,90 @@ describe("distinct canonical authenticated broker Android policy", () => {
         expect(result).toMatchObject({ kind: "refused", reason: "conflict", error: "android-emulator-port-conflict", detail: "port-5630-already-in-use" });
         expect(f.trace).toEqual(["live"]); expect(f.publications).toEqual([]);
     });
-    it("broker create keeps native error identity and raw diagnostics while compensating before claim", async () => {
+    it("broker create awaits failed native execution and compensation before returning the exact diagnostics", async () => {
         const native = { status: 17, error: "raw error", stderr: "raw stderr", stdout: "raw stdout" };
         const f = brokerLifecyclePorts(), failure = { ok: false, mode: "exec", provider: "avdmanager", receipt: { sequence: 0, native } };
-        f.ports.executePrepared = () => failure;
-        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).create(f.input("device_create", { create: { createAvd: true, systemImage: "system-images;android-35;google_apis;x86_64", avdName: "ccc-owner-unit" } }));
-        expect(result).toMatchObject({ kind: "provider-failed", error: "provider-command-failed", rollback: { ok: true } });
-        expect(result.execution).toBe(failure); expect(result.execution?.receipt?.native).toBe(native);
-        expect(f.trace).toContain("remove-avd"); expect(f.trace).not.toContain("claim"); expect(f.current()).toBeUndefined();
+        const execution = deferredAndroidEffect<typeof failure>(), entered = deferredAndroidEffect<void>();
+        const removal = deferredAndroidEffect<void>(), removing = deferredAndroidEffect<void>();
+        f.ports.executePrepared = () => { entered.resolve(); return execution.promise; };
+        f.ports.removeAvdArtifacts = async (_name, _owner, _root, verifyInactive) => {
+            f.trace.push("remove-avd"); removing.resolve(); await removal.promise;
+            if (!await verifyInactive()) throw Error("Native liveness unavailable");
+            return { removed: ["owned-partial-avd"] };
+        };
+        let settled = false;
+        const pending = createBrokerAndroidEmulatorLifecycle(f.ports).create(f.input("device_create", { create: { createAvd: true, systemImage: "system-images;android-35;google_apis;x86_64", avdName: "ccc-owner-unit" } }))
+            .then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await Promise.race([entered.promise, pending.then(() => { throw Error("Lifecycle settled before the held effect was entered"); })]); await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(f.trace).not.toContain("remove-avd"); expect(f.trace).not.toContain("claim"); expect(f.current()).toBeUndefined();
+            execution.resolve(failure);
+            await Promise.race([removing.promise, pending.then(() => { throw Error("Create settled before compensation"); })]);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(f.trace).not.toContain("claim"); expect(f.current()).toBeUndefined();
+            removal.resolve();
+            const result = await pending;
+            expect(result).toMatchObject({ kind: "provider-failed", error: "provider-command-failed", rollback: { ok: true, artifactsRemoved: ["owned-partial-avd"] } });
+            expect(result.execution).toBe(failure); expect(result.execution?.receipt?.native).toBe(native);
+            expect(f.trace).toContain("live-avds"); expect(f.trace).toContain("processes"); expect(f.trace).not.toContain("claim"); expect(f.current()).toBeUndefined();
+        } finally { execution.resolve(failure); removal.resolve(); }
+    });
+    it("start awaits execution, each boot observation and pacing before publishing readiness", async () => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original);
+        const execution = deferredAndroidEffect<Awaited<ReturnType<typeof f.ports.executePrepared>>>(), executing = deferredAndroidEffect<void>();
+        const probe = deferredAndroidEffect<Awaited<ReturnType<typeof f.ports.observeBootProbe>>>(), probing = deferredAndroidEffect<void>();
+        const pacing = deferredAndroidEffect<void>(), sleeping = deferredAndroidEffect<void>();
+        const sleep = f.ports.sleep; let probes = 0, settled = false;
+        f.ports.executePrepared = () => { f.trace.push("execute-held"); executing.resolve(); return execution.promise; };
+        f.ports.observeBootProbe = () => {
+            probes++; f.trace.push("probe:" + probes);
+            if (probes === 1) { probing.resolve(); return probe.promise; }
+            return { ok: true, ready: true, mode: "exec", provider: "adb", receipt: { sequence: probes } };
+        };
+        f.ports.sleep = ms => { sleep(ms); sleeping.resolve(); return pacing.promise; };
+        const pending = createBrokerAndroidEmulatorLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }))
+            .then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await Promise.race([executing.promise, pending.then(() => { throw Error("Start settled before native execution"); })]); await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(probes).toBe(0); expect(f.publications).toEqual([]); expect(f.current()).toBe(original);
+            execution.resolve({ ok: true, mode: "detached", provider: "emulator", receipt: { sequence: 1 } });
+            await Promise.race([probing.promise, pending.then(() => { throw Error("Start settled before boot observation"); })]);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(probes).toBe(1); expect(f.trace.some(step => step.startsWith("sleep:"))).toBe(false); expect(f.publications).toEqual([]);
+            probe.resolve({ ok: true, ready: false, mode: "exec", provider: "adb", receipt: { sequence: 2 } });
+            await Promise.race([sleeping.promise, pending.then(() => { throw Error("Start settled before boot pacing"); })]);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(probes).toBe(1); expect(f.publications).toEqual([]); expect(f.current()).toBe(original);
+            pacing.resolve();
+            expect(await pending).toMatchObject({ kind: "completed", device: { status: "running", bootReady: true }, boot: { ok: true, ready: true } });
+            expect(probes).toBe(2); expect(f.publications).toEqual([original]);
+        } finally {
+            execution.resolve({ ok: true, mode: "detached", provider: "emulator" });
+            probe.resolve({ ok: true, ready: false, mode: "exec", provider: "adb" }); pacing.resolve();
+        }
+    });
+    it("stop awaits inventory before process observation and both before stopped publication", async () => {
+        const original = { ...brokerDevice(), status: "running" }, f = brokerLifecyclePorts(original);
+        const inventory = deferredAndroidEffect<Awaited<ReturnType<typeof f.ports.observeStopInventory>>>(), inventoryEntered = deferredAndroidEffect<void>();
+        const processes = deferredAndroidEffect<Awaited<ReturnType<typeof f.ports.avdProcesses>>>(), processesEntered = deferredAndroidEffect<void>();
+        f.ports.observeStopInventory = () => { f.trace.push("inventory-held"); inventoryEntered.resolve(); return inventory.promise; };
+        f.ports.avdProcesses = () => { f.trace.push("processes-held"); processesEntered.resolve(); return processes.promise; };
+        let settled = false;
+        const pending = createBrokerAndroidEmulatorLifecycle(f.ports).stop(f.input("device_stop")).then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await Promise.race([inventoryEntered.promise, pending.then(() => { throw Error("Stop settled before inventory observation"); })]); await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(f.trace).not.toContain("processes-held"); expect(f.publications).toEqual([]); expect(f.current()).toBe(original);
+            inventory.resolve({ ok: true, mode: "exec", provider: "adb", available: true, serialPresent: false });
+            await Promise.race([processesEntered.promise, pending.then(() => { throw Error("Stop settled before process inventory"); })]);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(f.publications).toEqual([]); expect(f.trace.some(step => step.startsWith("sleep:"))).toBe(false);
+            processes.resolve({ ok: true, active: false });
+            expect(await pending).toMatchObject({ kind: "completed", device: { status: "stopped" } });
+            expect(f.publications).toEqual([original]);
+        } finally { inventory.resolve({ ok: true, mode: "exec", provider: "adb", available: true, serialPresent: false }); processes.resolve({ ok: true, active: false }); }
     });
     it("broker create loser preserves an external winner and removes only its inactive owned artifacts", async () => {
         const f = brokerLifecyclePorts(), winner = { ...brokerDevice(), avdName: "ccc-owner-winner", extra: { raw: "winner" } };
@@ -67,14 +154,41 @@ describe("distinct canonical authenticated broker Android policy", () => {
         expect(result).toMatchObject({ kind: "refused", reason: "conflict", error: "owner-device-id-conflict", rollback: { attempted: true, ok: true } });
         expect(f.current()).toBe(winner); expect(f.trace).toContain("remove-avd");
     });
-    it("committed auxiliary cleanup advances the complete expected snapshot before stopped publication", async () => {
+    it("awaited committed auxiliary cleanup advances the complete snapshot before stopped publication", async () => {
         const original: Record<string, unknown> = { ...brokerDevice(), status: "running", recording: { active: false, raw: "metadata" } }, f = brokerLifecyclePorts(original);
-        const cleaned = { ...original, recording: null };
-        f.ports.cleanupAuxiliary = (_owner, _parsed, expected) => { expect(expected).toBe(original); f.trace.push("cleanup"); f.replace(cleaned); return { committed: true, device: cleaned, result: { ok: true, changed: true, appium: {}, recording: { cleared: true }, minimizeWatchdog: {} } }; };
-        const result = await createBrokerAndroidEmulatorLifecycle(f.ports).stop(f.input("device_stop"));
-        expect(result).toMatchObject({ kind: "completed", device: { status: "stopped", recording: null, extra: original.extra } });
-        expect(f.publications).toEqual([cleaned]); expect(f.trace.indexOf("cleanup")).toBeLessThan(f.trace.indexOf("execute:adb"));
-        expect(f.trace).toContain("processes");
+        const cleaned = { ...original, recording: null }, cleanup = deferredAndroidEffect<void>(), entered = deferredAndroidEffect<void>();
+        f.ports.cleanupAuxiliary = async (_owner, _parsed, expected) => {
+            expect(expected).toBe(original); f.trace.push("cleanup"); entered.resolve(); await cleanup.promise;
+            f.replace(cleaned); return { committed: true, device: cleaned, result: { ok: true, changed: true, appium: {}, recording: { cleared: true }, minimizeWatchdog: {} } };
+        };
+        let settled = false;
+        const pending = createBrokerAndroidEmulatorLifecycle(f.ports).stop(f.input("device_stop")).then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await Promise.race([entered.promise, pending.then(() => { throw Error("Lifecycle settled before the held effect was entered"); })]); await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(f.commands).toEqual([]); expect(f.publications).toEqual([]); expect(f.current()).toBe(original);
+            cleanup.resolve();
+            expect(await pending).toMatchObject({ kind: "completed", device: { status: "stopped", recording: null, extra: original.extra }, auxiliaryCleanup: { changed: true, recording: { cleared: true } } });
+            expect(f.publications).toEqual([cleaned]); expect(f.trace.indexOf("cleanup")).toBeLessThan(f.trace.indexOf("execute:adb"));
+            expect(f.trace).toContain("processes");
+        } finally { cleanup.resolve(); }
+    });
+    it("keeps committed auxiliary facts and a successor when later awaited native execution loses publication CAS", async () => {
+        const original = { ...brokerDevice(), status: "running", recording: { active: false, raw: "metadata" } }, f = brokerLifecyclePorts(original);
+        const cleaned = { ...original, recording: null }, successor = { ...cleaned, extra: { raw: "successor" } };
+        const execution = deferredAndroidEffect<Awaited<ReturnType<typeof f.ports.executePrepared>>>(), entered = deferredAndroidEffect<void>();
+        f.ports.cleanupAuxiliary = async () => { f.replace(cleaned); return { committed: true, device: cleaned, result: { ok: true, changed: true, appium: {}, recording: { cleared: true }, minimizeWatchdog: {} } }; };
+        f.ports.executePrepared = () => { entered.resolve(); return execution.promise; };
+        let settled = false;
+        const pending = createBrokerAndroidEmulatorLifecycle(f.ports).stop(f.input("device_stop")).then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await Promise.race([entered.promise, pending.then(() => { throw Error("Lifecycle settled before the held effect was entered"); })]); await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(f.current()).toBe(cleaned); expect(f.publications).toEqual([]);
+            f.replace(successor); execution.resolve({ ok: true, mode: "exec", provider: "adb", receipt: { sequence: 1 } });
+            expect(await pending).toMatchObject({ kind: "publication-conflict", error: "owner-device-state-conflict", auxiliaryCleanup: { changed: true, recording: { cleared: true } }, invoked: true, mutatesHost: true });
+            expect(f.publications).toEqual([cleaned]); expect(f.current()).toBe(successor);
+        } finally { execution.resolve({ ok: true, mode: "exec", provider: "adb" }); }
     });
     it("auxiliary cleanup failure blocks provider execution and reports its committed native change truthfully", async () => {
         const original = brokerDevice(), f = brokerLifecyclePorts(original), changed = { ...original, recording: null };
@@ -96,7 +210,7 @@ describe("distinct canonical authenticated broker Android policy", () => {
     it("stop inventory uncertainty refuses final publication; a successful native effect cannot replace a successor", async () => {
         const original = { ...brokerDevice(), status: "running" }, f = brokerLifecyclePorts(original), app = createBrokerAndroidEmulatorLifecycle(f.ports);
         const inventory = f.ports.observeStopInventory;
-        f.ports.observeStopInventory = (...args) => ({ ...inventory(...args), available: false });
+        f.ports.observeStopInventory = async (...args) => ({ ...await inventory(...args), available: false });
         const uncertain = await app.stop(f.input("device_stop"));
         expect(uncertain).toMatchObject({ kind: "stop-unconfirmed", error: "android-emulator-stop-unconfirmed" }); expect(f.current()).toBe(original); expect(f.publications).toEqual([]);
         const successor = { ...original, extra: { raw: "successor" } };
@@ -105,6 +219,31 @@ describe("distinct canonical authenticated broker Android policy", () => {
         f.ports.executePrepared = (effect, options) => { if (effect.action === "stop") f.replace(successor); return execute(effect, options); };
         const conflicted = await app.stop(f.input("device_stop"));
         expect(conflicted).toMatchObject({ kind: "publication-conflict", error: "owner-device-state-conflict" }); expect(f.current()).toBe(successor);
+    });
+    it("delete awaits fresh inactivity inside artifact removal and keeps metadata when that observation refuses", async () => {
+        const original = brokerDevice(), f = brokerLifecyclePorts(original);
+        const fresh = deferredAndroidEffect<Awaited<ReturnType<typeof f.ports.liveAvds>>>(), removing = deferredAndroidEffect<void>();
+        let observations = 0, settled = false;
+        f.ports.liveAvds = () => ++observations === 1 ? { ok: true, names: new Set<string>() } : fresh.promise;
+        f.ports.removeAvdArtifacts = (_name, _owner, _root, verifyInactive) => {
+            const removal = (async () => {
+                removing.resolve();
+                if (!await verifyInactive()) throw Error("Native liveness unavailable");
+                return { removed: ["owned-avd"] };
+            })();
+            void removal.catch(() => undefined);
+            return removal;
+        };
+        const pending = createBrokerAndroidEmulatorLifecycle(f.ports).delete(f.input("device_delete", { deleteAvd: true }))
+            .then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await Promise.race([removing.promise, pending.then(() => { throw Error("Delete settled before artifact removal"); })]); await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(observations).toBe(2); expect(f.publications).toEqual([]); expect(f.current()).toBe(original);
+            fresh.resolve({ ok: false, reason: "provider-failed", detail: "fresh inventory unavailable" });
+            expect(await pending).toMatchObject({ kind: "refused", reason: "provider-failed", error: "android-avd-artifact-cleanup-failed" });
+            expect(f.publications).toEqual([]); expect(f.current()).toBe(original);
+        } finally { fresh.resolve({ ok: false, reason: "provider-failed", detail: "fresh inventory unavailable" }); }
     });
     it("AVD delete liveness/root refusals precede destructive provider execution and state removal", async () => {
         const original = brokerDevice(), f = brokerLifecyclePorts(original), app = createBrokerAndroidEmulatorLifecycle(f.ports);

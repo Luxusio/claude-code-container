@@ -3,7 +3,8 @@ import { createBrokerPhysicalDevicesApplication } from "../../../packages/device
 import { createBrokerOwnerCleanupApplication } from "../../../packages/device-lab/src/device-lab/application/broker-owner-cleanup.js";
 import { physicalStopReplacement, type PhysicalExecution } from "../../../packages/device-lab/src/device-lab/domain/broker-physical-devices.js";
 import type { BrokerPhysicalDevicesPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-devices.js";
-import type { BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
+import type { BrokerOwnerAuxiliaryAsyncPorts, BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
+import type { AuxiliaryOutcome, CleanupDeviceOutcome, CleanupTermination } from "../../../packages/device-lab/src/device-lab/domain/broker-owner-cleanup.js";
 
 export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevicesPorts<string, { observed: boolean }>, cleanup: BrokerOwnerCleanupPorts<string, { observed: boolean }>): {
     devices: ReturnType<typeof createBrokerPhysicalDevicesApplication<string, { observed: boolean }>>;
@@ -84,6 +85,37 @@ export function consumedPhysicalCleanupContracts(physical: BrokerPhysicalDevices
         const authorized: boolean = stillCurrent();
         return { ok: authorized, ended: authorized, receipt: { ok: authorized } };
     } });
+    const target = { backend: "android-emulator", stateKey: "android", deviceId: "emu" };
+    const synchronousAuxiliary: AuxiliaryOutcome = owner.auxiliary("owner", target, {});
+    const synchronousCleanupDevice: CleanupDeviceOutcome<{ observed: boolean }> = owner.cleanupDevice("owner", "ios-device", {}, { stopDevices: false, detachPhysical: true });
+    const terminationThenable: PromiseLike<CleanupTermination> = {
+        then: (fulfilled, rejected) => Promise.resolve<CleanupTermination>({ ok: true, ended: true, receipt: { ok: true } }).then(fulfilled, rejected),
+    };
+    const asyncEffects: BrokerOwnerAuxiliaryAsyncPorts = {
+        terminateAppium: async (_runtime, stillCurrent) => {
+            const authorized: boolean = stillCurrent();
+            return { ok: authorized, ended: authorized, receipt: { ok: authorized } };
+        },
+        signalRecording: (_runtime, stillCurrent) => {
+            const authorized: boolean = stillCurrent();
+            return authorized ? terminationThenable : { ok: false, ended: false, receipt: { ok: false } };
+        },
+    };
+    const asynchronousAuxiliary: Promise<AuxiliaryOutcome> = owner.auxiliaryAsync("owner", target, {}, asyncEffects);
+    const synchronousEffectsAccepted: Promise<AuxiliaryOutcome> = owner.auxiliaryAsync("owner", target, {}, {
+        terminateAppium: cleanup.terminateAppium, signalRecording: cleanup.signalRecording,
+    });
+    // @ts-expect-error asynchronous cleanup requires explicit native effects rather than synchronous fallback
+    owner.auxiliaryAsync("owner", target, {});
+    const { terminateAppium: asyncAppium, ...withoutAsyncAppium } = asyncEffects;
+    // @ts-expect-error asynchronous Appium termination is a mandatory capability
+    owner.auxiliaryAsync("owner", target, {}, withoutAsyncAppium);
+    const { signalRecording: asyncRecording, ...withoutAsyncRecording } = asyncEffects;
+    // @ts-expect-error asynchronous recorder termination is a mandatory capability
+    owner.auxiliaryAsync("owner", target, {}, withoutAsyncRecording);
+    // @ts-expect-error an awaited successful signal still requires semantic exit proof
+    owner.auxiliaryAsync("owner", target, {}, { ...asyncEffects, signalRecording: async () => ({ ok: true, receipt: { ok: true } }) });
+    void [synchronousAuxiliary, synchronousCleanupDevice, asynchronousAuxiliary, synchronousEffectsAccepted, asyncAppium, asyncRecording];
     const { observePhysicalStop, ...withoutObservation } = physical;
     // @ts-expect-error the physical stop observation is required
     createBrokerPhysicalDevicesApplication(withoutObservation);

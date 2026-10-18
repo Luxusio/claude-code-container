@@ -19,6 +19,15 @@ export interface AndroidAvdArtifactCleanup {
     removed: number;
 }
 
+export interface AndroidAvdStorageAsyncOptions extends Omit<AndroidAvdStorageOptions, "verifyInactive" | "onArtifactQuarantined"> {
+    onArtifactQuarantined?: (artifact: {
+        name: string;
+        originalPath: string;
+        quarantinePath: string;
+    }) => void | PromiseLike<void>;
+    verifyInactive?: (name: string) => boolean | PromiseLike<boolean>;
+}
+
 export function androidAvdHome(options?: AndroidAvdStorageOptions): string;
 export function ownedAndroidAvdName(name: unknown, ownerId: unknown, suffixPattern?: string): boolean;
 export function listOwnedAndroidAvdArtifacts(ownerId: string, options?: AndroidAvdStorageOptions): Array<{
@@ -39,3 +48,13 @@ export function removeOwnedAndroidAvdArtifacts(
     ownerId: string,
     options?: AndroidAvdStorageOptions,
 ): AndroidAvdArtifactCleanup;
+
+export function listOwnedAndroidAvdArtifactsAsync(
+    ownerId: string,
+    options?: AndroidAvdStorageAsyncOptions,
+): Promise<ReturnType<typeof listOwnedAndroidAvdArtifacts>>;
+export function removeOwnedAndroidAvdArtifactsAsync(
+    name: string,
+    ownerId: string,
+    options?: AndroidAvdStorageAsyncOptions,
+): Promise<AndroidAvdArtifactCleanup>;

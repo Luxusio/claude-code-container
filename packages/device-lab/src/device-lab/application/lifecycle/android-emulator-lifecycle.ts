@@ -3,10 +3,10 @@ import type { BrokerAndroidBoot, BrokerAndroidLifecycleInput, BrokerAndroidLifec
 import type { BrokerAndroidCreatePortAllocation, BrokerAndroidCreatePortAllocationPorts, BrokerAndroidEmulatorLifecyclePorts, BrokerAndroidPreparationPorts } from "../../ports/lifecycle/android-emulator-lifecycle.js";
 
 /** Live augmentation reuses the broker's already inward preview allocator. */
-export function allocateBrokerAndroidCreatePort(ownerId: string, parsed: BrokerAndroidLifecycleRequest, ports: BrokerAndroidCreatePortAllocationPorts): BrokerAndroidCreatePortAllocation {
+export async function allocateBrokerAndroidCreatePort(ownerId: string, parsed: BrokerAndroidLifecycleRequest, ports: BrokerAndroidCreatePortAllocationPorts): Promise<BrokerAndroidCreatePortAllocation> {
     const allocation = ports.previewAllocation(ownerId, parsed);
     if (!allocation.ok) return allocation;
-    const live = ports.livePorts();
+    const live = await ports.livePorts();
     if (!live.ok) return live;
     return live.ports.has(allocation.port) ? ports.previewAllocation(ownerId, parsed, live.ports) : allocation;
 }
@@ -55,10 +55,10 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
         return {kind: "refused", reason, error, ...extra, ownerId: input.ownerId, backend: input.parsed.backend, deviceId: input.parsed.deviceId};
     }
 
-    function inactive(name: string): boolean {
-        const live = ports.liveAvds();
+    async function inactive(name: string): Promise<boolean> {
+        const live = await ports.liveAvds();
         if (!live.ok || live.names.has(name)) return false;
-        const processes = ports.avdProcesses(name);
+        const processes = await ports.avdProcesses(name);
         return processes.ok && !processes.active;
     }
 
@@ -69,14 +69,14 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
         if (!ownerId) return { attempted: false, ok: false, reason: "created-avd-owner-id-missing" };
         const name = brokerAndroidField(device, "avdName");
         if (!name || !ports.ownedAvdName(name, ownerId)) return { attempted: false, ok: false, reason: "created-avd-identity-unverified" };
-        const live = ports.liveAvds();
+        const live = await ports.liveAvds();
         if (!live.ok || live.names.has(name)) return { attempted: false, ok: false, reason: live.ok && live.names.has(name) ? "created-avd-active" : "created-avd-liveness-unverified" };
-        const processes = ports.avdProcesses(name);
+        const processes = await ports.avdProcesses(name);
         if (!processes.ok || processes.active) return { attempted: false, ok: false, reason: processes.ok && processes.active ? "created-avd-active" : "created-avd-liveness-unverified" };
         const root = ports.approvedAvdRoot(brokerAndroidField(device, "avdRoot"));
         if (!root) return { attempted: false, ok: false, reason: "created-avd-root-unavailable" };
         try {
-            const cleanup = ports.removeAvdArtifacts(name, ownerId, root, () => inactive(name));
+            const cleanup = await ports.removeAvdArtifacts(name, ownerId, root, () => inactive(name));
             return { attempted: true, ok: true, artifactsRemoved: cleanup.removed };
         } catch { return { attempted: true, ok: false, reason: "android-avd-artifact-cleanup-failed" }; }
     }
@@ -89,18 +89,18 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
             const name = brokerAndroidField(plan?.device, "avdName");
             if (!name || !createAvdRoot || !ports.ownedAvdName(name, ownerId)) return refusal(input, "conflict", "android-avd-create-identity-unavailable");
             try {
-                if (ports.avdArtifacts(ownerId, createAvdRoot).some(artifact => artifact.name === name)) return refusal(input, "conflict", "android-avd-artifacts-already-exist");
+                if ((await ports.avdArtifacts(ownerId, createAvdRoot)).some(artifact => artifact.name === name)) return refusal(input, "conflict", "android-avd-artifacts-already-exist");
             } catch { return refusal(input, "conflict", "android-avd-storage-preflight-failed"); }
         }
-        let execution = ports.metadataObservation("create", {timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
+        let execution = await ports.metadataObservation("create", {timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
         if (preparation?.kind === "ready") {
-            execution = ports.executePrepared(preparation.effect, {timeoutMs: parsed.create?.createAvd === true ? 300000 : ports.commandTimeoutMs, outputLimit: ports.outputLimit});
+            execution = await ports.executePrepared(preparation.effect, {timeoutMs: parsed.create?.createAvd === true ? 300000 : ports.commandTimeoutMs, outputLimit: ports.outputLimit});
             if (!brokerAndroidCommandSucceeded(execution)) {
                 let rollback: BrokerAndroidRollback | null = null;
                 if (parsed.create?.createAvd === true) {
                     const name = brokerAndroidField(plan?.device, "avdName");
                     if (name && createAvdRoot && ports.ownedAvdName(name, ownerId)) {
-                        try { rollback = {ok: true, artifactsRemoved: ports.removeAvdArtifacts(name, ownerId, createAvdRoot, () => inactive(name)).removed}; }
+                        try { rollback = {ok: true, artifactsRemoved: (await ports.removeAvdArtifacts(name, ownerId, createAvdRoot, () => inactive(name))).removed}; }
                         catch { rollback = {ok: false, error: "android-avd-artifact-cleanup-failed"}; }
                     } else { rollback = {ok: false, error: "android-avd-create-identity-unavailable"}; }
                 }
@@ -128,7 +128,7 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
         return {kind: "created", plan: plan || null, device, invoked: true, mutatesHost: true, execution};
     }
 
-    function confirmStop(device: unknown): string | null {
+    async function confirmStop(device: unknown): Promise<string | null> {
         const serial = brokerAndroidSerial(device);
         const name = brokerAndroidField(device, "avdName");
         const preparation = ports.prepareStopInventory();
@@ -139,24 +139,24 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
             try {
                 const remaining = deadline - ports.now();
                 if (remaining <= 0) break;
-                const inventory = ports.observeStopInventory(preparation.effect, serial, { timeoutMs: Math.min(10000, remaining), outputLimit: ports.outputLimit });
+                const inventory = await ports.observeStopInventory(preparation.effect, serial, { timeoutMs: Math.min(10000, remaining), outputLimit: ports.outputLimit });
                 if (!inventory.ok || !inventory.available) return "inventory-unavailable";
                 serialPresent = inventory.serialPresent;
             } catch { return "inventory-unavailable"; }
             const remaining = deadline - ports.now();
             if (remaining <= 0) break;
             try {
-                const processes = ports.avdProcesses(name, Math.min(10000, remaining), true);
+                const processes = await ports.avdProcesses(name, Math.min(10000, remaining), true);
                 if (!processes.ok) return "process-inventory-unavailable";
                 if (ports.now() >= deadline) break;
                 if (!serialPresent && !processes.active) return null;
             } catch { return "process-inventory-unavailable"; }
-            ports.sleep(Math.min(250, Math.max(0, deadline - ports.now())));
+            await ports.sleep(Math.min(250, Math.max(0, deadline - ports.now())));
         }
         return "deadline-exceeded";
     }
 
-    function confirmBoot(parsed: BrokerAndroidLifecycleRequest, device: unknown): BrokerAndroidBoot<Receipt> {
+    async function confirmBoot(parsed: BrokerAndroidLifecycleRequest, device: unknown): Promise<BrokerAndroidBoot<Receipt>> {
         if (parsed.waitForBoot !== true) return {ok: true, ready: false, skipped: true};
         const serial = brokerAndroidSerial(device);
         const preparation = ports.prepareBootProbe(serial);
@@ -165,10 +165,10 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
         const deadline = ports.now() + timeout;
         const attempts: BrokerAndroidProviderResult<Receipt>[] = [];
         while (ports.now() < deadline) {
-            const result = ports.observeBootProbe(preparation.effect, {timeoutMs: Math.min(ports.commandTimeoutMs, Math.max(1000, deadline - ports.now())), outputLimit: ports.outputLimit});
+            const result = await ports.observeBootProbe(preparation.effect, {timeoutMs: Math.min(ports.commandTimeoutMs, Math.max(1000, deadline - ports.now())), outputLimit: ports.outputLimit});
             attempts.push(result);
             if (result.ok && result.ready) return {ok: true, ready: true, result, attempts: attempts.slice(-4)};
-            ports.sleep(Math.min(1000, Math.max(0, deadline - ports.now())));
+            await ports.sleep(Math.min(1000, Math.max(0, deadline - ports.now())));
         }
         return {ok: false, ready: false, reason: "deadline-exceeded", serial, last: attempts.at(-1), attempts: attempts.slice(-8)};
     }
@@ -184,7 +184,7 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
         if (parsed.command === "device_start") {
             const port = brokerAndroidNumber(plan?.device, "port");
             if (ports.validPort(port)) {
-                const live = ports.livePorts();
+                const live = await ports.livePorts();
                 if (!live.ok) return refusal(input, live.reason, live.error, {detail: live.detail});
                 if (port !== null && live.ports.has(port)) return refusal(input, "conflict", "android-emulator-port-conflict", {detail: `port-${port}-already-in-use`});
             }
@@ -194,14 +194,14 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
             const name = brokerAndroidField(plan?.device, "avdName");
             const root = ports.approvedAvdRoot(brokerAndroidField(plan?.device, "avdRoot"));
             if (!root || !name || !ports.ownedAvdName(name, ownerId)) return refusal(input, "conflict", !root ? "android-avd-root-unavailable" : "android-avd-identity-unavailable");
-            const live = ports.liveAvds();
+            const live = await ports.liveAvds();
             if (!live.ok) return refusal(input, live.reason, "android-avd-liveness-unverified", {detail: live.detail});
             if (live.names.has(name)) return refusal(input, "conflict", "android-avd-active");
-            const processes = ports.avdProcesses(name);
+            const processes = await ports.avdProcesses(name);
             if (!processes.ok) return refusal(input, processes.reason, "android-avd-liveness-unverified", {detail: processes.detail});
             if (processes.active) return refusal(input, "conflict", "android-avd-active");
         }
-        const auxiliary = parsed.command === "device_stop" || parsed.command === "device_delete" ? ports.cleanupAuxiliary(ownerId, parsed, expectedDevice) : null;
+        const auxiliary = parsed.command === "device_stop" || parsed.command === "device_delete" ? await ports.cleanupAuxiliary(ownerId, parsed, expectedDevice) : null;
         if (auxiliary?.committed) expectedDevice = structuredClone(auxiliary.device);
         if (auxiliary?.result.ok === false) return {
             kind: "auxiliary-failed", error: "auxiliary-runtime-cleanup-failed", plan: plan || null,
@@ -209,11 +209,11 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
             mutatesHost: auxiliary.result.changed === true || auxiliary.result.appium.cleared === true || auxiliary.result.recording.cleared === true || auxiliary.result.minimizeWatchdog.cleared === true,
         };
         const execution = deletingArtifacts || preparation.kind === "metadata-only"
-            ? ports.metadataObservation(deletingArtifacts ? "delete-artifacts" : "delete-metadata", {timeoutMs: deletingArtifacts ? 120000 : ports.commandTimeoutMs, outputLimit: ports.outputLimit})
-            : ports.executePrepared(preparation.effect, {timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
+            ? await ports.metadataObservation(deletingArtifacts ? "delete-artifacts" : "delete-metadata", {timeoutMs: deletingArtifacts ? 120000 : ports.commandTimeoutMs, outputLimit: ports.outputLimit})
+            : await ports.executePrepared(preparation.effect, {timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
         let success = brokerAndroidCommandSucceeded(execution);
         if (success && parsed.command === "device_stop") {
-            const stopFailure = confirmStop(plan?.device);
+            const stopFailure = await confirmStop(plan?.device);
             if (stopFailure) return {
                 kind: "stop-unconfirmed", error: "android-emulator-stop-unconfirmed", ownerId, backend: parsed.backend, deviceId: parsed.deviceId,
                 detail: stopFailure, plan: plan || null, device: plan?.device, invoked: true, mutatesHost: true, execution,
@@ -224,12 +224,12 @@ export function createBrokerAndroidEmulatorLifecycle<Effect, Receipt>(ports: Bro
             const root = ports.approvedAvdRoot(brokerAndroidField(plan?.device, "avdRoot"));
             try {
                 if (!name || !root) throw new Error("missing-provider-metadata");
-                ports.removeAvdArtifacts(name, ownerId, root, () => inactive(name));
+                await ports.removeAvdArtifacts(name, ownerId, root, () => inactive(name));
                 success = true;
             } catch { return refusal(input, "provider-failed", "android-avd-artifact-cleanup-failed"); }
         }
         let boot: BrokerAndroidBoot<Receipt> | null = null;
-        if (success && parsed.command === "device_start") {boot = confirmBoot(parsed, plan?.device); if (!boot.ok) success = false;}
+        if (success && parsed.command === "device_start") {boot = await confirmBoot(parsed, plan?.device); if (!boot.ok) success = false;}
         const publication = success ? ports.transition(ownerId, parsed, expectedDevice, candidate => parsed.command === "device_delete" ? null : {...brokerAndroidReplacement(candidate, parsed, boot), updatedAt: ports.timestamp()}) : null;
         const observed = {
             plan: plan || null, device: success ? publication?.device : plan?.device,

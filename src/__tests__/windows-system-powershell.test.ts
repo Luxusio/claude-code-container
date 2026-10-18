@@ -5,11 +5,13 @@ import { dirname, join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     canonicalWindowsPowerShellPath,
+    canonicalWindowsPowerShellPathAsync,
     canonicalWindowsTasklistPath,
     canonicalWindowsSystemExecutablePath,
     hiddenWindowsPowerShellArgs,
     spawnableWindowsExecutablePath,
     terminateWindowsProcessByStartToken,
+    terminateWindowsProcessByStartTokenAsync,
     windowsHandleBoundTerminationScript,
 } from "@ccc/device-lab/windows-system-powershell.js";
 
@@ -26,10 +28,10 @@ function terminationResult(status: number | null, stderr = "", error?: Error): c
 }
 
 function mockTermination(result = terminationResult(0), afterTermination?: () => void) {
-    return vi.spyOn(childProcess, "spawnSync").mockImplementation((() => {
+    return vi.spyOn(childProcess, "spawnSync").mockImplementation(() => {
         afterTermination?.();
         return result;
-    }) as typeof childProcess.spawnSync);
+    });
 }
 
 function terminationDurations(spawn: ReturnType<typeof mockTermination>) {
@@ -38,6 +40,25 @@ function terminationDurations(spawn: ReturnType<typeof mockTermination>) {
         outer: options.timeout as number,
         inner: Number(options.env?.CCC_WINDOWS_TERMINATE_TIMEOUT_MS),
     };
+}
+
+function mockDeferredTermination() {
+    type Callback = (error: childProcess.ExecFileException | null, stdout: string, stderr: string) => void;
+    let complete!: Callback;
+    const execute = vi.spyOn(childProcess, "execFile").mockImplementation(((_file: string, _args: readonly string[], _options: childProcess.ExecFileOptions, callback: Callback) => {
+        complete = callback;
+        return {} as childProcess.ChildProcess;
+    }) as typeof childProcess.execFile);
+    return { execute, complete: (...args: Parameters<Callback>) => complete(...args) };
+}
+
+function asyncTerminationDurations(execute: ReturnType<typeof mockDeferredTermination>["execute"]) {
+    const options = execute.mock.calls[0][2] as childProcess.ExecFileOptions;
+    return { outer: options.timeout as number, inner: Number(options.env?.CCC_WINDOWS_TERMINATE_TIMEOUT_MS) };
+}
+
+function nextEventLoopTurn(): Promise<void> {
+    return new Promise(resolve => setImmediate(resolve));
 }
 
 describe("canonical Windows PowerShell", () => {
@@ -153,6 +174,21 @@ describe("canonical Windows PowerShell", () => {
         writeFileSync(target, "foreign");
         symlinkSync(target, executable, "file");
         expect(canonicalWindowsPowerShellPath(root)).toBeNull();
+    });
+
+    it("applies the same plain-file trust checks through the async PowerShell resolver", async () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-system-powershell-async-"));
+        roots.push(root);
+        const executable = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+        mkdirSync(dirname(executable), { recursive: true });
+        writeFileSync(executable, "test");
+        expect(await canonicalWindowsPowerShellPathAsync(root)).toBe(executable);
+
+        rmSync(executable);
+        const target = join(root, "foreign.exe");
+        writeFileSync(target, "foreign");
+        symlinkSync(target, executable, "file");
+        expect(await canonicalWindowsPowerShellPathAsync(root)).toBeNull();
     });
 
     it("resolves only plain System32 executables without path traversal", () => {
@@ -309,5 +345,117 @@ describe("Windows handle termination remaining allowance", () => {
         expect(terminateWindowsProcessByStartToken(321, "linux:123", 1000, "trusted-powershell.exe", () => 70))
             .toEqual(expect.objectContaining({ ok: false, reason: "windows-process-identity-unavailable" }));
         expect(spawn).not.toHaveBeenCalled();
+    });
+});
+
+describe("asynchronous Windows handle termination", () => {
+    it("awaits the native handle-bound command while the event loop remains responsive", async () => {
+        const synchronousTermination = vi.spyOn(childProcess, "spawnSync");
+        const native = mockDeferredTermination();
+        let settled = false;
+        const pending = terminateWindowsProcessByStartTokenAsync(321, ownedWindowsStartToken, 1000, "trusted-powershell.exe", () => 70.9)
+            .then(result => { settled = true; return result; });
+
+        await nextEventLoopTurn();
+        expect(settled).toBe(false);
+        expect(native.execute).toHaveBeenCalledTimes(1);
+        expect(synchronousTermination).not.toHaveBeenCalled();
+        expect(native.execute.mock.calls[0][0]).toBe("trusted-powershell.exe");
+        expect(native.execute.mock.calls[0][1]).toEqual(hiddenWindowsPowerShellArgs([
+            "-NoProfile", "-NonInteractive", "-Command", windowsHandleBoundTerminationScript(),
+        ]));
+        expect((native.execute.mock.calls[0][2] as childProcess.ExecFileOptions).env).toEqual(expect.objectContaining({
+            CCC_WINDOWS_TERMINATE_PID: "321", CCC_WINDOWS_TERMINATE_START_TOKEN: ownedWindowsStartToken,
+        }));
+        expect((native.execute.mock.calls[0][2] as childProcess.ExecFileOptions).windowsHide).toBe(true);
+        const { inner, outer } = asyncTerminationDurations(native.execute);
+        expect(inner).toBeGreaterThan(0);
+        expect(inner).toBeLessThanOrEqual(70);
+        expect(outer).toBeGreaterThanOrEqual(inner);
+        expect(outer).toBeLessThanOrEqual(70);
+        native.complete(null, "", "");
+
+        expect(await pending).toEqual(expect.objectContaining({ ok: true, pid: 321, status: 0, method: "process-handle" }));
+    });
+
+    it.each([
+        { timeoutMs: undefined, inner: 10_000, outer: 11_000 },
+        { timeoutMs: 250, inner: 250, outer: 1250 },
+        { timeoutMs: 1000, inner: 1000, outer: 2000 },
+    ])("preserves the omitted parent budget for async timeout $timeoutMs", async ({ timeoutMs, inner, outer }) => {
+        const native = mockDeferredTermination();
+        const pending = terminateWindowsProcessByStartTokenAsync(321, ownedWindowsStartToken, timeoutMs, "trusted-powershell.exe");
+        await nextEventLoopTurn();
+        expect(asyncTerminationDurations(native.execute)).toEqual({ inner, outer });
+        native.complete(null, "", "");
+        expect((await pending).ok).toBe(true);
+    });
+
+    it.each([37.9, 1.9])("bounds both async native waits by a fractional parent allowance %s", async remaining => {
+        const native = mockDeferredTermination();
+        const pending = terminateWindowsProcessByStartTokenAsync(321, ownedWindowsStartToken, 1000, "trusted-powershell.exe", () => remaining);
+        await nextEventLoopTurn();
+        const { inner, outer } = asyncTerminationDurations(native.execute);
+        expect(Number.isInteger(inner)).toBe(true);
+        expect(Number.isInteger(outer)).toBe(true);
+        expect(inner).toBeGreaterThan(0);
+        expect(inner).toBeLessThanOrEqual(outer);
+        expect(outer).toBeLessThanOrEqual(Math.floor(remaining));
+        native.complete(null, "", "");
+        expect((await pending).ok).toBe(true);
+    });
+
+    it.each([0, -1, 0.9, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+        "refuses spent async parent allowance %s before native execution",
+        async remaining => {
+            const native = mockDeferredTermination();
+            expect(await terminateWindowsProcessByStartTokenAsync(321, ownedWindowsStartToken, 1000, "trusted-powershell.exe", () => remaining))
+                .toEqual(expect.objectContaining({ ok: false, pid: 321, reason: "process-termination-timeout" }));
+            expect(native.execute).not.toHaveBeenCalled();
+        },
+    );
+
+    it("refuses late native success after a deferred command consumes its parent allowance", async () => {
+        const native = mockDeferredTermination();
+        let remaining = 70;
+        const pending = terminateWindowsProcessByStartTokenAsync(321, ownedWindowsStartToken, 1000, "trusted-powershell.exe", () => remaining);
+        await nextEventLoopTurn();
+        remaining = 0;
+        native.complete(null, "", "");
+
+        expect(await pending).toEqual(expect.objectContaining({ ok: false, pid: 321, status: 0, method: "process-handle", reason: "process-termination-timeout" }));
+    });
+
+    it.each([
+        { status: 3, stderr: "identity refused", reason: "process-start-token-mismatch" },
+        { status: 4, stderr: "handle wait failed", reason: "process-termination-timeout" },
+        { status: 7, stderr: "native access denied", reason: undefined },
+    ])("preserves async native failure $status when the parent allowance also expires", async ({ status, stderr, reason }) => {
+        const native = mockDeferredTermination();
+        let remaining = 70;
+        const pending = terminateWindowsProcessByStartTokenAsync(321, ownedWindowsStartToken, 1000, "trusted-powershell.exe", () => remaining);
+        await nextEventLoopTurn();
+        remaining = 0;
+        native.complete(Object.assign(new Error("native command failed"), { code: status }), "", stderr);
+
+        const result = await pending;
+        expect(result).toEqual(expect.objectContaining({ ok: false, pid: 321, status, error: stderr, method: "process-handle" }));
+        expect(result.reason).toBe(reason);
+    });
+
+    it("preserves a deferred native transport error without reporting clean exit", async () => {
+        const native = mockDeferredTermination();
+        const pending = terminateWindowsProcessByStartTokenAsync(321, ownedWindowsStartToken, 1000, "trusted-powershell.exe");
+        await nextEventLoopTurn();
+        native.complete(Object.assign(new Error("native executable unavailable"), { code: "ENOENT" }), "", "");
+
+        expect(await pending).toEqual(expect.objectContaining({ ok: false, status: null, error: "native executable unavailable" }));
+    });
+
+    it("refuses a missing qualified Windows identity before the async command", async () => {
+        const native = mockDeferredTermination();
+        expect(await terminateWindowsProcessByStartTokenAsync(321, "linux:123", 1000, "trusted-powershell.exe"))
+            .toEqual(expect.objectContaining({ ok: false, reason: "windows-process-identity-unavailable" }));
+        expect(native.execute).not.toHaveBeenCalled();
     });
 });

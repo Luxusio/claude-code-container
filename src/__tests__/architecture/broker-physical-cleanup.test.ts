@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createBrokerOwnerCleanupApplication } from "../../../packages/device-lab/src/device-lab/application/broker-owner-cleanup.js";
-import type { BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
+import type { BrokerOwnerAuxiliaryAsyncPorts, BrokerOwnerCleanupPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-owner-cleanup.js";
+import type { CleanupTermination } from "../../../packages/device-lab/src/device-lab/domain/broker-owner-cleanup.js";
 import { createBrokerPhysicalDevicesApplication } from "../../../packages/device-lab/src/device-lab/application/broker-physical-devices.js";
 import type { BrokerPhysicalDevicesPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-physical-devices.js";
 import { normalizeAppleInventory, normalizePhysicalExecution, renderAppleTrustDiagnostic, renderPhysicalAttachOutcome, renderPhysicalStopOutcome } from "../../../packages/device-lab/src/device-lab/broker/physical-outcomes.js";
@@ -520,6 +521,174 @@ describe("owner cleanup completion proof", () => {
         expect(appium).not.toHaveBeenCalled();
         expect(recording).not.toHaveBeenCalled();
         expect(publish).not.toHaveBeenCalled();
+    });
+});
+
+function deferredCleanup<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    const promise = new Promise<T>(settle => { resolve = settle; });
+    return { promise, resolve };
+}
+
+describe("asynchronous owner auxiliary cleanup", () => {
+    const target = { backend: "android-emulator", stateKey: "android", deviceId: "emu" };
+    const ended: CleanupTermination = { ok: true, ended: true, receipt: { attempted: true, ok: true } };
+
+    it("refuses a stale complete record before invoking either supplied native effect", async () => {
+        const ports = cleanupPorts(), initial = { id: "emu", appium: { serverPid: 21 }, recording: { pid: 22 }, label: "before" };
+        const successor = { ...initial, label: "successor" };
+        ports.read = () => [successor];
+        const appium = vi.fn(async () => ended), recording = vi.fn(async () => ended), publish = vi.fn(ports.publish);
+        ports.publish = publish;
+        expect(await createBrokerOwnerCleanupApplication(ports).auxiliaryAsync("owner", target, initial, {
+            terminateAppium: appium, signalRecording: recording,
+        })).toMatchObject({ committed: false, device: successor, result: { ok: false, changed: false, stateConflict: true } });
+        expect(appium).not.toHaveBeenCalled(); expect(recording).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled();
+    });
+
+    it("waits for each termination before later effects and publishes only the settled replacement", async () => {
+        const ports = cleanupPorts(), initial = {
+            id: "emu", status: "running", appium: { serverPid: 21 }, recording: { pid: 22 },
+            minimizeWatchdog: { processOwner: "host-broker", startedBy: "broker.windows-sandbox.minimize-watchdog" },
+            label: "retain definition",
+        };
+        const appium = deferredCleanup<CleanupTermination>(), recording = deferredCleanup<CleanupTermination>();
+        const appiumEntered = deferredCleanup<void>(), recordingEntered = deferredCleanup<void>(), events: string[] = [];
+        ports.read = () => [initial];
+        ports.terminateAppium = () => { throw new Error("async-cleanup-must-use-supplied-effects"); };
+        ports.signalRecording = () => { throw new Error("async-cleanup-must-use-supplied-effects"); };
+        ports.withLeaseGuard = () => { throw new Error("auxiliary-cleanup-does-not-own-a-physical-lease"); };
+        const effects: BrokerOwnerAuxiliaryAsyncPorts = {
+            terminateAppium: (runtime, stillCurrent) => {
+                expect(runtime).toBe(initial.appium); expect(stillCurrent()).toBe(true);
+                events.push("appium"); appiumEntered.resolve(undefined); return appium.promise;
+            },
+            signalRecording: (runtime, stillCurrent) => {
+                expect(runtime).toBe(initial.recording); expect(stillCurrent()).toBe(true);
+                events.push("recording"); recordingEntered.resolve(undefined); return recording.promise;
+            },
+        };
+        const cancel = vi.fn(() => { events.push("watchdog"); return { ok: true }; });
+        const publish = vi.fn(ports.publish); ports.cancelWatchdog = cancel;
+        ports.publish = (...args) => { events.push("publish"); return publish(...args); };
+        let settled = false;
+        const pending = createBrokerOwnerCleanupApplication(ports).auxiliaryAsync("owner", target, initial, effects);
+        void pending.then(() => { settled = true; }, () => { settled = true; });
+        await appiumEntered.promise;
+        expect(events).toEqual(["appium"]); expect(settled).toBe(false);
+        expect(publish).not.toHaveBeenCalled(); expect(cancel).not.toHaveBeenCalled();
+        appium.resolve(ended);
+        await recordingEntered.promise;
+        expect(events).toEqual(["appium", "recording"]); expect(settled).toBe(false);
+        expect(publish).not.toHaveBeenCalled(); expect(cancel).not.toHaveBeenCalled();
+        expect(initial.appium).toEqual({ serverPid: 21 }); expect(initial.recording).toEqual({ pid: 22 });
+        recording.resolve(ended);
+        expect(await pending).toMatchObject({ committed: true, result: { ok: true, changed: true }, device: {
+            id: "emu", label: "retain definition", appium: null, recording: null, minimizeWatchdog: null, updatedAt: "now",
+        } });
+        expect(events).toEqual(["appium", "recording", "watchdog", "publish"]);
+        expect(publish).toHaveBeenCalledExactlyOnceWith("owner", "android", "emu", initial, {
+            ...initial, appium: null, recording: null, minimizeWatchdog: null, updatedAt: "now",
+        });
+    });
+
+    it.each(["appium", "recording"] as const)("refuses later effects and publication after a successor arrives during awaited %s termination", async phase => {
+        const ports = cleanupPorts(), initial = {
+            id: "emu", appium: { serverPid: 21 }, recording: { pid: 22 },
+            minimizeWatchdog: { processOwner: "host-broker", startedBy: "broker.windows-sandbox.minimize-watchdog" },
+        };
+        const successor = { ...initial, generation: "new", appium: { serverPid: 31 }, recording: { pid: 32 } };
+        let current = initial, authorized = () => false;
+        ports.read = () => [current];
+        const termination = deferredCleanup<CleanupTermination>(), entered = deferredCleanup<void>();
+        const waitForTermination = (_runtime: unknown, stillCurrent: () => boolean) => {
+            expect(stillCurrent()).toBe(true); authorized = stillCurrent;
+            entered.resolve(undefined); return termination.promise;
+        };
+        const recorder = vi.fn(phase === "recording" ? waitForTermination : () => ended);
+        const effects: BrokerOwnerAuxiliaryAsyncPorts = {
+            terminateAppium: phase === "appium" ? waitForTermination : () => ended,
+            signalRecording: recorder,
+        };
+        const watchdog = vi.fn(ports.cancelWatchdog), publish = vi.fn(ports.publish);
+        ports.cancelWatchdog = watchdog; ports.publish = publish;
+        const pending = createBrokerOwnerCleanupApplication(ports).auxiliaryAsync("owner", target, initial, effects);
+        await entered.promise;
+        expect(publish).not.toHaveBeenCalled(); expect(watchdog).not.toHaveBeenCalled();
+        current = successor;
+        termination.resolve(ended);
+        expect(await pending).toMatchObject({ committed: false, device: successor, result: { ok: false, changed: false, stateConflict: true } });
+        expect(authorized()).toBe(false);
+        expect(recorder).toHaveBeenCalledTimes(phase === "recording" ? 1 : 0);
+        expect(watchdog).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled();
+        expect(current).toBe(successor);
+    });
+
+    it.each([false, true])("preserves recoverable Android recording metadata while committing Appium cleanup (recording active=%s)", async active => {
+        const ports = cleanupPorts(), recording = {
+            pid: 22, provider: "adb-screenrecord", authority: "host-broker", processOwner: "host-broker",
+            startedBy: "broker.device.recording.start", remotePath: "/sdcard/keep.mp4", localPath: "/artifacts/keep.mp4",
+            runtimeId: "recording-generation", startedAt: "started", active,
+            ...(active ? {} : { stoppedAt: "before", artifactCopyPending: true, artifactCopied: false }),
+        };
+        const initial = { id: "emu", appium: { serverPid: 21 }, recording, incarnationId: "device-generation" };
+        const capturedRecording = structuredClone(recording);
+        ports.read = () => [initial];
+        const signal = vi.fn(async () => ended), publish = vi.fn(ports.publish); ports.publish = publish;
+        const outcome = await createBrokerOwnerCleanupApplication(ports).auxiliaryAsync("owner", target, initial, {
+            terminateAppium: async () => ended, signalRecording: signal,
+        });
+        expect(outcome).toMatchObject({ committed: true, device: { ...initial, appium: null }, result: {
+            ok: false, changed: true, appium: { cleared: true },
+            recording: { cleared: false, signal: { ok: false, reason: "recording-artifact-copy-pending" } },
+        } });
+        expect(signal).toHaveBeenCalledTimes(active ? 1 : 0);
+        expect(publish).toHaveBeenCalledExactlyOnceWith("owner", "android", "emu", initial, { ...initial, appium: null, updatedAt: "now" });
+        expect((outcome.device as typeof initial).recording).toEqual(capturedRecording);
+        expect(initial.recording).toEqual(capturedRecording);
+    });
+
+    it("commits confirmed Appium cleanup while retaining the recorder whose awaited signal has no exit proof", async () => {
+        const ports = cleanupPorts(), recording = { pid: 22, runtimeId: "recorder-generation" };
+        const initial = { id: "emu", appium: { serverPid: 21 }, recording };
+        const receipt = { attempted: true, ok: true, nativeDetail: "signal accepted" };
+        ports.read = () => [initial];
+        const publish = vi.fn(ports.publish); ports.publish = publish;
+        const outcome = await createBrokerOwnerCleanupApplication(ports).auxiliaryAsync("owner", target, initial, {
+            terminateAppium: async () => ended,
+            signalRecording: async () => ({ ok: true, ended: false, receipt }),
+        });
+        expect(outcome).toMatchObject({ committed: true, device: { appium: null, recording }, result: {
+            ok: false, changed: true, appium: { cleared: true },
+            recording: { cleared: false, signal: { attempted: true, ok: false, nativeDetail: "signal accepted" } },
+        } });
+        expect(outcome.result.recording.signal).not.toHaveProperty("ended");
+        expect(outcome.result.recording.signal).not.toHaveProperty("receipt");
+        expect(receipt.ok).toBe(true);
+        expect(publish).toHaveBeenCalledExactlyOnceWith("owner", "android", "emu", initial, { ...initial, appium: null, updatedAt: "now" });
+    });
+
+    it("reports the final complete-record CAS conflict without crediting or replacing a successor", async () => {
+        const ports = cleanupPorts(), initial = { id: "emu", appium: { serverPid: 21 }, recording: { pid: 22 }, label: "original" };
+        const successor = { ...initial, generation: "new", label: "successor", appium: { serverPid: 31 } };
+        let current = initial;
+        ports.read = () => [current];
+        const publish = vi.fn((_owner: string, _state: string, _id: string, expected: unknown, replacement: unknown) => {
+            expect(expected).toBe(initial);
+            expect(replacement).toEqual({ ...initial, appium: null, recording: null, updatedAt: "now" });
+            current = successor;
+            return { found: true, matched: false, device: successor };
+        });
+        ports.publish = publish;
+        const outcome = await createBrokerOwnerCleanupApplication(ports).auxiliaryAsync("owner", target, initial, {
+            terminateAppium: async () => ended, signalRecording: async () => ended,
+        });
+        expect(outcome).toMatchObject({ committed: false, device: successor, result: {
+            ok: false, changed: false, stateConflict: true, appium: { cleared: true }, recording: { cleared: true },
+        } });
+        expect(publish).toHaveBeenCalledOnce();
+        expect(current).toBe(successor);
+        expect(initial.appium).toEqual({ serverPid: 21 }); expect(initial.recording).toEqual({ pid: 22 });
     });
 });
 

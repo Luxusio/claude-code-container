@@ -12,9 +12,9 @@ vi.mock("crypto", async original => {
 });
 import * as fixtureFs from "fs";
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
-import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
+import { deviceLabTestHomeEnvironment, isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { isolatedDeviceLabPackage } from "./helpers/isolated-device-lab-package.js";
-import { fakeAndroidProviderScript } from "./helpers/fake-android-provider-script.js";
+import { fakeAndroidLauncherPreloadSource, fakeAndroidProviderScript } from "./helpers/fake-android-provider-script.js";
 import { createFakeIosMcpContext, cleanupFakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
 import { createFakeMacosMcpContext, cleanupFakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
 import { installNodeProviderFixtureRouting, nodeProviderFixturePreloadSource } from "./helpers/node-provider-fixture.js";
@@ -11660,3 +11660,290 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
 });
 
 vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import("fs")>() }));
+
+// The controller lives outside the broker process. A synchronous native wait cannot
+// delay this controller's deadline or release the gate before responsiveness is proved.
+type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup";
+type AndroidHttpFixtureReply = { status: number; body: Record<string, any> };
+type AndroidHttpFixtureReady = { baseUrl: string; owners: Array<{ id: string; token: string; file: string }>; initial: Record<string, unknown> };
+
+const androidHttpFixtureNative = String.raw`
+const fs = require('node:fs'), path = require('node:path');
+const home = process.env.HOME, args = process.argv.slice(2);
+const file = name => path.join(home, name), has = name => fs.existsSync(file(name));
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+const active = serial => file('active-' + serial);
+const liveFile = file('native-' + process.pid + '.json');
+fs.writeFileSync(liveFile, JSON.stringify({pid: process.pid, tool, args}));
+fs.appendFileSync(file('native.log'), JSON.stringify({pid: process.pid, tool, args}) + '\n');
+async function gate(name) {
+    if (process.env.CCC_ANDROID_HTTP_PHASE !== name) return;
+    fs.writeFileSync(file('entered-' + name), JSON.stringify({pid: process.pid, tool, args}));
+    const deadline = Date.now() + 20000;
+    while (!has('release-' + name) && !has('shutdown')) {
+        if (Date.now() > deadline) throw Error('owned native fixture gate expired: ' + name);
+        await pause(10);
+    }
+}
+async function main() {
+    if (tool === 'avdmanager') {
+        if (args[0] === 'create') {
+            await gate('create');
+            const name = args[args.indexOf('--name') + 1], root = path.join(home, '.android', 'avd');
+            const directory = path.join(root, name + '.avd');
+            fs.mkdirSync(directory, {recursive: true});
+            fs.writeFileSync(path.join(root, name + '.ini'), 'path=' + directory + '\n');
+        }
+        return;
+    }
+    if (tool === 'emulator') {
+        const serial = 'emulator-' + args[args.indexOf('-port') + 1];
+        fs.writeFileSync(active(serial), '');
+        const deadline = Date.now() + 20000;
+        while (fs.existsSync(active(serial)) && !has('shutdown') && Date.now() < deadline) await pause(10);
+        return;
+    }
+    let serial = '', operation = args;
+    if (args[0] === '-s') { serial = args[1]; operation = args.slice(2); }
+    if (operation[0] === 'devices') {
+        if (has('stop-requested')) await gate('stop-inventory');
+        console.log('List of devices attached');
+        for (const name of fs.readdirSync(home).filter(name => name.startsWith('active-'))) console.log(name.slice(7) + '\tdevice');
+        return;
+    }
+    if (operation[0] === 'emu' && operation[1] === 'kill') {
+        await gate('owner-cleanup');
+        fs.rmSync(active(serial), {force: true});
+        fs.writeFileSync(file('stop-requested'), '');
+        return;
+    }
+    if (operation[0] === 'shell' && operation[2] === 'sys.boot_completed') { await gate('boot'); console.log('1'); return; }
+    if (operation[0] === 'get-state') { console.log(fs.existsSync(active(serial)) ? 'device' : 'unknown'); return; }
+    if (operation[0] === 'emu' && operation[1] === 'avd') { console.log(fs.readFileSync(file('avd-name'), 'utf8') + '\nOK'); return; }
+}
+main().catch(error => {console.error(error); process.exitCode = 1;});
+`;
+
+const androidHttpFixtureBroker = String.raw`
+const fs = require('node:fs'), path = require('node:path');
+const settings = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+let server;
+const deadline = setTimeout(() => { console.error('owned broker fixture deadline exceeded'); process.exit(1); }, 25000);
+(async () => {
+    // This is a normal Node import of the current emitted package graph. No test
+    // runner, TypeScript loader, commandRunner or in-broker release timer is used.
+    const broker = await import(settings.brokerModule), owner = await import(settings.ownerModule);
+    const owners = settings.projects.map(project => {
+        const id = owner.deviceLabOwnerId(project);
+        broker.registerDeviceBrokerOwner(project);
+        return {id, token: broker.deviceBrokerOwnerToken(id), file: path.join(settings.home, '.ccc', 'devices', 'owners', id, 'android', 'devices.json')};
+    });
+    const initial = {id: 'responsive-pixel', backend: 'android-emulator', status: settings.phase === 'boot' ? 'stopped' : 'running',
+        name: 'Responsive Pixel', port: 5586, serial: 'emulator-5586', avdName: 'ccc-' + owners[0].id + '-responsive-pixel',
+        avdRoot: path.join(settings.home, '.android', 'avd'), createdAt: '2026-10-19T00:00:00.000Z',
+        preferences: {keep: 'exact-publication-witness'}, ...(settings.phase === 'owner-cleanup' ? {appium: {sessionId: 'owned-association'}} : {})};
+    if (settings.phase !== 'create') {
+        fs.mkdirSync(path.dirname(owners[0].file), {recursive: true});
+        fs.writeFileSync(owners[0].file, JSON.stringify({devices: [initial]}));
+        fs.writeFileSync(path.join(settings.home, 'avd-name'), initial.avdName);
+        if (settings.phase !== 'boot') fs.writeFileSync(path.join(settings.home, 'active-emulator-5586'), '');
+    }
+    server = broker.createDeviceBrokerServer({cwd: settings.projects[0], host: '127.0.0.1', port: 0,
+        commandTimeoutMs: settings.phase === 'owner-cleanup' ? 2000 : 10000,
+        providerPaths: Object.fromEntries(['adb', 'emulator', 'avdmanager'].map(tool => [tool, path.join(settings.bin, tool)]))});
+    await new Promise((resolve, reject) => {server.once('error', reject); server.listen(0, '127.0.0.1', resolve);});
+    process.send({baseUrl: 'http://127.0.0.1:' + server.address().port, owners, initial});
+    const shutdown = async () => {
+        fs.writeFileSync(path.join(settings.home, 'shutdown'), '');
+        await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        clearTimeout(deadline);
+        if (process.connected) process.disconnect();
+    };
+    process.once('message', () => {void shutdown().catch(error => {console.error(error); process.exit(1);});});
+    process.once('disconnect', () => {if (server.listening) void shutdown();});
+})().catch(error => {console.error(error); clearTimeout(deadline); process.exitCode = 1; if (process.connected) process.disconnect();});
+`;
+
+async function androidHttpFixtureBounded<T>(operation: Promise<T>, milliseconds: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([operation, new Promise<never>((_, reject) => {timer = setTimeout(() => reject(new Error(label)), milliseconds);})]);
+    } finally { if (timer) clearTimeout(timer); }
+}
+
+async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
+    const root = mkdtempSync(join(tmpdir(), 'ccc-emitted-android-http-'));
+    const home = join(root, 'home'), bin = join(root, 'bin'), temporary = join(root, 'tmp');
+    for (const directory of [home, bin, temporary]) mkdirSync(directory);
+    // TMPDIR may place this owned fixture below the repository's ESM package.
+    // Its extensionless Node executables use require and need an explicit boundary.
+    writeFileSync(join(root, 'package.json'), JSON.stringify({type: 'commonjs'}));
+    const brokerModule = import.meta.resolve('@ccc/device-lab/device-lab-broker.js');
+    expect(new URL(brokerModule).pathname, 'current emitted broker is required').toMatch(/\/dist\/device-lab-broker\.js$/);
+    for (const tool of ['adb', 'emulator', 'avdmanager']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
+    const preload = join(root, 'fixture-preload.cjs'), worker = join(root, 'broker.cjs'), settings = join(root, 'settings.json');
+    writeFileSync(preload, nodeProviderFixturePreloadSource(bin) + fakeAndroidLauncherPreloadSource(bin));
+    writeFileSync(worker, androidHttpFixtureBroker);
+    writeFileSync(settings, JSON.stringify({brokerModule, ownerModule: import.meta.resolve('@ccc/device-lab/device-lab-owner.js'),
+        home, bin, phase, projects: [join(root, 'project-a'), join(root, 'project-b')]}));
+    const env: NodeJS.ProcessEnv = {...process.env, ...deviceLabTestHomeEnvironment(home), TMPDIR: temporary, TMP: temporary, TEMP: temporary};
+    for (const key of Object.keys(env)) if (/^(?:CCC_|ANDROID_)/i.test(key)) delete env[key];
+    Object.assign(env, {ANDROID_AVD_HOME: join(home, '.android', 'avd'), CCC_ANDROID_HTTP_PHASE: phase, FAKE_ANDROID_LOG: join(home, 'launcher.log')});
+    delete env.NODE_OPTIONS;
+    delete env.NODE_PATH;
+    const child = spawn(process.execPath, ['--require', preload, worker, settings], {cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc']});
+    let diagnostics = '', spawnError: Error | undefined;
+    child.stdout!.on('data', chunk => {diagnostics += chunk;});
+    child.stderr!.on('data', chunk => {diagnostics += chunk;});
+    child.once('error', error => {spawnError = error;});
+    const exited = new Promise<void>((resolveExit, reject) => child.once('close', code => code === 0 ? resolveExit() : reject(spawnError || new Error('owned broker exited ' + code + ': ' + diagnostics))));
+    void exited.catch(() => undefined);
+    const requests: Promise<AndroidHttpFixtureReply>[] = [];
+    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup']) writeFileSync(join(home, 'release-' + name), '');};
+    const dispose = async () => {
+        release();
+        writeFileSync(join(home, 'shutdown'), '');
+        try {
+            await androidHttpFixtureBounded(Promise.allSettled(requests), 12000, 'native requests did not settle after gate release');
+            if (child.connected) child.send('shutdown');
+            await androidHttpFixtureBounded(exited, 5000, 'owned broker did not close: ' + diagnostics);
+            await vi.waitFor(() => {
+                for (const name of readdirSync(home).filter(name => /^native-\d+\.json$/.test(name))) {
+                    const {pid} = JSON.parse(readFileSync(join(home, name), 'utf8')) as {pid: number};
+                    let running = false;
+                    try {
+                        process.kill(pid, 0);
+                        running = process.platform !== 'linux' || !/\) Z /.test(readFileSync('/proc/' + pid + '/stat', 'utf8'));
+                    } catch (error) {
+                        if (!['ESRCH', 'ENOENT'].includes(String((error as NodeJS.ErrnoException).code))) throw error;
+                    }
+                    expect(running, 'owned fake native process ' + pid + ' survived fixture release').toBe(false);
+                }
+            }, {timeout: 5000, interval: 10});
+        } finally {
+            if (child.exitCode === null && child.signalCode === null) {child.kill('SIGKILL'); await exited.catch(() => undefined);}
+            rmSync(root, {recursive: true, force: true, maxRetries: 20, retryDelay: 100});
+        }
+    };
+    try {
+        const ready = await androidHttpFixtureBounded(new Promise<AndroidHttpFixtureReady>((resolveReady, reject) => {
+            child.once('message', message => resolveReady(message as AndroidHttpFixtureReady));
+            child.once('error', reject);
+            child.once('exit', () => reject(new Error('owned broker exited before readiness: ' + diagnostics)));
+        }), 10000, 'emitted broker readiness deadline: ' + diagnostics);
+        function rpc(ownerIndex: number, method: string, params: Record<string, unknown>) {
+            let settled = false;
+            const target = ready.owners[ownerIndex];
+            const result = fetch(ready.baseUrl + '/v1/owners/' + target.id + '/rpc', {method: 'POST', headers: {'content-type': 'application/json', 'x-ccc-device-token': target.token},
+                body: JSON.stringify({method, params})}).then(async response => ({status: response.status, body: await response.json() as Record<string, any>})).finally(() => {settled = true;});
+            requests.push(result);
+            void result.catch(() => undefined);
+            return {result, settled: () => settled};
+        }
+        const waitForGate = async (pending: ReturnType<typeof rpc>) => {
+            const deadline = performance.now() + 10000;
+            while (!existsSync(join(home, 'entered-' + phase))) {
+                if (spawnError || child.exitCode !== null) throw spawnError || new Error('owned broker exited before native ' + phase + ' gate: ' + diagnostics);
+                if (pending.settled()) {
+                    const reply = await pending.result;
+                    const calls = existsSync(join(home, 'native.log')) ? readFileSync(join(home, 'native.log'), 'utf8') : '(no native fixture calls)';
+                    throw new Error('lifecycle settled before native ' + phase + ' gate: ' + JSON.stringify(reply) + '\nnative calls: ' + calls + '\nbroker output: ' + diagnostics);
+                }
+                if (performance.now() >= deadline) throw new Error('native ' + phase + ' gate deadline exceeded while lifecycle request remained pending; broker output: ' + diagnostics);
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+        };
+        const assertResponsive = async (pending: {settled: () => boolean}) => {
+            expect(pending.settled(), 'lifecycle request is still held at native gate').toBe(false);
+            const health = fetch(ready.baseUrl + '/health', {signal: AbortSignal.timeout(1000)}).then(async response => ({status: response.status, body: await response.json()}));
+            const echo = rpc(1, 'broker.echo', {externalGate: phase});
+            const [healthReply, echoReply] = await androidHttpFixtureBounded(Promise.all([health, echo.result]), 1500, 'native Android gate blocked health or second-owner RPC');
+            expect(healthReply.status).toBe(200);
+            expect(echoReply).toMatchObject({status: 200, body: {ok: true, result: {ownerId: ready.owners[1].id, params: {externalGate: phase}}}});
+            expect(existsSync(join(home, 'release-' + phase))).toBe(false);
+            expect(pending.settled(), 'responsiveness is proved before native release').toBe(false);
+        };
+        const records = (ownerIndex = 0): Record<string, any>[] => existsSync(ready.owners[ownerIndex].file) ? JSON.parse(readFileSync(ready.owners[ownerIndex].file, 'utf8')).devices : [];
+        const nativeCalls = (): Array<{pid: number; tool: string; args: string[]}> => existsSync(join(home, 'native.log')) ? readFileSync(join(home, 'native.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+        return {...ready, home, rpc, waitForGate, assertResponsive, records, nativeCalls, release, dispose};
+    } catch (error) {await dispose(); throw error;}
+}
+
+describe('emitted default-runner Android HTTP responsiveness', () => {
+    it('yields during native create and keeps the host allocation lock through provisioning and claim', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('create');
+        try {
+            const params = {backend: 'android-emulator', command: 'device_create', deviceId: 'responsive-pixel', name: 'Responsive Pixel', port: 5586,
+                createAvd: true, systemImage: 'system-images;android-35;google_apis;x86_64'};
+            const first = fixture.rpc(0, 'broker.command.invoke', params);
+            await fixture.waitForGate(first);
+            const conflicting = fixture.rpc(1, 'broker.command.invoke', {...params, deviceId: 'conflicting-pixel'});
+            await fixture.assertResponsive(first);
+            expect(conflicting.settled()).toBe(false);
+            expect(fixture.records()).toEqual([]);
+            expect(fixture.records(1)).toEqual([]);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'avdmanager' && call.args[0] === 'create')).toHaveLength(1);
+            fixture.release();
+            expect(await first.result).toMatchObject({status: 200, body: {ok: true, result: {device: {id: 'responsive-pixel', port: 5586, status: 'stopped'}}}});
+            expect(await conflicting.result).toMatchObject({status: 409, body: {ok: false, error: 'android-emulator-port-conflict'}});
+            expect(fixture.records()).toEqual([expect.objectContaining({id: 'responsive-pixel', port: 5586, status: 'stopped'})]);
+            expect(fixture.records(1)).toEqual([]);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'avdmanager' && call.args[0] === 'create')).toHaveLength(1);
+        } finally {await fixture.dispose();}
+    });
+
+    it('yields during the native boot probe while the same-device stop remains locked', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('boot');
+        try {
+            const start = fixture.rpc(0, 'broker.command.invoke', {backend: 'android-emulator', command: 'device_start', deviceId: 'responsive-pixel', waitForBoot: true, bootTimeoutMs: 10000});
+            await fixture.waitForGate(start);
+            const stop = fixture.rpc(0, 'broker.command.invoke', {backend: 'android-emulator', command: 'device_stop', deviceId: 'responsive-pixel'});
+            await fixture.assertResponsive(start);
+            expect(stop.settled()).toBe(false);
+            expect(fixture.records()).toEqual([fixture.initial]);
+            expect(fixture.nativeCalls().some(call => call.tool === 'adb' && call.args.at(-1) === 'kill')).toBe(false);
+            fixture.release();
+            expect(await start.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'running', bootReady: true}, boot: {ready: true}}}});
+            expect(await stop.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped', bootReady: false}}}});
+            expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, status: 'stopped', bootReady: false, preferences: {keep: 'exact-publication-witness'}})]);
+        } finally {await fixture.dispose();}
+    });
+
+    it('yields during stop inventory and publishes stopped only after the held observation completes', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('stop-inventory');
+        try {
+            const stop = fixture.rpc(0, 'broker.command.invoke', {backend: 'android-emulator', command: 'device_stop', deviceId: 'responsive-pixel'});
+            await fixture.waitForGate(stop);
+            await fixture.assertResponsive(stop);
+            expect(fixture.records()).toEqual([fixture.initial]);
+            expect(fixture.nativeCalls().some(call => call.tool === 'adb' && call.args.at(-1) === 'kill')).toBe(true);
+            fixture.release();
+            expect(await stop.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped', bootReady: false}}}});
+            expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, status: 'stopped', bootReady: false})]);
+        } finally {await fixture.dispose();}
+    });
+
+    it('charges owner cleanup native stop and fallback to its captured allowance while retaining committed auxiliary facts', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('owner-cleanup');
+        try {
+            const startedAt = performance.now();
+            const cleanup = fixture.rpc(0, 'broker.cleanup.owner', {backend: 'android-emulator', stopDevices: true});
+            await fixture.waitForGate(cleanup);
+            await fixture.assertResponsive(cleanup);
+            expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null, status: 'running'})]);
+            // Keep the native gate CLOSED. The original parent allowance must bound
+            // the real default runner, including failure cleanup, without a fresh 30s stop budget.
+            const reply = await androidHttpFixtureBounded(cleanup.result, 6000, 'owner cleanup reset its captured Android execution allowance');
+            expect(performance.now() - startedAt).toBeLessThan(7000);
+            expect(existsSync(join(fixture.home, 'release-owner-cleanup'))).toBe(false);
+            expect(reply).toMatchObject({status: 200, body: {ok: false, result: {changedDevices: 1, failed: 1,
+                results: [{stateKey: 'android', devices: [{deviceId: 'responsive-pixel', appium: {cleared: true},
+                    stop: {attempted: true, ok: false, execution: {provider: 'adb', timedOut: true, status: null}}}]}]}}});
+            const execution = reply.body.result.results[0].devices[0].stop.execution;
+            expect(execution.cleanup).toEqual(expect.objectContaining({attempted: expect.any(Boolean), ok: expect.any(Boolean)}));
+            expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null, status: 'running'})]);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'adb' && call.args.at(-1) === 'kill')).toHaveLength(1);
+            expect(fixture.nativeCalls().some(call => call.tool === 'adb' && call.args[0] === 'devices')).toBe(false);
+        } finally {await fixture.dispose();}
+    });
+});

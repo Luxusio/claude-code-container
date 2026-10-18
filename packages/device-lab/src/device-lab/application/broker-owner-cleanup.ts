@@ -1,6 +1,6 @@
 import { recordingCopyPending } from "../domain/broker-recording.js";
 import { cleanupRecord, isPhysicalState, deviceHasRuntimeMetadata, shouldStopOwnerDevice, cleanupFailureCount, ownerCleanupSelection, type PhysicalRecord, type CleanupLeaseGuard, type CleanupOptions, type CleanupDeviceOutcome, type CleanupCommandTarget, type AuxiliaryOutcome, type AuxiliaryCleanup, type CleanupSignal, type CleanupTermination, type CleanupDeviceReport, type CleanupBackendReport, type OwnerCleanupOutcome } from '../domain/broker-owner-cleanup.js';
-import type { BrokerOwnerCleanupPorts } from '../ports/broker-owner-cleanup.js';
+import type { BrokerOwnerCleanupPorts, BrokerOwnerAuxiliaryAsyncPorts } from '../ports/broker-owner-cleanup.js';
 export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: BrokerOwnerCleanupPorts<Handle, Receipt>) {
     function readCurrent(ownerId: string, target: CleanupCommandTarget) {
         return ports.read(ownerId, target.stateKey).find((candidate): candidate is PhysicalRecord => cleanupRecord(candidate) && candidate.id === target.deviceId) || null;
@@ -8,14 +8,19 @@ export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: Brok
     function settledSignal(termination: CleanupTermination): CleanupSignal {
         return {...termination.receipt, ok: termination.ok && termination.ended};
     }
-    function cleanupRecording(recording: PhysicalRecord, stillCurrent: () => boolean): CleanupSignal {
-        if (recordingCopyPending(recording))
-            return {attempted: false, ok: false, reason: 'recording-artifact-copy-pending'};
-        const signal = settledSignal(ports.signalRecording(recording, stillCurrent));
+    function pendingRecordingSignal(recording: PhysicalRecord): CleanupSignal | null {
+        return recordingCopyPending(recording)
+            ? {attempted: false, ok: false, reason: 'recording-artifact-copy-pending'} : null;
+    }
+    function settledRecordingSignal(recording: PhysicalRecord, termination: CleanupTermination): CleanupSignal {
+        const signal = settledSignal(termination);
         return signal.ok && recordingCopyPending({...recording, active: false, stoppedAt: ports.timestamp()})
             ? {...signal, ok: false, reason: 'recording-artifact-copy-pending'} : signal;
     }
-    function inspectAuxiliary(ownerId: string, target: CleanupCommandTarget, expected: unknown) {
+    function cleanupRecording(recording: PhysicalRecord, stillCurrent: () => boolean): CleanupSignal {
+        return pendingRecordingSignal(recording) || settledRecordingSignal(recording, ports.signalRecording(recording, stillCurrent));
+    }
+    function captureAuxiliary(ownerId: string, target: CleanupCommandTarget, expected: unknown) {
         let current = readCurrent(ownerId, target);
         const record = current;
         let stateConflict = !record || !ports.equal(record, expected);
@@ -25,47 +30,77 @@ export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: Brok
             stateConflict = !current || !ports.equal(current, expected);
             return !stateConflict;
         };
-        const appiumSignal = record?.appium != null && stillCurrent()
-            ? settledSignal(ports.terminateAppium(record.appium, stillCurrent)) : null;
         const recording = record?.recording != null
             ? cleanupRecord(record.recording) ? record.recording : {} : null;
-        const recordingSignal = recording && stillCurrent() ? cleanupRecording(recording, stillCurrent) : null;
         const minimizeWatchdog = record && cleanupRecord(record.minimizeWatchdog) ? record.minimizeWatchdog : null;
         const minimizeWatchdogOwned = minimizeWatchdog?.processOwner === 'host-broker'
             && minimizeWatchdog?.startedBy === 'broker.windows-sandbox.minimize-watchdog';
-        const cancellation = minimizeWatchdogOwned && stillCurrent() ? ports.cancelWatchdog(ownerId, target.deviceId) : null;
-        stillCurrent();
-        const appiumCleared = Boolean(appiumSignal?.ok), recordingCleared = Boolean(recordingSignal?.ok), watchdogCleared = Boolean(cancellation?.ok);
-        const changed = (appiumCleared || recordingCleared || watchdogCleared) && !stateConflict;
-        const result: AuxiliaryCleanup = {
-            ok: (!appiumSignal || appiumCleared) && (!recordingSignal || recordingCleared) && (!cancellation || watchdogCleared) && !stateConflict,
-            changed,
-            ...(stateConflict ? {stateConflict: true} : {}),
-            appium: appiumSignal ? {cleared: appiumCleared, signal: appiumSignal} : {cleared: false},
-            recording: recordingSignal ? {cleared: recordingCleared, signal: recordingSignal} : {cleared: false},
-            minimizeWatchdog: cancellation ? {cleared: watchdogCleared, cancellation} : {
-                cleared: false, ...(minimizeWatchdog && !minimizeWatchdogOwned ? {skipped: true, reason: 'not-broker-owned'} : {}),
-            },
-        };
-        const device = changed ? {
-            ...record,
-            ...(appiumCleared ? {appium: null} : {}),
-            ...(recordingCleared ? {recording: null} : {}),
-            ...(watchdogCleared ? {minimizeWatchdog: null} : {}),
-            updatedAt: ports.timestamp(),
-        } : current;
-        return {result, device, changed};
+        const cancelWatchdog = () => minimizeWatchdogOwned && stillCurrent() ? ports.cancelWatchdog(ownerId, target.deviceId) : null;
+        function finish(appiumSignal: CleanupSignal | null, recordingSignal: CleanupSignal | null, cancellation: CleanupSignal | null) {
+            stillCurrent();
+            const appiumCleared = Boolean(appiumSignal?.ok), recordingCleared = Boolean(recordingSignal?.ok), watchdogCleared = Boolean(cancellation?.ok);
+            const changed = (appiumCleared || recordingCleared || watchdogCleared) && !stateConflict;
+            const result: AuxiliaryCleanup = {
+                ok: (!appiumSignal || appiumCleared) && (!recordingSignal || recordingCleared) && (!cancellation || watchdogCleared) && !stateConflict,
+                changed,
+                ...(stateConflict ? {stateConflict: true} : {}),
+                appium: appiumSignal ? {cleared: appiumCleared, signal: appiumSignal} : {cleared: false},
+                recording: recordingSignal ? {cleared: recordingCleared, signal: recordingSignal} : {cleared: false},
+                minimizeWatchdog: cancellation ? {cleared: watchdogCleared, cancellation} : {
+                    cleared: false, ...(minimizeWatchdog && !minimizeWatchdogOwned ? {skipped: true, reason: 'not-broker-owned'} : {}),
+                },
+            };
+            const device = changed ? {
+                ...record,
+                ...(appiumCleared ? {appium: null} : {}),
+                ...(recordingCleared ? {recording: null} : {}),
+                ...(watchdogCleared ? {minimizeWatchdog: null} : {}),
+                updatedAt: ports.timestamp(),
+            } : current;
+            return {result, device, changed};
+        }
+        return {record, recording, stillCurrent, cancelWatchdog, finish};
     }
-    function auxiliary(ownerId: string, parsed: CleanupCommandTarget, expected: unknown): AuxiliaryOutcome {
-        const pending = inspectAuxiliary(ownerId, parsed, expected);
+    function inspectAuxiliary(ownerId: string, target: CleanupCommandTarget, expected: unknown) {
+        const inspection = captureAuxiliary(ownerId, target, expected);
+        const appiumSignal = inspection.record?.appium != null && inspection.stillCurrent()
+            ? settledSignal(ports.terminateAppium(inspection.record.appium, inspection.stillCurrent)) : null;
+        const recordingSignal = inspection.recording && inspection.stillCurrent()
+            ? cleanupRecording(inspection.recording, inspection.stillCurrent) : null;
+        return inspection.finish(appiumSignal, recordingSignal, inspection.cancelWatchdog());
+    }
+    function publishAuxiliary(ownerId: string, target: CleanupCommandTarget, expected: unknown, pending: {result: AuxiliaryCleanup; device: unknown; changed: boolean}): AuxiliaryOutcome {
         if (!pending.changed) return {result: pending.result, device: pending.device, committed: false};
-        const transition = ports.publish(ownerId, parsed.stateKey, parsed.deviceId, expected, pending.device);
+        const transition = ports.publish(ownerId, target.stateKey, target.deviceId, expected, pending.device);
         return {
             result: {...pending.result, ok: pending.result.ok && transition.matched, changed: transition.matched,
                 ...(!transition.matched ? {stateConflict: true} : {})},
             device: transition.device,
             committed: transition.matched,
         };
+    }
+    function auxiliary(ownerId: string, target: CleanupCommandTarget, expected: unknown): AuxiliaryOutcome {
+        return publishAuxiliary(ownerId, target, expected, inspectAuxiliary(ownerId, target, expected));
+    }
+    async function auxiliaryAsync(ownerId: string, target: CleanupCommandTarget, expected: unknown, effects: BrokerOwnerAuxiliaryAsyncPorts): Promise<AuxiliaryOutcome> {
+        const inspection = captureAuxiliary(ownerId, target, expected);
+        let appiumSignal: CleanupSignal | null = null;
+        if (inspection.record?.appium != null && inspection.stillCurrent()) {
+            const termination = await effects.terminateAppium(inspection.record.appium, inspection.stillCurrent);
+            inspection.stillCurrent();
+            appiumSignal = settledSignal(termination);
+        }
+        let recordingSignal: CleanupSignal | null = null;
+        if (inspection.recording && inspection.stillCurrent()) {
+            recordingSignal = pendingRecordingSignal(inspection.recording);
+            if (!recordingSignal) {
+                const termination = await effects.signalRecording(inspection.recording, inspection.stillCurrent);
+                inspection.stillCurrent();
+                recordingSignal = settledRecordingSignal(inspection.recording, termination);
+            }
+        }
+        const pending = inspection.finish(appiumSignal, recordingSignal, inspection.cancelWatchdog());
+        return publishAuxiliary(ownerId, target, expected, pending);
     }
     function cleanupDevice(ownerId: string, stateKey: string, device: unknown, options: CleanupOptions, guard?: CleanupLeaseGuard<Handle>): CleanupDeviceOutcome<Receipt> {
         if (!cleanupRecord(device) || typeof device.id !== 'string' || !device.id)
@@ -218,6 +253,6 @@ export function createBrokerOwnerCleanupApplication<Handle, Receipt>(ports: Brok
         return {kind:'cleaned',ownerId,cleaned:true,stopDevices,detachPhysical,changedDevices,failed,results,authority:'host-broker'};
     }
     return {
-        cleanup, cleanupDevice, auxiliary
+        cleanup, cleanupDevice, auxiliary, auxiliaryAsync
     };
 }

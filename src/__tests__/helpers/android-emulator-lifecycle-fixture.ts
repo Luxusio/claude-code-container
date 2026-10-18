@@ -136,15 +136,15 @@ export type BrokerAndroidTestPorts = BrokerAndroidEmulatorLifecyclePorts<BrokerA
 export function brokerLifecyclePorts(initial: Record<string, unknown> | undefined = undefined) {
     let current = initial, time = 0;
     const trace: string[] = [], publications: unknown[] = [], commands: Array<{ effect: BrokerAndroidTestEffect; timeoutMs: number }> = [];
-    const observeEffect: BrokerAndroidTestPorts["executePrepared"] = (effect, options) => {
+    const observeEffect = (effect: BrokerAndroidTestEffect, options: {timeoutMs: number; outputLimit: number}): Awaited<ReturnType<BrokerAndroidTestPorts["executePrepared"]>> => {
         const provider = effect.action === "create" || effect.action === "delete" ? "avdmanager" : effect.action === "start" ? "emulator" : "adb";
         trace.push("execute:" + provider); commands.push({ effect, timeoutMs: options.timeoutMs });
         return { ok: true, mode: effect.action === "start" ? "detached" : "exec", provider, receipt: { sequence: commands.length } };
     };
     const ports: { -readonly [K in keyof BrokerAndroidTestPorts]: BrokerAndroidTestPorts[K] } = {
         executePrepared: observeEffect,
-        observeStopInventory: (effect, _serial, options) => ({ ...observeEffect(effect, options), available: true, serialPresent: false }),
-        observeBootProbe: (effect, options) => ({ ...observeEffect(effect, options), ready: true }),
+        observeStopInventory: async (effect, _serial, options) => ({ ...await observeEffect(effect, options), available: true, serialPresent: false }),
+        observeBootProbe: async (effect, options) => ({ ...await observeEffect(effect, options), ready: true }),
         metadataObservation: () => ({ ok: true, mode: "noop", provider: "host-broker-state" }),
         prepareStopInventory: () => ({ kind: "ready", effect: { action: "stop-inventory" } }),
         prepareBootProbe: () => ({ kind: "ready", effect: { action: "boot-probe" } }),
@@ -159,7 +159,7 @@ export function brokerLifecyclePorts(initial: Record<string, unknown> | undefine
         ownedAvdName: (name, owner) => name.startsWith("ccc-" + owner + "-"),
         approvedAvdRoot: () => "/owned-avd",
         avdArtifacts: () => [],
-        removeAvdArtifacts: (_name, _owner, _root, verifyInactive) => { trace.push("remove-avd"); if (!verifyInactive()) throw Error("Native liveness unavailable"); return { removed: [] }; },
+        removeAvdArtifacts: async (_name, _owner, _root, verifyInactive) => { trace.push("remove-avd"); if (!await verifyInactive()) throw Error("Native liveness unavailable"); return { removed: [] }; },
         claimDefinition: (_owner, _parsed, device) => { trace.push("claim"); current = device; return { ok: true, device }; },
         cleanupAuxiliary: (_owner, _parsed, expected) => { trace.push("cleanup"); return { committed: false, device: expected, result: { ok: true, changed: false, appium: {}, recording: {}, minimizeWatchdog: {} } }; },
         transition: (_owner, _parsed, expected, replace) => {
@@ -183,4 +183,12 @@ export function brokerLifecyclePorts(initial: Record<string, unknown> | undefine
             plan: { device: plannedDevice, create: parsed.create, preparation: { kind: "ready", mode: command === "device_start" ? "detached" : "exec", provider: command === "device_create" || command === "device_delete" ? "avdmanager" : command === "device_start" ? "emulator" : "adb", effect: { action: command === "device_create" ? "create" : command === "device_start" ? "start" : command === "device_stop" ? "stop" : "delete" } } } };
     };
     return { ports, input, trace, publications, commands, current: () => current, replace: (next: Record<string, unknown> | undefined) => { current = next; } };
+}
+
+/** A held native effect; tests release every gate even when an assertion fails. */
+export function deferredAndroidEffect<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((settle, fail) => { resolve = settle; reject = fail; });
+    return { promise, resolve, reject };
 }

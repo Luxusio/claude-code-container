@@ -13,6 +13,7 @@ import {
     providerCommandSpawn,
     runBrokerBackendChild,
     terminateBrokerSpawnedProcessTree,
+    terminateBrokerSpawnedProcessTreeAsync,
     windowsHiddenVbsLauncherScript,
 } from "@ccc/device-lab/device-lab-broker.js";
 
@@ -40,9 +41,15 @@ vi.mock("@ccc/device-lab/device-lab-process-identity.js", async original => {
         readDeviceRuntimeProcessIdentity: (...args: Parameters<typeof actual.readDeviceRuntimeProcessIdentity>) => backendNative.identity
             ? backendNative.identity(...args)
             : actual.readDeviceRuntimeProcessIdentity(...args),
+        readDeviceRuntimeProcessIdentityAsync: (...args: Parameters<typeof actual.readDeviceRuntimeProcessIdentityAsync>) => backendNative.identity
+            ? Promise.resolve(backendNative.identity(...args))
+            : actual.readDeviceRuntimeProcessIdentityAsync(...args),
         inspectDeviceRuntimeProcessIdentity: (...args: Parameters<typeof actual.inspectDeviceRuntimeProcessIdentity>) => backendNative.inspect
             ? backendNative.inspect(...args)
             : actual.inspectDeviceRuntimeProcessIdentity(...args),
+        inspectDeviceRuntimeProcessIdentityAsync: (...args: Parameters<typeof actual.inspectDeviceRuntimeProcessIdentityAsync>) => backendNative.inspect
+            ? Promise.resolve(backendNative.inspect(...args))
+            : actual.inspectDeviceRuntimeProcessIdentityAsync(...args),
     };
 });
 
@@ -1119,5 +1126,175 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(result.error).toBeUndefined();
         expect(Buffer.byteLength(result.stdout || "")).toBe(outputBytes);
         expect(result.stdout).toBe("\u0000".repeat(outputBytes));
+    });
+});
+
+function brokerNativeGate<T>() {
+    let release!: (value: T) => void;
+    const result = new Promise<T>(resolve => {release = resolve;});
+    return {result, release};
+}
+
+describe('asynchronous broker fallback process-tree cleanup', () => {
+    it.each(['match', 'reused', 'expired'] as const)('awaits exact native identity and rechecks authority after %s observation', async outcome => {
+        const expected = {pid: 778, startToken: 'linux:100', commandHash: 'b'.repeat(64)};
+        const gate = brokerNativeGate<typeof expected>();
+        const kill = vi.fn();
+        let remaining = 200, settled = false;
+        const readIdentity = vi.fn(() => gate.result);
+        const cleanup = terminateBrokerSpawnedProcessTreeAsync(expected.pid, {platform: 'linux', expectedIdentity: expected, requireIdentity: true,
+            readIdentity, remainingMs: () => remaining, kill}).finally(() => {settled = true;});
+        try {
+            await vi.waitFor(() => expect(readIdentity).toHaveBeenCalledOnce());
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false);
+            expect(kill).not.toHaveBeenCalled();
+            if (outcome === 'expired') remaining = 0;
+            gate.release(outcome === 'reused' ? {...expected, startToken: 'linux:101'} : expected);
+            if (outcome === 'match') {
+                expect(await cleanup).toMatchObject({attempted: true, ok: true, pid: expected.pid});
+                expect(kill).toHaveBeenCalledExactlyOnceWith(-expected.pid, 'SIGKILL');
+            } else {
+                expect(await cleanup).toMatchObject({attempted: false, ok: false,
+                    error: outcome === 'reused' ? 'spawned-process-identity-mismatch' : 'spawned-process-identity-unavailable'});
+                expect(kill).not.toHaveBeenCalled();
+            }
+        } finally {gate.release(expected); await cleanup;}
+    });
+
+    it('awaits native Windows tree completion after exact identity and preserves a termination refusal', async () => {
+        const expected = {pid: 654, startToken: 'windows:2026-10-19T00:00:00.0000000Z', commandHash: 'c'.repeat(64)};
+        const gate = brokerNativeGate<{attempted: boolean; ok: boolean; error: string}>();
+        const terminateWindowsTree = vi.fn(() => gate.result);
+        let settled = false;
+        const cleanup = terminateBrokerSpawnedProcessTreeAsync(expected.pid, {platform: 'win32', expectedIdentity: expected, requireIdentity: true,
+            readIdentity: async () => expected, terminateWindowsTree}).finally(() => {settled = true;});
+        try {
+            await vi.waitFor(() => expect(terminateWindowsTree).toHaveBeenCalledExactlyOnceWith(expected.pid));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false);
+            gate.release({attempted: false, ok: false, error: 'native-handle-authority-expired'});
+            expect(await cleanup).toMatchObject({attempted: false, ok: false, platform: 'win32', error: 'native-handle-authority-expired'});
+        } finally {gate.release({attempted: false, ok: false, error: 'fixture-released'}); await cleanup;}
+    });
+
+    it('refuses missing captured identity before any asynchronous native observation', async () => {
+        const readIdentity = vi.fn(), terminateWindowsTree = vi.fn(), kill = vi.fn();
+        expect(await terminateBrokerSpawnedProcessTreeAsync(654, {platform: 'win32', requireIdentity: true, readIdentity, terminateWindowsTree, kill}))
+            .toMatchObject({attempted: false, ok: false, error: 'spawned-process-identity-missing'});
+        expect(readIdentity).not.toHaveBeenCalled();
+        expect(terminateWindowsTree).not.toHaveBeenCalled();
+        expect(kill).not.toHaveBeenCalled();
+    });
+
+    // The real Worker publishes an exact identity into the real shared transport,
+    // then emits both error and exit while the parent's native observation is held.
+    // These are runner-boundary tests, not a claim of native Windows execution.
+    it.runIf(process.platform !== 'win32').each([false, true])('holds runner settlement through Worker error/exit while native cleanup is pending (parent expires=%s)', async expires => {
+        const expected = {pid: 7019, startToken: 'linux:100', commandHash: 'd'.repeat(64)};
+        workerFixture.replacement = `
+            const {workerData} = require('node:worker_threads');
+            const control = new Int32Array(workerData.shared, 0, 4);
+            const identity = Buffer.from(JSON.stringify(${JSON.stringify(expected)}));
+            new Uint8Array(workerData.identityShared).set(identity);
+            Atomics.store(control, 2, ${expected.pid}); Atomics.store(control, 3, identity.length);
+            const failure = Buffer.from(JSON.stringify({error: 'native-primary-failure', outputLimitExceeded: true}));
+            new Uint8Array(workerData.admissionShared, 20).set(failure);
+            Atomics.store(new Int32Array(workerData.admissionShared, 0, 5), 4, failure.length);
+            throw new Error('worker transport failed after native spawn');
+        `;
+        const observation = brokerNativeGate<{status: string}>();
+        let observedOptions: {remainingMs: () => number} | undefined;
+        let remaining = 3000, settled = false, observations = 0;
+        backendNative.inspect = (identity, pid, options) => {
+            observations++;
+            expect(identity).toEqual(expected);
+            expect(pid).toBe(expected.pid);
+            observedOptions = options as {remainingMs: () => number};
+            return observation.result;
+        };
+        const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+        const execution = defaultProviderCommandRunnerAsync({mode: 'exec', provider: 'held-native-cleanup', executable: process.execPath, args: []},
+            {timeoutMs: 2000, wrapperTimeoutMs: 2500, cleanupGraceMs: 50, outputLimit: 32, remainingMs: () => remaining}).finally(() => {settled = true;});
+        try {
+            await vi.waitFor(() => expect(observations).toBe(1));
+            await vi.waitFor(() => expect(workerFixture.workers.at(-1)?.threadId).toBe(-1));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled, 'Worker exit cannot finish an in-flight native cleanup').toBe(false);
+            expect(kill).not.toHaveBeenCalled();
+            expect(observedOptions!.remainingMs()).toBeGreaterThan(0);
+            expect(observedOptions!.remainingMs()).toBeLessThanOrEqual(3000);
+            if (expires) remaining = 0;
+            observation.release({status: 'match'});
+            const result = await execution;
+            expect(result).toMatchObject({status: null, error: 'native-primary-failure', outputLimitExceeded: true,
+                cleanup: {attempted: !expires, ok: !expires, pid: expected.pid}});
+            expect(result.timedOut).not.toBe(true);
+            expect(observations).toBe(1);
+            if (expires) {
+                expect(observedOptions!.remainingMs()).toBe(0);
+                expect(result.cleanup?.error).toBe('spawned-process-identity-unavailable');
+                expect(kill).not.toHaveBeenCalled();
+            } else expect(kill).toHaveBeenCalledExactlyOnceWith(-expected.pid, 'SIGKILL');
+        } finally {observation.release({status: 'match'}); await execution;}
+    });
+
+    it.runIf(process.platform !== 'win32').each([false, true])('waits for late Worker cleanup evidence after unavailable parent identity and qualifies its captured pid (mismatch=%s)', async mismatch => {
+        const expected = {pid: 7029, startToken: 'linux:100', commandHash: 'e'.repeat(64)};
+        workerFixture.replacement = [
+            "const {workerData, parentPort} = require('node:worker_threads');",
+            "const control = new Int32Array(workerData.shared, 0, 4);",
+            "const identity = Buffer.from(JSON.stringify(" + JSON.stringify(expected) + "));",
+            "new Uint8Array(workerData.identityShared).set(identity);",
+            "Atomics.store(control, 2, " + expected.pid + "); Atomics.store(control, 3, identity.length);",
+            "const failure = Buffer.from(JSON.stringify({error: 'native-primary-before-wrapper-expiry', outputLimitExceeded: true}));",
+            "new Uint8Array(workerData.admissionShared, 20).set(failure);",
+            "Atomics.store(new Int32Array(workerData.admissionShared, 0, 5), 4, failure.length);",
+            "parentPort.on('message', message => {",
+            "    if (message?.fixture !== 'publish-cleanup') return;",
+            "    const result = Buffer.from(JSON.stringify({status: null, stdout: '', stderr: '',",
+            "        error: 'late-secondary-worker-error', timedOut: true,",
+            "        cleanup: {attempted: true, ok: true, pid: message.pid, platform: process.platform, signal: 'SIGKILL'}}));",
+            "    new Uint8Array(workerData.shared, 16).set(result);",
+            "    Atomics.store(control, 1, result.length); Atomics.store(control, 0, 1); Atomics.notify(control, 0);",
+            "    parentPort.postMessage({done: true});",
+            "});",
+        ].join('\n');
+        const observation = brokerNativeGate<{status: string}>();
+        let observations = 0, settled = false;
+        backendNative.inspect = (identity, pid) => {
+            observations++;
+            expect(identity).toEqual(expected);
+            expect(pid).toBe(expected.pid);
+            return observation.result;
+        };
+        const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+        const parentDeadlineAt = performance.now() + 3000;
+        const execution = defaultProviderCommandRunnerAsync({mode: 'exec', provider: 'late-worker-cleanup', executable: process.execPath, args: []},
+            {timeoutMs: 2000, wrapperTimeoutMs: 500, cleanupGraceMs: 50, outputLimit: 64,
+                remainingMs: () => Math.max(0, parentDeadlineAt - performance.now())}).finally(() => {settled = true;});
+        const publish = (pid: number) => workerFixture.workers.at(-1)!.postMessage({fixture: 'publish-cleanup', pid});
+        try {
+            await vi.waitFor(() => expect(observations).toBe(1), {timeout: 2000});
+            observation.release({status: 'unavailable'});
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled, 'unavailable parent identity leaves time for the cancelling Worker to publish its cleanup').toBe(false);
+            expect(workerFixture.workers.at(-1)!.threadId).not.toBe(-1);
+            expect(Atomics.load(new Int32Array(workerFixture.data!.shared, 0, 4), 0)).not.toBe(1);
+            expect(kill).not.toHaveBeenCalled();
+            publish(mismatch ? expected.pid + 1 : expected.pid);
+            const result = await execution;
+            expect(result.error).toBe('native-primary-before-wrapper-expiry; device-lab provider wrapper timed out after 500ms');
+            expect(result).toMatchObject({status: null, outputLimitExceeded: true, timedOut: false,
+                cleanup: {pid: expected.pid, platform: process.platform, signal: 'SIGKILL', ok: !mismatch}});
+            if (mismatch) expect(result.cleanup).toMatchObject({attempted: false, error: 'spawned-process-identity-unavailable'});
+            else expect(result.cleanup).toMatchObject({attempted: true, ok: true});
+            expect(observations).toBe(1);
+            expect(kill).not.toHaveBeenCalled();
+        } finally {
+            observation.release({status: 'unavailable'});
+            publish(expected.pid);
+            await execution;
+        }
     });
 });

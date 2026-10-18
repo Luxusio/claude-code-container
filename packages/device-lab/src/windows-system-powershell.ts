@@ -1,5 +1,5 @@
-import { spawnSync } from "child_process";
-import { lstatSync, realpathSync } from "fs";
+import { execFile, spawnSync } from "child_process";
+import { lstatSync, promises as fs, realpathSync } from "fs";
 import { dirname, join, resolve } from "path";
 
 const WINDOWS_SYSTEM32_PATH = "\\\\?\\GLOBALROOT\\SystemRoot\\System32";
@@ -10,23 +10,42 @@ export function spawnableWindowsExecutablePath(path: string): string | null {
     return null;
 }
 
-function assertPlainDirectoryPath(path: string): void {
+function directoryParents(path: string): string[] {
+    const parents: string[] = [];
     let current = resolve(path);
     while (true) {
-        const metadata = lstatSync(current);
-        if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("windows-system-directory-invalid");
+        parents.push(current);
         const parent = dirname(current);
-        if (parent === current) return;
+        if (parent === current) return parents;
         current = parent;
     }
 }
 
-export function canonicalWindowsSystemExecutablePath(relativePath: string, testSystemRoot?: string): string | null {
+function assertPlainDirectoryPath(path: string): void {
+    for (const current of directoryParents(path)) {
+        const metadata = lstatSync(current);
+        if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("windows-system-directory-invalid");
+    }
+}
+
+async function assertPlainDirectoryPathAsync(path: string): Promise<void> {
+    for (const current of directoryParents(path)) {
+        const metadata = await fs.lstat(current);
+        if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("windows-system-directory-invalid");
+    }
+}
+
+function windowsExecutableCandidate(relativePath: string, testSystemRoot?: string): string | null {
     const segments = relativePath.split(/[\\/]+/).filter(Boolean);
     if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) return null;
-    const candidate = testSystemRoot
+    return testSystemRoot
         ? join(resolve(testSystemRoot), "System32", ...segments)
         : join(WINDOWS_SYSTEM32_PATH, ...segments);
+}
+
+export function canonicalWindowsSystemExecutablePath(relativePath: string, testSystemRoot?: string): string | null {
+    const candidate = windowsExecutableCandidate(relativePath, testSystemRoot);
+    if (!candidate) return null;
     try {
         // path.resolve() cannot preserve the GLOBALROOT device alias while
         // walking its parents. Resolve that trusted alias to its ordinary
@@ -46,8 +65,30 @@ export function canonicalWindowsSystemExecutablePath(relativePath: string, testS
     }
 }
 
+export async function canonicalWindowsSystemExecutablePathAsync(relativePath: string, testSystemRoot?: string): Promise<string | null> {
+    const candidate = windowsExecutableCandidate(relativePath, testSystemRoot);
+    if (!candidate) return null;
+    try {
+        if (testSystemRoot) await assertPlainDirectoryPathAsync(dirname(candidate));
+        const source = await fs.lstat(candidate);
+        if (!source.isFile() || source.isSymbolicLink()) return null;
+        const resolved = await fs.realpath(candidate);
+        const executable = testSystemRoot ? resolved : spawnableWindowsExecutablePath(resolved);
+        if (!executable) return null;
+        await assertPlainDirectoryPathAsync(dirname(executable));
+        const target = await fs.lstat(executable);
+        return target.isFile() && !target.isSymbolicLink() ? executable : null;
+    } catch {
+        return null;
+    }
+}
+
 export function canonicalWindowsPowerShellPath(testSystemRoot?: string): string | null {
     return canonicalWindowsSystemExecutablePath("WindowsPowerShell/v1.0/powershell.exe", testSystemRoot);
+}
+
+export function canonicalWindowsPowerShellPathAsync(testSystemRoot?: string): Promise<string | null> {
+    return canonicalWindowsSystemExecutablePathAsync("WindowsPowerShell/v1.0/powershell.exe", testSystemRoot);
 }
 
 
@@ -132,37 +173,35 @@ export function windowsHandleBoundTerminationScript(): string {
     ].join("; ");
 }
 
-export function terminateWindowsProcessByStartToken(
-    pid: number,
-    expectedStartToken: string,
-    timeoutMs = 10_000,
-    powershellPath = canonicalWindowsPowerShellPath(),
-    remainingMs?: () => number,
-): {
+type WindowsTerminationResult = {
     ok: boolean;
     pid: number;
     status?: number | null;
     method?: string;
     reason?: string;
     error?: string;
-} {
-    if (!Number.isInteger(pid) || pid <= 0 || !expectedStartToken.startsWith("windows:") || !powershellPath) {
-        return { ok: false, pid, reason: "windows-process-identity-unavailable" };
-    }
-    const script = windowsHandleBoundTerminationScript();
+};
+
+type WindowsTerminationNativeResult = { status: number | null; stderr?: string; error?: { message?: string } };
+
+function windowsTerminationTimeouts(timeoutMs: number, remainingMs?: () => number) {
     let outerTimeoutMs = Math.max(1000, timeoutMs + 1000);
     let waitTimeoutMs = Math.max(1, timeoutMs);
     if (remainingMs) {
         const remaining = remainingMs();
         if (!Number.isFinite(remaining) || remaining < 1) {
-            return { ok: false, pid, reason: "process-termination-timeout" };
+            return null;
         }
         outerTimeoutMs = Math.min(Math.floor(remaining), Math.floor(outerTimeoutMs));
         waitTimeoutMs = Math.min(Math.floor(remaining), Math.floor(waitTimeoutMs));
     }
-    const result = spawnSync(powershellPath, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
-        encoding: "utf8",
-        windowsHide: true,
+    return { outerTimeoutMs, waitTimeoutMs };
+}
+
+function windowsTerminationOptions(pid: number, expectedStartToken: string, outerTimeoutMs: number, waitTimeoutMs: number) {
+    return {
+        encoding: "utf8" as const,
+        windowsHide: true as const,
         timeout: outerTimeoutMs,
         env: {
             ...process.env,
@@ -170,7 +209,10 @@ export function terminateWindowsProcessByStartToken(
             CCC_WINDOWS_TERMINATE_START_TOKEN: expectedStartToken,
             CCC_WINDOWS_TERMINATE_TIMEOUT_MS: String(waitTimeoutMs),
         },
-    });
+    };
+}
+
+function windowsTerminationResult(pid: number, result: WindowsTerminationNativeResult, remainingMs?: () => number): WindowsTerminationResult {
     let expired = false;
     if (result.status === 0 && remainingMs) {
         const remaining = remainingMs();
@@ -187,4 +229,52 @@ export function terminateWindowsProcessByStartToken(
             error: String(result.stderr || result.error?.message || "").trim() || undefined,
         }),
     };
+}
+
+export function terminateWindowsProcessByStartToken(
+    pid: number,
+    expectedStartToken: string,
+    timeoutMs = 10_000,
+    powershellPath = canonicalWindowsPowerShellPath(),
+    remainingMs?: () => number,
+): WindowsTerminationResult {
+    if (!Number.isInteger(pid) || pid <= 0 || !expectedStartToken.startsWith("windows:") || !powershellPath) {
+        return { ok: false, pid, reason: "windows-process-identity-unavailable" };
+    }
+    const timeouts = windowsTerminationTimeouts(timeoutMs, remainingMs);
+    if (!timeouts) return { ok: false, pid, reason: "process-termination-timeout" };
+    const result = spawnSync(powershellPath,
+        hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", windowsHandleBoundTerminationScript()]),
+        windowsTerminationOptions(pid, expectedStartToken, timeouts.outerTimeoutMs, timeouts.waitTimeoutMs));
+    return windowsTerminationResult(pid, result, remainingMs);
+}
+
+export async function terminateWindowsProcessByStartTokenAsync(
+    pid: number,
+    expectedStartToken: string,
+    timeoutMs = 10_000,
+    powershellPath?: string | null,
+    remainingMs?: () => number,
+): Promise<WindowsTerminationResult> {
+    if (!Number.isInteger(pid) || pid <= 0 || !expectedStartToken.startsWith("windows:") || powershellPath === null || powershellPath === "") {
+        return { ok: false, pid, reason: "windows-process-identity-unavailable" };
+    }
+    if (powershellPath === undefined && remainingMs && !windowsTerminationTimeouts(timeoutMs, remainingMs)) {
+        return { ok: false, pid, reason: "process-termination-timeout" };
+    }
+    const executable = powershellPath === undefined ? await canonicalWindowsPowerShellPathAsync() : powershellPath;
+    if (!executable) return { ok: false, pid, reason: "windows-process-identity-unavailable" };
+    const timeouts = windowsTerminationTimeouts(timeoutMs, remainingMs);
+    if (!timeouts) return { ok: false, pid, reason: "process-termination-timeout" };
+    const result = await new Promise<WindowsTerminationNativeResult>((resolve) => {
+        execFile(executable,
+            hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", windowsHandleBoundTerminationScript()]),
+            windowsTerminationOptions(pid, expectedStartToken, timeouts.outerTimeoutMs, timeouts.waitTimeoutMs),
+            (error, _stdout, stderr) => resolve({
+                status: error ? typeof error.code === "number" ? error.code : null : 0,
+                stderr,
+                ...(error ? { error } : {}),
+            }));
+    });
+    return windowsTerminationResult(pid, result, remainingMs);
 }

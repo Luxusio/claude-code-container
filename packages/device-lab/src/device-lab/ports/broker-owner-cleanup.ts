@@ -1,4 +1,8 @@
 import type { PhysicalRecord, CleanupSignal, CleanupTermination, CleanupPublication, CleanupLeaseGuard, CleanupLeaseResult, CleanupRollback, CleanupCommandTarget, CleanupStopOutcome } from '../domain/broker-owner-cleanup.js';
+export interface BrokerOwnerAuxiliaryAsyncPorts {
+    terminateAppium(runtime: unknown, stillCurrent: () => boolean): CleanupTermination | PromiseLike<CleanupTermination>;
+    signalRecording(runtime: PhysicalRecord, stillCurrent: () => boolean): CleanupTermination | PromiseLike<CleanupTermination>;
+}
 export interface BrokerOwnerCleanupPorts<Handle, Receipt> {
     stateKeys: readonly string[];
     backendAliases: ReadonlyMap<string, string>;

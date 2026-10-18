@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { deferredAndroidEffect } from "../helpers/android-emulator-lifecycle-fixture.js";
 import { createBrokerDeviceStatus, createBrokerService } from "@ccc/device-lab/device-lab/application/broker-observation-status.js";
 import type { BrokerDeviceStatusPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
 import type { DeviceStatusExecution, DeviceStatusRequest } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
@@ -30,10 +31,48 @@ function deviceStatusFixture(backend = "android-emulator") {
         stateFailure: () => ({ reason: "conflict", error: "owner-device-state-read-failed" }), errorCode: (_error, fallback) => fallback,
         withHostLock: async (_deadline, operation) => operation(), lockTimedOut: () => false,
     };
-    return { request, device, ports, vmExecution };
+    return { request, device, connection, ports, vmExecution };
 }
 
 describe("broker device status", () => {
+    it("awaits a native thenable before projecting Android status and retains the exact execution receipt", async () => {
+        const f = deviceStatusFixture(), observed = deferredAndroidEffect<DeviceStatusExecution<object>>();
+        const receipt = { status: 0, stdout: "device\n", native: { token: "original" } };
+        const execution: DeviceStatusExecution<object> = { ok: true, mode: "exec", provider: "adb", adbState: "device", vm: null, receipt };
+        let projections = 0, settled = false;
+        f.ports.timestamp = () => { projections++; return "deferred-observation-timestamp"; };
+        f.ports.observe = connection => {
+            expect(connection).toBe(f.connection);
+            const thenable: PromiseLike<DeviceStatusExecution<object>> = { then: (fulfilled, rejected) => observed.promise.then(fulfilled, rejected) };
+            return thenable;
+        };
+        const pending = createBrokerDeviceStatus(f.ports).execute("owner", f.request, {}).then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false); expect(projections).toBe(0); expect(f.device.status).toBe("stopped");
+            observed.resolve(execution);
+            const result = await pending;
+            expect(result).toMatchObject({ kind: "observed", device: { status: "running", runtimeState: "running", readiness: { state: "ready", provider: "adb" } } });
+            expect(result.kind === "observed" ? result.execution : null).toBe(execution);
+            expect(result.kind === "observed" ? result.execution.receipt : null).toBe(receipt);
+            expect(projections).toBe(0); expect(f.device.status).toBe("stopped");
+        } finally { observed.resolve(execution); }
+    });
+
+    it("preserves a rejected Android native observation without projecting success", async () => {
+        const f = deviceStatusFixture(), observed = deferredAndroidEffect<DeviceStatusExecution<object>>(), nativeFailure = new Error("native status unavailable");
+        let projections = 0;
+        f.ports.observe = () => observed.promise;
+        void observed.promise.catch(() => undefined);
+        f.ports.timestamp = () => { projections++; return "must-not-project"; };
+        const pending = createBrokerDeviceStatus(f.ports).execute("owner", f.request, {});
+        const rejected = expect(pending).rejects.toBe(nativeFailure);
+        observed.reject(nativeFailure);
+        await rejected;
+        expect(projections).toBe(0); expect(f.device.status).toBe("stopped");
+    });
+
     it("does not tolerate an absent physical ADB target as a stopped emulator", async () => {
         const f = deviceStatusFixture("android-device");
         f.ports.observe = () => ({ mode: "exec", provider: "adb", ok: false, adbState: null, vm: null, receipt: { status: 1, stdout: "", stderr: "target absent" } });

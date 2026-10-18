@@ -16,33 +16,33 @@ export type BrokerAndroidCreatePortAllocation =
 
 export interface BrokerAndroidCreatePortAllocationPorts {
     readonly previewAllocation: (ownerId: string, parsed: BrokerAndroidLifecycleRequest, additionalUsedPorts?: Iterable<number>) => BrokerAndroidCreatePortAllocation;
-    readonly livePorts: () => BrokerAndroidLivePorts;
+    readonly livePorts: () => BrokerAndroidLivePorts | PromiseLike<BrokerAndroidLivePorts>;
 }
 
 export type {BrokerAndroidAuxiliaryCleanup} from "../../domain/lifecycle/android-emulator-lifecycle.js";
 
-/** Each port performs a native step; lifecycle ordering belongs to the application. */
+/** Native effects settle before the next lifecycle step; preparation and publication stay synchronous. */
 export interface BrokerAndroidEmulatorLifecyclePorts<Effect, Receipt> {
-    readonly executePrepared: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidProviderResult<Receipt>;
-    readonly observeStopInventory: (effect: Effect, serial: string, options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidStopInventoryObservation<Receipt>;
-    readonly observeBootProbe: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidBootProbeObservation<Receipt>;
-    readonly metadataObservation: (purpose: "create" | "delete-artifacts" | "delete-metadata", options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidProviderResult<Receipt>;
+    readonly executePrepared: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidProviderResult<Receipt> | PromiseLike<BrokerAndroidProviderResult<Receipt>>;
+    readonly observeStopInventory: (effect: Effect, serial: string, options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidStopInventoryObservation<Receipt> | PromiseLike<BrokerAndroidStopInventoryObservation<Receipt>>;
+    readonly observeBootProbe: (effect: Effect, options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidBootProbeObservation<Receipt> | PromiseLike<BrokerAndroidBootProbeObservation<Receipt>>;
+    readonly metadataObservation: (purpose: "create" | "delete-artifacts" | "delete-metadata", options: {timeoutMs: number; outputLimit: number}) => BrokerAndroidProviderResult<Receipt> | PromiseLike<BrokerAndroidProviderResult<Receipt>>;
     readonly prepareStopInventory: () => {kind: "ready"; effect: Effect} | {kind: "unavailable"};
     readonly prepareBootProbe: (serial: string | null) => {kind: "ready"; effect: Effect} | {kind: "unavailable"; observation: BrokerAndroidProviderResult<Receipt>};
     readonly now: () => number;
-    readonly sleep: (milliseconds: number) => undefined;
+    readonly sleep: (milliseconds: number) => undefined | PromiseLike<void>;
     readonly timestamp: () => string;
     readonly avdHome: () => string;
     readonly validPort: (port: unknown) => boolean;
-    readonly livePorts: () => BrokerAndroidLivePorts;
-    readonly liveAvds: () => BrokerAndroidLiveAvds;
-    readonly avdProcesses: (name: string, timeoutMs?: number, registeredName?: boolean) => BrokerAndroidAvdProcesses;
+    readonly livePorts: () => BrokerAndroidLivePorts | PromiseLike<BrokerAndroidLivePorts>;
+    readonly liveAvds: () => BrokerAndroidLiveAvds | PromiseLike<BrokerAndroidLiveAvds>;
+    readonly avdProcesses: (name: string, timeoutMs?: number, registeredName?: boolean) => BrokerAndroidAvdProcesses | PromiseLike<BrokerAndroidAvdProcesses>;
     readonly ownedAvdName: (name: string, ownerId: string) => boolean;
     readonly approvedAvdRoot: (recordedRoot: unknown) => string | null;
-    readonly avdArtifacts: (ownerId: string, root: string) => { name: string }[];
-    readonly removeAvdArtifacts: (name: string, ownerId: string, root: string, verifyInactive: () => boolean) => { removed: unknown };
+    readonly avdArtifacts: (ownerId: string, root: string) => { name: string }[] | PromiseLike<{ name: string }[]>;
+    readonly removeAvdArtifacts: (name: string, ownerId: string, root: string, verifyInactive: () => boolean | PromiseLike<boolean>) => { removed: unknown } | PromiseLike<{ removed: unknown }>;
     readonly claimDefinition: (ownerId: string, parsed: BrokerAndroidLifecycleRequest, device: Record<string, unknown>) => BrokerAndroidClaim;
-    readonly cleanupAuxiliary: (ownerId: string, parsed: BrokerAndroidLifecycleRequest, expectedDevice: unknown) => BrokerAndroidAuxiliaryCleanup;
+    readonly cleanupAuxiliary: (ownerId: string, parsed: BrokerAndroidLifecycleRequest, expectedDevice: unknown) => BrokerAndroidAuxiliaryCleanup | PromiseLike<BrokerAndroidAuxiliaryCleanup>;
     readonly transition: (ownerId: string, parsed: BrokerAndroidLifecycleRequest, expectedDevice: unknown, replace: (current: Record<string, unknown>) => unknown) => BrokerAndroidPublication;
     readonly stateErrorCode: (error: unknown) => string | null;
     readonly commandTimeoutMs: number;
