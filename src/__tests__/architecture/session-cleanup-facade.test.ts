@@ -334,14 +334,33 @@ describe("native session cleanup through the public facade", () => {
         expect(effects.spawn).toHaveBeenLastCalledWith("later-runtime", ["stop", "captured-id"], stopOptions);
     });
 
-    it("registers exactly three once callbacks on every setup without changing real listeners", () => {
+    it("repeated signal setup replaces only its owned registrations and preserves foreign listeners", () => {
         const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
         const before = signals.map(signal => process.listeners(signal));
-        const once = vi.spyOn(process, "once").mockImplementation(() => process);
-        session.setupSignalHandlers(); session.setupSignalHandlers();
-        expect(once.mock.calls.map(([signal]) => signal)).toEqual(["SIGINT", "SIGTERM", "SIGHUP", "SIGINT", "SIGTERM", "SIGHUP"]);
-        for (const [, callback] of once.mock.calls) expect(callback).toEqual(expect.any(Function));
-        expect(signals.map(signal => process.listeners(signal))).toEqual(before);
+        const foreign = vi.fn();
+        for (const signal of signals) process.on(signal, foreign);
+        const withForeign = signals.map(signal => process.listeners(signal));
+        try {
+            session.setupSignalHandlers();
+            const first = signals.map((signal, index) => process.listeners(signal).filter(listener => !withForeign[index]!.includes(listener)));
+            expect(first.map(listeners => listeners.length)).toEqual([1, 1, 1]);
+            session.setupSignalHandlers();
+            for (const [index, signal] of signals.entries()) {
+                const current = process.listeners(signal);
+                expect(current).toHaveLength(withForeign[index]!.length + 1);
+                for (const listener of withForeign[index]!) expect(current).toContain(listener);
+                expect(current).not.toContain(first[index]![0]);
+            }
+            session.clearSession();
+            expect(signals.map(signal => process.listeners(signal))).toEqual(withForeign);
+            expect(foreign).not.toHaveBeenCalled();
+        } finally {
+            for (const [index, signal] of signals.entries()) {
+                for (const listener of process.listeners(signal)) {
+                    if (!before[index]!.includes(listener)) process.removeListener(signal, listener);
+                }
+            }
+        }
     });
 
     it.each(["SIGINT", "SIGTERM", "SIGHUP"])("runs cleanup before exit(0) for intercepted %s", signal => {
@@ -420,6 +439,109 @@ describe("host ownership acquisition through the facade", () => {
         session.clearSession(); vi.restoreAllMocks();
     });
 
+    it("releases real signal registrations across eleven consecutive acquisition and cleanup cycles", async () => {
+        vi.mocked(process.once).mockRestore();
+        const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+        const before = signals.map(signal => process.listeners(signal));
+        const activeCounts: number[][] = [];
+        const completedCounts: number[][] = [];
+        try {
+            for (let index = 0; index < 11; index++) {
+                await session.acquireHostSessionOwnership(request, () => ({
+                    known: true, containerId: `reused-id-${index}`, runtime: "docker",
+                }));
+                activeCounts.push(signals.map(signal => process.listenerCount(signal)));
+                session.cleanupSession();
+                completedCounts.push(signals.map(signal => process.listenerCount(signal)));
+            }
+            expect(activeCounts).toEqual(Array.from({ length: 11 }, () => before.map(listeners => listeners.length + 1)));
+            expect(completedCounts).toEqual(Array.from({ length: 11 }, () => before.map(listeners => listeners.length)));
+            expect(signals.map(signal => process.listeners(signal))).toEqual(before);
+            expect(effects.unlink).toHaveBeenCalledTimes(11);
+            expect(release).toHaveBeenCalledTimes(11);
+            expect(effects.spawn).not.toHaveBeenCalled();
+        } finally {
+            for (const [index, signal] of signals.entries()) {
+                for (const listener of process.listeners(signal)) {
+                    if (!before[index]!.includes(listener)) process.removeListener(signal, listener);
+                }
+            }
+        }
+    });
+
+    it("keeps real signal registrations through pending ACK and removes them after complete rollback", async () => {
+        vi.mocked(process.once).mockRestore();
+        const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+        const before = signals.map(signal => process.listeners(signal));
+        const failure = new Error("pending ACK rejected");
+        let rejectAck!: (error: Error) => void;
+        const pendingAck = new Promise<void>((_resolve, reject) => { rejectAck = reject; });
+        update.mockImplementationOnce(() => pendingAck);
+        const acquisition = session.acquireHostSessionOwnership(request, () => ({
+            known: true, containerId: "unacknowledged-id", runtime: "docker",
+        }));
+        const outcome = acquisition.then(() => undefined, error => error);
+        try {
+            await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("unacknowledged-id", "docker", false));
+            for (const [index, signal] of signals.entries()) {
+                const current = process.listeners(signal);
+                expect(current).toHaveLength(before[index]!.length + 1);
+                for (const listener of before[index]!) expect(current).toContain(listener);
+            }
+            expect(effects.rollback).not.toHaveBeenCalled();
+            expect(release).not.toHaveBeenCalled();
+            rejectAck(failure);
+            expect(await outcome).toBe(failure);
+            expect(effects.rollback).toHaveBeenCalledExactlyOnceWith(effects.capture.mock.results[0].value);
+            expect(release).toHaveBeenCalledTimes(1);
+            expect(session.getCurrentSession()).toEqual(emptyContext);
+            expect(signals.map(signal => process.listeners(signal))).toEqual(before);
+        } finally {
+            rejectAck(failure);
+            await outcome;
+            for (const [index, signal] of signals.entries()) {
+                for (const listener of process.listeners(signal)) {
+                    if (!before[index]!.includes(listener)) process.removeListener(signal, listener);
+                }
+            }
+        }
+    });
+
+    it("retains the same real signal registrations after failed cleanup until successful retry", async () => {
+        vi.mocked(process.once).mockRestore();
+        const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+        const before = signals.map(signal => process.listeners(signal));
+        try {
+            const acquired = await session.acquireHostSessionOwnership(request, () => ({
+                known: true, containerId: "retry-exact-id", runtime: "docker",
+            }));
+            session.setSessionCleanupEnabled(true);
+            await session.confirmSessionOwnership();
+            const active = signals.map(signal => process.listeners(signal));
+            expect(active.map(listeners => listeners.length)).toEqual(before.map(listeners => listeners.length + 1));
+            effects.spawn.mockReturnValueOnce({ status: 9 }).mockReturnValue({ status: 0 });
+            expect(() => session.cleanupSession()).toThrow("Container shutdown failed");
+            expect(session.getCurrentSession().lockFile).toBe(acquired.lockFile);
+            expect(signals.map(signal => process.listeners(signal))).toEqual(active);
+            expect(effects.unlink).not.toHaveBeenCalled();
+            expect(release).not.toHaveBeenCalled();
+            session.cleanupSession();
+            expect(signals.map(signal => process.listeners(signal))).toEqual(before);
+            expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(acquired.lockFile);
+            expect(release).toHaveBeenCalledTimes(1);
+            expect(effects.spawn.mock.calls).toEqual([
+                ["docker", ["stop", "retry-exact-id"], stopOptions],
+                ["docker", ["stop", "retry-exact-id"], stopOptions],
+            ]);
+        } finally {
+            for (const [index, signal] of signals.entries()) {
+                for (const listener of process.listeners(signal)) {
+                    if (!before[index]!.includes(listener)) process.removeListener(signal, listener);
+                }
+            }
+        }
+    });
+
     it.each(["inspection", "READY", "ACK"] as const)("registered signals share one completion while %s and guard release are pending", async stage => {
         const once = vi.mocked(process.once);
         const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as () => never);
@@ -444,10 +566,10 @@ describe("host ownership acquisition through the facade", () => {
             return { known: true, containerId: "captured-exact-id", runtime: "docker" as const };
         };
         session.setupSignalHandlers();
-        const callbacks = ["SIGINT", "SIGTERM", "SIGHUP"].map(signal => once.mock.calls.find(([registered]) => registered === signal)![1]);
         const acquisition = session.acquireHostSessionOwnership(request, inspect);
         const rejected = expect(acquisition).rejects.toThrow("cancelled");
         await vi.waitFor(() => expect(entered).toBe(true));
+        const callbacks = ["SIGINT", "SIGTERM", "SIGHUP"].map(signal => [...once.mock.calls].reverse().find(([registered]) => registered === signal)![1]);
         for (const callback of [...callbacks, callbacks[0]]) expect(() => callback()).not.toThrow();
         expect(exit).not.toHaveBeenCalled();
         expect(effects.rollback).not.toHaveBeenCalled();
@@ -489,7 +611,7 @@ describe("host ownership acquisition through the facade", () => {
         const rejected = expect(acquisition).rejects.toBeInstanceOf(AggregateError);
         await vi.waitFor(() => expect(effects.capture).toHaveBeenCalledTimes(1));
         for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-            expect(() => once.mock.calls.find(([name]) => name === signal)![1]()).not.toThrow();
+            expect(() => [...once.mock.calls].reverse().find(([name]) => name === signal)![1]()).not.toThrow();
         }
         inspectDone();
         await rejected;
@@ -528,7 +650,7 @@ describe("host ownership acquisition through the facade", () => {
         // produce an unhandled rejection while the signal completion settles.
         const outcome = acquisition.then(() => { throw new Error("Expected interrupted acquisition failure"); }, error => error);
         await vi.waitFor(() => expect(entered).toBe(true));
-        expect(() => once.mock.calls.find(([signal]) => signal === "SIGTERM")![1]()).not.toThrow();
+        expect(() => [...once.mock.calls].reverse().find(([signal]) => signal === "SIGTERM")![1]()).not.toThrow();
         expect(exit).not.toHaveBeenCalled();
         continueStage();
         const rejected = await outcome;

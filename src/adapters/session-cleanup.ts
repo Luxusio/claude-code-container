@@ -40,14 +40,20 @@ export function stopNativeSessionContainer(readContainerId: () => string | null)
     }
 }
 
-export function setupNativeSessionCleanupSignals(cleanupSession: () => void | Promise<void>): void {
+export function setupNativeSessionCleanupSignals(cleanupSession: () => void | Promise<void>): () => void {
     let completion: Promise<void> | null = null;
     let finished = false;
+    let disposed = false;
     const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
     const handlers = new Map<NodeJS.Signals, () => void>();
+    const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+    };
     const exit = () => {
         finished = true;
-        for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+        dispose();
         process.exit(process.exitCode ?? 0);
     };
     const fail = (error: unknown) => {
@@ -57,7 +63,7 @@ export function setupNativeSessionCleanupSignals(cleanupSession: () => void | Pr
         exit();
     };
     const cleanup = (signal: NodeJS.Signals) => {
-        if (finished) return;
+        if (finished || disposed) return;
         if (completion) {
             process.once(signal, handlers.get(signal)!);
             return;
@@ -66,7 +72,7 @@ export function setupNativeSessionCleanupSignals(cleanupSession: () => void | Pr
         try { result = cleanupSession(); }
         catch (error) { return fail(error); }
         if (!result) return exit();
-        process.once(signal, handlers.get(signal)!);
+        if (!disposed) process.once(signal, handlers.get(signal)!);
         completion = result.then(exit, fail);
     };
 
@@ -75,4 +81,5 @@ export function setupNativeSessionCleanupSignals(cleanupSession: () => void | Pr
         handlers.set(signal, handler);
         process.once(signal, handler);
     }
+    return dispose;
 }

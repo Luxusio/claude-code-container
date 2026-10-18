@@ -80,6 +80,7 @@ let pendingOwnershipUpdate: Promise<void> = Promise.resolve();
 let capturedContainerId: string | null = null;
 let sessionCleanupEnabled = true;
 let cleanupAuthorizationVersion = 0;
+let disposeSessionCleanupSignals: (() => void) | null = null;
 
 function ownershipFailed(error: Error): void {
     if (acquiringOwnership) { acquisitionFailure = error; return; }
@@ -137,6 +138,7 @@ export async function acquireHostSessionOwnership(
     acquisitionCancellation = null;
     let settleAcquisition!: (outcome: AcquisitionOutcome) => void;
     let acquisitionOutcome: AcquisitionOutcome = { kind: "completed" };
+    let acquisitionRolledBack = false;
     acquisitionSettled = new Promise<AcquisitionOutcome>((resolve) => { settleAcquisition = resolve; });
     const checkCancelled = () => {
         if (acquisitionCancellation) throw acquisitionCancellation;
@@ -194,6 +196,7 @@ export async function acquireHostSessionOwnership(
                 sessionCleanupEnabled = true;
                 cleanupAuthorizationVersion++;
                 if (previous) await previous.release();
+                acquisitionRolledBack = true;
             },
         }).run(request, checkCancelled);
         if (acquisitionFailure) throw acquisitionFailure;
@@ -208,6 +211,7 @@ export async function acquireHostSessionOwnership(
         acquiringOwnership = false;
         acquisitionFailure = null;
         acquisitionCancellation = null;
+        if (acquisitionRolledBack) disposeSessionCleanupSignals?.();
         settleAcquisition(acquisitionOutcome);
     }
 }
@@ -283,6 +287,7 @@ export function clearSession(): void {
     cleanupAuthorizationVersion++;
     ownershipAuthorization = null;
     capturedOwnership = null;
+    disposeSessionCleanupSignals?.();
 }
 
 export function createSessionLock(projectId: string, profile?: string): string {
@@ -387,13 +392,15 @@ export function cleanupSession(): void {
         cleanupAuthorizationVersion++;
         ownershipAuthorization = null;
         capturedOwnership = null;
+        disposeSessionCleanupSignals?.();
         if (previous) void previous.release().catch(() => undefined);
     }
 }
 
 // Setup signal handlers for cleanup
 export function setupSignalHandlers(): void {
-    setupNativeSessionCleanupSignals(() => {
+    disposeSessionCleanupSignals?.();
+    disposeSessionCleanupSignals = setupNativeSessionCleanupSignals(() => {
         if (!acquiringOwnership) return cleanupSession();
         acquisitionCancellation ??= new Error("Host session ownership acquisition cancelled by signal.");
         return acquisitionSettled.then((outcome) => {

@@ -10,6 +10,8 @@ Command finalization keeps configuration restore, prepared-command disposal, the
 
 Each newly admitted native acquisition initializes a fresh cleanup lifetime before binding its reserved session. After one invocation is cleaned, a subsequent acquisition must remove its own claim and release its own handle without requiring caller-side context clearing. The existing low-level setSession/clearSession and failed-cleanup retry contracts remain unchanged.
 
+Native signal registrations belong to that same lifetime. Successful cleanup or complete acquisition rollback removes only the invocation's registrations; unrelated listeners remain intact. Pending acquisition and retryable cleanup failure retain interruption handling. Repeated setup replaces the prior owned registration, and asynchronous signal cleanup still settles before controlled exit. Consecutive invocations must not accumulate process listeners.
+
 A caller can catch a startup rejection without a CLI error boundary and still observe this cleanup attempt. Successful native cleanup removes only its owned claim; a defensive repeated CLI cleanup is inert. Failed cleanup preserves the existing retry obligation and is reported alongside the original failure. No automatic retry or unconditional stop is added.
 
 ## Verification
