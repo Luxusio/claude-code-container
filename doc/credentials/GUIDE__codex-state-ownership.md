@@ -99,6 +99,18 @@ pure policy and the real platform no-op. Code authorship and a Linux pass do not
 establish Windows acceptance. This extraction's current review and QA status
 lives in the progress overlay and WBS.
 
+On 2026-10-18, the existing reserved Hyper-V guest qualified the outstanding
+125 actual-Windows cases: 110 facade and 15 credential cases. The current literal
+whole-eight run passed239 with48 existing platform/Python skips; the materialized
+emitted-three run passed137 with1 non-Windows skip. The repeated native cases
+count once. Fresh strict producers passed; the materialized CLI help, version and
+invalid-runtime exits were0/0/1. Source, dependencies and emitted outputs
+authenticated, and all known owned processes exited. The earlier interrupted
+whole17 remains unqualified. Exact scoped evidence is recorded under
+`currentWindowsRecoveryQualification20261018` in the progress overlay. These
+fixtures use synthetic native-effect bindings; they prove Windows dispatch and
+recovery policy, not live host credential/ACL repair or macOS behavior.
+
 ## Known ceiling
 
 Portable tests and private Python fixtures do not prove live Docker or Podman

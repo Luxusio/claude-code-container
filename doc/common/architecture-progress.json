@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-17",
+  "updatedAt": "2026-10-18",
   "inventoryPath": "doc/common/architecture-operation-inventory.json",
   "baselineCommit": "c284ead3a637d4d31ca93661920ee0f0200b9077",
   "scope": "Current Codex/Claude architecture migration; existing shared behavior retained.",
@@ -2386,7 +2386,7 @@
       "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
       "title": "브로커 provider 수명주기 결과",
       "workStatus": "partial",
-      "remainingWork": "기존 provider lifecycle·snapshot·worker/helper 전환을 유지한다. Direct Sandbox 응답과 macOS 시작 예산은1e093ce5에 통합했고814PASS/기존2SKIP 및 strict shipping 검증을 확인했다. macOS recorder-exit와 Saved/start classifier는9e12902a의375PASS/기존2SKIP·실제 배포 QA 범위에 포함된다.97317 감사가 지목한 Sandbox 응답 경계를 새 개발로 다시 세지 않는다. 실제 Windows/macOS/provider 동작과 원래 route/범위·reliability·최종 판정은 남으며 Saved/409와 현재 host artifact/이전 driver 종료 미확인으로 native 검증은 보류다.",
+      "remainingWork": "기존 provider lifecycle·snapshot·worker/helper 전환을 유지한다. Direct Sandbox 응답과 macOS 시작 예산은1e093ce5에 통합했고814PASS/기존2SKIP 및 strict shipping 검증을 확인했다. macOS recorder-exit와 Saved/start classifier는9e12902a의375PASS/기존2SKIP·실제 배포 QA 범위에 포함된다.97317 감사가 지목한 Sandbox 응답 경계를 새 개발로 다시 세지 않는다. 실제 Windows/macOS/provider 동작과 원래 route/범위·reliability·최종 판정은 남으며 2026-10-18 예약 guest 접근과 이전 driver 부재는 확인했다. 현재 loaded host artifact와 이 그룹의 실제 provider 검증은 아직 미확인이다.",
       "completionCriteria": "Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects with outward native framing and response presentation. Actual independent Code/Security/Docs and QA425 across17 whole files with zero skips passed; genuine1330 build artifacts qualified from unchanged executable Source/output bytes, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed. Protected42 pins/97 user paths delivered; current f5a0 Source pins qualified. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -2662,7 +2662,7 @@
       "coveredOperationIds": [],
       "title": "Remote 연결·전송 경계",
       "workStatus": "partial",
-      "remainingWork": "원격 연결 정책과 SSH/Mutagen native 관측의 c2a1f54f 구현은 독립 Code/Security·Linux whole27파일1176PASS/기존1SKIP·shipping/CLI 검증을 마쳤다. 이번 한정된 owner/caller 대조에서 추가 Source 결함은 확인되지 않았다. 실제 Windows 원격 동작과 원래 최종 통합 판정은 남는다. 기존 driver 종료와 현재 host artifact/예약 guest 접근이 확인되지 않아 native 검증은 미실행이다.",
+      "remainingWork": "원격 연결 정책과 SSH/Mutagen native 관측의 c2a1f54f 구현은 독립 Code/Security·Linux whole27파일1176PASS/기존1SKIP·shipping/CLI 검증을 마쳤다. 이번 한정된 owner/caller 대조에서 추가 Source 결함은 확인되지 않았다. 실제 Windows 원격 동작과 원래 최종 통합 판정은 남는다. 2026-10-18 예약 guest 접근과 이전 driver 부재는 확인했다. 현재 loaded host artifact와 이 그룹의 실제 Windows 원격 검증은 아직 미확인이다.",
       "completionCriteria": "원격 연결 정책과 SSH·Mutagen 실행·응답 표현이 분리되고 독립 리뷰·portable QA·로컬 통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "sourceTrace": {
@@ -2906,7 +2906,7 @@
       "coveredOperationIds": [],
       "title": "Codex·Claude 설정 포트 단순화",
       "workStatus": "partial",
-      "remainingWork": "Codex config의 의미 결과·native 오류 경계는02bf2c98에서 독립 리뷰·compiled/public/type·배포 검증과 로컬 통합을 확인했다. 이번 한정된 owner/caller 대조에서 추가 Source 결함은 확인되지 않았다. 실제 Windows 설정 동작과 원래 범위의 최종 통합 판정은 남는다. 기존 driver 종료·안전한 예약 VM 접근이 확인되기 전 native 실행을 재개하지 않는다.",
+      "remainingWork": "Codex config의 의미 결과·native 오류 경계는02bf2c98에서 독립 리뷰·compiled/public/type·배포 검증과 로컬 통합을 확인했다. 이번 한정된 owner/caller 대조에서 추가 Source 결함은 확인되지 않았다. 실제 Windows 설정 동작과 원래 범위의 최종 통합 판정은 남는다. 2026-10-18 예약 VM 접근과 이전 driver 부재는 확인했다. 이 그룹의 실제 Windows 설정 검증은 아직 미실행이다.",
       "completionCriteria": "코어가 host MCP 필터링·forwarding·설정 lock·공개 정책을 유지하고, 어댑터가 managed 네이티브 서버 구성을 제공한다. 기존 일반 포트 단순화 기여를 유지한다.",
       "confirmedAtCommit": "6ea57ca54aaa8531886e2947e2c4f258564e2a4b",
       "sourceTrace": {
@@ -3259,7 +3259,7 @@
       "coveredOperationIds": [],
       "title": "Codex credential runtime observations",
       "workStatus": "in-progress",
-      "remainingWork": "자격 증명 관측의 c2a1f54f 구현은 독립 Code/Security·Linux whole27파일1176PASS/기존1SKIP·shipping/CLI로 검증했다. Windows 복구·socket 허용 정책5eb8a0d9도149개 portable 사례와 컴파일·배포 소비를 확인했다. 추가125개 실제 Windows 사례, 실제 macOS 자격 증명/권한 동작과 원래 최종 판정은 미완료다. 과거 owner/access 진단을 현재 Source 결함으로 다시 세지 않는다.",
+      "remainingWork": "자격 증명 관측 c2a1f54f와 복구 정책5eb8a0d9의 기존 portable 검증을 유지한다. 2026-10-18 실제 Windows whole8은239PASS/48기존SKIP, emitted3은137PASS/1기존SKIP이며 미검증125개 Windows 사례가 모두 통과했다. 실제 macOS 자격 증명·권한, live host 자격 증명/ACL 및 원래 최종 판정은 남는다. 이 fixture 검증으로 그룹 전체 완료를 선언하지 않는다.",
       "completionCriteria": "Native composition decodes ps/inspect and prior UID:GID into semantic account/container/mount facts; core retains source, inode, principal, active-user and startup-lock refusal. Qualify actual fail-closed callers through current review, joint QA and delivery.",
       "confirmedAtCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
       "sourceTrace": {
@@ -3282,7 +3282,7 @@
           "src/ports/credentials/windows-codex-recovery.ts"
         ]
       },
-      "status": "Current c2a1f54f implementation and final independent Code/Security reviews complete; independent Linux QA2 passed1176 cases in27 whole files with1existing skip plus genuine shipping/CLI/consumer evidence. Required Windows qualification is BLOCKED_ENV through unavailable owner-correct Device Lab MCP; original driver8704/target2860 terminal state unknown. Historical71473106 joint FAIL and root QA1 FAIL remain retained. No group completion credit or formal close.",
+      "status": "Existing independently qualified c2a1f54f and5eb8a0d9 Source retained. Current Windows Nodev22.16.0 whole8=239PASS/48existingSKIP and emitted3=137PASS/1existingSKIP;125unique native recovery cases passed once, strict current producers and materialized CLI0/0/1 passed. Exact owned processes absent. Historical failed/interrupted runs retained; macOS/live-host/remaining original qualification and formal close remain unverified; no group credit.",
       "taskId": "TASK__architecture-final-source-remediation",
       "currentQualificationTask": "TASK__root-native-framing-recovery-20261014",
       "historicalRemainingWorkBeforeRootRecovery": "Credential runtime 의미 관측 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음. Runtime publication 수정은 계획 리뷰 후 uncommitted 작성했으나 /tmp 후보가 사라져 복구/재작성·제품 리뷰·QA 필요. managedBy 충돌·inode fixture 약점은 확인; 개별7147 실패 원인은 미입증.",
@@ -3290,7 +3290,8 @@
       "additionalRecoveryQualificationTask": "TASK__architecture-windows-codex-recovery-20261015",
       "historicalQualificationTasks": [
         "TASK__windows-native-termination-observation-budget"
-      ]
+      ],
+      "statusBeforeWindowsRecoveryQualification20261018": "Current c2a1f54f implementation and final independent Code/Security reviews complete; independent Linux QA2 passed1176 cases in27 whole files with1existing skip plus genuine shipping/CLI/consumer evidence. Required Windows qualification is BLOCKED_ENV through unavailable owner-correct Device Lab MCP; original driver8704/target2860 terminal state unknown. Historical71473106 joint FAIL and root QA1 FAIL remain retained. No group completion credit or formal close."
     },
     {
       "id": "installer-presentation-materialization-structural",
@@ -3332,7 +3333,7 @@
       "coveredOperationIds": [],
       "title": "Shared mutation-lock ownership policy",
       "workStatus": "in-progress",
-      "remainingWork": "유효 claim의 확정된 종료/동일성 판단과 malformed 기록의 age grace 분리는799ec9fa에서313사례로 검증했다. 일반 획득·own identity·관측 cache의 monotonic 계산은1e093ce5에 통합했고 독립814PASS/기존2SKIP와 strict shipping 검증을 확인했다.97317 시점의 wall-clock 잔여는 과거 기록이다. 실제 Windows sync/async 동작과 원래 최종 판정은 남으며, Saved/409·이전 driver 종료 미확인 때문에 native 완료로 세지 않는다.",
+      "remainingWork": "유효 claim의 확정된 종료/동일성 판단과 malformed 기록의 age grace 분리는799ec9fa에서313사례로 검증했다. 일반 획득·own identity·관측 cache의 monotonic 계산은1e093ce5에 통합했고 독립814PASS/기존2SKIP와 strict shipping 검증을 확인했다.97317 시점의 wall-clock 잔여는 과거 기록이다. 2026-10-18 예약 VM 접근과 이전 driver 부재는 확인했다. 이 그룹의 실제 Windows sync/async 동작과 원래 최종 판정은 아직 미완료다.",
       "completionCriteria": "Unknown/live owners block bounded acquisition; only qualified dead PID, verified identity mismatch or different boot permits reclamation. Qualify exact-record release, successor protection and sync/async callers through current review, joint QA and delivery.",
       "confirmedAtCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
       "sourceTrace": {
@@ -4318,8 +4319,20 @@
       "taskId": "TASK__architecture-windows-codex-recovery-20261015",
       "coveredOperationIds": [],
       "title": "Windows Codex shared-state recovery policy boundary",
-      "status": "Source5eb8a0d9 locally committed after actual independent Code/Security PASS and first independent qa-cli portable PASS:149 unique Source cases, strict Root/architecture, fresh emitted13PASS/110WindowsSKIP, finite emitted and materialized8policy cases plus actual Linux no-op, public exports and CLI/declaration consumers. Required125 actual-Windows cases remain BLOCKED_ENV behind foreign-owner/unreachable Device Lab. Original combined Python skip and corrected fixture setup failures retained. No WBS/group/native/full-Goal credit or formal close.",
+      "status": "Source5eb8a0d9 and prior149portable cases remain qualified. Current actual-Windows whole8=239PASS/48existingSKIP and emitted3=137PASS/1existingSKIP;125unique native recovery cases passed, counted once. Fresh strict producers/materialized CLI0/0/1 and exact-owned process completion authenticated. Historical interruptions retained; no live-host/macOS/group/full-Goal/formal completion claim.",
       "currentWork": {
+        "stage": "scoped-actual-windows-fixtures-qualified",
+        "sourceCommit": "5eb8a0d9f2bbbf38cf773a929e528e582c34b5a0",
+        "qualificationRef": "confirmedStructuralScopeAudit.currentWindowsRecoveryQualification20261018",
+        "evidenceRoot": "results/windows-codex-recovery-01a13dde-20261015/independent-qa/windows-native-20261018",
+        "uniqueWindowsCases": 125,
+        "groupCompletionCredit": false,
+        "operationCredit": 0,
+        "formalDisposition": "Actual current native qa-cli PASS; final factual documentation/static QA and hook-owned formal disposition remain separate."
+      },
+      "authoredCandidateStatusBeforeIndependentQa": "All three product paths and three new suites authored; original user contributions and1723tracked/81untracked protected paths unchanged. Coordinator strict Root and architecture checks pass. Whole8reported144PASS/130SKIP; unchanged owner-probe wholefile separately executed5PASS, giving149 unique portable passes and125 actual-Windows cases still unexecuted. Original combined skip report retained, cause unconfirmed. Independent Code/Security/Docs and QA pending; no credit.",
+      "historicalStatusBeforeWindowsQualification20261018": "Source5eb8a0d9 locally committed after actual independent Code/Security PASS and first independent qa-cli portable PASS:149 unique Source cases, strict Root/architecture, fresh emitted13PASS/110WindowsSKIP, finite emitted and materialized8policy cases plus actual Linux no-op, public exports and CLI/declaration consumers. Required125 actual-Windows cases remain BLOCKED_ENV behind foreign-owner/unreachable Device Lab. Original combined Python skip and corrected fixture setup failures retained. No WBS/group/native/full-Goal credit or formal close.",
+      "historicalWorkBeforeWindowsQualification20261018": {
         "stage": "portable-independent-qa-pass-required-windows-blocked-env",
         "productPaths": [
           "src/adapters/windows-credential-access.ts",
@@ -4417,8 +4430,7 @@
         },
         "formalDisposition": "Actual required-Windows BLOCKED_ENV; no task_verify, PASS, close, or group credit. Native Goal remains broader and active.",
         "parallelDeliveryDecision": "User requested disjoint implementation/review/scopedQA in parallel, then one affected integration cycle. Recorded in existing migration plan; no generic framework, duplicate passing checks or hosted CI."
-      },
-      "authoredCandidateStatusBeforeIndependentQa": "All three product paths and three new suites authored; original user contributions and1723tracked/81untracked protected paths unchanged. Coordinator strict Root and architecture checks pass. Whole8reported144PASS/130SKIP; unchanged owner-probe wholefile separately executed5PASS, giving149 unique portable passes and125 actual-Windows cases still unexecuted. Original combined skip report retained, cause unconfirmed. Independent Code/Security/Docs and QA pending; no credit."
+      }
     },
     {
       "id": "clipboard-orphan-policy-current",
@@ -5982,6 +5994,40 @@
       "finalScope": "Original caller/export/source-scope, platform/distribution, reliability and final integration obligations remain; sourceDenominatorCertified:false alone does not establish a new implementation defect or every-helper worklist.",
       "formalDisposition": "Missing automatic review/QA receipts are separate from actual qualified results; no formal close or whole-Goal PASS.",
       "accounting": "All workStatus/completionCriteria unchanged:17/25complete(68%),5partial,3in-progress,8remaining;218in-scope/219inventory/75gates; zero new credit and source universe false."
+    },
+    "currentWindowsRecoveryQualification20261018": {
+      "taskId": "TASK__architecture-windows-codex-recovery-20261015",
+      "sourceCommit": "9c631a993556ebd289be46912458c9881bfbd3bc",
+      "scope": "Bounded actual Windows recovery facade/outer wrapper fixtures for5eb8a0d9; unchanged current Source. Not live host credential or global architecture acceptance.",
+      "evidenceRoot": "results/windows-codex-recovery-01a13dde-20261015/independent-qa/windows-native-20261018",
+      "evidenceSha256": {
+        "qa-new/actual-case-report.json": "0256d7c32dd29313d8caef4529fb1fd00dab1127743a22f502a54b96f0dbf30e",
+        "qa-new/cli-and-commands.json": "fd0c62fc77c0d05efc4cd37a2319c49b2f16b3d4f4c03f81b81f5c679ca0deab",
+        "qa-new/payload-and-guest-inventory.json": "428b42dc143179830365a22617525cf09cad2c650db47428d97ec39249798471",
+        "qa-new/final-exact-descendants-raw.json": "b397ac6c1b66ca9fab715a3b9a2c54b06b63181e0ca5f5744ee89ad2f5ee69b2",
+        "qa-new/terminal-authentication-raw.json": "d6925d85b01ad0d7fdea33a6e04b6fd598da2a52eb1182602b29968a06d24cea"
+      },
+      "guestRoot": "C:\\ccc-qa\\architecture-windows-recovery-01a13dde-20261018",
+      "runtime": "Actual Windows Nodev22.16.0 on existing reserved VM7b8d4450-8afa-4cb6-bc2e-b4d223906278",
+      "sourceWholeEight": {
+        "passed": 239,
+        "skipped": 48,
+        "failed": 0
+      },
+      "emittedThree": {
+        "passed": 137,
+        "skipped": 1,
+        "failed": 0
+      },
+      "uniqueWindowsCases": 125,
+      "sourceAndEmitRepeatAddsCredit": false,
+      "authentication": "1461Source/238packages/7543dependencyfiles/1374fresh emits/1059materialized files; all matching. Fresh materialized native resolverSHA5ddb7654d95dc522cd18c948e4d29225b61ec36086c44ba2fdbbccf00862160c.",
+      "commands": "Six sequential producers and both suites exit0; materialized CLI help/version/invalid-runtime0/0/1.",
+      "completion": "Driver4924/birth2026-10-18T06:58:58.2573814Z and all13known owned PIDs/descendants absent at07:04:00Z; no guest Node processes. No execution timeout or duplicate launch.",
+      "priorInterruption": "Old whole17 remains interrupted/unqualified; old roots/job/results untouched. This fresh observation supersedes only the earlier guest-unavailable/old-PID-unknown prerequisites.",
+      "transport": "Actual broker29552/birthwindows:2026-10-18T06:35:59.2866223Z is transport only; no loaded current-host artifact equivalence.502/download observations retained separately from successful command outcomes.",
+      "remaining": "macOS,live host credential/ACL,remaining native/provider/installer/remote/lock/reliability/original final conditions. Group statuses,25groups/17complete/eightremaining,operations/gates/source-universe flags unchanged.",
+      "formalDisposition": "Actual independent preparation Code/Security and native qa-cli PASS; formal hook attestation/close not claimed."
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
