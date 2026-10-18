@@ -1,40 +1,15 @@
 # Host credential path and directory preparation
 
-The application owns both complete resolver/preparation operations through nine
-required synchronous ports and explicit Codex package container-path data.
-Canonical CredentialMount objects remain mutable and are passed unchanged.
-Docker retains the two public names, signatures and arity2, with live native
-closures for environment, existing profile helpers, home, host paths, mkdir and
-POSIX package paths. Construction observes none of those effects.
+The existing credential application owns resolver and directory preparation through eight required synchronous capabilities and explicit Codex package-path data. Public Docker resolver/preparation signatures remain unchanged. Construction performs no native observation or filesystem operation.
 
-Keep the resolver's profile/container/single-VITEST truthiness short circuit.
-Truthy profile skips application environment ports only: native utils helpers
-have distinct mounted/profile rules and may still read environment. Claude
-normalizes profile before its mounted guard; Codex can select mounted mode for
-named profiles. Retain those dynamic helpers rather than caching their results.
+Supply a live executionContext callback returning host or container. The native binding translates the established CCC marker, exactly container=docker; application policy has no process environment or test-runner dependency. Both the binding and native utility helpers ignore VITEST/VITEST_* when selecting credential paths. The [execution-context requirement](REQ__credential-execution-context.md) defines the observable host/container and profile behavior.
 
-Read mount.containerDir at each original site; do not snapshot changing getters.
-Fallback observes home before hostDir and join. Preparation resolves first,
-re-evaluates private ownership comparisons, creates the root, computes POSIX
-package parent before the next containerDir read, then conditionally evaluates
-basename/host join and creates nested packages. Other tools get recursive-only
-options with mode absent; private roots/packages get mode0700. These are creation
-options, not chmod/reset of an existing directory's permissions.
+Retain existing profile helpers and their normalization. The application's raw profile truthiness determines whether it delegates; named Codex profiles stay mounted inside a container while named Claude profiles retain profile-specific paths. Do not reconstruct those paths in the application, cache helper/context results or introduce trimming.
 
-Raw callback/getter failures propagate without catch, warning, retry or rollback.
-Nested failure leaves the already-created root. The native mkdir port ignores
-Node's recursive mkdir return; public operations return the selected host path
-only after all required effects succeed. Startup callers retain their subsequent
-containerDir getter reads when publishing mount DTOs.
+Preparation resolves first, creates private Claude/Codex roots and nested Codex packages with mode0700 creation options, and leaves existing modes intact. Other tool roots use recursive creation without an explicit mode. Callback, getter and filesystem failures propagate; a failed nested creation leaves its already-created root. No retry, fallback or permission reset is implied.
 
-Verify ordered getter/env/profile/path/mkdir faults, canonical mutable source and
-emitted contracts, actual synthetic-home/profile directory creation and modes,
-retained startup/catalog/package cases and both real shipped payloads. CLI
-help/version is separate from module proof. Never read real credential material.
+Host-oriented tests select host context explicitly and restore it. Native runner-independence tests keep runner variables present and use synthetic homes; they cover default/named/custom resolution, helper directory/file paths, directory modes and partial failure. Strict consumers prove the semantic callback remains required and synchronous. A genuine compiled facade/helper probe supplies production-path evidence; source-body snapshots and verifier tests are unnecessary.
 
 ## Known ceiling
 
-This is directory preparation, not credential copy/refresh, profile migration,
-mount ownership, runtime startup or full M11 acceptance. Existing inability to
-prepare real-host package directories from Docker-outside-Docker remains.
-Unavailable native OS/mode/link capabilities remain unverified.
+Path preparation does not certify credential copy/refresh, profile migration, mount/UID/ACL authority, installed payloads or native runtime/platform acceptance. A container marker is path-policy input, not proof of mount ownership. Whole-source/reliability/full Goal and formal acceptance remain separate.

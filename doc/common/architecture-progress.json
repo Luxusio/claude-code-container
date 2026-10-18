@@ -5184,6 +5184,35 @@
         "Other current architecture audit findings; native platforms/providers/runtime, source/reliability/formal and full Goal acceptance"
       ],
       "sourceUniverseCertified": false
+    },
+    {
+      "id": "credential-execution-context-current",
+      "taskId": "TASK__credential-production-context-20261019",
+      "coveredOperationIds": [],
+      "status": "Task Source e9df578a locally committed; semantic host/container context replaces two raw environment callbacks and actual helpers ignore runner flags. Independent Code DEEP and Security PASS0 preceded substantive qa-cli PASS: fresh610/610 in6complete owners, compiled735assertions, genuine emission/strictSource+4owners PASS, CLI0/0/1; no pending/filter/platform skips. Eight legacy full-six strict diagnostics remain baseline-identical, not green. Qualified working cohort preserves two original unstaged Docker additions. No new structural/operation/gate credit or native/full Goal acceptance; actual results non-attesting and formal close unverified.",
+      "qualification": {
+        "sourceCommit": "e9df578a27598740351e5ef837d054c196ebc9c5",
+        "developmentEvidence": "results/credential-production-context-20261019/",
+        "workingCohort": "Pinned Main includes two protected original unstaged Docker additions, excluded from task commit",
+        "legacyTypeDebt": "Eight original Docker/utils test diagnostics unchanged; four Source and four other owners strictly pass",
+        "structuralGroupCredit": 0,
+        "operationCredit": 0,
+        "deliveryGateCredit": 0,
+        "sourceUniverseCertified": false,
+        "nativeAcceptance": "unverified",
+        "formalClose": "unverified; actual results non-attesting while required hook receipts absent",
+        "codeReview": "Actual independent final DEEP PASS0; Security PASS0, both before qa-cli",
+        "qa": "Actual independent substantive qa-cli PASS; 610/610 across6wholeowners,735compiled assertions,518outputs exact,CLI0/0/1",
+        "qaEvidence": "results/credential-production-context-20261019/qa-final/",
+        "preservation": "15frozen Main pins,1825non-owned originals,1744non-owned index records; original Docker additions unchanged"
+      },
+      "auditPath": "doc/common/AUDIT__architecture-current-boundaries.md",
+      "remainingOriginalAcceptance": [
+        "Actual credential copy and mount/UID/ACL authority, native platform/runtime and installed delivery",
+        "Eight baseline legacy-test type diagnostics in this scoped strict attempt; wider Source/reliability remains unverified",
+        "Other current architecture audit findings, formal workflow and full Goal acceptance"
+      ],
+      "sourceUniverseCertified": false
     }
   ],
   "currentSourceQualificationAudit": {
