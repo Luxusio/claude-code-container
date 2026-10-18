@@ -4,8 +4,8 @@ Updated: 2026\-10\-18. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
-확인된 구조 정리 그룹: **17/25 완료 (68.0%)**, **8개 남음**.
-부분 완료: **5**; 진행 중: **3**; 미착수: **0**.
+확인된 구조 정리 그룹: **18/25 완료 (72.0%)**, **7개 남음**.
+부분 완료: **5**; 진행 중: **2**; 미착수: **0**.
 
 이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
 
@@ -15,10 +15,9 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 | WBS | 그룹 | 상태 | 선행 작업 | 남은 구현 |
 | --- | --- | --- | --- | --- |
-| R08 | Codex·Claude 설정 포트 단순화 | 부분 완료 | 없음 | Codex config의 의미 결과·native 오류 경계는02bf2c98에서 독립 리뷰·compiled/public/type·배포 검증과 로컬 통합을 확인했다\. 이번 한정된 owner/caller 대조에서 추가 Source 결함은 확인되지 않았다\. 실제 Windows 설정 동작과 원래 범위의 최종 통합 판정은 남는다\. 2026\-10\-18 예약 VM 접근과 이전 driver 부재는 확인했다\. 이 그룹의 실제 Windows 설정 검증은 아직 미실행이다\. |
+| R08 | Codex·Claude 설정 포트 단순화 | 부분 완료 | 없음 | Codex config의 의미 결과·native 오류 경계는02bf2c98의 독립 리뷰·compiled/public/type·배포 검증과 통합을 유지한다\. 2026\-10\-18 Windows recovery source whole8에 공개 config\-preparation facade40PASS가 이미 포함되어 있으며 동일 바이트를 인증해 재사용한다\. 이 파일은 emitted3에는 포함되지 않았다\. 남은 Windows semantic/Harness·기본 파일 게시·compiled 공개 소비자와 원래 최종 판정은 아직 미완료다\. |
 | R12 | Codex credential runtime observations | 진행 중 | 없음 | 자격 증명 관측 c2a1f54f와 복구 정책5eb8a0d9의 기존 portable 검증을 유지한다\. 2026\-10\-18 실제 Windows whole8은239PASS/48기존SKIP, emitted3은137PASS/1기존SKIP이며 미검증125개 Windows 사례가 모두 통과했다\. 실제 macOS 자격 증명·권한, live host 자격 증명/ACL 및 원래 최종 판정은 남는다\. 이 fixture 검증으로 그룹 전체 완료를 선언하지 않는다\. |
 | R13 | Top\-level installer presentation and materialization | 진행 중 | 없음 | 설치 코어/포트 분리와 c2a1f54f portable 검증을 유지한다\. 이후 sudo 빌드 소유권 복구 ebf55316은 현재 installer 바이트와 기존 독립 Code DEEP/Security·install\-global whole99PASS·배포 근거를 대조해 확인했다\.99사례는 install\-global만이며 unchanged core/ports는 c2a의 인증 재사용이다\. 실제 macOS sudo 소유권/자격 전환, Windows launcher/User PATH·live engine 및 원래 최종 설치 판정은 남는다\. 근거는 currentEvidenceReconciliation20261017에 있다\. |
-| R14 | Shared mutation\-lock ownership policy | 진행 중 | 없음 | 유효 claim의 확정된 종료/동일성 판단과 malformed 기록의 age grace 분리는799ec9fa에서313사례로 검증했다\. 일반 획득·own identity·관측 cache의 monotonic 계산은1e093ce5에 통합했고 독립814PASS/기존2SKIP와 strict shipping 검증을 확인했다\.97317 시점의 wall\-clock 잔여는 과거 기록이다\. 2026\-10\-18 예약 VM 접근과 이전 driver 부재는 확인했다\. 이 그룹의 실제 Windows sync/async 동작과 원래 최종 판정은 아직 미완료다\. |
 | R16 | Remote 연결·전송 경계 | 부분 완료 | 없음 | 원격 연결 정책과 SSH/Mutagen native 관측의 c2a1f54f 구현은 독립 Code/Security·Linux whole27파일1176PASS/기존1SKIP·shipping/CLI 검증을 마쳤다\. 이번 한정된 owner/caller 대조에서 추가 Source 결함은 확인되지 않았다\. 실제 Windows 원격 동작과 원래 최종 통합 판정은 남는다\. 2026\-10\-18 예약 guest 접근과 이전 driver 부재는 확인했다\. 현재 loaded host artifact와 이 그룹의 실제 Windows 원격 검증은 아직 미확인이다\. |
 | R17 | 브로커 상태·녹화·Appium 결과 | 부분 완료 | 없음 | 상태·녹화·owner\-cleanup 의미 결과와 기존 executor/락 소유권 전환을 유지한다\.1e093ce5의 Appium phase는814PASS/기존2SKIP,9e12902a의 native allowance/실패 관측은375PASS/기존2SKIP,abb48599의 MCP supervision phase는195PASS와 실제 archive/Unix CLI/MCP로 검증·통합했다\. 현재 broker/direct physical/Appium/admin 경로의 담당은 inventory의 한정된 current trace에 구분했다\. 새 전체 Appium timeout 요구나 이 경로의 추가 Source 결함은 확인되지 않았다\. 실제 Windows/macOS/provider 및 원래 범위·reliability·최종 판정은 남는다\. |
 | R18 | 브로커 provider 수명주기 결과 | 부분 완료 | 없음 | 기존 provider lifecycle·snapshot·worker/helper 전환을 유지한다\. Direct Sandbox 응답과 macOS 시작 예산은1e093ce5에 통합했고814PASS/기존2SKIP 및 strict shipping 검증을 확인했다\. macOS recorder\-exit와 Saved/start classifier는9e12902a의375PASS/기존2SKIP·실제 배포 QA 범위에 포함된다\.97317 감사가 지목한 Sandbox 응답 경계를 새 개발로 다시 세지 않는다\. 실제 Windows/macOS/provider 동작과 원래 route/범위·reliability·최종 판정은 남으며 2026\-10\-18 예약 guest 접근과 이전 driver 부재는 확인했다\. 현재 loaded host artifact와 이 그룹의 실제 provider 검증은 아직 미확인이다\. |
@@ -47,12 +46,6 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 완료 조건: Native installer owns terminal/PowerShell hints, Unix/Windows launchers and package serialization; core retains build/cache/image/PATH/copy/uninstall and truthful partial outcomes\. Qualify materialized bytes/public launchers through current review, joint QA and delivery\.
 
 확인한 소스: [scripts/install/application\.mjs](../../scripts/install/application.mjs), [scripts/install/domain\.mjs](../../scripts/install/domain.mjs), [scripts/install/ports\.d\.mts](../../scripts/install/ports.d.mts)
-
-### R14. Shared mutation\-lock ownership policy
-
-완료 조건: Unknown/live owners block bounded acquisition; only qualified dead PID, verified identity mismatch or different boot permits reclamation\. Qualify exact\-record release, successor protection and sync/async callers through current review, joint QA and delivery\.
-
-확인한 소스: [packages/device\-lab/providers/application/shared\-mutation\-lock\.mjs](../../packages/device-lab/providers/application/shared-mutation-lock.mjs), [packages/device\-lab/providers/domain/shared\-mutation\-lock\.mjs](../../packages/device-lab/providers/domain/shared-mutation-lock.mjs), [packages/device\-lab/providers/ports/shared\-mutation\-lock\.d\.mts](../../packages/device-lab/providers/ports/shared-mutation-lock.d.mts)
 
 ### R16. Remote 연결·전송 경계
 
@@ -96,6 +89,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | R09 | iOS 앱 관리 | `6ea57ca5` | 코어는 앱 작업 선택·physical 제한·대상 소유권·컨테이너 fence·reset 공개를 유지하고, 어댑터가 설치·실행·종료·삭제·권한의 네이티브 효과와 응답을 처리한다\. |
 | R10 | iOS 관측·접근 | `6ea57ca5` | 코어는 session 수명주기·동일성·예산·fallback 순서·staging·recording 거절을 유지하고, 어댑터가 유한한 관측·접근 효과와 응답을 제공한다\. |
 | R11 | QEMU 이미지·수명주기 | `7b0fb1d0` | 코어는 경로·materialize/reuse·runtime 동일성·snapshot 게시·공개 정책을 유지하고, 어댑터가 overlay·launch·provisioning·guest SSH·snapshot 명령 구성을 처리한다\. 독립 리뷰·QA·로컬 통합으로 확인한다\. |
+| R14 | Shared mutation\-lock ownership policy | `3f8efc17` | Unknown/live owners block bounded acquisition; only qualified dead PID, verified identity mismatch or different boot permits reclamation\. Qualify exact\-record release, successor protection and sync/async callers through current review, joint QA and delivery\. |
 | R15 | Release workspace version synchronization | `1b699b6d` | Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI\. |
 | R20 | Clean native inventory and result boundary | `cf6ae421` | Native stdout/status/error와 running 판정은 facade에서 처리하고 application은 ID·이름 admission, dedup, 선택·확인, claim veto·캡처 ID·중단 순서를 소유한다\. 독립 Code/Security, 기존 테스트·엄격한 Source/emitted 계약·실제 배포 CLI와 로컬 통합을 확인한다\. |
 | R21 | 공유 provider 물리 기기·녹화 결과 경계 | `9c807d1e` | 코어는 연결 성공·attachability·cleanup detail·copy 완료의 의미 결과를 사용한다\. Native adapter가 status/stdout/stderr를 해석하며 반환 실패는 lease publication·stage commit·generation clear·remote 삭제를 허용하지 않는다\. 기존 공개 결과와 successor/재시도 정책을 검증한다\. |
