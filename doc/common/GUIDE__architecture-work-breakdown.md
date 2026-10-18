@@ -1,6 +1,6 @@
 # Architecture work breakdown and progress
 
-Updated: 2026\-10\-18. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
+Updated: 2026\-10\-19. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b9077`.
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
@@ -182,6 +182,7 @@ Current whole-source/exports/caller closure, final type/composition integration,
 | native\-docker\-lab\-ownership\-current |  | Actual independent Code/Security and native Docker QA PASS\. Existing packaged retained\-lab\-state ownership witness exited0 in8086ms; migration, preservation, reuse, missing\-provenance/busy refusal and exact\-owned cleanup passed\. One offline archive1236files/1058dist authenticated; no new resource/helper survivors observed\. Two proven existing witness observation/cleanup defects corrected; R1 review failures and auxiliary observer exit1 retained\. Zero operation/group/gate credit; structural25/25 unchanged\. Full Docker lifecycle, Podman, macOS, reliability and formal/whole\-Goal acceptance remain separate\. |
 | original\-completion\-boundaries\-current |  | Original sixteen\-family audit led to six narrow boundary corrections: opaque Codex resume observations, semantic proxy verification, outward Lab/Clean presentation, exact shared snapshot\-policy dependency, and pure mount\-policy ownership\. Actual independent Code/Security and qa\-cli PASS;15 whole files355 assertions, full original architecture program with current Source package paths exit0, fresh emitted public consumer exit0\. Six local Source commits through dcc354a6\. Structural25/25 and known in\-scope218/218 unchanged; no new group/operation/gate or full\-Goal/native credit\. |
 | affected\-package\-continuity\-current |  | Current affected npm/Unix continuity independently Code/Security reviewed and qa\-cli PASS\. Four genuine Root generation commands and one actual consumer with13 successful child commands; archive1238/Unix1209 files each1060 matching dist\. Both actual CLI/exports/MCP/affected runtime/strict declarations passed\. Zero group/operation/gate credit;25/25 unchanged\. Native/provider/fullhost/reliability/formal/wholeGoal acceptance remains separate\. |
+| bigpicture\-audit\-and\-profile\-admission\-current |  | Four independent static big\-picture audits confirm sound examined wiring, with real follow\-ups\. Profile P1 fixed at8ba5505a: actual Code/Security/QA122\+strict contracts\+16emittedCLI PASS\. Android event\-loop blocking P1 remains; Hyper\-V CCC policy, installed diagnostic dependencies, Unix replacement failure, QEMU declarations and Codex metadata P2 remain\. Existing25/25 records earlier confirmed structural criteria only, not overall perfection; zero added operation/group/gate credit\. Native/wholeGoal/formal remain separate\. |
 
 ## 1. M00 — Baseline and inventory (0/0 implemented)
 

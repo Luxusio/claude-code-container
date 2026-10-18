@@ -61,8 +61,9 @@ Paths inside the container do not change.
    - Creating, ensuring, or removing an invalid name fails before any filesystem
      access or settings evaluation. This also refuses `..` and aliases such as
      `./default`; the reserved account cannot be removed through a path alias.
-   - `ccc profile rm <invalid-name>` exits nonzero with an invalid-name error.
-     Valid named profiles and the reserved `default` rules above stay unchanged.
+   - `ccc profile rm <name>` exits nonzero with an invalid-name error for a
+     nonempty invalid name. A missing or empty CLI name prints usage and exits
+     nonzero. Valid named profiles and the reserved `default` rules stay unchanged.
 
 ## Migration of an existing ~/.ccc
 
