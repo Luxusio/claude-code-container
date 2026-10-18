@@ -40,22 +40,28 @@ function contracts(socket: net.Socket, server: net.Server, original: ForwardingS
     const asyncPipe: ForwardingStream<Buffer, net.Socket>['pipe'] = async () => socket;
     // @ts-expect-error destroy returns the native owned stream synchronously
     const asyncDestroy: ForwardingStream<Buffer, net.Socket>['destroy'] = async () => socket;
-    // @ts-expect-error observation does not erase synchronous native result semantics
-    const asyncObservation: LocalhostProxyVerifierPorts['proxyListenerObservation'] = async () => ({status:0});
-    // @ts-expect-error diagnostics cannot silently become asynchronous
-    const asyncWarning: LocalhostProxyVerifierPorts['reportWarning'] = async () => {};
+    // @ts-expect-error listener presence remains a synchronous semantic boolean
+    const asyncPresence: LocalhostProxyVerifierPorts['proxyListenerPresent'] = async () => true;
+    // @ts-expect-error native process result carriers do not cross the setup port
+    const nativeObservation: LocalhostProxyVerifierPorts['proxyListenerPresent'] = () => ({status:0});
+    // @ts-expect-error unavailable notification cannot silently become asynchronous
+    const asyncUnavailable: LocalhostProxyVerifierPorts['reportUnavailable'] = async () => {};
+    // @ts-expect-error direct-reach notification cannot silently become asynchronous
+    const asyncReachable: LocalhostProxyVerifierPorts['reportDirectReachable'] = async () => {};
+    // @ts-expect-error direct-reach notification carries latency, not terminal prose
+    const stringLatency: LocalhostProxyVerifierPorts['reportDirectReachable'] = (_message: string) => undefined;
     // @ts-expect-error direct reach retains the exact 1500ms caller budget
     const wrongReach: LocalhostProxyVerifierPorts['directReach'] = (_container: string, _timeout: 5000) => ({reachable:false,latencyMs:0});
     const verifier = createLocalhostProxyVerifier({
     platform: () => 'linux', containerHostRemote: () => false,
     directReach: (_container: string, _timeout: number) => ({reachable: false, latencyMs: 7}),
-    proxyListenerObservation: (_container: string) => ({status: 0}),
-    debugFlag: () => undefined, runtimeName: () => 'docker', reportDebug: (_message: string) => undefined, reportWarning: (_message: string) => undefined,
+    proxyListenerPresent: (_container: string) => true,
+    debugFlag: () => undefined, reportDirectReachable: (_latencyMs: number) => undefined, reportUnavailable: (_container: string) => undefined,
     });
     const verified: void = verifier.setup('owned');
     // @ts-expect-error verifier remains synchronous
     const asyncVerified: Promise<void> = verifier.setup('owned');
 
-    void [literalPort, facet, dial, forward, defaults, listener, stopped, app, application, synchronous, wrongDial, asyncStop, wrote, piped, destroyed, asyncWrite, asyncPipe, asyncDestroy, asyncObservation, asyncWarning, wrongReach, verifier, verified, asyncVerified];
+    void [literalPort, facet, dial, forward, defaults, listener, stopped, app, application, synchronous, wrongDial, asyncStop, wrote, piped, destroyed, asyncWrite, asyncPipe, asyncDestroy, asyncPresence, nativeObservation, asyncUnavailable, asyncReachable, stringLatency, wrongReach, verifier, verified, asyncVerified];
 }
 void contracts;

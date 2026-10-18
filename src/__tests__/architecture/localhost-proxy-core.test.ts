@@ -56,9 +56,10 @@ function verifierFixture() {
         platform: () => { events.push("platform"); return "darwin"; },
         containerHostRemote: () => { events.push("remote"); return false; },
         directReach: (container: string, timeout: number) => { events.push(["reach", container, timeout]); return { reachable: false, latencyMs: 7 }; },
-        proxyListenerObservation: (container: string) => { events.push(["listener", container]); return { error: undefined, status: 1 }; },
-        debugFlag: () => { events.push("debug"); return undefined; }, runtimeName: () => { events.push("runtime"); return "podman"; },
-        reportDebug: (message: string): undefined => { events.push(["debugMessage", message]); return undefined; }, reportWarning: (message: string): undefined => { events.push(["warning", message]); return undefined; },
+        proxyListenerPresent: (container: string) => { events.push(["listener", container]); return false; },
+        debugFlag: (): string | undefined => { events.push("debug"); return undefined; },
+        reportDirectReachable: (latencyMs: number): undefined => { events.push(["direct-reachable", latencyMs]); return undefined; },
+        reportUnavailable: (container: string): undefined => { events.push(["unavailable", container]); return undefined; },
     };
     return { events, ports };
 }
@@ -67,11 +68,54 @@ it("verifier construction has no effects; native Linux skips reach and observati
     const app = createLocalhostProxyVerifier(ports); expect(events).toEqual([]); app.setup("owned");
     expect(events).toEqual(["platform", "remote"]);
 });
-it("verifier observes unreachable host and publishes two exact selected-runtime warnings", () => {
+it("verifier observes unreachable host and reports unavailability after the listener fact", () => {
     const { events, ports } = verifierFixture(); createLocalhostProxyVerifier(ports).setup("owned");
+    expect(events).toEqual(["platform", ["reach", "owned", 1500], ["listener", "owned"], ["unavailable", "owned"]]);
+});
+it("a remote Linux host still receives bounded reach and listener checks", () => {
+    const { events, ports } = verifierFixture();
+    ports.platform = () => { events.push("platform"); return "linux"; };
+    ports.containerHostRemote = () => { events.push("remote"); return true; };
+    createLocalhostProxyVerifier(ports).setup("remote-owned");
+    expect(events).toEqual(["platform", "remote", ["reach", "remote-owned", 1500],
+        ["listener", "remote-owned"], ["unavailable", "remote-owned"]]);
+});
+it.each([undefined, "", "1"])("direct reach reports latency only when DEBUG is enabled (%s)", debugFlag => {
+    const { events, ports } = verifierFixture();
+    ports.directReach = (container, timeout) => { events.push(["reach", container, timeout]); return { reachable: true, latencyMs: 23 }; };
+    ports.debugFlag = () => { events.push("debug"); return debugFlag; };
+    createLocalhostProxyVerifier(ports).setup("owned");
+    expect(events).toEqual(["platform", ["reach", "owned", 1500], "debug",
+        ...(debugFlag ? [["direct-reachable", 23]] : [])]);
+});
+it("a present listener ends setup without debug or unavailable notifications", () => {
+    const { events, ports } = verifierFixture();
+    ports.proxyListenerPresent = container => { events.push(["listener", container]); return true; };
+    createLocalhostProxyVerifier(ports).setup("owned");
+    expect(events).toEqual(["platform", ["reach", "owned", 1500], ["listener", "owned"]]);
+});
+it("notification capabilities stay lazy until their selected setup branch", () => {
+    const { events, ports } = verifierFixture();
+    Object.defineProperty(ports, "reportDirectReachable", { get() { throw new Error("unselected-direct-notification"); } });
+    Object.defineProperty(ports, "reportUnavailable", { get() {
+        events.push("get:unavailable");
+        return (container: string): undefined => { events.push(["unavailable", container]); return undefined; };
+    } });
+    const app = createLocalhostProxyVerifier(ports);
+    expect(events).toEqual([]);
+    app.setup("owned");
     expect(events).toEqual(["platform", ["reach", "owned", 1500], ["listener", "owned"],
-        ["warning", "[ccc] WARNING: localhost proxy daemon not detected — host port access may fail."], "runtime",
-        ["warning", "[ccc]   check `podman logs owned` for entrypoint errors."]]);
+        "get:unavailable", ["unavailable", "owned"]]);
+});
+it.each(["reach", "listener"])("a raw %s failure propagates before any notification", operation => {
+    const { events, ports } = verifierFixture(); const failure = {};
+    if (operation === "reach") ports.directReach = (container, timeout) => { events.push(["reach", container, timeout]); throw failure; };
+    else ports.proxyListenerPresent = container => { events.push(["listener", container]); throw failure; };
+    let observed: unknown;
+    try { createLocalhostProxyVerifier(ports).setup("owned"); } catch (error) { observed = error; }
+    expect(observed).toBe(failure);
+    expect(events).toEqual(["platform", ["reach", "owned", 1500],
+        ...(operation === "listener" ? [["listener", "owned"]] : [])]);
 });
 it("routing constructor leaves getter-backed dial capability lazy until after buffering", async () => {
     const events: unknown[] = []; const client = new Stream("client",events); const upstream = new Stream("upstream",events);

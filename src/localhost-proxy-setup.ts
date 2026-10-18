@@ -21,7 +21,7 @@ import { detectHostNetworkReach } from "./network-reach.js";
 
 const STEP_TIMEOUT_MS = 5_000;
 
-function observeProxyListener(containerName: string) {
+function proxyListenerPresent(containerName: string): boolean {
     // Inspect the kernel socket table without ss or a TCP connection: probing
     // the transparent proxy's own port can make it forward back into itself.
     const address = `0100007F:${PROXY_PORT.toString(16).toUpperCase().padStart(4, "0")}`;
@@ -34,7 +34,7 @@ function observeProxyListener(containerName: string) {
         ["exec", containerName, "bash", "-c", script],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: STEP_TIMEOUT_MS },
     );
-    return result;
+    return !result.error && result.status === 0;
 }
 
 export function setupLocalhostProxy(containerName: string): void {
@@ -42,16 +42,24 @@ export function setupLocalhostProxy(containerName: string): void {
         platform: () => process.platform,
         containerHostRemote: () => isContainerHostRemote(),
         directReach: (container, timeoutMs) => detectHostNetworkReach(container, {timeoutMs}),
-        proxyListenerObservation: container => observeProxyListener(container),
+        proxyListenerPresent,
         debugFlag: () => process.env.DEBUG,
-        runtimeName: () => runtimeCli(),
-        get reportDebug() {
+        get reportDirectReachable() {
             const report = console.error;
-            return (message: string): undefined => { report.call(console, message); return undefined; };
+            return (latencyMs: number): undefined => {
+                report.call(console, `[ccc] host loopback reachable from container (${latencyMs}ms) — proxy not needed`);
+                return undefined;
+            };
         },
-        get reportWarning() {
+        get reportUnavailable() {
             const report = console.warn;
-            return (message: string): undefined => { report.call(console, message); return undefined; };
+            return (container: string): undefined => {
+                report.call(console, `[ccc] WARNING: localhost proxy daemon not detected — host port access may fail.`);
+                const reportCheck = console.warn;
+                const message = `[ccc]   check \`${runtimeCli()} logs ${container}\` for entrypoint errors.`;
+                reportCheck.call(console, message);
+                return undefined;
+            };
         },
     }).setup(containerName);
 }
