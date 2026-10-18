@@ -48,7 +48,23 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
     const errors: string[] = [];
     const purePathImports = new Set<ts.ImportDeclaration>();
     const purePlanningImports = new Set<ts.ImportDeclaration>();
+    const pureSnapshotImports = new Set<ts.ImportDeclaration>();
     const purePathNames = new Set<string>();
+    // One reviewed shared policy edge, not a package-wide core exemption.
+    if (boundary.language === "mjs" && boundary.providerRoot && layer === "domain"
+        && relative(resolve(boundary.root), resolve(file)).split(sep).join("/") === "domain/device-request.mjs") {
+        for (const statement of tree.statements) {
+            if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
+                || statement.moduleSpecifier.text !== "@ccc/device-lab/device-lab/domain/lifecycle/hyper-v-snapshots.js") continue;
+            const clause = statement.importClause;
+            const bindings = clause?.namedBindings;
+            if (clause && !clause.name && !clause.isTypeOnly && bindings && ts.isNamedImports(bindings)
+                && bindings.elements.length > 0 && bindings.elements.every(item => !item.isTypeOnly
+                    && ["isSnapshotTool", "snapshotInvocationLimits"].includes(item.propertyName?.text ?? item.name.text))) {
+                pureSnapshotImports.add(statement);
+            }
+        }
+    }
     if (boundary.language === "ts" && layer !== "ports") for (const statement of tree.statements) {
         if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
             || !hyperVPurePlanningModules.has(statement.moduleSpecifier.text)) continue;
@@ -107,7 +123,7 @@ export function coreBoundaryViolations(source: string, file: string, boundary: C
             const bindings = clause?.namedBindings;
             const typeOnly = clause?.isTypeOnly === true || (!!bindings && ts.isNamedImports(bindings)
                 && !clause?.name && bindings.elements.length > 0 && bindings.elements.every(item => item.isTypeOnly));
-            if (!purePathImports.has(node) && !purePlanningImports.has(node)) checkImport(node.moduleSpecifier, typeOnly);
+            if (!purePathImports.has(node) && !purePlanningImports.has(node) && !pureSnapshotImports.has(node)) checkImport(node.moduleSpecifier, typeOnly);
         }
         if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
             const typeOnly = node.isTypeOnly || (!!node.exportClause && ts.isNamedExports(node.exportClause)

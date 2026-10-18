@@ -93,6 +93,13 @@ Allowed imports:
 | presentation | public application interfaces, DTO codecs; no provider internals |
 | composition | all required concrete implementations; no business decisions |
 
+The MCP `domain/device-request.mjs` has one reviewed shared pure-policy edge:
+named imports of `isSnapshotTool` and `snapshotInvocationLimits` from Device
+Lab's `device-lab/domain/lifecycle/hyper-v-snapshots.js`. This keeps snapshot
+budgets authoritative in one place. The dependency guard admits only that
+module and those symbols on this edge, and recursively checks both cores;
+other package imports, namespace/default imports and re-exports remain barred.
+
 The call direction at runtime crosses a port into an adapter, but the source
 interface is owned inward. Application must never import concrete adapters.
 No environment, global caches, current working directory, real timers, random
