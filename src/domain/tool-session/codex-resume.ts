@@ -5,14 +5,6 @@ export interface CodexResumeRecoveryPlan {
     selector?: string;
 }
 
-export interface CodexResumeObservation {
-    code: number;
-    output: string;
-    stderr: string;
-    overflow: boolean;
-    signal: string | null;
-}
-
 export interface CodexResumeRollout { id: string; path: string }
 export type CodexResumeMetadataFailureStage =
     | "metadata-support" | "metadata-home" | "metadata-initialize" | "metadata-read" | "metadata-close";

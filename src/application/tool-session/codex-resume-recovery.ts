@@ -1,8 +1,8 @@
-import type { CodexResumeObservation, CodexResumeRecoveryPlan } from "../../domain/tool-session/codex-resume.js";
+import type { CodexResumeRecoveryPlan } from "../../domain/tool-session/codex-resume.js";
 import type { CodexResumeRecoveryPorts } from "../../ports/tool-session/codex-resume-recovery.js";
 
 /** One original launch, qualified native repair, optional metadata fallback and one retry. */
-export function createCodexResumeRecovery<Runner, Home, Reporter, Observation extends CodexResumeObservation>(
+export function createCodexResumeRecovery<Runner, Home, Reporter, Observation = unknown>(
     ports: CodexResumeRecoveryPorts<Runner, Home, Reporter, Observation>,
 ) {
     // Keep the public async boundary, name and arity without an adopting facade.
@@ -17,18 +17,19 @@ export function createCodexResumeRecovery<Runner, Home, Reporter, Observation ex
         try {
             const script = await ports.probeTerminal(invocation);
             if (ports.interruption(invocation)) return ports.interruption(invocation);
-            if (script.code !== 0 || !script.output.includes("util-linux")) {
-                return (await ports.launchOriginal(invocation, command, true)).code;
+            if (!ports.terminalSupported(script)) {
+                const direct = await ports.launchOriginal(invocation, command, true);
+                return ports.exitCode(direct);
             }
             const first = await ports.launchOriginal(invocation, command, false);
             if (ports.interruption(invocation)) return ports.interruption(invocation);
-            if (first.code !== 1 || first.signal) return first.code;
+            if (!ports.recoverableOriginal(first)) return ports.exitCode(first);
             const rollout = ports.qualifyRollout(invocation, first, selector);
-            if (!rollout) return first.code;
+            if (!rollout) return ports.exitCode(first);
             const { id } = rollout;
             const help = await ports.probeMigration(invocation, command);
             if (ports.interruption(invocation)) return ports.interruption(invocation);
-            if (!ports.supportsMigration(help)) return first.code;
+            if (!ports.supportsMigration(help)) return ports.exitCode(first);
             ports.reportRecovery(invocation);
             let migrationStage: "migration" | "migration-after-metadata" = "migration";
             let migration = await ports.migrateThread(invocation, command, config, id);
@@ -38,19 +39,20 @@ export function createCodexResumeRecovery<Runner, Home, Reporter, Observation ex
                 if (ports.interruption(invocation)) return ports.interruption(invocation);
                 if (!restored.ok) {
                     ports.reportFailure(invocation, restored.stage);
-                    return first.code;
+                    return ports.exitCode(first);
                 }
                 migrationStage = "migration-after-metadata";
                 migration = await ports.migrateThread(invocation, command, config, id);
                 if (ports.interruption(invocation)) return ports.interruption(invocation);
             }
-            const repaired = migration.code === 0 && !migration.signal && !migration.overflow
+            const repaired = ports.migrationSucceeded(migration)
                 && ports.repairedThread(migration, id);
             if (!repaired) {
                 ports.reportFailure(invocation, migrationStage);
-                return first.code;
+                return ports.exitCode(first);
             }
-            return (await ports.retryResume(invocation, retry, id)).code;
+            const resumed = await ports.retryResume(invocation, retry, id);
+            return ports.exitCode(resumed);
         } finally {
             ports.dispose(invocation);
         }
