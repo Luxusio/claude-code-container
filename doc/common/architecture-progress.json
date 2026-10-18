@@ -1953,14 +1953,14 @@
     {
       "id": "broker-remaining-semantic-results-structural",
       "coveredOperationIds": [],
-      "status": "Current source9b12312 integrated and independently Code/Security reviewed; Linux QA948PASS in23 whole files, ordinary shipping and four actual source/emitted/npm/Unix public behavior forms passed. Required Windows qualification remains BLOCKED_ENV. No structural group completion credit or formal close; prior accepted contributions and historical failures retained.",
+      "status": "Original R17 criterion independently accepted: current qualified status/recording/owner-cleanup/Appium contracts, actual portable source/built/npm/Unix public forms and controlled Windows19-file native identity/receipt/recovery/lease/cleanup/backend-child/MCP/auth evidence cover the original scope. No extra pure-policy-per-OS or exact historical public-script replay is required. Existing skips and four Appium early-return bodies receive no native execution credit.",
       "taskId": "TASK__architecture-broker-remaining-result-boundaries",
-      "acceptedIntegrationCommit": "0cebcfe028aa6a6a15f8afa020e436daef83616a",
+      "acceptedIntegrationCommit": "9b12312ad25e66ad250742d75a29082ff44c57c5",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/broker-remaining-0ceb-3hu7nfyo/final-result.json",
       "deliveryEvidence": "/tmp/ccc-broker-remaining-result-boundaries-main-delivery-20261011.json",
       "title": "브로커 상태·녹화·Appium 결과",
-      "workStatus": "partial",
-      "remainingWork": "상태·녹화·owner-cleanup 의미 결과와 기존 executor/락 소유권 전환을 유지한다.1e093ce5의 Appium phase는814PASS/기존2SKIP,9e12902a의 native allowance/실패 관측은375PASS/기존2SKIP,abb48599의 MCP supervision phase는195PASS와 실제 archive/Unix CLI/MCP로 검증·통합했다. 현재 broker/direct physical/Appium/admin 경로의 담당은 inventory의 한정된 current trace에 구분했다. 새 전체 Appium timeout 요구나 이 경로의 추가 Source 결함은 확인되지 않았다. 실제 Windows/macOS/provider 및 원래 범위·reliability·최종 판정은 남는다.",
+      "workStatus": "completed",
+      "remainingWork": "이 구조 그룹의 원래 완료 조건을 충족했다. Live provider/macOS·reliability 및 전체 Goal/formal 조건은 별도로 남는다.",
       "completionCriteria": "상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at0cebcfe0: semantic owner resolution/device status, broker recording and Appium outcomes with finite native effects and outward HTTP presentation. Actual independent Code DEEP/Security/Docs and QA484 across13 whole files, genuine build1330, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed; protected31 pins/97 user paths delivered. Prior compiler/runtime failures corrected and retained. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -2255,7 +2255,28 @@
       "historicalQualificationTasks": [
         "TASK__appium-boundary-recovery-20261014"
       ],
-      "currentProviderBoundaryTask": "TASK__architecture-provider-native-boundary-wave-20261017; see confirmedStructuralScopeAudit/currentProviderBoundaryWave20261017 for current scoped evidence/disposition."
+      "currentProviderBoundaryTask": "TASK__architecture-provider-native-boundary-wave-20261017; see confirmedStructuralScopeAudit/currentProviderBoundaryWave20261017 for current scoped evidence/disposition.",
+      "historicalRemainingWorkBeforeFinalWindowsAcceptance20261018": {
+        "status": "Current source9b12312 integrated and independently Code/Security reviewed; Linux QA948PASS in23 whole files, ordinary shipping and four actual source/emitted/npm/Unix public behavior forms passed. Required Windows qualification remains BLOCKED_ENV. No structural group completion credit or formal close; prior accepted contributions and historical failures retained.",
+        "workStatus": "partial",
+        "remainingWork": "상태·녹화·owner-cleanup 의미 결과와 기존 executor/락 소유권 전환을 유지한다.1e093ce5의 Appium phase는814PASS/기존2SKIP,9e12902a의 native allowance/실패 관측은375PASS/기존2SKIP,abb48599의 MCP supervision phase는195PASS와 실제 archive/Unix CLI/MCP로 검증·통합했다. 현재 broker/direct physical/Appium/admin 경로의 담당은 inventory의 한정된 current trace에 구분했다. 새 전체 Appium timeout 요구나 이 경로의 추가 Source 결함은 확인되지 않았다. 실제 Windows/macOS/provider 및 원래 범위·reliability·최종 판정은 남는다.",
+        "acceptedIntegrationCommit": "0cebcfe028aa6a6a15f8afa020e436daef83616a"
+      },
+      "currentCriterionQualification20261018": {
+        "reviewer": "/root/code_review_provider_windows_148f5_recovery2",
+        "actualFinal": "PASS; original R17 structural criterion only",
+        "publicWitnessSha256": "13c04e5f5cbea5ad7479408f8173e2d81d535e16ac25d6523797bae1754207bf",
+        "publicEvidence": "Authenticated HTTP status and SDK recording start/status/stop, receipt omission, real recorder identity/termination; actual source/built/npm/Unix commands0 and joined",
+        "windowsFactsPath": "results/provider-native-148f5-windows-20261018/qa-r2/native-facts.json",
+        "windowsFactsSha256": "294f045dd108df8b06936b604773e6f144c9e5e0cf169f058ddc48927c72241c",
+        "sourceContributions": [
+          "9b12312ad25e66ad250742d75a29082ff44c57c5",
+          "7f3c9439c778e6b150983982e2eea30a79562dc5",
+          "1a3dbf97296774a8877eed99fd518268381968e5",
+          "9e12902aa77ed7b7343fe254c6e72fbc48fc9dd6"
+        ],
+        "nativeTier": "Controlled actual Windows Node/CIM/file/process/public/backend-child bindings; not live providers/macOS/GUI"
+      }
     },
     {
       "id": "hyper-v-lifecycle-results-native-recipes-structural",
@@ -2379,14 +2400,14 @@
     {
       "id": "broker-provider-lifecycle-results-structural",
       "coveredOperationIds": [],
-      "status": "Current source9b12312 integrated and independently Code/Security reviewed; Linux QA948PASS in23 whole files, ordinary shipping and four actual source/emitted/npm/Unix public behavior forms passed. Required Windows qualification remains BLOCKED_ENV. No structural group completion credit or formal close; prior accepted contributions and historical failures retained.",
+      "status": "Original independent R18 mapping found one controlled Windows public lifecycle gap: positive iOS create/boot/shutdown/delete and macOS boot/address publication. Existing current Android/Sandbox lifecycle and direct macOS/Sandbox/Hyper-V/worker contributions remain qualified; portable pure-policy owners need no blanket per-OS replay. Resume original broker-semantic task for the existing public witness, not a new extraction.",
       "taskId": "TASK__architecture-provider-lifecycle-result-boundaries",
       "acceptedIntegrationCommit": "8060aa02e9746ba501b0f03a8bba56133015415a",
       "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/provider-lifecycle-8060-e5t_1pbv/final-result.json",
       "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
       "title": "브로커 provider 수명주기 결과",
       "workStatus": "partial",
-      "remainingWork": "기존 provider lifecycle·snapshot·worker/helper 전환을 유지한다. Direct Sandbox 응답과 macOS 시작 예산은1e093ce5에 통합했고814PASS/기존2SKIP 및 strict shipping 검증을 확인했다. macOS recorder-exit와 Saved/start classifier는9e12902a의375PASS/기존2SKIP·실제 배포 QA 범위에 포함된다.97317 감사가 지목한 Sandbox 응답 경계를 새 개발로 다시 세지 않는다. 실제 Windows/macOS/provider 동작과 원래 route/범위·reliability·최종 판정은 남으며 2026-10-18 예약 guest 접근과 이전 driver 부재는 확인했다. 현재 loaded host artifact와 이 그룹의 실제 provider 검증은 아직 미확인이다.",
+      "remainingWork": "구현과 기존 portable/type/shipping·현재 Windows19파일 검증은 유지한다. 남은 원래 조건은 Windows에서 현재 compiled broker/MCP의 양성 iOS create/start/stop/delete와 macOS start/address 게시를 기존 공개 소비자로 한 번 확인하는 것이다. 기기 상태를 미리 기록한 tool/transfer 테스트로 수명주기 실행을 대신하지 않는다. 새 Source나 검증 틀은 필요하지 않다.",
       "completionCriteria": "Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects with outward native framing and response presentation. Actual independent Code/Security/Docs and QA425 across17 whole files with zero skips passed; genuine1330 build artifacts qualified from unchanged executable Source/output bytes, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed. Protected42 pins/97 user paths delivered; current f5a0 Source pins qualified. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
@@ -2450,7 +2471,8 @@
           "qualification": "Actual independent Code PASS, Security PASS with sole test-only qualified carry, affected portable emitted/public/package QA PASS and local Source delivery. No native, whole-group or formal completion credit."
         }
       ],
-      "currentProviderBoundaryTask": "TASK__architecture-provider-native-boundary-wave-20261017; see confirmedStructuralScopeAudit/currentProviderBoundaryWave20261017 for current scoped evidence/disposition."
+      "currentProviderBoundaryTask": "TASK__architecture-provider-native-boundary-wave-20261017; see confirmedStructuralScopeAudit/currentProviderBoundaryWave20261017 for current scoped evidence/disposition.",
+      "historicalRemainingWorkBeforeFinalCriterionMapping20261018": "기존 provider lifecycle·snapshot·worker/helper 전환을 유지한다. Direct Sandbox 응답과 macOS 시작 예산은1e093ce5에 통합했고814PASS/기존2SKIP 및 strict shipping 검증을 확인했다. macOS recorder-exit와 Saved/start classifier는9e12902a의375PASS/기존2SKIP·실제 배포 QA 범위에 포함된다.97317 감사가 지목한 Sandbox 응답 경계를 새 개발로 다시 세지 않는다. 실제 Windows/macOS/provider 동작과 원래 route/범위·reliability·최종 판정은 남으며 2026-10-18 예약 guest 접근과 이전 driver 부재는 확인했다. 현재 loaded host artifact와 이 그룹의 실제 provider 검증은 아직 미확인이다."
     },
     {
       "id": "shared-android-contract-cleanup-accepted",
@@ -3357,8 +3379,8 @@
       "dependsOn": [],
       "coveredOperationIds": [],
       "title": "Top-level installer presentation and materialization",
-      "workStatus": "in-progress",
-      "remainingWork": "설치 core/ports와 sudo 소유권 복구의 기존 검증·통합을 유지한다. 실제 Windows 기존3whole은44PASS/76기존SKIP, shipped JSDoc/declaration strict 소비자는0으로 통과했다. 실제 .cmd 런처 소비자는 검증 스크립트의 중복 argument escaping으로1을 반환했다. 런처 바이트는 예상값과 일치했다. 이 임시 실행 옵션 한 곳을 수정한 공개 런처 재검증과 원래 최종 판정이 남는다.",
+      "workStatus": "completed",
+      "remainingWork": "해당 구조 그룹의 원래 완료 조건을 충족했다. 실제 macOS·live User PATH registry·global 설치 및 전체 native/reliability/formal 조건은 별도로 남는다.",
       "completionCriteria": "Native installer owns terminal/PowerShell hints, Unix/Windows launchers and package serialization; core retains build/cache/image/PATH/copy/uninstall and truthful partial outcomes. Qualify materialized bytes/public launchers through current review, joint QA and delivery.",
       "confirmedAtCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
       "sourceTrace": {
@@ -3376,14 +3398,40 @@
           "scripts/install/ports.d.mts"
         ]
       },
-      "status": "Current controlled Windows installer whole/type qualification passed; actual public launcher witness failed due to temporary cmd framing. Preserve failure and successful44/76 evidence. R13 remains in progress; no product failure or completion is inferred.",
+      "status": "Original R13 criterion independently accepted after current Windows44PASS/76existingSKIP, shipped JSDoc/declaration strict0 and corrected actual cmd.exe -> ccc.cmd -> compiled CLI --version0. Original configured tests/real-tests noEmit checks both0; prior successful suites/strict evidence retained without replay. Live PATH registry persistence is not credited.",
       "taskId": "TASK__architecture-final-source-remediation",
       "currentQualificationTask": "TASK__root-native-framing-recovery-20261014",
       "historicalRemainingWorkBeforeRootRecovery": "Installer 네이티브 표현·파일 생성 분리 구현·독립 리뷰 완료. 수정 후보의 Linux 검증51건 및 Windows 패키지 두 검사는 통과. 인증 파일 교체·브로커 E2E 실패 해결, 공동 QA 통과 및 로컬 통합이 남음. 별도70b1b4de postinstall 수정은 Main 전달·빌드 및8개 파일528PASS; native npm-stub subprocess3건은 full Windows build나 timeout 원인 검증이 아님. 구조 완료 credit 없음.",
       "historicalQualificationTasks": [
         "TASK__windows-native-termination-observation-budget"
       ],
-      "historicalRemainingWorkBeforeWindowsInstallerR120261018": "설치 코어/포트 분리와 c2a1f54f portable 검증을 유지한다. 이후 sudo 빌드 소유권 복구 ebf55316은 현재 installer 바이트와 기존 독립 Code DEEP/Security·install-global whole99PASS·배포 근거를 대조해 확인했다.99사례는 install-global만이며 unchanged core/ports는 c2a의 인증 재사용이다. 실제 macOS sudo 소유권/자격 전환, Windows launcher/User PATH·live engine 및 원래 최종 설치 판정은 남는다. 근거는 currentEvidenceReconciliation20261017에 있다."
+      "historicalRemainingWorkBeforeWindowsInstallerR120261018": "설치 코어/포트 분리와 c2a1f54f portable 검증을 유지한다. 이후 sudo 빌드 소유권 복구 ebf55316은 현재 installer 바이트와 기존 독립 Code DEEP/Security·install-global whole99PASS·배포 근거를 대조해 확인했다.99사례는 install-global만이며 unchanged core/ports는 c2a의 인증 재사용이다. 실제 macOS sudo 소유권/자격 전환, Windows launcher/User PATH·live engine 및 원래 최종 설치 판정은 남는다. 근거는 currentEvidenceReconciliation20261017에 있다.",
+      "historicalRemainingWorkBeforeFinalWindowsAcceptance20261018": {
+        "status": "Current controlled Windows installer whole/type qualification passed; actual public launcher witness failed due to temporary cmd framing. Preserve failure and successful44/76 evidence. R13 remains in progress; no product failure or completion is inferred.",
+        "workStatus": "in-progress",
+        "remainingWork": "설치 core/ports와 sudo 소유권 복구의 기존 검증·통합을 유지한다. 실제 Windows 기존3whole은44PASS/76기존SKIP, shipped JSDoc/declaration strict 소비자는0으로 통과했다. 실제 .cmd 런처 소비자는 검증 스크립트의 중복 argument escaping으로1을 반환했다. 런처 바이트는 예상값과 일치했다. 이 임시 실행 옵션 한 곳을 수정한 공개 런처 재검증과 원래 최종 판정이 남는다."
+      },
+      "acceptedIntegrationCommit": "ebf553164af2ae607b82e6a0d6a6e30ff6f6a532",
+      "currentCriterionQualification20261018": {
+        "reviewer": "/root/code_review_root_remaining_13a2c_20261018",
+        "actualFinal": "PASS; original Root AC001–007 implementation/substantive qualification complete, final docs/delivery/formal disposition separate",
+        "factsPath": "results/root-native-13a2c-windows-20261018/qa-installer-r2/native-facts.json",
+        "factsSha256": "7f51ca0ba80b0a4f5e9dfd2af5f809bb43286de946505d0d25c5ad9d36c8bc88",
+        "freshCommands": 3,
+        "allExitZero": true,
+        "wholeCarry": {
+          "files": 3,
+          "passed": 44,
+          "existingWindowsSkipped": 76,
+          "strictExit": 0
+        },
+        "pathEvidence": "Retained whole report1e41c6be63958fd169adf56ad885fc30ba2148353f09d0a21a5313c7137c5bc7 contains actual passed positive User PATH and read/write failure bodies. Separate public consumer nested PATH leaf has CRLF SyntaxError, truthfully READ_ERROR/manual remedy; no successful live registry claim or new replay.",
+        "completion": "Sole driver4248/birth2026-10-18T10:06:12.2644597Z terminal0,28.638s; final90-process inventory10:07:40.6811859Z no Node/known20PIDs/children;11finite actors joined",
+        "sourceContributions": [
+          "c2a1f54f4ea70f118bcbb4438e751f4076193ee0",
+          "ebf553164af2ae607b82e6a0d6a6e30ff6f6a532"
+        ]
+      }
     },
     {
       "id": "shared-mutation-lock-ownership-policy-structural",
@@ -4844,17 +4892,17 @@
     "scope": "Nine existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery, including direct physical attach/detach at b14321e7. Only known recording start/finalize/status operations remain partial. Historical twelve-operation retraction and prior seven-credit qualification retained; no exhaustive/native/formal certification."
   },
   "confirmedStructuralScopeAudit": {
-    "sourceCommit": "df73df428f40e12897a1179cffae51546e59c746",
+    "sourceCommit": "6d597e7665817b477f3db8d354ad006f7504db5a",
     "previousCompleted": 19,
     "previousGroups": 19,
     "confirmedGroups": 25,
-    "completedGroups": 22,
-    "partialGroups": 2,
-    "inProgressGroups": 1,
+    "completedGroups": 24,
+    "partialGroups": 1,
+    "inProgressGroups": 0,
     "pendingGroups": 0,
-    "remainingGroups": 3,
+    "remainingGroups": 1,
     "sourceUniverseCertified": false,
-    "scope": "Twenty-two of25 confirmed structural groups qualified. Original R08/R12/R16/R19 criteria accepted by independent evidence/delivery mapping; R13/R17/R18 remain. No new operation/gate credit or source-universe/live-provider/reliability/formal/full-Goal certification.",
+    "scope": "Twenty-four of25 confirmed structural groups qualified. Original R13 and R17 criteria independently accepted; only R18 controlled public lifecycle qualification remains. Operation/gate counts and source-universe false unchanged; named final integration/native/reliability/formal/full-Goal conditions remain separate.",
     "currentQualificationTask": "TASK__root-native-framing-recovery-20261014",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",
@@ -6172,7 +6220,9 @@
         "R08",
         "R12",
         "R16",
-        "R19"
+        "R19",
+        "R13",
+        "R17"
       ],
       "evidence": {
         "rootR1": {
@@ -6230,9 +6280,53 @@
         "remaining": "Surgical temporary cmd consumer framing correction and actual retry; original two configured noEmit checks also lack current qualification evidence."
       },
       "preservedFailures": "Original private config strict TS7060 and installer cmd quoting failures remain retained; passing whole/type evidence reused, not erased or replayed.",
-      "preservation": "All1832 protected working entries retained. Index byte/metadata preservation is FALSE after the disclosed cross-agent09:28git status cache replacement;1751stage0entries matchHEAD, staged content unchanged. Root preserved the observed cache without reset/chown; ordinary subsequent commits may update it.",
-      "credit": "Four original structural groups only:22/25=88%,2partial/1inprogress/3remaining. Operation218/219,75gates and source-universe false unchanged.",
-      "remainingCeilings": "R13/R17/R18, original Root final obligations, live macOS/host credentials/ACL/providers/GUI, reliability, exhaustive source qualification, formal attestation and full Goal remain unclaimed."
+      "preservation": "All1832 working entries/staged content retained through native execution. Both index cache changes are disclosed; original frozen-index byte/metadata preservation is FALSE. Supplemental e41a71 cache remained exact through R2;1751stage0mode/blob/path entries equalHEAD. No reset/chown/reconstruction; subsequent authorized commits update index normally.",
+      "credit": "Six original group decisions across the root/current Windows wave:24/25=96%,1partial/0inprogress/1remaining R18. No new operation or75gate credit and source-universe false unchanged.",
+      "remainingCeilings": "R18 positive public lifecycle witness; final affected integration/package equivalence; original named native/provider/macOS/runtime and lifecycle residue/reliability gates; automatic formal attestation and whole Goal remain unclaimed. Original ADR excludes certification of every existing function.",
+      "historicalCreditBeforeFinalInstallerBrokerAcceptance": "Four original structural groups only:22/25=88%,2partial/1inprogress/3remaining. Operation218/219,75gates and source-universe false unchanged.",
+      "installerR2": {
+        "reviewer": "/root/code_review_root_remaining_13a2c_20261018",
+        "actualFinal": "PASS; original Root AC001–007 implementation/substantive qualification complete, final docs/delivery/formal disposition separate",
+        "factsPath": "results/root-native-13a2c-windows-20261018/qa-installer-r2/native-facts.json",
+        "factsSha256": "7f51ca0ba80b0a4f5e9dfd2af5f809bb43286de946505d0d25c5ad9d36c8bc88",
+        "freshCommands": 3,
+        "allExitZero": true,
+        "wholeCarry": {
+          "files": 3,
+          "passed": 44,
+          "existingWindowsSkipped": 76,
+          "strictExit": 0
+        },
+        "pathEvidence": "Retained whole report1e41c6be63958fd169adf56ad885fc30ba2148353f09d0a21a5313c7137c5bc7 contains actual passed positive User PATH and read/write failure bodies. Separate public consumer nested PATH leaf has CRLF SyntaxError, truthfully READ_ERROR/manual remedy; no successful live registry claim or new replay.",
+        "completion": "Sole driver4248/birth2026-10-18T10:06:12.2644597Z terminal0,28.638s; final90-process inventory10:07:40.6811859Z no Node/known20PIDs/children;11finite actors joined",
+        "sourceContributions": [
+          "c2a1f54f4ea70f118bcbb4438e751f4076193ee0",
+          "ebf553164af2ae607b82e6a0d6a6e30ff6f6a532"
+        ]
+      },
+      "brokerR17Decision": {
+        "reviewer": "/root/code_review_provider_windows_148f5_recovery2",
+        "actualFinal": "PASS; original R17 structural criterion only",
+        "publicWitnessSha256": "13c04e5f5cbea5ad7479408f8173e2d81d535e16ac25d6523797bae1754207bf",
+        "publicEvidence": "Authenticated HTTP status and SDK recording start/status/stop, receipt omission, real recorder identity/termination; actual source/built/npm/Unix commands0 and joined",
+        "windowsFactsPath": "results/provider-native-148f5-windows-20261018/qa-r2/native-facts.json",
+        "windowsFactsSha256": "294f045dd108df8b06936b604773e6f144c9e5e0cf169f058ddc48927c72241c",
+        "sourceContributions": [
+          "9b12312ad25e66ad250742d75a29082ff44c57c5",
+          "7f3c9439c778e6b150983982e2eea30a79562dc5",
+          "1a3dbf97296774a8877eed99fd518268381968e5",
+          "9e12902aa77ed7b7343fe254c6e72fbc48fc9dd6"
+        ],
+        "nativeTier": "Controlled actual Windows Node/CIM/file/process/public/backend-child bindings; not live providers/macOS/GUI"
+      }
+    },
+    "historicalCountsBeforeFinalInstallerBrokerAcceptance20261018": {
+      "sourceCommit": "df73df428f40e12897a1179cffae51546e59c746",
+      "completedGroups": 22,
+      "partialGroups": 2,
+      "inProgressGroups": 1,
+      "remainingGroups": 3,
+      "scope": "Twenty-two of25 confirmed structural groups qualified. Original R08/R12/R16/R19 criteria accepted by independent evidence/delivery mapping; R13/R17/R18 remain. No new operation/gate credit or source-universe/live-provider/reliability/formal/full-Goal certification."
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {

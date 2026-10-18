@@ -4,8 +4,8 @@ Updated: 2026\-10\-18. Source baseline: `c284ead3a637d4d31ca93661920ee0f0200b907
 
 Generated from [the source inventory](architecture-operation-inventory.json) and [the progress overlay](architecture-progress.json).
 
-확인된 구조 정리 그룹: **22/25 완료 (88.0%)**, **3개 남음**.
-부분 완료: **2**; 진행 중: **1**; 미착수: **0**.
+확인된 구조 정리 그룹: **24/25 완료 (96.0%)**, **1개 남음**.
+부분 완료: **1**; 진행 중: **0**; 미착수: **0**.
 
 이 수치는 현재 확인된 구조 정리 그룹을 같은 비중으로 센 것이다. 전체 전환의 노력·완료율이나 전수조사 완료를 의미하지 않는다. 완료는 해당 그룹 범위의 독립 리뷰·portable QA·로컬 통합이 확인된 상태다. 부분 완료·진행 중·미착수는 완료 수에 포함하지 않는다. Native 플랫폼, reliability, 전체 소스 범위 및 formal close는 아래 별도 조건으로 남는다.
 
@@ -15,27 +15,13 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 
 | WBS | 그룹 | 상태 | 선행 작업 | 남은 구현 |
 | --- | --- | --- | --- | --- |
-| R13 | Top\-level installer presentation and materialization | 진행 중 | 없음 | 설치 core/ports와 sudo 소유권 복구의 기존 검증·통합을 유지한다\. 실제 Windows 기존3whole은44PASS/76기존SKIP, shipped JSDoc/declaration strict 소비자는0으로 통과했다\. 실제 \.cmd 런처 소비자는 검증 스크립트의 중복 argument escaping으로1을 반환했다\. 런처 바이트는 예상값과 일치했다\. 이 임시 실행 옵션 한 곳을 수정한 공개 런처 재검증과 원래 최종 판정이 남는다\. |
-| R17 | 브로커 상태·녹화·Appium 결과 | 부분 완료 | 없음 | 상태·녹화·owner\-cleanup 의미 결과와 기존 executor/락 소유권 전환을 유지한다\.1e093ce5의 Appium phase는814PASS/기존2SKIP,9e12902a의 native allowance/실패 관측은375PASS/기존2SKIP,abb48599의 MCP supervision phase는195PASS와 실제 archive/Unix CLI/MCP로 검증·통합했다\. 현재 broker/direct physical/Appium/admin 경로의 담당은 inventory의 한정된 current trace에 구분했다\. 새 전체 Appium timeout 요구나 이 경로의 추가 Source 결함은 확인되지 않았다\. 실제 Windows/macOS/provider 및 원래 범위·reliability·최종 판정은 남는다\. |
-| R18 | 브로커 provider 수명주기 결과 | 부분 완료 | 없음 | 기존 provider lifecycle·snapshot·worker/helper 전환을 유지한다\. Direct Sandbox 응답과 macOS 시작 예산은1e093ce5에 통합했고814PASS/기존2SKIP 및 strict shipping 검증을 확인했다\. macOS recorder\-exit와 Saved/start classifier는9e12902a의375PASS/기존2SKIP·실제 배포 QA 범위에 포함된다\.97317 감사가 지목한 Sandbox 응답 경계를 새 개발로 다시 세지 않는다\. 실제 Windows/macOS/provider 동작과 원래 route/범위·reliability·최종 판정은 남으며 2026\-10\-18 예약 guest 접근과 이전 driver 부재는 확인했다\. 현재 loaded host artifact와 이 그룹의 실제 provider 검증은 아직 미확인이다\. |
+| R18 | 브로커 provider 수명주기 결과 | 부분 완료 | 없음 | 구현과 기존 portable/type/shipping·현재 Windows19파일 검증은 유지한다\. 남은 원래 조건은 Windows에서 현재 compiled broker/MCP의 양성 iOS create/start/stop/delete와 macOS start/address 게시를 기존 공개 소비자로 한 번 확인하는 것이다\. 기기 상태를 미리 기록한 tool/transfer 테스트로 수명주기 실행을 대신하지 않는다\. 새 Source나 검증 틀은 필요하지 않다\. |
 
 ### 진행 순서와 완료 판정
 
 남은 그룹은 표의 선행 작업과 실제 파일 소유권을 기준으로 병렬 진행한다. 공유 조합 파일은 코디네이터가 연결하고, 각 그룹의 결과를 함께 검증한다.
 
 공통 조합 지점의 연결, 독립 리뷰, portable QA, 로컬 통합까지 확인한 그룹만 완료로 바꾼다. 이 공통 작업은 각 그룹의 완료 조건에 포함하며 별도 그룹으로 더하지 않는다. 계획 작성·코드 작성만으로 완료 수를 올리지 않는다.
-
-### R13. Top\-level installer presentation and materialization
-
-완료 조건: Native installer owns terminal/PowerShell hints, Unix/Windows launchers and package serialization; core retains build/cache/image/PATH/copy/uninstall and truthful partial outcomes\. Qualify materialized bytes/public launchers through current review, joint QA and delivery\.
-
-확인한 소스: [scripts/install/application\.mjs](../../scripts/install/application.mjs), [scripts/install/domain\.mjs](../../scripts/install/domain.mjs), [scripts/install/ports\.d\.mts](../../scripts/install/ports.d.mts)
-
-### R17. 브로커 상태·녹화·Appium 결과
-
-완료 조건: 상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다\.
-
-확인한 소스: [packages/device\-lab/src/device\-lab/application/broker\-recording\.ts](../../packages/device-lab/src/device-lab/application/broker-recording.ts), [packages/device\-lab/src/device\-lab/domain/broker\-recording\.ts](../../packages/device-lab/src/device-lab/domain/broker-recording.ts), [packages/device\-lab/src/device\-lab/application/broker\-owner\-cleanup\.ts](../../packages/device-lab/src/device-lab/application/broker-owner-cleanup.ts), [packages/device\-lab/src/device\-lab/application/broker\-appium\.ts](../../packages/device-lab/src/device-lab/application/broker-appium.ts)
 
 ### R18. 브로커 provider 수명주기 결과
 
@@ -49,6 +35,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | --- | --- | --- | --- |
 | R02 | MCP 요청·결과 경계 | `6ea57ca5` | 코어가 기기 선택·검증·순서·대기 예산을 결정하고, 어댑터가 모바일 요청 프레임과 응답을 정규화한다\. 활성 앱 대기 경계의 통합 기여는 유지한다\. |
 | R04 | 브로커 물리 기기·리스·정리 | `9c807d1e` | 선택·소유권·리스·정리 정책은 유지하고, 코어가 정규화된 기기 목록과 의미 결과만 사용한다\. Native process/command grammar is decoded outward; inward admission/finalization consumes semantic facts\. |
+| R17 | 브로커 상태·녹화·Appium 결과 | `9b12312a` | 상태·녹화·Appium 의미 결과와 외부 응답 경계가 분리되고, 독립 리뷰·portable QA·로컬 통합이 확인된다\. |
 | R06 | Hyper\-V 수명주기·네이티브 경계 | `0211995a` | 어댑터가 seed 실행 결과를 정규화하고, 코어가 VM·키·네트워크 동일성·host trust·rollback을 판단한다\. Native process/command grammar is decoded outward; inward admission/finalization consumes semantic facts\. 현재 감사에서 확인한 inward native framing과 완료 증거 조건을 함께 충족해야 한다\. |
 | 기완료 | Android·iOS 환경 제어 | `438db1c0` | 환경 코어가 의미 입력·결과만 사용하고, ADB·simctl 명령 구성과 응답 처리는 네이티브 어댑터에 둔다\. |
 | 기완료 | Android 앱 관리 | `438db1c0` | 앱 설치·실행·삭제·권한 정책과 ADB 명령 구성이 분리되고, emulator·physical 양쪽 호출 경로의 QA가 확인된다\. |
@@ -65,6 +52,7 @@ Generated from [the source inventory](architecture-operation-inventory.json) and
 | R10 | iOS 관측·접근 | `6ea57ca5` | 코어는 session 수명주기·동일성·예산·fallback 순서·staging·recording 거절을 유지하고, 어댑터가 유한한 관측·접근 효과와 응답을 제공한다\. |
 | R11 | QEMU 이미지·수명주기 | `7b0fb1d0` | 코어는 경로·materialize/reuse·runtime 동일성·snapshot 게시·공개 정책을 유지하고, 어댑터가 overlay·launch·provisioning·guest SSH·snapshot 명령 구성을 처리한다\. 독립 리뷰·QA·로컬 통합으로 확인한다\. |
 | R12 | Codex credential runtime observations | `5eb8a0d9` | Native composition decodes ps/inspect and prior UID:GID into semantic account/container/mount facts; core retains source, inode, principal, active\-user and startup\-lock refusal\. Qualify actual fail\-closed callers through current review, joint QA and delivery\. |
+| R13 | Top\-level installer presentation and materialization | `ebf55316` | Native installer owns terminal/PowerShell hints, Unix/Windows launchers and package serialization; core retains build/cache/image/PATH/copy/uninstall and truthful partial outcomes\. Qualify materialized bytes/public launchers through current review, joint QA and delivery\. |
 | R14 | Shared mutation\-lock ownership policy | `3f8efc17` | Unknown/live owners block bounded acquisition; only qualified dead PID, verified identity mismatch or different boot permits reclamation\. Qualify exact\-record release, successor protection and sync/async callers through current review, joint QA and delivery\. |
 | R15 | Release workspace version synchronization | `1b699b6d` | Synchronize tagged root/workspace versions and exact internal dependency pins before npm ci/build/publish; qualify package assembly/shipping locally without hosted CI\. |
 | R20 | Clean native inventory and result boundary | `cf6ae421` | Native stdout/status/error와 running 판정은 facade에서 처리하고 application은 ID·이름 admission, dedup, 선택·확인, claim veto·캡처 ID·중단 순서를 소유한다\. 독립 Code/Security, 기존 테스트·엄격한 Source/emitted 계약·실제 배포 CLI와 로컬 통합을 확인한다\. |
