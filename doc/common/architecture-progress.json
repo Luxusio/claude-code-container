@@ -2400,27 +2400,21 @@
     {
       "id": "broker-provider-lifecycle-results-structural",
       "coveredOperationIds": [],
-      "status": "Original independent R18 mapping found one controlled Windows public lifecycle gap: positive iOS create/boot/shutdown/delete and macOS boot/address publication. Existing current Android/Sandbox lifecycle and direct macOS/Sandbox/Hyper-V/worker contributions remain qualified; portable pure-policy owners need no blanket per-OS replay. Resume original broker-semantic task for the existing public witness, not a new extraction.",
+      "status": "Original R18 structural criterion accepted after independent Code/Security, one actual current Windows public built consumer and subsequent independent original-criterion adjudication. Prior portable/type/shipping and Android/Sandbox/worker evidence retained; no additional Source extraction or blanket per-OS replay.",
       "taskId": "TASK__architecture-provider-lifecycle-result-boundaries",
-      "acceptedIntegrationCommit": "8060aa02e9746ba501b0f03a8bba56133015415a",
-      "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/provider-lifecycle-8060-e5t_1pbv/final-result.json",
-      "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
+      "acceptedIntegrationCommit": "9b12312ad25e66ad250742d75a29082ff44c57c5",
+      "qaEvidence": "results/broker-semantic-13cff-windows-20261018/qa/native-facts.json",
+      "deliveryEvidence": "Current semantic integration9b12312; historical8060aa02 replayed by actual ancestor1f19bae52d9c1aac4f2894bd8f633d328f5bafdd with byte-identical complete patch d8f684e4794b0811bf95aeedda51f49eab3e1d39f70fa5da358db347d8db1926. Original source/test/history preserved.",
       "title": "브로커 provider 수명주기 결과",
-      "workStatus": "partial",
-      "remainingWork": "구현과 기존 portable/type/shipping·현재 Windows19파일 검증은 유지한다. 남은 원래 조건은 Windows에서 현재 compiled broker/MCP의 양성 iOS create/start/stop/delete와 macOS start/address 게시를 기존 공개 소비자로 한 번 확인하는 것이다. 기기 상태를 미리 기록한 tool/transfer 테스트로 수명주기 실행을 대신하지 않는다. 새 Source나 검증 틀은 필요하지 않다.",
+      "workStatus": "completed",
+      "remainingWork": "이 그룹의 원래 구조 정리 조건은 충족했다. 실제 provider·native macOS·런타임·reliability 및 전체 Goal 판정은 별도이며 이 그룹 완료로 대신하지 않는다.",
       "completionCriteria": "Android·iOS·macOS·Sandbox 수명주기 의미 결과와 네이티브 실행·응답 표현이 분리되고 리뷰·portable QA·통합이 확인된다.",
       "confirmedAtCommit": "c9cae5aedf7ee2d387e5a5d25c84d59ffb8204bb",
       "historicalStatusBeforeFreshSourceAudit": "Accepted bounded source at8060aa02: semantic Android/iOS/macOS/Sandbox lifecycle/create outcomes and finite prepared native effects with outward native framing and response presentation. Actual independent Code/Security/Docs and QA425 across17 whole files with zero skips passed; genuine1330 build artifacts qualified from unchanged executable Source/output bytes, strong contracts, lint/package7/npm Unix shipping/MCP/CLI passed. Protected42 pins/97 user paths delivered; current f5a0 Source pins qualified. Formal receipt-empty park and original worktree retained. Zero operation credit; exhaustive/native/reliability/formal Goal certification unverified.",
       "wbsCode": "R18",
       "dependsOn": [],
       "sourceTrace": {
-        "remainingPaths": [
-          "packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.ts",
-          "packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.ts",
-          "packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.ts",
-          "packages/device-lab/src/device-lab/application/lifecycle/windows-sandbox-lifecycle.ts",
-          "packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs"
-        ],
+        "remainingPaths": [],
         "nativeConsumers": [
           "packages/device-lab/providers/backends/android.mjs",
           "packages/device-lab/providers/backends/android-device.mjs",
@@ -2449,8 +2443,8 @@
       "currentSourceAudit": {
         "sourceCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
         "taskId": "TASK__architecture-final-source-remediation",
-        "status": "partial-awaiting-current-qualification",
-        "scope": "Android/iOS/macOS 직접 수명주기 framing과 Android 접근 명령을 어댑터로 분리하고 리뷰·QA·통합한다. 기존 deadline 수정·provider routing의 공동 QA·통합도 남음. R17/R19와 공유하는 브로커·codec 파일 연결은 순차 처리한다."
+        "status": "original-structural-criterion-qualified",
+        "scope": "Original native framing and shared broker integration qualified by retained review/portable/current compiled public evidence; missing positive Windows iOS/macOS lifecycle execution now passed. Actual providers/native macOS and full-Goal requirements remain separate."
       },
       "currentQualificationTask": "TASK__architecture-broker-semantic-finish-20261015",
       "currentSourceCheck": {
@@ -2472,7 +2466,29 @@
         }
       ],
       "currentProviderBoundaryTask": "TASK__architecture-provider-native-boundary-wave-20261017; see confirmedStructuralScopeAudit/currentProviderBoundaryWave20261017 for current scoped evidence/disposition.",
-      "historicalRemainingWorkBeforeFinalCriterionMapping20261018": "기존 provider lifecycle·snapshot·worker/helper 전환을 유지한다. Direct Sandbox 응답과 macOS 시작 예산은1e093ce5에 통합했고814PASS/기존2SKIP 및 strict shipping 검증을 확인했다. macOS recorder-exit와 Saved/start classifier는9e12902a의375PASS/기존2SKIP·실제 배포 QA 범위에 포함된다.97317 감사가 지목한 Sandbox 응답 경계를 새 개발로 다시 세지 않는다. 실제 Windows/macOS/provider 동작과 원래 route/범위·reliability·최종 판정은 남으며 2026-10-18 예약 guest 접근과 이전 driver 부재는 확인했다. 현재 loaded host artifact와 이 그룹의 실제 provider 검증은 아직 미확인이다."
+      "historicalRemainingWorkBeforeFinalCriterionMapping20261018": "기존 provider lifecycle·snapshot·worker/helper 전환을 유지한다. Direct Sandbox 응답과 macOS 시작 예산은1e093ce5에 통합했고814PASS/기존2SKIP 및 strict shipping 검증을 확인했다. macOS recorder-exit와 Saved/start classifier는9e12902a의375PASS/기존2SKIP·실제 배포 QA 범위에 포함된다.97317 감사가 지목한 Sandbox 응답 경계를 새 개발로 다시 세지 않는다. 실제 Windows/macOS/provider 동작과 원래 route/범위·reliability·최종 판정은 남으며 2026-10-18 예약 guest 접근과 이전 driver 부재는 확인했다. 현재 loaded host artifact와 이 그룹의 실제 provider 검증은 아직 미확인이다.",
+      "historicalStatusBeforeFinalWindowsPublicQualification20261018": {
+        "workStatus": "partial",
+        "status": "Original independent R18 mapping found one controlled Windows public lifecycle gap: positive iOS create/boot/shutdown/delete and macOS boot/address publication. Existing current Android/Sandbox lifecycle and direct macOS/Sandbox/Hyper-V/worker contributions remain qualified; portable pure-policy owners need no blanket per-OS replay. Resume original broker-semantic task for the existing public witness, not a new extraction.",
+        "remainingWork": "구현과 기존 portable/type/shipping·현재 Windows19파일 검증은 유지한다. 남은 원래 조건은 Windows에서 현재 compiled broker/MCP의 양성 iOS create/start/stop/delete와 macOS start/address 게시를 기존 공개 소비자로 한 번 확인하는 것이다. 기기 상태를 미리 기록한 tool/transfer 테스트로 수명주기 실행을 대신하지 않는다. 새 Source나 검증 틀은 필요하지 않다.",
+        "acceptedIntegrationCommit": "8060aa02e9746ba501b0f03a8bba56133015415a",
+        "qaEvidence": "/tmp/ccc-pending15-ordinary-qa-20261010-xhujmynm/evidence/provider-lifecycle-8060-e5t_1pbv/final-result.json",
+        "deliveryEvidence": "/tmp/ccc-provider-lifecycle-integration-after-20261012.json",
+        "currentSourceAudit": {
+          "sourceCommit": "7bf6119c4288536751eb8838db4e4522b90d111a",
+          "taskId": "TASK__architecture-final-source-remediation",
+          "status": "partial-awaiting-current-qualification",
+          "scope": "Android/iOS/macOS 직접 수명주기 framing과 Android 접근 명령을 어댑터로 분리하고 리뷰·QA·통합한다. 기존 deadline 수정·provider routing의 공동 QA·통합도 남음. R17/R19와 공유하는 브로커·codec 파일 연결은 순차 처리한다."
+        },
+        "remainingPaths": [
+          "packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.ts",
+          "packages/device-lab/src/device-lab/application/lifecycle/windows-sandbox-lifecycle.ts",
+          "packages/device-lab/providers/application/lifecycle/windows-sandbox-stop.mjs"
+        ]
+      },
+      "currentWindowsPublicQualification": "confirmedStructuralScopeAudit.currentBrokerPublicQualification20261018"
     },
     {
       "id": "shared-android-contract-cleanup-accepted",
@@ -4892,18 +4908,18 @@
     "scope": "Nine existing operations requalified by actual independent required-binding review, accepted source/QA and protected delivery, including direct physical attach/detach at b14321e7. Only known recording start/finalize/status operations remain partial. Historical twelve-operation retraction and prior seven-credit qualification retained; no exhaustive/native/formal certification."
   },
   "confirmedStructuralScopeAudit": {
-    "sourceCommit": "6d597e7665817b477f3db8d354ad006f7504db5a",
+    "sourceCommit": "fdf328fd805604437640e83d52391980090ebb58",
     "previousCompleted": 19,
     "previousGroups": 19,
     "confirmedGroups": 25,
-    "completedGroups": 24,
-    "partialGroups": 1,
+    "completedGroups": 25,
+    "partialGroups": 0,
     "inProgressGroups": 0,
     "pendingGroups": 0,
-    "remainingGroups": 1,
+    "remainingGroups": 0,
     "sourceUniverseCertified": false,
-    "scope": "Twenty-four of25 confirmed structural groups qualified. Original R13 and R17 criteria independently accepted; only R18 controlled public lifecycle qualification remains. Operation/gate counts and source-universe false unchanged; named final integration/native/reliability/formal/full-Goal conditions remain separate.",
-    "currentQualificationTask": "TASK__root-native-framing-recovery-20261014",
+    "scope": "All25 currently confirmed structural groups qualified. R18 original positive controlled Windows public lifecycle gap accepted; original criteria and218of219operation/75gate accounting unchanged. This is unweighted structural completion, not whole-Goal/native-provider/macOS/runtime/reliability certification.",
+    "currentQualificationTask": "TASK__architecture-broker-semantic-finish-20261015",
     "currentQualification": {
       "candidateCommit": "71473106c0c1220ea546b00f945f3dc41651ab0b",
       "independentReviews": "Smoke route correction2fca1f74: actual independent Code/Security PASS; committed WBS71473106 documentation PASS. Final QA remains FAIL; no integration or completion credit.",
@@ -5349,7 +5365,7 @@
       "remainingGroups": 10,
       "scope": "완료13/23(56.5%)·잔여10개(부분6·진행4) 유지. R08/R11/R12/R13/R14/R15/R16 구현·리뷰 후보와 R17 구현·리뷰 및 Linux QA 후보의 공동 qualification·통합이 남음. R17 native QA는 빌드·테스트 전에 중단됨. R18/R19 실제 framing 구현이 남음. 원래71473106 FAIL 및 과거 측정·native/reliability·전수 범위·formal 조건 유지; 문서 복구와 인접70b1b4de 전달에 완료 credit 없음."
     },
-    "currentQualificationScope": "currentProviderBoundaryWave20261017 records actual independent Code/Security, portable814PASS/2existingSKIP and fresh strict archive/Unix/runtime/CLI/MCP qualification. Actual final QA remains BLOCKED_ENV for the existing Windows VM Saved/409 condition. Qualification alone does not establish Main delivery. Prior revision-bound contributions and native/universe/startup/reliability/formal/whole-Goal holds remain.",
+    "currentQualificationScope": "Actual final controlled Windows broker public qualification completes original structural R18; prior affected native/export/portable/shipping contributions retain their qualified scopes. Original named real-native/runtime/macOS and reliability acceptance, formal attestation and full Goal remain separate.",
     "historicalStructuralAccountingBeforeQemuRecovery": {
       "sourceCommit": "1b699b6d57fa9fd915e7875687a81dfb7de51c54",
       "completedGroups": 14,
@@ -6327,6 +6343,73 @@
       "inProgressGroups": 1,
       "remainingGroups": 3,
       "scope": "Twenty-two of25 confirmed structural groups qualified. Original R08/R12/R16/R19 criteria accepted by independent evidence/delivery mapping; R13/R17/R18 remain. No new operation/gate credit or source-universe/live-provider/reliability/formal/full-Goal certification."
+    },
+    "historicalCountsBeforeFinalBrokerPublicQualification20261018": {
+      "confirmedGroups": 25,
+      "completedGroups": 24,
+      "partialGroups": 1,
+      "inProgressGroups": 0,
+      "pendingGroups": 0,
+      "remainingGroups": 1,
+      "scope": "Twenty-four of25 confirmed structural groups qualified. Original R13 and R17 criteria independently accepted; only R18 controlled public lifecycle qualification remains. Operation/gate counts and source-universe false unchanged; named final integration/native/reliability/formal/full-Goal conditions remain separate."
+    },
+    "currentBrokerPublicQualification20261018": {
+      "taskId": "TASK__architecture-broker-semantic-finish-20261015",
+      "runId": "01a13cff-f82a-7f6a-8db2-f857e4ce685d",
+      "qualifiedWorkingHead": "fdf328fd805604437640e83d52391980090ebb58",
+      "facts": {
+        "path": "results/broker-semantic-13cff-windows-20261018/qa/native-facts.json",
+        "sha256": "c990d5e2420a332c16604f3ac3b6f5842e588a68c8cc680df322fa708faa08f8",
+        "bytes": 21882
+      },
+      "actualFinals": "Affected Code DEEP/nohunters/discovery exhausted PASS and independent Security PASS preceded independent qa-cli PASS; subsequent independent original-criterion Code PASS accepted R18 and original AC001–004 substantive implementation/qualification. Final outcome Docs/local delivery/formal disposition remain separately recorded.",
+      "execution": {
+        "freshCommands": 1,
+        "form": "built",
+        "exitCode": 0,
+        "seconds": 2.743,
+        "phaseSeconds": 8.957,
+        "httpRequests": 12,
+        "sdkMcpCalls": 5,
+        "finiteInjectedProviderCalls": 23,
+        "ios": "create/start/stop/delete each200",
+        "macos": "create/start/nonempty-address/stop/delete each200",
+        "originalAssertionsAndBudgetsUnchanged": true
+      },
+      "processes": {
+        "driverPid": 3948,
+        "driverBirth": "2026-10-18T10:45:31.5852459Z",
+        "consumerPid": 1448,
+        "recorderPid": 2316,
+        "recorderBirth": "2026-10-18T10:45:36.2232846Z",
+        "sdkPid": 4796,
+        "recorderHashJoinAndAbsenceObserved": true,
+        "finalInventory": "93processes at2026-10-18T10:47:10.8382570Z; zeroNode/knownownedPIDs/directchildren/private-root processes",
+        "listenerClosed": true
+      },
+      "authentication": "24rawguestrecords captured/hashverified; before/after Source1461/emits1374/currentMCPbundle/deps238packages7543files/retained inputs match. All1832Mainentries/currentindex0a9e/rawstatus/staging preserved. Both historical index-cache exceptions remain explicit.",
+      "retainedEvidence": "Original23wholeLinux948PASS/fourpublicforms/strict/build/shipping/CLI and current19wholeWindows evidence retained without replay or expanded historical scope.",
+      "preservedFailures": "Transport502 and unsafe download parent recovered by same-job/immutable-capture reobservation; no runtime retry, permission changes or cleanup signals. Earlier QA failures remain retained.",
+      "credit": "R18 only:25of25structural groups100%,zero remaining. No additional operation/gate/source-universe/fullGoal credit.",
+      "ceiling": "Controlled actual Windows Node/CIM/file/process/public bindings with finite injected provider leaves; not real providers, GUI, native macOS or POSIX signal-handler proof. Original named runtime/native/reliability and formal/fullGoal requirements remain."
+    },
+    "currentFinalCandidatePackageContinuity20261018": {
+      "reviewer": "/root/code_review_provider_windows_148f5_recovery2",
+      "kind": "Read-only original M13 affected-package provenance reconciliation; no execution replay",
+      "inputManifest": {
+        "path": "/tmp/ccc-mcp-waits-01a1499a/artifact-inputs-r1.json",
+        "sha256": "c550c709ae926c2cb0ada543fc545030d5e9347e30b79b136a75bb612e32fcf4"
+      },
+      "facts": {
+        "path": "/tmp/ccc-mcp-waits-01a1499a/qa/qa-final-facts.json",
+        "sha256": "c29ad3216e8bbaf6b31d0937b56790bff23d9d5a8902c754056506616563af67"
+      },
+      "currentInputMatches": 635,
+      "missing": 0,
+      "different": 0,
+      "qualifiedShipping": "Actual offline npm extraction and Unix materialization each1058matchingassembledfiles/noSourcelinks/addedfixtures; CLI0/0/1 and MCP59tools/protocolerror/EOF/cleanup passed. Changes abb48599 to fdf328fd are Docs/inventory and3qualified tests; no changed runtime/build input.",
+      "archiveSha256": "e2c3c3c0c77a88eb5c9ed7e74900f92776a32c4be9086f6750678e0b1cc723a5",
+      "ceiling": "Linux and Windows remain distinct genuinely qualified artifact cohorts; no bundle-byte equality or current checkout dist freshness is claimed. No newer Docs/test HEAD alone requires another build/package smoke."
     }
   },
   "historicalConfirmedStructuralScopeAuditBeforeSevenGroupAcceptance": {
