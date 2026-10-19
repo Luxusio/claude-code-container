@@ -1,14 +1,11 @@
-import type { RemoveResult } from "../../domain/workspace/removal-result.js";
+import type { RemoveResult, WorkspaceRemovalProgress, WorkspaceStrandedRegistration } from "../../domain/workspace/removal-result.js";
 
 export interface WorkspaceCliContainerIdentity {
     containerId: string;
     running: boolean;
 }
 
-export interface WorkspaceCliStrandedRegistration {
-    repository: string;
-    lockedPaths: string[];
-}
+export type WorkspaceCliStrandedRegistration = WorkspaceStrandedRegistration;
 
 export type WorkspaceContainerNames =
     | { kind: "listed"; names: readonly string[] }
@@ -27,6 +24,7 @@ export type WorkspaceCliOwnershipAssertion = (
 
 /** Native callable selection remains local to the original evaluation site. */
 export interface WorkspaceCliRemovalPorts {
+    resolveSource(sourcePath: string): string;
     selectWorkspacePath(): (cwd: string, branch: string) => string;
     selectProjectId(): (workspacePath: string) => string;
     selectFamilyLock(): WorkspaceCliFamilyLock;
@@ -38,10 +36,6 @@ export interface WorkspaceCliRemovalPorts {
     selectExists(): (name: string) => boolean;
     selectContainerRuntime(): WorkspaceCliContainerRuntime;
     selectRemoveWorkspace(): (cwd: string, branch: string, options: { force: boolean }) => RemoveResult;
-    selectLog(): (message: string) => undefined;
-    selectError(): (message: string) => undefined;
-    selectExit(): (status: number) => never;
+    publish(event: WorkspaceRemovalProgress): undefined;
     selectStrandedRegistrations(): (cwd: string, branch: string) => WorkspaceCliStrandedRegistration[];
-    selectTerminalSafeLiteral(): (text: string) => string;
-    selectPasteableArgument(): (text: string) => string;
 }

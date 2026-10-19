@@ -53,3 +53,38 @@ repair through private real Git repositories, original file bytes/inodes and
 registration snapshots. Cover missing receipts, successors, false restoration
 and settlement failures. Fixture evidence does not establish native host or
 whole-architecture completion.
+
+## Workspace removal application boundary
+
+Engineering-derived from the existing request for a noninteractive Core and the
+ownership requirements above: the complete workspace removal application accepts
+an explicit request and returns removed, incomplete or failed facts. It publishes
+typed progress without selecting consoles, process exit, terminal escaping or
+shell remedies. The CLI owns their presentation and chooses its exit status.
+Existing guard/native errors remain opaque error objects; this is an internal
+application contract, not a new remote API or error serialization protocol.
+
+Resolve the source once before callbacks, then derive the workspace and project
+through the existing native authority. Retain that source for ownership, deletion
+and registration inspection even if a progress observer changes its current
+directory. Inspect
+claims under the family guard, retain strict source/branch ownership and validate
+the complete container plan before workspace mutation. Snapshot admitted container
+IDs and running state; the same captured ID must reach stop and removal even if a
+native callback changes the original observation object. Unavailable inventory or
+unknown identity for a present target refuses mutation; confirmed absence may be
+skipped. A partial workspace result must not trigger associated-container cleanup.
+
+Retain the exact workspace result as soon as native removal returns, including
+when later container cleanup or registration inspection fails. Failure is not a
+rollback or a promise that nothing changed. Keep progress at the existing effect
+boundaries and publish snapshots rather than mutable policy inputs. Release the
+family guard before result summaries or outward exit; a late registration failure
+may follow an already published removal completion. Observer failures grant no
+additional deletion authority.
+
+Verify the whole application through data outcomes, original error identity and
+semantic progress, and execute the actual CLI composition through controlled
+native adapters. Existing private real Git owners remain required for strict
+ownership, both workspace layouts, content/ref preservation and safe remedy
+commands. Portable fixtures do not certify native host behavior.

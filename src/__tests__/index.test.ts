@@ -1356,30 +1356,6 @@ describe('strandedBranchNotice escaping', () => {
   })
 })
 
-describe('~/.ccc layout migration and default profile wiring', () => {
-  it('migrates host-side before any profile, lock or container work, and maps CCC_PROFILE=default to no profile', async () => {
-    const { readFileSync } = await vi.importActual<typeof import('fs')>('fs')
-    const { fileURLToPath } = await vi.importActual<typeof import('url')>('url')
-    const source = readFileSync(fileURLToPath(new URL('../index.ts', import.meta.url)), 'utf8')
-    const main = source.indexOf('async function main(): Promise<void> {')
-    const migrate = source.indexOf('    migrateHostHomeLayout();', main)
-    expect(migrate).toBeGreaterThan(main)
-    // After the informational early returns, before the profile is resolved or created.
-    expect(migrate).toBeGreaterThan(source.indexOf('if (informational === "version")', main))
-    expect(migrate).toBeLessThan(source.indexOf('const profile = normalizeProfile(requestedProfile);', main))
-    expect(migrate).toBeLessThan(source.indexOf('ensureProfile(profile)', main))
-    // Host-side only, and gated on live sessions read from the pre-layout locks.
-    const helper = source.slice(source.indexOf('function migrateHostHomeLayout(): void {'), main)
-    expect(helper).toContain('if (process.env[CONTAINER_ENV_KEY] === CONTAINER_ENV_VALUE) return;')
-    expect(helper).toContain('hasLiveSessions: () => [join(DATA_DIR, "locks"), join(DATA_DIR, "run", "locks")]')
-    expect(helper).toContain('.some((directory) => hasAnyActiveSessionsExcept(null, directory))')
-    // The reserved default profile cannot be added or removed.
-    expect(source).toMatch(/if \(name === DEFAULT_PROFILE_NAME\) \{\s*console\.error\(`Error: "\$\{DEFAULT_PROFILE_NAME\}" is the account used without CCC_PROFILE/)
-    expect(source).toMatch(/if \(name === DEFAULT_PROFILE_NAME\) \{\s*console\.error\(`Error: the "\$\{DEFAULT_PROFILE_NAME\}" profile cannot be removed/)
-  })
-})
-
-
 describe('main labs diagnostics dispatch', () => {
   it.each([
     { args: [] as string[], status: 0 },

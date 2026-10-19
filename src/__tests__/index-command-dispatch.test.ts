@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import type { HomeLayoutMigrationOptions } from "../ports/home-layout-migration.js";
 
 const fixture = vi.hoisted(() => ({
     home: "", project: "", workspace: "", broken: false,
@@ -10,6 +11,12 @@ const fixture = vi.hoisted(() => ({
     clean: vi.fn(), createProfile: vi.fn(), removeProfile: vi.fn(), listProfiles: vi.fn(),
     savedDefault: vi.fn(), readDefault: vi.fn(), launch: vi.fn(),
     prompt: vi.fn(), repair: vi.fn(), setAside: vi.fn(), migrate: vi.fn(),
+    profileLookup: vi.fn(), homeSessions: vi.fn(),
+    removalLocked: false, removalTrace: [] as string[],
+    removalClaims: vi.fn(), removalOwnership: vi.fn(), removalReady: vi.fn(),
+    removalIdentity: vi.fn(), removalExists: vi.fn(), removalWorkspace: vi.fn(),
+    removalStranded: vi.fn(), removalRunner: vi.fn(),
+    removalLiteralFailure: null as Error | null,
 }));
 
 // Use a private native directory for cwd/content, but make every external effect
@@ -28,13 +35,37 @@ vi.mock("../home-layout.js", async original => ({
 }));
 vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({
     ...await original<typeof import("@ccc/device-lab/device-lab-shared-state.js")>(),
-    withSharedMutationLock: (_key: string, operation: () => unknown) => operation(),
+    withSharedMutationLock: (key: string, operation: () => unknown) => {
+        // Native home preparation validates the held lock's identity and private mode.
+        expect(key).toBe(join(fixture.home, ".ccc", "codex-state.lock"));
+        writeFileSync(key, "private dispatch fixture lock\n", { mode: 0o600, flag: "wx" });
+        try { return operation(); } finally { rmSync(key); }
+    },
 }));
-vi.mock("../clipboard-server.js", () => ({ hasAnyActiveSessionsExcept: () => false, retireClipboardServerFromPortFile: vi.fn() }));
+vi.mock("../clipboard-server.js", () => ({
+    hasAnyActiveSessionsExcept: (...args: unknown[]) => fixture.homeSessions(...args),
+    retireClipboardServerFromPortFile: vi.fn(),
+}));
 vi.mock("../home-layout-container-guard.js", () => ({ hasLegacyHomeLayoutContainerMounts: () => false }));
 vi.mock("../container-runtime.js", async original => ({
     ...await original<typeof import("../container-runtime.js")>(),
     setRuntimeOverride: (...args: unknown[]) => fixture.runtime(...args),
+}));
+vi.mock("../adapters/workspace-cli-container-runtime.js", async original => {
+    const native = await original<typeof import("../adapters/workspace-cli-container-runtime.js")>();
+    return {
+        ...native,
+        createNativeWorkspaceCliContainerRuntime: () => native.createNativeWorkspaceCliContainerRuntime(
+            (...args) => fixture.removalRunner(...args), "docker",
+        ),
+    };
+});
+vi.mock("../docker.js", async original => ({
+    ...await original<typeof import("../docker.js")>(),
+    getContainerName: () => "base",
+    ensureDockerRunning: (...args: unknown[]) => fixture.removalReady(...args),
+    getManagedProjectContainerIdentity: (...args: unknown[]) => fixture.removalIdentity(...args),
+    isContainerExists: (...args: unknown[]) => fixture.removalExists(...args),
 }));
 vi.mock("../remote.js", () => ({
     remoteSetup: (...args: unknown[]) => fixture.setup(...args),
@@ -45,7 +76,7 @@ vi.mock("../remote.js", () => ({
 vi.mock("../clean.js", () => ({ cleanContainers: (...args: unknown[]) => fixture.clean(...args) }));
 vi.mock("../profile.js", async original => ({
     ...await original<typeof import("../profile.js")>(),
-    profileExists: (name: string) => fixture.profiles.has(name),
+    profileExists: (name: string) => fixture.profileLookup(name),
     listProfiles: (...args: unknown[]) => fixture.listProfiles(...args),
     createProfile: (...args: unknown[]) => fixture.createProfile(...args),
     removeProfile: (...args: unknown[]) => fixture.removeProfile(...args),
@@ -66,24 +97,40 @@ vi.mock("../composition/container-exec.js", async original => ({
 vi.mock("../session.js", async original => ({
     ...await original<typeof import("../session.js")>(),
     withProjectFamilyLifecycleLockAsync: async (_projectId: string, operation: () => unknown) => operation(),
+    withProjectFamilyLifecycleLock: (_projectId: string, operation: () => unknown) => {
+        fixture.removalTrace.push("lock"); fixture.removalLocked = true;
+        try { return operation(); } finally { fixture.removalLocked = false; fixture.removalTrace.push("unlock"); }
+    },
+    getSessionLockClaimsForProjectFamily: (...args: unknown[]) => fixture.removalClaims(...args),
 }));
-vi.mock("../worktree.js", async original => ({
-    ...await original<typeof import("../worktree.js")>(),
-    isWorktreeWorkspace: () => false,
-    getWorkspacePath: () => fixture.workspace,
-    workspaceExists: () => true,
-    hasGitMetadata: () => true,
-    repairWorkspaceRootOwnership: vi.fn(),
-    assertWorkspaceRootOwnership: vi.fn(),
-    assertWorkspaceReady: vi.fn(),
-    repairWorkspace: () => [],
-    detectBrokenWorktrees: () => fixture.broken ? [{ name: "api" }] : [],
-    fixBrokenWorktree: (...args: unknown[]) => fixture.repair(...args),
-    setAsideConflictingContent: (...args: unknown[]) => fixture.setAside(...args),
-}));
+vi.mock("../worktree.js", async original => {
+    const native = await original<typeof import("../worktree.js")>();
+    return {
+        ...native,
+        isWorktreeWorkspace: () => false,
+        getWorkspacePath: () => fixture.workspace,
+        workspaceExists: () => true,
+        hasGitMetadata: () => true,
+        repairWorkspaceRootOwnership: vi.fn(),
+        assertWorkspaceRootOwnership: vi.fn(),
+        assertWorkspaceReady: vi.fn(),
+        repairWorkspace: () => [],
+        detectBrokenWorktrees: () => fixture.broken ? [{ name: "api" }] : [],
+        fixBrokenWorktree: (...args: unknown[]) => fixture.repair(...args),
+        setAsideConflictingContent: (...args: unknown[]) => fixture.setAside(...args),
+        assertWorkspaceBranch: (...args: unknown[]) => fixture.removalOwnership(...args),
+        removeWorkspace: (...args: unknown[]) => fixture.removalWorkspace(...args),
+        strandedBranchRegistrations: (...args: unknown[]) => fixture.removalStranded(...args),
+        terminalSafeLiteral: (value: string) => {
+            if (fixture.removalLiteralFailure) throw fixture.removalLiteralFailure;
+            return native.terminalSafeLiteral(value);
+        },
+    };
+});
 
 import { main } from "../index.js";
 import { WorktreeContentConflictError } from "../worktree.js";
+import { getProjectId } from "../utils.js";
 
 class CliExit extends Error {
     constructor(readonly status: number) { super(`CLI exited ${status}`); }
@@ -106,15 +153,47 @@ beforeEach(() => {
     vi.stubEnv("container", "");
     fixture.broken = false;
     fixture.profiles = new Set();
+    fixture.profileLookup.mockImplementation((name: string) => fixture.profiles.has(name));
+    fixture.homeSessions.mockReturnValue(false);
+    fixture.migrate.mockImplementation(() => undefined);
     fixture.native.mockImplementation(() => { throw new Error("Unexpected native command"); });
     fixture.listProfiles.mockReturnValue(["work", "personal"]);
     fixture.readDefault.mockReturnValue("claude");
     fixture.prompt.mockResolvedValue("y");
     fixture.repair.mockReturnValue(null);
     fixture.setAside.mockReturnValue(join(fixture.workspace, "api.ccc-conflict-kept"));
-    vi.spyOn(process, "exit").mockImplementation(status => { throw new CliExit(Number(status)); });
-    logs = vi.spyOn(console, "log").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    fixture.removalLocked = false;
+    fixture.removalTrace = [];
+    fixture.removalLiteralFailure = null;
+    fixture.removalClaims.mockImplementation(() => { expect(fixture.removalLocked).toBe(true); fixture.removalTrace.push("claims"); return []; });
+    fixture.removalOwnership.mockImplementation(() => { expect(fixture.removalLocked).toBe(true); fixture.removalTrace.push("ownership"); });
+    fixture.removalReady.mockImplementation(() => { expect(fixture.removalLocked).toBe(true); fixture.removalTrace.push("ready"); });
+    fixture.removalIdentity.mockImplementation((name: string) => {
+        expect(fixture.removalLocked).toBe(true); fixture.removalTrace.push(`identity:${name}`);
+        return { containerId: name === "base" ? "base-native-id" : "profile-native-id", running: name === "base" };
+    });
+    fixture.removalExists.mockImplementation(() => { expect(fixture.removalLocked).toBe(true); return true; });
+    fixture.removalWorkspace.mockImplementation(() => {
+        expect(fixture.removalLocked).toBe(true); fixture.removalTrace.push("workspace");
+        return { removed: ["nested"], errors: [] };
+    });
+    fixture.removalStranded.mockImplementation(() => {
+        expect(fixture.removalLocked).toBe(false); fixture.removalTrace.push("stranded"); return [];
+    });
+    fixture.removalRunner.mockImplementation((_command: string, args: string[]) => {
+        expect(fixture.removalLocked).toBe(true);
+        if (JSON.stringify(args) === JSON.stringify(["ps", "-a", "--format", "{{.Names}}"])) {
+            fixture.removalTrace.push("inventory");
+            return { status: 0, stdout: "base\nbase--p--work\nunrelated\n" };
+        }
+        if ((args[0] === "stop" || args[0] === "rm") && ["base-native-id", "profile-native-id"].includes(args[1])) {
+            fixture.removalTrace.push(`${args[0]}:${args[1]}`); return { status: 0 };
+        }
+        throw new Error(`Unexpected removal runtime command: ${args.join(" ")}`);
+    });
+    vi.spyOn(process, "exit").mockImplementation(status => { fixture.removalTrace.push(`exit:${status}`); throw new CliExit(Number(status)); });
+    logs = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { fixture.removalTrace.push(`stdout:${args.map(String).join(" ")}`); });
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { fixture.removalTrace.push(`stderr:${args.map(String).join(" ")}`); });
 });
 afterEach(() => {
     process.argv = initialArgv;
@@ -313,6 +392,229 @@ describe("normalized main command dispatch", () => {
         expect(fixture.migrate).not.toHaveBeenCalled();
         expect(fixture.remote).not.toHaveBeenCalled();
         expectNoAlternativeEffects();
+    });
+});
+
+describe("actual CLI home migration and default profile wiring", () => {
+    it.each(["legacy", "run"] as const)("checks %s session locks during migration before profile and workspace lifecycle work", async namespace => {
+        const legacyLocks = join(fixture.home, ".ccc", "locks");
+        const runLocks = join(fixture.home, ".ccc", "run", "locks");
+        const activeDirectory = namespace === "legacy" ? legacyLocks : runLocks;
+        fixture.homeSessions.mockImplementation((_excluded: unknown, directory: string) => directory === activeDirectory);
+        fixture.migrate.mockImplementation((options: HomeLayoutMigrationOptions) => {
+            fixture.removalTrace.push("migrate");
+            expect(options.hasLiveSessions()).toBe(true);
+        });
+        fixture.profiles.add("work");
+        fixture.profileLookup.mockImplementation((name: string) => {
+            fixture.removalTrace.push(`profile:${name}`); return fixture.profiles.has(name);
+        });
+        vi.stubEnv("CCC_PROFILE", "work");
+        await run(["@feature", "rm"]);
+        expect(fixture.migrate).toHaveBeenCalledOnce();
+        expect(fixture.homeSessions.mock.calls).toEqual(namespace === "legacy"
+            ? [[null, legacyLocks]] : [[null, legacyLocks], [null, runLocks]]);
+        expect(fixture.profileLookup).toHaveBeenCalledExactlyOnceWith("work");
+        expect(fixture.removalTrace.slice(0, 3)).toEqual(["migrate", "profile:work", "lock"]);
+        expect(fixture.removalWorkspace).toHaveBeenCalledExactlyOnceWith(fixture.project, "feature", { force: false });
+        expect(console.error).not.toHaveBeenCalled();
+        expect(process.exit).not.toHaveBeenCalled();
+        expectNoAlternativeEffects();
+    });
+
+    it.each([false, true])("uses CCC_PROFILE=default without a named profile and keeps home migration host-side, inContainer=%s", async inContainer => {
+        vi.stubEnv("CCC_PROFILE", "default");
+        if (inContainer) vi.stubEnv("container", "docker");
+        await run(["remote", "check"]);
+        expect(fixture.profileLookup).not.toHaveBeenCalled();
+        expect(fixture.check).toHaveBeenCalledExactlyOnceWith(fixture.project);
+        expect(fixture.migrate).toHaveBeenCalledTimes(inContainer ? 0 : 1);
+        expect(console.error).not.toHaveBeenCalled();
+        expect(process.exit).not.toHaveBeenCalled();
+        expectNoAlternativeEffects();
+    });
+});
+
+describe("actual CLI workspace removal composition", () => {
+    function outwardTrace(): string[] {
+        return fixture.removalTrace.filter(entry => /^(stdout:|stderr:|exit:)/.test(entry));
+    }
+
+    function expectNoOtherCommandEffects(): void {
+        expectNoAlternativeEffects();
+        expect(fixture.setup).not.toHaveBeenCalled();
+        expect(fixture.check).not.toHaveBeenCalled();
+        expect(fixture.terminate).not.toHaveBeenCalled();
+        expect(fixture.remote).not.toHaveBeenCalled();
+        expect(fixture.repair).not.toHaveBeenCalled();
+        expect(fixture.setAside).not.toHaveBeenCalled();
+        expect(fixture.prompt).not.toHaveBeenCalled();
+    }
+
+    function expectOneFailureExit(): void {
+        expect(process.exit).toHaveBeenCalledExactlyOnceWith(1);
+        expect(fixture.removalTrace.at(-1)).toBe("exit:1");
+        expect(fixture.removalLocked).toBe(false);
+        expectNoOtherCommandEffects();
+    }
+
+    it("keeps native ID cleanup and output inside their existing guard and channel boundaries", async () => {
+        await run(["--runtime", "docker", "@feature", "rm"]);
+        expect(fixture.removalTrace).toEqual([
+            "lock", "claims", "ownership", "ready", "stdout:Removing workspace @feature...",
+            "inventory", "identity:base", "identity:base--p--work", "workspace",
+            "stop:base-native-id", "rm:base-native-id", "rm:profile-native-id",
+            "stdout:Removed associated container base.", "stdout:Removed associated container base--p--work.",
+            "unlock", "stdout:  removed: nested", "stdout:Workspace removed.", "stranded",
+        ]);
+        expect(fixture.removalClaims).toHaveBeenCalledExactlyOnceWith(getProjectId(fixture.workspace));
+        expect(fixture.removalOwnership).toHaveBeenCalledExactlyOnceWith(fixture.workspace, "feature", expect.any(Function), fixture.project, { allowTrackedGitlinks: true });
+        expect(fixture.removalIdentity.mock.calls).toEqual([["base", fixture.workspace], ["base--p--work", fixture.workspace]]);
+        expect(fixture.removalWorkspace).toHaveBeenCalledExactlyOnceWith(fixture.project, "feature", { force: false });
+        expect(fixture.removalStranded).toHaveBeenCalledExactlyOnceWith(fixture.project, "feature");
+        expect(fixture.removalRunner.mock.calls.map(call => call.slice(0, 2))).toEqual([
+            ["docker", ["ps", "-a", "--format", "{{.Names}}"]],
+            ["docker", ["stop", "base-native-id"]],
+            ["docker", ["rm", "base-native-id"]],
+            ["docker", ["rm", "profile-native-id"]],
+        ]);
+        expect(console.error).not.toHaveBeenCalled();
+        expect(process.exit).not.toHaveBeenCalled();
+        expect(fixture.removalLocked).toBe(false);
+        expectNoOtherCommandEffects();
+    });
+
+    it.each([false, true])("observes active family claims and preserves the explicit force=%s policy", async force => {
+        fixture.removalClaims.mockImplementation(() => {
+            expect(fixture.removalLocked).toBe(true); fixture.removalTrace.push("claims"); return ["session-owner"];
+        });
+        if (force) {
+            await run(["@feature", "rm", "--force"]);
+            expect(fixture.removalWorkspace).toHaveBeenCalledExactlyOnceWith(fixture.project, "feature", { force: true });
+            expect(output()).toContain("Workspace removed.");
+            expect(process.exit).not.toHaveBeenCalled();
+            expectNoOtherCommandEffects();
+        } else {
+            await expect(run(["@feature", "rm"])).rejects.toMatchObject({ status: 1 });
+            expect(outwardTrace()).toEqual([
+                "stderr:Error: Workspace has 1 session ownership claim(s); stop sessions first or use -f to force removal.", "exit:1",
+            ]);
+            expect(fixture.removalOwnership).not.toHaveBeenCalled();
+            expect(fixture.removalReady).not.toHaveBeenCalled();
+            expect(fixture.removalRunner).not.toHaveBeenCalled();
+            expect(fixture.removalWorkspace).not.toHaveBeenCalled();
+            expectOneFailureExit();
+        }
+        expect(fixture.removalClaims).toHaveBeenCalledExactlyOnceWith(getProjectId(fixture.workspace));
+        expect(fixture.removalLocked).toBe(false);
+    });
+
+    it.each(["unavailable", "present-unknown", "duplicate"] as const)("refuses %s inventory before workspace deletion and exits once", async inventory => {
+        if (inventory === "unavailable") fixture.removalRunner.mockReturnValue({ status: 1, stdout: "" });
+        if (inventory === "present-unknown") fixture.removalIdentity.mockReturnValue(null);
+        if (inventory === "duplicate") fixture.removalIdentity.mockReturnValue({ containerId: "same-native-id", running: true });
+        await expect(run(["@feature", "rm", "-f"])).rejects.toMatchObject({ status: 1 });
+        expect(output()).toBe("Removing workspace @feature...");
+        expect(console.error).toHaveBeenCalledTimes(1);
+        const message = inventory === "unavailable" ? "Unable to list workspace containers."
+            : inventory === "duplicate" ? "Workspace container inventory contains a duplicate identity."
+                : "Workspace container identity inspection failed; workspace removal was aborted.";
+        expect(outwardTrace()).toEqual(["stdout:Removing workspace @feature...", `stderr:Error: ${message}`, "exit:1"]);
+        expect(fixture.removalWorkspace).not.toHaveBeenCalled();
+        expect(fixture.removalRunner).toHaveBeenCalledTimes(1);
+        expect(fixture.removalStranded).not.toHaveBeenCalled();
+        expectOneFailureExit();
+    });
+
+    it("reports partial workspace deletion on the existing channels and keeps associated containers", async () => {
+        fixture.removalWorkspace.mockImplementation(() => {
+            expect(fixture.removalLocked).toBe(true); fixture.removalTrace.push("workspace");
+            return { removed: ["services/api"], errors: ["services/web is dirty; inspect it before retrying"] };
+        });
+        await expect(run(["@feature", "rm", "-f"])).rejects.toMatchObject({ status: 1 });
+        expect(outwardTrace()).toEqual([
+            "stdout:Removing workspace @feature...", "stdout:  removed: services/api",
+            "stderr:  error: services/web is dirty; inspect it before retrying",
+            "stderr:\nRemoved 1 item(s) before stopping — the workspace is partly dismantled. See the errors above.", "exit:1",
+        ]);
+        expect(fixture.removalTrace.indexOf("unlock")).toBeLessThan(fixture.removalTrace.indexOf("stdout:  removed: services/api"));
+        expect(fixture.removalRunner).toHaveBeenCalledTimes(1);
+        expect(fixture.removalStranded).not.toHaveBeenCalled();
+        expect(output()).not.toContain("Workspace removed.");
+        expectOneFailureExit();
+    });
+
+    it("stops cleanup after a native removal failure without claiming the completed workspace deletion rolled back", async () => {
+        const ordinary = fixture.removalRunner.getMockImplementation()!;
+        fixture.removalRunner.mockImplementation((command: string, args: string[], options: unknown) => {
+            if (args[0] === "rm" && args[1] === "base-native-id") {
+                expect(fixture.removalLocked).toBe(true); fixture.removalTrace.push("rm:base-native-id"); return { status: 1 };
+            }
+            return ordinary(command, args, options);
+        });
+        await expect(run(["@feature", "rm"])).rejects.toMatchObject({ status: 1 });
+        expect(fixture.removalWorkspace).toHaveBeenCalledOnce();
+        expect(fixture.removalRunner.mock.calls.map(call => call[1])).toEqual([
+            ["ps", "-a", "--format", "{{.Names}}"], ["stop", "base-native-id"], ["rm", "base-native-id"],
+        ]);
+        expect(outwardTrace()).toEqual(["stdout:Removing workspace @feature...", "stderr:Error: Failed to remove workspace container.", "exit:1"]);
+        expect(fixture.removalStranded).not.toHaveBeenCalled();
+        expectOneFailureExit();
+    });
+
+    it("keeps ownership failure prose and the force restriction in the outward CLI", async () => {
+        fixture.removalOwnership.mockImplementation(() => { throw new Error("Nested repository is not owned by the workspace source"); });
+        await expect(run(["@feature", "rm", "-f"])).rejects.toMatchObject({ status: 1 });
+        expect(outwardTrace()[0]).toBe("stderr:Error: Nested repository is not owned by the workspace source");
+        expect(outwardTrace()[1]).toContain("-f does not lift this");
+        expect(outwardTrace()[1]).toContain("git worktree prune");
+        expect(fixture.removalReady).not.toHaveBeenCalled();
+        expect(fixture.removalRunner).not.toHaveBeenCalled();
+        expect(fixture.removalWorkspace).not.toHaveBeenCalled();
+        expectOneFailureExit();
+    });
+
+    it("prints success before a later stranded-registry failure and exits once without repeating cleanup", async () => {
+        fixture.removalStranded.mockImplementation(() => {
+            expect(fixture.removalLocked).toBe(false); fixture.removalTrace.push("stranded"); throw new Error("stranded registry unavailable");
+        });
+        await expect(run(["@feature", "rm"])).rejects.toMatchObject({ status: 1 });
+        expect(outwardTrace()).toEqual([
+            "stdout:Removing workspace @feature...", "stdout:Removed associated container base.",
+            "stdout:Removed associated container base--p--work.", "stdout:  removed: nested", "stdout:Workspace removed.",
+            "stderr:Error: stranded registry unavailable", "exit:1",
+        ]);
+        expect(fixture.removalWorkspace).toHaveBeenCalledOnce();
+        expect(fixture.removalRunner).toHaveBeenCalledTimes(4);
+        expectOneFailureExit();
+    });
+
+    it("reports a stranded-remedy formatter failure after success with one outward exit", async () => {
+        fixture.removalStranded.mockReturnValue([{ repository: "/source/repository", lockedPaths: [] }]);
+        fixture.removalLiteralFailure = new Error("terminal formatter failed");
+        await expect(run(["@feature", "rm"])).rejects.toMatchObject({ status: 1 });
+        expect(outwardTrace().slice(-3)).toEqual(["stdout:Workspace removed.", "stderr:Error: terminal formatter failed", "exit:1"]);
+        expect(fixture.removalWorkspace).toHaveBeenCalledOnce();
+        expect(fixture.removalRunner).toHaveBeenCalledTimes(4);
+        expectOneFailureExit();
+    });
+
+    it("renders shell-safe stranded unlock and prune remedies after successful removal", async () => {
+        fixture.removalStranded.mockReturnValue([
+            { repository: "/source/owner's $(repo)", lockedPaths: ["/old/worktree $(touch marker)"] },
+            { repository: "/source/other repo", lockedPaths: [] },
+        ]);
+        await run(["@feature", "rm"]);
+        expect(output()).toContain("Workspace removed.");
+        expect(console.error).toHaveBeenCalledTimes(1);
+        const notice = outwardTrace().at(-1)!;
+        expect(notice).toContain("git -C '/source/owner'\\''s $(repo)' worktree unlock -- '/old/worktree $(touch marker)'");
+        expect(notice).toContain("git -C '/source/owner'\\''s $(repo)' worktree prune");
+        expect(notice).toContain('git -C "/source/other repo" worktree prune');
+        expect(fixture.removalTrace.indexOf("stdout:Workspace removed.")).toBeLessThan(fixture.removalTrace.indexOf(notice));
+        expect(process.exit).not.toHaveBeenCalled();
+        expect(fixture.removalLocked).toBe(false);
+        expectNoOtherCommandEffects();
     });
 });
 

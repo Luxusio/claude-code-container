@@ -7,10 +7,11 @@ import type { ContainerExecOptions } from "./ports/container-exec.js";
 import { createWorkspaceOpen } from "./application/workspace/open.js";
 import { createWorkspaceOpenPresentation } from "./adapters/workspace/open-presentation.js";
 import * as workspaceCliRemoval from "./application/workspace/cli-removal.js";
+import * as workspaceRemovalPresentation from "./adapters/workspace-removal-presentation.js";
 import { createNativeWorkspaceCliContainerRuntime } from "./adapters/workspace-cli-container-runtime.js";
 import { createWorkspaceContentRepairAdmission } from "./application/workspace/content-repair-admission.js";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { basename, dirname, join, relative } from "path";
+import { basename, dirname, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
     formatScannedFiles,
@@ -652,7 +653,7 @@ export function workspaceRemovalAdvice(
     force: boolean,
     removed: readonly string[] = [],
 ): string {
-    return workspaceCliRemoval.workspaceRemovalAdvice(force, removed);
+    return workspaceRemovalPresentation.workspaceRemovalAdvice(force, removed);
 }
 
 export function workspaceRemovalCompleted(
@@ -671,7 +672,18 @@ export function removeWorkspaceThenContainers<T extends { errors: string[] }>(
 const invokeWorkspaceCliRemoval = Reflect.apply;
 
 function handleWorktreeRemove(cwd: string, branch: string, force: boolean): void {
-    workspaceCliRemoval.createWorkspaceCliRemoval({
+    const log = (message: string): undefined => {
+        const receiver = console;
+        invokeWorkspaceCliRemoval(receiver.log, receiver, [message]);
+        return undefined;
+    };
+    const error = (message: string): undefined => {
+        const receiver = console;
+        invokeWorkspaceCliRemoval(receiver.error, receiver, [message]);
+        return undefined;
+    };
+    let outcome = workspaceCliRemoval.createWorkspaceRemoval({
+        resolveSource: sourcePath => resolve(sourcePath),
         selectWorkspacePath: () => getWorkspacePath,
         selectProjectId: () => getProjectId,
         selectFamilyLock: () => withProjectFamilyLifecycleLock,
@@ -692,49 +704,28 @@ function handleWorktreeRemove(cwd: string, branch: string, force: boolean): void
         selectExists: () => isContainerExists,
         selectContainerRuntime: () => createNativeWorkspaceCliContainerRuntime(),
         selectRemoveWorkspace: () => removeWorkspace,
-        selectLog: () => {
-            const receiver = console;
-            const log = receiver.log;
-            return (message) => {
-                invokeWorkspaceCliRemoval(log, receiver, [message]);
-                return undefined;
-            };
-        },
-        selectError: () => {
-            const receiver = console;
-            const error = receiver.error;
-            return (message) => {
-                invokeWorkspaceCliRemoval(error, receiver, [message]);
-                return undefined;
-            };
-        },
-        selectExit: () => {
-            const receiver = process;
-            const exit = receiver.exit;
-            return (status) => invokeWorkspaceCliRemoval(exit, receiver, [status]) as never;
-        },
+        publish: (event) => workspaceRemovalPresentation.renderWorkspaceRemovalProgress(event, force, log, error),
         selectStrandedRegistrations: () => strandedBranchRegistrations,
-        selectTerminalSafeLiteral: () => terminalSafeLiteral,
-        selectPasteableArgument: () => pasteableArgument,
-    })(cwd, branch, force);
+    })({ sourcePath: cwd, branch, force });
+    if (outcome.kind === "removed") {
+        try {
+            if (outcome.stranded.length > 0) error(strandedBranchNotice(branch, outcome.stranded));
+            return;
+        } catch (presentationError) {
+            outcome = { kind: "failed", error: presentationError, result: outcome.result };
+        }
+    }
+    if (outcome.kind === "failed") {
+        error(`Error: ${(outcome.error as Error).message}`);
+        const removalNote = workspaceRemovalFailureNote(outcome.error, force);
+        if (removalNote) error(removalNote);
+    }
+    const receiver = process;
+    invokeWorkspaceCliRemoval(receiver.exit, receiver, [1]);
 }
 
-// An ownership assert raises before `removeWorkspace` returns anything, so the summary line
-// below the error list is never reached and the operator gets only the raw sentence. It names
-// no cause, no remedy, and — the part that matters — does not say that -f cannot lift it.
-//
-// That asymmetry is real and worth stating out loud rather than only in a test: after the
-// force gate, `ccc rm -f` DELETES this shape in unified mode and REFUSES it here, and nothing
-// else tells the operator which mode they are in. `forceWouldNotHelp` was deleted because -f
-// had become the way through; this is the live case where it has not, and the sentence that
-// flag existed to produce is still needed. It belongs here, in the catch, rather than as a
-// field on a result this path never returns.
-// Extracted so a test can drive the assertion the removal path ACTUALLY makes, rather than
-// an assertion written to look like it. The first version of this fix was pinned by a test
-// that called `assertWorkspaceBranch` with the options spelled out beside it — which passes
-// whatever `src/index.ts` does, so reverting the call site left the suite green. Coupling by
-// resemblance instead of by execution, which is the mistake this task has now paid for three
-// times.
+// The CLI adds ownership guidance to failed outcomes; the application preserves the error.
+// Keep this public assertion wrapper on the same admission policy as the removal operation.
 export function assertRemovableWorkspace(
     workspacePath: string,
     branch: string,
@@ -768,11 +759,11 @@ export function strandedBranchNotice(
     branch: string,
     stranded: StrandedBranchRegistration[],
 ): string {
-    return workspaceCliRemoval.strandedBranchNotice(branch, stranded, () => terminalSafeLiteral, () => pasteableArgument);
+    return workspaceRemovalPresentation.strandedBranchNotice(branch, stranded, () => terminalSafeLiteral, () => pasteableArgument);
 }
 
 export function workspaceRemovalFailureNote(error: unknown, force: boolean): string | null {
-    return workspaceCliRemoval.workspaceRemovalFailureNote(error, force);
+    return workspaceRemovalPresentation.workspaceRemovalFailureNote(error, force);
 }
 
 function showHelp(): void {
