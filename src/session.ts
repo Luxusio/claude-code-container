@@ -384,6 +384,11 @@ export function setSessionContainerId(containerId: string | null): void {
     queueOwnershipUpdate(++cleanupAuthorizationVersion);
 }
 
+/** Existing exact claim receipt; callers cannot manufacture a basename exclusion. */
+export function getCurrentSessionOwnershipReceipt(): SessionOwnershipReceipt | undefined {
+    return capturedOwnership ?? undefined;
+}
+
 export function getCurrentSession(): { lockFile: string | null; projectPath: string | null; profile?: string; toolName: string | null } {
     return sessionCleanup.getCurrentSession();
 }

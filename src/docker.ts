@@ -72,7 +72,8 @@ import {
     getRuntimeInfo,
 } from "./container-runtime.js";
 import { ensureIdentityImage, getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName, normalizeImageId, resolveContainerIdentity, type ContainerIdentity as ContainerUserIdentity } from "./container-identity.js";
-import { withSharedMutationLock, withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
+import { beginRuntimeBindCreation, recordRuntimeBindAuthority, settleRuntimeBindCreation, withRuntimeBindGuard, withRuntimeBindGuardAsync } from "./adapters/runtime-bind-authority.js";
+import type { RuntimeBindCreationTicket, RuntimeBindGuard } from "./ports/runtime-bind-authority.js";
 import { codexConfigFileAclScript, codexConfigDirectoryAclScript } from "./codex-config-acl.js";
 import { prepareLabStateOwnership } from "./lab-state-ownership.js";
 import { prepareCodexStateOwnership } from "./codex-state-ownership.js";
@@ -560,6 +561,7 @@ export function findManagedProjectNamespaceCollision(
     projectMountIdentity: string,
     projectMountSourceIdentity: BindMountSourceIdentity,
     profile?: string,
+    bindGuard?: RuntimeBindGuard,
 ): ManagedProjectNamespaceCollision | null {
     if (process.platform !== "win32") return null;
     const listed = runtimeSpawnSync(["ps", "-aq", "--no-trunc", "--filter", "label=ccc.managed=true"],
@@ -626,6 +628,7 @@ export function findManagedProjectNamespaceCollision(
                         projectPath,
                         projectMountSourceIdentity,
                         getCurrentImageId,
+                        bindGuard,
                     );
                     if (sourceMatch === "retryable") {
                         throw new Error(
@@ -915,6 +918,7 @@ function inspectManagedProjectContainerIdentity(
     containerName: string,
     projectPath: string,
     expectedSessionId?: string,
+    bindGuard?: RuntimeBindGuard,
 ): ManagedProjectContainerInspection {
     const inspectedResult = inspectContainerJsonWithRetry(containerName);
     if (!inspectedResult) return { reason: "container-inspection-unavailable" };
@@ -991,6 +995,7 @@ function inspectManagedProjectContainerIdentity(
             }
             const verification = verifyRequiredContainerMounts(
                 inspected.Id, inspected.Mounts ?? [], [projectMount], "strict", true,
+                bindGuard,
             );
             if (verification.kind !== "verified") return { reason: "project-bind-unverified" };
         }
@@ -1004,8 +1009,9 @@ function inspectManagedProjectContainerIdentity(
 export function getManagedProjectContainerIdentity(
     containerName: string,
     projectPath: string,
+    bindGuard?: RuntimeBindGuard,
 ): ContainerIdentity | null {
-    const inspected = inspectManagedProjectContainerIdentity(containerName, projectPath);
+    const inspected = inspectManagedProjectContainerIdentity(containerName, projectPath, undefined, bindGuard);
     return "identity" in inspected ? inspected.identity : null;
 }
 
@@ -1295,12 +1301,14 @@ function mountVerification(
     containerId: string,
     requiredMounts: RequiredContainerMount[],
     currentImageId: () => string | null = getCurrentImageId,
+    bindGuard?: RuntimeBindGuard,
 ) {
     const native = createNativeContainerMountObservations({
         containerId,
         requiredMounts,
         canExecContainer,
         currentImageId,
+        bindGuard,
         withRetry: withBoundedVerificationRetry,
     });
     return {
@@ -1315,8 +1323,9 @@ function preflightStoppedContainerMounts(
     observedMounts: InspectedContainerMount[],
     requiredMounts: RequiredContainerMount[],
     currentImageId: () => string | null = getCurrentImageId,
+    bindGuard?: RuntimeBindGuard,
 ): StoppedMountPreflight {
-    const { native, application } = mountVerification(containerId, requiredMounts, currentImageId);
+    const { native, application } = mountVerification(containerId, requiredMounts, currentImageId, bindGuard);
     return application.preflightStopped(native.decodeObservedMounts(observedMounts));
 }
 
@@ -1326,8 +1335,9 @@ function verifyRequiredContainerMounts(
     requiredMounts: RequiredContainerMount[],
     policy: MountPresencePolicy,
     allowUnexpected = false,
+    bindGuard?: RuntimeBindGuard,
 ): MountVerification {
-    const { native, application } = mountVerification(containerId, requiredMounts);
+    const { native, application } = mountVerification(containerId, requiredMounts, getCurrentImageId, bindGuard);
     return application.verifyExisting(native.decodeObservedMounts(observedMounts), policy, allowUnexpected);
 }
 
@@ -1335,8 +1345,9 @@ function verifyCreatedContainerMounts(
     containerId: string,
     requiredMounts: RequiredContainerMount[],
     projectMountIdentity: string,
+    bindGuard?: RuntimeBindGuard,
 ): MountVerification {
-    return mountVerification(containerId, requiredMounts)
+    return mountVerification(containerId, requiredMounts, getCurrentImageId, bindGuard)
         .application.verifyCreated(containerId, projectMountIdentity);
 }
 
@@ -1426,6 +1437,7 @@ function containerMatchesRunContract(
     identity: ContainerUserIdentity,
     reportMismatch: (reason: string) => void = () => undefined,
     phase: "preflight" | "live" = "live",
+    bindGuard?: RuntimeBindGuard,
 ): boolean | null {
     const inspectedResult = inspectContainerJsonWithRetry(containerName);
     if (!inspectedResult) {
@@ -1488,8 +1500,8 @@ function containerMatchesRunContract(
         }
         const staticStoppedPreflight = phase === "preflight" && inspected.State?.Running === false;
         const mountVerification = staticStoppedPreflight
-            ? preflightStoppedContainerMounts(inspected.Id, mounts, requiredMounts)
-            : verifyRequiredContainerMounts(inspected.Id, mounts, requiredMounts, "strict");
+            ? preflightStoppedContainerMounts(inspected.Id, mounts, requiredMounts, getCurrentImageId, bindGuard)
+            : verifyRequiredContainerMounts(inspected.Id, mounts, requiredMounts, "strict", false, bindGuard);
         if (mountVerification.kind === "retryable") {
             reportMismatch(mountVerification.reason);
             return null;
@@ -1548,6 +1560,7 @@ function containerRunContractIsSafeToDefer(
     projectPath: string,
     identity: ContainerUserIdentity,
     reportUnsafe: (reason: string) => void = () => undefined,
+    bindGuard?: RuntimeBindGuard,
 ): boolean {
     const unsafe = (reason: string) => {
         reportUnsafe(reason);
@@ -1592,6 +1605,8 @@ function containerRunContractIsSafeToDefer(
             mounts,
             requiredMounts,
             "safe-defer",
+            false,
+            bindGuard,
         );
         if (mountVerification.kind === "retryable") {
             return unsafe(mountVerification.reason);
@@ -1745,8 +1760,12 @@ export function prepareProjectContainerStartup() {
         const helpers = new Map<string, Array<() => void>>();
         return {
             start: (...args: Parameters<typeof startProjectContainer>) => runWithNativeRuntimeInvocation(invocation, () => {
-                helpers.clear();
-                return startProjectContainerLocked({ identity, imageId, helpers }, ...args);
+                const startHeld = (guard: RuntimeBindGuard) => {
+                    helpers.clear();
+                    return startProjectContainerLocked({ identity, imageId, helpers }, guard, ...args);
+                };
+                return args[10] ? startHeld(args[10])
+                    : withRuntimeBindGuard(cccHome(), startHeld, { waitMs: 0 });
             }),
             initialize: (id: string) => runWithNativeRuntimeInvocation(invocation, () => {
                 const pending = helpers.get(id);
@@ -1758,9 +1777,8 @@ export function prepareProjectContainerStartup() {
     });
 }
 
-export function withProjectContainerStateLockAsync<T>(operation: () => Promise<T> | T): Promise<T> {
-    return withSharedMutationLockAsync(join(cccHome(), "codex-state.lock"), operation,
-        { waitMs: 600_000 });
+export function withProjectContainerStateLockAsync<T>(operation: (guard: RuntimeBindGuard) => Promise<T> | T): Promise<T> {
+    return withRuntimeBindGuardAsync(cccHome(), operation, { waitMs: 600_000 });
 }
 
 /** Legacy synchronous callers retain guarded startup and helper initialization. */
@@ -1769,8 +1787,11 @@ export function startProjectContainer(...args: Parameters<ProjectContainerStartu
     let readyId: string | undefined;
     const onReady = args[7];
     args[7] = (id, handoff) => { readyId = id; onReady?.(id, handoff); };
-    const result = withSharedMutationLock(join(cccHome(), "codex-state.lock"),
-        () => prepared.start(...args), { waitMs: 600_000, reclaimStale: false });
+    const startHeld = (guard: RuntimeBindGuard) => {
+        args[10] = guard;
+        return prepared.start(...args);
+    };
+    const result = args[10] ? startHeld(args[10]) : withRuntimeBindGuard(cccHome(), startHeld, { waitMs: 600_000 });
     if (readyId) prepared.initialize(readyId);
     return result;
 }
@@ -1807,13 +1828,18 @@ type ProjectContainerStartup = (
     initiallyRunningContainerId?: string,
     /** Publishes this invocation's exact started ID before helper setup can fail. */
     onContainerStarted?: (containerId: string) => void,
+    /** Qualified global bind-publication guard, explicitly handed across the application ports. */
+    bindGuard?: RuntimeBindGuard,
 ) => string;
 
 function startProjectContainerLocked(
     prepared: { identity: ContainerUserIdentity; imageId: string; helpers: Map<string, Array<() => void>> },
+    bindGuard: RuntimeBindGuard,
     ...args: Parameters<ProjectContainerStartup>
 ): string {
     const [projectPath, ensureDirs, extraMounts, clipboardPortFile, profile, onRecreate, recreateRunningContainer, onContainerReady, initiallyRunningContainerId, onContainerStarted] = args;
+    if (bindGuard.root !== resolve(cccHome())) throw new Error("Container startup requires the current CCC home's bind-publication guard.");
+    recordRuntimeBindAuthority(bindGuard, getRuntimeInvocation());
     ensureDirs();
     mkdirSync(clipboardFilesDir(), { recursive: true, mode: 0o700 });
     const { identity, imageId } = prepared;
@@ -2016,7 +2042,8 @@ function startProjectContainerLocked(
             const codexRoot = getCodexDir(profile);
             const codexSource = captureBindMountSourceIdentity(codexRoot);
             prepareCodexStateOwnership(previousContainer, imageId, identity, profile,
-                (source) => bindSourceIsTrustedFilesystemAlias(source, codexRoot, codexSource, getCurrentImageId) === "match");
+                (source) => bindSourceIsTrustedFilesystemAlias(source, codexRoot, codexSource, getCurrentImageId, bindGuard) === "match",
+                bindGuard);
         }
         if (labRunner.status === "ready") {
             prepareLabStateOwnership(labRunner.stateVolumeName, imageId, identity,
@@ -2052,7 +2079,7 @@ function startProjectContainerLocked(
     const existingLifecycle = createNativeContainerExistingLifecycle({
         listContainer: getListedContainerId,
         identity: getContainerIdentity,
-        managedIdentity: getManagedProjectContainerIdentity,
+        managedIdentity: (name, path) => getManagedProjectContainerIdentity(name, path, bindGuard),
         assertProjectSources: () => { assertPreparedProjectMountSources(); },
         assertDeviceSources: () => { assertPreparedDeviceLabMountSources(preparedDeviceLabSources); },
         assertFilesystemSources: () => { assertRequiredFilesystemMountSources(); },
@@ -2065,6 +2092,7 @@ function startProjectContainerLocked(
             identity,
             reportReason,
             "preflight",
+            bindGuard,
         ),
         verifyBeforeSetup: (id) => {
             assertPreparedProjectMountSources();
@@ -2072,7 +2100,7 @@ function startProjectContainerLocked(
             assertRequiredFilesystemMountSources();
             let reason = "container contract changed";
             const verified = containerMatchesRunContract(id, requiredMounts, labRunner,
-                fullPath, imageId, identity, value => { reason = value; }, "live");
+                fullPath, imageId, identity, value => { reason = value; }, "live", bindGuard);
             if (verified !== true) {
                 throw new Error(`Existing container live verification failed (${reason}); preserving it without replacement or join.`);
             }
@@ -2084,7 +2112,7 @@ function startProjectContainerLocked(
             assertRequiredFilesystemMountSources();
         },
         safeToDefer: (id, reportReason) => containerRunContractIsSafeToDefer(
-            id, requiredMounts, labRunner, fullPath, identity, reportReason,
+            id, requiredMounts, labRunner, fullPath, identity, reportReason, bindGuard,
         ),
         isRunning: isContainerRunning,
         canExec: canExecContainer,
@@ -2115,6 +2143,7 @@ function startProjectContainerLocked(
     });
     if (existingLifecycle.kind === "joined") return containerName;
 
+    let creation: RuntimeBindCreationTicket | undefined;
     return createNativeContainerCreateLifecycle({
         withFamilyLock: withProjectFamilyLifecycleLock,
         namespaceExists: isContainerExists,
@@ -2123,15 +2152,23 @@ function startProjectContainerLocked(
             projectMountIdentity,
             projectMountSourceIdentity,
             profile,
+            bindGuard,
         ),
         assertProjectSources: () => { assertPreparedProjectMountSources(); },
         assertDeviceSources: () => { assertPreparedDeviceLabMountSources(preparedDeviceLabSources); },
         assertFilesystemSources: () => { assertRequiredFilesystemMountSources(); },
         verifyCreated: (id) => {
+            // A completed run plus its exact materialized ID settles creation
+            // before mount verification can publish a separate WSL helper.
+            if (creation && /^[a-f0-9]{64}$/i.test(id) && getContainerIdentity(id)?.containerId === id) {
+                settleRuntimeBindCreation(bindGuard, creation);
+                creation = undefined;
+            }
             const verification = verifyCreatedContainerMounts(
                 id,
                 requiredMounts,
                 projectMountIdentity,
+                bindGuard,
             );
             if (verification.kind === "verified") publishStarted(id);
             return verification;
@@ -2142,36 +2179,40 @@ function startProjectContainerLocked(
         finish: (id) => finish(id, true),
     }, {
         createCli: cli,
-        prepareRunArgs: () => buildDockerRunArgs({
-            containerName,
-            fullPath,
-            projectMountPath,
-            profile,
-            credentialMounts,
-            gitIdentityMounts,
-            claudeJsonFile: getClaudeJsonFile(profile),
-            miseVolumeName,
-            codexPackagesVolumeName,
-            identity,
-            pidsLimit: CONTAINER_PID_LIMIT,
-            imageName: imageId,
-            hostSshDir,
-            sshAgentSocket,
-            extraMounts: preparedExtraMounts,
-            projectMountIdentity,
-            clipboardPortFile,
-            clipboardFilesHostDir: clipboardFilesDir(),
-            labRunner,
-            deviceLabStateHostDir,
-            deviceLabOwnerId: currentDeviceLabOwnerId,
-            deviceLabOwnerAuthFile: currentDeviceLabOwnerAuthFile,
-            deviceLabMountIdentity: preparedDeviceLabSources.contractIdentity,
-            // CCC_DISABLE_PROXY is the escape hatch when the runtime-detect
-            // heuristics get it wrong (exotic VPN/networking setups, mirrored
-            // mode we failed to recognize, etc).
-            proxyEnabled: (process.platform !== "linux" || isContainerHostRemote()) && process.env.CCC_DISABLE_PROXY !== "1",
-            containerHostRemote: process.platform !== "linux" || isContainerHostRemote(),
-        }),
+        prepareRunArgs: () => {
+            const runArgs = buildDockerRunArgs({
+                containerName,
+                fullPath,
+                projectMountPath,
+                profile,
+                credentialMounts,
+                gitIdentityMounts,
+                claudeJsonFile: getClaudeJsonFile(profile),
+                miseVolumeName,
+                codexPackagesVolumeName,
+                identity,
+                pidsLimit: CONTAINER_PID_LIMIT,
+                imageName: imageId,
+                hostSshDir,
+                sshAgentSocket,
+                extraMounts: preparedExtraMounts,
+                projectMountIdentity,
+                clipboardPortFile,
+                clipboardFilesHostDir: clipboardFilesDir(),
+                labRunner,
+                deviceLabStateHostDir,
+                deviceLabOwnerId: currentDeviceLabOwnerId,
+                deviceLabOwnerAuthFile: currentDeviceLabOwnerAuthFile,
+                deviceLabMountIdentity: preparedDeviceLabSources.contractIdentity,
+                // CCC_DISABLE_PROXY is the escape hatch when the runtime-detect
+                // heuristics get it wrong (exotic VPN/networking setups, mirrored
+                // mode we failed to recognize, etc).
+                proxyEnabled: (process.platform !== "linux" || isContainerHostRemote()) && process.env.CCC_DISABLE_PROXY !== "1",
+                containerHostRemote: process.platform !== "linux" || isContainerHostRemote(),
+            });
+            creation = beginRuntimeBindCreation(bindGuard, getRuntimeInvocation());
+            return runArgs;
+        },
         beforeCreating: prepareRetainedState,
         createFailureHint: CONTAINER_INIT_UNAVAILABLE_HINT,
         labWarning: () => isLabRunnerProfile(profile) && labRunner.status === "unsupported"

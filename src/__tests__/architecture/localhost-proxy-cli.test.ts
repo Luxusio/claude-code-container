@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -13,15 +13,6 @@ const f = vi.hoisted(() => ({
 }));
 vi.mock("os", async original => ({ ...await original<typeof import("os")>(), homedir: () => f.home }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: (...args: unknown[]) => f.spawn(...normalizeNativeRuntimeCall(args)) }));
-// Native filesystem metadata stays real. Only the exact synthetic claim is removed
-// by a fixture; the isolated verification HOME contains all config directories.
-vi.mock("fs", async original => {
-    const actual = await original<typeof import("fs")>();
-    return { ...actual, unlinkSync: (path: import("fs").PathLike) => {
-        if (path === "/fixture/session.lock") return;
-        return actual.unlinkSync(path);
-    } };
-});
 vi.mock("../../utils.js", async original => ({
     ...await original<typeof import("../../utils.js")>(),
     get DATA_DIR() { return join(f.home, ".ccc"); },
@@ -37,7 +28,6 @@ vi.mock("../../docker.js", async original => ({
     getContainerName: () => "ccc-fixture", getContainerStatus: () => ({ exists: f.exists, running: f.running, imageId: "sha256:old", containerId: "old-id" }),
     startProjectContainer: f.start, isContainerRunning: f.probeRunning,
     prepareProjectContainerStartup: () => ({ start: f.start, initialize: () => {} }),
-    withProjectContainerStateLockAsync: (operation: () => unknown) => operation(),
     restoreCodexConfigHostOwnership: f.restore, prepareCodexConfigForContainer: f.prepare,
     syncClipboardShims: () => f.events.push("clipboard"), ensureContainerManagerSocketAccess: vi.fn(),
 }));
@@ -47,21 +37,31 @@ vi.mock("../../container-runtime.js", async original => ({ ...await original<typ
     runtimeCli: () => "podman", isContainerHostRemote: () => true, deviceBrokerBindHostForContainer: () => "127.0.0.1" }));
 vi.mock("../../worktree.js", async original => ({ ...await original<typeof import("../../worktree.js")>(), detectWorktreeWorkspaceBranch: () => null, getWorktreeGitMounts: () => [] }));
 vi.mock("../../profile.js", async original => ({ ...await original<typeof import("../../profile.js")>(), profileExists: () => true }));
-vi.mock("../../clipboard-server.js", () => ({ ensureClipboardServer: async () => null, hasAnyActiveSessionsExcept: () => false, retireClipboardServerFromPortFile: vi.fn() }));
+vi.mock("../../clipboard-server.js", () => ({ ensureClipboardSelection: async () => null, validateClipboardSelection: async (selection: null, guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard) => { expect(guard.root).toBe(join(f.home, ".ccc")); return selection; }, hasAnyActiveSessionsExcept: () => false, retireClipboardServerFromPortFile: vi.fn() }));
 vi.mock("../../home-layout.js", async original => ({ ...await original<typeof import("../../home-layout.js")>(), ensureDefaultProfileDir: vi.fn(), migrateHomeLayout: () => f.events.push("layout") }));
 vi.mock("../../home-layout-container-guard.js", () => ({ hasLegacyHomeLayoutContainerMounts: () => false }));
 vi.mock("@ccc/device-lab/device-lab-broker.js", () => ({ DEVICE_BROKER_DEFAULT_HOST: "127.0.0.1", ensureHostDeviceBroker: async () => ({ ok: true }) }));
 vi.mock("../../device-lab-admin.js", () => ({ cleanupOwnerDevices: f.devices }));
 vi.mock("../../session.js", async original => {
     const actual = await original<typeof import("../../session.js")>();
+    const { locksDir } = await import("../../home-layout.js");
+    const { getProjectId } = await import("../../utils.js");
+    const { encodeSessionClaim, sessionClaimName, sessionClaimPrefix } = await import("../../domain/session-claims.js");
     return { ...actual,
     acquireHostSessionOwnership: async (request: import("../../ports/session-acquisition.js").SessionAcquisitionRequest) => {
-        actual.setSession("/fixture/session.lock", request.projectPath, request.profile, request.toolName);
+        const directory = locksDir();
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        const lockFile = join(directory, sessionClaimName(sessionClaimPrefix(getProjectId(request.projectPath), request.profile), "fixture"));
+        writeFileSync(lockFile, encodeSessionClaim(process.pid, null, "direct"), { mode: 0o600, flag: "wx" });
+        actual.setSession(lockFile, request.projectPath, request.profile, request.toolName);
         actual.setSessionCleanupEnabled(false);
-        return { lockFile: "/fixture/session.lock", existingId: f.running ? "old-id" : null };
+        return { lockFile, existingId: f.running ? "old-id" : null };
     },
+    beginSessionStartupInHeldLifecycleLock: () => actual.setSessionCleanupEnabled(false),
+    recordSessionOwnStartInHeldLifecycleLock: (id: string) => { actual.setSessionContainerId(id); actual.setSessionCleanupEnabled(true); },
+    publishSessionReadyInHeldLifecycleLock: (id: string, handoff: { startedByInvocation: boolean }) => { actual.setSessionContainerId(id); actual.setSessionCleanupEnabled(handoff.startedByInvocation); },
     confirmSessionOwnership: f.confirm,
-    createSessionLock: () => "/fixture/session.lock", setupSignalHandlers: vi.fn(),
+    setupSignalHandlers: vi.fn(),
     getActiveSessionsForContainer: () => [], cleanupSession: () => { f.events.push("cleanup"); if (f.realCleanup) actual.cleanupSession(); },
     withContainerLifecycleLock: (_key: string, operation: () => unknown) => operation(),
     withContainerSetupLockAsync: async (_key: string, operation: () => unknown) => operation(),
@@ -112,6 +112,7 @@ beforeEach(() => {
         f.events.push("command"); return 0;
     });
     f.start.mockImplementation((...args: unknown[]) => { f.events.push("start");
+        expect(args[10]).toMatchObject({ root: join(f.home, ".ccc") });
         const started = f.handoffStarted ?? !f.running;
         if (started) (args[9] as (id: string) => void)("final-id");
         (args[7] as (id: string, handoff: { startedByInvocation: boolean }) => void)("final-id", { startedByInvocation: started }); return "ccc-fixture"; });

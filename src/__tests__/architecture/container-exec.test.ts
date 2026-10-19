@@ -1,6 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 import {createContainerExec, containerExecReplacementBlockReason} from "../../application/container-exec.js";
 import type {ContainerExecPorts} from "../../ports/container-exec.js";
+import type {RuntimeBindGuard} from "../../ports/runtime-bind-authority.js";
 import {createDefaultToolCatalog} from "../../domain/tool-registry.js";
 import {createContainerExistingLifecycle} from "../../application/container-existing-lifecycle.js";
 import {assertBindMountSourceIdentity, captureBindMountSourceIdentity} from "../../adapters/container-mount-observations.js";
@@ -18,6 +19,9 @@ vi.mock("child_process", async () => ({...await vi.importActual("child_process")
 function fixture(options: {running?: boolean; replace?: boolean} = {}) {
     const catalog = createDefaultToolCatalog(), events: string[] = [];
     const handle: symbol = Symbol("owned preparation");
+    // This application owner supplies an opaque port value; native qualification
+    // and actual codex-state.lock contention belong to the integration owner.
+    const stateGuard = Object.freeze({root: "/owned"}) as RuntimeBindGuard;
     const forwarded: Array<[string, string]> = [["DUPLICATE", "first"], ["DUPLICATE", "last"]];
     const entries: Array<[string, string]> = [["container", "docker"], ...forwarded, ["MISE_TRUSTED_CONFIG_PATHS", "/project/repo-id"], ["TZ", "Host/Zone"]];
     let first = true;
@@ -29,13 +33,14 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
         async familyLock<T>(_id: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
         acquireOwnership: async () => ({lockFile: "/owned/session.lock", existingId: options.running ? "final-id" : null}),
         inspectSessionContainer: () => ({known: true, containerId: options.running ? "final-id" : null}),
-        ensureClipboard: async () => null, clipboardPortFile: () => "/owned/clipboard.port", clipboardConnection: () => ({}),
+        ensureClipboard: async () => null, validateClipboard: async selection => selection,
+        clipboardPortFile: () => "/owned/clipboard.port", clipboardConnection: () => ({}),
         worktreeMounts: () => [], containerName: () => "ccc-repo",
         containerStatus: () => ({exists: true, running: Boolean(options.running), containerId: options.running ? "final-id" : "setup-id", imageId: "image-id"}),
         sessionClaims: () => ["session.lock"], lockName: () => "session.lock", prepareDeviceBroker: async () => {},
         async lifecycleLock<T>(_prefix: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
         async setupLock<T>(_prefix: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
-        async stateLock<T>(operation: () => Promise<T> | T): Promise<T> { return operation(); },
+        async stateLock<T>(operation: (guard: RuntimeBindGuard) => Promise<T> | T): Promise<T> { return operation(stateGuard); },
         prepareContainer: () => ({start: (...args) => ports.startContainer(...args), initialize: vi.fn()}),
         startContainer: (_path, _ensure, _mounts, _port, _profile, _recreate, _replacement, onReady, _expected, onStarted) => {
             const id = options.replace && first ? "setup-id" : "final-id"; first = false;
@@ -60,7 +65,7 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
         handoffFailure: () => new Error("Container handoff failed"), invalidRuntimeFailure: () => new Error("Invalid runtime"),
         cleanupSession: vi.fn(() => { events.push("cleanup"); }), report: vi.fn(),
     };
-    return {ports, entries, handle, events, exec: createContainerExec(ports).exec};
+    return {ports, entries, handle, events, stateGuard, exec: createContainerExec(ports).exec};
 }
 
 function deferred<T>() {
@@ -134,7 +139,7 @@ describe("acquired session lifetime", () => {
         install(f: ReturnType<typeof fixture>, failure: Error): void;
     }> = [
         {name: "synchronous clipboard startup", wrapped: false, restores: 0, install: (f, failure) => { f.ports.ensureClipboard = () => { throw failure; }; }},
-        {name: "clipboard port lookup", wrapped: false, restores: 0, install: (f, failure) => { f.ports.clipboardPortFile = () => { throw failure; }; }},
+        {name: "clipboard final selection validation", wrapped: true, restores: 0, install: (f, failure) => { f.ports.validateClipboard = async () => { throw failure; }; }},
         {name: "mount discovery", wrapped: false, restores: 0, install: (f, failure) => { f.ports.worktreeMounts = () => { throw failure; }; }},
         {name: "container name", wrapped: false, restores: 0, install: (f, failure) => { f.ports.containerName = () => { throw failure; }; }},
         {name: "container inspection", wrapped: false, restores: 0, install: (f, failure) => { f.ports.containerStatus = () => { throw failure; }; }},
@@ -506,6 +511,48 @@ describe("acquired session lifetime", () => {
 });
 
 describe("container exec semantic workflow", () => {
+    it("drops a paused requester's retired selection before bind, environment and image attachment", async () => {
+        const f = fixture(), stale = {port: 4321, token: "retired-token", portFile: "/owned/bridge-a.port"};
+        f.ports.ensureClipboard = async () => stale;
+        f.ports.clipboardPortFile = () => {throw new Error("must not reread an unrelated port path");};
+        f.ports.validateClipboard = vi.fn(async (selected, guard) => {
+            expect(selected).toBe(stale); expect(guard).toBe(f.stateGuard); return null;
+        });
+        f.ports.clipboardConnection = vi.fn(selected => {
+            expect(selected).toBeNull(); return {};
+        });
+        const start = f.ports.startContainer; f.ports.startContainer = vi.fn(start);
+        await f.exec("/repo", ["codex"]);
+        expect(f.ports.validateClipboard).toHaveBeenCalledOnce();
+        expect(vi.mocked(f.ports.startContainer).mock.calls[0][3]).toBeUndefined();
+        expect(f.ports.clipboardConnection).toHaveBeenCalledWith(null);
+        expect(f.ports.attachClipboardImage).toHaveBeenCalledWith("/project/repo", ["codex"], {enabled: true, clipboardUrl: undefined, clipboardToken: undefined});
+        const intent = vi.mocked(f.ports.prepareCommand).mock.calls[0][0];
+        expect(intent.environment.some(([key]) => key === "CCC_CLIPBOARD_URL" || key === "CCC_CLIPBOARD_TOKEN")).toBe(false);
+    });
+    it("uses the one final guarded selection for the bind, connection, image and environment", async () => {
+        const f = fixture(), selected = Object.freeze({port: 4321, token: "current-token", portFile: "/owned/bridge-a.port"});
+        let validated = false;
+        f.ports.ensureClipboard = async () => selected;
+        f.ports.clipboardPortFile = () => {throw new Error("must not mix a later port-file lookup into the selection");};
+        f.ports.validateClipboard = vi.fn(async (candidate, guard) => {
+            expect(candidate).toBe(selected); expect(guard).toBe(f.stateGuard); validated = true; return selected;
+        });
+        f.ports.clipboardConnection = vi.fn(candidate => {
+            expect(validated).toBe(true); expect(candidate).toBe(selected); return {url: `http://127.0.0.1:${candidate!.port}`, token: candidate!.token};
+        });
+        const start = f.ports.startContainer;
+        f.ports.startContainer = vi.fn<ContainerExecPorts<symbol>["startContainer"]>((...args) => {
+            expect(validated).toBe(true); expect(args[3]).toBe(selected.portFile); expect(args[10]).toBe(f.stateGuard); return start(...args);
+        });
+        await f.exec("/repo", ["codex"]);
+        const connection = {url: "http://127.0.0.1:4321", token: "current-token"};
+        expect(f.ports.startClipboardBridge).toHaveBeenCalledWith("final-id", connection);
+        expect(f.ports.attachClipboardImage).toHaveBeenCalledWith("/project/repo", ["codex"], {enabled: true, clipboardUrl: connection.url, clipboardToken: connection.token});
+        expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment).toEqual(expect.arrayContaining([
+            ["CCC_CLIPBOARD_URL", connection.url], ["CCC_CLIPBOARD_TOKEN", connection.token],
+        ]));
+    });
     it("publishes startup intent, positive own start and ready while the one lifecycle guard is held", async () => {
         const f = fixture(), publications: string[] = [];
         let held = false;
@@ -568,7 +615,7 @@ describe("container exec semantic workflow", () => {
         const f = fixture();
         let stateHeld = false, lifecycleHeld = false, setupHeld = false;
         f.ports.setupLock = async (_prefix, operation) => { setupHeld = true; try { return await operation(); } finally { setupHeld = false; } };
-        f.ports.stateLock = async operation => { expect(setupHeld).toBe(true); stateHeld = true; try { return await operation(); } finally { stateHeld = false; } };
+        f.ports.stateLock = async operation => { expect(setupHeld).toBe(true); stateHeld = true; try { return await operation(f.stateGuard); } finally { stateHeld = false; } };
         f.ports.lifecycleLock = async (_prefix, operation) => { expect(stateHeld).toBe(true); lifecycleHeld = true; try { return await operation(); } finally { lifecycleHeld = false; } };
         const initialize = vi.fn((id: string) => {
             expect(id).toBe("final-id"); expect(setupHeld).toBe(true);
@@ -583,12 +630,39 @@ describe("container exec semantic workflow", () => {
         await f.exec("/repo", ["codex"]);
         expect(prepare).toHaveBeenCalledOnce(); expect(initialize).toHaveBeenCalledExactlyOnceWith("final-id");
     });
+    it("hands the same held state guard to startup without acquiring a second global guard", async () => {
+        const f = fixture();
+        let held = false;
+        const originalStart = f.ports.startContainer;
+        const start = vi.fn<ContainerExecPorts<symbol>["startContainer"]>((...args) => {
+            expect(held).toBe(true);
+            expect(args[10]).toBe(f.stateGuard);
+            return originalStart(...args);
+        });
+        const stateAdmission = vi.fn();
+        f.ports.stateLock = async <T>(operation: (guard: RuntimeBindGuard) => T | Promise<T>): Promise<T> => {
+            stateAdmission();
+            expect(held).toBe(false);
+            held = true;
+            try { return await operation(f.stateGuard); }
+            finally { held = false; }
+        };
+        f.ports.prepareContainer = () => ({start, initialize: id => {
+            expect(held).toBe(false);
+            expect(id).toBe("final-id");
+        }});
+        await expect(f.exec("/repo", ["codex"])).resolves.toBe(0);
+        expect(stateAdmission).toHaveBeenCalledOnce();
+        expect(start).toHaveBeenCalledOnce();
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith("final-id", {startedByInvocation: true});
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
     it("preparation failure performs no mutation admission or command launch", async () => {
         const f = fixture(), failure = new Error("image preparation unavailable");
         f.ports.prepareContainer = () => { throw failure; };
         let stateCalls = 0, lifecycleCalls = 0;
-        f.ports.stateLock = async <T>(operation: () => T | Promise<T>): Promise<T> => {
-            stateCalls++; return operation();
+        f.ports.stateLock = async <T>(operation: (guard: RuntimeBindGuard) => T | Promise<T>): Promise<T> => {
+            stateCalls++; return operation(f.stateGuard);
         };
         f.ports.lifecycleLock = async <T>(_prefix: string, operation: () => T | Promise<T>): Promise<T> => {
             lifecycleCalls++; return operation();

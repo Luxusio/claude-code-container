@@ -29,7 +29,8 @@ import { getProjectId, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, DATA_DIR,
 import { hasAnyActiveSessionsExcept, retireClipboardServerFromPortFile } from "./clipboard-server.js";
 import { DEFAULT_PROFILE_NAME, defaultProfileDir, ensureDefaultProfileDir, migrateHomeLayout, normalizeProfile } from "./home-layout.js";
 import { hasLegacyHomeLayoutContainerMounts } from "./home-layout-container-guard.js";
-import { withSharedMutationLock } from "@ccc/device-lab/device-lab-shared-state.js";
+import { prepareRuntimeBindHome, withRuntimeBindGuard } from "./adapters/runtime-bind-authority.js";
+import type { RuntimeBindHomePreparation } from "./ports/runtime-bind-authority.js";
 import { formatContainerStartupError } from "./container-restart-guidance.js";
 import { maybeAttachCodexClipboardImage } from "./codex-clipboard-image.js";
 import { parseWorktreeArg, validateBranchName, listWorkspaces, createWorkspace, removeWorkspace, repairWorkspace, detectBrokenWorktrees, fixBrokenWorktree, getWorkspacePath, assertWorkspaceBranch, assertWorkspaceRootOwnership, strandedBranchRegistrations, terminalSafeLiteral, pasteableArgument, type StrandedBranchRegistration, repairWorkspaceRootOwnership, hasGitMetadata, isWorktreeWorkspace, assertWorkspaceReady, workspaceExists, needsSubmoduleSetup, initWithSubmodules, DamagedWorkspaceMetadataError, MissingWorkspaceRootRegistrationError, canRecreateMissingWorkspaceRootRegistration, WorktreeContentConflictError, setAsideConflictingContent, repairWorkspaceWorktree } from "./worktree.js";
@@ -91,6 +92,7 @@ import {
 import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
 import { formatRuntimeSummary, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation, setRuntimeOverride } from "./container-runtime.js";
+import { parseRuntimeOverride } from "./domain/container-runtime.js";
 import { devicesCliAsync } from "./device-lab-admin.js";
 import { labsCli } from "./lab-runner-admin.js";
 
@@ -912,16 +914,16 @@ export function informationalCommand(args: string[]): "help" | "version" | null 
 
 // Move a pre-layout ~/.ccc into profiles/ and run/ (doc/common/REQ__ccc-home-layout.md).
 // Host-side only: inside a ccc container ~/.ccc holds container state, not the host layout.
-function migrateHostHomeLayout(): void {
+function migrateHostHomeLayout(preparation?: RuntimeBindHomePreparation): void {
     if (process.env[CONTAINER_ENV_KEY] === CONTAINER_ENV_VALUE) return;
     try {
-        withSharedMutationLock(join(DATA_DIR, "codex-state.lock"), () => migrateHomeLayout({
+        withRuntimeBindGuard(preparation ?? DATA_DIR, guard => migrateHomeLayout({
             // Sessions of an older ccc use ~/.ccc/locks even when run/locks exists.
             hasLiveSessions: () => [join(DATA_DIR, "locks"), join(DATA_DIR, "run", "locks")]
                 .some((directory) => hasAnyActiveSessionsExcept(null, directory)),
             retireLegacyClipboard: retireClipboardServerFromPortFile,
-            hasContainerMounts: hasLegacyHomeLayoutContainerMounts,
-        }), { waitMs: 10_000, reclaimStale: false });
+            hasContainerMounts: () => hasLegacyHomeLayoutContainerMounts(guard),
+        }), { waitMs: 10_000 });
     } catch (error) {
         console.error(`ccc: ~/.ccc layout migration skipped (${(error as Error).message}); the old paths keep working.`);
     }
@@ -950,6 +952,7 @@ export async function main(): Promise<void> {
     // An override may own stopped containers whose legacy bind paths must stay.
     const extraEnv: Record<string, string> = {};
     const cmdArgs: string[] = [];
+    let explicitRuntime = false;
     for (let i = 0; i < filteredArgs.length; i++) {
         if (filteredArgs[i] === "--env" && i + 1 < filteredArgs.length) {
             const kv = filteredArgs[++i];
@@ -959,6 +962,7 @@ export async function main(): Promise<void> {
             try {
                 if (i + 1 >= filteredArgs.length) throw new Error("--runtime requires docker or podman");
                 setRuntimeOverride(filteredArgs[++i]);
+                explicitRuntime = true;
             } catch (e) {
                 console.error((e as Error).message);
                 process.exit(1);
@@ -967,9 +971,18 @@ export async function main(): Promise<void> {
             cmdArgs.push(filteredArgs[i]);
         }
     }
+    if (!explicitRuntime) {
+        try { parseRuntimeOverride(process.env.CCC_RUNTIME, "environment"); }
+        catch (error) {
+            console.error((error as Error).message);
+            process.exit(1);
+        }
+    }
     const envOpt = Object.keys(extraEnv).length > 0 ? { env: extraEnv } : {};
 
-    migrateHostHomeLayout();
+    const homePreparation = process.env[CONTAINER_ENV_KEY] === CONTAINER_ENV_VALUE
+        ? undefined : prepareRuntimeBindHome(DATA_DIR);
+    migrateHostHomeLayout(homePreparation);
 
     // Profile from CCC_PROFILE env var; "default" is the no-profile account.
     const requestedProfile = process.env.CCC_PROFILE || undefined;

@@ -14,8 +14,12 @@ import {
     lstatSync,
     fchmodSync,
     ftruncateSync,
+    fsyncSync,
     existsSync,
     readFileSync,
+    readSync,
+    realpathSync,
+    type BigIntStats,
     writeFileSync,
     copyFileSync,
     readdirSync,
@@ -23,13 +27,20 @@ import {
     closeSync,
     mkdirSync,
 } from "fs";
-import { join, dirname, basename } from "path";
+import { join, dirname, basename, relative, isAbsolute, sep, resolve } from "path";
 import { platform } from "os";
 import { fileURLToPath } from "url";
 import { CLIPBOARD_FILES_CONTAINER_DIR } from "./utils.js";
-import { clipboardFilesDir, clipboardPortFile, clipboardStartingLock, helperBinDir, locksDir } from "./home-layout.js";
+import { cccHome, clipboardFilesDir, clipboardPortFile, clipboardStartingLock, helperBinDir, locksDir } from "./home-layout.js";
 import { tryAcquireClipboardStartupLock, recoverDeadClipboardStartupLock, releaseClipboardStartupLock } from "./clipboard-startup-lock.js";
 import { clipboardPortMayHaveBindUsers } from "./clipboard-bind-users.js";
+import { prepareRuntimeBindHome, withRuntimeBindGuardAsync, readRuntimeBindAuthority, assertRuntimeBindAuthorityCurrent } from "./adapters/runtime-bind-authority.js";
+import { getRuntimeInvocation, peekRuntimeInvocation, runWithNativeRuntimeInvocation, validateNativeRuntimeInvocation } from "./container-runtime.js";
+import { nativeSessionOwnershipMatches, captureNativeSessionOwnership } from "./adapters/session-ownership.js";
+import type { SessionOwnershipReceipt } from "./ports/session-ownership.js";
+import type { RuntimeBindGuard, RuntimeBindHomePreparation } from "./ports/runtime-bind-authority.js";
+import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
+import type { ClipboardPortRecord, ClipboardSelection } from "./domain/clipboard/server-lifecycle.js";
 import { sessionLockLiveness } from "./session-lock-liveness.js";
 import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "@ccc/device-lab/windows-system-powershell.js";
 
@@ -58,8 +69,12 @@ function getServerHash(): string {
             "application/clipboard/snapshot.js",
             "application/clipboard/text-write.js",
             "application/clipboard/server-lifecycle.js",
+            "clipboard-bind-users.js",
+            "adapters/runtime-bind-authority.js",
+            "adapters/runtime-bind-users.js",
+            "application/runtime-bind-admission.js",
         ];
-        const hash = createHash("sha256").update("ccc-clipboard-policy-v1\0");
+        const hash = createHash("sha256").update("ccc-clipboard-policy-v2\0");
         for (const file of files) {
             const content = readFileSync(join(directory, file), "utf-8");
             hash.update(file).update("\0").update(String(Buffer.byteLength(content, "utf8")))
@@ -78,6 +93,8 @@ const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
 
 const SHUTDOWN_TIMEOUT_MS = 2000;
+const DAEMON_START_TIMEOUT_MS = 5000;
+const WRITER_SETTLEMENT = "writer-settlement-v1";
 
 
 const PS_MARKER = "<<<CCC_CB_DONE>>>";
@@ -1179,23 +1196,44 @@ function readClipboardImage(plat: ClipboardPlatform, format: "png" | "bmp", targ
     return r.status === 0 && r.stdout.length > 0 ? r.stdout : null;
 }
 
-// === Graceful Shutdown ===
-
-function gracefulShutdown(server: Server, idleTimer?: ReturnType<typeof setInterval>): void {
-    if (idleTimer) clearInterval(idleTimer);
-    killPersistentPS();
-    killPersistentDarwin();
-    server.close(() => {
-        process.exit(0);
-    });
-    setTimeout(() => process.exit(0), 3000);
-}
-
 // === HTTP Server ===
 
-export function createClipboardServer(token: string, plat: ClipboardPlatform): { server: Server; start: (bindAddr: string) => Promise<number> } {
+export function createClipboardServer(token: string, plat: ClipboardPlatform, options: {
+    disablePublication?: () => void;
+    publicationCommitted?: () => boolean;
+    retirePublication?: (guard?: RuntimeBindGuard) => void;
+    runtimeInvocation?: NativeRuntimeInvocation;
+} = {}): { server: Server; start: (bindAddr: string) => Promise<number>; shutdown: () => void } {
     let noActiveSessionsSince: number | null = null;
     let idleTimer: ReturnType<typeof setInterval>;
+    let retiring = false;
+    let exitAfterClose = false;
+    let closed = false;
+    let orphanCheckPending = false;
+    const relinquish = () => {
+        if (!retiring) {
+            retiring = true;
+            options.disablePublication?.();
+            clearInterval(idleTimer);
+            killPersistentPS();
+            killPersistentDarwin();
+            server.close(() => {
+                closed = true;
+                if (exitAfterClose) process.exit(0);
+            });
+        }
+        return !server.listening;
+    };
+    const finishShutdown = () => {
+        if (exitAfterClose) return;
+        exitAfterClose = true;
+        if (closed) process.exit(0);
+        setTimeout(() => process.exit(0), 3000).unref();
+    };
+    const shutdown = () => {
+        relinquish();
+        try { options.retirePublication?.(); } finally { finishShutdown(); }
+    };
 
     // Pre-warm persistent PowerShell on Windows/WSL
     if (plat === "windows" || plat === "wsl") {
@@ -1213,7 +1251,8 @@ export function createClipboardServer(token: string, plat: ClipboardPlatform): {
                 const expected = `Bearer ${token}`;
                 const isValid = authH !== undefined && safeCompare(authH, expected);
                 res.writeHead(200, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ service: "ccc-clipboard", ...(isValid ? { version: SERVER_VERSION, valid: true } : {}) }));
+                res.end(JSON.stringify({ service: "ccc-clipboard", ...(isValid ? { version: SERVER_VERSION, valid: true,
+                    ...(options.publicationCommitted?.() === false ? {} : { retirement: WRITER_SETTLEMENT }) } : {}) }));
                 return;
             }
 
@@ -1227,9 +1266,23 @@ export function createClipboardServer(token: string, plat: ClipboardPlatform): {
             }
 
             if (method === "POST" && url === "/shutdown") {
-                res.writeHead(200, { "Content-Type": "text/plain" });
-                res.end("shutting down");
-                gracefulShutdown(server, idleTimer);
+                if (options.publicationCommitted?.() === false) {
+                    res.writeHead(503);
+                    res.end("Clipboard publication is not committed");
+                    return;
+                }
+                // server.close() stops new listeners synchronously. Its close event
+                // waits for this response, so never await it before acknowledging.
+                if (!relinquish()) {
+                    res.writeHead(503);
+                    res.end();
+                    return;
+                }
+                options.retirePublication?.(); // Parent owns any final marker; this child can never write again.
+                res.once("finish", finishShutdown);
+                res.once("close", finishShutdown);
+                res.writeHead(200, { "Content-Type": "application/json", "Connection": "close" });
+                res.end(JSON.stringify({ service: "ccc-clipboard", retirement: WRITER_SETTLEMENT, settled: true }));
                 return;
             }
 
@@ -1316,18 +1369,28 @@ export function createClipboardServer(token: string, plat: ClipboardPlatform): {
     // A detached server may outlive a crashed CLI. Active session locks keep it
     // alive; an empty/stale lock set starts a short grace period before exit.
     idleTimer = setInterval(() => {
-        const state = clipboardServerOrphanWatchdogState(
-            Date.now(),
-            noActiveSessionsSince,
-            hasAnyActiveSessionsExcept(null),
-        );
+        if (retiring || orphanCheckPending) return;
+        const state = clipboardServerOrphanWatchdogState(Date.now(), noActiveSessionsSince, hasAnyActiveSessionsExcept(null));
         noActiveSessionsSince = state.noActiveSessionsSince;
-        if (state.shouldShutdown) gracefulShutdown(server, idleTimer);
+        if (!state.shouldShutdown || !options.runtimeInvocation) return;
+        orphanCheckPending = true;
+        void runWithNativeRuntimeInvocation(options.runtimeInvocation, () => withRuntimeBindGuardAsync(cccHome(), async guard => {
+            if (retiring || hasAnyActiveSessionsExcept(null)) return;
+            const portFile = clipboardPortFile();
+            const selected = readPortFile(portFile);
+            const address = server.address();
+            if (!selected || !address || typeof address === "string" || selected.token !== token || selected.port !== address.port) return;
+            if (clipboardPortMayHaveBindUsers(portFile, guard) || hasAnyActiveSessionsExcept(null) || !portRecordMatches(selected, portFile)) return;
+            if (!relinquish()) return;
+            try { options.retirePublication?.(guard); }
+            finally { finishShutdown(); }
+        }, { waitMs: 0 })).catch(() => undefined).finally(() => { orphanCheckPending = false; });
     }, CLIPBOARD_SERVER_ORPHAN_CHECK_INTERVAL_MS);
     server.once("close", () => clearInterval(idleTimer));
 
     const start = (bindAddr: string): Promise<number> => {
         return new Promise((resolve, reject) => {
+            if (retiring) { reject(new Error("Clipboard writer has retired")); return; }
             server.listen(0, bindAddr, () => {
                 const addr = server.address();
                 if (addr && typeof addr !== "string") {
@@ -1340,54 +1403,243 @@ export function createClipboardServer(token: string, plat: ClipboardPlatform): {
         });
     };
 
-    return { server, start };
+    return { server, start, shutdown };
 }
 
 // === Port File Management ===
 
-function readPortFile(portFile = clipboardPortFile()): { port: number; token: string } | null {
-    try {
-        if (!existsSync(portFile)) return null;
-        const content = readFileSync(portFile, "utf-8").trim();
-        const colonIdx = content.indexOf(":");
-        if (colonIdx === -1) return null;
-        const portStr = content.substring(0, colonIdx);
-        const token = content.substring(colonIdx + 1);
-        const port = parseInt(portStr, 10);
-        if (isNaN(port) || !token) return null;
-        return { port, token };
-    } catch {
-        return null;
-    }
+interface ClipboardPortReceipt { readonly stat: BigIntStats; readonly bytes: string }
+const portReceipts = new WeakMap<ClipboardPortRecord, ClipboardPortReceipt>();
+
+function samePortReceipt(left: ClipboardPortReceipt, right: ClipboardPortReceipt): boolean {
+    return left.bytes === right.bytes && left.stat.dev === right.stat.dev && left.stat.ino === right.stat.ino
+        && left.stat.birthtimeNs === right.stat.birthtimeNs && left.stat.mtimeNs === right.stat.mtimeNs
+        && left.stat.ctimeNs === right.stat.ctimeNs;
 }
 
-function writePortFile(port: number, token: string): void {
-    const portFile = clipboardPortFile();
-    mkdirSync(dirname(portFile), { recursive: true, mode: 0o700 });
-    // Containers bind this file's inode. Publish through a pinned descriptor;
-    // stale bytes remain harmless because readers require authenticated health.
-    const flags = constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
-    let fd: number;
+function portPathMatches(opened: BigIntStats, named: BigIntStats): boolean {
+    const unnamedWindowsDevice = process.platform === "win32" && named.dev === 0n;
+    return named.isFile() && !named.isSymbolicLink() && named.nlink === 1n
+        && named.ino === opened.ino && named.birthtimeNs === opened.birthtimeNs
+        && (unnamedWindowsDevice ? opened.dev > 0n && opened.ino > 0n : named.dev === opened.dev);
+}
+
+function capturePortFile(path: string): ClipboardPortReceipt | null {
+    let fd: number | undefined;
     try {
-        fd = openSync(portFile, flags | constants.O_CREAT | constants.O_EXCL, 0o600);
-    } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-        fd = openSync(portFile, flags);
-    }
-    try {
-        const file = fstatSync(fd);
-        const path = lstatSync(portFile);
+        fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+        const before = fstatSync(fd, { bigint: true });
         const uid = process.getuid?.();
-        if (!file.isFile() || file.nlink !== 1 || (uid !== undefined && file.uid !== uid)
-            || !path.isFile() || path.dev !== file.dev || path.ino !== file.ino) {
-            throw new Error("Unsafe clipboard port file");
+        if (!before.isFile() || before.nlink !== 1n || before.size > 1024n
+            || (uid !== undefined && (before.uid !== BigInt(uid) || (before.mode & 0o077n) !== 0n))) return null;
+        const bytes = Buffer.alloc(1025);
+        let length = 0;
+        while (length < bytes.length) {
+            const count = readSync(fd, bytes, length, bytes.length - length, length);
+            if (!count) break;
+            length += count;
         }
-        if (uid !== undefined && (file.mode & 0o777) !== 0o600) fchmodSync(fd, 0o600);
-        ftruncateSync(fd, 0);
-        writeFileSync(fd, `${port}:${token}`);
-    } finally {
-        closeSync(fd);
+        const after = fstatSync(fd, { bigint: true });
+        const named = lstatSync(path, { bigint: true });
+        if (BigInt(length) !== before.size || !portPathMatches(before, named)
+            || !after.isFile() || after.nlink !== 1n || after.dev !== before.dev || after.ino !== before.ino
+            || after.birthtimeNs !== before.birthtimeNs || after.size !== before.size
+            || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) return null;
+        return { stat: before, bytes: bytes.subarray(0, length).toString("utf8") };
+    } catch { return null; }
+    finally { if (fd !== undefined) closeSync(fd); }
+}
+
+function decodePortFile(receipt: ClipboardPortReceipt | null): ClipboardPortRecord | null {
+    const retired = receipt?.bytes.match(/^retired-v1:([1-9][0-9]{0,4}):([a-f0-9]{32})$/);
+    const active = receipt?.bytes.trim().match(/^([0-9]{1,5}):([^\s\x00-\x1f]{1,256})$/);
+    const match = retired ?? active;
+    if (!match) return null;
+    const port = Number(match[1]);
+    return port > 0 && port <= 65535 ? { port, token: match[2], ...(retired ? { retired: true as const } : {}) } : null;
+}
+
+function readPortFile(portFile = clipboardPortFile()): ClipboardPortRecord | null {
+    const receipt = capturePortFile(portFile);
+    const record = decodePortFile(receipt);
+    if (receipt && record) portReceipts.set(record, receipt);
+    return record;
+}
+
+function portRecordMatches(record: ClipboardPortRecord, path: string): boolean {
+    const before = portReceipts.get(record);
+    const current = capturePortFile(path);
+    return !!before && !!current && samePortReceipt(before, current);
+}
+
+/** A paused caller cannot bind one record and later use a different daemon token. */
+export async function validateClipboardSelection(selected: ClipboardSelection | null, guard: RuntimeBindGuard): Promise<ClipboardSelection | null> {
+    if (!selected) return null;
+    try {
+        const snapshot = readRuntimeBindAuthority(guard);
+        const suffix = relative(resolve(guard.root), selected.portFile);
+        if (!suffix || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) return null;
+        for (let path = dirname(selected.portFile); ; path = dirname(path)) {
+            const parent = lstatSync(path);
+            if (!parent.isDirectory() || parent.isSymbolicLink()) return null;
+            if (path === resolve(guard.root)) break;
+            if (dirname(path) === path) return null;
+        }
+        const current = capturePortFile(selected.portFile);
+        const record = decodePortFile(current);
+        if (!current || !record || record.retired || selected.retired || record.port !== selected.port || record.token !== selected.token) return null;
+        const health = await checkServerHealth(selected.port, selected.token, "127.0.0.1");
+        const after = capturePortFile(selected.portFile);
+        assertRuntimeBindAuthorityCurrent(guard, snapshot);
+        if (!health.alive || !after || !samePortReceipt(current, after)) return null;
+        return selected;
+    } catch { return null; }
+}
+
+function preparePortPublication(portFile: string, guard: RuntimeBindGuard): ((record: ClipboardPortRecord) => PublishedClipboardReceipt) | null {
+    try {
+        const snapshot = readRuntimeBindAuthority(guard);
+        const root = resolve(guard.root);
+        const suffix = relative(root, portFile);
+        if (!suffix || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) return null;
+        const ancestors: Array<{ path: string; stat: BigIntStats; canonical: string }> = [];
+        const missing: string[] = [];
+        for (let path = dirname(portFile); ; path = dirname(path)) {
+            try {
+                const stat = lstatSync(path, { bigint: true });
+                if (!stat.isDirectory() || stat.isSymbolicLink() || (process.getuid && (stat.uid !== BigInt(process.getuid()) || (stat.mode & 0o022n) !== 0n))) return null;
+                ancestors.push({ path, stat, canonical: realpathSync(path) });
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+                missing.push(path);
+            }
+            if (path === root) break;
+            if (dirname(path) === path) return null;
+        }
+        const expected = capturePortFile(portFile);
+        if (!expected) {
+            try { lstatSync(portFile); return null; }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null; }
+        } else if (!decodePortFile(expected)) return null;
+        const assertCurrent = () => {
+            assertRuntimeBindAuthorityCurrent(guard, snapshot);
+            for (const before of ancestors) {
+                const stat = lstatSync(before.path, { bigint: true });
+                if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== before.stat.dev
+                    || stat.ino !== before.stat.ino || stat.birthtimeNs !== before.stat.birthtimeNs
+                    || realpathSync(before.path) !== before.canonical) throw new Error("Clipboard publication parent changed");
+            }
+            for (const path of missing) {
+                try { lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+                throw new Error("Clipboard publication parent changed");
+            }
+            const current = capturePortFile(portFile);
+            if (expected ? !current || !samePortReceipt(expected, current) : current !== null) throw new Error("Clipboard publication target changed");
+            if (!expected) {
+                try { lstatSync(portFile); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+                throw new Error("Clipboard publication target changed");
+            }
+        };
+        const scope = expected ? portFile : ancestors[0]?.path;
+        if (!scope || clipboardPortMayHaveBindUsers(scope, guard)) return null;
+        assertCurrent();
+        let published = false;
+        return record => {
+            if (published) throw new Error("Clipboard publication has already settled");
+            published = true;
+            assertCurrent();
+            for (const path of [...missing].reverse()) mkdirSync(path, { mode: 0o700 });
+            const flags = constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+            const fd = openSync(portFile, expected ? flags : flags | constants.O_CREAT | constants.O_EXCL, 0o600);
+            try {
+                const stat = fstatSync(fd, { bigint: true });
+                const named = lstatSync(portFile, { bigint: true });
+                if (!stat.isFile() || stat.nlink !== 1n || !portPathMatches(stat, named)
+                    || (process.getuid && stat.uid !== BigInt(process.getuid()))
+                    || (expected && (stat.dev !== expected.stat.dev || stat.ino !== expected.stat.ino
+                        || stat.birthtimeNs !== expected.stat.birthtimeNs || stat.size !== expected.stat.size
+                        || stat.mtimeNs !== expected.stat.mtimeNs || stat.ctimeNs !== expected.stat.ctimeNs))) {
+                    throw new Error("Unsafe clipboard port file");
+                }
+                if (process.getuid && (stat.mode & 0o777n) !== 0o600n) fchmodSync(fd, 0o600);
+                ftruncateSync(fd, 0);
+                writeFileSync(fd, `${record.port}:${record.token}`);
+                fsyncSync(fd);
+                const committed = capturePortFile(portFile);
+                if (!committed) throw new Error("Clipboard publication could not be captured");
+                return publicationReceipt(portFile, committed);
+            } finally { closeSync(fd); }
+        };
+    } catch { return null; }
+}
+
+interface PublishedClipboardReceipt {
+    readonly path: string;
+    readonly bytes: string;
+    readonly device: string;
+    readonly inode: string;
+    readonly birthtime: string;
+    readonly mtime: string;
+    readonly ctime: string;
+}
+
+function publicationReceipt(path: string, receipt: ClipboardPortReceipt): PublishedClipboardReceipt {
+    return Object.freeze({ path, bytes: receipt.bytes, device: String(receipt.stat.dev), inode: String(receipt.stat.ino),
+        birthtime: String(receipt.stat.birthtimeNs), mtime: String(receipt.stat.mtimeNs), ctime: String(receipt.stat.ctimeNs) });
+}
+
+function publicationMatches(before: PublishedClipboardReceipt, current: ClipboardPortReceipt): boolean {
+    const after = publicationReceipt(before.path, current);
+    return Object.keys(after).every(key => after[key as keyof PublishedClipboardReceipt] === before[key as keyof PublishedClipboardReceipt]);
+}
+
+function decodePublicationReceipt(value: unknown, port: number, token: string): PublishedClipboardReceipt {
+    if (!value || typeof value !== "object") throw new Error("Clipboard commit receipt is unavailable");
+    const record = value as Record<string, unknown>;
+    const keys = ["path", "bytes", "device", "inode", "birthtime", "mtime", "ctime"];
+    if (Object.keys(record).length !== keys.length || keys.some(key => typeof record[key] !== "string")
+        || record.path !== clipboardPortFile() || record.bytes !== `${port}:${token}`
+        || keys.slice(2).some(key => !/^[0-9]+$/.test(record[key] as string))) throw new Error("Invalid clipboard commit receipt");
+    return Object.freeze({ path: record.path as string, bytes: record.bytes as string, device: record.device as string,
+        inode: record.inode as string, birthtime: record.birthtime as string, mtime: record.mtime as string, ctime: record.ctime as string });
+}
+
+function writeRetiredPublication(receipt: PublishedClipboardReceipt, guard: RuntimeBindGuard): void {
+    const snapshot = readRuntimeBindAuthority(guard);
+    const relativePath = relative(resolve(guard.root), receipt.path);
+    if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
+        || !/^[1-9][0-9]{0,4}:[a-f0-9]{32}$/.test(receipt.bytes)) throw new Error("Invalid clipboard retirement authority");
+    for (let path = dirname(receipt.path); ; path = dirname(path)) {
+        const parent = lstatSync(path);
+        if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Clipboard retirement parent changed");
+        if (path === resolve(guard.root)) break;
+        if (dirname(path) === path) throw new Error("Clipboard retirement is outside its guard");
     }
+    const current = capturePortFile(receipt.path);
+    if (!current || !publicationMatches(receipt, current)) throw new Error("Clipboard publication was replaced");
+    assertRuntimeBindAuthorityCurrent(guard, snapshot);
+    const fd = openSync(receipt.path, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    try {
+        const stat = fstatSync(fd, { bigint: true });
+        const named = lstatSync(receipt.path, { bigint: true });
+        if (!stat.isFile() || stat.nlink !== 1n || !portPathMatches(stat, named)
+            || String(stat.dev) !== receipt.device || String(stat.ino) !== receipt.inode
+            || String(stat.birthtimeNs) !== receipt.birthtime || String(stat.mtimeNs) !== receipt.mtime || String(stat.ctimeNs) !== receipt.ctime) {
+            throw new Error("Clipboard publication changed before retirement");
+        }
+        ftruncateSync(fd, 0);
+        writeFileSync(fd, `retired-v1:${receipt.bytes}`);
+        fsyncSync(fd);
+    } finally { closeSync(fd); }
+}
+
+function markPortRetired(record: ClipboardPortRecord, path: string, guard: RuntimeBindGuard): void {
+    const receipt = portReceipts.get(record);
+    // Consume even a failed terminal writer; never retry against a successor.
+    try {
+        if (!receipt) throw new Error("Clipboard retirement lacks its captured publication");
+        writeRetiredPublication(publicationReceipt(path, receipt), guard);
+    } finally { portReceipts.delete(record); }
 }
 
 // === Server Shutdown (used for version upgrade restart) ===
@@ -1404,8 +1656,18 @@ function shutdownServer(port: number, token?: string): Promise<boolean> {
                 { hostname: "127.0.0.1", port, path: "/shutdown", method: "POST", headers },
                 (res) => {
                     res.on("error", () => finish(false));
-                    res.on("end", () => finish(res.statusCode === 200));
-                    res.resume();
+                    let body = "";
+                    res.on("data", chunk => {
+                        body += chunk;
+                        if (Buffer.byteLength(body) > 1024) { req?.destroy(); finish(false); }
+                    });
+                    res.on("end", () => {
+                        try {
+                            const value = JSON.parse(body);
+                            finish(res.statusCode === 200 && value.service === "ccc-clipboard"
+                                && value.retirement === WRITER_SETTLEMENT && value.settled === true);
+                        } catch { finish(false); }
+                    });
                 },
             );
             req.on("error", () => finish(false));
@@ -1421,6 +1683,7 @@ function shutdownServer(port: number, token?: string): Promise<boolean> {
 interface HealthResult {
     alive: boolean;
     version?: string;
+    retirement?: "writer-settlement-v1";
 }
 
 function checkServerHealth(port: number, expectedToken: string, bindAddr: string): Promise<HealthResult> {
@@ -1442,7 +1705,11 @@ function checkServerHealth(port: number, expectedToken: string, bindAddr: string
                 { hostname: bindAddr, port, path: "/health", method: "GET", headers: { "Authorization": `Bearer ${expectedToken}` }, timeout: HEALTH_CHECK_TIMEOUT_MS },
                 (res) => {
                     let data = "";
-                    res.on("data", (chunk) => { if (!settled) data += chunk; });
+                    res.on("data", (chunk) => {
+                        if (settled) return;
+                        data += chunk;
+                        if (Buffer.byteLength(data) > 4096) finish({ alive: false }, true);
+                    });
                     res.on("error", () => finish({ alive: false }, true));
                     res.on("aborted", () => finish({ alive: false }, true));
                     res.on("end", () => {
@@ -1450,7 +1717,7 @@ function checkServerHealth(port: number, expectedToken: string, bindAddr: string
                         try {
                             const json = JSON.parse(data);
                             const alive = json.service === "ccc-clipboard" && json.valid === true;  // valid only present when auth header sent
-                            finish({ alive, version: json.version });
+                            finish({ alive, version: json.version, ...(alive && json.retirement === WRITER_SETTLEMENT ? { retirement: WRITER_SETTLEMENT } : {}) });
                         } catch {
                             finish({ alive: false });
                         }
@@ -1476,38 +1743,127 @@ function checkServerHealth(port: number, expectedToken: string, bindAddr: string
  * If a server is already running (verified via health check + token), reuses it.
  * Otherwise starts a new detached server process.
  */
-const clipboardLifecycle = createClipboardServerLifecycle({
-    readPortFile,
-    portFilePath: () => clipboardPortFile(),
-    startupLockPath: () => clipboardStartingLock(),
-    tryAcquireStartupLock: tryAcquireClipboardStartupLock,
-    recoverDeadStartupLock: recoverDeadClipboardStartupLock,
-    releaseStartupLock: (lock) => { releaseClipboardStartupLock(lock); return undefined; },
-    checkHealth: checkServerHealth,
-    requestShutdown: shutdownServer,
-    portMayHaveBindUsers: clipboardPortMayHaveBindUsers,
-    warnUpgradeDeferred: () => {
-        console.warn("[ccc] Clipboard update deferred: running container bind users could not be excluded. Keeping the authenticated existing bridge; retry after its container users stop.");
-        return undefined;
-    },
-    now: () => performance.now(),
-    sleep: (milliseconds) => new Promise((r) => setTimeout(r, milliseconds)),
-    daemonScriptPath: () => fileURLToPath(import.meta.url).replace(/\.ts$/, ".js"),
-    launchDaemon: (serverScript) => spawn(process.execPath, [serverScript, "--serve"], {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-    }),
-    unrefDaemon: (child) => { child.unref(); return undefined; },
-}, SERVER_VERSION);
-const { ensureClipboardServer, stopClipboardServerIfLast, retireClipboardServerFromPortFile } = clipboardLifecycle;
-export { ensureClipboardServer, stopClipboardServerIfLast, retireClipboardServerFromPortFile };
+function launchClipboardDaemon(serverScript: string, publish: (record: ClipboardPortRecord) => unknown): Promise<ChildProcess> {
+    const runtimeInvocation = peekRuntimeInvocation();
+    if (!runtimeInvocation) return Promise.reject(new Error("Clipboard runtime authority is unavailable"));
+    return new Promise((resolve, reject) => {
+        const deadline = performance.now() + DAEMON_START_TIMEOUT_MS;
+        const child = spawn(process.execPath, [serverScript, "--serve", "--parent-publisher"], {
+            detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true,
+        });
+        let active = true;
+        let ready = false;
+        const finish = (error?: Error) => {
+            if (!active) return;
+            active = false;
+            clearTimeout(timer);
+            child.removeListener("message", onMessage);
+            child.removeListener("error", onError);
+            child.removeListener("exit", onExit);
+            child.removeListener("disconnect", onDisconnect);
+            if (error) {
+                try { child.disconnect(); } catch { /* The private channel may already be closed. */ }
+                reject(error);
+            } else {
+                try { child.disconnect(); } catch { /* The committed child can disconnect first. */ }
+                resolve(child);
+            }
+        };
+        const onError = () => finish(new Error("Clipboard daemon startup failed"));
+        const onExit = () => finish(new Error("Clipboard daemon exited before publication committed"));
+        const onDisconnect = () => finish(new Error("Clipboard daemon disconnected before publication committed"));
+        const onMessage = (message: unknown) => {
+            if (!active) return;
+            if (performance.now() >= deadline) {
+                finish(new Error("Clipboard daemon publication timed out"));
+                return;
+            }
+            if (!message || typeof message !== "object" || !("type" in message)) return;
+            if (message.type === "ready" && !ready && "port" in message && "token" in message
+                && typeof message.port === "number" && Number.isInteger(message.port) && Number(message.port) > 0 && Number(message.port) <= 65535
+                && typeof message.token === "string" && /^[a-f0-9]{32}$/.test(message.token)) {
+                ready = true;
+                try {
+                    if (performance.now() >= deadline) {
+                        finish(new Error("Clipboard daemon publication timed out"));
+                        return;
+                    }
+                    const receipt = publish({ port: Number(message.port), token: message.token });
+                    // A synchronous write begun in budget cannot be cancelled. Do
+                    // not commit a late result or give its child a terminal writer.
+                    if (performance.now() >= deadline) {
+                        finish(new Error("Clipboard daemon publication timed out"));
+                        return;
+                    }
+                    child.send({ type: "published", receipt }, error => { if (error) onError(); });
+                } catch { finish(new Error("Clipboard publication authority changed")); }
+            } else if (message.type === "committed" && ready) finish();
+        };
+        const timer = setTimeout(() => finish(new Error("Clipboard daemon publication timed out")), Math.max(0, deadline - performance.now()));
+        child.on("message", onMessage);
+        child.once("error", onError);
+        child.once("exit", onExit);
+        child.once("disconnect", onDisconnect);
+        if (performance.now() >= deadline) { finish(new Error("Clipboard daemon publication timed out")); return; }
+        try { child.send({ type: "initialize", runtimeInvocation }, error => { if (error) onError(); }); }
+        catch { onError(); }
+    });
+}
+
+function createNativeClipboardLifecycle() {
+    let homePreparation: RuntimeBindHomePreparation | undefined;
+    return createClipboardServerLifecycle({
+        readPortFile,
+        portRecordMatches,
+        portFilePath: () => clipboardPortFile(),
+        startupLockPath: () => {
+            // The startup slot can create the root: capture exclusive genesis first.
+            homePreparation ??= prepareRuntimeBindHome(cccHome());
+            return clipboardStartingLock();
+        },
+        tryAcquireStartupLock: tryAcquireClipboardStartupLock,
+        recoverDeadStartupLock: recoverDeadClipboardStartupLock,
+        releaseStartupLock: (lock) => { releaseClipboardStartupLock(lock); return undefined; },
+        checkHealth: checkServerHealth,
+        requestShutdown: shutdownServer,
+        withGlobalGuard: <T>(operation: (guard: RuntimeBindGuard) => Promise<T>) => {
+            const invocation = getRuntimeInvocation(); // Capture outside the guarded inventory budget.
+            return runWithNativeRuntimeInvocation(invocation, () => withRuntimeBindGuardAsync(homePreparation ?? cccHome(), operation));
+        },
+        hasOtherSessions: (requester?: SessionOwnershipReceipt) => hasAnyActiveSessionsExcept(requester ?? null),
+        portMayHaveBindUsers: clipboardPortMayHaveBindUsers,
+        preparePublication: preparePortPublication,
+        markRetired: markPortRetired,
+        warnUpgradeDeferred: () => {
+            console.warn("[ccc] Clipboard update deferred: shared session, bind, or writer ownership could not be excluded. Keeping the authenticated existing bridge.");
+            return undefined;
+        },
+        now: () => performance.now(),
+        sleep: (milliseconds) => new Promise((r) => setTimeout(r, milliseconds)),
+        daemonScriptPath: () => fileURLToPath(import.meta.url).replace(/\.ts$/, ".js"),
+        launchDaemon: launchClipboardDaemon,
+        unrefDaemon: (child) => { child.unref(); return undefined; },
+    }, SERVER_VERSION);
+}
+
+export function ensureClipboardSelection(requester?: SessionOwnershipReceipt): Promise<ClipboardSelection | null> {
+    return createNativeClipboardLifecycle().ensureClipboardSelection(requester);
+}
+export function ensureClipboardServer(requester?: SessionOwnershipReceipt): Promise<number> {
+    return createNativeClipboardLifecycle().ensureClipboardServer(requester);
+}
+export function stopClipboardServerIfLast(hasOtherActiveSessions: boolean): Promise<void> {
+    return createNativeClipboardLifecycle().stopClipboardServerIfLast(hasOtherActiveSessions);
+}
+export function retireClipboardServerFromPortFile(portFile: string): Promise<void> {
+    return createNativeClipboardLifecycle().retireClipboardServerFromPortFile(portFile);
+}
 
 /**
  * Check if there are any active CCC sessions besides the given lock file.
  */
-export function hasAnyActiveSessionsExcept(currentLockFile: string | null, directory: string = locksDir()): boolean {
-    const currentLockName = currentLockFile ? basename(currentLockFile) : "";
+export function hasAnyActiveSessionsExcept(currentLockFile: string | SessionOwnershipReceipt | null, directory: string = locksDir()): boolean {
+    const requester = typeof currentLockFile === "object" && currentLockFile !== null ? currentLockFile : null;
     let locks: string[];
     try {
         locks = readdirSync(directory).filter((f) => f.endsWith(".lock"));
@@ -1517,12 +1873,12 @@ export function hasAnyActiveSessionsExcept(currentLockFile: string | null, direc
         return true;
     }
     return locks.some((f) => {
-        if (f === currentLockName) return false;
-        // Use the same conservative lock identity rules as container cleanup.
         const lockPath = join(directory, f);
+        if (requester && requester.ownerPid === process.pid && requester.path === lockPath && nativeSessionOwnershipMatches(requester)) return false;
+        // Unknown, replaced and nonregular claims veto a shared mutation.
         try {
-            const content = readFileSync(lockPath, "utf-8").trim();
-            const liveness = sessionLockLiveness(content);
+            const receipt = captureNativeSessionOwnership(lockPath);
+            const liveness = sessionLockLiveness(Buffer.from(receipt.bytes, "base64").toString("utf8"));
             return liveness !== "stale";
         } catch {
             // A read failure is not proof that the owning session exited.
@@ -1531,15 +1887,6 @@ export function hasAnyActiveSessionsExcept(currentLockFile: string | null, direc
     });
 }
 
-/**
- * Stop the clipboard server when the session module has atomically established
- * that no other session owns the shared container.
- */
-
-
-/** Ask the server recorded in a pre-layout port file to shut down. */
-
-
 // === Standalone Entry Point ===
 // When run with --serve flag, start the HTTP server directly
 
@@ -1547,35 +1894,80 @@ const isMainModule = process.argv[1] &&
     (process.argv[1].endsWith("clipboard-server.js") || process.argv[1].endsWith("clipboard-server.ts"));
 
 if (isMainModule && process.argv.includes("--serve")) {
-    const token = randomBytes(16).toString("hex");
-    const plat = detectPlatform();
-    const bindAddr = "127.0.0.1";
-
-    // Pre-compile native clipboard helper on macOS (non-blocking background)
-    if (plat === "darwin") compileDarwinHelperAsync();
-
-    const { server, start } = createClipboardServer(token, plat);
-
-    start(bindAddr)
-        .then((port) => {
-            writePortFile(port, token);
-        })
-        .catch((err) => {
-            console.error("Failed to start clipboard server:", err);
-            process.exit(1);
+    if (!process.argv.includes("--parent-publisher")) {
+        // A direct entrance owns the ordinary startup/global admission itself.
+        // It never races the parent-owned child publisher by reacquiring its guard.
+        void ensureClipboardSelection().then(selected => {
+            if (!selected) process.exitCode = 1;
+        }).catch(() => { console.error("Clipboard startup admission failed; existing state was preserved."); process.exitCode = 1; });
+    } else {
+        const publicationDeadline = performance.now() + DAEMON_START_TIMEOUT_MS;
+        let initialized = false;
+        let committed = false;
+        let publicationEnabled = true;
+        let daemon: ReturnType<typeof createClipboardServer> | undefined;
+        let publishedReceipt: PublishedClipboardReceipt | undefined;
+        let daemonPort: number | undefined;
+        let daemonToken: string | undefined;
+        const stop = () => {
+            publicationEnabled = false;
+            publishedReceipt = undefined;
+            clearTimeout(timer);
+            if (daemon) daemon.shutdown();
+            else process.exit(1);
+        };
+        const timer = setTimeout(stop, Math.max(0, publicationDeadline - performance.now()));
+        process.once("disconnect", () => { if (!committed) stop(); });
+        process.on("message", (message: unknown) => {
+            if (!publicationEnabled) return;
+            if (!committed && performance.now() >= publicationDeadline) { stop(); return; }
+            if (!message || typeof message !== "object" || !("type" in message)) return;
+            if (message.type === "published" && initialized && daemon?.server.listening && publicationEnabled && !committed) {
+                try {
+                    if (!("receipt" in message) || daemonPort === undefined || !daemonToken) { stop(); return; }
+                    if (performance.now() >= publicationDeadline) { stop(); return; }
+                    const receipt = decodePublicationReceipt(message.receipt, daemonPort, daemonToken);
+                    const current = capturePortFile(receipt.path);
+                    if (!current || !publicationMatches(receipt, current)) { stop(); return; }
+                    // Descriptor reads can outlast the budget even when their
+                    // message preceded the timer. Never adopt a late writer.
+                    if (performance.now() >= publicationDeadline) { stop(); return; }
+                    publishedReceipt = receipt;
+                } catch { stop(); return; }
+                committed = true;
+                clearTimeout(timer);
+                process.send?.({ type: "committed" }, error => { if (error) stop(); });
+                return;
+            }
+            if (message.type !== "initialize" || initialized || !publicationEnabled || !("runtimeInvocation" in message)) return;
+            if (performance.now() >= publicationDeadline) { stop(); return; }
+            initialized = true;
+            try {
+                const invocation = validateNativeRuntimeInvocation(message.runtimeInvocation);
+                const token = randomBytes(16).toString("hex");
+                daemonToken = token;
+                const plat = detectPlatform();
+                if (plat === "darwin") compileDarwinHelperAsync();
+                daemon = createClipboardServer(token, plat, {
+                    disablePublication: () => { publicationEnabled = false; },
+                    publicationCommitted: () => committed,
+                    retirePublication: guard => {
+                        const receipt = publishedReceipt;
+                        publishedReceipt = undefined;
+                        if (guard && receipt) writeRetiredPublication(receipt, guard);
+                    },
+                    runtimeInvocation: invocation,
+                });
+                void daemon.start("127.0.0.1").then(port => {
+                    if (!publicationEnabled || !process.connected || performance.now() >= publicationDeadline) { stop(); return; }
+                    daemonPort = port;
+                    process.send?.({ type: "ready", port, token }, error => { if (error) stop(); });
+                }).catch(stop);
+            } catch { stop(); }
         });
-
-    // Handle signals for clean shutdown
-    process.once("SIGTERM", () => gracefulShutdown(server));
-    process.once("SIGINT", () => gracefulShutdown(server));
-
-    // Graceful shutdown on unexpected errors — don't continue in unknown state
-    process.on("uncaughtException", (err) => {
-        console.error("clipboard-server uncaughtException:", err);
-        gracefulShutdown(server);
-    });
-    process.on("unhandledRejection", (err) => {
-        console.error("clipboard-server unhandledRejection:", err);
-        gracefulShutdown(server);
-    });
+        process.once("SIGTERM", stop);
+        process.once("SIGINT", stop);
+        process.on("uncaughtException", stop);
+        process.on("unhandledRejection", stop);
+    }
 }

@@ -64,6 +64,22 @@ const mockPrepareCodexStateOwnership = vi.fn();
 const mockPrepareLabStateOwnership = vi.fn();
 const mockProveWslBindSourceIdentity = vi.fn<(...args: unknown[]) => boolean | null>(() => null);
 const mockSharedMutationLock = vi.fn((_path: string, operation: () => unknown) => operation());
+// These lifecycle units already replace every filesystem and native-process
+// leaf. Keep history as an explicit mocked native boundary here; the separate
+// publication integration owner exercises the actual private history and lock.
+const mockRuntimeBindGuard = Object.freeze({root: join(homedir(), ".ccc")});
+const mockRecordRuntimeBindAuthority = vi.fn();
+const mockBeginRuntimeBindCreation = vi.fn();
+const mockSettleRuntimeBindCreation = vi.fn();
+vi.mock("../adapters/runtime-bind-authority.js", () => ({
+    withRuntimeBindGuard: (root: string, operation: (guard: unknown) => unknown) =>
+        mockSharedMutationLock(join(root, "codex-state.lock"), () => operation(mockRuntimeBindGuard)),
+    withRuntimeBindGuardAsync: async (root: string, operation: (guard: unknown) => unknown) =>
+        mockSharedMutationLock(join(root, "codex-state.lock"), () => operation(mockRuntimeBindGuard)),
+    recordRuntimeBindAuthority: (...args: unknown[]) => mockRecordRuntimeBindAuthority(...args),
+    beginRuntimeBindCreation: (...args: unknown[]) => mockBeginRuntimeBindCreation(...args),
+    settleRuntimeBindCreation: (...args: unknown[]) => mockSettleRuntimeBindCreation(...args),
+}));
 let effectiveContainerIdentity = "1000:1000:ccc:/home/ccc";
 vi.mock("../container-identity.js", async (importOriginal) => ({
     ...await importOriginal<typeof import("../container-identity.js")>(),
@@ -337,7 +353,7 @@ vi.mock("fs", async (importOriginal) => {
         realpathSync: (...args: unknown[]) => mockRealpathSync(...args),
         rmSync: (...args: unknown[]) => mockRmSync(...args),
         statSync: (...args: unknown[]) => mockStatSync(...args),
-        writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
+        writeFileSync: (...args: Parameters<typeof recordMountMarker>) => mockWriteFileSync(...args),
     };
 });
 
@@ -362,7 +378,6 @@ const {
     buildDockerRunArgs,
     getContainerName,
     isDockerRunning,
-    isDockerDesktop,
     isContainerRunning,
     isContainerConfirmedStopped,
     getConfirmedRunningContainerId,
@@ -408,8 +423,6 @@ const { clipboardFilesDir } = await import("../home-layout.js");
 const {
     CLI_VERSION,
     CLIPBOARD_FILES_CONTAINER_DIR,
-    MISE_VOLUME_NAME,
-    CODEX_PACKAGES_VOLUME_NAME,
     CODEX_PACKAGES_CONTAINER_DIR,
     getClaudeJsonFile,
     getProjectId,
@@ -447,7 +460,7 @@ function defaultProjectMountIdentity(path = "/home/user/my-project"): string {
 // runtime expects. Use this whenever a test wants the existing container to
 // pass the mount-drift check.
 function fullCredentialMountsJson(
-    extra: Array<{ Source: string; Destination: string }> = [],
+    extra: Array<{ Source: string; Destination: string; Type?: "bind"; RW?: boolean }> = [],
     options: {
         labState?: boolean;
         status?: "ready" | "unsupported";
@@ -580,6 +593,9 @@ describe("docker.ts module exports", () => {
         mockProveWslBindSourceIdentity.mockReset().mockReturnValue(null);
         mismatchingMountChallengePathPrefix = undefined;
         mockSharedMutationLock.mockClear();
+        mockRecordRuntimeBindAuthority.mockReset();
+        mockBeginRuntimeBindCreation.mockReset().mockImplementation(() => Object.freeze({}));
+        mockSettleRuntimeBindCreation.mockReset();
         mockAccessSync.mockReset();
         mockLifecycleImage = false;
         expandShortContainerIds = false;
@@ -2338,6 +2354,80 @@ describe("docker.ts module exports", () => {
             mockExistsSync.mockReturnValue(true);
         });
 
+        it("retains the captured authority before a stopped restart or retained Codex-state helper", () => {
+            mockReplacementRuntime(makeDriftedRunningContract(() => {}, false), {
+                identityRunning: false, startTransitionsToRunning: true,
+            });
+            expect(startProjectContainer(projectPath, ensureDirs)).toBe(getContainerName(projectPath));
+            expect(mockRecordRuntimeBindAuthority).toHaveBeenCalledWith(mockRuntimeBindGuard,
+                expect.objectContaining({executable: "/fixture/runtime/docker", transport: expect.objectContaining({host: "unix:///fixture/engine.sock"})}));
+            expect(mockPrepareCodexStateOwnership).toHaveBeenCalledOnce();
+            const startIndex = spawnSyncMock.mock.calls.findIndex(call => (call[1] as string[])[0] === "start");
+            expect(startIndex).toBeGreaterThan(-1);
+            expect(mockRecordRuntimeBindAuthority.mock.invocationCallOrder[0])
+                .toBeLessThan(mockPrepareCodexStateOwnership.mock.invocationCallOrder[0]);
+            expect(mockRecordRuntimeBindAuthority.mock.invocationCallOrder[0])
+                .toBeLessThan(spawnSyncMock.mock.invocationCallOrder[startIndex]);
+            expect(mockBeginRuntimeBindCreation).not.toHaveBeenCalled();
+            expect(mockSettleRuntimeBindCreation).not.toHaveBeenCalled();
+        });
+
+        it("a failed authority publication preserves the stopped target before helpers or native lifecycle effects", () => {
+            mockReplacementRuntime(makeDriftedRunningContract(() => {}, false), {
+                identityRunning: false, startTransitionsToRunning: true,
+            });
+            const failure = new Error("private authority publication refused");
+            mockRecordRuntimeBindAuthority.mockImplementationOnce(() => { throw failure; });
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(failure);
+            expect(mockPrepareCodexStateOwnership).not.toHaveBeenCalled();
+            expect(mockPrepareLabStateOwnership).not.toHaveBeenCalled();
+            expect(spawnSyncMock.mock.calls.filter(call => ["start", "stop", "rm", "run"].includes((call[1] as string[])[0])))
+                .toEqual([]);
+            expect(mockBeginRuntimeBindCreation).not.toHaveBeenCalled();
+        });
+
+        it("publishes a fresh-creation barrier before run and settles only after exact native identity is observed", () => {
+            const ticket = Object.freeze({owned: "this creation"});
+            mockBeginRuntimeBindCreation.mockReturnValueOnce(ticket);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") {
+                    expect(mockBeginRuntimeBindCreation).toHaveBeenCalledWith(mockRuntimeBindGuard,
+                        expect.objectContaining({executable: "/fixture/runtime/docker"}));
+                    expect(mockSettleRuntimeBindCreation).not.toHaveBeenCalled();
+                    return makeResult(0, `${TEST_CREATED_CONTAINER_SHORT_ID}\n`);
+                }
+                return makeResult(0);
+            });
+            expect(startProjectContainer(projectPath, ensureDirs)).toBe(getContainerName(projectPath));
+            expect(mockSettleRuntimeBindCreation).toHaveBeenCalledExactlyOnceWith(mockRuntimeBindGuard, ticket);
+            const runIndex = spawnSyncMock.mock.calls.findIndex(call => (call[1] as string[])[0] === "run");
+            const exactIndex = spawnSyncMock.mock.calls.findIndex(call => {
+                const args = call[1] as string[];
+                return args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")
+                    && args.includes(TEST_CREATED_CONTAINER_ID);
+            });
+            expect(runIndex).toBeGreaterThan(-1);
+            expect(exactIndex).toBeGreaterThan(runIndex);
+            expect(mockBeginRuntimeBindCreation.mock.invocationCallOrder[0]).toBeLessThan(spawnSyncMock.mock.invocationCallOrder[runIndex]);
+            expect(spawnSyncMock.mock.invocationCallOrder[exactIndex]).toBeLessThan(mockSettleRuntimeBindCreation.mock.invocationCallOrder[0]);
+        });
+
+        it("does not settle a fresh creation when the native client times out without an exact returned target", () => {
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return {...makeResult(1), status: null,
+                    error: Object.assign(new Error("inert client timed out"), {code: "ETIMEDOUT"})};
+                return makeResult(0);
+            });
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow();
+            expect(mockBeginRuntimeBindCreation).toHaveBeenCalledOnce();
+            expect(mockSettleRuntimeBindCreation).not.toHaveBeenCalled();
+            expect(mockPrepareCodexStateOwnership).not.toHaveBeenCalled();
+        });
+
         it.each(["running reuse", "stopped restart", "safe defer"] as const)("rechecks stale fingerprints through current mounts for %s on macOS", mode => {
             vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
             _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-desktop", remote: true, dockerDesktop: true });
@@ -2658,7 +2748,7 @@ describe("docker.ts module exports", () => {
                 if (outcome === "unavailable" || outcome === "host swap") expect(guard).not.toHaveBeenCalled();
             }
             expect(mockProveWslBindSourceIdentity).toHaveBeenCalledWith(opaque,
-                { realpath: hostPath, dev: "1", ino: "1" }, `sha256:${"2".repeat(64)}`);
+                { realpath: hostPath, dev: "1", ino: "1" }, `sha256:${"2".repeat(64)}`, mockRuntimeBindGuard);
             expectNoContainerReplacement();
         });
 
@@ -3184,7 +3274,7 @@ describe("docker.ts module exports", () => {
             expect(ready).toHaveBeenCalledWith(TEST_CONTAINER_ID, { startedByInvocation: initial !== "running" });
             if (initial === "running") {
                 expect(started).not.toHaveBeenCalled();
-                expect(spawnSyncMock.mock.calls.some(([, args]) => ["start", "run", "stop", "rm"].includes(args[0]))).toBe(false);
+                expect(spawnSyncMock.mock.calls.some(([, args]) => ["start", "run", "stop", "rm"].includes((args as string[])[0]))).toBe(false);
             } else {
                 expect(started).toHaveBeenCalledExactlyOnceWith(TEST_CONTAINER_ID);
                 expect(events.indexOf(initial === "stopped" ? "start" : "run")).toBeLessThan(events.indexOf("pinned-running-identity"));
@@ -3736,7 +3826,7 @@ describe("docker.ts module exports", () => {
             expect(guard).toHaveBeenCalledOnce();
             expect(mockPrepareCodexStateOwnership).toHaveBeenCalledWith(
                 expect.objectContaining({ Image: previousImage, Id: TEST_CONTAINER_ID }),
-                TEST_IDENTITY_IMAGE, mockIdentity, undefined, expect.any(Function),
+                TEST_IDENTITY_IMAGE, mockIdentity, undefined, expect.any(Function), mockRuntimeBindGuard,
             );
             const runIndex = spawnSyncMock.mock.calls.findIndex(call => (call[1] as string[])[0] === "run");
             expect(runIndex).toBeGreaterThan(-1);
@@ -3786,7 +3876,7 @@ describe("docker.ts module exports", () => {
             expect(mockPrepareLabStateOwnership).not.toHaveBeenCalled();
             expect(mockPrepareCodexStateOwnership).toHaveBeenCalledExactlyOnceWith(
                 expect.objectContaining({ Image: previousImage, Id: TEST_CONTAINER_ID }),
-                TEST_IDENTITY_IMAGE, mockIdentity, undefined, expect.any(Function),
+                TEST_IDENTITY_IMAGE, mockIdentity, undefined, expect.any(Function), mockRuntimeBindGuard,
             );
             const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
             expect(calls.some(args => args[0] === "volume")).toBe(false);
@@ -3833,7 +3923,7 @@ describe("docker.ts module exports", () => {
             expect(guard).toHaveBeenCalledOnce();
             expect(mockPrepareCodexStateOwnership).toHaveBeenCalledExactlyOnceWith(
                 expect.objectContaining({ Image: previousImage, Id: TEST_CONTAINER_ID }),
-                TEST_IDENTITY_IMAGE, mockIdentity, undefined, expect.any(Function),
+                TEST_IDENTITY_IMAGE, mockIdentity, undefined, expect.any(Function), mockRuntimeBindGuard,
             );
             expect(mockPrepareLabStateOwnership).toHaveBeenCalledExactlyOnceWith(
                 `${getContainerName(projectPath)}-lab-state`, TEST_IDENTITY_IMAGE, mockIdentity, previousImage,
@@ -7127,7 +7217,8 @@ describe("docker.ts module exports", () => {
             const siblingId = "f".repeat(64);
             const sibling = getContainerName(projectPath, "a-b");
             const requested = getContainerName(projectPath, "a.b");
-            spawnSyncMock.mockImplementation((_command: string, args: string[]) => {
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
                 if (args[0] === "info") return makeResult(0);
                 if (args[0] === "ps") {
                     const filter = args.find(arg => arg.startsWith("name="))!;

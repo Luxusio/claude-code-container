@@ -8,6 +8,7 @@ import { projectPathsEquivalent } from "../utils.js";
 import { proveWslBindSourceIdentity } from "../wsl-bind-source-proof.js";
 import type { LiveSourceProof, MountVerification, ObservedMountContract, RequiredMountContract } from "../bind-mount-verification.js";
 import type { ContainerMountSourceFacts, ContainerMountVerificationPorts } from "../ports/container-mount-verification.js";
+import type { RuntimeBindGuard } from "../ports/runtime-bind-authority.js";
 
 const CONTAINER_MANAGER_SOCKET = "/var/run/docker.sock";
 const PROJECT_MOUNT_IDENTITY_LABEL = "ccc.project.mount-identity";
@@ -409,6 +410,7 @@ export function bindSourceIsTrustedFilesystemAlias(
     hostPath: string,
     expected: BindMountSourceIdentity,
     currentImageId: () => string | null,
+    bindGuard?: RuntimeBindGuard,
 ): FilesystemAliasVerification {
     if (pathHasTraversalSegments(observedSource)) return "mismatch";
     const nativeMacSource = nativeMacDockerDesktopBindSource(observedSource);
@@ -439,7 +441,7 @@ export function bindSourceIsTrustedFilesystemAlias(
         const before = observeBindMountSourceIdentity(hostPath, expected);
         if (before.kind !== "verified") return before.kind === "retryable" ? "retryable" : "mismatch";
         const image = currentImageId();
-        const proof = image ? proveWslBindSourceIdentity(observedSource, expected, image) : null;
+        const proof = image ? proveWslBindSourceIdentity(observedSource, expected, image, bindGuard) : null;
         const after = observeBindMountSourceIdentity(hostPath, expected);
         if (after.kind !== "verified") return after.kind === "retryable" ? "retryable" : "mismatch";
         return proof === true ? "match" : proof === false ? "mismatch" : "retryable";
@@ -563,6 +565,7 @@ export interface NativeContainerMountObservationContext {
     requiredMounts: RequiredContainerMount[];
     canExecContainer(id: string, timeoutMs: number): boolean;
     currentImageId(): string | null;
+    bindGuard?: RuntimeBindGuard;
     withRetry(
         operation: (finalAttempt: boolean) => MountVerification,
         isRetryable: (result: MountVerification) => boolean,
@@ -627,6 +630,7 @@ export function createNativeContainerMountObservations(context: NativeContainerM
         if (proof.kind === "filesystem") {
             const alias = bindSourceIsTrustedFilesystemAlias(
                 observed.Source, required.hostPath, proof.identity, context.currentImageId,
+                context.bindGuard,
             );
             return { kind: "filesystem", pathMatch: alias === "retryable" ? "unavailable" : alias };
         }

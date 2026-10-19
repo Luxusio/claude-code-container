@@ -11,6 +11,7 @@ const applicationUrl = new URL("../../../dist/application/container-exec.js", im
 const cleanupApplicationUrl = new URL("../../../dist/application/session-cleanup.js", import.meta.url).href;
 const runtimeUrl = new URL("../../../dist/container-runtime.js", import.meta.url).href;
 const invocationPortUrl = new URL("../../../dist/ports/container-runtime-invocation.js", import.meta.url).href;
+const bindAuthorityUrl = new URL("../../../dist/adapters/runtime-bind-authority.js", import.meta.url).href;
 
 it("native exec lifecycle acquisition yields to the real owner's timer and enters only after release", async () => {
     const root = mkdtempSync(join(tmpdir(), "ccc-exec-lifecycle-"));
@@ -21,6 +22,9 @@ const {withProjectContainerStateLockAsync} = await import(${JSON.stringify(docke
 const {createContainerExec} = await import(${JSON.stringify(applicationUrl)});
 const {_setRuntimeInvocationForTest} = await import(${JSON.stringify(runtimeUrl)});
 const {NATIVE_RUNTIME_SELECTOR_KEYS} = await import(${JSON.stringify(invocationPortUrl)});
+const {prepareRuntimeBindHome, withRuntimeBindGuard} = await import(${JSON.stringify(bindAuthorityUrl)});
+const homePreparation = prepareRuntimeBindHome(${JSON.stringify(join(root, ".ccc"))});
+withRuntimeBindGuard(homePreparation, () => {});
 // The real lock ports may enter native operation scope. This fixture supplies
 // all process effects below, so unexpected dispatch cannot reach a host runtime.
 _setRuntimeInvocationForTest({version: 1, runtime: 'docker', executable: ${JSON.stringify(join(root, "unexpected-native-cli"))},
@@ -53,7 +57,8 @@ Object.assign(ports, {
  isWorktreeWorkspace: () => false, familyLock: async (_id, operation) => operation(),
  acquireOwnership: async () => ({lockFile: '/owned/session.lock', existingId: 'pinned-id'}),
  inspectSessionContainer: () => ({known: true, containerId: 'pinned-id'}),
- ensureClipboard: async () => null, clipboardPortFile: () => '/owned/clipboard.port', clipboardConnection: () => ({}),
+ ensureClipboard: async () => null, validateClipboard: async selected => selected,
+ clipboardPortFile: () => '/owned/clipboard.port', clipboardConnection: () => ({}),
  worktreeMounts: () => [], containerName: () => 'ccc-isolated-exec',
  containerStatus: () => ({exists: true, running: true, containerId: 'pinned-id', imageId: 'image'}),
  sessionClaims: () => ['session.lock'], lockName: () => 'session.lock', prepareDeviceBroker: async () => {},
@@ -169,7 +174,8 @@ const ports = {
    return {lockFile: claim, existingId: reused ? target : null};
  },
  inspectSessionContainer: () => ({known: true, containerId: reused ? target : null}),
- ensureClipboard: async () => null, clipboardPortFile: () => join(root, 'clipboard.port'), clipboardConnection: () => ({}),
+ ensureClipboard: async () => null, validateClipboard: async selected => selected,
+ clipboardPortFile: () => join(root, 'clipboard.port'), clipboardConnection: () => ({}),
  worktreeMounts: () => [], containerName: () => 'ccc-isolated-library',
  containerStatus: () => ({exists: true, running: reused, containerId: target, imageId: 'fake-image'}),
  sessionClaims: () => ['owned-session.lock'], lockName: () => 'owned-session.lock', prepareDeviceBroker: async () => {},

@@ -58,7 +58,12 @@ function fixturePaths(host: typeof path, root: string) {
 const fixtureHost = fixturePaths(path, native.root);
 const runtimeSocket = path.join(native.root, "engine.sock");
 const lockHome = path.join(fixtureHost.home, ".ccc");
-const lockDirectories = new Set([lockHome, path.join(lockHome, "locks"), path.join(lockHome, "run", "locks")]);
+const lockDirectories = new Set([lockHome, path.join(lockHome, "locks"), path.join(lockHome, "run"), path.join(lockHome, "run", "locks")]);
+const authorityDirectory = path.join(lockHome, "runtime-bind-authority");
+function ownedStatePath(selected: string): boolean {
+    return lockDirectories.has(selected) || ownedLockFile(selected)
+        || selected === authorityDirectory || fixtureHost.contains(authorityDirectory, selected);
+}
 function ownedLockFile(selected: string): boolean {
     if (!lockDirectories.has(path.dirname(selected))) return false;
     const name = path.basename(selected);
@@ -96,6 +101,7 @@ function thrown(operation: () => unknown): unknown {
 }
 
 function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded = true) {
+    actualFs.mkdirSync(lockHome, { recursive: true, mode: 0o700 });
     const trace: string[] = [];
     const waits: Array<[unknown, number, number | bigint, number]> = [];
     const state = {
@@ -114,7 +120,7 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
     const identityLabels = { ...containerIdentity.getIdentityLabels(identity), "ccc.identity.base": baseImageId };
     native.exists.mockImplementation((selected: string) => { if (selected !== "/dev/kvm") fakePath(selected); return false; });
     native.realpath.mockImplementation(fakePath);
-    const stat = (selected: string) => { fakePath(selected); if (ownedLockFile(selected)) return actualFs.lstatSync(selected); return ({
+    const stat = (selected: string, options?: { bigint?: boolean }) => { fakePath(selected); if (ownedStatePath(selected)) return actualFs.lstatSync(selected, options); return ({
         isSymbolicLink: () => false,
         isDirectory: () => !selected.endsWith(".json") && !selected.includes(".guard"),
         isFile: () => selected.endsWith(".json") || selected.includes(".guard"),
@@ -122,25 +128,31 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
     }); };
     native.lstat.mockImplementation(stat);
     native.stat.mockImplementation(stat);
-    native.fstat.mockImplementation((descriptor: number) => lockDescriptors.has(descriptor) ? actualFs.fstatSync(descriptor) : stat(path.join(native.root, "owner.json")));
-    native.read.mockImplementation((selected: string, encoding) => { fakePath(selected); return encoding ? "fixture" : Buffer.from("fixture"); });
+    native.fstat.mockImplementation((descriptor: number, options?: { bigint?: boolean }) => lockDescriptors.has(descriptor) ? actualFs.fstatSync(descriptor, options) : stat(path.join(native.root, "owner.json")));
+    native.read.mockImplementation((selected: string, encoding: BufferEncoding | undefined) => { fakePath(selected); if (ownedStatePath(selected)) return actualFs.readFileSync(selected, encoding); return encoding ? "fixture" : Buffer.from("fixture"); });
     native.readdir.mockImplementation((selected: string) => {
         fakePath(selected);
-        return lockDirectories.has(selected) ? actualFs.readdirSync(selected).filter(entry => ownedLockFile(path.join(selected, entry))) : [];
+        return selected === authorityDirectory ? actualFs.readdirSync(selected)
+            : lockDirectories.has(selected) ? actualFs.readdirSync(selected).filter(entry => ownedLockFile(path.join(selected, entry))) : [];
     });
     native.readSync.mockImplementation((descriptor: number, buffer: Buffer, offset: number, length: number, position: number | null) =>
         lockDescriptors.has(descriptor) ? actualFs.readSync(descriptor, buffer, offset, length, position) : 0);
     const markers = new Map<string, string>();
-    native.write.mockImplementation((selected: string | number, content: string) => {
+    native.write.mockImplementation((selected: string | number, content: string, options?: import("node:fs").WriteFileOptions) => {
         if (typeof selected === "number" && lockDescriptors.has(selected)) return actualFs.writeFileSync(selected, content);
+        if (typeof selected === "string" && ownedStatePath(selected)) return actualFs.writeFileSync(selected, content, options);
         if (typeof selected === "string") markers.set(fixtureHost.hostMarker(fakePath(selected)), content);
     });
-    // Only genuine lock files use owned native storage. Their records and tokens
-    // are written and reread by the unchanged package lock implementation.
+    // Global lock and authority records share genuine private storage. Preserve
+    // bigint metadata and descriptor IO used by the native authority adapter.
+    native.mkdir.mockImplementation((selected: string, options?: import("node:fs").MakeDirectoryOptions) => {
+        fakePath(selected);
+        if (ownedStatePath(selected)) return actualFs.mkdirSync(selected, options);
+    });
     native.open.mockImplementation((selected: string, flags: string | number, mode?: number) => {
         fakePath(selected);
-        if (!ownedLockFile(selected)) return 1;
-        actualFs.mkdirSync(path.dirname(selected), { recursive: true, mode: 0o700 });
+        if (!ownedStatePath(selected)) return 1;
+        if (!lockDirectories.has(selected) && selected !== authorityDirectory) actualFs.mkdirSync(path.dirname(selected), { recursive: true, mode: 0o700 });
         const descriptor = actualFs.openSync(selected, flags, mode);
         lockDescriptors.add(descriptor);
         return descriptor;
@@ -150,14 +162,22 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
     });
     native.rename.mockImplementation((source: string, destination: string) => {
         fakePath(source); fakePath(destination);
-        if (ownedLockFile(source) || ownedLockFile(destination)) {
-            expect(ownedLockFile(source) && ownedLockFile(destination)).toBe(true);
+        if (ownedStatePath(source) || ownedStatePath(destination)) {
+            expect(ownedStatePath(source) && ownedStatePath(destination)).toBe(true);
             actualFs.renameSync(source, destination);
         }
     });
     native.rm.mockImplementation((selected: string) => {
         fakePath(selected);
-        if (ownedLockFile(selected)) actualFs.rmSync(selected, { force: true });
+        if (ownedStatePath(selected)) actualFs.rmSync(selected, { force: true });
+    });
+    native.unlink.mockImplementation((selected: string) => {
+        fakePath(selected);
+        if (ownedStatePath(selected)) actualFs.unlinkSync(selected);
+    });
+    native.chmod.mockImplementation((selected: string, mode: number) => {
+        fakePath(selected);
+        if (ownedStatePath(selected)) actualFs.chmodSync(selected, mode);
     });
     vi.spyOn(Date, "now").mockImplementation(function (this: unknown) {
         if (state.active) visit(`clock:${++state.clocks}`, `now:${state.now}`);

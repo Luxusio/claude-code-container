@@ -4,6 +4,10 @@ import { EventEmitter } from "events";
 import { join } from "path";
 import { type ChildProcess } from "child_process";
 import { createHash } from "crypto";
+import {tmpdir} from "node:os";
+import {NATIVE_RUNTIME_SELECTOR_KEYS} from "../ports/container-runtime-invocation.js";
+
+const portBacking = vi.hoisted(() => ({root: "", file: "", descriptors: new Set<number>()}));
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 // Must be declared before import of the module under test.
@@ -11,6 +15,14 @@ import { createHash } from "crypto";
 // Bind-user inspection is exercised with real daemon descriptors in clipboard-state
 // and runtime metadata cases in clipboard-bind-users.test.ts.
 vi.mock("../clipboard-bind-users.js", () => ({ clipboardPortMayHaveBindUsers: () => false }));
+// Application order is covered separately with real claims and native files.
+// This HTTP/clipboard owner isolates that boundary without opening a host root.
+vi.mock("../adapters/runtime-bind-authority.js", () => ({
+    prepareRuntimeBindHome: (root: string) => ({root}),
+    withRuntimeBindGuardAsync: async <T>(home: string | {root: string}, operation: (guard: {root: string}) => Promise<T>) => operation({root: typeof home === "string" ? home : home.root}),
+    readRuntimeBindAuthority: () => ({coverage: "complete", pending: false, authorities: []}),
+    assertRuntimeBindAuthorityCurrent: () => {},
+}));
 
 // Filesystem ownership is tested with real descriptors in startup-lock/state suites.
 vi.mock("../clipboard-startup-lock.js", () => ({
@@ -41,21 +53,39 @@ const mockReaddirSync = vi.fn();
 const mockOpenSync = vi.fn();
 const mockCloseSync = vi.fn();
 const mockMkdirSync = vi.fn();
-vi.mock("fs", async () => ({
-    ...await vi.importActual<typeof import("fs")>("fs"),
+vi.mock("fs", async () => {
+    const actual = await vi.importActual<typeof import("fs")>("fs");
+    return {
+    ...actual,
     existsSync: (...args: any[]) => mockExistsSync(...args),
     readFileSync: (...args: any[]) => mockReadFileSync(...args),
     writeFileSync: (...args: any[]) => mockWriteFileSync(...args),
     unlinkSync: (...args: any[]) => mockUnlinkSync(...args),
     readdirSync: (...args: any[]) => mockReaddirSync(...args),
-    openSync: (...args: any[]) => mockOpenSync(...args),
-    closeSync: (...args: any[]) => mockCloseSync(...args),
+    openSync: (path: import("fs").PathLike, flags: string | number, mode?: import("fs").Mode) => {
+        // The product now reads through a bounded pinned descriptor. Back the
+        // existing virtual port fixture with a real private file, preserving its
+        // inode/timestamps between reads instead of inventing fd stat results.
+        if (String(path) === PORT_FILE) {
+            if (!mockExistsSync(PORT_FILE)) throw Object.assign(new Error("missing private fixture"), {code: "ENOENT"});
+            const bytes = Buffer.from(mockReadFileSync(PORT_FILE, "utf-8"));
+            if (!actual.existsSync(portBacking.file) || !actual.readFileSync(portBacking.file).equals(bytes)) actual.writeFileSync(portBacking.file, bytes, {mode: 0o600});
+            const descriptor = actual.openSync(portBacking.file, flags, mode); portBacking.descriptors.add(descriptor); return descriptor;
+        }
+        if (String(path).startsWith(`${portBacking.root}/`) || String(path).startsWith(`${portBacking.root}\\`)) {
+            const descriptor = actual.openSync(path, flags, mode); portBacking.descriptors.add(descriptor); return descriptor;
+        }
+        return mockOpenSync(path, flags, mode);
+    },
+    lstatSync: (path: import("fs").PathLike, options?: {bigint?: boolean}) => actual.lstatSync(String(path) === PORT_FILE ? portBacking.file : path, options as {bigint: true}),
+    closeSync: (descriptor: number) => portBacking.descriptors.delete(descriptor) ? actual.closeSync(descriptor) : mockCloseSync(descriptor),
     mkdirSync: (...args: any[]) => mockMkdirSync(...args),
-}));
+};});
 
 const mockPlatform = vi.fn().mockReturnValue("linux");
 const mockHomedir = vi.fn().mockReturnValue("/home/testuser");
-vi.mock("os", () => ({
+vi.mock("os", async () => ({
+    ...await vi.importActual<typeof import("os")>("os"),
     platform: () => mockPlatform(),
     homedir: () => mockHomedir(),
 }));
@@ -139,10 +169,14 @@ const POLICY_HASH_FILES = [
     "application/clipboard/snapshot.js",
     "application/clipboard/text-write.js",
     "application/clipboard/server-lifecycle.js",
+    "clipboard-bind-users.js",
+    "adapters/runtime-bind-authority.js",
+    "adapters/runtime-bind-users.js",
+    "application/runtime-bind-admission.js",
 ];
 function currentPolicyVersion(): string {
     const content = "file-content-for-hash";
-    const hash = createHash("sha256").update("ccc-clipboard-policy-v1\0");
+    const hash = createHash("sha256").update("ccc-clipboard-policy-v2\0");
     for (const file of POLICY_HASH_FILES) {
         hash.update(file).update("\0").update(String(Buffer.byteLength(content, "utf8")))
             .update("\0").update(content).update("\0");
@@ -153,8 +187,15 @@ function currentPolicyVersion(): string {
 // ─── Test Suite ───────────────────────────────────────────────────────────────
 
 describe("clipboard-server", () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         vi.clearAllMocks();
+        const actual = await vi.importActual<typeof import("fs")>("fs");
+        portBacking.root = actual.realpathSync(actual.mkdtempSync(join(tmpdir(), "ccc-clipboard-port-reader-"))); portBacking.file = join(portBacking.root, "port");
+        const runtime = await import("../container-runtime.js");
+        runtime._setRuntimeInvocationForTest(runtime.validateNativeRuntimeInvocation({version: 1, runtime: "docker", executable: join(portBacking.root, "inert-runtime"),
+            transport: {kind: "docker", host: "unix:///inert/unit-clipboard.sock", configDirectory: portBacking.root,
+                tls: {enabled: false, verify: false, caFile: null, certFile: null, keyFile: null}},
+            selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null]))}));
         // Default: getServerHash reads a file successfully
         mockReadFileSync.mockImplementation((path: string, _enc?: string) => {
             if (POLICY_HASH_FILES.some(file => path === join("/fake", file))) {
@@ -166,7 +207,10 @@ describe("clipboard-server", () => {
         mockHomedir.mockReturnValue("/home/testuser");
     });
 
-    afterEach(() => {
+    afterEach(async () => {
+        const actual = await vi.importActual<typeof import("fs")>("fs");
+        for (const descriptor of portBacking.descriptors) actual.closeSync(descriptor);
+        portBacking.descriptors.clear(); actual.rmSync(portBacking.root, {recursive: true, force: true});
         vi.restoreAllMocks();
         vi.resetAllMocks();
     });
@@ -3189,12 +3233,12 @@ describe("clipboard-server", () => {
             expect(result).toBe(false);
         });
 
-        it("returns false when only own lock exists", async () => {
+        it("does not exclude a session using an unverified path string", async () => {
             const ownLock = join(LOCKS_DIR, "my-session.lock");
             mockExistsSync.mockImplementation(() => true);
             mockReaddirSync.mockReturnValue(["my-session.lock"]);
             const result = mod.hasAnyActiveSessionsExcept(ownLock);
-            expect(result).toBe(false);
+            expect(result).toBe(true);
         });
 
         it("preserves another malformed lock as potentially active", async () => {
@@ -3261,7 +3305,9 @@ describe("clipboard-server", () => {
                 throw new Error(`unexpected: ${p}`);
             });
             mockUnlinkSync.mockImplementation(() => {});
-            const result = mod.hasAnyActiveSessionsExcept(null);
+            const actual = await vi.importActual<typeof import("fs")>("fs");
+            actual.writeFileSync(join(portBacking.root, "stale.lock"), String(deadPid), {mode: 0o600});
+            const result = mod.hasAnyActiveSessionsExcept(null, portBacking.root);
             expect(result).toBe(false);
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
@@ -3309,7 +3355,7 @@ describe("clipboard-server", () => {
             mockReaddirSync.mockImplementation(() => {
                 throw new Error("clipboard shutdown must not rescan session locks");
             });
-            mod.stopClipboardServerIfLast(true);
+            await mod.stopClipboardServerIfLast(true);
             // No unlink of PORT_FILE because we returned early
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
             expect(mockReaddirSync).not.toHaveBeenCalled();
@@ -3328,11 +3374,11 @@ describe("clipboard-server", () => {
                 throw new Error(`unexpected: ${p}`);
             });
             // Should not throw
-            mod.stopClipboardServerIfLast(false);
+            await mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
-        it("calls shutdownServer and retains PORT_FILE when last session and port file exists", async () => {
+        it("retains PORT_FILE when last-session health cannot establish writer settlement", async () => {
             // No other sessions
             mockExistsSync.mockImplementation((p: string) => {
                 if (typeof p === "string" && p.endsWith("locks")) return true;
@@ -3348,11 +3394,7 @@ describe("clipboard-server", () => {
             mockUnlinkSync.mockImplementation(() => {});
             // shutdownServer makes a real HTTP request to port 54321, which will fail (connection refused)
             // but it silently ignores errors. We just need to ensure no throw.
-            await new Promise<void>((resolve) => {
-                mod.stopClipboardServerIfLast(false);
-                // Give async HTTP request a moment to fire and fail
-                setTimeout(resolve, 100);
-            });
+            await mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         });
     });
@@ -3409,7 +3451,7 @@ describe("clipboard-server", () => {
             }
         });
 
-        it("starts new server when port file is missing (startup lock acquired)", async () => {
+        it("refuses new publication when this isolated fixture cannot qualify its native parent path", async () => {
             // No port file, no starting lock contention — but spawned server never writes port file
             // so it should throw after timeout. We use a very short timeout by spying on Date.now.
             mockExistsSync.mockImplementation(() => false);
@@ -3428,10 +3470,11 @@ describe("clipboard-server", () => {
 
             // The real ensureClipboardServer polls for STARTUP_POLL_TIMEOUT_MS (5000ms).
             // We can't wait that long. Instead, verify it throws with the expected message.
-            await expect(mod.ensureClipboardServer()).rejects.toThrow("Clipboard server failed to start within timeout");
+            await expect(mod.ensureClipboardServer()).rejects.toThrow("Clipboard publication deferred");
+            expect(mockSpawn).not.toHaveBeenCalled();
         }, 15000);
 
-        it("throws when health is dead and port file cleanup + new start also fails", async () => {
+        it("preserves an unhealthy record rather than treating failed health as writer death", async () => {
             // Stale port file remains while replacement startup acquires its lock, forks, then times out.
             mockExistsSync.mockImplementation((p: string) => {
                 if (p === PORT_FILE) return true;
@@ -3451,7 +3494,8 @@ describe("clipboard-server", () => {
             mockSpawn.mockReturnValue(mockChild);
 
             // Dead server on port 9999 — health check will fail → start new → timeout
-            await expect(mod.ensureClipboardServer()).rejects.toThrow("Clipboard server failed to start within timeout");
+            await expect(mod.ensureClipboardServer()).rejects.toThrow("Clipboard publication deferred");
+            expect(mockSpawn).not.toHaveBeenCalled(); expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         }, 15000);
     });
 
@@ -3665,10 +3709,7 @@ describe("clipboard-server", () => {
             mockUnlinkSync.mockImplementation(() => {});
 
             // stopClipboardServerIfLast calls readPortFile internally
-            await new Promise<void>((resolve) => {
-                mod.stopClipboardServerIfLast(false);
-                setTimeout(resolve, 150);
-            });
+            await mod.stopClipboardServerIfLast(false);
 
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         });
@@ -3688,7 +3729,7 @@ describe("clipboard-server", () => {
             });
 
             // readPortFile returns null (no colon) → stopClipboardServerIfLast returns early
-            mod.stopClipboardServerIfLast(false);
+            await mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         });
 
@@ -3707,7 +3748,7 @@ describe("clipboard-server", () => {
             });
 
             // readPortFile returns null (NaN port) → stopClipboardServerIfLast returns early
-            mod.stopClipboardServerIfLast(false);
+            await mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         });
 
@@ -3726,7 +3767,7 @@ describe("clipboard-server", () => {
             });
 
             // readPortFile returns null (empty token) → stopClipboardServerIfLast returns early
-            mod.stopClipboardServerIfLast(false);
+            await mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         });
 
@@ -3745,7 +3786,7 @@ describe("clipboard-server", () => {
             });
 
             // readPortFile catches exception, returns null → stopClipboardServerIfLast returns early
-            mod.stopClipboardServerIfLast(false);
+            await mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
     });
@@ -3760,12 +3801,14 @@ describe("clipboard-server", () => {
             mod = await import("../clipboard-server.js");
         });
 
-        it("covers race path: openSync throws (another process starting), then port appears healthy", async () => {
+        it("accepts a healthy private publication from the owner of a contended startup slot", async () => {
             // Set up a real health server that the polling will find
             const raceToken = "race-token-abc";
+            let healthProbes = 0, authenticatedProbes = 0, portReads = 0, published = false;
             const raceServer = createServer((req, res) => {
                 const auth = req.headers.authorization;
                 const isValid = auth === `Bearer ${raceToken}`;
+                healthProbes++; if (isValid) authenticatedProbes++;
                 res.writeHead(200, { "Content-Type": "application/json" });
                 const version = currentPolicyVersion();
                 res.end(JSON.stringify({ service: "ccc-clipboard", version, ...(isValid ? { valid: true } : {}) }));
@@ -3778,13 +3821,9 @@ describe("clipboard-server", () => {
             });
 
             try {
-                // No existing port file
-                mockExistsSync.mockImplementation((p: string) => {
-                    if (p === PORT_FILE) return false;
-                    return false;
-                });
+                mockExistsSync.mockImplementation((p: string) => p === PORT_FILE && published);
                 mockReadFileSync.mockImplementation((p: string) => {
-                    if (p === PORT_FILE) return `${racePort}:${raceToken}`;
+                    if (p === PORT_FILE) {portReads++; return `${racePort}:${raceToken}`;}
                     if (p === "/fake/clipboard-server.js") return "file-content-for-hash";
                     throw new Error(`unexpected: ${p}`);
                 });
@@ -3792,26 +3831,22 @@ describe("clipboard-server", () => {
                 mockUnlinkSync.mockImplementation(() => {});
                 mockCloseSync.mockImplementation(() => {});
 
-                let openCallCount = 0;
-                mockOpenSync.mockImplementation(() => {
-                    openCallCount++;
-                    // First openSync throws (another process holds the lock)
-                    throw new Error("EEXIST: file exists");
+                mockOpenSync.mockImplementation((path: string) => {
+                    expect(path).toBe(STARTING_LOCK);
+                    throw Object.assign(new Error("owned startup slot"), {code: "EEXIST"});
                 });
-
-                // After a delay, make readPortFile return the race server's port
-                // by making existsSync return true for PORT_FILE after first poll
-                let pollCount = 0;
-                mockExistsSync.mockImplementation((p: string) => {
-                    if (p === PORT_FILE) {
-                        pollCount++;
-                        return pollCount >= 2; // Return true after 2nd check
-                    }
-                    return false;
-                });
-
+                const actual = await vi.importActual<typeof import("fs")>("fs");
+                actual.writeFileSync(portBacking.file, `${racePort}:${raceToken}`, {mode: 0o600});
+                // Slot contention is separate from opening the owner's actual
+                // private port descriptor; do not make every open throw.
+                setTimeout(() => {published = true;}, 20);
                 const result = await mod.ensureClipboardServer();
                 expect(result).toBe(racePort);
+                expect(mockOpenSync).toHaveBeenCalledWith(STARTING_LOCK, "wx");
+                expect(mockSpawn).not.toHaveBeenCalled();
+            } catch (cause) {
+                throw new Error(`Owned clipboard race phases ${JSON.stringify({published, portReads, healthProbes, authenticatedProbes,
+                    slotAttempts: mockOpenSync.mock.calls.length})}`, {cause});
             } finally {
                 raceServer.close();
             }
@@ -3868,7 +3903,7 @@ describe("clipboard-server", () => {
     // ensureClipboardServer - version mismatch path
     // ═══════════════════════════════════════════════════════════════════════
     describe("ensureClipboardServer version mismatch path", () => {
-        it("shuts down old server on version mismatch then starts new (returns new port or throws)", async () => {
+        it("preserves a legacy version mismatch without claiming shutdown from an HTTP200 response", async () => {
             const mod = await import("../clipboard-server.js");
 
             // Start a real server that returns a different (mismatched) version
@@ -3915,17 +3950,8 @@ describe("clipboard-server", () => {
                 // The old server will keep responding alive (same port re-read from mock).
                 // It may succeed (returning old port again) or fail depending on timing.
                 // We just need the version mismatch branch covered.
-                let result: number | null = null;
-                let error: unknown = null;
-                try {
-                    result = await mod.ensureClipboardServer();
-                } catch (e) {
-                    error = e;
-                }
-
-                // Either we got a port back (re-used old port after "shutdown") or we timed out.
-                // Either way, we exercised the shutdownServer call path.
-                expect(result !== null || error !== null).toBe(true);
+                expect(await mod.ensureClipboardServer()).toBe(oldPort);
+                expect(mockSpawn).not.toHaveBeenCalled(); expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
                 // PORT_FILE was read at least once (for the initial check)
                 expect(portFileReads).toBeGreaterThanOrEqual(1);
             } finally {

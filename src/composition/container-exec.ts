@@ -1,10 +1,9 @@
 import { spawnSync } from "child_process";
-import { readFileSync } from "fs";
 import { basename, resolve } from "path";
 import type { ContainerExecPorts, ContainerExecReport, ContainerExecReadinessPorts, ContainerExecReplacementPorts, ContainerExecReplacementReason } from "../ports/container-exec.js";
 import { runContainerCommand } from "../container-command.js";
 import { getProjectId, collectForwardedEnv, writeOwnedEnvFile, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE } from "../utils.js";
-import { ensureClipboardServer } from "../clipboard-server.js";
+import { ensureClipboardSelection, validateClipboardSelection } from "../clipboard-server.js";
 import { clipboardPortFile } from "../home-layout.js";
 import { runtimeCli, runtimeSpawnSync, getRuntimeInvocation, currentNativeRuntimeInvocation, bindNativeRuntimeInvocation, runWithNativeRuntimeInvocation, type NativeRuntimeInvocation, type BoundNativeRuntimeRunner } from "../container-runtime.js";
 import { getToolByName, getDefaultTool } from "../tool-registry.js";
@@ -19,7 +18,7 @@ import {
     withContainerSetupLockAsync, getActiveSessionsForContainer,
     beginSessionStartupInHeldLifecycleLock, recordSessionOwnStartInHeldLifecycleLock,
     publishSessionReadyInHeldLifecycleLock,
-    setSessionCleanupEnabled, confirmSessionOwnership, cleanupSession,
+    setSessionCleanupEnabled, confirmSessionOwnership, cleanupSession, getCurrentSessionOwnershipReceipt,
 } from "../session.js";
 import { withCodexConfigLock } from "../codex-config-lock.js";
 import { ensureUvAvailable, ensureTools, ensureClaudeInContainer, CLAUDE_BIN_PATH } from "../container-setup.js";
@@ -146,15 +145,13 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         familyLock: withProjectFamilyLifecycleLockAsync,
         acquireOwnership: acquireHostSessionOwnership,
         inspectSessionContainer: inspectSessionContainerOwnership,
-        ensureClipboard: ensureClipboardServer,
+        ensureClipboard: () => ensureClipboardSelection(getCurrentSessionOwnershipReceipt()),
+        validateClipboard: validateClipboardSelection,
         clipboardPortFile,
-        clipboardConnection(port) {
-            if (!port) return {};
+        clipboardConnection(selection) {
+            if (!selection) return {};
             const host = process.platform === "linux" && !isDockerDesktop() ? "127.0.0.1" : "host.docker.internal";
-            let token: string | undefined;
-            try { token = readFileSync(clipboardPortFile(), "utf-8").trim().split(":").slice(1).join(":") || undefined; }
-            catch { token = undefined; }
-            return { url: `http://${host}:${port}`, token };
+            return { url: `http://${host}:${selection.port}`, token: selection.token };
         },
         worktreeMounts: getWorktreeGitMounts,
         containerName: getContainerName,
@@ -272,7 +269,8 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         acquireOwnership: (request, inspect) => inRuntime(() => ports.acquireOwnership(request, inspect)),
         inspectSessionContainer: (path, profile) => inRuntime(() => ports.inspectSessionContainer(path, profile)),
         ensureClipboard: () => inRuntime(ports.ensureClipboard),
-        clipboardConnection: port => inRuntime(() => ports.clipboardConnection(port)),
+        clipboardConnection: selection => inRuntime(() => ports.clipboardConnection(selection)),
+        validateClipboard: (selection, guard) => inRuntime(() => ports.validateClipboard(selection, guard)),
         worktreeMounts: (...args) => inRuntime(() => ports.worktreeMounts(...args)),
         containerStatus: name => inRuntime(() => ports.containerStatus(name)),
         lifecycleLock: (path, operation) => inRuntime(() => ports.lifecycleLock(path, operation)),

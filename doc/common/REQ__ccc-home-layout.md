@@ -121,6 +121,28 @@ On the first host-side ccc start after the update, ccc moves the old entries:
 
 ## Verification cues
 
+### Derived admission across runtime changes
+
+These implementation rules derive from observable behavior 3 and the migration
+preservation rules above. The captured-runtime requirement and the
+global-bind-user-authority task plan provide their technical basis; a particular
+history schema or lock protocol is not a user-prescribed requirement.
+
+Migration and automatic clipboard retirement keep the same global guard as
+controlled bind creation through final admission and mutation. Admission includes
+retained native runtime authorities and stopped containers. Current-context
+emptiness, missing old history or a timed-out creation never proves absence of
+users. A truly fresh, exclusively created home can establish controlled coverage;
+an existing home cannot retroactively establish it from missing files.
+
+Interrupted or uncertain native creation retains its pending-effect veto. Remote
+receiving-host writes without captured native authority retain incomplete
+coverage. Unknown coverage keeps credentials, port-file identity and the current
+bridge intact. An automatic bridge replacement requires a positive shared-writer
+retirement witness; health failure or an HTTP response alone is insufficient.
+
+### Layout checks
+
 - After one start, `~/.ccc` contains `config.json`, `profiles/`, `run/`, and the
   device folders, and no `claude/`, `claude.json`, `codex/`, `locks/` or `remote/`.
 - `ccc profile list` includes `default`.

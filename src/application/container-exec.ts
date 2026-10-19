@@ -102,8 +102,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             // Start clipboard server early — must complete before container creation so
             // the port file exists and can be bind-mounted (file mount requires the file
             // to already exist at docker run time).
-            const clipboardPort = await ports.ensureClipboard().catch(() => null);
-            const clipboardPortFile = ports.clipboardPortFile();
+            let clipboardSelection = await ports.ensureClipboard().catch(() => null);
 
             // Detect worktree mounts (source .git directories needed for git operations)
             const worktreeMounts = ports.worktreeMounts(
@@ -151,39 +150,45 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             let startup: ReturnType<ContainerExecPorts<Prepared>["prepareContainer"]>;
             const startContainer = async (
                 mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
-                portFile: string | undefined = clipboardPortFile,
+                portFile: string | undefined = clipboardSelection?.portFile,
                 onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
             ): Promise<string> => {
-                const readyId = await ports.stateLock(() => ports.lifecycleLock(sessionContainerPrefix, () => {
-                    let readyContainerId: string | null = null;
-                    ports.beginSessionStartupInHeldLifecycleLock();
-                    startup.start(
-                        fullPath,
-                        () => ports.ensureDirectories(profile),
-                        mounts,
-                        portFile,
-                        profile,
-                        onRecreate,
-                        recreateInsideLifecycleLock,
-                        (containerId, handoff) => {
-                            requiresLiveVerification = false;
-                            readyContainerId = containerId;
-                            if (handoff.startedByInvocation) invocationStartedContainers.add(containerId);
-                            ports.publishSessionReadyInHeldLifecycleLock(containerId, {
-                                startedByInvocation: invocationStartedContainers.has(containerId),
-                            });
-                        },
-                        containerStatus.running ? containerStatus.containerId ?? undefined : undefined,
-                        (containerId) => {
-                            invocationStartedContainers.add(containerId);
-                            ports.recordSessionOwnStartInHeldLifecycleLock(containerId);
-                        },
-                    );
-                    if (!readyContainerId) {
-                        throw ports.handoffFailure();
-                    }
-                    return readyContainerId;
-                }));
+                const readyId = await ports.stateLock(async bindGuard => {
+                    clipboardSelection = await ports.validateClipboard(clipboardSelection, bindGuard);
+                    // Validation and native bind share this held global capability.
+                    const selectedPortFile = clipboardSelection?.portFile === portFile ? portFile : undefined;
+                    return ports.lifecycleLock(sessionContainerPrefix, () => {
+                        let readyContainerId: string | null = null;
+                        ports.beginSessionStartupInHeldLifecycleLock();
+                        startup.start(
+                            fullPath,
+                            () => ports.ensureDirectories(profile),
+                            mounts,
+                            selectedPortFile,
+                            profile,
+                            onRecreate,
+                            recreateInsideLifecycleLock,
+                            (containerId, handoff) => {
+                                requiresLiveVerification = false;
+                                readyContainerId = containerId;
+                                if (handoff.startedByInvocation) invocationStartedContainers.add(containerId);
+                                ports.publishSessionReadyInHeldLifecycleLock(containerId, {
+                                    startedByInvocation: invocationStartedContainers.has(containerId),
+                                });
+                            },
+                            containerStatus.running ? containerStatus.containerId ?? undefined : undefined,
+                            (containerId) => {
+                                invocationStartedContainers.add(containerId);
+                                ports.recordSessionOwnStartInHeldLifecycleLock(containerId);
+                            },
+                            bindGuard,
+                        );
+                        if (!readyContainerId) {
+                            throw ports.handoffFailure();
+                        }
+                        return readyContainerId;
+                    });
+                });
                 await ports.confirmOwnership();
                 startup.initialize(readyId);
                 return readyId;
@@ -278,7 +283,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                 throw ports.setupFailure(error);
             });
 
-            const clipboard = ports.clipboardConnection(clipboardPort);
+            const clipboard = ports.clipboardConnection(clipboardSelection);
             const resolvedCmd = await attachContainerExecClipboardImage(
                 fullPath, cmd, commandTool, clipboard, ports.attachClipboardImage,
             );

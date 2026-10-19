@@ -3,11 +3,56 @@ import type { SpawnSyncReturns } from "child_process";
 import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
 const native = vi.hoisted(() => ({
+    bindGuard: Object.freeze({ root: "/fixture/home/.ccc" }) as import("../../ports/runtime-bind-authority.js").RuntimeBindGuard,
+    creationTicket: Object.freeze({}) as import("../../ports/runtime-bind-authority.js").RuntimeBindCreationTicket,
+    authorityEvents: [] as string[],
+    authorityHeld: false,
+    retainedAuthority: undefined as import("../../ports/runtime-bind-authority.js").RuntimeBindAuthorityFacts | undefined,
     spawn: vi.fn(), runtime: vi.fn(), remote: vi.fn(), family: vi.fn(),
     handoffBoundary: vi.fn<(operation: () => string) => string>(),
     exists: vi.fn(), stat: vi.fn(), lstat: vi.fn(), read: vi.fn(), write: vi.fn(),
     realpath: vi.fn(), mkdir: vi.fn(), open: vi.fn(), fstat: vi.fn(), close: vi.fn(), rm: vi.fn(),
 }));
+// These facade owners fabricate host metadata. Keep authority at an explicit
+// typed native boundary; real private-file guard qualification has native owners.
+vi.mock("../../adapters/runtime-bind-authority.js", async original => {
+    const actual = await original<typeof import("../../adapters/runtime-bind-authority.js")>();
+    const { validateNativeRuntimeInvocation } = await import("../../adapters/container-runtime-invocation.js");
+    const snapshot = (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard, invocation: import("../../ports/container-runtime-invocation.js").NativeRuntimeInvocation) => {
+        expect(native.authorityHeld).toBe(true);
+        expect(guard).toBe(native.bindGuard);
+        expect(validateNativeRuntimeInvocation(invocation).executable).toBe("/fixture/runtime/docker");
+        native.retainedAuthority = Object.freeze({ coverage: "incomplete", pending: false, authorities: [invocation] });
+        return native.retainedAuthority;
+    };
+    return {
+        ...actual,
+        withRuntimeBindGuard: <T>(root: string | import("../../ports/runtime-bind-authority.js").RuntimeBindHomePreparation, operation: (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard) => T) => {
+            expect(typeof root === "string" ? root : root.root).toBe(native.bindGuard.root);
+            expect(native.authorityHeld).toBe(false);
+            native.authorityHeld = true;
+            try { return operation(native.bindGuard); } finally { native.authorityHeld = false; }
+        },
+        recordRuntimeBindAuthority: (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard, invocation: import("../../ports/container-runtime-invocation.js").NativeRuntimeInvocation) => {
+            const recorded = snapshot(guard, invocation);
+            native.authorityEvents.push("record");
+            return recorded;
+        },
+        beginRuntimeBindCreation: (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard, invocation: import("../../ports/container-runtime-invocation.js").NativeRuntimeInvocation) => {
+            snapshot(guard, invocation);
+            native.authorityEvents.push("begin");
+            return native.creationTicket;
+        },
+        settleRuntimeBindCreation: (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard, ticket: import("../../ports/runtime-bind-authority.js").RuntimeBindCreationTicket) => {
+            expect(native.authorityHeld).toBe(true);
+            expect(guard).toBe(native.bindGuard);
+            expect(ticket).toBe(native.creationTicket);
+            native.authorityEvents.push("settle");
+            if (!native.retainedAuthority) throw new Error("Fixture creation has no recorded authority");
+            return native.retainedAuthority;
+        },
+    };
+});
 vi.mock("child_process", async original => ({
     ...await original<typeof import("node:child_process")>(), spawnSync: native.spawn,
 }));
@@ -88,6 +133,7 @@ function calls() {
 }
 
 function fixture(path: Path) {
+    native.authorityEvents = [];
     preloadNativeRuntimeFixture(runtime);
     const identity = containerIdentity.resolveContainerIdentity();
     const identityLabels = { ...containerIdentity.getIdentityLabels(identity), "ccc.identity.base": baseImageId };
@@ -157,7 +203,12 @@ function fixture(path: Path) {
             expect(args.slice(0, 9)).toEqual(["run", "--rm", "--network", "none", "--user", "ccc", "--entrypoint", "/bin/sh", identityImageId]);
             return result(0, `${identity.uid}:${identity.gid}:/home/ccc:ccc`);
         }
-        if (args[0] === "run") { state.runArgs = [...args]; return result(0, id); }
+        if (args[0] === "run") {
+            expect(native.authorityHeld).toBe(true);
+            expect(native.authorityEvents.at(-1)).toBe("begin");
+            native.authorityEvents.push("run");
+            state.runArgs = [...args]; return result(0, id);
+        }
         if (args[0] === "start") { state.running = true; return result(); }
         if (args[0] === "ps" && args[1] === "-aq") return result(0, state.existing ? id : "");
         if (args[0] === "ps" && args[1] === "-q") return result(0, state.existing && state.running ? id : "");
@@ -205,6 +256,7 @@ function fixture(path: Path) {
         state.deferred = path === "deferred";
         state.late = false;
         native.spawn.mockClear(); native.family.mockClear(); trace.length = 0;
+        native.authorityEvents = [];
     }
     const start = (ready?: (target: string, handoff: { startedByInvocation: boolean }) => void, started?: (target: string) => void) => docker.startProjectContainer(
         project, () => {}, undefined, undefined, undefined, undefined,
@@ -223,6 +275,7 @@ function assertPreserved() {
 
 beforeEach(() => {
     vi.resetAllMocks();
+    native.authorityEvents = []; native.authorityHeld = false;
     runtime._resetRuntimeCacheForTest();
     native.handoffBoundary.mockImplementation(operation => operation());
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -261,6 +314,7 @@ describe("public Docker session handoff through the real application", () => {
         expect(calls().filter(call => call[1][0] === "run" && call[1][1] !== "--rm")).toHaveLength(path === "fresh" ? 1 : 0);
         expect(calls().filter(call => call[1][0] === "start").map(call => call[1])).toEqual(path === "restart" ? [["start", id]] : []);
         expect(native.family).toHaveBeenCalledTimes(path === "fresh" ? 1 : 0);
+        expect(native.authorityEvents).toEqual(path === "fresh" ? ["record", "begin", "run", "settle"] : ["record"]);
         if (path === "deferred") expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
         assertPreserved();
     });
@@ -287,7 +341,14 @@ describe("public Docker session handoff through the real application", () => {
         expect(f.trace.some(entry => entry.startsWith("identity:"))).toBe(false);
         const allCalls = calls();
         const inspections = allCalls.filter(call => call[1].includes("{{.Id}}|{{.State.Running}}"));
-        expect(inspections).toHaveLength(path === "deferred" || path === "restart" ? 1 : 0);
+        expect(inspections).toHaveLength(path === "existing" ? 0 : path === "deferred" ? 2 : 1);
+        if (path === "fresh") expect(inspections[0][1]).toEqual(["inspect", id, "--format", "{{.Id}}|{{.State.Running}}"]);
+        if (path === "deferred") {
+            expect(inspections.map(call => call[1])).toEqual([
+                ["inspect", docker.getContainerName(project), "--format", "{{.Id}}|{{.State.Running}}"],
+                ["inspect", id, "--format", "{{.Id}}|{{.State.Running}}"],
+            ]);
+        }
         if (path === "restart") {
             // Restart rechecks its captured stopped ID before start. This early
             // fence must not become a callback-dependent final identity probe.

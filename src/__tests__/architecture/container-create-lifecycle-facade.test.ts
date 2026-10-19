@@ -6,10 +6,55 @@ import type { NativeContainerCreateLifecycleContext } from "../../composition/co
 import {isAbsolute, resolve} from "node:path";
 
 const native = vi.hoisted(() => ({
+    bindGuard: Object.freeze({ root: "/fixture/home/.ccc" }) as import("../../ports/runtime-bind-authority.js").RuntimeBindGuard,
+    creationTicket: Object.freeze({}) as import("../../ports/runtime-bind-authority.js").RuntimeBindCreationTicket,
+    authorityEvents: [] as string[],
+    authorityHeld: false,
+    retainedAuthority: undefined as import("../../ports/runtime-bind-authority.js").RuntimeBindAuthorityFacts | undefined,
     spawn: vi.fn(), runtime: vi.fn(), remote: vi.fn(), family: vi.fn(),
     exists: vi.fn(), stat: vi.fn(), lstat: vi.fn(), read: vi.fn(), write: vi.fn(),
     realpath: vi.fn(), mkdir: vi.fn(), open: vi.fn(), fstat: vi.fn(), close: vi.fn(), rm: vi.fn(),
 }));
+// These facade owners fabricate host metadata. Keep authority at an explicit
+// typed native boundary; real private-file guard qualification has native owners.
+vi.mock("../../adapters/runtime-bind-authority.js", async original => {
+    const actual = await original<typeof import("../../adapters/runtime-bind-authority.js")>();
+    const { validateNativeRuntimeInvocation } = await import("../../adapters/container-runtime-invocation.js");
+    const snapshot = (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard, invocation: import("../../ports/container-runtime-invocation.js").NativeRuntimeInvocation) => {
+        expect(native.authorityHeld).toBe(true);
+        expect(guard).toBe(native.bindGuard);
+        expect(validateNativeRuntimeInvocation(invocation).executable).toBe("/fixture/runtime/docker");
+        native.retainedAuthority = Object.freeze({ coverage: "incomplete", pending: false, authorities: [invocation] });
+        return native.retainedAuthority;
+    };
+    return {
+        ...actual,
+        withRuntimeBindGuard: <T>(root: string | import("../../ports/runtime-bind-authority.js").RuntimeBindHomePreparation, operation: (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard) => T) => {
+            expect(typeof root === "string" ? root : root.root).toBe(native.bindGuard.root);
+            expect(native.authorityHeld).toBe(false);
+            native.authorityHeld = true;
+            try { return operation(native.bindGuard); } finally { native.authorityHeld = false; }
+        },
+        recordRuntimeBindAuthority: (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard, invocation: import("../../ports/container-runtime-invocation.js").NativeRuntimeInvocation) => {
+            const recorded = snapshot(guard, invocation);
+            native.authorityEvents.push("record");
+            return recorded;
+        },
+        beginRuntimeBindCreation: (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard, invocation: import("../../ports/container-runtime-invocation.js").NativeRuntimeInvocation) => {
+            snapshot(guard, invocation);
+            native.authorityEvents.push("begin");
+            return native.creationTicket;
+        },
+        settleRuntimeBindCreation: (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard, ticket: import("../../ports/runtime-bind-authority.js").RuntimeBindCreationTicket) => {
+            expect(native.authorityHeld).toBe(true);
+            expect(guard).toBe(native.bindGuard);
+            expect(ticket).toBe(native.creationTicket);
+            native.authorityEvents.push("settle");
+            if (!native.retainedAuthority) throw new Error("Fixture creation has no recorded authority");
+            return native.retainedAuthority;
+        },
+    };
+});
 vi.mock("child_process", async original => ({
     ...await original<typeof import("node:child_process")>(), spawnSync: native.spawn,
 }));
@@ -104,6 +149,7 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
 
 beforeEach(() => {
     vi.resetAllMocks();
+    native.authorityEvents = []; native.authorityHeld = false;
     native.spawn.mockReturnValue(result(0, id));
     native.runtime.mockReturnValue("current-runtime");
     native.family.mockImplementation((_prefix, operation) => operation());
@@ -337,6 +383,7 @@ const identityImageId = `sha256:${"c".repeat(64)}`;
 const project = resolve("/fixture/project");
 
 function publicFixture() {
+    native.authorityEvents = [];
     const identity = containerIdentity.resolveContainerIdentity();
     const identityLabels = { ...containerIdentity.getIdentityLabels(identity), "ccc.identity.base": baseImageId };
     const state = {
@@ -379,6 +426,9 @@ function publicFixture() {
             return result(0, `${identity.uid}:${identity.gid}:/home/ccc:ccc`);
         }
         if (args[0] === "run") {
+            expect(native.authorityHeld).toBe(true);
+            expect(native.authorityEvents.at(-1)).toBe("begin");
+            native.authorityEvents.push("run");
             state.runArgs = [...args];
             state.changed = state.swapProject;
             state.currentCli = "changed-runtime";
@@ -503,6 +553,7 @@ describe("public Docker creation cutover", () => {
         const ready = vi.fn();
         expect(docker.startProjectContainer(project, () => {}, undefined, undefined, undefined, undefined, undefined, ready)).toBe(docker.getContainerName(project));
         expect(ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: true });
+        expect(native.authorityEvents).toEqual(["record", "begin", "run", "settle"]);
         expect(state.familyCalls).toBe(1);
         expect(state.currentCli).toBe("changed-runtime");
         const run = native.spawn.mock.calls.find(call => call[1][0] === "run" && call[1][1] !== "--rm");
@@ -548,6 +599,7 @@ describe("public Docker creation cutover", () => {
             "created container bind mount identity verification failed (container runtime did not return an exact 64-hex container ID)",
         );
         expect(ensureDirs).toHaveBeenCalledTimes(1);
+        expect(native.authorityEvents).toEqual(["record", "begin", "run"]);
         expect(state.familyCalls).toBe(1);
         expect(native.family.mock.calls[0][0]).toBe(`mount-${docker.bindMountSourceIdentityDigest({ realpath: project, dev: "1", ino: "1" })}`);
         const run = native.spawn.mock.calls.find(call => call[1][0] === "run" && call[1][1] !== "--rm");

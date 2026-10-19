@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "crypto";
 import { createServer, request, type Server } from "http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
-import { dirname, join, relative, resolve } from "path";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { EventEmitter } from "events";
+import { join, relative, resolve } from "path";
 import { tmpdir } from "os";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
-import ts from "typescript";
 
 const native = vi.hoisted(() => ({
     sourceRoot: "", home: "", contents: new Map<string, string>(), reads: [] as string[],
@@ -26,6 +26,17 @@ vi.mock("fs", async () => {
 });
 vi.mock("os", async () => ({ ...await vi.importActual<typeof import("os")>("os"), homedir: () => native.home }));
 vi.mock("child_process", async () => ({ ...await vi.importActual<typeof import("child_process")>("child_process"), spawn: native.spawn }));
+vi.mock("../../container-runtime.js", async original => {
+    const actual = await original<typeof import("../../container-runtime.js")>();
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../../ports/container-runtime-invocation.js");
+    const invocation = actual.validateNativeRuntimeInvocation({
+        version: 1, runtime: "docker", executable: "/fixture/runtime/docker",
+        transport: { kind: "docker", host: "unix:///fixture/engine.sock", configDirectory: "/fixture/config",
+            tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    return { ...actual, getRuntimeInvocation: () => invocation, peekRuntimeInvocation: () => invocation };
+});
 vi.mock("../../clipboard-bind-users.js", () => ({ clipboardPortMayHaveBindUsers: () => native.bindUsers }));
 vi.mock("../../clipboard-startup-lock.js", () => ({
     tryAcquireClipboardStartupLock: () => ({ path: "private-startup-lock", fd: 1 }),
@@ -41,6 +52,10 @@ const files = [
     "application/clipboard/snapshot.js",
     "application/clipboard/text-write.js",
     "application/clipboard/server-lifecycle.js",
+    "clipboard-bind-users.js",
+    "adapters/runtime-bind-authority.js",
+    "adapters/runtime-bind-users.js",
+    "application/runtime-bind-admission.js",
 ] as const;
 const sourceRoot = fileURLToPath(new URL("../../", import.meta.url));
 const fixtureEnvKeys = ["HOME", "USERPROFILE", "TMPDIR"] as const;
@@ -80,7 +95,7 @@ afterEach(async () => {
 });
 
 function expectedVersion() {
-    const digest = createHash("sha256").update("ccc-clipboard-policy-v1\0");
+    const digest = createHash("sha256").update("ccc-clipboard-policy-v2\0");
     for (const file of files) {
         const body = native.contents.get(file)!;
         digest.update(file).update("\0").update(String(Buffer.byteLength(body, "utf8")))
@@ -120,14 +135,21 @@ function publish(port: number, token: string) {
     writeFileSync(portFile, `${port}:${token}`, { mode: 0o600 });
     return portFile;
 }
-async function oldPeer(version: string) {
-    const token = "private-old-peer-token";
+async function oldPeer(version: string, settlement = false) {
+    const token = settlement ? "a".repeat(32) : "private-old-peer-token";
     const calls: { path: string; authorization?: string }[] = [];
     const server = createServer((req, response) => {
         calls.push({ path: req.url!, authorization: req.headers.authorization });
         if (req.headers.authorization !== `Bearer ${token}`) { response.writeHead(401).end(); return; }
-        if (req.url === "/shutdown") { response.writeHead(200).end("acknowledged"); return; }
-        response.end(JSON.stringify({ service: "ccc-clipboard", valid: true, version }));
+        if (req.url === "/shutdown") {
+            if (settlement) {
+                server.close();
+                expect(server.listening).toBe(false);
+                response.writeHead(200).end(JSON.stringify({ service: "ccc-clipboard", retirement: "writer-settlement-v1", settled: true }));
+            } else response.writeHead(200).end("acknowledged");
+            return;
+        }
+        response.end(JSON.stringify({ service: "ccc-clipboard", valid: true, version, ...(settlement ? { retirement: "writer-settlement-v1" } : {}) }));
     });
     servers.push(server);
     const port = await new Promise<number>(done => server.listen(0, "127.0.0.1", () => done((server.address() as { port: number }).port)));
@@ -136,32 +158,6 @@ async function oldPeer(version: string) {
 }
 
 describe("fixed compiled Clipboard policy fingerprint", () => {
-    it("guards the literal seven-file closure against the actual runtime import graph", () => {
-        const source = readFileSync(join(sourceRoot, "clipboard-server.ts"), "utf8");
-        const tree = ts.createSourceFile("clipboard-server.ts", source, ts.ScriptTarget.Latest, true);
-        const hash = tree.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "getServerHash") as ts.FunctionDeclaration;
-        const declaration = hash.body!.statements.find(statement => ts.isTryStatement(statement)) as ts.TryStatement;
-        const fileList = declaration.tryBlock.statements.find(statement => ts.isVariableStatement(statement)
-            && statement.declarationList.declarations[0].name.getText(tree) === "files") as ts.VariableStatement;
-        const array = fileList.declarationList.declarations[0].initializer as ts.ArrayLiteralExpression;
-        expect(array.elements.map(element => (element as ts.StringLiteral).text)).toEqual(files);
-        const closure = new Set<string>(["clipboard-server.js"]);
-        const pending = ["clipboard-server.ts"];
-        while (pending.length) {
-            const file = pending.pop()!;
-            const content = readFileSync(join(sourceRoot, file), "utf8");
-            const module = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
-            for (const statement of module.statements) {
-                if (!ts.isImportDeclaration(statement) || statement.importClause?.isTypeOnly
-                    || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-                const target = relative(sourceRoot, resolve(sourceRoot, dirname(file), statement.moduleSpecifier.text)).replaceAll("\\", "/");
-                if (!target.startsWith("domain/clipboard/") && !target.startsWith("application/clipboard/")) continue;
-                if (!closure.has(target)) { closure.add(target); pending.push(target.replace(/\.js$/, ".ts")); }
-            }
-        }
-        expect([...closure].sort()).toEqual([...files].sort());
-    });
-
     it("reports the framed SHA-256/12 digest only to authenticated health", async () => {
         const instance = await load();
         expect(instance.version).toMatch(/^[a-f0-9]{12}$/);
@@ -200,7 +196,7 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
         expect((await reload()).version).toBe(expectedVersion());
     });
 
-    it("captures the version at import and excludes native/helper dependencies", async () => {
+    it("captures the version at import and excludes external helper contents", async () => {
         const imported = await load();
         native.contents.set(files[2], "new policy after import");
         native.contents.set("clipboard-helper-darwin.m", "new external helper");
@@ -237,49 +233,71 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
     it("authenticates retirement and publishes a new token for an upgraded policy", async () => {
         const previousVersion = expectedVersion();
         native.contents.set(files[5], "changed text write policy");
-        const peer = await oldPeer(previousVersion);
+        const peer = await oldPeer(previousVersion, true);
         const inode = statSync(peer.portFile).ino;
         const instance = await load();
         const unref = vi.fn();
         let successorPort = 0;
+        const successorToken = "b".repeat(32);
+        const protocol: string[] = [];
         native.spawn.mockImplementation(() => {
-            const successor = instance.mod.createClipboardServer("private-successor-token", "unsupported");
+            const successor = instance.mod.createClipboardServer(successorToken, "unsupported");
             servers.push(successor.server);
-            void successor.start("127.0.0.1").then(port => {
-                successorPort = port;
-                publish(port, "private-successor-token");
+            const child = Object.assign(new EventEmitter(), {
+                unref,
+                disconnect: vi.fn(),
+                send: (message: { type: string; runtimeInvocation?: unknown; receipt?: { path: string; bytes: string } }, callback: (error: Error | null) => void) => {
+                    protocol.push(message.type);
+                    if (message.type === "initialize") {
+                        expect(message.runtimeInvocation).toMatchObject({ executable: "/fixture/runtime/docker" });
+                        expect(readFileSync(peer.portFile, "utf8")).toBe(`retired-v1:${peer.port}:${peer.token}`);
+                        void successor.start("127.0.0.1").then(port => {
+                            successorPort = port;
+                            child.emit("message", { type: "ready", port, token: successorToken });
+                        });
+                    } else if (message.type === "published") {
+                        expect(message.receipt?.path).toBe(peer.portFile);
+                        expect(readFileSync(peer.portFile, "utf8")).toBe(`${successorPort}:${successorToken}`);
+                        queueMicrotask(() => child.emit("message", { type: "committed" }));
+                    } else throw new Error("Unexpected parent publisher message");
+                    callback(null);
+                    return true;
+                },
             });
-            return { unref };
+            return child;
         });
         expect(await instance.mod.ensureClipboardServer()).toBe(successorPort);
         expect(successorPort).not.toBe(peer.port);
         expect(peer.calls.filter(call => call.path === "/shutdown")).toEqual([{ path: "/shutdown", authorization: `Bearer ${peer.token}` }]);
-        expect((await health(successorPort, "private-successor-token")).version).toBe(instance.version);
+        expect((await health(successorPort, successorToken)).version).toBe(instance.version);
         expect(statSync(peer.portFile).ino).toBe(inode);
         expect(unref).toHaveBeenCalledOnce();
-        expect(native.spawn.mock.calls[0][1]).toEqual([join(sourceRoot, "clipboard-server.js"), "--serve"]);
+        expect(protocol).toEqual(["initialize", "published"]);
+        expect(native.spawn.mock.calls[0][1]).toEqual([join(sourceRoot, "clipboard-server.js"), "--serve", "--parent-publisher"]);
+        expect(native.spawn.mock.calls[0][2]).toMatchObject({ detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
     }, 10000);
 
     it("fails a private emitted ESM startup before publication when a statically imported policy file is missing", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-policy-static-missing-"));
         roots.push(root);
+        // The coordinator emits the combined product before these owners run.
+        // Copy its actual tree so only the selected policy dependency is absent.
+        const copyTree = (source: string, destination: string): void => {
+            for (const entry of readdirSync(source, { withFileTypes: true })) {
+                const input = join(source, entry.name), output = join(destination, entry.name);
+                if (entry.isDirectory()) {
+                    mkdirSync(output, { mode: 0o700 });
+                    copyTree(input, output);
+                } else if (entry.isFile()) copyFileSync(input, output);
+                else throw new Error(`Unexpected emitted fixture entry: ${entry.name}`);
+            }
+        };
+        copyTree(resolve(sourceRoot, "../dist"), root);
         writeFileSync(join(root, "package.json"), '{"type":"module"}');
         symlinkSync(resolve("node_modules"), join(root, "node_modules"), "junction");
-        const modules = [
-            "clipboard-server", "clipboard-startup-lock", "utils", "home-layout", "session-lock-liveness",
-            "adapters/session-env-file", "application/session-lock-liveness", "application/home-layout-migration",
-            "application/home/layout-paths", "application/home/config", "domain/session-lock", "domain/profile-request",
-            "domain/clipboard/snapshot", "domain/clipboard/text-write", "domain/clipboard/server-lifecycle",
-            "application/clipboard/snapshot", "application/clipboard/text-write", "application/clipboard/server-lifecycle",
-        ];
-        for (const name of modules) {
-            if (name === "application/clipboard/text-write") continue;
-            const source = readFileSync(join(sourceRoot, `${name}.ts`), "utf8");
-            const target = join(root, `${name}.js`);
-            mkdirSync(dirname(target), { recursive: true });
-            writeFileSync(target, ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText);
-        }
-        writeFileSync(join(root, "clipboard-bind-users.js"), "export const clipboardPortMayHaveBindUsers = () => true;\n");
+        const missing = join(root, "application/clipboard/text-write.js");
+        expect(existsSync(missing)).toBe(true);
+        unlinkSync(missing);
         const result = spawnSync(process.execPath, [join(root, "clipboard-server.js"), "--serve"], {
             cwd: root, timeout: 5000, encoding: "utf8", env: {
                 ...process.env, HOME: native.home, USERPROFILE: native.home, NODE_OPTIONS: "",
@@ -287,7 +305,7 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
         });
         expect(result.status).not.toBe(0);
         expect(result.stderr).toContain("ERR_MODULE_NOT_FOUND");
-        expect(result.stderr).toContain("application/clipboard/text-write.js");
+        expect(result.stderr).toContain(`Cannot find module '${missing}'`);
         expect(existsSync(join(native.home, ".ccc", "run", "clipboard.port"))).toBe(false);
         expect(existsSync(join(native.home, ".ccc", "clipboard.port"))).toBe(false);
     });

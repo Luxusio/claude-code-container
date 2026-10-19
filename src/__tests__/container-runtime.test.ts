@@ -33,6 +33,7 @@ vi.mock("fs", async (importOriginal) => {
 const {
     runtimeCli,
     getRuntimeInfo,
+    peekRuntimeInvocation,
     setRuntimeOverride,
     isContainerHostRemote,
     needsSelinuxRelabel,
@@ -118,6 +119,37 @@ describe("container-runtime", () => {
         for (const key of Object.keys(process.env)) if (!(key in origEnv)) delete process.env[key];
         Object.assign(process.env, origEnv);
         vi.restoreAllMocks();
+    });
+
+    describe("read-only captured invocation", () => {
+        it("does not discover an uncaptured runtime or execute capability probes", () => {
+            process.env.CCC_RUNTIME = "docker";
+            expect(peekRuntimeInvocation()).toBeUndefined();
+            expect(spawnSyncMock).not.toHaveBeenCalled();
+            expect(metadataMock).not.toHaveBeenCalled();
+        });
+
+        it("retains the existing validated capture despite later mutable selector changes", () => {
+            const retained = nestedDockerInvocation("unix:///fixture/retained.sock");
+            _setRuntimeInvocationForTest(retained);
+            const captured = peekRuntimeInvocation();
+            process.env.DOCKER_HOST = "unix:///fixture/later.sock";
+            process.env.DOCKER_CONTEXT = "different-alias";
+            expect(peekRuntimeInvocation()).toBe(captured);
+            expect(captured).toEqual(retained);
+            expect(spawnSyncMock).not.toHaveBeenCalled();
+            expect(metadataMock).not.toHaveBeenCalled();
+        });
+
+        it("prefers the current native scope and restores the cached capture after it ends", () => {
+            const cached = nestedDockerInvocation("unix:///fixture/cached.sock");
+            const scoped = nestedDockerInvocation("unix:///fixture/scoped.sock");
+            _setRuntimeInvocationForTest(cached);
+            runWithNativeRuntimeInvocation(scoped, () => expect(peekRuntimeInvocation()).toEqual(scoped));
+            expect(peekRuntimeInvocation()).toEqual(cached);
+            expect(spawnSyncMock).not.toHaveBeenCalled();
+            expect(metadataMock).not.toHaveBeenCalled();
+        });
     });
 
     describe("resolveRuntime", () => {

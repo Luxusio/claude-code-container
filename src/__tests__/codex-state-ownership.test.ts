@@ -1,10 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tmpdir } from "os";
 import { join } from "path";
+import type { RuntimeBindGuard } from "../ports/runtime-bind-authority.js";
 
-const mocks = vi.hoisted(() => ({ spawn: vi.fn(), lstat: vi.fn(), realpath: vi.fn() }));
+const mocks = vi.hoisted(() => ({ spawn: vi.fn(), lstat: vi.fn(), realpath: vi.fn(),
+    guard: Object.freeze({root: "/home/test/.ccc"}), acquire: vi.fn(), record: vi.fn(), begin: vi.fn(), settle: vi.fn(),
+}));
 vi.mock("child_process", () => ({ spawnSync: mocks.spawn }));
-vi.mock("fs", () => ({ lstatSync: mocks.lstat, realpathSync: mocks.realpath }));
+vi.mock("fs", async original => ({...await original<typeof import("fs")>(), lstatSync: mocks.lstat, realpathSync: mocks.realpath}));
+vi.mock("../home-layout.js", () => ({cccHome: () => "/home/test/.ccc"}));
+vi.mock("../adapters/runtime-bind-authority.js", () => ({
+    withRuntimeBindGuard: (root: string, operation: (guard: unknown) => unknown, options: unknown) => {
+        mocks.acquire(root, options);
+        return operation(mocks.guard);
+    },
+    recordRuntimeBindAuthority: (...args: unknown[]) => mocks.record(...args),
+    beginRuntimeBindCreation: (...args: unknown[]) => mocks.begin(...args),
+    settleRuntimeBindCreation: (...args: unknown[]) => mocks.settle(...args),
+}));
 vi.mock("../utils.js", () => ({ getCodexDir: (profile?: string) => profile ? `/home/test/.ccc/profiles/${profile}/codex` : "/home/test/.ccc/codex" }));
 vi.mock("../container-runtime.js", async () => {
     const { validateNativeRuntimeInvocation } = await import("../adapters/container-runtime-invocation.js");
@@ -36,6 +49,8 @@ const success = (stdout = "") => ({ status: 0, stdout, stderr: "" });
 const fixtures: string[] = [];
 
 beforeEach(() => {
+    mocks.acquire.mockReset(); mocks.record.mockReset();
+    mocks.begin.mockReset().mockImplementation(() => Object.freeze({})); mocks.settle.mockReset();
     vi.spyOn(process, "geteuid").mockReturnValue(1000);
     vi.spyOn(process, "getegid").mockReturnValue(1000);
     vi.stubEnv("container", "");
@@ -65,6 +80,48 @@ describe.skipIf(process.platform !== "linux")("proven retained Codex state migra
         expect(calls[2]).toContain(currentImage);
         expect(calls[2].slice(-7)).toEqual(["/state", "1001", "1001", "1000", "1000", "2096", "85186"]);
         expect(calls[2].slice(2, 6)).toEqual(["--network", "none", "--user", "root"]);
+    });
+    it("publishes captured authority and pending effect before the public helper creates its protected bind", () => {
+        const ticket = Object.freeze({owned: "codex helper"});
+        mocks.begin.mockReturnValueOnce(ticket);
+        mocks.spawn.mockImplementation((_cli: string, args: string[]) => {
+            if (args.includes("--mount")) {
+                expect(mocks.acquire).toHaveBeenCalledExactlyOnceWith("/home/test/.ccc", {waitMs: 0});
+                expect(mocks.begin).toHaveBeenCalledExactlyOnceWith(mocks.guard,
+                    expect.objectContaining({executable: "/fixture/runtime/docker", transport: expect.objectContaining({host: "unix:///fixture/engine.sock"})}));
+                expect(mocks.settle).not.toHaveBeenCalled();
+            }
+            return success(args[0] === "run" && args.includes(previousImage) ? "1001:1001" : "");
+        });
+        prepareCodexStateOwnership(previous, currentImage, identity);
+        expect(mocks.settle).toHaveBeenCalledExactlyOnceWith(mocks.guard, ticket);
+        expect(mocks.spawn.mock.calls.filter(call => (call[1] as string[]).includes("--mount"))).toHaveLength(1);
+    });
+    it("uses an explicit held guard after source proof without acquiring the same guard again", () => {
+        let proved = false;
+        const proveSource = vi.fn(() => { proved = true; return true; });
+        const aliasPrevious = {...previous, Mounts: [{...previous.Mounts[0], Source: "/alias/codex"}]};
+        mocks.begin.mockImplementation(() => { expect(proved).toBe(true); return Object.freeze({}); });
+        prepareCodexStateOwnership(aliasPrevious, currentImage, identity, undefined, proveSource, mocks.guard as RuntimeBindGuard);
+        expect(proveSource).toHaveBeenCalledWith("/alias/codex");
+        expect(mocks.acquire).not.toHaveBeenCalled();
+        expect(mocks.begin).toHaveBeenCalledOnce();
+        expect(mocks.settle).toHaveBeenCalledOnce();
+    });
+    it("refuses a helper before its protected bind when pending publication fails", () => {
+        const failure = new Error("durable pending publication refused");
+        mocks.begin.mockImplementationOnce(() => { throw failure; });
+        expect(() => prepareCodexStateOwnership(previous, currentImage, identity)).toThrow(failure);
+        expect(mocks.spawn.mock.calls.filter(call => (call[1] as string[]).includes("--mount"))).toEqual([]);
+        expect(mocks.settle).not.toHaveBeenCalled();
+    });
+    it("does not settle a migration whose native client times out", () => {
+        mocks.spawn.mockImplementation((_cli: string, args: string[]) => args.includes("--mount")
+            ? {status: null, stdout: "", stderr: "", error: new Error("helper native client timed out")}
+            : success(args[0] === "run" && args.includes(previousImage) ? "1001:1001" : ""));
+        expect(() => prepareCodexStateOwnership(previous, currentImage, identity)).toThrow("timed out");
+        expect(mocks.begin).toHaveBeenCalledOnce();
+        expect(mocks.settle).not.toHaveBeenCalled();
     });
     it("does not migrate absent stores, non-host mappings, or already-matched IDs", () => {
         prepareCodexStateOwnership({ Image: previousImage, Mounts: [] }, currentImage, identity);

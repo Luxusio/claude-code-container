@@ -1,8 +1,11 @@
 import { repairWindowsCodexPrivateState } from "./adapters/windows-credential-access.js";
 import { lstatSync, realpathSync } from "fs";
-import { dirname, isAbsolute, sep } from "path";
+import { dirname, isAbsolute, resolve, sep } from "path";
 import { getCodexDir } from "./utils.js";
-import { getRuntimeInfo, runtimeCli, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
+import { getRuntimeInfo, runtimeCli, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation, type NativeRuntimeInvocation } from "./container-runtime.js";
+import { cccHome } from "./home-layout.js";
+import { beginRuntimeBindCreation, settleRuntimeBindCreation, withRuntimeBindGuard } from "./adapters/runtime-bind-authority.js";
+import type { RuntimeBindGuard } from "./ports/runtime-bind-authority.js";
 import { createCodexStateOwnershipMigration } from "./application/credentials/codex-state-ownership.js";
 import type { ActiveCodexStateContainer, CodexStateMount, PreviousCodexStateContainer } from "./domain/credentials/codex-state-ownership.js";
 import { normalizeImageId, type ContainerIdentity } from "./container-identity.js";
@@ -161,32 +164,44 @@ function observeActiveContainers(): ActiveCodexStateContainer[] {
     });
 }
 
-const ownershipMigration = createCodexStateOwnershipMigration({
-    managedRoot: getCodexDir,
-    nestedContainerMarker: () => process.env.container,
-    runtime: getRuntimeInfo,
-    platform: () => process.platform,
-    effectiveUid: () => process.geteuid?.(),
-    effectiveGid: () => process.getegid?.(),
-    normalizeImage: normalizeImageId,
-    previousAccount: observePreviousAccount,
-    directory: path => lstatSync(path, { bigint: true }),
-    parent: dirname,
-    activeContainers: observeActiveContainers,
-    isAbsolute,
-    realpath: realpathSync,
-    separator: sep,
-    migrate: (root, image, oldUid, oldGid, newUid, newGid, receipt) => {
-        checked(["run", "--rm", "--network", "none", "--user", "root", "--mount", `type=bind,src=${root},dst=/state`,
-            "--entrypoint", "python3", image, "-c", codexStateMigrationScript,
-            "/state", oldUid, oldGid, newUid, newGid, receipt.dev, receipt.ino]);
-        return undefined;
-    },
-});
+function ownershipMigration(bindGuard: RuntimeBindGuard, invocation: NativeRuntimeInvocation) {
+    return createCodexStateOwnershipMigration({
+        managedRoot: getCodexDir,
+        nestedContainerMarker: () => process.env.container,
+        runtime: getRuntimeInfo,
+        platform: () => process.platform,
+        effectiveUid: () => process.geteuid?.(),
+        effectiveGid: () => process.getegid?.(),
+        normalizeImage: normalizeImageId,
+        previousAccount: observePreviousAccount,
+        directory: path => lstatSync(path, { bigint: true }),
+        parent: dirname,
+        activeContainers: observeActiveContainers,
+        isAbsolute,
+        realpath: realpathSync,
+        separator: sep,
+        migrate: (root, image, oldUid, oldGid, newUid, newGid, receipt) => {
+            const ticket = beginRuntimeBindCreation(bindGuard, invocation);
+            checked(["run", "--rm", "--network", "none", "--user", "root", "--mount", `type=bind,src=${root},dst=/state`,
+                "--entrypoint", "python3", image, "-c", codexStateMigrationScript,
+                "/state", oldUid, oldGid, newUid, newGid, receipt.dev, receipt.ino]);
+            settleRuntimeBindCreation(bindGuard, ticket);
+            return undefined;
+        },
+    });
+}
 
-/** Caller holds the global startup lock until the replacement container has started. */
-export function prepareCodexStateOwnership(previous: PreviousContainer, imageId: string, identity: ContainerIdentity, profile?: string, proveSource?: (source: string) => boolean): void {
-    runWithNativeRuntimeInvocation(getRuntimeInvocation(), () => ownershipMigration.run(() => observePreviousContainer(previous), imageId, identity, profile, proveSource));
+/** A held caller passes its guard; direct callers use bounded standalone admission. */
+export function prepareCodexStateOwnership(previous: PreviousContainer, imageId: string, identity: ContainerIdentity, profile?: string, proveSource?: (source: string) => boolean, bindGuard?: RuntimeBindGuard): void {
+    const invocation = getRuntimeInvocation();
+    runWithNativeRuntimeInvocation(invocation, () => {
+        const migrate = (guard: RuntimeBindGuard) => {
+            if (guard.root !== resolve(cccHome())) throw new Error("Codex state migration requires the current CCC home's bind-publication guard.");
+            return ownershipMigration(guard, invocation).run(() => observePreviousContainer(previous), imageId, identity, profile, proveSource);
+        };
+        if (bindGuard) migrate(bindGuard);
+        else withRuntimeBindGuard(cccHome(), migrate, { waitMs: 0 });
+    });
 }
 
 export const codexStateAccessScript = String.raw`

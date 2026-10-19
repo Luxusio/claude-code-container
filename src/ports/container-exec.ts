@@ -1,6 +1,8 @@
 import type { ToolDefinition } from "../domain/tool-registry.js";
 import type { CodexLaunchSemanticPreparation } from "../domain/tool-session/codex-launch.js";
 import type { SessionAcquisitionRequest, SessionAcquisitionInspection, SessionAcquisitionResult, SessionContainerInspection } from "./session-acquisition.js";
+import type { ClipboardSelection } from "../domain/clipboard/server-lifecycle.js";
+import type { RuntimeBindGuard } from "./runtime-bind-authority.js";
 
 export interface ContainerExecOptions {
     interactive?: boolean;
@@ -76,9 +78,10 @@ export interface ContainerExecPorts<Prepared> {
     familyLock<T>(projectId: string, operation: () => Promise<T> | T): Promise<T>;
     acquireOwnership(request: SessionAcquisitionRequest, inspect: (request: SessionAcquisitionRequest) => SessionAcquisitionInspection): Promise<SessionAcquisitionResult>;
     inspectSessionContainer(path: string, profile?: string): SessionContainerInspection;
-    ensureClipboard(): Promise<number | null>;
+    ensureClipboard(): Promise<ClipboardSelection | null>;
+    validateClipboard(selection: ClipboardSelection | null, guard: RuntimeBindGuard): Promise<ClipboardSelection | null>;
     clipboardPortFile(): string;
-    clipboardConnection(port: number | null): ContainerExecClipboardConnection;
+    clipboardConnection(selection: ClipboardSelection | null): ContainerExecClipboardConnection;
     worktreeMounts(path: string, required: boolean, mountPath: string): ContainerExecMount[];
     containerName(path: string, profile?: string): string;
     containerStatus(name: string): ContainerExecStatus;
@@ -86,13 +89,13 @@ export interface ContainerExecPorts<Prepared> {
     lockName(path: string): string;
     prepareDeviceBroker(path: string, profile?: string): Promise<void>;
     prepareContainer(): { start: ContainerExecPorts<Prepared>["startContainer"]; initialize(id: string): void };
-    stateLock<T>(operation: () => Promise<T> | T): Promise<T>;
+    stateLock<T>(operation: (guard: RuntimeBindGuard) => Promise<T> | T): Promise<T>;
     lifecycleLock<T>(prefix: string, operation: () => Promise<T> | T): Promise<T>;
     setupLock<T>(prefix: string, operation: () => Promise<T> | T): Promise<T>;
     startContainer(path: string, ensureDirectories: () => void, mounts: ContainerExecMount[] | undefined, clipboardPortFile: string | undefined, profile: string | undefined,
         onRecreate: (() => void) | undefined, replacement: (recreate: () => void) => boolean,
         onReady: (id: string, handoff: { startedByInvocation: boolean }) => void,
-        expectedRunningId: string | undefined, onStarted: (id: string) => void): string;
+        expectedRunningId: string | undefined, onStarted: (id: string) => void, bindGuard?: RuntimeBindGuard): string;
     beginSessionStartupInHeldLifecycleLock(): void;
     recordSessionOwnStartInHeldLifecycleLock(id: string): void;
     publishSessionReadyInHeldLifecycleLock(id: string, handoff: { startedByInvocation: boolean }): void;

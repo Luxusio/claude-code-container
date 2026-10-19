@@ -192,7 +192,7 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
         },
         reserveContainer: request => {
             const name = getContainerName(request.projectPath, request.profile);
-            const command = remoteContainerStartScript(request.projectPath, request.profile);
+            const command = remoteContainerStartScript(request.projectPath, request.profile, true);
             const body = remoteSessionReservationShell(name, request.token, request.leaseSeconds, command, true);
             const result = spawnSync("ssh", [`${request.config.user}@${request.config.host}`, body], { encoding: "utf-8", timeout: 60000 });
             if (result.status !== 0) return { kind: "failed", reason: "start-failed", evidence: { execution: result } };

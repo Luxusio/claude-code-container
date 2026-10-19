@@ -169,6 +169,11 @@ export function getRuntimeInvocation(): NativeRuntimeInvocation {
     return _cachedInvocation!;
 }
 
+/** Read already captured authority without native discovery or capability probes. */
+export function peekRuntimeInvocation(): NativeRuntimeInvocation | undefined {
+    return currentNativeRuntimeInvocation() ?? _cachedInvocation ?? undefined;
+}
+
 /** Native dispatch always uses the current operation's capture, including nested helper calls. */
 export const runtimeSpawnSync: BoundNativeSpawnSync = ((args: readonly string[], options: SpawnSyncOptions = {}) =>
     bindNativeRuntimeInvocation(getRuntimeInvocation()).spawnSync(args, options)) as BoundNativeSpawnSync;
