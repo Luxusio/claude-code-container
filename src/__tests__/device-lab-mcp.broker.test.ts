@@ -1402,7 +1402,7 @@ describe("device-lab MCP", () => {
         }
     });
 
-    it.each([undefined, 4, 5, 6])("rejects an older ccc-host runtime with protocol %s through actual compatibility verification", { timeout: TIMEOUT }, async protocolVersion => {
+    it.each([undefined, 4, 5, 6, 7])("rejects an older ccc-host runtime with protocol %s through actual compatibility verification", { timeout: TIMEOUT }, async protocolVersion => {
         const initial = await callInternalBroker(client, { operation: "brokerStatus", arguments: { probe: false, autolaunch: false } });
         const initialPayload = JSON.parse(((initial.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             state: { runtimeFile: string };

@@ -1,0 +1,3 @@
+# macOS broker status observation
+
+Generic macOS status now awaits the existing asynchronous budgeted provider runner. A slow native status command can finish with its original success or failure result while broker health and another owner's requests remain available; ordinary macOS status leaves stored device records unchanged. Shared protocol 8 routes stale-daemon handling through the existing identity-qualified replacement checks. Regression coverage uses an external controller, genuine emitted broker code and owned fake Tart commands. Known ceiling: portable responsiveness and compatibility evidence does not certify native macOS/Windows providers or complete the architecture migration.

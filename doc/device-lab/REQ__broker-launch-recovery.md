@@ -12,9 +12,14 @@ macOS broker create/start/stop/delete execution, metadata effects, IP probes, pa
 
 Verification uses behavioral lifecycle cases, authenticated start-then-cleanup HTTP journeys, and an external controller observing health and another owner's RPC before releasing a held default native probe. A held cleanup-stop timeout must leave recovery state and cannot resume that command after the reply when its gate is released. Tests use owned fake executables and genuine emitted broker code; they do not certify real platform/provider behavior.
 
+## Generic macOS status observation
+
+Engineering-derived from the existing application/effect boundary and broker responsiveness contract: authenticated `broker.command.invoke` with `command: device_status` must yield while waiting for a macOS native status command. Health and another owner's authenticated echo remain available before that command completes. Reuse the existing runner allowance, output bounds, native receipt and success/failure projection; this adds no provider or status API. Ordinary macOS status does not write device records, and refused owner/target admission dispatches no native observation.
+
+Verify this binding with genuine emitted broker code and an external controller holding an owned fake Tart `get`. Before release, health and the second owner's echo must complete. After release, successful observation retains its current projection and nonzero observation retains HTTP 502 with the bounded provider failure. Both leave the exact device records unchanged. Existing runner tests cover deadline and child settlement; this portable witness does not certify native macOS behavior.
+
 ## Known ceiling
 
 Known ceiling: writers bypassing the device-operation lock can erase a reservation; detected conflicts preserve successors and report partial execution, but this change adds no independent durable journal — reconsider only if out-of-band mutation must carry recoverable predecessor obligations.
 Known ceiling: portable fake-executable and deferred-effect checks do not establish native Windows/macOS/Android acceptance — qualify those platforms with current Source and an authorized native environment.
-Known ceiling: generic `device_status` belongs to a separate observation application; its macOS default native call remains synchronous and can block other broker requests. This four-operation lifecycle repair does not qualify status responsiveness; the separate binding needs an asynchronous native witness.
 

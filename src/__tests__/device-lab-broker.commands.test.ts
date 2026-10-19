@@ -11666,7 +11666,7 @@ vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import
 
 // The controller lives outside the broker process. A synchronous native wait cannot
 // delay this controller's deadline or release the gate before responsiveness is proved.
-type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup" | "macos-spawn-error";
+type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup" | "macos-spawn-error" | "macos-status" | "macos-status-failure";
 type AndroidHttpFixtureReply = { status: number; body: Record<string, any> };
 type AndroidHttpFixtureReady = { baseUrl: string; owners: Array<{ id: string; token: string; file: string }>; initial: Record<string, unknown> };
 
@@ -11707,7 +11707,18 @@ async function main() {
             fs.writeFileSync(file('stop-requested'), '');
             return;
         }
-        if (args[0] === 'get') { console.log(JSON.stringify({State: has('active-macos') ? 'running' : 'stopped'})); return; }
+        if (args[0] === 'get') {
+            await gate('macos-status');
+            await gate('macos-status-failure');
+            if (process.env.CCC_ANDROID_HTTP_PHASE === 'macos-status-failure') {
+                process.stdout.write('owned-status-stdout\n');
+                process.stderr.write('owned-status-failure\n');
+                process.exitCode = 23;
+                return;
+            }
+            console.log(JSON.stringify({State: has('active-macos') ? 'running' : 'stopped'}));
+            return;
+        }
         throw Error('unallocated owned Tart operation: ' + args[0]);
     }
     if (tool === 'avdmanager') {
@@ -11787,7 +11798,7 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
         return {id, token: broker.deviceBrokerOwnerToken(id), file: path.join(settings.home, '.ccc', 'devices', 'owners', id, macos ? 'macos' : 'android', 'devices.json')};
     });
     const initial = macos ? {id: 'responsive-mac', backend: 'macos-vm', provider: 'tart', providerInstance: 'ccc-' + owners[0].id + '-responsive-mac',
-        status: ['macos-boot', 'macos-spawn-error'].includes(settings.phase) ? 'stopped' : 'starting', name: 'Responsive Mac', createdAt: '2026-10-19T00:00:00.000Z',
+        status: ['macos-boot', 'macos-spawn-error'].includes(settings.phase) ? 'stopped' : settings.phase.startsWith('macos-status') ? 'running' : 'starting', name: 'Responsive Mac', createdAt: '2026-10-19T00:00:00.000Z',
         preferences: {keep: 'exact-publication-witness'}, ...(settings.phase === 'macos-owner-cleanup' ? {lifecycle: {runtimeId: 'owned-pending-mac', operation: 'start', claimedAt: '2026-10-19T00:00:01.000Z'}} : {})}
         : {id: 'responsive-pixel', backend: 'android-emulator', status: ['boot', 'auxiliary-stopped'].includes(settings.phase) ? 'stopped' : 'running',
         name: 'Responsive Pixel', port: 5586, serial: 'emulator-5586', avdName: 'ccc-' + owners[0].id + '-responsive-pixel',
@@ -11812,7 +11823,14 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
     if (settings.phase !== 'create') {
         fs.mkdirSync(path.dirname(owners[0].file), {recursive: true});
         fs.writeFileSync(owners[0].file, JSON.stringify({devices: [initial]}));
-        if (macos) { if (initial.status === 'starting') fs.writeFileSync(path.join(settings.home, 'active-macos'), ''); }
+        if (macos) {
+            if (['starting', 'running'].includes(initial.status)) fs.writeFileSync(path.join(settings.home, 'active-macos'), '');
+            if (settings.phase.startsWith('macos-status')) {
+                fs.mkdirSync(path.dirname(owners[1].file), {recursive: true});
+                fs.writeFileSync(owners[1].file, JSON.stringify({devices: [{...initial, id: 'other-mac',
+                    providerInstance: 'ccc-' + owners[1].id + '-other-mac', preferences: {keep: 'other-owner-publication-witness'}}]}));
+            }
+        }
         else {
             fs.writeFileSync(path.join(settings.home, 'avd-name'), initial.avdName);
             if (initial.status === 'running') fs.writeFileSync(path.join(settings.home, 'active-emulator-5586'), '');
@@ -11893,7 +11911,7 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
     const exited = new Promise<void>((resolveExit, reject) => child.once('close', code => code === 0 ? resolveExit() : reject(spawnError || new Error('owned broker exited ' + code + ': ' + diagnostics))));
     void exited.catch(() => undefined);
     const requests: Promise<AndroidHttpFixtureReply>[] = [];
-    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup', 'auxiliary-stopped', 'auxiliary-no-stop', 'macos-boot', 'macos-owner-cleanup']) writeFileSync(join(home, 'release-' + name), '');};
+    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup', 'auxiliary-stopped', 'auxiliary-no-stop', 'macos-boot', 'macos-owner-cleanup', 'macos-status', 'macos-status-failure']) writeFileSync(join(home, 'release-' + name), '');};
     const dispose = async () => {
         release();
         writeFileSync(join(home, 'shutdown'), '');
@@ -12079,6 +12097,53 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
 });
 
 describe('emitted default-runner macOS HTTP responsiveness', () => {
+    it.each(['macos-status', 'macos-status-failure'] as const)(
+        'yields during %s native observation without changing either owner record', {timeout: 30000}, async phase => {
+        const fixture = await createAndroidHttpFixture(phase);
+        try {
+            const originalRecords = fixture.owners.map(owner => readFileSync(owner.file));
+            const assertRecordsUnchanged = () => fixture.owners.forEach((owner, index) => expect(readFileSync(owner.file)).toEqual(originalRecords[index]));
+            for (const [ownerIndex, deviceId] of [[0, 'missing-mac'], [1, 'responsive-mac']] as const) {
+                const refused = fixture.rpc(ownerIndex, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_status', deviceId});
+                expect(await androidHttpFixtureBounded(refused.result, 3000, 'missing or foreign status admission did not settle')).toMatchObject({
+                    status: 404, body: {ok: false, error: 'owner-device-not-found', ownerId: fixture.owners[ownerIndex].id, deviceId},
+                });
+                expect(fixture.nativeCalls(), 'refused status must not reach any provider').toEqual([]);
+                assertRecordsUnchanged();
+            }
+            const status = fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_status', deviceId: 'responsive-mac'});
+            await fixture.waitForGate(status);
+            const entered = JSON.parse(readFileSync(join(fixture.home, 'entered-' + phase), 'utf8')) as {pid: number; tool: string; args: string[]};
+            expect(entered).toMatchObject({tool: 'tart', args: ['get', fixture.initial.providerInstance]});
+            expect(Number.isSafeInteger(entered.pid) && entered.pid > 0).toBe(true);
+            expect(androidHttpFixtureProcessRunning(entered.pid), 'held status reached an actual owned native process').toBe(true);
+            await fixture.assertResponsive(status);
+            assertRecordsUnchanged();
+            expect(fixture.nativeCalls()).toEqual([entered]);
+            fixture.release();
+            const reply = await androidHttpFixtureBounded(status.result, 5000, 'native status did not settle after gate release');
+            const failed = phase === 'macos-status-failure';
+            expect(reply).toMatchObject({status: failed ? 502 : 200, body: {ok: !failed,
+                ...(failed ? {error: 'provider-command-failed'} : {}), result: {
+                    ownerId: fixture.owners[0].id, backend: 'macos-vm', deviceId: 'responsive-mac', command: 'device_status',
+                    device: fixture.initial, invoked: true, dryRun: false,
+                    providerCommand: {mode: 'exec', provider: 'tart', args: ['get', fixture.initial.providerInstance]},
+                    execution: {mode: 'exec', providerExecution: 'executed', mutatesHost: false, command: {
+                        mode: 'exec', provider: 'tart', args: ['get', fixture.initial.providerInstance], status: failed ? 23 : 0,
+                        stdout: failed ? 'owned-status-stdout\n' : '{"State":"running"}\n',
+                        stderr: failed ? 'owned-status-failure\n' : '',
+                    }},
+                }}});
+            if (!failed) expect(reply.body).not.toHaveProperty('error');
+            expect(reply.body.result.device).toEqual(fixture.initial);
+            assertRecordsUnchanged();
+            expect(fixture.records()).toEqual([fixture.initial]);
+            expect(fixture.nativeCalls(), 'status may only execute its single observation, with no Tart lifecycle commands').toEqual([entered]);
+            expect(existsSync(join(fixture.home, 'active-macos'))).toBe(true);
+            expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
+        } finally {await fixture.dispose();}
+    });
+
     it.runIf(process.platform !== 'win32')('retains recovery when default detached launch cannot obtain a native PID', {timeout: 30000}, async () => {
         const fixture = await createAndroidHttpFixture('macos-spawn-error');
         try {

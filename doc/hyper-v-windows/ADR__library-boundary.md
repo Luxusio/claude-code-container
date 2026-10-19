@@ -185,6 +185,12 @@ The correction preserves per-invocation local dispatch cutoff provenance without
 genuine native failures or completed bootstrap observations. It changes no operation asset
 or persisted schema; all shared consumers continue using the same protocol constant.
 
+Protocol 8 replaces a protocol-7 daemon retaining the synchronous generic status binding.
+The macOS observation now uses the existing asynchronous budgeted provider runner, keeping
+health and another owner's RPC responsive during native status execution. This changes no
+operation asset, stored schema, status API or identity requirements for replacement; CLI,
+packaged MCP and Level 3 still consume the shared protocol constant.
+
 Level 3 invokes the repair-capable CLI status once per attestation attempt, then
 confirms its OS-verified broker identity with two independent read-only loopback
 status requests. It never uses another repair-capable status invocation as an
