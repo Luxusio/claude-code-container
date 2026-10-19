@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, copyFileSync } from "fs";
 import { tmpdir } from "os";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { join } from "path";
 import { spawnSync } from "child_process";
 import { CODEX_HARNESS_BOOTSTRAP, ensureCodexHarness } from "../codex-harness.js";
@@ -22,7 +22,7 @@ vi.mock("../container-runtime.js", async () => {
     const runner = () => { const capturedCli = "podman"; return { invocation,
         spawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => spawnSync(capturedCli, args, options),
     }; };
-    return { ...({ runtimeCli: () => "podman" }), getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
+    return { ...({ runtimeCli: () => "podman" }), getRuntimeInfo: () => ({ dockerDesktop: false }), getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
         runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => runner().spawnSync(args, options),
         runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation() };
 });
@@ -306,39 +306,57 @@ describe("ensureCodexHarness", () => {
         expect(output).toHaveBeenCalledExactlyOnceWith("installed partially");
         expect(warn).toHaveBeenCalledExactlyOnceWith("[ccc] Harness is unavailable: installer refused. Codex will continue. Check the container's ~/.codex/config.toml and Harness installation, then retry ccc codex.");
     });
-    it.skip("reads private config when the default UID differs from named ccc (Docker; native-only)", async (context) => {
-        const image = process.env.CCC_TEST_HARNESS_IMAGE!;
-        if (realSpawn("docker", ["image", "inspect", image], { timeout: 5000, stdio: "ignore" }).status !== 0) {
-            context.skip();
+    it("reads private config when the default UID differs from named ccc (Docker; native-only)", async (context) => {
+        const image = process.env.CCC_TEST_HARNESS_IMAGE?.trim();
+        if (!image) return context.skip("Set CCC_TEST_HARNESS_IMAGE to an existing suitable image to opt into the native UID regression.");
+        if (process.platform === "win32" || typeof process.getuid !== "function" || typeof process.getgid !== "function") {
+            return context.skip("The native UID regression requires a POSIX host with UID/GID APIs.");
+        }
+        const inspected = realSpawn("docker", ["image", "inspect", image], {
+            encoding: "utf8", timeout: 5000, windowsHide: true, shell: false,
+        });
+        if (inspected.error || inspected.status !== 0) {
+            throw new Error(`Cannot inspect CCC_TEST_HARNESS_IMAGE=${JSON.stringify(image)}: ${inspected.error?.message ?? (inspected.stderr.trim() || `exit ${inspected.status}`)}. Make the image available locally and verify Docker access before retrying.`);
         }
         const home = mkdtempSync(join(tmpdir(), "ccc-harness-uid-"));
         temporary.push(home);
         const contents = '[plugins."harness@harness"]\nenabled = false\n';
         writeFileSync(join(home, "config.toml"), contents, { mode: 0o600 });
-        const container = `ccc-harness-uid-${process.pid}`;
+        const name = `ccc-harness-uid-${randomUUID()}`;
         const run = (args: string[]) => {
-            const result = realSpawn("docker", args, { encoding: "utf8", timeout: 15000 });
+            const result = realSpawn("docker", args, { encoding: "utf8", timeout: 15000, windowsHide: true, shell: false });
             expect(result.status, result.stderr || result.error?.message).toBe(0);
             return result.stdout.trim();
         };
+        const created = realSpawn("docker", ["run", "-d", "--name", name, "--network", "none", "--user", `${process.getuid()}:${process.getgid()}`,
+            "--mount", `type=bind,src=${home},dst=/home/ccc/.codex`, "--entrypoint", "sleep", image, "infinity"], {
+            encoding: "utf8", timeout: 15000, windowsHide: true, shell: false,
+        });
+        const container = created.stdout?.trim() ?? "";
+        if (created.error || created.status !== 0 || !/^[a-f0-9]{64}$/.test(container)) {
+            throw new Error(`Native UID fixture creation was not confirmed for ${name}: ${created.error?.message ?? (created.stderr.trim() || `exit ${created.status}; stdout ${JSON.stringify(created.stdout)}`)}. No cleanup was attempted without a validated owned container ID; inspect this unique fixture name before removing anything.`);
+        }
         try {
-            run(["run", "-d", "--name", container, "--network", "none", "--user", `${process.getuid!()}:${process.getgid!()}`,
-                "--mount", `type=bind,src=${home},dst=/home/ccc/.codex`, "--entrypoint", "sleep", image, "infinity"]);
-            if (run(["exec", container, "id", "-u"]) === run(["exec", container, "id", "-u", "ccc"])) context.skip();
+            if (run(["exec", container, "id", "-u"]) === run(["exec", container, "id", "-u", "ccc"])) {
+                return context.skip("The host default UID equals the image's named ccc UID, so this fixture cannot exercise the identity split.");
+            }
             const actual = await vi.importActual<typeof import("../docker.js")>("../docker.js");
+            vi.spyOn(await import("../utils.js"), "getCodexConfigFile").mockReturnValue(join(home, "config.toml"));
             vi.mocked(prepareCodexConfigForContainer).mockImplementation(actual.prepareCodexConfigForContainer);
             // Transport uses Docker; preparation and bootstrap both execute
             // their real commands against the same isolated identity split.
-            vi.mocked(spawnSync).mockImplementation((_runtime, args, options) => realSpawn("docker", args as string[], options!));
+            vi.mocked(spawnSync).mockImplementation((_runtime, args, options) => realSpawn("docker", args as string[], {
+                ...options, timeout: options?.timeout ?? 15000, windowsHide: true, shell: false,
+            }));
             const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
             ensureCodexHarness(container);
             expect(prepareCodexConfigForContainer).toHaveBeenCalledWith(container, undefined);
             expect(warn).not.toHaveBeenCalled();
             expect(readFileSync(join(home, "config.toml"), "utf8")).toBe(contents);
         } finally {
-            realSpawn("docker", ["rm", "-f", container], { timeout: 15000, stdio: "ignore" });
+            run(["rm", "-f", container]);
         }
-    }, 30000);
+    }, 300000);
     it.each(["prepare", "installer", "lock"])("warns and continues after %s failure", (failure) => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
         if (failure === "prepare") vi.mocked(prepareCodexConfigForContainer).mockImplementation(() => { throw new Error("permission denied"); });

@@ -95,7 +95,8 @@ describe("npm package contents", () => {
             engines?: Record<string, string>;
         };
         expect(pkg.scripts?.postinstall).toBe("node scripts/install.js --postinstall");
-        expect(pkg.scripts?.test).toBe("node scripts/run-vitest.mjs run");
+        expect(pkg.scripts?.test).toBe("npm run test:scripts && node scripts/run-vitest.mjs run");
+        expect(pkg.scripts?.["test:scripts"]).toBe("node --test scripts/tests/set-release-version.test.mjs scripts/tests/workspace-windows-lx-links.test.mjs");
         expect(pkg.scripts?.["test:watch"]).toBe("node scripts/run-vitest.mjs");
         expect(pkg.engines?.node).toBe(">=20.19.0");
 
