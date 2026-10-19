@@ -75,17 +75,42 @@ existing container/data and session-claim preservation policy. The specific repa
 design is not a separate user-requested policy. The actual Mac failure cause and
 native acceptance remain unconfirmed until a host recheck.
 
-Session acquisition must not execute inside a confirmed stopped legacy container
-just to establish a startup candidate. When its project identity label is absent,
-require the exact managed ID, matching project label, current host filesystem
-identity and one writable project bind with a verified source or supported alias.
+A subsequent real Mac startup reported `project-identity-mismatch` on Docker.
+This establishes a failed stored-fingerprint comparison; it does not establish
+why the host identity changed or whether the actual container bind is different.
+Project fingerprints include the captured real path, device and inode. Device Lab
+fingerprints likewise include captured state, owner and auth-file identities.
+These historical values must not veto fresh qualifying mount evidence.
+
+For a well-formed stale project fingerprint, running session admission and
+strict destructive lookup require a fresh current project-bind nonce proof,
+including current host identity checks before and after the proof. A different
+mounted view, changed host object, malformed project fingerprint or unavailable
+proof still refuses ownership. Never clear or rewrite labels to bypass a refusal.
+
+Session acquisition must not execute inside a confirmed stopped container just
+to establish a startup candidate. When its project fingerprint is absent or
+well-formed but stale, require the exact managed ID, matching project label,
+current host filesystem identity and one writable project bind with a verified
+source or supported alias.
 This static admission carries a pending live-verification marker through the
 session acquisition and startup boundary. A pending ownership ACK does not enable
 cleanup of an existing container; the ordinary own-start callback retains its
 separate responsibility. Automatic replacement stays blocked until full live
 verification produces the ready handoff. Strict destructive ownership inspection
-still requires its existing live legacy proof. Foreign, changed or unavailable
-evidence must not authorize deletion, replacement or joining.
+still requires its live proof for missing or stale project fingerprints; a
+static stopped observation grants no destructive authority. Foreign, changed or
+unavailable evidence must not authorize deletion, replacement or joining.
+
+Reuse, stopped preflight and safe-defer decisions must reach their actual
+required-mount checks even when project or Device Lab fingerprints are stale.
+Preserve current image/user, management/project path, bind source/access,
+volume/tmpfs/auth, environment, device/group and privilege requirements. Fresh
+creation still publishes and verifies the current fingerprints. An incompatible
+stopped container remains preserved while live ownership is pending. Namespace
+discovery uses canonical project path or verified source fallback when a stored
+fingerprint differs; a possible matching namespace blocks duplicate creation
+without granting ownership or cleanup permission.
 
 Acquisition failures distinguish native listing, inspection, management, project
 identity and legacy bind-proof failures with bounded reason codes and the selected

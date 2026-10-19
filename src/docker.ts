@@ -122,6 +122,13 @@ const DIST_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const DEVICE_BROKER_AUTH_CONTAINER_FILE = "/run/ccc-device-broker-auth/owner.json";
 const DEVICE_LAB_MOUNT_IDENTITY_LABEL = "ccc.device-lab.mount-identity";
 const PROJECT_MOUNT_IDENTITY_LABEL = "ccc.project.mount-identity";
+
+/** Persisted fingerprints are hints; current bind proof decides stale values. */
+function mountIdentityLabelIsWellFormed(value: unknown): boolean {
+    return value === undefined || value === ""
+        || (typeof value === "string" && /^[a-f0-9]{64}$/.test(value));
+}
+
 const DEVICE_LAB_MOUNT_CONTRACT_VERSION = "2";
 const VERIFICATION_RETRY_DELAYS_MS = [100, 200, 400, 800] as const;
 export const CODEX_CONFIG_PREPARE_TIMEOUT_MS = 15_000;
@@ -597,8 +604,13 @@ export function findManagedProjectNamespaceCollision(
             );
         }
         const labeledMountIdentity = labels[PROJECT_MOUNT_IDENTITY_LABEL];
+        if (!mountIdentityLabelIsWellFormed(labeledMountIdentity)) {
+            throw new Error(
+                "Existing CCC container project fingerprint was malformed; refusing duplicate container creation.",
+            );
+        }
         let samePhysicalProject = labeledMountIdentity === projectMountIdentity;
-        if (!labeledMountIdentity) {
+        if (!samePhysicalProject) {
             samePhysicalProject = projectPathIdentityMatches(labeledPath, projectPath);
             if (!samePhysicalProject) {
                 const projectMounts = (inspected.Mounts ?? []).filter((mount) => (
@@ -933,16 +945,16 @@ function inspectManagedProjectContainerIdentity(
         }
         const expectedMountIdentity = bindMountSourceIdentityDigest(currentIdentity);
         const labeledIdentity = labels[PROJECT_MOUNT_IDENTITY_LABEL];
+        if (!mountIdentityLabelIsWellFormed(labeledIdentity)) {
+            return { reason: "project-identity-mismatch" };
+        }
         if (labeledIdentity !== expectedMountIdentity) {
-            if (labeledIdentity || (expectedSessionId !== undefined
-                && labeledIdentity !== undefined && typeof labeledIdentity !== "string")) {
-                return { reason: "project-identity-mismatch" };
-            }
             const projectMountPath = `/project/${getProjectId(projectPath)}`;
             const projectMount: RequiredContainerMount = {
                 hostPath: projectPath,
                 containerPath: projectMountPath,
                 type: "bind",
+                readonly: false,
                 presence: "core",
                 sourceProof: { kind: "filesystem", identity: currentIdentity },
             };
@@ -954,12 +966,14 @@ function inspectManagedProjectContainerIdentity(
                     ? inspected.Mounts.filter(mount => mount?.Destination === projectMountPath)
                     : [];
                 const preflight = preflightStoppedContainerMounts(inspected.Id, projectMounts, [
-                    { ...projectMount, readonly: false },
+                    projectMount,
                 ], () => null);
                 return preflight.kind === "preflight-verified"
                     ? { identity: { containerId: inspected.Id, running: false }, requiresLiveVerification: true }
                     : { reason: "project-bind-unverified" };
             }
+            // A stale fingerprint never turns static evidence into cleanup authority.
+            if (inspected.State.Running === false) return { reason: "project-bind-unverified" };
             const verification = verifyRequiredContainerMounts(
                 inspected.Id, inspected.Mounts ?? [], [projectMount], "strict", true,
             );
@@ -1391,9 +1405,7 @@ function containerMatchesRunContract(
     containerName: string,
     requiredMounts: RequiredContainerMount[],
     labRunner: LabRunnerRunConfig,
-    deviceLabMountIdentity: string,
     projectPath: string,
-    projectMountIdentity: string,
     desiredImageId: string,
     identity: ContainerUserIdentity,
     reportMismatch: (reason: string) => void = () => undefined,
@@ -1443,11 +1455,11 @@ function containerMatchesRunContract(
         }
         const labeledProjectIdentity =
             inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL];
-        if (labeledProjectIdentity && labeledProjectIdentity !== projectMountIdentity) {
-            return failContract("project mount identity changed");
+        if (!mountIdentityLabelIsWellFormed(labeledProjectIdentity)) {
+            return failContract("project mount identity is malformed");
         }
-        if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) {
-            return failContract("device-lab mount identity changed");
+        if (!mountIdentityLabelIsWellFormed(inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL])) {
+            return failContract("device-lab mount identity is malformed");
         }
         const devices = hostConfig.Devices;
         const deviceRequests = hostConfig.DeviceRequests;
@@ -1518,7 +1530,6 @@ function containerRunContractIsSafeToDefer(
     requiredMounts: RequiredContainerMount[],
     labRunner: LabRunnerRunConfig,
     projectPath: string,
-    projectMountIdentity: string,
     identity: ContainerUserIdentity,
     reportUnsafe: (reason: string) => void = () => undefined,
 ): boolean {
@@ -1543,8 +1554,8 @@ function containerRunContractIsSafeToDefer(
             return unsafe("project path identity changed");
         }
         const labeledProjectIdentity = labels[PROJECT_MOUNT_IDENTITY_LABEL];
-        if (labeledProjectIdentity && labeledProjectIdentity !== projectMountIdentity) {
-            return unsafe("project mount identity changed");
+        if (!mountIdentityLabelIsWellFormed(labeledProjectIdentity)) {
+            return unsafe("project mount identity is malformed");
         }
         const hostConfig = inspectedHostConfig(inspected.HostConfig);
         if (!hostConfig) return unsafe("container host configuration is malformed");
@@ -2033,9 +2044,7 @@ function startProjectContainerLocked(
             id,
             requiredMounts,
             labRunner,
-            preparedDeviceLabSources.contractIdentity,
             fullPath,
-            projectMountIdentity,
             imageId,
             identity,
             reportReason,
@@ -2047,8 +2056,7 @@ function startProjectContainerLocked(
             assertRequiredFilesystemMountSources();
             let reason = "container contract changed";
             const verified = containerMatchesRunContract(id, requiredMounts, labRunner,
-                preparedDeviceLabSources.contractIdentity, fullPath, projectMountIdentity,
-                imageId, identity, value => { reason = value; }, "live");
+                fullPath, imageId, identity, value => { reason = value; }, "live");
             if (verified !== true) {
                 throw new Error(`Existing container live verification failed (${reason}); preserving it without replacement or join.`);
             }
@@ -2060,7 +2068,7 @@ function startProjectContainerLocked(
             assertRequiredFilesystemMountSources();
         },
         safeToDefer: (id, reportReason) => containerRunContractIsSafeToDefer(
-            id, requiredMounts, labRunner, fullPath, projectMountIdentity, identity, reportReason,
+            id, requiredMounts, labRunner, fullPath, identity, reportReason,
         ),
         isRunning: isContainerRunning,
         canExec: canExecContainer,

@@ -399,11 +399,79 @@ describe("session.ts", () => {
             expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
         });
 
+        it.each([true, false])("accepts a valid stale project fingerprint only after current bind verification when running=%s", async running => {
+            const docker = await inspectActual();
+            const { projectPath, inspected } = legacyFixture();
+            inspected.State.Running = running;
+            inspected.Config.Labels["ccc.project.mount-identity"] = "f".repeat(64);
+            const markers = new Map<string, string>();
+            mockWriteFileSync.mockImplementation((path: string, value: string) => { markers.set(basename(path), value); });
+            mockSpawnSync.mockImplementation((_command: string, args: string[]) => {
+                if (args[0] === "ps") return { status: 0, stdout: exactId };
+                if (args[0] === "inspect") return { status: 0, stdout: JSON.stringify(inspected) };
+                if (running && args[0] === "exec" && args[1] === exactId && args[2] === "cat") {
+                    return { status: 0, stdout: markers.get(basename(args[3])) ?? "" };
+                }
+                return { status: 1, stdout: "", stderr: "stopped or foreign command" };
+            });
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
+                known: true, containerId: exactId, ...(running ? {} : { requiresLiveVerification: true }),
+            });
+            if (running) {
+                expect(mockWriteFileSync).toHaveBeenCalled();
+                expect(mockSpawnSync.mock.calls.some(call => call[1]?.[0] === "exec" && call[1]?.[1] === exactId)).toBe(true);
+            } else expectReadOnlyAdmission();
+            expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
+        });
+
+        it.each(["foreign live view", "changed host identity"])("refuses a valid stale project fingerprint with %s despite matching lexical source", async fault => {
+            const docker = await inspectActual();
+            const { projectPath, inspected } = legacyFixture();
+            inspected.State.Running = true;
+            inspected.Config.Labels["ccc.project.mount-identity"] = "f".repeat(64);
+            mockWriteFileSync.mockImplementation(() => {
+                if (fault === "changed host identity") mockLstatSync.mockReturnValue({
+                    isDirectory: () => true, isSymbolicLink: () => false, dev: 2n, ino: 3n,
+                });
+            });
+            mockSpawnSync.mockImplementation((_command: string, args: string[]) => {
+                if (args[0] === "ps") return { status: 0, stdout: exactId };
+                if (args[0] === "inspect") return { status: 0, stdout: JSON.stringify(inspected) };
+                return { status: 0, stdout: "a different mounted directory" };
+            });
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
+                known: false, containerId: null, reason: "project-bind-unverified",
+            });
+            expect(mockWriteFileSync).toHaveBeenCalled();
+            expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
+        });
+
+        it.each([true, false])("requires live proof for destructive ownership with a valid stale project fingerprint when running=%s", async running => {
+            const docker = await inspectActual();
+            const { projectPath, inspected } = legacyFixture();
+            inspected.State.Running = running;
+            inspected.Config.Labels["ccc.project.mount-identity"] = "f".repeat(64);
+            const markers = new Map<string, string>();
+            mockWriteFileSync.mockImplementation((path: string, value: string) => { markers.set(basename(path), value); });
+            mockSpawnSync.mockImplementation((_command: string, args: string[]) => {
+                if (args[0] === "inspect") return { status: 0, stdout: JSON.stringify(inspected) };
+                if (running && args[0] === "exec" && args[1] === exactId && args[2] === "cat") {
+                    return { status: 0, stdout: markers.get(basename(args[3])) ?? "" };
+                }
+                return { status: 1, stdout: "" };
+            });
+            expect(docker.getManagedProjectContainerIdentity(exactId, projectPath)).toEqual(running
+                ? { containerId: exactId, running: true } : null);
+            if (running) expect(mockWriteFileSync).toHaveBeenCalled();
+            else expectReadOnlyAdmission();
+            expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
+        });
+
         it("does not grant destructive ownership from static stopped legacy admission", async () => {
             const docker = await inspectActual();
             const { projectPath } = legacyFixture();
             expect(docker.getManagedProjectContainerIdentity(exactId, projectPath)).toBeNull();
-            expect(mockSpawnSync.mock.calls.some(call => call[1]?.[0] === "exec")).toBe(true);
+            expectReadOnlyAdmission();
             expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
         });
     });

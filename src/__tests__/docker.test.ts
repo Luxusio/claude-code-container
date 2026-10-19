@@ -742,7 +742,7 @@ describe("docker.ts module exports", () => {
             });
         }
 
-        it("finds a canonical-era default-profile container for the same physical project", () => {
+        it.each(["absent", "stale fingerprint"])("finds a canonical-era default-profile container for the same physical project with %s metadata", metadata => {
             const canonicalAlias = "C:\\Users\\LUXUS\\PROJECT\\repo";
             mockRealpathSync.mockImplementation((path: string) => (
                 path === projectPath || path === canonicalAlias ? physicalPath : path
@@ -753,7 +753,8 @@ describe("docker.ts module exports", () => {
                 if (args[0] === "inspect") {
                     return makeResult(
                         0,
-                        legacyInspection("ccc-repo-deadbeef0000", canonicalAlias),
+                        legacyInspection("ccc-repo-deadbeef0000", canonicalAlias, metadata === "stale fingerprint"
+                            ? { "ccc.project.mount-identity": "f".repeat(64) } : {}),
                     );
                 }
                 return makeResult(1);
@@ -795,7 +796,7 @@ describe("docker.ts module exports", () => {
             ))?.containerName).toBe("ccc-repo-deadbeef0000");
         });
 
-        it("allows a different explicit profile for the same physical project", () => {
+        it.each(["current", "stale fingerprint"])("allows a different explicit profile for the same physical project with %s metadata", metadata => {
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
                 if (args[0] === "ps") return makeResult(0, `${legacyContainerId}\n`);
@@ -804,7 +805,7 @@ describe("docker.ts module exports", () => {
                         "ccc-repo-deadbeef0000--p--work",
                         projectPath,
                         {
-                            "ccc.project.mount-identity": mountIdentity,
+                            "ccc.project.mount-identity": metadata === "stale fingerprint" ? "f".repeat(64) : mountIdentity,
                             "ccc.profile": "work",
                         },
                     ));
@@ -2337,6 +2338,68 @@ describe("docker.ts module exports", () => {
             mockExistsSync.mockReturnValue(true);
         });
 
+        it.each(["running reuse", "stopped restart", "safe defer"] as const)("rechecks stale fingerprints through current mounts for %s on macOS", mode => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-desktop", remote: true, dockerDesktop: true });
+            const lab = buildLabRunnerRunConfig("lab-runner", getContainerName(projectPath))!;
+            const inspected = JSON.parse(fullCredentialMountsJson([{
+                Source: "/run/host-services/ssh-auth.sock", Destination: "/tmp/ssh-agent.sock",
+            }], {
+                status: lab.status, unsupportedReason: lab.unsupportedReason, kvmDevice: false, groupAdd: [],
+            }));
+            const running = mode !== "stopped restart";
+            inspected.State.Running = running;
+            inspected.Config.Labels["ccc.project.mount-identity"] = "f".repeat(64);
+            inspected.Config.Labels["ccc.device-lab.mount-identity"] = "e".repeat(64);
+            if (mode === "safe defer") inspected.HostConfig.Init = false;
+            mockReplacementRuntime(JSON.stringify(inspected), { identityRunning: running, startTransitionsToRunning: !running });
+            rejectStoppedExec = true;
+            existingRuntimeRunning = running;
+            const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+            const guard = vi.fn(() => false);
+            const ready = vi.fn();
+            const started = vi.fn();
+            expect(startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined,
+                guard, ready, undefined, started)).toBe(getContainerName(projectPath));
+            expect(ready).toHaveBeenCalledExactlyOnceWith(TEST_CONTAINER_ID, { startedByInvocation: !running });
+            if (running) expect(started).not.toHaveBeenCalled();
+            else expect(started).toHaveBeenCalledExactlyOnceWith(TEST_CONTAINER_ID);
+            expect(guard, JSON.stringify(warnings.mock.calls)).toHaveBeenCalledTimes(mode === "safe defer" ? 1 : 0);
+            expect(stoppedExecAttempts).toBe(0);
+            expect(mountChallengeContainerIds.has(TEST_CONTAINER_ID)).toBe(true);
+            expect([...mountChallengePaths].some(path => path.startsWith(`/project/${getProjectId(projectPath)}/.ccc-mount-identity-`))).toBe(true);
+            expect(spawnSyncMock.mock.calls.filter(([, args]) => (args as string[])[0] === "start")
+                .map(([, args]) => args)).toEqual(running ? [] : [["start", TEST_CONTAINER_SHORT_ID]]);
+            expectNoContainerReplacement();
+        });
+
+        it.each(["project access", "auth source", "device-state access"] as const)("keeps the lifecycle guard for actual %s changes despite stale fingerprints", fault => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-desktop", remote: true, dockerDesktop: true });
+            const lab = buildLabRunnerRunConfig("lab-runner", getContainerName(projectPath))!;
+            const inspected = JSON.parse(fullCredentialMountsJson([{
+                Source: "/run/host-services/ssh-auth.sock", Destination: "/tmp/ssh-agent.sock",
+            }], {
+                status: lab.status, unsupportedReason: lab.unsupportedReason, kvmDevice: false, groupAdd: [],
+            }));
+            inspected.Config.Labels["ccc.project.mount-identity"] = "f".repeat(64);
+            inspected.Config.Labels["ccc.device-lab.mount-identity"] = "e".repeat(64);
+            const target = fault === "project access" ? `/project/${getProjectId(projectPath)}`
+                : fault === "auth source" ? "/run/ccc-device-broker-auth/owner.json" : "/home/ccc/.ccc/devices";
+            const mount = inspected.Mounts.find((item: { Destination: string }) => item.Destination === target);
+            expect(mount).toBeDefined();
+            if (fault === "auth source") mount.Source = "/foreign/owner-auth.json";
+            else mount.RW = !mount.RW;
+            mockReplacementRuntime(JSON.stringify(inspected));
+            const guard = vi.fn(() => false);
+            const ready = vi.fn();
+            expect(() => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined,
+                undefined, guard, ready)).toThrow();
+            expect(guard).toHaveBeenCalledOnce();
+            expect(ready).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
+        });
+
         it("preserves a canonical-era Windows container instead of creating a duplicate", () => {
             startupGlobalNamespaceIds = null;
             const existingId = "b".repeat(64);
@@ -3370,7 +3433,7 @@ describe("docker.ts module exports", () => {
 
             expect(name).toBe(getContainerName(projectPath));
             expect(guard).toHaveBeenCalledOnce();
-            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("device-lab mount identity changed"));
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("device-lab mount identity is malformed"));
             expectNoContainerReplacement();
         });
 
