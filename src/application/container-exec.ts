@@ -90,12 +90,14 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             return ownership;
         };
         try {
-            const { lockFile: sessionLockFile } = worktreeWorkspace
+            const acquired = worktreeWorkspace
                 ? await ports.familyLock(projectId, () => {
                     ports.assertWorkspace(fullPath, options.expectedWorktreeSourcePath);
                     return acquire();
                 })
                 : await acquire();
+            const sessionLockFile = acquired.lockFile;
+            let requiresLiveVerification = acquired.requiresLiveVerification === true;
 
             // Start clipboard server early — must complete before container creation so
             // the port file exists and can be bind-mounted (file mount requires the file
@@ -128,6 +130,9 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                 ports.report({ kind: "broker-failed", cause: error });
             });
             const recreateInsideLifecycleLock = (recreate: () => void) => {
+                // Static legacy admission establishes a startup candidate only.
+                // Replacement must wait for the existing full live-ready handoff.
+                if (requiresLiveVerification) return false;
                 const blockedReason = containerExecReplacementBlockReason(
                     targetContainer,
                     sessionContainerPrefix,
@@ -160,6 +165,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                         onRecreate,
                         recreateInsideLifecycleLock,
                         (containerId, handoff) => {
+                            requiresLiveVerification = false;
                             readyContainerId = containerId;
                             ports.setSessionContainer(containerId);
                             if (handoff.startedByInvocation) invocationStartedContainers.add(containerId);

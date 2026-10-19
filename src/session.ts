@@ -5,7 +5,7 @@ import { createNativeSessionClaims, ensureNativeSessionClaimsDirectory } from ".
 import { armNativeSessionOwnership, assertNativeSessionOwnership, validateNativeSessionOwnership } from "./composition/session-ownership.js";
 import { captureNativeSessionOwnership, nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership } from "./adapters/session-ownership.js";
 import { createSessionAcquisition } from "./application/session-acquisition.js";
-import type { SessionAcquisitionPorts, SessionAcquisitionRequest } from "./ports/session-acquisition.js";
+import type { SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisitionResult } from "./ports/session-acquisition.js";
 import { getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
 import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
 import type { SessionOwnershipHandle, SessionOwnershipReceipt } from "./ports/session-ownership.js";
@@ -138,7 +138,7 @@ export async function armSessionOwnership(): Promise<number | undefined> {
 export async function acquireHostSessionOwnership(
     request: SessionAcquisitionRequest,
     inspectExisting: SessionAcquisitionPorts["inspectExisting"],
-): Promise<{ lockFile: string; existingId: string | null }> {
+): Promise<SessionAcquisitionResult> {
     if (ownership || armingOwnership || acquiringOwnership || sessionCleanup.getCurrentSession().lockFile) {
         throw new Error("Host session ownership is already being acquired.");
     }

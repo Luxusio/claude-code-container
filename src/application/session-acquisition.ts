@@ -1,5 +1,5 @@
 import { sessionClaimPrefix } from "../domain/session-claims.js";
-import type { SessionAcquisitionCheckpoint, SessionAcquisitionPorts, SessionAcquisitionRequest } from "../ports/session-acquisition.js";
+import type { SessionAcquisitionCheckpoint, SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisitionResult } from "../ports/session-acquisition.js";
 
 export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
     for (const name of [
@@ -11,7 +11,7 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
         }
     }
 
-    async function run(request: SessionAcquisitionRequest, checkCancelled: SessionAcquisitionCheckpoint = () => {}): Promise<{ lockFile: string; existingId: string | null }> {
+    async function run(request: SessionAcquisitionRequest, checkCancelled: SessionAcquisitionCheckpoint = () => {}): Promise<SessionAcquisitionResult> {
         const prefix = sessionClaimPrefix(request.projectId, request.profile);
         return ports.withLifecycleLock(prefix, async () => {
             checkCancelled();
@@ -22,7 +22,9 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
                 checkCancelled();
                 const inspection = await ports.inspectExisting(request);
                 checkCancelled();
-                if (!inspection.known) throw new Error("Existing session container ownership could not be inspected.");
+                if (!inspection.known) {
+                    throw new Error(`Existing session container ownership could not be inspected (${inspection.reason ?? "unavailable"}; runtime: ${inspection.runtime}). The existing container was preserved.`);
+                }
                 await ports.arm();
                 checkCancelled();
                 if (inspection.containerId !== null) {
@@ -31,7 +33,10 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
                     checkCancelled();
                 }
                 ports.reconcileForeign(prefix, lockFile);
-                return { lockFile, existingId: inspection.containerId };
+                return {
+                    lockFile, existingId: inspection.containerId,
+                    ...(inspection.requiresLiveVerification ? { requiresLiveVerification: true as const } : {}),
+                };
             } catch (error) {
                 // Once transferred, the receipt must survive partial predecessor
                 // reconciliation so guarded cleanup can still stop the owned ID.

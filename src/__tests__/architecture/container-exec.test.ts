@@ -217,6 +217,40 @@ describe("acquired session lifetime", () => {
         }
     });
 
+    it.each([false, true])("never replaces a stopped legacy candidate before live-ready (own start=%s)", async started => {
+        const f = fixture(), remove = vi.fn(), failure = new Error("live verification unavailable");
+        f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: "setup-id", requiresLiveVerification: true});
+        f.ports.startContainer = (...args) => {
+            expect(args[6](remove)).toBe(false);
+            if (started) args[9]("setup-id");
+            expect(args[6](remove)).toBe(false);
+            throw failure;
+        };
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
+        expect(remove).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        if (started) expect(f.ports.setCleanupEnabled).toHaveBeenCalledWith(true);
+        else expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+    });
+
+    it("uses normal guarded replacement only after a legacy candidate reaches verified live-ready", async () => {
+        const f = fixture(), replace = vi.fn();
+        f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: "setup-id", requiresLiveVerification: true});
+        f.ports.startContainer = (...args) => {
+            expect(args[6](replace)).toBe(false);
+            args[9]("setup-id");
+            expect(args[6](replace)).toBe(false);
+            args[7]("setup-id", {startedByInvocation: true});
+            expect(args[6](replace)).toBe(true);
+            return "ccc-repo";
+        };
+        f.ports.containerRunning = () => true;
+        await expect(f.exec("/repo", ["codex"])).resolves.toBe(0);
+        expect(replace).toHaveBeenCalledOnce();
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+
     it("reused startup failure never grants permission to stop the joined container", async () => {
         const f = fixture({running: true}), failure = new Error("join initialization failed");
         f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => { throw failure; }});

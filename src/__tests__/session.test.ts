@@ -240,13 +240,16 @@ describe("session.ts", () => {
         });
 
         it.each([
-            { status: 1, stdout: "" }, { status: null, stdout: "" },
-            { status: 0, error: new Error("runtime unavailable"), stdout: "" },
-            { status: 0, stdout: "short-id" }, { status: 0, stdout: `${exactId}\n${"b".repeat(64)}` },
-        ])("keeps failed or ambiguous enumeration unknown: %j", async result => {
+            [{ status: 1, stdout: "", stderr: "private engine diagnostic" }, "container-list-failed"],
+            [{ status: null, stdout: "" }, "container-list-failed"],
+            [{ status: 0, error: new Error("runtime unavailable"), stdout: "" }, "container-list-failed"],
+            [{ status: null, error: Object.assign(new Error("private timeout diagnostic"), { code: "ETIMEDOUT" }), stdout: "" }, "container-list-timeout"],
+            [{ status: 0, stdout: "short-id" }, "container-list-ambiguous"],
+            [{ status: 0, stdout: `${exactId}\n${"b".repeat(64)}` }, "container-list-ambiguous"],
+        ] as const)("keeps failed or ambiguous enumeration unknown: %j", async (result, reason) => {
             const docker = await inspectActual();
             mockGetProjectId.mockReturnValue("project"); mockSpawnSync.mockReturnValue(result);
-            expect(docker.inspectSessionContainerOwnership("/fixture/project")).toEqual({ known: false, containerId: null });
+            expect(docker.inspectSessionContainerOwnership("/fixture/project")).toEqual({ known: false, containerId: null, reason });
             expect(mockSpawnSync).toHaveBeenCalledTimes(1);
         });
 
@@ -267,7 +270,10 @@ describe("session.ts", () => {
             expect(mockSpawnSync.mock.calls[1][1]).toEqual(["inspect", "-f", "{{json .}}", exactId]);
         });
 
-        it.each(["foreign", "wrong project", "different ID"])("does not authorize a listed container with %s ownership", async mode => {
+        it.each([
+            ["foreign", "container-not-managed"], ["wrong project", "project-path-mismatch"],
+            ["different ID", "container-id-changed"], ["stale digest", "project-identity-mismatch"],
+        ] as const)("does not authorize a listed container with %s ownership", async (mode, reason) => {
             const docker = await inspectActual();
             const projectPath = makeLocksDir();
             mockGetProjectId.mockReturnValue("project");
@@ -278,11 +284,127 @@ describe("session.ts", () => {
                 State: { Running: true }, Config: { Labels: {
                     "ccc.managed": mode === "foreign" ? "false" : "true",
                     "ccc.project.path": mode === "wrong project" ? "/different/project" : projectPath,
-                    "ccc.project.mount-identity": identity,
+                    "ccc.project.mount-identity": mode === "stale digest" ? "obsolete-directory-identity" : identity,
                 } },
             }) });
-            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: false, containerId: null });
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: false, containerId: null, reason });
             expect(mockSpawnSync.mock.calls.some(call => ["stop", "rm", "exec"].includes(call[1]?.[0]))).toBe(false);
+        });
+
+        function legacyFixture() {
+            const projectPath = makeLocksDir();
+            mockGetProjectId.mockReturnValue("project");
+            mockLstatSync.mockReturnValue({ isDirectory: () => true, isSymbolicLink: () => false, dev: 1n, ino: 2n });
+            const inspected = {
+                Id: exactId,
+                State: { Running: false },
+                Config: { Labels: { "ccc.managed": "true", "ccc.project.path": projectPath } as Record<string, string> },
+                Mounts: [{ Source: projectPath, Destination: "/project/project", Type: "bind", RW: true }],
+            };
+            mockSpawnSync.mockImplementation((_command: string, args: string[]) => {
+                if (args[0] === "ps") return { status: 0, stdout: `${exactId}\n` };
+                if (args[0] === "inspect") return { status: 0, stdout: JSON.stringify(inspected) };
+                return { status: 1, stdout: "", stderr: "stopped container cannot execute commands" };
+            });
+            return { projectPath, inspected };
+        }
+
+        function expectReadOnlyAdmission() {
+            expect(mockSpawnSync.mock.calls.every(call => ["ps", "inspect"].includes(call[1]?.[0]))).toBe(true);
+            expect(mockWriteFileSync).not.toHaveBeenCalled();
+        }
+
+        it("admits a stopped legacy managed container for live verification after startup without executing it", async () => {
+            const docker = await inspectActual();
+            const { projectPath, inspected } = legacyFixture();
+            // Other ordinary mounts do not change this project-only admission.
+            inspected.Mounts.push({ Source: "/fixture/credentials", Destination: "/home/ccc/.ssh", Type: "bind", RW: false });
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
+                known: true, containerId: exactId, requiresLiveVerification: true,
+            });
+            expectReadOnlyAdmission();
+        });
+
+        it.each(["/host_mnt", "/run/desktop/mnt/host"])("admits a stopped legacy macOS Docker Desktop project alias through %s", async prefix => {
+            const docker = await inspectActual();
+            const { projectPath, inspected } = legacyFixture();
+            vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            const runtime = await import("../container-runtime.js");
+            vi.spyOn(runtime, "getRuntimeInfo").mockReturnValue({
+                runtime: "docker", flavor: "docker-desktop", version: "0.0.0", socketPath: "/var/run/docker.sock",
+                rootless: false, remote: true, dockerDesktop: true,
+            });
+            inspected.Mounts[0].Source = `${prefix}${projectPath}`;
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
+                known: true, containerId: exactId, requiresLiveVerification: true,
+            });
+            expectReadOnlyAdmission();
+        });
+
+        it.each([
+            ["missing bind", "project-bind-unverified"], ["duplicate bind", "project-bind-unverified"],
+            ["readonly bind", "project-bind-unverified"], ["wrong source", "project-bind-unverified"],
+            ["stale digest", "project-identity-mismatch"], ["unavailable host", "project-identity-unavailable"],
+            ["foreign", "container-not-managed"], ["changed ID", "container-id-changed"],
+            ["invalid ID", "container-id-invalid"], ["unknown state", "container-state-unavailable"],
+        ] as const)("refuses stopped legacy admission with %s without effects", async (mode, reason) => {
+            const docker = await inspectActual();
+            const { projectPath, inspected } = legacyFixture();
+            if (mode === "missing bind") inspected.Mounts = [];
+            if (mode === "duplicate bind") inspected.Mounts.push({ ...inspected.Mounts[0] });
+            if (mode === "readonly bind") inspected.Mounts[0].RW = false;
+            if (mode === "wrong source") inspected.Mounts[0].Source = "/fixture/foreign-project";
+            if (mode === "stale digest") inspected.Config.Labels["ccc.project.mount-identity"] = "obsolete-directory-identity";
+            if (mode === "unavailable host") mockLstatSync.mockImplementation(() => { throw new Error("private filesystem diagnostic"); });
+            if (mode === "foreign") inspected.Config.Labels["ccc.managed"] = "false";
+            if (mode === "changed ID") inspected.Id = "b".repeat(64);
+            if (mode === "invalid ID") inspected.Id = "";
+            if (mode === "unknown state") Reflect.deleteProperty(inspected.State, "Running");
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: false, containerId: null, reason });
+            expectReadOnlyAdmission();
+        });
+
+        it.each([
+            { status: 1, stdout: "", stderr: "private native diagnostic" },
+            { status: null, error: Object.assign(new Error("private timeout"), { code: "ETIMEDOUT" }), stdout: "" },
+            { status: 0, stdout: "not-json: private native diagnostic" },
+        ])("keeps failed native inspection unavailable without leaking diagnostics: %j", async result => {
+            const docker = await inspectActual();
+            const { projectPath } = legacyFixture();
+            mockSpawnSync.mockImplementation((_command: string, args: string[]) => args[0] === "ps"
+                ? { status: 0, stdout: exactId } : result);
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
+                known: false, containerId: null, reason: "container-inspection-unavailable",
+            });
+            expectReadOnlyAdmission();
+        });
+
+        it("retains live bind proof for a running legacy container", async () => {
+            const docker = await inspectActual();
+            const { projectPath, inspected } = legacyFixture();
+            inspected.State.Running = true;
+            const markers = new Map<string, string>();
+            mockWriteFileSync.mockImplementation((path: string, value: string) => { markers.set(basename(path), value); });
+            mockSpawnSync.mockImplementation((_command: string, args: string[]) => {
+                if (args[0] === "ps") return { status: 0, stdout: exactId };
+                if (args[0] === "inspect") return { status: 0, stdout: JSON.stringify(inspected) };
+                if (args[0] === "exec" && args[1] === exactId && args[2] === "cat") {
+                    return { status: 0, stdout: markers.get(basename(args[3])) ?? "" };
+                }
+                return { status: 1, stdout: "" };
+            });
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: true, containerId: exactId });
+            expect(mockWriteFileSync).toHaveBeenCalled();
+            expect(mockSpawnSync.mock.calls.some(call => call[1]?.[0] === "exec" && call[1]?.[1] === exactId)).toBe(true);
+            expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
+        });
+
+        it("does not grant destructive ownership from static stopped legacy admission", async () => {
+            const docker = await inspectActual();
+            const { projectPath } = legacyFixture();
+            expect(docker.getManagedProjectContainerIdentity(exactId, projectPath)).toBeNull();
+            expect(mockSpawnSync.mock.calls.some(call => call[1]?.[0] === "exec")).toBe(true);
+            expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
         });
     });
 

@@ -69,6 +69,30 @@ preflight and startup, require the same live verification before setup without
 claiming own-start cleanup authority. Running and safe-defer verification retain
 their existing policies; static preflight must never synthesize a live proof.
 
+The following admission and diagnostic requirements are derived technical repair
+requirements for the reported Mac startup ownership-inspection failure, using the
+existing container/data and session-claim preservation policy. The specific repair
+design is not a separate user-requested policy. The actual Mac failure cause and
+native acceptance remain unconfirmed until a host recheck.
+
+Session acquisition must not execute inside a confirmed stopped legacy container
+just to establish a startup candidate. When its project identity label is absent,
+require the exact managed ID, matching project label, current host filesystem
+identity and one writable project bind with a verified source or supported alias.
+This static admission carries a pending live-verification marker through the
+session acquisition and startup boundary. A pending ownership ACK does not enable
+cleanup of an existing container; the ordinary own-start callback retains its
+separate responsibility. Automatic replacement stays blocked until full live
+verification produces the ready handoff. Strict destructive ownership inspection
+still requires its existing live legacy proof. Foreign, changed or unavailable
+evidence must not authorize deletion, replacement or joining.
+
+Acquisition failures distinguish native listing, inspection, management, project
+identity and legacy bind-proof failures with bounded reason codes and the selected
+runtime. Preserve the existing container and predecessor session claims; roll back
+only the failed invocation's reservation. Do not print raw engine diagnostics,
+credentials or environment contents in these errors.
+
 Mise and Codex package cache volumes are scoped to the UID/GID and mapping contract. Existing
 cache volumes remain intact. Any retained per-container writable state must
 become usable by the replacement identity without changing live state or host

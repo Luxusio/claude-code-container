@@ -7,10 +7,28 @@ export interface SessionAcquisitionRequest {
     toolName?: string;
 }
 
-export interface SessionAcquisitionInspection {
+export type SessionContainerInspectionReason =
+    | "container-list-timeout" | "container-list-failed" | "container-list-ambiguous"
+    | "container-inspection-unavailable" | "container-id-invalid" | "container-id-changed"
+    | "container-state-unavailable" | "container-not-managed" | "project-path-mismatch"
+    | "project-identity-mismatch" | "project-identity-unavailable" | "project-bind-unverified";
+
+export interface SessionContainerInspection {
     known: boolean;
     containerId: string | null;
+    reason?: SessionContainerInspectionReason;
+    /** Static stopped admission permits startup, never replacement before live proof. */
+    requiresLiveVerification?: true;
+}
+
+export interface SessionAcquisitionInspection extends SessionContainerInspection {
     runtime: SessionOwnershipRuntime;
+}
+
+export interface SessionAcquisitionResult {
+    lockFile: string;
+    existingId: string | null;
+    requiresLiveVerification?: true;
 }
 
 export interface SessionAcquisitionPorts {

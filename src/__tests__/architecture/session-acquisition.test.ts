@@ -146,6 +146,32 @@ describe("atomic session acquisition", () => {
         if (stage !== "ack") expect(f.trace).not.toContain("ack");
     });
 
+    it("retains static legacy admission while ACK remains before predecessor reconciliation", async () => {
+        const f = fixture();
+        f.ports.inspectExisting = () => {
+            f.inGuard("inspect-stopped-legacy");
+            return {known: true, containerId: "captured-container-id", runtime: "podman", requiresLiveVerification: true};
+        };
+        await expect(createSessionAcquisition(f.ports).run(request)).resolves.toEqual({
+            lockFile: own, existingId: "captured-container-id", requiresLiveVerification: true,
+        });
+        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect-stopped-legacy", "ready", "ack", "reconcile", "unlock:project--p--work"]);
+        expect([...f.claims]).toEqual([own]);
+    });
+
+    it("reports the selected runtime and bounded inspection cause without pruning a predecessor", async () => {
+        const f = fixture();
+        f.ports.inspectExisting = () => {
+            f.inGuard("inspect-unknown");
+            return {known: false, containerId: null, runtime: "podman", reason: "container-list-timeout"};
+        };
+        await expect(createSessionAcquisition(f.ports).run(request)).rejects.toThrow(
+            "Existing session container ownership could not be inspected (container-list-timeout; runtime: podman). The existing container was preserved.",
+        );
+        expect([...f.claims]).toEqual([predecessor]);
+        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect-unknown", "rollback", "unlock:project--p--work"]);
+    });
+
     it("unknown inspection cannot stand for proven absence or prune the predecessor", async () => {
         const f = fixture();
         f.ports.inspectExisting = () => { f.inGuard("inspect-unknown"); return { known: false, containerId: null, runtime: "docker" }; };

@@ -26,6 +26,7 @@ import { createContainerSessionHandoff } from "./application/container-session-h
 import { createContainerLaunchArguments } from "./application/container-launch-arguments.js";
 import { createContainerRuntimeReadiness } from "./application/container-runtime-readiness.js";
 import type { ContainerRuntimeRepairCategory } from "./ports/container-runtime-readiness.js";
+import type { SessionContainerInspection, SessionContainerInspectionReason } from "./ports/session-acquisition.js";
 import { createContainerExecReadiness } from "./application/container-exec-readiness.js";
 import { ContainerEngineUnavailableError } from "./domain/container-runtime.js";
 import { createContainerSocketAccess } from "./application/container-socket-access.js";
@@ -892,12 +893,18 @@ export function getContainerIdentity(containerName: string): ContainerIdentity |
     return { containerId, running: running === "true" };
 }
 
-export function getManagedProjectContainerIdentity(
+type ManagedProjectContainerInspection =
+    | { identity: ContainerIdentity; requiresLiveVerification?: true }
+    | { reason: SessionContainerInspectionReason };
+
+/** Session admission may defer live proof; destructive callers never receive that authority. */
+function inspectManagedProjectContainerIdentity(
     containerName: string,
     projectPath: string,
-): ContainerIdentity | null {
+    expectedSessionId?: string,
+): ManagedProjectContainerInspection {
     const inspectedResult = inspectContainerJsonWithRetry(containerName);
-    if (!inspectedResult) return null;
+    if (!inspectedResult) return { reason: "container-inspection-unavailable" };
     try {
         const inspected = inspectedResult as {
             Id?: unknown;
@@ -905,45 +912,72 @@ export function getManagedProjectContainerIdentity(
             Config?: { Labels?: Record<string, string> };
             Mounts?: InspectedContainerMount[];
         };
-        if (typeof inspected.Id !== "string" || inspected.Id.length === 0) return null;
-        if (typeof inspected.State?.Running !== "boolean") return null;
+        if (typeof inspected.Id !== "string" || inspected.Id.length === 0
+            || (expectedSessionId !== undefined && !/^[a-f0-9]{64}$/i.test(inspected.Id))) {
+            return { reason: "container-id-invalid" };
+        }
+        if (expectedSessionId !== undefined && inspected.Id !== expectedSessionId) {
+            return { reason: "container-id-changed" };
+        }
+        if (typeof inspected.State?.Running !== "boolean") return { reason: "container-state-unavailable" };
         const labels = inspected.Config?.Labels;
-        if (labels?.["ccc.managed"] !== "true") return null;
+        if (labels?.["ccc.managed"] !== "true") return { reason: "container-not-managed" };
         const labeledPath = labels["ccc.project.path"];
-        if (!labeledPath || !projectPathsEquivalent(labeledPath, projectPath)) return null;
-        const expectedMountIdentity = bindMountSourceIdentityDigest(
-            captureBindMountSourceIdentity(projectPath),
-        );
+        if (typeof labeledPath !== "string" || !labeledPath
+            || !projectPathsEquivalent(labeledPath, projectPath)) return { reason: "project-path-mismatch" };
+        let currentIdentity: BindMountSourceIdentity;
+        try {
+            currentIdentity = captureBindMountSourceIdentity(projectPath);
+        } catch {
+            return { reason: "project-identity-unavailable" };
+        }
+        const expectedMountIdentity = bindMountSourceIdentityDigest(currentIdentity);
         const labeledIdentity = labels[PROJECT_MOUNT_IDENTITY_LABEL];
         if (labeledIdentity !== expectedMountIdentity) {
-            if (labeledIdentity) return null;
-            const projectMountPath = `/project/${getProjectId(projectPath)}`;
-            const currentIdentity = captureBindMountSourceIdentity(projectPath);
-            const verification = verifyRequiredContainerMounts(
-                inspected.Id,
-                inspected.Mounts ?? [],
-                [{
-                    hostPath: projectPath,
-                    containerPath: projectMountPath,
-                    type: "bind",
-                    presence: "core",
-                    sourceProof: {
-                        kind: "filesystem",
-                        identity: currentIdentity,
-                    },
-                }],
-                "strict",
-                true,
-            );
-            if (verification.kind !== "verified") {
-                return null;
+            if (labeledIdentity || (expectedSessionId !== undefined
+                && labeledIdentity !== undefined && typeof labeledIdentity !== "string")) {
+                return { reason: "project-identity-mismatch" };
             }
+            const projectMountPath = `/project/${getProjectId(projectPath)}`;
+            const projectMount: RequiredContainerMount = {
+                hostPath: projectPath,
+                containerPath: projectMountPath,
+                type: "bind",
+                presence: "core",
+                sourceProof: { kind: "filesystem", identity: currentIdentity },
+            };
+            if (expectedSessionId !== undefined && inspected.State.Running === false) {
+                // Keep every matching destination so the normal shape gate rejects
+                // duplicates. Static evidence authorizes startup only, never cleanup.
+                // A null image also prevents opaque WSL aliases from launching a proof helper.
+                const projectMounts = Array.isArray(inspected.Mounts)
+                    ? inspected.Mounts.filter(mount => mount?.Destination === projectMountPath)
+                    : [];
+                const preflight = preflightStoppedContainerMounts(inspected.Id, projectMounts, [
+                    { ...projectMount, readonly: false },
+                ], () => null);
+                return preflight.kind === "preflight-verified"
+                    ? { identity: { containerId: inspected.Id, running: false }, requiresLiveVerification: true }
+                    : { reason: "project-bind-unverified" };
+            }
+            const verification = verifyRequiredContainerMounts(
+                inspected.Id, inspected.Mounts ?? [], [projectMount], "strict", true,
+            );
+            if (verification.kind !== "verified") return { reason: "project-bind-unverified" };
         }
-        return { containerId: inspected.Id, running: inspected.State.Running };
+        return { identity: { containerId: inspected.Id, running: inspected.State.Running } };
     } catch (error) {
         if (error instanceof ContainerEngineUnavailableError) throw error;
-        return null;
+        return { reason: "container-inspection-unavailable" };
     }
+}
+
+export function getManagedProjectContainerIdentity(
+    containerName: string,
+    projectPath: string,
+): ContainerIdentity | null {
+    const inspected = inspectManagedProjectContainerIdentity(containerName, projectPath);
+    return "identity" in inspected ? inspected.identity : null;
 }
 
 /** Destructive lifecycle operations require a successful, explicit stopped result. */
@@ -994,24 +1028,38 @@ export function isContainerExists(containerName: string): boolean {
     return (result.stdout ?? "").trim().length > 0;
 }
 
-function getListedContainerId(containerName: string): { known: boolean; containerId: string | null } {
+function getListedContainerId(containerName: string): SessionContainerInspection {
     const result = runtimeSpawnSync(["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
-    if (result.error || result.status !== 0) return { known: false, containerId: null };
+    if (result.error || result.signal || result.status !== 0) {
+        return {
+            known: false,
+            containerId: null,
+            reason: (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+                ? "container-list-timeout" : "container-list-failed",
+        };
+    }
     const ids = (result.stdout ?? "").trim().split(/\s+/).filter(Boolean);
     if (ids.length === 0) return { known: true, containerId: null };
-    if (ids.length !== 1 || !/^[a-f0-9]{64}$/i.test(ids[0])) return { known: false, containerId: null };
+    if (ids.length !== 1 || !/^[a-f0-9]{64}$/i.test(ids[0])) {
+        return { known: false, containerId: null, reason: "container-list-ambiguous" };
+    }
     return { known: true, containerId: ids[0] };
 }
 
-export function inspectSessionContainerOwnership(projectPath: string, profile?: string): { known: boolean; containerId: string | null } {
+export function inspectSessionContainerOwnership(projectPath: string, profile?: string): SessionContainerInspection {
     const listed = getListedContainerId(getContainerName(projectPath, profile));
     if (!listed.known || listed.containerId === null) return listed;
-    const managed = getManagedProjectContainerIdentity(listed.containerId, projectPath);
-    return managed?.containerId === listed.containerId
-        ? listed
-        : { known: false, containerId: null };
+    try {
+        const managed = inspectManagedProjectContainerIdentity(listed.containerId, projectPath, listed.containerId);
+        if ("reason" in managed) return { known: false, containerId: null, reason: managed.reason };
+        return managed.requiresLiveVerification
+            ? { ...listed, requiresLiveVerification: true }
+            : listed;
+    } catch {
+        return { known: false, containerId: null, reason: "container-inspection-unavailable" };
+    }
 }
 
 export function isImageExists(): boolean {
@@ -1213,12 +1261,16 @@ function inspectContainerJsonWithRetry(containerId: string): Record<string, unkn
     );
 }
 
-function mountVerification(containerId: string, requiredMounts: RequiredContainerMount[]) {
+function mountVerification(
+    containerId: string,
+    requiredMounts: RequiredContainerMount[],
+    currentImageId: () => string | null = getCurrentImageId,
+) {
     const native = createNativeContainerMountObservations({
         containerId,
         requiredMounts,
         canExecContainer,
-        currentImageId: getCurrentImageId,
+        currentImageId,
         withRetry: withBoundedVerificationRetry,
     });
     return {
@@ -1232,8 +1284,9 @@ function preflightStoppedContainerMounts(
     containerId: string,
     observedMounts: InspectedContainerMount[],
     requiredMounts: RequiredContainerMount[],
+    currentImageId: () => string | null = getCurrentImageId,
 ): StoppedMountPreflight {
-    const { native, application } = mountVerification(containerId, requiredMounts);
+    const { native, application } = mountVerification(containerId, requiredMounts, currentImageId);
     return application.preflightStopped(native.decodeObservedMounts(observedMounts));
 }
 

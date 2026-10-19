@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../domain/tool-registry.js";
 import type { CodexLaunchSemanticPreparation } from "../domain/tool-session/codex-launch.js";
-import type { SessionAcquisitionRequest, SessionAcquisitionInspection } from "./session-acquisition.js";
+import type { SessionAcquisitionRequest, SessionAcquisitionInspection, SessionAcquisitionResult, SessionContainerInspection } from "./session-acquisition.js";
 
 export interface ContainerExecOptions {
     interactive?: boolean;
@@ -74,8 +74,8 @@ export interface ContainerExecPorts<Prepared> {
     isWorktreeWorkspace(path: string): boolean;
     assertWorkspace(path: string, sourcePath?: string): void;
     familyLock<T>(projectId: string, operation: () => Promise<T> | T): Promise<T>;
-    acquireOwnership(request: SessionAcquisitionRequest, inspect: (request: SessionAcquisitionRequest) => SessionAcquisitionInspection): Promise<{ lockFile: string; existingId: string | null }>;
-    inspectSessionContainer(path: string, profile?: string): { known: boolean; containerId: string | null };
+    acquireOwnership(request: SessionAcquisitionRequest, inspect: (request: SessionAcquisitionRequest) => SessionAcquisitionInspection): Promise<SessionAcquisitionResult>;
+    inspectSessionContainer(path: string, profile?: string): SessionContainerInspection;
     ensureClipboard(): Promise<number | null>;
     clipboardPortFile(): string;
     clipboardConnection(port: number | null): ContainerExecClipboardConnection;
