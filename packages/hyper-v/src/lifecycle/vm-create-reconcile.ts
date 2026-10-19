@@ -4,6 +4,7 @@ import type {
     HyperVCreateStep,
     HyperVCreateVirtualMachineRequest,
 } from "./vm-create-contracts.js";
+import { parseHyperVMacAddress } from "../low-level/network-contracts.js";
 
 /**
  * Orders the steps that bring one VM into existence.
@@ -24,6 +25,23 @@ import type {
 export function planHyperVVirtualMachineCreation(
     request: HyperVCreateVirtualMachineRequest,
 ): readonly HyperVCreateStep[] {
+    const network = request.network;
+    if (network.kind === "managed-and-bootstrap") {
+        const macAddressPattern = /^(?:[0-9a-f]{12}|(?:[0-9a-f]{2}:){5}[0-9a-f]{2}|(?:[0-9a-f]{2}-){5}[0-9a-f]{2})$/i;
+        if (typeof network.macAddress !== "string" || typeof network.bootstrapMacAddress !== "string"
+            || !macAddressPattern.test(network.macAddress) || !macAddressPattern.test(network.bootstrapMacAddress)) {
+            throw new Error("hyper-v-create-bootstrap-mac-address-invalid");
+        }
+        const managedMacAddress = parseHyperVMacAddress(network.macAddress);
+        const bootstrapMacAddress = parseHyperVMacAddress(network.bootstrapMacAddress);
+        // Exclude trailing line terminators admitted by the parser's end anchor.
+        if (managedMacAddress.length !== 12 || bootstrapMacAddress.length !== 12) {
+            throw new Error("hyper-v-create-bootstrap-mac-address-invalid");
+        }
+        if (managedMacAddress === bootstrapMacAddress) {
+            throw new Error("hyper-v-create-bootstrap-mac-address-conflict");
+        }
+    }
     const diskDirectory = diskDirectoryOf(request.diskPath);
     const steps: HyperVCreateStep[] = [
         { kind: "ensure-directory", path: request.deviceRoot },
@@ -46,7 +64,6 @@ export function planHyperVVirtualMachineCreation(
         },
     ];
 
-    const network = request.network;
     if (network.kind === "managed-and-bootstrap") {
         // The adapter New-VM made is on the bootstrap switch but still carries native's
         // default name. Renaming it before adding the second one keeps the two apart by name
@@ -56,7 +73,7 @@ export function planHyperVVirtualMachineCreation(
         steps.push({
             kind: "set-adapter-mac",
             adapter: { kind: "name", name: network.bootstrapAdapterName },
-            macAddress: bootstrapMacAddressOf(network.macAddress),
+            macAddress: network.bootstrapMacAddress,
         });
         steps.push({ kind: "add-adapter", adapterName: network.adapterName, switchName: network.switchName });
         steps.push({
@@ -139,29 +156,6 @@ export function planHyperVVirtualMachineCreationCompensation(
         }
     }
     return Object.freeze(compensations);
-}
-
-/**
- * Derives the bootstrap address from the managed one, as the PowerShell this replaces did.
- *
- * Deriving rather than accepting a second address is most of what keeps the two adapters of
- * one device from colliding -- but not all of it, and the difference matters. The legacy
- * command earned the invariant with a guard this library does not have: it required the
- * managed address to match `^02(?::[0-9A-F]{2}){5}$` before deriving, so `06` + the rest was
- * necessarily different. Here the address is an opaque string, and deriving from one that
- * already starts with `06` returns the same address.
- *
- * So the equality is checked rather than assumed. Two adapters on one VM holding the same
- * static address is a state native accepts and nothing downstream re-reads -- the legacy's
- * post-assignment conflict check is deferred with the rest of the transaction -- which makes
- * this the last place it can be caught.
- */
-function bootstrapMacAddressOf(managedMacAddress: string): string {
-    const derived = `06${managedMacAddress.slice(2)}`;
-    if (derived === managedMacAddress) {
-        throw new Error("hyper-v-create-bootstrap-mac-address-not-derivable");
-    }
-    return derived;
 }
 
 // The switch New-VM itself attaches to. For a bootstrap guest that is deliberately the

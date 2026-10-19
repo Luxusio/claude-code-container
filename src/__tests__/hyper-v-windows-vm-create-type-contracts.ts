@@ -51,10 +51,19 @@ export const generation2IsWritable: HyperVVirtualMachineGeneration = {
 // @ts-expect-error a startup device outside the four native accepts is not a startup device
 export const unknownStartupDevice: HyperVBiosStartupDevice = "USB";
 
-// A bootstrap guest needs an address on both adapters: the bootstrap one is how it is reached
-// before the device network works, so it cannot be left unaddressed the way a managed-only
-// adapter can. The two intents differ in exactly that, and the difference is a type.
+// A bootstrap guest needs an explicit address on both adapters. A missing-field consumer
+// proves that bootstrapMacAddress is required; a null excess property alone cannot prove it.
+// @ts-expect-error the caller must supply a bootstrap address instead of asking the library to derive one
 export const bootstrapAddressIsNotOptional: HyperVCreateNetworkIntent = {
+    kind: "managed-and-bootstrap",
+    switchName: "ccc-internal",
+    adapterName: "CCC Device Network",
+    macAddress: "02:15:5d:01:1a:2c",
+    bootstrapSwitchName: "Default Switch",
+    bootstrapAdapterName: "CCC Bootstrap DHCP",
+};
+
+export const bootstrapAddressCannotBeNull: HyperVCreateNetworkIntent = {
     kind: "managed-and-bootstrap",
     switchName: "ccc-internal",
     adapterName: "CCC Device Network",
@@ -63,6 +72,45 @@ export const bootstrapAddressIsNotOptional: HyperVCreateNetworkIntent = {
     bootstrapAdapterName: "CCC Bootstrap DHCP",
     // @ts-expect-error a bootstrap adapter with no address cannot be reached, so null is not a value here
     bootstrapMacAddress: null,
+};
+
+export const bootstrapAddressCannotBeUndefined: HyperVCreateNetworkIntent = {
+    kind: "managed-and-bootstrap",
+    switchName: "ccc-internal",
+    adapterName: "CCC Device Network",
+    macAddress: "02:15:5d:01:1a:2c",
+    bootstrapSwitchName: "Default Switch",
+    bootstrapAdapterName: "CCC Bootstrap DHCP",
+    // @ts-expect-error the required explicit address is a string, including with exact optional properties enabled
+    bootstrapMacAddress: undefined,
+};
+
+export const bootstrapManagedAddressCannotBeNull: Extract<HyperVCreateNetworkIntent, { kind: "managed-and-bootstrap" }> = {
+    kind: "managed-and-bootstrap",
+    switchName: "ccc-internal",
+    adapterName: "CCC Device Network",
+    // @ts-expect-error a guest with both adapters must also supply its managed address
+    macAddress: null,
+    bootstrapSwitchName: "Default Switch",
+    bootstrapAdapterName: "CCC Bootstrap DHCP",
+    bootstrapMacAddress: "0A-2B-3C-4D-5E-6F",
+};
+
+export const explicitBootstrapPairIsWritable: HyperVCreateNetworkIntent = {
+    kind: "managed-and-bootstrap",
+    switchName: "ccc-internal",
+    adapterName: "CCC Device Network",
+    macAddress: "02:15:5d:01:1a:2c",
+    bootstrapSwitchName: "Default Switch",
+    bootstrapAdapterName: "CCC Bootstrap DHCP",
+    bootstrapMacAddress: "0A-2B-3C-4D-5E-6F",
+};
+
+export const managedNetworkWithoutAnAddressIsWritable: HyperVCreateNetworkIntent = {
+    kind: "managed",
+    switchName: "ccc-internal",
+    adapterName: "CCC Device Network",
+    macAddress: null,
 };
 
 // A VM with no network carries no switch to name.

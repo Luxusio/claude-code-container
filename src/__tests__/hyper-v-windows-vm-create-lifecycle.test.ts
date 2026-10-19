@@ -99,6 +99,7 @@ describe("the whole plan, every field", () => {
                 macAddress: "02:15:5d:01:1a:2c",
                 bootstrapSwitchName: "Default Switch",
                 bootstrapAdapterName: "CCC Bootstrap DHCP",
+                bootstrapMacAddress: "06:15:5d:01:1a:2c",
             },
         }))).toEqual([
             { kind: "ensure-directory", path: DEVICE_ROOT },
@@ -242,6 +243,7 @@ describe("virtual machine creation planning, bootstrap networking", () => {
         macAddress: "02:15:5d:01:1a:2c",
         bootstrapSwitchName: "Default Switch",
         bootstrapAdapterName: "CCC Bootstrap DHCP",
+        bootstrapMacAddress: "06:15:5d:01:1a:2c",
     };
 
     // New-VM creates exactly one adapter, and for a guest that needs DHCP before it can be
@@ -266,8 +268,6 @@ describe("virtual machine creation planning, bootstrap networking", () => {
             {
                 kind: "set-adapter-mac",
                 adapter: { kind: "name", name: "CCC Bootstrap DHCP" },
-                // Derived from the managed address, never supplied beside it -- so the two
-                // adapters of one device cannot be handed in accidentally equal.
                 macAddress: "06:15:5d:01:1a:2c",
             },
             {
@@ -415,6 +415,7 @@ const EVERY_STEP_KIND: readonly HyperVCreateStep[] = ([
         macAddress: "02:15:5d:01:1a:2c",
         bootstrapSwitchName: "Default Switch",
         bootstrapAdapterName: "CCC Bootstrap DHCP",
+        bootstrapMacAddress: "06:15:5d:01:1a:2c",
     },
 ] as readonly HyperVCreateNetworkIntent[]).flatMap((network) =>
     [...planHyperVVirtualMachineCreation(request({ network }))])
@@ -560,6 +561,7 @@ describe("the VM settings order", () => {
             macAddress: "02:15:5d:01:1a:2c",
             bootstrapSwitchName: "Default Switch",
             bootstrapAdapterName: "CCC Bootstrap DHCP",
+            bootstrapMacAddress: "06:15:5d:01:1a:2c",
         });
         expect(kinds).toEqual([
             "ensure-directory",
@@ -578,21 +580,106 @@ describe("the VM settings order", () => {
     });
 });
 
-describe("the derived bootstrap address", () => {
-    // Deriving `06` from `02` is what keeps a device's two adapters apart. An address already
-    // in the `06` range derives to itself, which would plan both adapters onto one address --
-    // native accepts that and nothing downstream re-reads it, so this is the last place to
-    // catch it.
-    it("refuses a managed address that derives to itself", () => {
+describe("explicit bootstrap MAC identity", () => {
+    const bootstrap = {
+        kind: "managed-and-bootstrap",
+        switchName: "ccc-internal",
+        adapterName: "CCC Device Network",
+        macAddress: "02:15:5d:01:1a:2c",
+        bootstrapSwitchName: "Default Switch",
+        bootstrapAdapterName: "CCC Bootstrap DHCP",
+        bootstrapMacAddress: "0A-2B-3C-4D-5E-6F",
+    } as const satisfies HyperVCreateNetworkIntent;
+
+    it.each([
+        ["02:15:5d:01:1a:2c", "0A-2B-3C-4D-5E-6F"],
+        ["06:15:5d:01:1a:2c", "0a:2b:3c:4d:5e:6f"],
+        ["02155D011A2C", "0A2B3C4D5E6F"],
+    ])("assigns the supplied distinct pair %s and %s without changing its spelling", (macAddress, bootstrapMacAddress) => {
+        const steps = planHyperVVirtualMachineCreation(request({
+            network: { ...bootstrap, macAddress, bootstrapMacAddress },
+        }));
+
+        expect(steps.filter((step) => step.kind === "set-adapter-mac")).toEqual([
+            {
+                kind: "set-adapter-mac",
+                adapter: { kind: "name", name: "CCC Bootstrap DHCP" },
+                macAddress: bootstrapMacAddress,
+            },
+            {
+                kind: "set-adapter-mac",
+                adapter: { kind: "name", name: "CCC Device Network" },
+                macAddress,
+            },
+        ]);
+    });
+
+    it.each([
+        "02:15:5d:01:1a:2c",
+        "02:15:5D:01:1A:2C",
+        "02-15-5D-01-1A-2C",
+        "02155D011A2C",
+    ])("refuses canonical equality with bootstrap spelling %s", (bootstrapMacAddress) => {
+        expect(() => planHyperVVirtualMachineCreation(request({
+            network: { ...bootstrap, bootstrapMacAddress },
+        }))).toThrow("hyper-v-create-bootstrap-mac-address-conflict");
+    });
+
+    it("refuses a missing bootstrap address instead of deriving one", () => {
         expect(() => planHyperVVirtualMachineCreation(request({
             network: {
                 kind: "managed-and-bootstrap",
                 switchName: "ccc-internal",
                 adapterName: "CCC Device Network",
-                macAddress: "06:15:5d:01:1a:2c",
+                macAddress: "02:15:5d:01:1a:2c",
                 bootstrapSwitchName: "Default Switch",
                 bootstrapAdapterName: "CCC Bootstrap DHCP",
-            },
-        }))).toThrow("hyper-v-create-bootstrap-mac-address-not-derivable");
+            } as HyperVCreateNetworkIntent,
+        }))).toThrow("hyper-v-create-bootstrap-mac-address-invalid");
+    });
+
+    it.each([
+        ["undefined", undefined],
+        ["null", null],
+        ["number", 42],
+        ["object", {}],
+        ["array", []],
+    ])("refuses a non-string bootstrap address of type %s", (_label, bootstrapMacAddress) => {
+        expect(() => planHyperVVirtualMachineCreation(request({
+            network: { ...bootstrap, bootstrapMacAddress } as unknown as HyperVCreateNetworkIntent,
+        }))).toThrow("hyper-v-create-bootstrap-mac-address-invalid");
+    });
+
+    it.each([
+        ["", "hyper-v-create-bootstrap-mac-address-invalid"],
+        ["0A:2B-3C:4D:5E:6F", "hyper-v-create-bootstrap-mac-address-invalid"],
+        ["0A:2B:3C:4D:5E", "hyper-v-create-bootstrap-mac-address-invalid"],
+        ["GG:2B:3C:4D:5E:6F", "hyper-v-create-bootstrap-mac-address-invalid"],
+        ["00:00:00:00:00:00", "hyper-v-mac-address-unassigned"],
+    ])("refuses invalid bootstrap address %j", (bootstrapMacAddress, code) => {
+        expect(() => planHyperVVirtualMachineCreation(request({
+            network: { ...bootstrap, bootstrapMacAddress },
+        }))).toThrow(code);
+    });
+
+    it.each([
+        "0:A2B:3C:4D:5E:6F",
+        "0-A2B-3C-4D-5E-6F",
+        "0A2B3C4D5E6F\n",
+        "0A:2B:3C:4D:5E:6F\r\n",
+        "0A-2B-3C-4D-5E-6F\u0000",
+    ])("refuses malformed width or trailing control in bootstrap spelling %j", (bootstrapMacAddress) => {
+        expect(() => planHyperVVirtualMachineCreation(request({
+            network: { ...bootstrap, bootstrapMacAddress },
+        }))).toThrow("hyper-v-create-bootstrap-mac-address-invalid");
+    });
+
+    it.each([
+        ["02:15-5d:01:1a:2c", "hyper-v-create-bootstrap-mac-address-invalid"],
+        ["000000000000", "hyper-v-mac-address-unassigned"],
+    ])("also validates the managed address %j before planning the pair", (macAddress, code) => {
+        expect(() => planHyperVVirtualMachineCreation(request({
+            network: { ...bootstrap, macAddress },
+        }))).toThrow(code);
     });
 });

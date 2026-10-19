@@ -122,8 +122,8 @@ fixed `-Command` bootstrap and bounded stdin-envelope helper. It never reopens
 that source with `-File`, so the production consumer and standalone proof share
 the same check/use-safe transport contract.
 
-The broker capability `hyper-v-windows-library-v17` is the current compatibility
-fence. Version 8 introduced the exact `Get-VM` no-match confirmation semantics
+The historical broker capability `hyper-v-windows-library-v17` was the compatibility
+fence before the shared protocol superseded it. Version 8 introduced the exact `Get-VM` no-match confirmation semantics
 above. Version 7 was already advertised when those
 asset bytes and their digest changed, so a same-package-version v7 broker could
 pass startup attestation, retain the previous digest in memory, and reject the
@@ -168,12 +168,17 @@ no-match pair is proven only by a successful host-wide inventory read. The
 name as a native error, which blocks every networked create at allocation
 reconciliation; the v17 fence replaces it along with its stale asset digest.
 
-Any later behavior-affecting change to the pinned asset or its production adapter after
-the current capability is advertised must advance the library capability in
-the broker advertisement, CLI requirement, Level 3 requirement, and packaged
-MCP requirement together. The existing
+Any later behavior-affecting change to the pinned asset or its production adapter that
+requires replacing an older daemon must advance the shared broker protocol consumed by
+the broker advertisement, CLI, Level 3 and packaged MCP together. The existing
 identity-fenced broker repair then replaces the stale process before provider
 execution; age-based or unconditional restart is not part of this contract.
+
+The current shared broker protocol replaces the earlier per-library capability fence.
+Explicit bootstrap identity expectations change the trusted operation asset, so protocol 6
+rejects a protocol-5 daemon before its old in-memory asset pin can be reused. CLI, packaged
+MCP and Level 3 consume the same protocol constant and retain the existing identity-fenced
+replacement and newer-protocol refusal.
 
 Level 3 invokes the repair-capable CLI status once per attestation attempt, then
 confirms its OS-verified broker identity with two independent read-only loopback
@@ -1719,7 +1724,12 @@ the VM and across the host. It validates the media output and SSH host identity
 before the VM is changed.
 
 The existing typed `Configure-VMGuestBoot` transaction gained an explicit Linux
-policy. Its Windows default and integration-service behavior are unchanged.
+arm. Device Lab supplies the expected bootstrap adapter name, switch name and
+MAC; the library validates those identities without choosing CCC names or a MAC
+prefix. Creation intents also carry an explicit bootstrap MAC, with canonical
+collision checks in the planner and CCC derivation kept in Device Lab. The
+contract is in `doc/hyper-v-windows/REQ__bootstrap-network-expectations.md`.
+Its Windows default and integration-service behavior are unchanged.
 Linux rechecks the bootstrap MAC and VM identity immediately before DVD attach,
 keeps Secure Boot Off for generation 2 or IDE-first BIOS order for generation 1,
 and leaves integration-service state alone. Native readback stays in the shared

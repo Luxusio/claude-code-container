@@ -1434,15 +1434,29 @@ try {
                 $GuestKind = if ($Request.PSObject.Properties.Name -contains "guestKind") { [string]$Request.guestKind } else { "windows" }
                 if ($GuestKind -cnotin @("windows", "linux")) { throw "hyper-v-guest-provision-boot-settings-invalid" }
                 if ($GuestKind -ceq "linux") {
+                    foreach ($ExpectedBootstrapName in @($Request.expectedBootstrapAdapterName, $Request.expectedBootstrapSwitchName)) {
+                        if ($ExpectedBootstrapName -isnot [string] -or
+                            $ExpectedBootstrapName.Length -eq 0 -or $ExpectedBootstrapName.Length -gt 100 -or
+                            $ExpectedBootstrapName -match '[\x00-\x1f*?\[\]]') {
+                            throw "hyper-v-guest-provision-boot-settings-invalid"
+                        }
+                    }
+                    $ExpectedBootstrapAdapterName = [string]$Request.expectedBootstrapAdapterName
+                    $ExpectedBootstrapSwitchName = [string]$Request.expectedBootstrapSwitchName
+                    if ($Request.expectedBootstrapMacAddress -isnot [string]) {
+                        throw "hyper-v-guest-provision-boot-settings-invalid"
+                    }
                     $ExpectedBootstrapMac = [string]$Request.expectedBootstrapMacAddress
-                    if ($ExpectedBootstrapMac -cnotmatch '^(?:[0-9A-Fa-f]{12}|(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})$') {
+                    if ($ExpectedBootstrapMac -cnotmatch '^(?:[0-9A-Fa-f]{12}|(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}|(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2})\z') {
                         throw "hyper-v-guest-provision-boot-settings-invalid"
                     }
-                    $ExpectedBootstrapMac = ($ExpectedBootstrapMac -replace ':', '').ToUpperInvariant()
-                    if (-not $ExpectedBootstrapMac.StartsWith("06", [StringComparison]::Ordinal)) {
+                    $ExpectedBootstrapMac = ($ExpectedBootstrapMac -replace '[:-]', '').ToUpperInvariant()
+                    if ($ExpectedBootstrapMac -ceq "000000000000") {
                         throw "hyper-v-guest-provision-boot-settings-invalid"
                     }
-                } elseif ($Request.PSObject.Properties.Name -contains "expectedBootstrapMacAddress") {
+                } elseif ($Request.PSObject.Properties.Name -contains "expectedBootstrapAdapterName" -or
+                    $Request.PSObject.Properties.Name -contains "expectedBootstrapSwitchName" -or
+                    $Request.PSObject.Properties.Name -contains "expectedBootstrapMacAddress") {
                     throw "hyper-v-guest-provision-boot-settings-invalid"
                 }
                 $VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine $VirtualMachines
@@ -1533,10 +1547,10 @@ try {
                     })
                     if ($ExistingMedia.Count -ne 0) { throw "hyper-v-guest-provisioning-media-already-attached" }
                     $BootstrapAdapters = @(Hyper-V\Get-VMNetworkAdapter -VM $VirtualMachine -ErrorAction Stop | Where-Object {
-                        [string]$_.Name -ceq "CCC Bootstrap DHCP"
+                        [string]$_.Name -ceq $ExpectedBootstrapAdapterName
                     })
                     if ($BootstrapAdapters.Count -ne 1 -or
-                        [string]$BootstrapAdapters[0].SwitchName -cne "Default Switch") {
+                        [string]$BootstrapAdapters[0].SwitchName -cne $ExpectedBootstrapSwitchName) {
                         throw "hyper-v-guest-bootstrap-adapter-invalid"
                     }
                     $BootstrapMac = ([string]$BootstrapAdapters[0].MacAddress -replace '[:-]', '').ToUpperInvariant()
@@ -1549,8 +1563,8 @@ try {
                     if ($HostBootstrapMacMatches.Count -ne 1 -or
                         [Guid]$HostBootstrapMacMatches[0].VMId -ne [Guid]$VirtualMachine.Id -or
                         [string]$HostBootstrapMacMatches[0].VMName -cne [string]$VirtualMachine.Name -or
-                        [string]$HostBootstrapMacMatches[0].Name -cne "CCC Bootstrap DHCP" -or
-                        [string]$HostBootstrapMacMatches[0].SwitchName -cne "Default Switch") {
+                        [string]$HostBootstrapMacMatches[0].Name -cne $ExpectedBootstrapAdapterName -or
+                        [string]$HostBootstrapMacMatches[0].SwitchName -cne $ExpectedBootstrapSwitchName) {
                         throw "hyper-v-guest-bootstrap-mac-identity-mismatch"
                     }
                 }

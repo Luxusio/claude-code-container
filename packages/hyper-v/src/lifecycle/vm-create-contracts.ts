@@ -57,11 +57,10 @@ export type HyperVCreateNetworkIntent =
         readonly macAddress: string;
         readonly bootstrapSwitchName: string;
         readonly bootstrapAdapterName: string;
+        readonly bootstrapMacAddress: string;
     };
-// The bootstrap address is DERIVED from the managed one, never supplied beside it: a second
-// field would let a caller hand in a pair that is accidentally equal. Deriving is not on its
-// own sufficient -- a managed address already in the `06` range derives to itself -- so the
-// planner rejects that case rather than planning two adapters onto one address.
+// Adapter addresses are caller policy. Both are explicit, and the planner rejects equal
+// identities so creation cannot assign the same static address to two adapters.
 
 /**
  * One step of creation, in the order it must run.

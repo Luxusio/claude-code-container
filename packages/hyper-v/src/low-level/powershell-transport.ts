@@ -12,7 +12,7 @@ import type {
 
 export const HYPER_V_WINDOWS_POWERSHELL_ASSET = {
     name: "Invoke-HyperVWindowsOperation.ps1",
-    sha256: "c2826507c99d7183c90cb7cc34c717770c68386f4958aaeeff3a96c89112c211",
+    sha256: "a09fcc32190029740c0a5190743c45793c9e5e469321fc5965acd86b702f5bf4",
 } as const;
 export const HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP = [
     "$EnvelopeJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))",

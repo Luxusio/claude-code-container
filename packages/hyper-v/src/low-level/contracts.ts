@@ -252,8 +252,18 @@ type HyperVConfigureVMGuestBootIdentity = {
 };
 
 export type HyperVConfigureVMGuestBootRequest = HyperVConfigureVMGuestBootIdentity & (
-    | { readonly guestKind?: "windows"; readonly expectedBootstrapMacAddress?: never }
-    | { readonly guestKind: "linux"; readonly expectedBootstrapMacAddress: string }
+    | {
+        readonly guestKind?: "windows";
+        readonly expectedBootstrapAdapterName?: never;
+        readonly expectedBootstrapSwitchName?: never;
+        readonly expectedBootstrapMacAddress?: never;
+    }
+    | {
+        readonly guestKind: "linux";
+        readonly expectedBootstrapAdapterName: string;
+        readonly expectedBootstrapSwitchName: string;
+        readonly expectedBootstrapMacAddress: string;
+    }
 );
 
 export type HyperVGuestDirectIdentity = {
@@ -311,7 +321,7 @@ export type HyperVWindowsExecutionRequest =
     | (HyperVWindowsExecutionRequestBase<"Capture-VMConsole"> & Omit<HyperVConsoleIdentity, "selector">)
     | (HyperVWindowsExecutionRequestBase<"Get-VMConsoleCursor"> & Omit<HyperVConsoleIdentity, "selector">)
     | (HyperVWindowsExecutionRequestBase<"Send-VMConsoleInput"> & Omit<HyperVConsoleInput, "selector">)
-    | (HyperVWindowsExecutionRequestBase<"Configure-VMGuestBoot"> & Omit<HyperVConfigureVMGuestBootRequest, "selector">)
+    | (HyperVWindowsExecutionRequestBase<"Configure-VMGuestBoot"> & HyperVConfigureVMGuestBootRequest)
     | (HyperVWindowsHostExecutionRequestWithoutSelectorBase<"Get-VM"> & HyperVExactNameVMInventoryRequest)
     | HyperVWindowsExecutionRequestBase<"Get-VMHardDiskDrive">
     | HyperVWindowsExecutionRequestBase<"Get-VMDvdDrive">

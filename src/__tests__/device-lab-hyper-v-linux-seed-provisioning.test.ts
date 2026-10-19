@@ -131,8 +131,10 @@ describe("Device Lab typed Linux seed VM boundary", () => {
         });
         await attachDeviceLabHyperVLinuxSeedMedia(target(run, generation));
         expect(requests).toHaveLength(1);
-        expect(requests[0]).toMatchObject({ operation: "Configure-VMGuestBoot", guestKind: "linux",
-            expectedBootstrapMacAddress: bootstrapMac, expectedName: vmName, expectedNotes,
+        expect(requests[0]).toEqual({ schemaVersion: 1, operation: "Configure-VMGuestBoot", guestKind: "linux",
+            selector: { kind: "id", id: vmId }, expectedName: vmName, expectedNotes, osDiskPath, mediaPath,
+            expectedBootstrapAdapterName: "CCC Bootstrap DHCP", expectedBootstrapSwitchName: "Default Switch",
+            expectedBootstrapMacAddress: bootstrapMac,
             bootSettings: generation === 2 ? { generation: 2, secureBoot: { enabled: false } }
                 : { generation: 1, startupOrder: ["IDE", "CD", "LegacyNetworkAdapter", "Floppy"] } });
     });

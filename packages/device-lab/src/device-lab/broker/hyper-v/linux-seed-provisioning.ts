@@ -90,6 +90,8 @@ export async function attachDeviceLabHyperVLinuxSeedMedia(
         osDiskPath: options.osDiskPath,
         mediaPath: options.mediaPath,
         guestKind: "linux",
+        expectedBootstrapAdapterName: "CCC Bootstrap DHCP",
+        expectedBootstrapSwitchName: "Default Switch",
         expectedBootstrapMacAddress: linuxSeedBootstrapMacAddress(options.managedMacAddress),
         bootSettings: options.generation === 2
             ? { generation: 2, secureBoot: { enabled: false } }

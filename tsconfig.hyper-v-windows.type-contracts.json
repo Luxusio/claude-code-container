@@ -8,6 +8,7 @@
   },
   "include": [
     "packages/hyper-v/src/**/*.ts",
+    "src/__tests__/hyper-v-windows-guest-boot-type-contracts.ts",
     "src/__tests__/hyper-v-windows-network-type-contracts.ts",
     "src/__tests__/hyper-v-windows-vm-create-type-contracts.ts"
   ],

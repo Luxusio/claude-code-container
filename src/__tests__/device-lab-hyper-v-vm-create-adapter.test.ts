@@ -14,9 +14,19 @@ import {
 } from "@ccc/hyper-v/low-level/index.js";
 
 const VM_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+const OTHER_VM_ID = "dddddddd-dddd-dddd-dddd-dddddddddddd";
 const DISK_PATH = "C:\\ccc\\device-1\\disks\\root.vhdx";
 const MANAGED_MAC = "02:15:5D:01:1A:2C";
-const BOOTSTRAP_MAC = parseHyperVMacAddress("06:15:5D:01:1A:2C");
+const BOOTSTRAP_MAC = "0A-2B-3C-4D-5E-6F";
+const BOOTSTRAP_NETWORK = {
+    kind: "managed-and-bootstrap",
+    switchName: "CCC Switch",
+    adapterName: "CCC Device Network",
+    macAddress: MANAGED_MAC,
+    bootstrapSwitchName: "Default Switch",
+    bootstrapAdapterName: "CCC Bootstrap DHCP",
+    bootstrapMacAddress: BOOTSTRAP_MAC,
+} as const;
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -54,6 +64,7 @@ function adapter(name: string, switchName: string, macAddress: string): HyperVVM
 }
 
 function fixture(createRequest: HyperVCreateVirtualMachineRequest) {
+    const network = createRequest.network;
     const operations: string[] = [];
     const effects: HyperVCreateEffect[] = [{ kind: "file-created", path: DISK_PATH }];
     let created = false;
@@ -97,14 +108,16 @@ function fixture(createRequest: HyperVCreateVirtualMachineRequest) {
         getAllVMNetworkAdapters: vi.fn(async () => {
             operations.push("Get-VMNetworkAdapter-All");
             hostAdapterReads += 1;
-            return hostAdapterReads === 1 ? [] : [adapter("CCC Bootstrap DHCP", "Default Switch", BOOTSTRAP_MAC)];
+            return hostAdapterReads === 1 || network.kind !== "managed-and-bootstrap"
+                ? []
+                : [adapter(network.bootstrapAdapterName, network.bootstrapSwitchName, network.bootstrapMacAddress)];
         }),
         getVMNetworkAdapters: vi.fn(async () => {
             operations.push("Get-VMNetworkAdapter-VM");
-            return createRequest.network.kind === "managed-and-bootstrap"
-                ? [adapter("CCC Bootstrap DHCP", "Default Switch", BOOTSTRAP_MAC), adapter("CCC Device Network", "CCC Switch", MANAGED_MAC)]
-                : createRequest.network.kind === "managed"
-                    ? [adapter(createRequest.network.adapterName, createRequest.network.switchName, MANAGED_MAC)]
+            return network.kind === "managed-and-bootstrap"
+                ? [adapter(network.bootstrapAdapterName, network.bootstrapSwitchName, network.bootstrapMacAddress), adapter(network.adapterName, network.switchName, network.macAddress)]
+                : network.kind === "managed"
+                    ? [adapter(network.adapterName, network.switchName, network.macAddress ?? MANAGED_MAC)]
                     : [];
         }),
     };
@@ -128,11 +141,11 @@ describe("typed Hyper-V creation mutation phase", () => {
         expect(host.client.setVM).toHaveBeenCalledWith(expect.objectContaining({ notes: createRequest.notes, checkpointType: "ProductionOnly", automaticCheckpointsEnabled: false }));
     });
 
-    it("preserves Linux bootstrap adapter order, MAC identity, and Production checkpoints", async () => {
+    it("uses the supplied non-06 bootstrap MAC through assignment and readback while preserving order and checkpoints", async () => {
         const createRequest = request({
             firmware: { generation: 2, secureBoot: { enabled: false } },
             checkpointType: "Production",
-            network: { kind: "managed-and-bootstrap", switchName: "CCC Switch", adapterName: "CCC Device Network", macAddress: MANAGED_MAC, bootstrapSwitchName: "Default Switch", bootstrapAdapterName: "CCC Bootstrap DHCP" },
+            network: BOOTSTRAP_NETWORK,
         });
         const host = fixture(createRequest);
 
@@ -146,6 +159,16 @@ describe("typed Hyper-V creation mutation phase", () => {
             "Get-VMHardDiskDrive", "Get-VMFirmware", "Get-VMNetworkAdapter-VM", "Get-VMNetworkAdapter-All",
         ]);
         expect(host.client.newVM).toHaveBeenCalledWith(expect.objectContaining({ switchName: "Default Switch" }));
+        expect(host.client.setVMNetworkAdapter).toHaveBeenNthCalledWith(1, {
+            selector: { kind: "id", id: VM_ID },
+            adapter: { kind: "name", name: "CCC Bootstrap DHCP" },
+            staticMacAddress: BOOTSTRAP_MAC,
+        });
+        expect(host.client.setVMNetworkAdapter).toHaveBeenNthCalledWith(2, {
+            selector: { kind: "id", id: VM_ID },
+            adapter: { kind: "name", name: "CCC Device Network" },
+            staticMacAddress: MANAGED_MAC,
+        });
         expect(host.client.setVM).toHaveBeenCalledWith(expect.objectContaining({ checkpointType: "Production" }));
         expect(host.client.setVMFirmware).toHaveBeenCalledWith(expect.objectContaining({ secureBoot: { enabled: false } }));
     });
@@ -160,15 +183,16 @@ describe("typed Hyper-V creation mutation phase", () => {
         expect(host.effects.at(-1)).toEqual({ kind: "vm-created", vmId: VM_ID });
     });
 
-    it("refuses a bootstrap MAC already assigned before New-VM", async () => {
-        const createRequest = request({ network: { kind: "managed-and-bootstrap", switchName: "CCC Switch", adapterName: "CCC Device Network", macAddress: MANAGED_MAC, bootstrapSwitchName: "Default Switch", bootstrapAdapterName: "CCC Bootstrap DHCP" } });
+    it("refuses the supplied non-06 bootstrap MAC already assigned before New-VM", async () => {
+        const createRequest = request({ network: BOOTSTRAP_NETWORK });
         const host = fixture(createRequest);
         host.networkClient.getAllVMNetworkAdapters = vi.fn(async () => [adapter("other", "Default Switch", BOOTSTRAP_MAC)]);
 
         await expect(executeDeviceLabHyperVVmCreation({ request: createRequest, ...host, deadlineAt: Date.now() + 30_000 }))
             .rejects.toThrow("hyper-v-bootstrap-mac-address-conflict");
         expect(host.client.newVM).not.toHaveBeenCalled();
-        expect(host.effects).toHaveLength(1);
+        expect(host.effects).toEqual([{ kind: "file-created", path: DISK_PATH }]);
+        expect(host.client.setVMNetworkAdapter).not.toHaveBeenCalled();
     });
 
     it("refuses a managed switch that disappeared before New-VM", async () => {
@@ -182,17 +206,102 @@ describe("typed Hyper-V creation mutation phase", () => {
     });
 
     it("refuses a bootstrap MAC claimed by another VM after assignment", async () => {
-        const createRequest = request({ network: { kind: "managed-and-bootstrap", switchName: "CCC Switch", adapterName: "CCC Device Network", macAddress: MANAGED_MAC, bootstrapSwitchName: "Default Switch", bootstrapAdapterName: "CCC Bootstrap DHCP" } });
+        const createRequest = request({ network: BOOTSTRAP_NETWORK });
         const host = fixture(createRequest);
         let reads = 0;
         host.networkClient.getAllVMNetworkAdapters = vi.fn(async () => {
             reads += 1;
-            return reads === 1 ? [] : [adapter("other", "Default Switch", BOOTSTRAP_MAC)];
+            return reads === 1 ? [] : [{
+                ...adapter("CCC Bootstrap DHCP", "Default Switch", BOOTSTRAP_MAC),
+                vmId: parseHyperVVirtualMachineId(OTHER_VM_ID),
+                vmName: "other-vm",
+            }];
         });
 
         await expect(executeDeviceLabHyperVVmCreation({ request: createRequest, ...host, deadlineAt: Date.now() + 30_000 }))
             .rejects.toThrow("hyper-v-bootstrap-mac-address-conflict");
-        expect(host.effects.at(-1)).toEqual({ kind: "vm-created", vmId: VM_ID });
+        expect(host.effects).toEqual([{ kind: "file-created", path: DISK_PATH }, { kind: "vm-created", vmId: VM_ID }]);
+        expect(host.client.newVM).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ["same spelling", MANAGED_MAC],
+        ["canonical alternate spelling", "02155d011a2c"],
+    ])("rejects equal managed/bootstrap MACs with %s before native reads or mutations", async (_label, bootstrapMacAddress) => {
+        const createRequest = request({ network: { ...BOOTSTRAP_NETWORK, bootstrapMacAddress } });
+        const host = fixture(createRequest);
+
+        await expect(executeDeviceLabHyperVVmCreation({ request: createRequest, ...host, deadlineAt: Date.now() + 30_000 }))
+            .rejects.toThrow("hyper-v-create-bootstrap-mac-address-conflict");
+
+        expect(host.operations).toEqual([]);
+        expect(host.effects).toEqual([{ kind: "file-created", path: DISK_PATH }]);
+    });
+
+    it.each([
+        ["missing", undefined, "hyper-v-create-bootstrap-mac-address-invalid"],
+        ["zero", "000000000000", "hyper-v-mac-address-unassigned"],
+    ])("rejects a %s bootstrap MAC before native reads or mutations", async (_label, bootstrapMacAddress, code) => {
+        const createRequest = request({
+            network: { ...BOOTSTRAP_NETWORK, bootstrapMacAddress } as unknown as HyperVCreateVirtualMachineRequest["network"],
+        });
+        const host = fixture(createRequest);
+
+        await expect(executeDeviceLabHyperVVmCreation({ request: createRequest, ...host, deadlineAt: Date.now() + 30_000 }))
+            .rejects.toThrow(code);
+
+        expect(host.operations).toEqual([]);
+        expect(host.effects).toEqual([{ kind: "file-created", path: DISK_PATH }]);
+    });
+
+    it("refuses readback of the former derived address when a different bootstrap MAC was supplied", async () => {
+        const createRequest = request({ network: BOOTSTRAP_NETWORK });
+        const host = fixture(createRequest);
+        host.networkClient.getVMNetworkAdapters = vi.fn(async () => [
+            adapter("CCC Bootstrap DHCP", "Default Switch", "06:15:5D:01:1A:2C"),
+            adapter("CCC Device Network", "CCC Switch", MANAGED_MAC),
+        ]);
+
+        await expect(executeDeviceLabHyperVVmCreation({ request: createRequest, ...host, deadlineAt: Date.now() + 30_000 }))
+            .rejects.toThrow("hyper-v-bootstrap-network-adapter-unavailable");
+
+        expect(host.effects).toEqual([{ kind: "file-created", path: DISK_PATH }, { kind: "vm-created", vmId: VM_ID }]);
+        expect(host.client.newVM).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["duplicate", "foreign VM"])("rejects %s bootstrap adapter readback and retains the created VM for compensation", async (observation) => {
+        const createRequest = request({ network: BOOTSTRAP_NETWORK });
+        const host = fixture(createRequest);
+        const bootstrap = adapter("CCC Bootstrap DHCP", "Default Switch", BOOTSTRAP_MAC);
+        host.networkClient.getVMNetworkAdapters = vi.fn(async () => [
+            ...(observation === "duplicate" ? [bootstrap, bootstrap] : [{ ...bootstrap, vmId: parseHyperVVirtualMachineId(OTHER_VM_ID) }]),
+            adapter("CCC Device Network", "CCC Switch", MANAGED_MAC),
+        ]);
+
+        await expect(executeDeviceLabHyperVVmCreation({ request: createRequest, ...host, deadlineAt: Date.now() + 30_000 }))
+            .rejects.toThrow("hyper-v-bootstrap-network-adapter-unavailable");
+
+        expect(host.effects).toEqual([{ kind: "file-created", path: DISK_PATH }, { kind: "vm-created", vmId: VM_ID }]);
+        expect(host.client.newVM).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects duplicate host assignments of the supplied bootstrap MAC after assignment", async () => {
+        const createRequest = request({ network: BOOTSTRAP_NETWORK });
+        const host = fixture(createRequest);
+        let reads = 0;
+        host.networkClient.getAllVMNetworkAdapters = vi.fn(async () => {
+            reads += 1;
+            return reads === 1 ? [] : [
+                adapter("CCC Bootstrap DHCP", "Default Switch", BOOTSTRAP_MAC),
+                { ...adapter("other", "Default Switch", BOOTSTRAP_MAC), vmId: parseHyperVVirtualMachineId(OTHER_VM_ID) },
+            ];
+        });
+
+        await expect(executeDeviceLabHyperVVmCreation({ request: createRequest, ...host, deadlineAt: Date.now() + 30_000 }))
+            .rejects.toThrow("hyper-v-bootstrap-mac-address-conflict");
+
+        expect(host.effects).toEqual([{ kind: "file-created", path: DISK_PATH }, { kind: "vm-created", vmId: VM_ID }]);
+        expect(host.client.newVM).toHaveBeenCalledTimes(1);
     });
 
     it("leaves VM identity unresolved when New-VM loses its response", async () => {

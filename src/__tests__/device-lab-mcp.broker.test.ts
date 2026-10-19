@@ -1352,7 +1352,7 @@ describe("device-lab MCP", () => {
         }
     });
 
-    it("reuses a version5 host broker regardless of package version", { timeout: TIMEOUT }, async () => {
+    it("reuses the current protocol host broker regardless of package version", { timeout: TIMEOUT }, async () => {
         const initial = await callInternalBroker(client, { operation: "brokerStatus", arguments: { probe: false, autolaunch: false } });
         const initialPayload = JSON.parse(((initial.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             state: { runtimeFile: string };
@@ -1364,7 +1364,7 @@ describe("device-lab MCP", () => {
                 return;
             }
             if (req.url === "/status") {
-                res.end(JSON.stringify({ ok: true, broker: { protocolVersion: 5, version: "999.0.0" } }));
+                res.end(JSON.stringify({ ok: true, broker: { protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION, version: "999.0.0" } }));
                 return;
             }
             if (sendTestOwnerResolve(req, res)) return;
@@ -1395,7 +1395,6 @@ describe("device-lab MCP", () => {
             };
             expect(payload).toEqual(expect.objectContaining({ mode: "host-broker-detected", rpcReady: true }));
             expect(payload.launch).toEqual(expect.objectContaining({ ok: true, reused: true, port: address.port }));
-            expect(DEVICE_BROKER_PROTOCOL_VERSION).toBe(5);
             expect(payload.warnings.join(" ")).not.toContain("missing required capabilities");
         } finally {
             rmSync(initialPayload.state.runtimeFile, { force: true });
@@ -1403,7 +1402,7 @@ describe("device-lab MCP", () => {
         }
     });
 
-    it.each([undefined, 4])("rejects an older ccc-host runtime with protocol %s through actual compatibility verification", { timeout: TIMEOUT }, async protocolVersion => {
+    it.each([undefined, 4, 5])("rejects an older ccc-host runtime with protocol %s through actual compatibility verification", { timeout: TIMEOUT }, async protocolVersion => {
         const initial = await callInternalBroker(client, { operation: "brokerStatus", arguments: { probe: false, autolaunch: false } });
         const initialPayload = JSON.parse(((initial.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             state: { runtimeFile: string };
@@ -1452,7 +1451,7 @@ describe("device-lab MCP", () => {
                     ok: false,
                     error: "host-broker-incompatible",
                     compatibility: expect.objectContaining({
-                        protocolVersion: protocolVersion ?? null, expectedProtocolVersion: 5,
+                        protocolVersion: protocolVersion ?? null, expectedProtocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
                     }),
                 }),
             }));
@@ -1703,7 +1702,8 @@ describe("device-lab MCP", () => {
                 cleanup: expect.objectContaining({ ok: true, method: "broker.cleanup.owner" }),
             }));
             expect(existsSync(runtimeFile)).toBe(false);
-            expect(pidAlive(brokerPid!)).toBe(false);
+            // Shutdown and the parent's process reaping can finish on separate turns.
+            await vi.waitFor(() => expect(pidAlive(brokerPid!)).toBe(false), { timeout: 3000 });
         } finally {
             await cleanupDeviceLabMcpTestContext(isolated);
             if (brokerPid) expect(await waitForHealthUnavailable(port)).toBe(true);

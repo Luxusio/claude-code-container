@@ -184,7 +184,7 @@ export async function executeHyperVVmCreation(request: VmCreationRequest, ports:
                 throw new Error("hyper-v-bootstrap-network-switch-conflict");
             bootstrapSwitchName = bootstrap[0].name;
             bootstrapSwitchId = bootstrap[0].id;
-            const bootstrapMac = ports.macAddress(`06${network.macAddress.slice(2)}`);
+            const bootstrapMac = ports.macAddress(network.bootstrapMacAddress);
             const hostAdapters = await call(() => ports.getAllVMNetworkAdapters());
             if (hostAdapters.some((adapter) => adapter.macAddress === bootstrapMac)) {
                 throw new Error("hyper-v-bootstrap-mac-address-conflict");
@@ -291,7 +291,7 @@ export async function executeHyperVVmCreation(request: VmCreationRequest, ports:
             throw new Error("hyper-v-managed-network-adapter-unavailable");
         }
         if (network.kind === "managed-and-bootstrap") {
-            const bootstrapMac = ports.macAddress(`06${network.macAddress.slice(2)}`);
+            const bootstrapMac = ports.macAddress(network.bootstrapMacAddress);
             const bootstrap = adapters.filter((adapter) => adapter.name === network.bootstrapAdapterName
                 && adapter.vmId === vmId && adapter.switchId === bootstrapSwitchId
                 && adapter.switchName === bootstrapSwitchName && adapter.macAddress === bootstrapMac);
@@ -419,7 +419,7 @@ export function createHyperVCreateStartApplication<Session,Connection,Receipt,Pr
             else if (parsed.backend === 'linux-vm') {
                 if (!macAddress)
                     throw new Error('hyper-v-bootstrap-mac-address-missing');
-                network = { kind: 'managed-and-bootstrap', switchName, adapterName: 'CCC Device Network', macAddress, bootstrapSwitchName: 'Default Switch', bootstrapAdapterName: 'CCC Bootstrap DHCP' };
+                network = { kind: 'managed-and-bootstrap', switchName, adapterName: 'CCC Device Network', macAddress, bootstrapSwitchName: 'Default Switch', bootstrapAdapterName: 'CCC Bootstrap DHCP', bootstrapMacAddress: `06${macAddress.slice(2)}` };
             }
             else
                 network = { kind: 'managed', switchName, adapterName: 'CCC Device Network', macAddress };

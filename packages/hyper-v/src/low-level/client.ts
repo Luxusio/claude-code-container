@@ -55,6 +55,7 @@ import type {
 } from "./contracts.js";
 import { parseHyperVWindowsGuestBootDiagnostic } from "./diagnostic.js";
 import { HyperVWindowsError, parseHyperVWindowsNativeDiagnostics } from "./errors.js";
+import { parseHyperVMacAddress } from "./network-contracts.js";
 
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NATIVE_ERROR_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -715,19 +716,36 @@ export function createHyperVWindowsClient(executor: HyperVWindowsExecutor): Hype
             const operation = "Configure-VMGuestBoot";
             const candidate = record(request);
             const guestKind = candidate?.guestKind === undefined ? "windows" : candidate.guestKind;
-            if (!candidate || (guestKind !== "windows" && guestKind !== "linux") || !hasExactKeys(candidate, [
+            if (!candidate || (guestKind !== "windows" && guestKind !== "linux")
+                || (guestKind === "windows" && (Object.hasOwn(candidate, "expectedBootstrapAdapterName")
+                    || Object.hasOwn(candidate, "expectedBootstrapSwitchName")
+                    || Object.hasOwn(candidate, "expectedBootstrapMacAddress")))
+                || !hasExactKeys(candidate, [
                 "selector", "expectedName", "expectedNotes", "osDiskPath", "mediaPath", "bootSettings",
                 ...(candidate.guestKind === undefined ? [] : ["guestKind"]),
-                ...(guestKind === "linux" ? ["expectedBootstrapMacAddress"] : []),
+                ...(guestKind === "linux" ? [
+                    "expectedBootstrapAdapterName", "expectedBootstrapSwitchName", "expectedBootstrapMacAddress",
+                ] : []),
             ])) throw error("validation", operation, "request-invalid");
+            let expectedBootstrapAdapterName: string | undefined;
+            let expectedBootstrapSwitchName: string | undefined;
             let expectedBootstrapMacAddress: string | undefined;
             if (guestKind === "linux") {
-                const rawMac = candidate.expectedBootstrapMacAddress;
-                if (typeof rawMac !== "string" || !/^(?:[0-9A-Fa-f]{12}|(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})$/.test(rawMac)) {
-                    throw error("validation", operation, "bootstrap-mac-invalid");
+                if (!validNativeName(candidate.expectedBootstrapAdapterName)
+                    || !validNativeName(candidate.expectedBootstrapSwitchName)) {
+                    throw error("validation", operation, "bootstrap-name-invalid");
                 }
-                expectedBootstrapMacAddress = rawMac.replace(/:/g, "").toUpperCase();
-                if (!expectedBootstrapMacAddress.startsWith("06")) {
+                expectedBootstrapAdapterName = candidate.expectedBootstrapAdapterName;
+                expectedBootstrapSwitchName = candidate.expectedBootstrapSwitchName;
+                const rawMac = candidate.expectedBootstrapMacAddress;
+                try {
+                    if (typeof rawMac !== "string") throw new Error("bootstrap-mac-invalid");
+                    expectedBootstrapMacAddress = parseHyperVMacAddress(rawMac).toUpperCase();
+                    if (expectedBootstrapMacAddress.length !== 12
+                        || (/[:-]/.test(rawMac) && rawMac.split(/[:-]/).some((part) => part.length !== 2))) {
+                        throw new Error("bootstrap-mac-invalid");
+                    }
+                } catch {
                     throw error("validation", operation, "bootstrap-mac-invalid");
                 }
             }
@@ -779,7 +797,12 @@ export function createHyperVWindowsClient(executor: HyperVWindowsExecutor): Hype
                 bootSettings: normalizedBootSettings,
             } as const;
             const executionRequest: HyperVWindowsExecutionRequest = guestKind === "linux"
-                ? { ...payload, guestKind: "linux" as const, expectedBootstrapMacAddress: expectedBootstrapMacAddress! }
+                ? {
+                    ...payload, guestKind: "linux" as const,
+                    expectedBootstrapAdapterName: expectedBootstrapAdapterName!,
+                    expectedBootstrapSwitchName: expectedBootstrapSwitchName!,
+                    expectedBootstrapMacAddress: expectedBootstrapMacAddress!,
+                }
                 : candidate.guestKind === undefined ? payload : { ...payload, guestKind: "windows" as const };
             const envelope = await execute(executor, executionRequest, options);
             expectNoItems(operation, envelope);

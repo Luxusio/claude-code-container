@@ -17,29 +17,44 @@ const request: HyperVConfigureVMGuestBootRequest = {
     mediaPath: "C:\\Hyper-V\\provision.iso",
     bootSettings: { generation: 2, secureBoot: { enabled: true, template: "MicrosoftWindows" } },
 };
+const linuxRequest = {
+    ...request,
+    guestKind: "linux",
+    expectedBootstrapAdapterName: " tenant DHCP Adapter ",
+    expectedBootstrapSwitchName: " Tenant Uplink ",
+    expectedBootstrapMacAddress: "00aabbccddee",
+    bootSettings: { generation: 2, secureBoot: { enabled: false } },
+} as const satisfies HyperVConfigureVMGuestBootRequest;
+const bootstrapFields = [
+    "expectedBootstrapAdapterName", "expectedBootstrapSwitchName", "expectedBootstrapMacAddress",
+] as const;
 
 describe("typed Hyper-V guest boot configuration", () => {
-    it("sends one exact identity operation with explicit generation policy", async () => {
+    it.each([undefined, "windows"] as const)("sends exact Windows generation policies with guestKind %s", async (guestKind) => {
         const execute = vi.fn(async (sent: HyperVWindowsExecutionRequest, _context: HyperVWindowsExecutionContext) => ({
             status: 0,
             stdout: JSON.stringify({ schemaVersion: 1, operation: sent.operation, ok: true, items: [] }),
         }));
         const client = createHyperVWindowsClient({ execute });
-        await expect(client.configureVMGuestBoot(request)).resolves.toBeUndefined();
-        await expect(client.configureVMGuestBoot({
-            ...request,
+        const windowsRequest = guestKind === undefined ? request : { ...request, guestKind };
+        const generation1Request = {
+            ...windowsRequest,
             bootSettings: { generation: 1, startupOrder: ["IDE", "CD", "LegacyNetworkAdapter", "Floppy"] },
-        })).resolves.toBeUndefined();
+        } as const;
+        await expect(client.configureVMGuestBoot(windowsRequest)).resolves.toBeUndefined();
+        await expect(client.configureVMGuestBoot(generation1Request)).resolves.toBeUndefined();
         expect(execute).toHaveBeenCalledTimes(2);
         expect(execute.mock.calls[0][0]).toEqual({
             schemaVersion: 1,
             operation: "Configure-VMGuestBoot",
-            ...request,
+            ...windowsRequest,
             selector: { kind: "id", id: vmId },
         });
-        expect(execute.mock.calls[1][0]).toMatchObject({
+        expect(execute.mock.calls[1][0]).toEqual({
+            schemaVersion: 1,
             operation: "Configure-VMGuestBoot",
-            bootSettings: { generation: 1, startupOrder: ["IDE", "CD", "LegacyNetworkAdapter", "Floppy"] },
+            ...generation1Request,
+            selector: { kind: "id", id: vmId },
         });
     });
 
@@ -58,51 +73,106 @@ describe("typed Hyper-V guest boot configuration", () => {
         expect(execute).not.toHaveBeenCalled();
     });
 
-    it("normalizes Linux bootstrap MAC and sends Secure Boot Off or Gen1 disk-first BIOS policy", async () => {
+    it.each([1, 2] as const)("sends caller names and any nonzero MAC spelling exactly for Linux generation %i", async (generation) => {
         const execute = vi.fn(async (sent: HyperVWindowsExecutionRequest) => ({
             status: 0,
             stdout: JSON.stringify({ schemaVersion: 1, operation: sent.operation, ok: true, items: [] }),
         }));
         const client = createHyperVWindowsClient({ execute });
-        const linuxRequest: HyperVConfigureVMGuestBootRequest = {
-            ...request,
-            guestKind: "linux",
-            expectedBootstrapMacAddress: "06:aa:bb:cc:dd:ee",
-            bootSettings: { generation: 2, secureBoot: { enabled: false } },
-        };
-        await client.configureVMGuestBoot(linuxRequest);
-        await client.configureVMGuestBoot({
+        const bootSettings = generation === 2 ? linuxRequest.bootSettings
+            : { generation: 1, startupOrder: ["IDE", "CD", "LegacyNetworkAdapter", "Floppy"] } as const;
+        for (const mac of ["00aabbccddee", "00:aa:bb:cc:dd:ee", "00-aa-bb-cc-dd-ee"]) {
+            await client.configureVMGuestBoot({ ...linuxRequest, expectedBootstrapMacAddress: mac, bootSettings });
+        }
+        expect(execute).toHaveBeenCalledTimes(3);
+        for (const [sent] of execute.mock.calls) expect(sent).toEqual({
+            schemaVersion: 1,
+            operation: "Configure-VMGuestBoot",
             ...linuxRequest,
-            bootSettings: { generation: 1, startupOrder: ["IDE", "CD", "LegacyNetworkAdapter", "Floppy"] },
-        });
-        expect(execute.mock.calls[0][0]).toMatchObject({
-            guestKind: "linux",
-            expectedBootstrapMacAddress: "06AABBCCDDEE",
-            bootSettings: { generation: 2, secureBoot: { enabled: false } },
-        });
-        expect(execute.mock.calls[1][0]).toMatchObject({
-            guestKind: "linux",
-            expectedBootstrapMacAddress: "06AABBCCDDEE",
-            bootSettings: { generation: 1, startupOrder: ["IDE", "CD", "LegacyNetworkAdapter", "Floppy"] },
+            selector: { kind: "id", id: vmId },
+            expectedBootstrapMacAddress: "00AABBCCDDEE",
+            bootSettings,
         });
     });
 
-    it("rejects missing, foreign, or unsafe Linux policy before native execution", async () => {
+    it.each(["expectedBootstrapAdapterName", "expectedBootstrapSwitchName"] as const)("preserves a 100-character %s", async (field) => {
+        const execute = vi.fn(async (sent: HyperVWindowsExecutionRequest) => ({
+            status: 0,
+            stdout: JSON.stringify({ schemaVersion: 1, operation: sent.operation, ok: true, items: [] }),
+        }));
+        const supplied = { ...linuxRequest, [field]: "x".repeat(100) };
+        await createHyperVWindowsClient({ execute }).configureVMGuestBoot(supplied);
+        expect(execute).toHaveBeenCalledOnce();
+        expect(execute.mock.calls[0][0]).toEqual({
+            schemaVersion: 1,
+            operation: "Configure-VMGuestBoot",
+            ...supplied,
+            selector: { kind: "id", id: vmId },
+            expectedBootstrapMacAddress: "00AABBCCDDEE",
+        });
+    });
+
+    it.each(bootstrapFields)("requires Linux %s before native execution", async (field) => {
+        const execute = vi.fn(async () => ({ status: 0, stdout: "" }));
+        const incomplete: Record<string, unknown> = { ...linuxRequest };
+        delete incomplete[field];
+        await expect(createHyperVWindowsClient({ execute }).configureVMGuestBoot(incomplete as HyperVConfigureVMGuestBootRequest))
+            .rejects.toMatchObject({ category: "validation" });
+        expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each(["expectedBootstrapAdapterName", "expectedBootstrapSwitchName"] as const)("rejects unsafe or non-string %s before native execution", async (field) => {
         const execute = vi.fn(async () => ({ status: 0, stdout: "" }));
         const client = createHyperVWindowsClient({ execute });
-        const linuxRequest = {
-            ...request,
-            guestKind: "linux",
-            expectedBootstrapMacAddress: "06AABBCCDDEE",
-            bootSettings: { generation: 2, secureBoot: { enabled: false } },
-        } as const;
+        const invalid: unknown[] = [
+            undefined, null, 123, false, {}, [], Object("Tenant"), "", "x".repeat(101),
+            "Tenant*", "Tenant?", "Tenant[", "Tenant]",
+            ...Array.from({ length: 32 }, (_, code) => `Tenant${String.fromCharCode(code)}`),
+        ];
+        for (const value of invalid) {
+            await expect(client.configureVMGuestBoot({ ...linuxRequest, [field]: value } as HyperVConfigureVMGuestBootRequest))
+                .rejects.toMatchObject({ category: "validation" });
+        }
+        expect(execute).not.toHaveBeenCalled();
+    });
+
+    it("rejects malformed, mixed, zero, or control-terminated MACs before native execution", async () => {
+        const execute = vi.fn(async () => ({ status: 0, stdout: "" }));
+        const client = createHyperVWindowsClient({ execute });
+        const invalid: unknown[] = [
+            undefined, null, 123, {}, "", "000000000000", "00:00:00:00:00:00", "00-00-00-00-00-00",
+            "00AABBCCDDE", "00AABBCCDDEEF", "00AABBCCDDEG", "00:aa-bb:cc:dd:ee", "00-aa:bb-cc-dd-ee",
+            "0:0a:bb:cc:dd:eee", "0-0a-bb-cc-dd-eee",
+            "00AABBCCDDEE\n", "00AABBCCDDEE\r\n", "00:AA:BB:CC:DD:EE\n", "00-AA-BB-CC-DD-EE\n",
+            "00AABBCCDDEE\0", " 00AABBCCDDEE", "00AABBCCDDEE ",
+        ];
+        for (const value of invalid) {
+            await expect(client.configureVMGuestBoot({ ...linuxRequest, expectedBootstrapMacAddress: value } as HyperVConfigureVMGuestBootRequest))
+                .rejects.toMatchObject({ category: "validation" });
+        }
+        expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each(bootstrapFields)("forbids any own Windows %s, including undefined or null", async (field) => {
+        const execute = vi.fn(async () => ({ status: 0, stdout: "" }));
+        const client = createHyperVWindowsClient({ execute });
+        for (const windowsRequest of [request, { ...request, guestKind: "windows" } as const]) {
+            for (const value of [undefined, null, linuxRequest[field]]) {
+                await expect(client.configureVMGuestBoot({ ...windowsRequest, [field]: value } as HyperVConfigureVMGuestBootRequest))
+                    .rejects.toMatchObject({ category: "validation" });
+            }
+        }
+        expect(execute).not.toHaveBeenCalled();
+    });
+
+    it("rejects extra policy fields and invalid Linux settings before native execution", async () => {
+        const execute = vi.fn(async () => ({ status: 0, stdout: "" }));
+        const client = createHyperVWindowsClient({ execute });
         const invalid = [
-            { ...linuxRequest, expectedBootstrapMacAddress: undefined },
-            { ...linuxRequest, expectedBootstrapMacAddress: "06-AA-BB-CC-DD-EE" },
-            { ...linuxRequest, expectedBootstrapMacAddress: "02AABBCCDDEE" },
+            { ...linuxRequest, bootstrapPolicy: "other" },
             { ...linuxRequest, bootSettings: { generation: 2, secureBoot: { enabled: true, template: "MicrosoftWindows" } } },
             { ...linuxRequest, bootSettings: { generation: 1, startupOrder: ["CD", "IDE"] } },
-            { ...request, expectedBootstrapMacAddress: "06AABBCCDDEE" },
+            { ...linuxRequest, bootSettings: { generation: 3, secureBoot: { enabled: false } } },
             { ...linuxRequest, guestKind: "other" },
         ];
         for (const bad of invalid) {
@@ -163,6 +233,13 @@ describe("typed Hyper-V guest boot configuration", () => {
         expect(preAttach).toContain("Hyper-V\\Get-VMNetworkAdapter -VM $VirtualMachine");
         expect(preAttach).toContain("Hyper-V\\Get-VMNetworkAdapter -All");
         expect(preAttach).toContain("$HostBootstrapMacMatches.Count -ne 1");
+        expect(preAttach).toContain("[string]$_.Name -ceq $ExpectedBootstrapAdapterName");
+        expect(preAttach).toContain("[string]$BootstrapAdapters[0].SwitchName -cne $ExpectedBootstrapSwitchName");
+        expect(preAttach).toContain("[string]$HostBootstrapMacMatches[0].Name -cne $ExpectedBootstrapAdapterName");
+        expect(preAttach).toContain("[string]$HostBootstrapMacMatches[0].SwitchName -cne $ExpectedBootstrapSwitchName");
+        expect(branch).not.toContain("CCC Bootstrap DHCP");
+        expect(branch).not.toContain("Default Switch");
+        expect(branch).not.toContain('.StartsWith("06"');
         expect(preAttach).toContain('$Generation -eq 1 -and [string]$Disks[0].ControllerType -ine "IDE"');
         expect(preAttach.indexOf('$Disks[0].ControllerType -ine "IDE"'))
             .toBeLessThan(branch.indexOf('Hyper-V\\Add-VMDvdDrive'));

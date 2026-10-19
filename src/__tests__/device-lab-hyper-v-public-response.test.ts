@@ -158,6 +158,25 @@ describe("Hyper-V public response projection", () => {
     });
 
     it.each([
+        "hyper-v-create-bootstrap-mac-address-invalid",
+        "hyper-v-create-bootstrap-mac-address-conflict",
+    ])("preserves the explicit creation MAC diagnostic %s", (diagnosticCode) => {
+        const code = hyperVTypedErrorCode(new Error(diagnosticCode), "hyper-v-vm-create-failed");
+        expect(code).toBe(diagnosticCode);
+        expect(hyperVProviderDiagnosticCode({ error: code, stdout: "", stderr: "" }, "hyper-v-provider-command-failed"))
+            .toBe(diagnosticCode);
+    });
+
+    it("bounds the obsolete derived-bootstrap failure to the creation fallback", () => {
+        expect(hyperVProviderDiagnosticCode({
+            error: "hyper-v-create-bootstrap-mac-address-not-derivable",
+            stdout: "",
+            stderr: "",
+        }, "hyper-v-vm-create-failed"))
+            .toBe("hyper-v-vm-create-failed");
+    });
+
+    it.each([
         "hyper-v-reboot-command-failed",
         "hyper-v-reboot-start-failed",
         "hyper-v-snapshot-reconciliation-ambiguous",
