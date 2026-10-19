@@ -1,11 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
+import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
+import { runWithNativeRuntimeInvocation } from "../adapters/container-runtime-invocation.js";
 
 // Mock child_process before importing
 const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
+const metadataMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
+let fixtureDockerHost = "unix:///fixture/docker.sock";
 vi.mock("child_process", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
-    return { ...actual, spawnSync: spawnSyncMock };
+    return { ...actual, spawnSync: (...args: unknown[]) => {
+        const argv = args[1] as string[];
+        if (argv.includes("context") || (argv.includes("info") && (argv.at(-1) === "json" || argv.at(-1) === "{{json .}}"))) return metadataMock(...args);
+        return spawnSyncMock(...args);
+    } };
 });
 
 // Mock fs — some branches read /sys/fs/selinux/enforce
@@ -15,6 +23,8 @@ vi.mock("fs", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
         ...actual,
+        accessSync: () => {},
+        statSync: () => ({ isFile: () => true }),
         existsSync: (...args: unknown[]) => mockExistsSync(...args),
         readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
     };
@@ -32,6 +42,7 @@ const {
     formatRuntimeSummary,
     _resetRuntimeCacheForTest,
     _setRuntimeInfoForTest,
+    _setRuntimeInvocationForTest,
     _resetSelinuxCacheForTest,
 } = await import("../container-runtime.js");
 
@@ -39,11 +50,40 @@ function result(status: number, stdout = ""): SpawnSyncReturns<string> {
     return { pid: 1, output: [], stdout, stderr: "", status, signal: null };
 }
 
+function nestedDockerInvocation(host = "unix:///fixture/docker.sock"): NativeRuntimeInvocation {
+    return {
+        version: 1, runtime: "docker", executable: "/fixture/bin/docker",
+        transport: { kind: "docker", host, configDirectory: "/fixture/docker-config", tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, key === "PATH" ? "/fixture/bin" : null])) as NativeRuntimeInvocation["selectors"],
+    };
+}
+
+function pinNestedDockerInvocation(): void {
+    _setRuntimeInvocationForTest(nestedDockerInvocation());
+}
+
+function pinWindowsCaptureEnvironment(): void {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.spyOn(process, "cwd").mockReturnValue("C:\\fixture\\work");
+    process.env.PATH = "C:\\fixture\\bin";
+    process.env.PATHEXT = ".EXE";
+    process.env.HOME = "C:\\fixture\\home";
+    process.env.USERPROFILE = "C:\\fixture\\home";
+    process.env.DOCKER_CONFIG = "C:\\fixture\\docker-config";
+}
+
 describe("container-runtime", () => {
     const origEnv = { ...process.env };
 
     beforeEach(() => {
         spawnSyncMock.mockReset();
+        fixtureDockerHost = "unix:///fixture/docker.sock";
+        metadataMock.mockReset().mockImplementation((_command, argv) => {
+            const args = argv as string[];
+            return result(0, JSON.stringify(args.includes("context")
+                ? { Name: process.env.DOCKER_HOST && !process.env.DOCKER_CONTEXT ? "default" : "native-fixture", Endpoints: { docker: { Host: !process.env.DOCKER_CONTEXT && process.env.DOCKER_HOST ? process.env.DOCKER_HOST : fixtureDockerHost, SkipTLSVerify: false } }, TLSMaterial: {}, Storage: { TLSPath: process.platform === "win32" ? "C:\\fixture\\docker-config\\contexts\\tls\\native-fixture" : "/fixture/docker-config/contexts/tls/native-fixture" } }
+                : { host: { serviceIsRemote: false }, store: { graphRoot: "/fixture/store", runRoot: "/fixture/run", graphDriverName: "overlay" } }));
+        });
         mockExistsSync.mockReset().mockReturnValue(false);
         mockReadFileSync.mockReset().mockReturnValue("");
         _resetRuntimeCacheForTest();
@@ -52,6 +92,15 @@ describe("container-runtime", () => {
         delete process.env.CCC_RUNTIME;
         delete process.env.DOCKER_HOST;
         delete process.env.DOCKER_CONTEXT;
+        delete process.env.DOCKER_TLS;
+        delete process.env.DOCKER_TLS_VERIFY;
+        delete process.env.DOCKER_CERT_PATH;
+        delete process.env.CONTAINER_HOST;
+        delete process.env.CONTAINER_CONNECTION;
+        delete process.env.CONTAINER_SSHKEY;
+        process.env.PATH = "/fixture/bin";
+        process.env.HOME = "/fixture/home";
+        process.env.DOCKER_CONFIG = "/fixture/docker-config";
         delete process.env.WSL_DISTRO_NAME;
         delete process.env.CCC_RUNTIME_SOCKET;
         delete process.env.XDG_RUNTIME_DIR;
@@ -76,7 +125,7 @@ describe("container-runtime", () => {
             // podman --version succeeds first
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "podman version 5.2.3\n")) // podman --version (isRuntimeOnPath)
-                .mockReturnValue(result(0, ""));                             // subsequent detectVersion/remote/rootless
+                .mockReturnValue(result(0, ""));                             // subsequent version/rootless probes
             expect(runtimeCli()).toBe("podman");
         });
 
@@ -171,6 +220,7 @@ describe("container-runtime", () => {
 
         it("translates nested-container bind mount sources to the outer host source", () => {
             _setRuntimeInfoForTest({ runtime: "docker" });
+            pinNestedDockerInvocation();
             process.env.container = "docker";
             process.env.HOSTNAME = "ccc-parent";
             spawnSyncMock.mockReturnValue(result(0, JSON.stringify([
@@ -192,6 +242,7 @@ describe("container-runtime", () => {
 
         it("uses the longest matching nested-container mount destination", () => {
             _setRuntimeInfoForTest({ runtime: "docker" });
+            pinNestedDockerInvocation();
             process.env.container = "docker";
             process.env.HOSTNAME = "ccc-parent";
             spawnSyncMock.mockReturnValue(result(0, JSON.stringify([
@@ -207,6 +258,7 @@ describe("container-runtime", () => {
 
         it("keeps the first equal-length match and excludes sibling prefixes", () => {
             _setRuntimeInfoForTest({ runtime: "docker" });
+            pinNestedDockerInvocation();
             process.env.container = "docker";
             process.env.HOSTNAME = "ccc-parent";
             spawnSyncMock.mockReturnValue(result(0, JSON.stringify([
@@ -227,6 +279,7 @@ describe("container-runtime", () => {
 
         it("normalizes Docker Desktop Windows mount sources for nested docker", () => {
             _setRuntimeInfoForTest({ runtime: "docker" });
+            pinNestedDockerInvocation();
             process.env.container = "docker";
             process.env.HOSTNAME = "ccc-parent";
             spawnSyncMock.mockReturnValue(result(0, JSON.stringify([
@@ -240,9 +293,48 @@ describe("container-runtime", () => {
                 "-v",
                 "/run/desktop/mnt/host/c/Users/TestUser/.ccc/codex/config.toml:/tmp/config.toml",
             ]);
-            expect(spawnSyncMock).toHaveBeenCalledWith("docker",
-                ["inspect", "ccc-parent", "--format", "{{json .Mounts}}"],
-                expect.objectContaining({ timeout: 5000, killSignal: "SIGKILL" }));
+            expect(spawnSyncMock).toHaveBeenCalledWith("/fixture/bin/docker",
+                ["--config", "/fixture/docker-config", "--host", "unix:///fixture/docker.sock", "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey=", "inspect", "ccc-parent", "--format", "{{json .Mounts}}"],
+                expect.objectContaining({ timeout: 5000, killSignal: "SIGKILL", shell: false, env: expect.objectContaining({ PATH: "/fixture/bin" }) }));
+            expect(metadataMock).not.toHaveBeenCalled();
+        });
+
+        it("keeps concurrent native scopes' outer-mount observations separate and reuses each captured observation", async () => {
+            process.env.container = "docker";
+            process.env.HOSTNAME = "same-parent-id";
+            spawnSyncMock.mockImplementation((_command, argv) => {
+                const args = argv as string[];
+                if (args.at(-1) === "{{json .Mounts}}") return result(0, JSON.stringify([{ Source: args.includes("unix:///fixture/engine-a.sock") ? "/outer/a" : "/outer/b", Destination: "/project" }]));
+                if (args.includes("--version")) return result(0, "Docker version 27.1.1");
+                if (args.at(-1) === "{{.OperatingSystem}}") return result(0, "Ubuntu");
+                if (args.at(-1) === "{{json .SecurityOptions}}") return result(0, "[]");
+                throw Error("unconfigured native probe in concurrent mount fixture");
+            });
+            let releaseA!: () => void;
+            const bObserved = new Promise<void>(resolve => { releaseA = resolve; });
+            const first = runWithNativeRuntimeInvocation(nestedDockerInvocation("unix:///fixture/engine-a.sock"), async () => {
+                expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", "/outer/a/file:/target"]);
+                await bObserved;
+                expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", "/outer/a/file:/target"]);
+            });
+            const second = runWithNativeRuntimeInvocation(nestedDockerInvocation("unix:///fixture/engine-b.sock"), async () => {
+                await Promise.resolve();
+                expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", "/outer/b/file:/target"]);
+                releaseA();
+            });
+            await Promise.all([first, second]);
+            const inspections = spawnSyncMock.mock.calls.filter(call => (call[1] as string[]).at(-1) === "{{json .Mounts}}");
+            expect(inspections).toHaveLength(2);
+            expect(inspections.map(call => {
+                const args = call[1] as string[];
+                return args[args.indexOf("--host") + 1];
+            })).toEqual(["unix:///fixture/engine-a.sock", "unix:///fixture/engine-b.sock"]);
+            for (const [command, argv, options] of inspections) {
+                expect(command).toBe("/fixture/bin/docker");
+                expect((argv as string[]).slice(-4)).toEqual(["inspect", "same-parent-id", "--format", "{{json .Mounts}}"]);
+                expect(options).toMatchObject({ shell: false, env: { PATH: "/fixture/bin" } });
+            }
+            expect(metadataMock).not.toHaveBeenCalled();
         });
 
         it("keeps current-container paths unchanged for nested local podman", () => {
@@ -254,11 +346,8 @@ describe("container-runtime", () => {
                 "-v",
                 "/home/ccc/.codex:/home/ccc/.codex",
             ]);
-            expect(spawnSyncMock).not.toHaveBeenCalledWith(
-                "docker",
-                ["inspect", "ccc-parent", "--format", "{{json .Mounts}}"],
-                expect.any(Object),
-            );
+            expect(spawnSyncMock.mock.calls.some(call => (call[1] as string[]).includes("inspect"))).toBe(false);
+            expect(metadataMock).not.toHaveBeenCalled();
         });
 
         it("does not inspect or translate mounts during Vitest runs", () => {
@@ -271,11 +360,7 @@ describe("container-runtime", () => {
                 "-v",
                 "/home/ccc/.codex:/home/ccc/.codex",
             ]);
-            expect(spawnSyncMock).not.toHaveBeenCalledWith(
-                "docker",
-                ["inspect", "ccc-parent", "--format", "{{json .Mounts}}"],
-                expect.any(Object),
-            );
+            expect(spawnSyncMock).not.toHaveBeenCalled();
         });
     });
 
@@ -338,13 +423,13 @@ describe("container-runtime", () => {
             process.env.CCC_RUNTIME = "docker";
             process.env.DOCKER_CONTEXT = "selected-remote";
             process.env.DOCKER_HOST = "unix:///desktop.sock";
+            fixtureDockerHost = "ssh://remote@example.test";
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
                 .mockReturnValueOnce(result(0, "Docker Desktop\n"))
-                .mockReturnValueOnce(result(0, "ssh://remote@example.test\n"))
                 .mockReturnValue(result(1));
             expect(getRuntimeInfo().dockerDesktop).toBe(false);
-            expect(spawnSyncMock).toHaveBeenCalledWith("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}", "--", "selected-remote"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" });
+            expect(metadataMock).toHaveBeenCalledWith(expect.stringMatching(/docker(?:\.exe)?$/i), ["--config", "/fixture/docker-config", "context", "inspect", "--format", "{{json .}}", "--", "selected-remote"], expect.objectContaining({ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL", maxBuffer: 512 * 1024 }));
         });
         it("reflects the cached remote flag", () => {
             _setRuntimeInfoForTest({ runtime: "docker", remote: true });
@@ -355,10 +440,10 @@ describe("container-runtime", () => {
 
         it("detects Docker Desktop from docker info as VM-backed", () => {
             process.env.CCC_RUNTIME = "docker";
+            fixtureDockerHost = "npipe:////./pipe/dockerDesktopLinuxEngine";
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
                 .mockReturnValueOnce(result(0, "Docker Desktop\n"))
-                .mockReturnValueOnce(result(0, "npipe:////./pipe/dockerDesktopLinuxEngine\n"))
                 .mockReturnValue(result(1, ""));
 
             const info = getRuntimeInfo();
@@ -368,12 +453,12 @@ describe("container-runtime", () => {
         });
 
         it("detects native Windows Docker Desktop from its exact local Linux-engine npipe when docker info is unavailable", () => {
-            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            pinWindowsCaptureEnvironment();
             process.env.CCC_RUNTIME = "docker";
+            fixtureDockerHost = "npipe:////./pipe/dockerDesktopLinuxEngine";
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
                 .mockReturnValueOnce(result(1, ""))
-                .mockReturnValueOnce(result(0, "npipe:////./pipe/dockerDesktopLinuxEngine\n"))
                 .mockReturnValue(result(1, ""));
 
             const info = getRuntimeInfo();
@@ -383,19 +468,19 @@ describe("container-runtime", () => {
         });
 
         it("does not infer Docker Desktop from a generic local Windows npipe", () => {
-            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            pinWindowsCaptureEnvironment();
             process.env.CCC_RUNTIME = "docker";
+            fixtureDockerHost = "npipe:////./pipe/docker_engine";
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
                 .mockReturnValueOnce(result(1, ""))
-                .mockReturnValueOnce(result(0, "npipe:////./pipe/docker_engine\n"))
                 .mockReturnValue(result(1, ""));
 
             expect(getRuntimeInfo().dockerDesktop).toBe(false);
         });
 
         it("does not let the Desktop npipe override a successful non-Desktop daemon identity", () => {
-            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            pinWindowsCaptureEnvironment();
             process.env.CCC_RUNTIME = "docker";
             process.env.DOCKER_HOST = "npipe:////./pipe/dockerDesktopLinuxEngine";
             spawnSyncMock
@@ -404,11 +489,7 @@ describe("container-runtime", () => {
                 .mockReturnValue(result(1, ""));
 
             expect(getRuntimeInfo().dockerDesktop).toBe(false);
-            expect(spawnSyncMock).not.toHaveBeenCalledWith(
-                "docker",
-                ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
-                expect.any(Object),
-            );
+            expect(metadataMock).toHaveBeenCalledTimes(1);
         });
 
         it.each([
@@ -417,12 +498,10 @@ describe("container-runtime", () => {
         ])("does not grant Docker Desktop capability through a remote %s", (_name, dockerHost, contextEndpoint) => {
             process.env.CCC_RUNTIME = "docker";
             if (dockerHost) process.env.DOCKER_HOST = dockerHost;
+            if (contextEndpoint) fixtureDockerHost = contextEndpoint;
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
                 .mockReturnValueOnce(result(0, "Docker Desktop\n"));
-            if (contextEndpoint) {
-                spawnSyncMock.mockReturnValueOnce(result(0, `${contextEndpoint}\n`));
-            }
             spawnSyncMock.mockReturnValue(result(1, ""));
 
             const info = getRuntimeInfo();
@@ -538,7 +617,6 @@ describe("container-runtime", () => {
             process.env.XDG_RUNTIME_DIR = "/run/user/1001";
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "podman version 5.2.3\n"))
-                .mockReturnValueOnce(result(0, "false\n"))
                 .mockReturnValueOnce(result(0, "true\n"));
 
             const info = getRuntimeInfo();
@@ -554,7 +632,6 @@ describe("container-runtime", () => {
             const getuidSpy = vi.spyOn(process, "getuid").mockReturnValue(1002);
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "podman version 4.9.3\n"))
-                .mockReturnValueOnce(result(1, ""))
                 .mockReturnValueOnce(result(1, ""));
 
             const info = getRuntimeInfo();

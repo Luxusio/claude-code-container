@@ -14,8 +14,8 @@
 //   127   — no probe binary available
 //   null  — spawnSync timed out (status=null, may have signal=SIGTERM)
 
-import { spawnSync as realSpawnSync } from "child_process";
-import { runtimeCli as realRuntimeCli } from "./container-runtime.js";
+import { spawnSync as realSpawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "child_process";
+import { runtimeCli as realRuntimeCli, getRuntimeInvocation, bindNativeRuntimeInvocation, currentNativeRuntimeInvocation, captureNativeRuntimeInvocation } from "./container-runtime.js";
 
 export type ReachReason = "unreachable" | "timeout" | "no-probe";
 
@@ -39,7 +39,22 @@ const DEFAULT_PROBE_HOST = "host.docker.internal";
 const DEFAULT_PROBE_PORT = 53;
 
 export function detectHostNetworkReach(containerName: string, opts: ReachOptions = {}): ReachResult {
-    const spawnImpl = opts.spawnImpl ?? realSpawnSync;
+    let spawnImpl: (cli: string, args: readonly string[], options: SpawnSyncOptionsWithStringEncoding) => SpawnSyncReturns<string>;
+    if (opts.spawnImpl) {
+        spawnImpl = opts.spawnImpl;
+    } else if (opts.runtimeCli) {
+        spawnImpl = (cli, args, options) => {
+            if (cli === "docker" || cli === "podman") {
+                const current = currentNativeRuntimeInvocation();
+                const invocation = current?.runtime === cli ? current : captureNativeRuntimeInvocation(cli);
+                return bindNativeRuntimeInvocation(invocation).spawnSync(args, options);
+            }
+            return realSpawnSync(cli, args, options);
+        };
+    } else {
+        const runner = bindNativeRuntimeInvocation(getRuntimeInvocation());
+        spawnImpl = (_cli, args, options) => runner.spawnSync(args, options);
+    }
     const runtimeCli = opts.runtimeCli ?? realRuntimeCli;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const probeHost = opts.probeHost ?? DEFAULT_PROBE_HOST;

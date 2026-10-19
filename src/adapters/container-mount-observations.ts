@@ -1,8 +1,7 @@
-import { spawnSync } from "child_process";
 import { createHash, randomBytes } from "crypto";
 import { lstatSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join, normalize, posix, resolve } from "path";
-import { containerEngineFailureHint, getRuntimeInfo, runtimeCli } from "../container-runtime.js";
+import { containerEngineFailureHint, getRuntimeInfo, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation } from "../container-runtime.js";
 import { ContainerEngineUnavailableError } from "../domain/container-runtime.js";
 import { projectPathsEquivalent } from "../utils.js";
 import { proveWslBindSourceIdentity } from "../wsl-bind-source-proof.js";
@@ -164,14 +163,14 @@ function combineLiveSourceProof(
 
 export function readDirectoryMountMarker(containerId: string, markerPath: string) {
     const options = { encoding: "utf-8" as const, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" as const };
-    const result = spawnSync(runtimeCli(), ["exec", containerId, "cat", markerPath], options);
+    const result = runtimeSpawnSync(["exec", containerId, "cat", markerPath], options);
     const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
     if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
     // Only this generated, non-secret challenge may need traversal through a
     // host-owned 0700 SSH directory. Never read keys as part of mount proof.
     if (!result.error && !result.signal && result.status !== null && result.status !== 0
         && /^\/home\/ccc\/\.ssh\/\.ccc-mount-identity-[a-f0-9]{32}$/.test(markerPath)) {
-        const elevated = spawnSync(runtimeCli(), ["exec", "--user", "root", containerId, "cat", markerPath], options);
+        const elevated = runtimeSpawnSync(["exec", "--user", "root", containerId, "cat", markerPath], options);
         const engineFailure = elevated.status !== 0 ? containerEngineFailureHint(elevated.stderr) : undefined;
         if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
         return elevated;
@@ -227,9 +226,7 @@ function proveContainerSeesCurrentBindSource(
             const expectedContent = readFileSync(expected.realpath);
             const fileIdentity = observeBindMountSourceIdentity(hostPath, expected);
             if (fileIdentity.kind !== "verified") return fileIdentity;
-            let result = spawnSync(
-                runtimeCli(),
-                ["exec", containerId, "cat", containerPath],
+            let result = runtimeSpawnSync(["exec", containerId, "cat", containerPath],
                 {
                     encoding: null,
                     stdio: ["pipe", "pipe", "pipe"],
@@ -390,7 +387,7 @@ export function bindSourceIsTrustedFilesystemAlias(
     return canonicalizationUnavailable ? "retryable" : "mismatch";
 }
 
-function dockerDaemonIdentity(result: ReturnType<typeof spawnSync>): string | null {
+function dockerDaemonIdentity(result: ReturnType<typeof runtimeSpawnSync>): string | null {
     if (result.error || result.status !== 0) return null;
     const identity = (result.stdout ?? "").toString().trim();
     return /^[^\s]{1,512}$/.test(identity) ? identity : null;
@@ -407,17 +404,13 @@ function containerManagerSocketTargetsCurrentDockerDaemon(containerId: string): 
         killSignal: "SIGKILL" as const,
         windowsHide: true,
     };
-    const hostIdentity = dockerDaemonIdentity(spawnSync(
-        runtimeCli(),
-        ["info", "--format", "{{.ID}}"],
+    const hostIdentity = dockerDaemonIdentity(runtimeSpawnSync(["info", "--format", "{{.ID}}"],
         options,
     ));
     if (!hostIdentity) {
         return { kind: "retryable", reason: "host container-manager daemon identity is unavailable" };
     }
-    const mountedIdentity = dockerDaemonIdentity(spawnSync(
-        runtimeCli(),
-        [
+    const mountedIdentity = dockerDaemonIdentity(runtimeSpawnSync([
             "exec",
             "--user",
             "root",
@@ -489,9 +482,7 @@ function normalizeInspectedTmpfsMounts(inspected: Record<string, unknown>): bool
 }
 
 export function inspectContainerJsonOnce(containerId: string): Record<string, unknown> | null {
-    const result = spawnSync(
-        runtimeCli(),
-        ["inspect", "-f", "{{json .}}", containerId],
+    const result = runtimeSpawnSync(["inspect", "-f", "{{json .}}", containerId],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
@@ -520,6 +511,7 @@ export interface NativeContainerMountObservationContext {
 
 /** Native evidence is retained only in this exact target/configuration closure. */
 export function createNativeContainerMountObservations(context: NativeContainerMountObservationContext) {
+    const invocation = getRuntimeInvocation();
     const session = createMountVerificationSession();
     const requiredByPath = new Map(context.requiredMounts.map(mount => [mount.containerPath, mount]));
     let observedByPath = new Map<string, InspectedContainerMount>();
@@ -641,5 +633,15 @@ export function createNativeContainerMountObservations(context: NativeContainerM
         )) && getRuntimeInfo().runtime === "docker",
         withRetry: context.withRetry,
     };
-    return { requiredMounts, decodeObservedMounts, ports };
+    const boundPorts: ContainerMountVerificationPorts = {
+        ...ports,
+        observeSource: path => runWithNativeRuntimeInvocation(invocation, () => ports.observeSource(path)),
+        observeHostIdentity: path => runWithNativeRuntimeInvocation(invocation, () => ports.observeHostIdentity(path)),
+        proveFilesystem: (path, finalAttempt) => runWithNativeRuntimeInvocation(invocation, () => ports.proveFilesystem(path, finalAttempt)),
+        proveDaemon: () => runWithNativeRuntimeInvocation(invocation, ports.proveDaemon),
+        inspectCreated: () => runWithNativeRuntimeInvocation(invocation, ports.inspectCreated),
+        requiresFinalDaemonProof: () => runWithNativeRuntimeInvocation(invocation, ports.requiresFinalDaemonProof),
+        withRetry: (operation, retryable) => runWithNativeRuntimeInvocation(invocation, () => ports.withRetry(operation, retryable)),
+    };
+    return { requiredMounts, decodeObservedMounts, ports: boundPorts };
 }

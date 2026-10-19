@@ -1,20 +1,19 @@
-import { spawnSync } from "child_process";
 import { realpathSync } from "fs";
 import { isAbsolute, relative, sep } from "path";
-import { runtimeCli } from "./container-runtime.js";
+import { getRuntimeInvocation, bindNativeRuntimeInvocation } from "./container-runtime.js";
 
 /** A legacy daemon unlinks its port file on exit. Unknown mount users defer exit. */
 export function clipboardPortMayHaveBindUsers(portFile: string): boolean {
     try {
         const port = realpathSync(portFile);
-        const runtime = runtimeCli();
+        const runner = bindNativeRuntimeInvocation(getRuntimeInvocation());
         const options = { encoding: "utf-8" as const, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 };
-        const listed = spawnSync(runtime, ["ps", "-q", "--no-trunc"], options);
+        const listed = runner.spawnSync(["ps", "-q", "--no-trunc"], options);
         if (listed.error || listed.status !== 0 || typeof listed.stdout !== "string") return true;
         const ids = listed.stdout.trim() ? listed.stdout.trim().split(/\s+/) : [];
         if (ids.some(id => !/^[a-f0-9]{64}$/.test(id)) || new Set(ids).size !== ids.length) return true;
         if (!ids.length) return false;
-        const inspected = spawnSync(runtime, ["inspect", ...ids], options);
+        const inspected = runner.spawnSync(["inspect", ...ids], options);
         if (inspected.error || inspected.status !== 0 || typeof inspected.stdout !== "string") return true;
         const containers = JSON.parse(inspected.stdout);
         if (!Array.isArray(containers) || containers.length !== ids.length) return true;

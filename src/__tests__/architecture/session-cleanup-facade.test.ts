@@ -1,11 +1,12 @@
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation, type NativeRuntimeSelectors } from "../../ports/container-runtime-invocation.js";
 import type { SessionOwnershipHandle, SessionOwnershipReceipt } from "../../ports/session-ownership.js";
 
 const effects = vi.hoisted(() => ({
     mkdir: vi.fn(), stat: vi.fn(), chmod: vi.fn(), list: vi.fn(), read: vi.fn(), write: vi.fn(),
     exists: vi.fn(), unlink: vi.fn(), identity: vi.fn(), lock: vi.fn(),
-    runtime: vi.fn(), devices: vi.fn(), spawn: vi.fn(), fork: vi.fn(), spawnAsync: vi.fn(),
+    runtime: vi.fn(), invocation: vi.fn(), devices: vi.fn(), spawn: vi.fn(), fork: vi.fn(), spawnAsync: vi.fn(),
     token: vi.fn(), observe: vi.fn(), classify: vi.fn(),
     arm: vi.fn(), authorize: vi.fn(), validate: vi.fn(), capture: vi.fn(), matches: vi.fn(), rollback: vi.fn(),
 }));
@@ -17,7 +18,10 @@ vi.mock("fs", async original => ({ ...await original<typeof import("node:fs")>()
 vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawnSync: effects.spawn, fork: effects.fork, spawn: effects.spawnAsync }));
 vi.mock("../../home-layout.js", () => ({ locksDir: () => join("/", "fixture", "locks") }));
 vi.mock("../../utils.js", () => ({ getProjectId: effects.identity }));
-vi.mock("../../container-runtime.js", () => ({ runtimeCli: effects.runtime }));
+vi.mock("../../container-runtime.js", async original => ({
+    ...await original<typeof import("../../container-runtime.js")>(),
+    runtimeCli: effects.runtime, getRuntimeInvocation: effects.invocation,
+}));
 vi.mock("../../device-lab-cleanup.js", () => ({ cleanupOwnerDevices: effects.devices }));
 vi.mock("../../session-lock-liveness.js", async original => ({
     ...await original<typeof import("../../session-lock-liveness.js")>(),
@@ -41,7 +45,22 @@ let session = await import("../../session.js");
 const fixtureLocks = join("/", "fixture", "locks");
 const own = join(fixtureLocks, "project--current.lock");
 const project = join("/", "fixture", "project");
-const stopOptions = { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL" };
+const invocation: NativeRuntimeInvocation = {
+    version: 1, runtime: "docker", executable: join("/", "fixture", "docker-a"),
+    transport: { kind: "docker", host: "unix:///fixture/engine-a.sock", configDirectory: join("/", "fixture", "config-a"),
+        tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+    selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])) as NativeRuntimeSelectors,
+};
+const stopArgs = (id: unknown) => ["--config", join("/", "fixture", "config-a"), "--host", "unix:///fixture/engine-a.sock",
+    "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey=", "stop", id];
+const podmanInvocation: NativeRuntimeInvocation = {
+    ...invocation, runtime: "podman", executable: join("/", "fixture", "podman-a"),
+    transport: { kind: "podman-local", graphRoot: join("/", "fixture", "graph-a"), runRoot: join("/", "fixture", "run-a"),
+        storageDriver: "overlay", storageOptions: [], transientStore: false },
+};
+const podmanStopArgs = (id: string) => ["--remote=false", "--root", join("/", "fixture", "graph-a"),
+    "--runroot", join("/", "fixture", "run-a"), "--storage-driver", "overlay", "--transient-store=false", "stop", id];
+const stopOptions = { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL", shell: false, env: expect.any(Object) };
 const emptyContext = { lockFile: null, projectPath: null, profile: undefined, toolName: null };
 let previousExitCode: typeof process.exitCode;
 
@@ -60,6 +79,7 @@ describe("native session cleanup through the public facade", () => {
         effects.list.mockReturnValue([]);
         effects.exists.mockReturnValue(true);
         effects.runtime.mockReturnValue("fixture-runtime");
+        effects.invocation.mockReturnValue(invocation);
         effects.lock.mockImplementation((_path, operation) => operation());
         effects.spawn.mockReturnValue({ status: 0 });
     });
@@ -95,7 +115,7 @@ describe("native session cleanup through the public facade", () => {
         session.clearSession();
         expect(effects.fork).not.toHaveBeenCalled();
         expect(effects.spawnAsync).not.toHaveBeenCalled();
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("fixture-runtime", ["stop", "captured-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
     });
 
     it.each([
@@ -141,7 +161,7 @@ describe("native session cleanup through the public facade", () => {
         else expect(() => session.cleanupSession()).not.toThrow();
         expect(effects.unlink.mock.calls).toEqual([[own], [own]]);
         expect(effects.devices).toHaveBeenCalledExactlyOnceWith(project, 5000, undefined);
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("fixture-runtime", ["stop", "captured-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
         expect(session.getCurrentSession().lockFile).toBe(mode === "unlink error" ? own : null);
     });
 
@@ -152,14 +172,14 @@ describe("native session cleanup through the public facade", () => {
         effects.list.mockImplementation(() => { order.push("claims"); return []; });
         effects.unlink.mockImplementation(() => { order.push("remove"); });
         effects.devices.mockImplementation(() => { order.push("devices"); });
-        effects.runtime.mockImplementation(() => { order.push("runtime"); return "podman-fixture"; });
+        effects.invocation.mockImplementation(() => invocation);
         effects.spawn.mockImplementation(() => { order.push("stop"); return { status: 0 }; });
         start(profile); session.cleanupSession();
-        expect(order).toEqual(["identity", "enter", "claims", "claims", "devices", "runtime", "stop", "remove", "return"]);
+        expect(order).toEqual(["identity", "enter", "claims", "claims", "devices", "stop", "remove", "return"]);
         const prefix = profile ? `project--p--${profile}` : "project";
         expect(effects.lock).toHaveBeenCalledExactlyOnceWith(join(fixtureLocks, `${prefix}.container-lifecycle.guard`), expect.any(Function), { waitMs: 180000 });
         expect(effects.devices).toHaveBeenCalledExactlyOnceWith(project, 5000, profile);
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("podman-fixture", ["stop", "captured-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
     });
 
     it.each(["malformed", "unreadable", "unknown"])("preserves foreign %s claims through reconciliation and fresh raw veto", record => {
@@ -184,7 +204,7 @@ describe("native session cleanup through the public facade", () => {
         effects.unlink.mockImplementation(path => { names.splice(names.indexOf(basename(path)), 1); });
         start(); session.cleanupSession();
         expect(effects.unlink.mock.calls).toEqual([[foreign], [own]]);
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("fixture-runtime", ["stop", "captured-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
         expect(effects.list).toHaveBeenCalledTimes(2);
         expect(effects.spawn.mock.invocationCallOrder[0]).toBeLessThan(effects.unlink.mock.invocationCallOrder[1]!);
     });
@@ -217,24 +237,29 @@ describe("native session cleanup through the public facade", () => {
             start(); session.cleanupSession();
             expect(effects.read).toHaveBeenCalledWith("/proc/4242/stat", "utf-8");
             expect(effects.unlink.mock.calls).toEqual([[foreign], [own]]);
-            expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("fixture-runtime", ["stop", "captured-id"], stopOptions);
+            expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
         } finally { Object.defineProperty(process, "platform", platform); }
     });
 
-    it.each(["replacement-id", null, ""])("reads the container ID after runtime selection mutates it to %s", nextId => {
-        effects.runtime.mockImplementation(() => { session.setSessionContainerId(nextId); return "changed-runtime"; });
-        start(); session.cleanupSession();
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("changed-runtime", ["stop", nextId], stopOptions);
+    it.each(["replacement-id", null, ""])("cleanup retains its captured target when ambient lookup would mutate it to %s", nextId => {
+        start();
+        effects.invocation.mockClear();
+        effects.invocation.mockImplementation(() => { session.setSessionContainerId(nextId); throw new Error("ambient lookup forbidden"); });
+        effects.runtime.mockImplementation(() => { throw new Error("ambient runtime lookup forbidden"); });
+        session.cleanupSession();
+        expect(effects.invocation).not.toHaveBeenCalled();
+        expect(effects.runtime).not.toHaveBeenCalled();
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
     });
 
     it("uses device callback mutations before choosing whether and which captured ID to stop", () => {
         effects.devices.mockImplementation(() => { session.setSessionContainerId("device-updated-id"); });
         start(); session.cleanupSession();
-        expect(effects.spawn).toHaveBeenCalledWith("fixture-runtime", ["stop", "device-updated-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledWith(invocation.executable, stopArgs("device-updated-id"), stopOptions);
         session.clearSession(); start();
         effects.devices.mockImplementation(() => { session.setSessionContainerId(null); });
         session.cleanupSession();
-        expect(effects.spawn).toHaveBeenCalledTimes(1); expect(effects.runtime).toHaveBeenCalledTimes(1);
+        expect(effects.spawn).toHaveBeenCalledTimes(1); expect(effects.runtime).not.toHaveBeenCalled();
     });
 
     it("keeps mutable facade reads across native identity, lock, raw query and removal callbacks", () => {
@@ -257,7 +282,7 @@ describe("native session cleanup through the public facade", () => {
         effects.devices.mockImplementation(() => { throw failure; });
         start(); session.cleanupSession();
         expect(report).toHaveBeenCalledExactlyOnceWith(`[ccc] device cleanup failed during session cleanup: ${failure instanceof Error ? failure.message : String(failure)}`);
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("fixture-runtime", ["stop", "reported-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("reported-id"), stopOptions);
     });
 
     it("propagates reporter failure without stop or finalization and retries", () => {
@@ -271,15 +296,23 @@ describe("native session cleanup through the public facade", () => {
         expect(effects.spawn).toHaveBeenCalledTimes(1); expect(session.getCurrentSession().lockFile).toBeNull();
     });
 
-    it.each(["runtime", "spawn"] as const)("propagates native %s exceptions and retries rather than finalizing", stage => {
-        const failure = new Error(`${stage} failed`);
-        effects[stage].mockImplementationOnce(() => { throw failure; });
-        start(); expect(() => session.cleanupSession()).toThrow(failure);
+    it("retries native stop with the same captured authority without another runtime lookup", () => {
+        const failure = new Error("native spawn failed");
+        start();
+        effects.invocation.mockClear();
+        effects.invocation.mockImplementation(() => { throw new Error("ambient selection changed"); });
+        effects.spawn.mockImplementationOnce(() => { throw failure; }).mockReturnValue({ status: 0 });
+        expect(() => session.cleanupSession()).toThrow(failure);
         expect(session.getCurrentSession().lockFile).toBe(own);
         session.cleanupSession();
-        expect(effects.devices).toHaveBeenCalledTimes(2); expect(effects.unlink).toHaveBeenCalledTimes(1);
-        expect(effects.runtime).toHaveBeenCalledTimes(2);
-        expect(effects.spawn).toHaveBeenCalledTimes(stage === "runtime" ? 1 : 2);
+        expect(effects.devices).toHaveBeenCalledTimes(2);
+        expect(effects.unlink).toHaveBeenCalledTimes(1);
+        expect(effects.invocation).not.toHaveBeenCalled();
+        expect(effects.runtime).not.toHaveBeenCalled();
+        expect(effects.spawn.mock.calls).toEqual([
+            [invocation.executable, stopArgs("captured-id"), stopOptions],
+            [invocation.executable, stopArgs("captured-id"), stopOptions],
+        ]);
         expect(session.getCurrentSession().lockFile).toBeNull();
     });
 
@@ -305,7 +338,7 @@ describe("native session cleanup through the public facade", () => {
         expect(message.length).toBeLessThan(250);
         expect(session.getCurrentSession().lockFile).toBe(own);
         expect(effects.unlink).not.toHaveBeenCalled();
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("fixture-runtime", ["stop", "captured-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
         session.cleanupSession();
         expect(effects.spawn).toHaveBeenCalledTimes(2);
         expect(session.getCurrentSession().lockFile).toBeNull();
@@ -323,7 +356,7 @@ describe("native session cleanup through the public facade", () => {
         expect(session.getCurrentSession().lockFile).toBeNull();
     });
 
-    it("resolves changed native effect implementations on later cleanup calls", () => {
+    it("retains native authority while using changed device effects on later sessions", () => {
         start(); session.cleanupSession(); session.clearSession();
         const report = vi.spyOn(console, "error").mockImplementation(() => {});
         effects.runtime.mockReturnValue("later-runtime");
@@ -331,7 +364,7 @@ describe("native session cleanup through the public facade", () => {
         start("work"); session.cleanupSession();
         expect(effects.devices).toHaveBeenLastCalledWith(project, 5000, "work");
         expect(report).toHaveBeenCalledExactlyOnceWith("[ccc] device cleanup failed during session cleanup: later-failure");
-        expect(effects.spawn).toHaveBeenLastCalledWith("later-runtime", ["stop", "captured-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenLastCalledWith(invocation.executable, stopArgs("captured-id"), stopOptions);
     });
 
     it("repeated signal setup replaces only its owned registrations and preserves foreign listeners", () => {
@@ -399,7 +432,7 @@ describe("native session cleanup through the public facade", () => {
         const report = vi.spyOn(console, "error").mockImplementation(() => {});
         if (signal === "throwing diagnostic") report.mockImplementation(() => { throw new Error("diagnostic unavailable"); });
         process.exitCode = undefined;
-        effects.runtime.mockImplementation(() => { throw failure; });
+        effects.spawn.mockImplementation(() => { throw failure; });
         start(); session.setupSignalHandlers();
         const callback = once.mock.calls.find(([registered]) => registered === (signal === "throwing diagnostic" ? "SIGTERM" : signal))![1];
         expect(() => callback()).not.toThrow();
@@ -408,7 +441,8 @@ describe("native session cleanup through the public facade", () => {
         }
         expect(exit).toHaveBeenCalledExactlyOnceWith(1);
         expect(report.mock.calls.some(call => call.includes(failure))).toBe(true);
-        expect(effects.runtime).toHaveBeenCalledTimes(1);
+        expect(effects.runtime).not.toHaveBeenCalled();
+        expect(effects.spawn).toHaveBeenCalledTimes(1);
         expect(session.getCurrentSession().lockFile).toBe(own);
     });
 });
@@ -427,7 +461,7 @@ describe("host ownership acquisition through the facade", () => {
         session.clearSession(); vi.resetAllMocks();
         effects.stat.mockReturnValue({ isDirectory: () => true, isSymbolicLink: () => false });
         effects.identity.mockReturnValue("project"); effects.list.mockReturnValue([]);
-        effects.runtime.mockReturnValue("docker"); effects.spawn.mockReturnValue({ status: 0 });
+        effects.runtime.mockReturnValue("docker"); effects.invocation.mockReturnValue(invocation); effects.spawn.mockReturnValue({ status: 0 });
         effects.lock.mockImplementation((_path, operation) => operation());
         effects.capture.mockImplementation(receiptFor); effects.matches.mockReturnValue(true);
         update.mockResolvedValue(undefined); release.mockResolvedValue(undefined);
@@ -437,6 +471,32 @@ describe("host ownership acquisition through the facade", () => {
     afterEach(() => {
         effects.authorize.mockImplementation(() => undefined);
         session.clearSession(); vi.restoreAllMocks();
+    });
+
+    it("captures authority before reserving a claim and permits a fresh attempt after capture failure", async () => {
+        const failure = new Error("native capture unavailable");
+        effects.invocation.mockImplementationOnce(() => { throw failure; });
+        const inspect = vi.fn(() => ({ known: true, containerId: null, runtime: "docker" as const }));
+        await expect(session.acquireHostSessionOwnership(request, inspect)).rejects.toBe(failure);
+        expect(inspect).not.toHaveBeenCalled();
+        for (const effect of [effects.lock, effects.write, effects.capture, effects.arm, effects.devices, effects.spawn]) {
+            expect(effect).not.toHaveBeenCalled();
+        }
+        expect(session.getCurrentSession()).toEqual(emptyContext);
+        await expect(session.acquireHostSessionOwnership(request, inspect)).resolves.toMatchObject({ existingId: null });
+        expect(inspect).toHaveBeenCalledTimes(1);
+        session.cleanupSession();
+    });
+
+    it("refuses an inspection runtime that disagrees with the captured native authority before ID ACK or pruning", async () => {
+        await expect(session.acquireHostSessionOwnership(request, () => ({
+            known: true, containerId: "untrusted-engine-id", runtime: "podman",
+        }))).rejects.toThrow();
+        expect(update).not.toHaveBeenCalled();
+        expect(effects.list).not.toHaveBeenCalled();
+        expect(effects.rollback).toHaveBeenCalledTimes(1);
+        expect(effects.devices).not.toHaveBeenCalled();
+        expect(effects.spawn).not.toHaveBeenCalled();
     });
 
     it("releases real signal registrations across eleven consecutive acquisition and cleanup cycles", async () => {
@@ -482,7 +542,7 @@ describe("host ownership acquisition through the facade", () => {
         }));
         const outcome = acquisition.then(() => undefined, error => error);
         try {
-            await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("unacknowledged-id", "docker", false));
+            await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("unacknowledged-id", false));
             for (const [index, signal] of signals.entries()) {
                 const current = process.listeners(signal);
                 expect(current).toHaveLength(before[index]!.length + 1);
@@ -530,8 +590,8 @@ describe("host ownership acquisition through the facade", () => {
             expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(acquired.lockFile);
             expect(release).toHaveBeenCalledTimes(1);
             expect(effects.spawn.mock.calls).toEqual([
-                ["docker", ["stop", "retry-exact-id"], stopOptions],
-                ["docker", ["stop", "retry-exact-id"], stopOptions],
+                [invocation.executable, stopArgs("retry-exact-id"), stopOptions],
+                [invocation.executable, stopArgs("retry-exact-id"), stopOptions],
             ]);
         } finally {
             for (const [index, signal] of signals.entries()) {
@@ -586,7 +646,7 @@ describe("host ownership acquisition through the facade", () => {
         await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(7));
         expect(effects.spawn).not.toHaveBeenCalled();
         expect(effects.devices).not.toHaveBeenCalled();
-        expect(update.mock.calls.every(call => call[2] === false)).toBe(true);
+        expect(update.mock.calls.every(call => call[1] === false)).toBe(true);
         if (stage === "ACK") {
             expect(effects.rollback).not.toHaveBeenCalled();
             expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(effects.capture.mock.results[0].value.path);
@@ -729,12 +789,13 @@ describe("host ownership acquisition through the facade", () => {
     });
 
     it("acknowledges an existing exact ID before pruning, and blocks session replacement while the ACK is pending", async () => {
+        effects.invocation.mockReturnValue(podmanInvocation);
         let ack!: () => void;
         update.mockImplementation(() => new Promise<void>(resolve => { ack = resolve; }));
         effects.list.mockReturnValue(["project--foreign.lock"]); effects.read.mockReturnValue("123"); effects.classify.mockReturnValue("stale");
         const acquisition = session.acquireHostSessionOwnership(request, () => ({ known: true, containerId: "existing-exact-id", runtime: "podman" }));
         void acquisition.catch(() => undefined);
-        await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("existing-exact-id", "podman", false));
+        await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("existing-exact-id", false));
         expect(effects.list).not.toHaveBeenCalled(); expect(effects.unlink).not.toHaveBeenCalled();
         expect(() => session.setSession(join("/", "other.lock"), project)).toThrow(); expect(() => session.clearSession()).toThrow();
         ack();
@@ -748,7 +809,7 @@ describe("host ownership acquisition through the facade", () => {
         session.setSessionCleanupEnabled(true);
         await session.confirmSessionOwnership();
         session.cleanupSession();
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "existing-exact-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(podmanInvocation.executable, podmanStopArgs("existing-exact-id"), stopOptions);
         expect(release).toHaveBeenCalledTimes(1);
     });
 
@@ -788,7 +849,7 @@ describe("host ownership acquisition through the facade", () => {
         session.cleanupSession();
         expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(first.lockFile);
         expect(release).toHaveBeenCalledTimes(1);
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "first-exact-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("first-exact-id"), stopOptions);
         expect(session.getCurrentSession().lockFile).toBeNull();
 
         const second = await session.acquireHostSessionOwnership(request, () => ({
@@ -798,13 +859,13 @@ describe("host ownership acquisition through the facade", () => {
         const [firstReceipt, secondReceipt] = effects.capture.mock.results.map(result => result.value as SessionOwnershipReceipt);
         expect(secondReceipt).not.toEqual(firstReceipt);
         expect(session.getCurrentSession().lockFile).toBe(second.lockFile);
-        expect(update).toHaveBeenLastCalledWith("reused-exact-id", "docker", false);
+        expect(update).toHaveBeenLastCalledWith("reused-exact-id", false);
         if (authorized) {
             session.setSessionContainerId("replacement-exact-id");
             await session.confirmSessionOwnership();
             session.setSessionCleanupEnabled(true);
             await session.confirmSessionOwnership();
-            expect(update).toHaveBeenLastCalledWith("replacement-exact-id", "docker", true);
+            expect(update).toHaveBeenLastCalledWith("replacement-exact-id", true);
         }
 
         session.cleanupSession();
@@ -816,8 +877,8 @@ describe("host ownership acquisition through the facade", () => {
         expect(session.getCurrentSession().lockFile).toBeNull();
         expect(effects.devices).toHaveBeenCalledTimes(authorized ? 2 : 1);
         expect(effects.spawn.mock.calls).toEqual([
-            ["docker", ["stop", "first-exact-id"], stopOptions],
-            ...(authorized ? [["docker", ["stop", "replacement-exact-id"], stopOptions]] : []),
+            [invocation.executable, stopArgs("first-exact-id"), stopOptions],
+            ...(authorized ? [[invocation.executable, stopArgs("replacement-exact-id"), stopOptions]] : []),
         ]);
         session.cleanupSession();
         expect(effects.unlink).toHaveBeenCalledTimes(2);
@@ -831,7 +892,7 @@ describe("host ownership acquisition through the facade", () => {
         let acknowledge!: () => void;
         update.mockImplementationOnce(() => new Promise<void>(resolve => { acknowledge = resolve; }));
         session.setSessionCleanupEnabled(true);
-        await vi.waitFor(() => expect(update).toHaveBeenLastCalledWith("existing-exact-id", "docker", true));
+        await vi.waitFor(() => expect(update).toHaveBeenLastCalledWith("existing-exact-id", true));
         session.setSessionCleanupEnabled(false);
         let confirmed = false;
         const confirmation = session.confirmSessionOwnership().then(() => { confirmed = true; });
@@ -840,7 +901,7 @@ describe("host ownership acquisition through the facade", () => {
         expect(update).toHaveBeenCalledTimes(2);
         acknowledge();
         await confirmation;
-        expect(update.mock.calls.map(call => call[2])).toEqual([false, true, false]);
+        expect(update.mock.calls.map(call => call[1])).toEqual([false, true, false]);
         session.cleanupSession();
         expect(effects.spawn).not.toHaveBeenCalled();
         expect(effects.devices).not.toHaveBeenCalled();
@@ -858,7 +919,7 @@ describe("host ownership acquisition through the facade", () => {
         await expect(session.acquireHostSessionOwnership(request, () => ({
             known: true, containerId: "acknowledged-exact-id", runtime: "docker",
         }))).rejects.toBe(failure);
-        expect(update).toHaveBeenCalledExactlyOnceWith("acknowledged-exact-id", "docker", false);
+        expect(update).toHaveBeenCalledExactlyOnceWith("acknowledged-exact-id", false);
         const captured = effects.capture.mock.results[0].value as SessionOwnershipReceipt;
         expect(session.getCurrentSession()).toEqual({
             lockFile: captured.path, projectPath: project, profile: undefined, toolName: "codex",
@@ -883,14 +944,14 @@ describe("host ownership acquisition through the facade", () => {
         update.mockClear();
         session.setSessionContainerId("replacement-exact-id");
         await session.confirmSessionOwnership();
-        expect(update).toHaveBeenCalledExactlyOnceWith("replacement-exact-id", "docker", false);
+        expect(update).toHaveBeenCalledExactlyOnceWith("replacement-exact-id", false);
         session.setSessionCleanupEnabled(true);
         await session.confirmSessionOwnership();
         expect(update.mock.calls).toEqual([
-            ["replacement-exact-id", "docker", false], ["replacement-exact-id", "docker", true],
+            ["replacement-exact-id", false], ["replacement-exact-id", true],
         ]);
         session.cleanupSession();
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "replacement-exact-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("replacement-exact-id"), stopOptions);
     });
 
     it("rejected replacement-ID ACK cannot retain the previous ID's local stop authorization", async () => {
@@ -904,7 +965,7 @@ describe("host ownership acquisition through the facade", () => {
         session.setSessionContainerId("replacement-exact-id");
         const confirmation = session.confirmSessionOwnership();
         const rejected = expect(confirmation).rejects.toBe(failure);
-        await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("replacement-exact-id", "docker", false));
+        await vi.waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith("replacement-exact-id", false));
         expect(effects.devices).not.toHaveBeenCalled();
         expect(effects.spawn).not.toHaveBeenCalled();
         rejectAck(failure);
@@ -922,9 +983,9 @@ describe("host ownership acquisition through the facade", () => {
         update.mockClear();
         session.setSessionContainerId("first-exact-id");
         await session.confirmSessionOwnership();
-        expect(update).toHaveBeenCalledExactlyOnceWith("first-exact-id", "docker", true);
+        expect(update).toHaveBeenCalledExactlyOnceWith("first-exact-id", true);
         session.cleanupSession();
-        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith("docker", ["stop", "first-exact-id"], stopOptions);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("first-exact-id"), stopOptions);
     });
 
     it("reports monitor loss during asynchronous acquisition guard release while retaining the acknowledged cleanup ID", async () => {

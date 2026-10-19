@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
 const native = vi.hoisted(() => ({
     spawn: vi.fn(), runtime: vi.fn(), remote: vi.fn(), family: vi.fn(),
+    handoffBoundary: vi.fn<(operation: () => string) => string>(),
     exists: vi.fn(), stat: vi.fn(), lstat: vi.fn(), read: vi.fn(), write: vi.fn(),
     realpath: vi.fn(), mkdir: vi.fn(), open: vi.fn(), fstat: vi.fn(), close: vi.fn(), rm: vi.fn(),
 }));
@@ -28,6 +30,18 @@ vi.mock("../../container-runtime.js", async original => ({
     runtimeExtraRunArgs: () => [],
     bindMountArgs: (host: string, container: string, options?: { readonly?: boolean }) => ["-v", `${host}:${container}${options?.readonly ? ":ro" : ""}`],
 }));
+// Arm native failure observations at the handoff boundary while retaining every
+// real application port assertion, identity check and callback invocation.
+vi.mock("../../application/container-session-handoff.js", async original => {
+    const actual = await original<typeof import("../../application/container-session-handoff.js")>();
+    return {
+        ...actual,
+        createContainerSessionHandoff: (ports: Parameters<typeof actual.createContainerSessionHandoff>[0]) => {
+            const handoff = actual.createContainerSessionHandoff(ports);
+            return { run: (...args: Parameters<typeof handoff.run>) => native.handoffBoundary(() => handoff.run(...args)) };
+        },
+    };
+});
 vi.mock("../../tool-registry.js", () => ({ getAllCredentialMounts: () => [] }));
 vi.mock("../../device-lab-admin.js", () => ({ cleanupOwnerDevices: vi.fn() }));
 vi.mock("../../session.js", () => ({
@@ -48,6 +62,7 @@ vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({
 }));
 
 // Docker, lifecycle composition and the extracted application remain real.
+const runtime = await import("../../container-runtime.js");
 const docker = await import("../../docker.js");
 const containerIdentity = await import("../../container-identity.js");
 const sharedState = await import("@ccc/device-lab/device-lab-shared-state.js");
@@ -68,7 +83,12 @@ function thrown(operation: () => unknown): unknown {
     throw new Error("Expected exception");
 }
 
+function calls() {
+    return native.spawn.mock.calls.map(call => normalizeNativeRuntimeCall(call, "fixture-runtime") as [string, string[], Record<string, unknown>]);
+}
+
 function fixture(path: Path) {
+    preloadNativeRuntimeFixture(runtime);
     const identity = containerIdentity.resolveContainerIdentity();
     const identityLabels = { ...containerIdentity.getIdentityLabels(identity), "ccc.identity.base": baseImageId };
     const trace: string[] = [];
@@ -78,6 +98,13 @@ function fixture(path: Path) {
         sourceFailure: undefined as unknown, sourcePath: "",
         runArgs: [] as string[],
     };
+    native.handoffBoundary.mockImplementation(operation => {
+        trace.push("handoff");
+        state.late = true;
+        const value = operation();
+        state.late = false;
+        return value;
+    });
     native.runtime.mockReturnValue("fixture-runtime");
     native.remote.mockReturnValue(false);
     native.exists.mockReturnValue(false);
@@ -100,7 +127,22 @@ function fixture(path: Path) {
     native.write.mockImplementation((target: string, content: string) => { markers.set(target.slice(target.lastIndexOf("/") + 1), content); });
     native.open.mockReturnValue(1);
     native.family.mockImplementation((_prefix, operation) => operation());
-    native.spawn.mockImplementation((_cli, args: string[], options?: { encoding?: string | null }) => {
+    native.spawn.mockImplementation((...rawCall) => {
+        const [, args, options] = normalizeNativeRuntimeCall(rawCall, "fixture-runtime") as [string, string[], { encoding?: string | null }];
+        if (args[0] === "info" && args.includes("{{.ID}}")) {
+            expect(rawCall[0]).toBe("/fixture/runtime/docker");
+            expect(args).toEqual(["info", "--format", "{{.ID}}"]);
+            expect(options).toEqual({ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000, killSignal: "SIGKILL", windowsHide: true });
+            return result(0, "fixture-daemon-id\n");
+        }
+        if (args[0] === "exec" && args.includes("/usr/bin/docker")) {
+            expect(rawCall[0]).toBe("/fixture/runtime/docker");
+            // The outer exec retains captured authority. The Docker command
+            // inside the container addresses its mounted socket directly.
+            expect(args).toEqual(["exec", "--user", "root", id, "/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "info", "--format", "{{.ID}}"]);
+            expect(options).toEqual({ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000, killSignal: "SIGKILL", windowsHide: true });
+            return result(0, "fixture-daemon-id\n");
+        }
         if (args[0] === "images") return result(0, "image-id");
         if (args[0] === "image" && args[1] === "inspect") {
             expect(args[2]).toMatch(/^ccc-identity:[a-f0-9]{64}$/);
@@ -153,7 +195,6 @@ function fixture(path: Path) {
         }
         if (args[0] === "exec" && args.includes("ccc-ssh-copy")) {
             trace.push("sync-finished");
-            state.late = true;
         }
         return result();
     });
@@ -169,20 +210,26 @@ function fixture(path: Path) {
         project, () => {}, undefined, undefined, undefined, undefined,
         path === "deferred" ? () => false : undefined, ready, undefined, started,
     );
-    return { state, trace, start };
+    const startPrepared = () => docker.prepareProjectContainerStartup().start(
+        project, () => {}, undefined, undefined, undefined, undefined,
+        path === "deferred" ? () => false : undefined,
+    );
+    return { state, trace, start, startPrepared };
 }
 
 function assertPreserved() {
-    expect(native.spawn.mock.calls.filter(call => ["stop", "rm"].includes(call[1][0]))).toEqual([]);
+    expect(calls().filter(call => ["stop", "rm"].includes(call[1][0]))).toEqual([]);
 }
 
 beforeEach(() => {
     vi.resetAllMocks();
+    runtime._resetRuntimeCacheForTest();
+    native.handoffBoundary.mockImplementation(operation => operation());
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
 });
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+afterEach(() => { runtime._resetRuntimeCacheForTest(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("public Docker session handoff through the real application", () => {
     it("refuses an unknown fixture lock without executing its callback", () => {
@@ -200,18 +247,19 @@ describe("public Docker session handoff through the real application", () => {
             f.trace.push(`ready:${target}`);
             return returned;
         })).toBe(docker.getContainerName(project));
-        expect(f.trace.slice(-2)).toEqual([`identity:${id}`, `ready:${id}`]);
-        const lastSync = f.trace.indexOf("sync-finished");
+        const readyIndex = f.trace.indexOf(`ready:${id}`);
+        expect(f.trace.slice(readyIndex - 1, readyIndex + 1)).toEqual([`identity:${id}`, `ready:${id}`]);
+        expect(readyIndex).toBeLessThan(f.trace.indexOf("sync-finished"));
         const finalIdentity = f.trace.indexOf(`identity:${id}`);
-        const sourceTrace = f.trace.slice(lastSync + 1, finalIdentity);
-        // Existing/restarted lifecycles recheck device sources after SSH sync
-        // before entering finish; the handoff source checks follow that step.
+        const sourceTrace = f.trace.slice(f.trace.indexOf("handoff") + 1, finalIdentity);
+        // The synchronous wrapper publishes the exact target before running
+        // queued helpers; source and identity assertions belong to that handoff.
         const projectCheck = sourceTrace.indexOf(`source:${project}`);
         const filesystemCheck = sourceTrace.findIndex(entry => entry.endsWith("claude.json"));
         expect(projectCheck).toBeGreaterThanOrEqual(0);
         expect(filesystemCheck).toBeGreaterThan(projectCheck);
-        expect(native.spawn.mock.calls.filter(call => call[1][0] === "run" && call[1][1] !== "--rm")).toHaveLength(path === "fresh" ? 1 : 0);
-        expect(native.spawn.mock.calls.filter(call => call[1][0] === "start").map(call => call[1])).toEqual(path === "restart" ? [["start", id]] : []);
+        expect(calls().filter(call => call[1][0] === "run" && call[1][1] !== "--rm")).toHaveLength(path === "fresh" ? 1 : 0);
+        expect(calls().filter(call => call[1][0] === "start").map(call => call[1])).toEqual(path === "restart" ? [["start", id]] : []);
         expect(native.family).toHaveBeenCalledTimes(path === "fresh" ? 1 : 0);
         if (path === "deferred") expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
         assertPreserved();
@@ -233,22 +281,32 @@ describe("public Docker session handoff through the real application", () => {
         assertPreserved();
     });
 
-    it.each(["fresh", "existing", "restart", "deferred"] as const)("makes no final identity inspection without a callback on %s", path => {
+    it.each(["fresh", "existing", "restart", "deferred"] as const)("prepared startup makes no handoff identity inspection without a callback on %s", path => {
         const f = fixture(path);
-        expect(f.start()).toBe(docker.getContainerName(project));
+        expect(f.startPrepared()).toBe(docker.getContainerName(project));
         expect(f.trace.some(entry => entry.startsWith("identity:"))).toBe(false);
-        const inspections = native.spawn.mock.calls.filter(call => call[1].includes("{{.Id}}|{{.State.Running}}"));
+        const allCalls = calls();
+        const inspections = allCalls.filter(call => call[1].includes("{{.Id}}|{{.State.Running}}"));
         expect(inspections).toHaveLength(path === "deferred" || path === "restart" ? 1 : 0);
         if (path === "restart") {
             // Restart rechecks its captured stopped ID before start. This early
             // fence must not become a callback-dependent final identity probe.
             expect(inspections[0]).toEqual(["fixture-runtime", ["inspect", id, "--format", "{{.Id}}|{{.State.Running}}"],
-                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 }]);
-            const startCall = native.spawn.mock.calls.find(call => call[1][0] === "start");
+                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" }]);
+            const startCall = allCalls.find(call => call[1][0] === "start");
             expect(startCall?.[1]).toEqual(["start", id]);
-            expect(native.spawn.mock.calls.indexOf(inspections[0])).toBeLessThan(native.spawn.mock.calls.indexOf(startCall!));
+            expect(allCalls.indexOf(inspections[0])).toBeLessThan(allCalls.indexOf(startCall!));
         }
         expect(f.trace.some(entry => entry.endsWith("claude.json"))).toBe(true);
+        assertPreserved();
+    });
+
+    it.each(["fresh", "existing", "restart", "deferred"] as const)("synchronous startup retains its internal handoff before helper initialization without an external callback on %s", path => {
+        const f = fixture(path);
+        expect(f.start()).toBe(docker.getContainerName(project));
+        expect(f.trace.filter(entry => entry.startsWith("identity:"))).toEqual([`identity:${id}`]);
+        expect(f.trace.filter(entry => entry === "sync-finished")).toHaveLength(1);
+        expect(f.trace.indexOf(`identity:${id}`)).toBeLessThan(f.trace.indexOf("sync-finished"));
         assertPreserved();
     });
 

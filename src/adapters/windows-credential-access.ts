@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "node:child_process";
+import { bindNativeRuntimeInvocation, captureNativeRuntimeInvocation, currentNativeRuntimeInvocation, type BoundNativeSpawnSync } from "../container-runtime.js";
 import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "@ccc/device-lab/windows-system-powershell.js";
@@ -239,9 +240,24 @@ for name in ('app-server-control', 'app-server-daemon', 'tmp'):
             if info.st_uid != uid: sys.exit(1)
 `;
 
-export function repairWindowsCodexPrivateState(cli: string, target: string): void {
+function credentialNativeRunner(cli: string, supplied?: BoundNativeSpawnSync) {
+    let runner = supplied;
+    if (!runner && (cli === "docker" || cli === "podman")) {
+        const current = currentNativeRuntimeInvocation();
+        runner = bindNativeRuntimeInvocation(current?.runtime === cli ? current : captureNativeRuntimeInvocation(cli)).spawnSync;
+    }
+    const bound = runner;
+    function native(args: readonly string[], options: SpawnSyncOptionsWithStringEncoding): SpawnSyncReturns<string>;
+    function native(args: readonly string[], options: SpawnSyncOptions): SpawnSyncReturns<string | Buffer>;
+    function native(args: readonly string[], options: SpawnSyncOptions): SpawnSyncReturns<string | Buffer> {
+        return bound ? bound(args, options) : spawnSync(cli, args, options);
+    }
+    return native;
+}
+
+export function repairWindowsCodexPrivateState(cli: string, target: string, runner?: BoundNativeSpawnSync): void {
     if (process.platform !== "win32") return;
-    createWindowsCodexRecovery(createNativeWindowsCodexRecoveryPorts(cli, target)).run();
+    createWindowsCodexRecovery(createNativeWindowsCodexRecoveryPorts(cli, target, runner)).run();
 }
 
 const CODEX_CONTROL_SOCKET_RECOVERY = String.raw`
@@ -285,17 +301,18 @@ interface WindowsCodexControlSocketContext {
     readonly source: string;
 }
 
-function createNativeWindowsCodexRecoveryPorts(cli: string, target: string): WindowsCodexRecoveryPorts<WindowsCodexPrivateStateContext, WindowsCodexControlSocketContext> {
-    const run = (mode: "probe" | "repair") => spawnSync(cli, ["exec", "-i", target, "python3", "-I", "-", mode], { input: CODEX_CONTROL_SOCKET_RECOVERY, encoding: "utf8", timeout: 10000 });
+function createNativeWindowsCodexRecoveryPorts(cli: string, target: string, runner?: BoundNativeSpawnSync): WindowsCodexRecoveryPorts<WindowsCodexPrivateStateContext, WindowsCodexControlSocketContext> {
+    const native = credentialNativeRunner(cli, runner);
+    const run = (mode: "probe" | "repair") => native(["exec", "-i", target, "python3", "-I", "-", mode], { input: CODEX_CONTROL_SOCKET_RECOVERY, encoding: "utf8", timeout: 10000 });
     return {
         probePrivateState: () => {
-            const probe = spawnSync(cli, ["exec", target, "python3", "-c", CODEX_STATE_OWNER_PROBE], { encoding: "utf8", timeout: 10000 });
+            const probe = native(["exec", target, "python3", "-c", CODEX_STATE_OWNER_PROBE], { encoding: "utf8", timeout: 10000 });
             if (!probe.error && probe.status === 0) return "healthy";
             if (probe.error || probe.status !== 1) throw new Error(`Codex private state ownership probe failed: ${probe.error?.message ?? probe.stderr?.trim() ?? `exit ${probe.status}`}`, { cause: probe.error });
             return "repair-required";
         },
         qualifyPrivateState: () => {
-            const inspect = spawnSync(cli, ["inspect", "-f", "{{json .Mounts}}", target], { encoding: "utf8", timeout: 10000 });
+            const inspect = native(["inspect", "-f", "{{json .Mounts}}", target], { encoding: "utf8", timeout: 10000 });
             if (inspect.error || inspect.status !== 0) throw new Error("Codex private state mount inspection failed");
             const mounts = JSON.parse(inspect.stdout) as { Destination: string; Source: string; Type: string; RW: boolean }[];
             const roots = mounts.filter(mount => mount.Destination === "/home/ccc/.codex");
@@ -307,17 +324,17 @@ function createNativeWindowsCodexRecoveryPorts(cli: string, target: string): Win
                 try { lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
                 assertWindowsCredentialDirectory(path);
             }
-            const account = spawnSync(cli, ["exec", target, "sh", "-c", "id -u; id -g"], { encoding: "utf8", timeout: 10000 });
+            const account = native(["exec", target, "sh", "-c", "id -u; id -g"], { encoding: "utf8", timeout: 10000 });
             const [uid, gid] = (account.stdout ?? "").trim().split(/\r?\n/);
             if (account.error || account.status !== 0 || !/^\d+$/.test(uid ?? "") || !/^\d+$/.test(gid ?? "")) throw new Error("Codex private state user lookup failed");
             return { context: { source, uid, gid }, principal: { uid, gid } };
         },
         *privateStatePeers(context) {
-            const active = spawnSync(cli, ["ps", "-q"], { encoding: "utf8", timeout: 10000 });
+            const active = native(["ps", "-q"], { encoding: "utf8", timeout: 10000 });
             if (active.error || active.status !== 0) throw new Error("Codex private state active users could not be checked");
             const ids = active.stdout.trim().split(/\s+/).filter(Boolean);
             if (ids.length) {
-                const inspected = spawnSync(cli, ["inspect", ...ids], { encoding: "utf8", timeout: 10000 });
+                const inspected = native(["inspect", ...ids], { encoding: "utf8", timeout: 10000 });
                 if (inspected.error || inspected.status !== 0) throw new Error("Codex private state active users could not be inspected");
                 const containers = JSON.parse(inspected.stdout) as { Id: string; Mounts: { Type: string; Source: string; Destination: string }[] }[];
                 for (const container of containers) {
@@ -332,12 +349,12 @@ function createNativeWindowsCodexRecoveryPorts(cli: string, target: string): Win
             }
         },
         privatePeerUser: (_context, peer) => {
-            const observed = spawnSync(cli, ["exec", peer.id, "id", "-u"], { encoding: "utf8", timeout: 10000 });
+            const observed = native(["exec", peer.id, "id", "-u"], { encoding: "utf8", timeout: 10000 });
             if (observed.error || observed.status !== 0) return { kind: "unknown" };
             return { kind: "known", uid: observed.stdout.trim() };
         },
         repairPrivateState: context => {
-            const repaired = spawnSync(cli, ["exec", "--user", "root", "-i", target, "timeout", "-k", "2s", "30s", "python3", "-I", "-", context.uid, context.gid], { input: CODEX_PRIVATE_STATE_GRANT, encoding: "utf8", timeout: 35000 });
+            const repaired = native(["exec", "--user", "root", "-i", target, "timeout", "-k", "2s", "30s", "python3", "-I", "-", context.uid, context.gid], { input: CODEX_PRIVATE_STATE_GRANT, encoding: "utf8", timeout: 35000 });
             if (repaired.error || repaired.status !== 0) throw new Error(`Codex private state repair failed: ${repaired.stderr?.trim()}`, { cause: repaired.error });
             return undefined;
         },
@@ -348,7 +365,7 @@ function createNativeWindowsCodexRecoveryPorts(cli: string, target: string): Win
             return "recognized-disconnected";
         },
         qualifyControlSocket: () => {
-            const inspected = spawnSync(cli, ["inspect", "-f", "{{json .Mounts}}", target], { encoding: "utf8", timeout: 10000 });
+            const inspected = native(["inspect", "-f", "{{json .Mounts}}", target], { encoding: "utf8", timeout: 10000 });
             if (inspected.error || inspected.status !== 0) throw new Error("Codex control socket mount inspection failed");
             const mounts = JSON.parse(inspected.stdout) as { Destination: string; Source: string; Type: string; RW: boolean }[];
             const roots = mounts.filter(mount => mount.Destination === "/home/ccc/.codex");
@@ -358,11 +375,11 @@ function createNativeWindowsCodexRecoveryPorts(cli: string, target: string): Win
             return { source };
         },
         *otherControlSocketPeers(context) {
-            const active = spawnSync(cli, ["ps", "-q"], { encoding: "utf8", timeout: 10000 });
+            const active = native(["ps", "-q"], { encoding: "utf8", timeout: 10000 });
             if (active.error || active.status !== 0) throw new Error("Codex control socket users could not be checked");
             const ids = active.stdout.trim().split(/\s+/).filter(id => id && !id.startsWith(target) && !target.startsWith(id));
             if (ids.length) {
-                const inspected = spawnSync(cli, ["inspect", ...ids], { encoding: "utf8", timeout: 10000 });
+                const inspected = native(["inspect", ...ids], { encoding: "utf8", timeout: 10000 });
                 if (inspected.error || inspected.status !== 0) throw new Error("Codex control socket users could not be inspected");
                 const containers = JSON.parse(inspected.stdout) as { Id: string; Mounts: { Type: string; Source: string }[] }[];
                 for (const container of containers) {
@@ -375,7 +392,7 @@ function createNativeWindowsCodexRecoveryPorts(cli: string, target: string): Win
             }
         },
         controlPeerServer: (_context, peer) => {
-            const processProbe = spawnSync(cli, ["exec", "--user", "root", peer.id, "python3", "-c", "import glob,os,sys; found=False\nfor path in glob.glob('/proc/[0-9]*/cmdline'):\n try:\n  args=open(path,'rb').read().split(b'\\0'); found=found or (b'codex' in os.path.basename(args[0]) and b'app-server' in args[1:])\n except (FileNotFoundError,PermissionError): pass\nsys.exit(10 if found else 0)"], { encoding: "utf8", timeout: 10000 });
+            const processProbe = native(["exec", "--user", "root", peer.id, "python3", "-c", "import glob,os,sys; found=False\nfor path in glob.glob('/proc/[0-9]*/cmdline'):\n try:\n  args=open(path,'rb').read().split(b'\\0'); found=found or (b'codex' in os.path.basename(args[0]) and b'app-server' in args[1:])\n except (FileNotFoundError,PermissionError): pass\nsys.exit(10 if found else 0)"], { encoding: "utf8", timeout: 10000 });
             return processProbe.error || processProbe.status !== 0 ? "may-be-serving" : "absent";
         },
         quarantineControlSocket: _context => {
@@ -386,25 +403,26 @@ function createNativeWindowsCodexRecoveryPorts(cli: string, target: string): Win
     };
 }
 
-export function prepareWindowsCredentialAccess(cli: string, target: string, directory: "/home/ccc/.claude" | "/home/ccc/.codex"): void {
+export function prepareWindowsCredentialAccess(cli: string, target: string, directory: "/home/ccc/.claude" | "/home/ccc/.codex", runner?: BoundNativeSpawnSync): void {
     if (process.platform !== "win32") return;
-    const probe = spawnSync(cli, ["exec", target, "sh", "-c", 'test -d "$1" && test ! -L "$1" && test -r "$1" && test -w "$1" && test -x "$1" || exit 1; for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do test -L "$entry" && continue; test -e "$entry" || continue; test -r "$entry" && test -w "$entry" || exit 1; if test -d "$entry"; then test -x "$entry" || exit 1; fi; done', "ccc-credential-probe", directory],
+    const native = credentialNativeRunner(cli, runner);
+    const probe = native(["exec", target, "sh", "-c", 'test -d "$1" && test ! -L "$1" && test -r "$1" && test -w "$1" && test -x "$1" || exit 1; for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do test -L "$entry" && continue; test -e "$entry" || continue; test -r "$entry" && test -w "$entry" || exit 1; if test -d "$entry"; then test -x "$entry" || exit 1; fi; done', "ccc-credential-probe", directory],
         { encoding: "utf8", timeout: 15000 });
     if (!probe.error && probe.status === 0) return;
     if (probe.error || probe.status !== 1) throw new Error("Windows credential access probe failed", { cause: probe.error ?? new Error(probe.stderr) });
-    const inspected = spawnSync(cli, ["inspect", "-f", "{{json .Mounts}}", target], { encoding: "utf8", timeout: 10000 });
+    const inspected = native(["inspect", "-f", "{{json .Mounts}}", target], { encoding: "utf8", timeout: 10000 });
     if (inspected.error || inspected.status !== 0) throw new Error("Windows credential mount inspection failed");
     const mounts = JSON.parse(inspected.stdout) as { Destination: string; Source: string; Type: string; RW: boolean }[];
     const mounted = mounts.filter(mount => mount.Destination === directory);
     if (mounted.length !== 1 || mounted[0].Type !== "bind" || !mounted[0].RW) throw new Error("Windows credential mount is not a writable bind");
     assertWindowsCredentialDirectory(mounted[0].Source);
-    const user = spawnSync(cli, ["exec", target, "sh", "-c", "id -u; id -G"], { encoding: "utf8", timeout: 10000 });
+    const user = native(["exec", target, "sh", "-c", "id -u; id -G"], { encoding: "utf8", timeout: 10000 });
     const [uid, groups] = (user.stdout ?? "").trim().split(/\r?\n/);
     if (user.error || user.status !== 0 || !/^\d+$/.test(uid ?? "") || Number(uid) >= 0xffffffff
         || !/^\d+(?: \d+)*$/.test(groups ?? "")) throw new Error("Windows credential container user lookup failed");
-    const granted = spawnSync(cli, ["exec", "--user", "root", "-i", target, "timeout", "-k", "2s", "120s", "/usr/bin/python3", "-I", "-", uid, directory, groups],
+    const granted = native(["exec", "--user", "root", "-i", target, "timeout", "-k", "2s", "120s", "/usr/bin/python3", "-I", "-", uid, directory, groups],
         { input: CREDENTIAL_ACCESS_GRANT, encoding: "utf8", timeout: 125000 });
     if (granted.error || granted.status !== 0) throw new Error(`Windows credential access grant failed: ${granted.stderr?.trim()}`, { cause: granted.error });
-    const verified = spawnSync(cli, ["exec", target, "sh", "-c", 'test -r "$1" && test -w "$1" && test -x "$1"', "ccc-credential-verify", directory], { timeout: 10000 });
+    const verified = native(["exec", target, "sh", "-c", 'test -r "$1" && test -w "$1" && test -x "$1"', "ccc-credential-verify", directory], { timeout: 10000 });
     if (verified.error || verified.status !== 0) throw new Error("Windows credential access verification failed");
 }

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 import type { SpawnSyncReturns } from "node:child_process";
 import type { RuntimeName } from "../../domain/container-runtime.js";
 
@@ -13,6 +14,7 @@ vi.mock("../../container-runtime.js", async original => ({
 
 // Both the public Docker facade and its application policy remain real.
 const docker = await import("../../docker.js");
+const runtimeFacade = await import("../../container-runtime.js");
 const options = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000, killSignal: "SIGKILL" };
 const cases: Array<[RuntimeName, string, string]> = [
     ["docker", "docker-desktop", "Please start Docker Desktop and try again."],
@@ -39,6 +41,7 @@ function thrown(operation: () => unknown): unknown {
 function fixture(runtime: RuntimeName = "docker", flavor = "docker-native", status: number | null = 1, stderr = "") {
     const trace: string[] = [];
     const info = { runtime, flavor };
+    preloadNativeRuntimeFixture(runtimeFacade, { runtime });
     native.cli.mockImplementation(() => { trace.push("cli"); return "fixture-runtime"; });
     native.spawn.mockImplementation(() => { trace.push("probe"); return result(status, stderr); });
     native.info.mockImplementation(() => { trace.push("info"); return info; });
@@ -52,14 +55,14 @@ function fixture(runtime: RuntimeName = "docker", flavor = "docker-native", stat
 }
 
 function assertOnlyInfoProbe() {
-    expect(native.spawn.mock.calls).toEqual([["fixture-runtime", ["info"], options]]);
+    expect(native.spawn.mock.calls.map(call => normalizeNativeRuntimeCall(call, "fixture-runtime"))).toEqual([["fixture-runtime", ["info"], options]]);
 }
 
 beforeEach(() => {
     vi.resetAllMocks();
     vi.stubEnv("DEBUG", "");
 });
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+afterEach(() => { runtimeFacade._resetRuntimeCacheForTest(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("container runtime readiness public facade", () => {
     it.each([0, 1, 127, null])("preserves native info probe options and status %s classification", status => {
@@ -75,16 +78,15 @@ describe("container runtime readiness public facade", () => {
         const f = fixture("docker", "docker-native", 0);
         vi.stubEnv("DEBUG", "1");
         expect(docker.ensureDockerRunning()).toBeUndefined();
-        expect(f.trace).toEqual(["cli", "probe"]);
+        expect(f.trace).toEqual(["probe"]);
         assertOnlyInfoProbe();
         expect(native.info).not.toHaveBeenCalled();
     });
 
     it.each(["docker", "podman"] as const)("probes the selected %s executable with info", runtime => {
         fixture(runtime);
-        native.cli.mockReturnValue(runtime);
         expect(docker.isDockerRunning()).toBe(false);
-        expect(native.spawn.mock.calls).toEqual([[runtime, ["info"], options]]);
+        expect(native.spawn.mock.calls.map(call => normalizeNativeRuntimeCall(call))).toEqual([[runtime, ["info"], options]]);
         expect(native.info).not.toHaveBeenCalled();
     });
 
@@ -101,7 +103,7 @@ describe("container runtime readiness public facade", () => {
         const f = fixture(runtime, flavor);
         expect(() => docker.ensureDockerRunning()).toThrow(`${runtime} is not running.`);
         expect(process.exit).not.toHaveBeenCalled();
-        expect(f.trace).toEqual(["cli", "probe", "info", `Error: ${runtime} is not running.`, hint]);
+        expect(f.trace).toEqual(["probe", "info", `Error: ${runtime} is not running.`, hint]);
         expect(native.info).toHaveBeenCalledTimes(1);
         assertOnlyInfoProbe();
     });
@@ -117,7 +119,7 @@ describe("container runtime readiness public facade", () => {
         expect(() => docker.ensureDockerRunning()).toThrow("docker is not running.");
         expect(process.exit).not.toHaveBeenCalled();
         expect(f.trace).toEqual([
-            "cli", "probe",
+            "probe",
             ...(visible ? ["cli", "[ccc:debug] fixture-runtime info failed: native failure"] : []),
             "info", "Error: docker is not running.", cases[1][2],
         ]);
@@ -127,7 +129,22 @@ describe("container runtime readiness public facade", () => {
 });
 
 describe("container runtime readiness facade failure behavior", () => {
-    const steps = ["cli", "probe", "info", "report:1", "report:2"];
+    it("preserves Error and non-Error runtime-name failures during native diagnostics", () => {
+        for (const failure of [new Error("native failure"), { failure: "cli" }]) {
+            native.spawn.mockClear();
+            const f = fixture("podman", "podman-rootless", 1, "native failure");
+            vi.stubEnv("DEBUG", "1");
+            native.cli.mockImplementation(() => { f.trace.push("cli"); throw failure; });
+            expect(thrown(() => docker.ensureDockerRunning())).toBe(failure);
+            expect(f.trace).toEqual(["probe", "cli"]);
+            assertOnlyInfoProbe();
+            expect(native.info).not.toHaveBeenCalled();
+            expect(console.error).not.toHaveBeenCalled();
+            expect(process.exit).not.toHaveBeenCalled();
+        }
+    });
+
+    const steps = ["probe", "info", "report:1", "report:2"];
 
     it.each(steps)("preserves Error and non-Error throws at %s and stops later effects", step => {
         for (const failure of [new Error("native failure"), { failure: step }]) {
@@ -137,7 +154,6 @@ describe("container runtime readiness facade failure behavior", () => {
                 f.trace.push(name);
                 if (step === name) throw failure;
             };
-            native.cli.mockImplementation(() => { visit("cli"); return "fixture-runtime"; });
             native.spawn.mockImplementation(() => { visit("probe"); return result(); });
             native.info.mockImplementation(() => { visit("info"); return f.info; });
             vi.mocked(console.error).mockImplementation(() => { visit(`report:${++reports}`); });

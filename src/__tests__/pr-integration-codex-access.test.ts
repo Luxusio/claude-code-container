@@ -1,3 +1,4 @@
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "./helpers/native-runtime-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "fs";
 import { tmpdir } from "os";
@@ -20,6 +21,7 @@ vi.mock("child_process", async (original) => {
     return {
         ...native,
         spawnSync: ((command: string, args: string[], options: object) => {
+            [command, args, options] = normalizeNativeRuntimeCall([command, args, options]) as [string, string[], object];
             if (command !== "docker") return native.spawnSync(command, args, options);
             fixture.executions.push([...args]);
             if (args.join(" ") === "exec pinned-test-container sh -c id -u") {
@@ -54,13 +56,14 @@ beforeEach(async () => {
     fixture.executions = [];
     fixture.failRepair = false;
     vi.stubEnv("container", "");
-    vi.stubEnv("VITEST", "true");
     const utilities = await import("../utils.js");
     configFile = utilities.getCodexConfigFile();
     fixture.configDir = utilities.getCodexDir();
     getClaudeJsonFile = utilities.getClaudeJsonFile;
     fs.mkdirSync(fixture.configDir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(configFile, retained, { mode: 0o100 });
+    const runtime = await import("../container-runtime.js");
+    preloadNativeRuntimeFixture(runtime, {runtime: "docker", rootless: false, dockerDesktop: false});
     ({ buildMcpConfig } = await import("../mcp-forward.js"));
     ({ restoreCodexConfigHostOwnership: restore } = await import("../docker.js"));
 });

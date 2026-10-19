@@ -1,8 +1,10 @@
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
 
 afterEach(() => {
     vi.doUnmock("child_process");
+    vi.doUnmock("../../container-runtime.js");
     vi.restoreAllMocks();
     vi.resetModules();
 });
@@ -15,7 +17,12 @@ async function loadFacade() {
     const spawn = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
     const exec = vi.fn(() => { throw new Error("unexpected native exec"); });
     vi.doMock("child_process", async importOriginal => ({
-        ...await importOriginal<object>(), spawnSync: spawn, execSync: exec,
+        ...await importOriginal<object>(), spawnSync: (...args: unknown[]) => spawn(...normalizeNativeRuntimeCall(args)), execSync: exec,
+    }));
+    vi.doMock("../../container-runtime.js", async importOriginal => ({
+        ...await importOriginal<typeof import("../../container-runtime.js")>(),
+        // Runtime facts are preloaded below; keep this facade focused on setup commands.
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation(),
     }));
     vi.resetModules();
     const setup = await import("../../container-setup.js");
@@ -33,7 +40,7 @@ describe("requested tool setup production facade", () => {
 
     it.each(["claude", "codex"])("uses the current native runtime for %s setup and readiness", async name => {
         const { setup, runtime, registry, spawn, exec } = await loadFacade();
-        runtime._setRuntimeInfoForTest({ runtime: "podman" });
+        preloadNativeRuntimeFixture(runtime, { runtime: "podman" });
         const target = "target with spaces";
         const descriptor = registry.getToolByName(name)!;
         spawn.mockImplementation(() => result(0, name === "claude" ? "VALID\n" : ""));
@@ -62,7 +69,7 @@ describe("requested tool setup production facade", () => {
         { observation: { ...result(null), error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) }, message: "Requested tool codex readiness check timed out" },
     ])("passes the raw readiness observation to the real policy ($message)", async ({ observation, message }) => {
         const { setup, runtime, registry, spawn } = await loadFacade();
-        runtime._setRuntimeInfoForTest({ runtime: "docker" });
+        preloadNativeRuntimeFixture(runtime, { runtime: "docker" });
         spawn.mockReturnValueOnce(result()).mockReturnValueOnce(observation);
         try {
             expect(() => setup.ensureTools("target", registry.getToolByName("codex")!)).toThrow(message);

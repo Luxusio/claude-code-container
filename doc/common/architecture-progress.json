@@ -5213,6 +5213,37 @@
         "Other current architecture audit findings, formal workflow and full Goal acceptance"
       ],
       "sourceUniverseCertified": false
+    },
+    {
+      "id": "captured-native-runtime-current",
+      "taskId": "TASK__native-runtime-authority-20261019",
+      "coveredOperationIds": [],
+      "status": "Captured native invocation has independent Code/Security and portable QA: frozen69owners2565PASS111existing skips; task-only delivery excludes original terminal work, retains103identical inputs, and passes genuine emission/strictSource/lint plus35affected cases. Unix launcher separately139PASS. Global claims, cross-engine bind-user absence, native/installed/reliability/Source-universe/formal/fullGoal acceptance remain. Structural25/25, in-scope218/218 and75gates unchanged; zero new credit.",
+      "qualification": {
+        "stage": "portable-qualified-task-only-delivery",
+        "evidenceRoot": "results/native-runtime-authority-20261019/",
+        "reviewState": "Actual full CodeR4/SecurityR5 PASS preceded independent QA; scoped delivery CodeR5/SecurityR6 PASS preceded fresh delivery checks. Results are non-attesting while required hook-owned receipts are absent.",
+        "delivery": "Task-only HEAD-based delivery snapshot excludes unrelated original terminal work; exact Source hashes and scoped evidence own local integration. No installed or formal acceptance is claimed.",
+        "facts": {
+          "path": "results/native-runtime-authority-20261019/qa-cli-r1/qa-facts.json",
+          "sha256": "c96a48b7c425390d9e19e106ac99d80e7995da3c4f479fd30d93c97ff065cd6d"
+        },
+        "structuralGroupCredit": 0,
+        "operationCredit": 0,
+        "deliveryGateCredit": 0,
+        "sourceUniverseCertified": false,
+        "nativeAcceptance": "unverified",
+        "formalClose": "unverified"
+      },
+      "requirementPath": "doc/runtime/REQ__captured-container-runtime.md",
+      "auditPath": "doc/common/AUDIT__architecture-current-boundaries.md",
+      "remainingOriginalAcceptance": [
+        "Independent-engine claim retirement and separate container/device cleanup vetoes; global workspace and shared-device admission remain.",
+        "Clipboard/home-layout selected-runtime inventory does not establish absence of bind users on other engines.",
+        "DNS, SSH configuration/agents, referenced configuration or credential contents and physical daemon replacement are not snapshots.",
+        "Clean/remote authority and other audited findings; native platform/provider/runtime, package/installed continuity, reliability, Source universe, formal and full Goal acceptance."
+      ],
+      "sourceUniverseCertified": false
     }
   ],
   "currentSourceQualificationAudit": {

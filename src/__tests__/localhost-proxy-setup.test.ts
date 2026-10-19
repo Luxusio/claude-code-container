@@ -10,10 +10,24 @@ vi.mock('child_process', () => ({
 }));
 
 const mockIsContainerHostRemote = vi.fn<() => boolean>().mockReturnValue(false);
-vi.mock('../container-runtime.js', () => ({
-    runtimeCli: () => 'docker',
+vi.mock("../container-runtime.js", async original => {
+    const actual = await original<typeof import("../container-runtime.js")>();
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../ports/container-runtime-invocation.js");
+    const invocation = actual.validateNativeRuntimeInvocation({
+        version: 1, runtime: "docker", executable: "/fixture/runtime/docker",
+        transport: { kind: "docker", host: "unix:///fixture/engine.sock", configDirectory: "/fixture/config",
+            tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    const runner = () => { const capturedCli = "docker"; return { invocation,
+        spawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => mockSpawnSync(capturedCli, args, options),
+    }; };
+    return { ...actual, runtimeCli: () => 'docker',
     isContainerHostRemote: (...args: unknown[]) => mockIsContainerHostRemote(...(args as [])),
-}));
+        getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => runner().spawnSync(args, options),
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation() };
+});
 
 const mockDetectHostNetworkReach = vi.fn();
 vi.mock('../network-reach.js', () => ({

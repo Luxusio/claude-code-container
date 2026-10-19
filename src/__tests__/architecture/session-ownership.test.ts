@@ -17,11 +17,21 @@ import type {
     SessionOwnershipMessage, SessionOwnershipPorts, SessionOwnershipReceipt,
 } from "../../ports/session-ownership.js";
 
+import { validateNativeRuntimeInvocation } from "../../adapters/container-runtime-invocation.js";
+import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation, type NativeRuntimeSelectors } from "../../ports/container-runtime-invocation.js";
+
 const nativeEnvironment = vi.hoisted(() => ({ home: "" }));
 vi.mock("os", async original => ({ ...await original<typeof import("node:os")>(), homedir: () => nativeEnvironment.home }));
 
 const binding: SessionOwnershipBinding = { lockFile: "/claims/project--p--work--owner.lock", projectPath: "/project", profile: "work", toolName: "claude" };
 const receipt: SessionOwnershipReceipt = { path: binding.lockFile, bytes: "42", device: "1", inode: "2", birthtime: "3", ownerPid: 42 };
+const runtimeInvocation: NativeRuntimeInvocation = validateNativeRuntimeInvocation({
+    version: 1, runtime: "docker", executable: process.execPath,
+    transport: { kind: "docker", host: "unix:///fixture/engine-a.sock", configDirectory: "/fixture/config-a",
+        tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+    selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])) as NativeRuntimeSelectors,
+});
+
 const containerId = "a".repeat(64);
 const secondContainerId = "b".repeat(12);
 
@@ -43,6 +53,7 @@ function parentFixture() {
         unref() { unreferenced++; },
     };
     const ports: SessionOwnershipPorts = {
+        decodeRuntimeInvocation: validateNativeRuntimeInvocation,
         launch: () => channel,
         cleanup: (ownedBinding, ownedReceipt) => { cleanups.push([ownedBinding, ownedReceipt]); },
         setTimer(callback, milliseconds) { expect(milliseconds).toBe(30); const timer = {}; timers.set(timer, callback); return timer; },
@@ -52,7 +63,7 @@ function parentFixture() {
     };
     return {
         channel, ports, sent, failures, cleanups, timers,
-        arm: () => armSessionOwnership(binding, receipt, ports, error => { failures.push(error); }),
+        arm: () => armSessionOwnership(binding, receipt, runtimeInvocation, ports, error => { failures.push(error); }),
         message: (message: unknown) => { for (const listener of messages) listener(message); },
         loss: (error: Error) => { for (const listener of losses) listener(error); },
         expire: () => { for (const callback of [...timers.values()]) callback(); },
@@ -114,6 +125,31 @@ describe("native Windows receipt capture when named device is unavailable", () =
 });
 
 describe("parent ownership handshake", () => {
+    it("snapshots the initialized native authority before caller mutation and never sends it in updates", async () => {
+        const f = parentFixture();
+        const callerInvocation = JSON.parse(JSON.stringify(runtimeInvocation));
+        const pending = armSessionOwnership(binding, receipt, callerInvocation, f.ports, () => undefined);
+        callerInvocation.transport.host = "unix:///fixture/engine-b.sock";
+        callerInvocation.selectors.PATH = "/fixture/b";
+        expect(f.sent[0]).toEqual({ type: "init", binding, receipt, runtimeInvocation });
+        f.message({ type: "ready" });
+        const handle = await pending;
+        const handoff = handle.updateContainer(containerId, true);
+        expect(f.sent.at(-1)).toEqual({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
+        f.message({ type: "ack", sequence: 1 });
+        await handoff;
+    });
+
+    it("refuses invalid native authority before launching or sending initialization", async () => {
+        const f = parentFixture();
+        const launch = vi.fn(f.ports.launch);
+        f.ports.launch = launch;
+        await expect(armSessionOwnership(binding, receipt, { ...runtimeInvocation, version: 9 } as unknown as NativeRuntimeInvocation,
+            f.ports, () => undefined)).rejects.toThrow();
+        expect(launch).not.toHaveBeenCalled();
+        expect(f.sent).toEqual([]);
+    });
+
     it.each(["launch", "READY"])("awaits %s rollback and preserves both failures", async phase => {
         const f = parentFixture();
         const primary = new Error("launch failed");
@@ -138,7 +174,7 @@ describe("parent ownership handshake", () => {
         const f = parentFixture();
         let armed = false;
         const pending = f.arm().then(handle => { armed = true; return handle; });
-        expect(f.sent).toEqual([{ type: "init", binding, receipt }]);
+        expect(f.sent).toEqual([{ type: "init", binding, receipt, runtimeInvocation }]);
         await Promise.resolve();
         expect(armed).toBe(false);
         expect(f.timers.size).toBe(1);
@@ -156,7 +192,7 @@ describe("parent ownership handshake", () => {
         const f = parentFixture();
         let armed = false;
         const pending = f.arm().then(handle => { armed = true; return handle; });
-        for (const message of [null, "ready", {}, { type: "ack", sequence: 0 }, { type: "update", sequence: 1, containerId: "untrusted", runtime: "docker" }]) f.message(message);
+        for (const message of [null, "ready", {}, { type: "ack", sequence: 0 }, { type: "update", sequence: 1, containerId: "untrusted" }]) f.message(message);
         await Promise.resolve();
         expect(armed).toBe(false);
         expect(f.timers.size).toBe(1);
@@ -178,7 +214,7 @@ describe("parent ownership handshake", () => {
         const f = parentFixture();
         const callerBinding = { ...binding };
         const callerReceipt = { ...receipt };
-        const pending = armSessionOwnership(callerBinding, callerReceipt, f.ports, error => { f.failures.push(error); });
+        const pending = armSessionOwnership(callerBinding, callerReceipt, runtimeInvocation, f.ports, error => { f.failures.push(error); });
         const rejection = expect(pending).rejects.toThrow(/timed out/i);
         callerBinding.lockFile = "/claims/successor.lock";
         callerBinding.profile = "other";
@@ -186,7 +222,7 @@ describe("parent ownership handshake", () => {
         callerReceipt.bytes = "successor";
         f.expire();
         await rejection;
-        expect(f.sent[0]).toEqual({ type: "init", binding, receipt });
+        expect(f.sent[0]).toEqual({ type: "init", binding, receipt, runtimeInvocation });
         expect(f.cleanups).toEqual([[binding, receipt]]);
     });
 
@@ -226,7 +262,7 @@ describe("parent ownership handshake", () => {
         expect(f.failures).toEqual([failure]);
         expect(f.cleanups).toEqual([]);
         expect(f.state().listeners).toBe(0);
-        await expect(handle.updateContainer(containerId, "docker")).rejects.toThrow();
+        await expect(handle.updateContainer(containerId)).rejects.toThrow();
     });
 
     it("the ownership handle checks the native receipt even after channel loss to guard failure cleanup", async () => {
@@ -250,15 +286,15 @@ describe("parent ownership handshake", () => {
         f.message({ type: "ready" });
         const handle = await pending;
         let acknowledged = false;
-        const update = handle.updateContainer(containerId, "podman").then(() => { acknowledged = true; });
-        expect(f.sent.at(-1)).toEqual({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: false });
+        const update = handle.updateContainer(containerId).then(() => { acknowledged = true; });
+        expect(f.sent.at(-1)).toEqual({ type: "update", sequence: 1, containerId, cleanupEnabled: false });
         f.message({ type: "ack", sequence: 9 });
         await Promise.resolve();
         expect(acknowledged).toBe(false);
         f.message({ type: "ack", sequence: 1 });
         await update;
         expect(f.timers.size).toBe(0);
-        const next = handle.updateContainer(secondContainerId, "docker");
+        const next = handle.updateContainer(secondContainerId);
         const rejection = expect(next).rejects.toThrow(/timed out/i);
         f.expire();
         await rejection;
@@ -292,14 +328,14 @@ describe("parent ownership handshake", () => {
         f.message({ type: "ready" });
         const handle = await pending;
         readyDeadline();
-        const update = handle.updateContainer(containerId, "docker");
+        const update = handle.updateContainer(containerId);
         const handoffDeadline = [...f.timers.values()][0]!;
         f.message({ type: "ack", sequence: 1 });
         await update;
         handoffDeadline();
         expect(f.failures).toEqual([]);
         expect(f.state().closed).toBe(0);
-        const next = handle.updateContainer(secondContainerId, "podman");
+        const next = handle.updateContainer(secondContainerId);
         f.message({ type: "ack", sequence: 2 });
         await next;
     });
@@ -361,7 +397,7 @@ describe("native ownership receipt and binding", () => {
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => assertNativeSessionOwnership(ownedReceipt)).toThrow();
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "docker");
+        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation);
         expect(readFileSync(ownedBinding.lockFile, "utf8")).toBe(replacement);
     });
 
@@ -375,7 +411,7 @@ describe("native ownership receipt and binding", () => {
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
         await rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt);
-        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "podman");
+        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation);
         expect(captureNativeSessionOwnership(ownedBinding.lockFile)).toEqual(successor);
     });
 
@@ -385,7 +421,7 @@ describe("native ownership receipt and binding", () => {
         expect(() => captureNativeSessionOwnership(ownedBinding.lockFile)).toThrow();
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "docker");
+        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation);
         expect(existsSync(ownedBinding.lockFile)).toBe(true);
     });
 
@@ -396,7 +432,7 @@ describe("native ownership receipt and binding", () => {
         expect(() => captureNativeSessionOwnership(ownedBinding.lockFile)).toThrow();
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", "docker");
+        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation);
         expect(readFileSync(target)).toEqual(Buffer.from(ownedReceipt.bytes, "base64"));
         expect(existsSync(ownedBinding.lockFile)).toBe(true);
     });
@@ -434,6 +470,7 @@ function guardianFixture() {
     let finishes = 0;
     const finishStatuses: Array<0 | 1 | undefined> = [];
     const ports: SessionOwnershipGuardianPorts = {
+        decodeRuntimeInvocation: validateNativeRuntimeInvocation,
         validate: (ownedBinding, ownedReceipt) => { expect(ownedBinding).toEqual(binding); expect(ownedReceipt).toEqual(receipt); },
         cleanup: (...args) => { cleanups.push(args); },
         rollback: (...args) => { rollbacks.push(args); },
@@ -443,7 +480,7 @@ function guardianFixture() {
     };
     const guardian = createSessionOwnershipGuardian(ports);
     return { guardian, ports, sent, cleanups, rollbacks, finishStatuses, finishes: () => finishes,
-        init: () => guardian.receive({ type: "init", binding: { ...binding }, receipt: { ...receipt } }),
+        init: () => guardian.receive({ type: "init", binding: { ...binding }, receipt: { ...receipt }, runtimeInvocation }),
     };
 }
 
@@ -455,6 +492,73 @@ function deferred() {
 }
 
 describe("guardian ownership protocol", () => {
+    it.each([
+        undefined, null, {},
+        { ...runtimeInvocation, version: 2 },
+        { ...runtimeInvocation, executable: "--untrusted" },
+        { ...runtimeInvocation, argv: ["--host", "unix:///fixture/b.sock"] },
+        { ...runtimeInvocation, transport: { ...runtimeInvocation.transport, host: "x".repeat(8193) } },
+        { ...runtimeInvocation, selectors: { ...runtimeInvocation.selectors, SECRET: "fixture-sensitive-secret" } },
+        { ...runtimeInvocation, selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, "x".repeat(2000)])) },
+        { ...runtimeInvocation, selectors: { ...runtimeInvocation.selectors, PATH: "bad\npath" } },
+    ])("invalid invocation cannot obtain READY, ACK, adopted rollback or cleanup: %j", async candidate => {
+        const f = guardianFixture();
+        await expect(f.guardian.receive({ type: "init", binding, receipt, runtimeInvocation: candidate })).rejects.toThrow();
+        await f.guardian.disconnect();
+        expect(f.sent).toEqual([{ type: "error" }]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.rollbacks).toEqual([]);
+        expect(f.finishStatuses).toEqual([1]);
+    });
+
+    it("freezes initialized nested native authority and retains it across ordered cleanup retries", async () => {
+        const f = guardianFixture();
+        const callerInvocation = JSON.parse(JSON.stringify(runtimeInvocation));
+        await f.guardian.receive({ type: "init", binding, receipt, runtimeInvocation: callerInvocation });
+        callerInvocation.transport.host = "unix:///fixture/engine-b.sock";
+        callerInvocation.selectors.PATH = "/fixture/bin-b";
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
+        let attempts = 0;
+        f.ports.cleanup = (...args) => {
+            f.cleanups.push(args);
+            expect(Object.isFrozen(args[3])).toBe(true);
+            expect(Object.isFrozen(args[3].transport)).toBe(true);
+            expect(Object.isFrozen(args[3].selectors)).toBe(true);
+            if (++attempts < 3) throw new Error("owned retry");
+        };
+        await f.guardian.disconnect();
+        expect(f.cleanups).toEqual(Array.from({ length: 3 }, () => [binding, receipt, containerId, runtimeInvocation]));
+        expect(f.finishStatuses).toEqual([0]);
+    });
+
+    it("captures nested authority before asynchronous receipt validation can yield to the sender", async () => {
+        const f = guardianFixture();
+        const pendingValidation = deferred();
+        const entered = deferred();
+        f.ports.validate = async () => { entered.resolve(); await pendingValidation.promise; };
+        const sender = JSON.parse(JSON.stringify(runtimeInvocation));
+        const initialized = f.guardian.receive({ type: "init", binding, receipt, runtimeInvocation: sender });
+        await entered.promise;
+        sender.transport.host = "unix:///fixture/engine-b.sock";
+        sender.selectors.PATH = "/fixture/bin-b";
+        pendingValidation.resolve();
+        await initialized;
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
+        await f.guardian.disconnect();
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, runtimeInvocation]]);
+    });
+
+    it.each(["runtime", "runtimeInvocation"] as const)("an update cannot replace initialized authority through %s after an acknowledged grant", async field => {
+        const f = guardianFixture();
+        await f.init();
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
+        await expect(f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, cleanupEnabled: true,
+            [field]: field === "runtime" ? "podman" : { ...runtimeInvocation, transport: { ...runtimeInvocation.transport, host: "unix:///fixture/engine-b.sock" } },
+        })).rejects.toThrow();
+        expect(f.sent.filter(message => message.type === "ack")).toEqual([{ type: "ack", sequence: 1 }]);
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, runtimeInvocation]]);
+    });
+
     it("awaits validation and queues disconnect until captured ownership is adopted", async () => {
         const f = guardianFixture();
         const validation = deferred();
@@ -540,9 +644,9 @@ describe("guardian ownership protocol", () => {
         if (mode === "pause") f.ports.pause = async () => { await Promise.resolve(); throw pauseFailure; };
         f.ports.finish = (status, error) => { expect(status).toBe(1); terminals.push(error); throw exited; };
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         const pending = mode === "protocol"
-            ? f.guardian.receive({ type: "update", sequence: 1, containerId: secondContainerId, runtime: "podman", cleanupEnabled: true })
+            ? f.guardian.receive({ type: "update", sequence: 1, containerId: secondContainerId, cleanupEnabled: true })
             : f.guardian.disconnect();
         await expect(pending).rejects.toBe(exited);
         expect(terminals).toHaveLength(1);
@@ -568,7 +672,7 @@ describe("guardian ownership protocol", () => {
         f.ports.cleanup = async () => { attempts++; throw failure; };
         f.ports.pause = async () => { throw pauseFailure; };
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         await expect(f.guardian.disconnect()).rejects.toMatchObject({ errors: [failure, pauseFailure], cause: failure });
         expect(attempts).toBe(1);
         expect(f.finishStatuses).toEqual([1]);
@@ -581,9 +685,9 @@ describe("guardian ownership protocol", () => {
         f.ports.cleanup = async (...args) => { f.cleanups.push(args); if (++attempts === 1) throw new Error("transient stop"); };
         f.ports.pause = async ms => { pauses.push(ms); };
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         await Promise.all([f.guardian.disconnect(), f.guardian.disconnect()]);
-        expect(f.cleanups).toEqual(Array.from({ length: 2 }, () => [binding, receipt, containerId, "docker"]));
+        expect(f.cleanups).toEqual(Array.from({ length: 2 }, () => [binding, receipt, containerId, runtimeInvocation]));
         expect(pauses).toEqual([1000]);
         expect(f.finishStatuses).toEqual([0]);
     });
@@ -606,13 +710,13 @@ describe("guardian ownership protocol", () => {
         expect(f.finishes()).toBe(1);
     });
 
-    it("disconnect passes only the exact acknowledged container ID and selected runtime to cleanup", async () => {
+    it("disconnect passes only the exact acknowledged container ID and initialized native authority to cleanup", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         expect(f.sent.at(-1)).toEqual({ type: "ack", sequence: 1 });
         await f.guardian.disconnect();
-        expect(f.cleanups).toEqual([[binding, receipt, containerId, "podman"]]);
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, runtimeInvocation]]);
         expect(f.rollbacks).toEqual([]);
         expect(f.finishes()).toBe(1);
     });
@@ -624,13 +728,13 @@ describe("guardian ownership protocol", () => {
         const failure = new Error("deferred native cleanup failed");
         f.ports.cleanup = async (...args) => { f.cleanups.push(args); entered.resolve(); await cleanup.promise; };
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         const disconnected = f.guardian.disconnect();
         const outcome = rejectCleanup ? expect(disconnected).rejects.toMatchObject({ errors: [failure, failure, failure], cause: failure }) : disconnected;
         const duplicate = f.guardian.disconnect();
         await entered.promise;
         expect(f.finishes()).toBe(0);
-        expect(f.cleanups).toEqual([[binding, receipt, containerId, "podman"]]);
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, runtimeInvocation]]);
         if (rejectCleanup) cleanup.reject(failure); else cleanup.resolve();
         await outcome;
         await duplicate;
@@ -645,15 +749,15 @@ describe("guardian ownership protocol", () => {
         const original = new Error("original ACK failure");
         const cleanupFailure = new Error("cleanup failure takes precedence");
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         f.ports.cleanup = async (...args) => { f.cleanups.push(args); entered.resolve(); await cleanup.promise; };
         f.ports.send = async message => { if (message.type === "ack") throw original; f.sent.push(message); };
-        const update = f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, runtime: "podman", cleanupEnabled: true });
+        const update = f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, cleanupEnabled: true });
         const outcome = (rejectCleanup ? expect(update).rejects.toMatchObject({ errors: [original, expect.objectContaining({ errors: [cleanupFailure, cleanupFailure, cleanupFailure] })], cause: original }) : expect(update).rejects.toBe(original));
         const duplicate = f.guardian.disconnect();
         await entered.promise;
         expect(f.finishes()).toBe(0);
-        expect(f.cleanups).toEqual([[binding, receipt, containerId, "docker"]]);
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, runtimeInvocation]]);
         if (rejectCleanup) cleanup.reject(cleanupFailure); else cleanup.resolve();
         await outcome;
         await duplicate;
@@ -664,7 +768,7 @@ describe("guardian ownership protocol", () => {
     it("normal release acknowledges once and prevents disconnect cleanup", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         await f.guardian.receive({ type: "release", sequence: 2 });
         await f.guardian.disconnect();
         await f.guardian.receive({ type: "release", sequence: 3 });
@@ -683,7 +787,7 @@ describe("guardian ownership protocol", () => {
         expect(f.finishes()).toBe(1);
     });
 
-    it.each([null, "update", {}, { type: "update", sequence: 1, containerId: "bad", runtime: "docker", cleanupEnabled: true }])("rejects pre-init message %j without cleanup", async message => {
+    it.each([null, "update", {}, { type: "update", sequence: 1, containerId: "bad", cleanupEnabled: true }])("rejects pre-init message %j without cleanup", async message => {
         const f = guardianFixture();
         await expect(f.guardian.receive(message)).rejects.toThrow();
         expect(f.sent).toEqual([{ type: "error" }]);
@@ -692,13 +796,13 @@ describe("guardian ownership protocol", () => {
     });
 
     it.each([
-        { type: "update", sequence: 0, containerId, runtime: "docker", cleanupEnabled: true },
-        { type: "update", sequence: 1.5, containerId, runtime: "docker", cleanupEnabled: true },
-        { type: "update", sequence: 1, containerId: "", runtime: "docker", cleanupEnabled: true },
-        { type: "update", sequence: 1, containerId, runtime: "other", cleanupEnabled: true },
-        { type: "update", sequence: 1, containerId: "--all", runtime: "docker", cleanupEnabled: true },
-        { type: "update", sequence: 1, containerId: "container-name", runtime: "podman", cleanupEnabled: true },
-        { type: "update", sequence: 1, containerId: "a".repeat(65), runtime: "docker", cleanupEnabled: true },
+        { type: "update", sequence: 0, containerId, cleanupEnabled: true },
+        { type: "update", sequence: 1.5, containerId, cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId: "", cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId, runtimeInvocation, cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId: "--all", cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId: "container-name", cleanupEnabled: true },
+        { type: "update", sequence: 1, containerId: "a".repeat(65), cleanupEnabled: true },
         { type: "init", binding: { ...binding, lockFile: "/successor.lock" }, receipt },
         { type: "ack", sequence: 1 },
     ])("malformed post-init message %j preserves captured ownership and never adopts its ID", async message => {
@@ -714,16 +818,16 @@ describe("guardian ownership protocol", () => {
     it("replayed handoff cannot replace the acknowledged ID", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
-        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId: secondContainerId, runtime: "podman", cleanupEnabled: true })).rejects.toThrow();
-        expect(f.cleanups).toEqual([[binding, receipt, containerId, "docker"]]);
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
+        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId: secondContainerId, cleanupEnabled: true })).rejects.toThrow();
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, runtimeInvocation]]);
     });
 
     it("failed ACK delivery cannot authorize stopping an unacknowledged ID", async () => {
         const f = guardianFixture();
         await f.init();
         f.ports.send = async message => { if (message.type === "ack") throw new Error("IPC closed"); f.sent.push(message); };
-        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true })).rejects.toThrow("IPC closed");
+        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true })).rejects.toThrow("IPC closed");
         expect(f.cleanups).toEqual([]);
         expect(f.rollbacks).toEqual([[binding, receipt]]);
         expect(f.finishes()).toBe(1);
@@ -738,7 +842,7 @@ describe("guardian ownership protocol", () => {
             f.sent.push(message);
             if (message.type === "ack") { sending.resolve(); await ack.promise; }
         };
-        const update = f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true });
+        const update = f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         await sending.promise;
         const disconnected = f.guardian.disconnect();
         await Promise.resolve();
@@ -747,14 +851,14 @@ describe("guardian ownership protocol", () => {
         ack.resolve();
         await update;
         await disconnected;
-        expect(f.cleanups).toEqual([[binding, receipt, containerId, "podman"]]);
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, runtimeInvocation]]);
         expect(f.finishes()).toBe(1);
     });
 
     it.each([false, true])("an asynchronously rejected ACK preserves prior acknowledged ownership (prior ID %s)", async hasPriorId => {
         const f = guardianFixture();
         await f.init();
-        if (hasPriorId) await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        if (hasPriorId) await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         const ack = deferred();
         const sending = deferred();
         f.ports.send = async message => {
@@ -762,7 +866,7 @@ describe("guardian ownership protocol", () => {
             if (message.type === "ack") { sending.resolve(); await ack.promise; }
         };
         const failure = new Error("native ACK write callback failed");
-        const update = f.guardian.receive({ type: "update", sequence: hasPriorId ? 2 : 1, containerId: secondContainerId, runtime: "podman", cleanupEnabled: true });
+        const update = f.guardian.receive({ type: "update", sequence: hasPriorId ? 2 : 1, containerId: secondContainerId, cleanupEnabled: true });
         const rejected = expect(update).rejects.toBe(failure);
         await sending.promise;
         const disconnected = f.guardian.disconnect();
@@ -772,7 +876,7 @@ describe("guardian ownership protocol", () => {
         ack.reject(failure);
         await rejected;
         await disconnected;
-        expect(f.cleanups).toEqual(hasPriorId ? [[binding, receipt, containerId, "docker"]] : []);
+        expect(f.cleanups).toEqual(hasPriorId ? [[binding, receipt, containerId, runtimeInvocation]] : []);
         expect(f.rollbacks).toEqual(hasPriorId ? [] : [[binding, receipt]]);
         expect(f.finishStatuses).toEqual([1]);
     });
@@ -834,7 +938,7 @@ describe("guardian ownership protocol", () => {
     it("a rejected release ACK cleans prior ownership and cannot masquerade as successful release", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "podman", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         const ack = deferred();
         const sending = deferred();
         f.ports.send = async message => {
@@ -850,14 +954,14 @@ describe("guardian ownership protocol", () => {
         ack.reject(failure);
         await rejected;
         await disconnected;
-        expect(f.cleanups).toEqual([[binding, receipt, containerId, "podman"]]);
+        expect(f.cleanups).toEqual([[binding, receipt, containerId, runtimeInvocation]]);
         expect(f.finishStatuses).toEqual([1]);
     });
 
     it("failed asynchronous error notification never hides an owned cleanup failure", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         const ack = deferred();
         const sending = deferred();
         const cleanupFailure = new Error("owned stop failed");
@@ -866,7 +970,7 @@ describe("guardian ownership protocol", () => {
             if (message.type === "ack") { sending.resolve(); await ack.promise; }
             if (message.type === "error") throw new Error("error notification callback also failed");
         };
-        const update = f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, runtime: "docker", cleanupEnabled: true });
+        const update = f.guardian.receive({ type: "update", sequence: 2, containerId: secondContainerId, cleanupEnabled: true });
         const primary = new Error("original ACK callback failed");
         const rejected = expect(update).rejects.toMatchObject({ errors: [primary, expect.objectContaining({ errors: [cleanupFailure, cleanupFailure, cleanupFailure] })], cause: primary });
         await sending.promise;
@@ -880,7 +984,7 @@ describe("guardian ownership protocol", () => {
     it("cleanup failure still finishes once and propagates for visible guardian failure", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId, runtime: "docker", cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         const failure = new Error("bounded stop failed");
         f.ports.cleanup = () => { throw failure; };
         let caught: unknown;

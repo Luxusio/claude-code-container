@@ -1,3 +1,53 @@
+
+/** This owner fakes native process leaves; captured transport compilation remains real. */
+vi.mock("../container-runtime.js", async original => {
+    const actual = await original<typeof import("../container-runtime.js")>();
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../ports/container-runtime-invocation.js");
+    let info: ReturnType<typeof actual.getRuntimeInfo> = {
+        runtime: "docker", flavor: "docker-native", version: "0.0.0",
+        socketPath: "/var/run/docker.sock", rootless: false, remote: false, dockerDesktop: false,
+    };
+    const preload = (value: Parameters<typeof actual._setRuntimeInfoForTest>[0]) => {
+        actual._setRuntimeInfoForTest(value);
+        info = actual.getRuntimeInfo();
+    };
+    preload(info);
+    const invocation = () => actual.validateNativeRuntimeInvocation({
+        version: 1, runtime: info.runtime, executable: `/fixture/runtime/${info.runtime}`,
+        transport: info.runtime === "docker"
+            ? { kind: "docker", host: "unix:///fixture/engine.sock", configDirectory: "/fixture/config",
+                tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } }
+            : { kind: "podman-local", graphRoot: "/fixture/storage", runRoot: "/fixture/run",
+                storageDriver: "overlay", storageOptions: [], transientStore: false },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    return { ...actual, getRuntimeInfo: () => info, runtimeCli: () => info.runtime,
+        getRuntimeInvocation: invocation,
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) =>
+            actual.bindNativeRuntimeInvocation(invocation()).spawnSync(args, options),
+        runtimeSpawn: (args: readonly string[], options?: import("child_process").SpawnOptions) =>
+            actual.bindNativeRuntimeInvocation(invocation()).spawn(args, options),
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation(),
+        _setRuntimeInfoForTest: preload,
+        _resetRuntimeCacheForTest: () => { actual._resetRuntimeCacheForTest(); preload({runtime: "docker"}); },
+    };
+});
+
+function logicalNativeCall(call: unknown[]): unknown[] {
+    const [program, argv, options] = call;
+    if (program !== "/fixture/runtime/docker" && program !== "/fixture/runtime/podman") return call;
+    const runtime = program.endsWith("/docker") ? "docker" : "podman";
+    const prefix = runtime === "docker"
+        ? ["--config", "/fixture/config", "--host", "unix:///fixture/engine.sock", "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey="]
+        : ["--remote=false", "--root", "/fixture/storage", "--runroot", "/fixture/run", "--storage-driver", "overlay", "--transient-store=false"];
+    expect((argv as string[]).slice(0, prefix.length)).toEqual(prefix);
+    const { env, shell, ...logicalOptions } = options as import("child_process").SpawnSyncOptions;
+    expect(shell).toBe(false);
+    expect(env?.DOCKER_CONTEXT).toBeUndefined();
+    expect(env?.CONTAINER_HOST).toBeUndefined();
+    return [runtime, (argv as string[]).slice(prefix.length), logicalOptions];
+}
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
 
@@ -5,7 +55,7 @@ import type { SpawnSyncReturns } from "child_process";
 const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
 vi.mock("child_process", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
-    return { ...actual, spawnSync: spawnSyncMock };
+    return { ...actual, spawnSync: (...args: unknown[]) => spawnSyncMock(...logicalNativeCall(args)) };
 });
 
 // Import AFTER mocks

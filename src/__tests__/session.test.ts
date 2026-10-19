@@ -76,6 +76,22 @@ vi.mock("@ccc/device-lab/device-lab-shared-state.js", () => ({
     withSharedMutationLockAsync: (...args: unknown[]) => mockWithSharedMutationLockAsync(...args as [string, () => unknown]),
 }));
 
+// Ordinary query owners retain their existing semantic fake runner. Cleanup's
+// explicit binder still reaches the native child-process mock with captured flags.
+vi.mock("../container-runtime.js", async original => ({
+    ...await original<typeof import("../container-runtime.js")>(),
+    getRuntimeInvocation: () => fixtureInvocation,
+    runtimeSpawnSync: (args: readonly string[], options?: unknown) => mockSpawnSync("docker", args, options),
+}));
+const fixtureInvocation = {
+    version: 1 as const, runtime: "docker" as const, executable: join("/", "fixture", "docker-a"),
+    transport: { kind: "docker" as const, host: "unix:///fixture/engine-a.sock", configDirectory: join("/", "fixture", "config-a"),
+        tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+    selectors: Object.fromEntries((await import("../ports/container-runtime-invocation.js")).NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+};
+const stopArgs = (id: string) => ["--config", join("/", "fixture", "config-a"), "--host", "unix:///fixture/engine-a.sock",
+    "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey=", "stop", id];
+
 // Import AFTER all mocks are declared
 const {
     setSession,
@@ -1228,7 +1244,7 @@ describe("session.ts", () => {
             expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${second}`);
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(expect.stringContaining(first));
             expect(mockReadFileSync).toHaveBeenCalledWith(expect.stringContaining(first), "utf-8");
-            expect(mockSpawnSync.mock.calls.some(call => call[1]?.[0] === "stop")).toBe(false);
+            expect(mockSpawnSync.mock.calls.some(call => call[1]?.includes("stop"))).toBe(false);
             expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
             expect(recreate).not.toHaveBeenCalled();
         });
@@ -1426,8 +1442,8 @@ describe("session.ts", () => {
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
             expect(mockSpawnSync).toHaveBeenCalledWith(
-                "docker",
-                ["stop", "pinned-container-id"],
+                fixtureInvocation.executable,
+                stopArgs("pinned-container-id"),
                 expect.any(Object),
             );
         });
@@ -1450,13 +1466,13 @@ describe("session.ts", () => {
             cleanupSession();
 
             expect(mockSpawnSync).toHaveBeenCalledWith(
-                "docker",
-                ["stop", "pinned-container-id"],
+                fixtureInvocation.executable,
+                stopArgs("pinned-container-id"),
                 expect.any(Object),
             );
             expect(mockSpawnSync).not.toHaveBeenCalledWith(
-                "docker",
-                ["stop", "ccc-my-project-abc123"],
+                fixtureInvocation.executable,
+                stopArgs("ccc-my-project-abc123"),
                 expect.any(Object),
             );
         });
@@ -1486,8 +1502,8 @@ describe("session.ts", () => {
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, "work");
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
             expect(mockSpawnSync).toHaveBeenCalledWith(
-                "docker",
-                ["stop", "profile-container-id"],
+                fixtureInvocation.executable,
+                stopArgs("profile-container-id"),
                 expect.any(Object),
             );
         });
@@ -1542,7 +1558,7 @@ describe("session.ts", () => {
 
             expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
             expect(mockIsContainerRunning).not.toHaveBeenCalled();
-            expect(mockSpawnSync.mock.calls.some((call) => call[1]?.[0] === "stop")).toBe(false);
+            expect(mockSpawnSync.mock.calls.some((call) => call[1]?.includes("stop"))).toBe(false);
         });
 
         it("does not stop the container when another Windows v2 session is live despite an ESRCH PID probe", () => {
@@ -1574,7 +1590,7 @@ describe("session.ts", () => {
             expect(killSpy).not.toHaveBeenCalled();
             expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(expect.stringContaining(other));
-            expect(mockSpawnSync.mock.calls.some((call) => call[1]?.[0] === "stop")).toBe(false);
+            expect(mockSpawnSync.mock.calls.some((call) => call[1]?.includes("stop"))).toBe(false);
         });
 
         it("fails closed without stopping when the lock directory disappears during cleanup", () => {
@@ -1589,7 +1605,7 @@ describe("session.ts", () => {
             setSessionContainerId("pinned-container-id");
 
             expect(() => cleanupSession()).toThrow(error);
-            expect(mockSpawnSync.mock.calls.some((call) => call[1]?.[0] === "stop")).toBe(false);
+            expect(mockSpawnSync.mock.calls.some((call) => call[1]?.includes("stop"))).toBe(false);
             expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
 
@@ -1624,7 +1640,7 @@ describe("session.ts", () => {
             expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
             expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining(stale));
             expect(mockReadFileSync).toHaveBeenCalledWith(expect.stringContaining(stale), "utf-8");
-            expect(mockSpawnSync).toHaveBeenCalledWith("docker", ["stop", "pinned-container-id"], { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL" });
+            expect(mockSpawnSync).toHaveBeenCalledWith(fixtureInvocation.executable, stopArgs("pinned-container-id"), { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL", shell: false, env: expect.any(Object) });
             expect(mockCleanupOwnerDevices).toHaveBeenCalledTimes(1);
         });
 
@@ -1656,7 +1672,7 @@ describe("session.ts", () => {
             expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
             expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining(foreign));
             expect(mockReadFileSync).toHaveBeenCalledWith(expect.stringContaining(foreign), "utf-8");
-            expect(mockSpawnSync).toHaveBeenCalledWith("docker", ["stop", "pinned-container-id"], { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL" });
+            expect(mockSpawnSync).toHaveBeenCalledWith(fixtureInvocation.executable, stopArgs("pinned-container-id"), { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL", shell: false, env: expect.any(Object) });
             expect(mockCleanupOwnerDevices).toHaveBeenCalledTimes(1);
         });
 
@@ -1680,8 +1696,8 @@ describe("session.ts", () => {
 
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(expect.stringContaining(corrupt));
             expect(mockSpawnSync).not.toHaveBeenCalledWith(
-                "docker",
-                ["stop", "ccc-my-project-abc123"],
+                fixtureInvocation.executable,
+                stopArgs("ccc-my-project-abc123"),
                 expect.any(Object),
             );
         });
@@ -1882,8 +1898,8 @@ describe("session.ts", () => {
 
             expect(callOrder).toEqual(["cleanupDevices", "dockerStop"]);
             expect(mockSpawnSync).toHaveBeenCalledWith(
-                "docker",
-                ["stop", "pinned-container-id"],
+                fixtureInvocation.executable,
+                stopArgs("pinned-container-id"),
                 expect.any(Object),
             );
         });
@@ -1914,8 +1930,8 @@ describe("session.ts", () => {
 
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
             expect(mockSpawnSync).toHaveBeenCalledWith(
-                "docker",
-                ["stop", "pinned-container-id"],
+                fixtureInvocation.executable,
+                stopArgs("pinned-container-id"),
                 expect.any(Object),
             );
         });

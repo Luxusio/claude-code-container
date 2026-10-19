@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve } from "node:path";
+import * as runtimeFacade from "../../container-runtime.js";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
 const native = vi.hoisted(() => ({
     spawn: vi.fn(), stat: vi.fn(), realpath: vi.fn(), powershell: vi.fn(), hiddenArgs: vi.fn(),
@@ -13,7 +15,9 @@ vi.mock("@ccc/device-lab/windows-system-powershell.js", () => ({
     canonicalWindowsPowerShellPath: native.powershell, hiddenWindowsPowerShellArgs: native.hiddenArgs,
 }));
 vi.mock("../../utils.js", () => ({ getCodexDir: native.root }));
-vi.mock("../../container-runtime.js", () => ({ getRuntimeInfo: native.runtime, runtimeCli: native.cli }));
+vi.mock("../../container-runtime.js", async original => ({
+    ...await original<typeof import("../../container-runtime.js")>(), getRuntimeInfo: native.runtime, runtimeCli: native.cli,
+}));
 vi.mock("../../container-identity.js", () => ({ normalizeImageId: native.normalize }));
 
 import { repairWindowsCodexPrivateState } from "../../adapters/windows-credential-access.js";
@@ -38,8 +42,11 @@ let scenario: Scenario;
 let phase: "private" | "socket";
 let mountIndex: number;
 const trace: string[] = [];
+const spawnCall = (call: unknown[]) => normalizeNativeRuntimeCall(call, cli) as [string, string[], { timeout?: number; env?: Record<string, string> }];
+const spawnCalls = () => native.spawn.mock.calls.map(spawnCall);
 
 beforeEach(() => {
+    preloadNativeRuntimeFixture(runtimeFacade, { runtime: "docker", dockerDesktop: true });
     scenario = {
         ownership: result(), socket: result(), mounts: [result(JSON.stringify([rootMount]))], windowsOwner: result(), account: result("1000\n1000\n"),
         privateActive: result(), socketActive: result(), privateInspection: result("[]"), socketInspection: result("[]"),
@@ -54,7 +61,8 @@ beforeEach(() => {
     native.runtime.mockReset().mockReturnValue({ dockerDesktop: true });
     native.cli.mockReset().mockReturnValue(cli);
     native.normalize.mockReset().mockImplementation((image: string) => image);
-    native.spawn.mockReset().mockImplementation((command: string, args: string[], options: { timeout?: number; env?: Record<string, string> }) => {
+    native.spawn.mockReset().mockImplementation((...rawCall) => {
+        const [command, args, options] = spawnCall(rawCall);
         if (command === "finite-powershell.exe") {
             trace.push("SID:" + options.env?.CCC_CREDENTIAL_ACCESS_SOURCE); return scenario.windowsOwner;
         }
@@ -96,6 +104,7 @@ beforeEach(() => {
         throw new Error("unexpected native argv: " + JSON.stringify(args));
     });
 });
+afterEach(() => { spawnCalls(); });
 
 describe.skipIf(process.platform === "win32")("actual non-Windows recovery gate", () => {
     it("is a synchronous no-op without touching any native binding", () => {
@@ -113,7 +122,7 @@ describe.skipIf(process.platform !== "win32")("actual Windows Codex recovery nat
         expect(repairWindowsCodexPrivateState.length).toBe(2);
         expect(repairWindowsCodexPrivateState(cli, target)).toBeUndefined();
         expect(trace).toEqual(["ownership", "socket probe"]);
-        expect(native.spawn.mock.calls).toEqual([
+        expect(spawnCalls()).toEqual([
             [cli, ["exec", target, "python3", "-c", expect.any(String)], { encoding: "utf8", timeout: 10000 }],
             [cli, ["exec", "-i", target, "python3", "-I", "-", "probe"], { input: expect.any(String), encoding: "utf8", timeout: 10000 }],
         ]);
@@ -310,7 +319,7 @@ describe.skipIf(process.platform !== "win32")("actual Windows Codex recovery nat
         scenario.privateInspection = result(JSON.stringify([{ Id: "peer", Mounts: [{ Type: "bind", Source: source }] }]));
         scenario.users.set("peer", result(" " + uid + " \n"));
         expect(repairWindowsCodexPrivateState(cli, target)).toBeUndefined();
-        const repair = native.spawn.mock.calls.find(([, args]) => args[0] === "exec" && args[1] === "--user" && args[3] === "-i");
+        const repair = spawnCalls().find(([, args]) => args[0] === "exec" && args[1] === "--user" && args[3] === "-i");
         expect(repair).toEqual([cli, ["exec", "--user", "root", "-i", target, "timeout", "-k", "2s", "30s", "python3", "-I", "-", uid, gid],
             { input: expect.any(String), encoding: "utf8", timeout: 35000 }]);
         expect(trace.indexOf("private repair")).toBeGreaterThan(trace.indexOf("user:peer"));
@@ -327,7 +336,7 @@ describe.skipIf(process.platform !== "win32")("actual Windows Codex recovery nat
         ]));
         scenario.users.set(target, result("1000")); scenario.users.set("peer", result("1000"));
         expect(repairWindowsCodexPrivateState(cli, target)).toBeUndefined();
-        expect(native.spawn.mock.calls.filter(([, args]) => args[0] === "inspect" && args[1] !== "-f")).toEqual([
+        expect(spawnCalls().filter(([, args]) => args[0] === "inspect" && args[1] !== "-f")).toEqual([
             [cli, ["inspect", target, "peer", "foreign"], { encoding: "utf8", timeout: 10000 }],
         ]);
         expect(trace.filter(event => event.startsWith("user:"))).toEqual(["user:" + target, "user:peer"]);
@@ -414,14 +423,14 @@ describe.skipIf(process.platform !== "win32")("actual Windows Codex recovery nat
         ]));
         scenario.servers.set("peer", result());
         expect(repairWindowsCodexPrivateState(cli, target)).toBeUndefined();
-        expect(native.spawn.mock.calls.filter(([, args]) => args[0] === "inspect" && args[1] !== "-f")).toEqual([
+        expect(spawnCalls().filter(([, args]) => args[0] === "inspect" && args[1] !== "-f")).toEqual([
             [cli, ["inspect", "peer", "foreign"], { encoding: "utf8", timeout: 10000 }],
         ]);
         expect(trace.filter(event => event.startsWith("server:"))).toEqual(["server:peer"]);
         expect(trace.at(-1)).toBe("socket repair");
-        const processProbe = native.spawn.mock.calls.find(([, args]) => args[0] === "exec" && args[3] === "peer");
+        const processProbe = spawnCalls().find(([, args]) => args[0] === "exec" && args[3] === "peer");
         expect(processProbe).toEqual([cli, ["exec", "--user", "root", "peer", "python3", "-c", expect.any(String)], { encoding: "utf8", timeout: 10000 }]);
-        expect(native.spawn.mock.calls.at(-1)).toEqual([
+        expect(spawnCalls().at(-1)).toEqual([
             cli, ["exec", "-i", target, "python3", "-I", "-", "repair"], { input: expect.any(String), encoding: "utf8", timeout: 10000 },
         ]);
     });
@@ -471,7 +480,7 @@ describe.skipIf(process.platform !== "win32")("actual Windows Codex recovery nat
         ]);
         expect(trace.indexOf("socket probe")).toBeGreaterThan(trace.indexOf("private repair"));
         expect(trace.indexOf("mount:1")).toBeGreaterThan(trace.indexOf("socket probe"));
-        expect(native.spawn.mock.calls.filter(([, args]) => args[0] === "inspect" && args[1] === "-f")).toEqual([
+        expect(spawnCalls().filter(([, args]) => args[0] === "inspect" && args[1] === "-f")).toEqual([
             [cli, ["inspect", "-f", "{{json .Mounts}}", target], { encoding: "utf8", timeout: 10000 }],
             [cli, ["inspect", "-f", "{{json .Mounts}}", target], { encoding: "utf8", timeout: 10000 }],
         ]);
@@ -484,7 +493,7 @@ describe.skipIf(process.platform !== "win32")("actual Windows Codex recovery nat
         expect(repairWindowsCodexPrivateState(cli, target)).toBeUndefined();
         scenario.account = result("001001\n00999");
         expect(repairWindowsCodexPrivateState(cli, target)).toBeUndefined();
-        const repairs = native.spawn.mock.calls.filter(([, args]) => args[0] === "exec" && args[1] === "--user" && args[3] === "-i");
+        const repairs = spawnCalls().filter(([, args]) => args[0] === "exec" && args[1] === "--user" && args[3] === "-i");
         expect(repairs.map(([, args]) => args.slice(-2))).toEqual([["1000", "1000"], ["001001", "00999"]]);
         expect(trace.filter(event => event.startsWith("mount:"))).toEqual(["mount:0", "mount:1"]);
         expect(trace.filter(event => event === "ownership" || event === "socket probe")).toEqual(["ownership", "socket probe", "ownership", "socket probe"]);
@@ -527,7 +536,7 @@ describe.skipIf(process.platform !== "win32")("actual Windows Codex recovery nat
         const fault = { spawn: "active observation" };
         const original = native.spawn.getMockImplementation()!;
         native.spawn.mockImplementation((command: string, args: string[], options: unknown) => {
-            if (args[0] === "ps") throw fault;
+            if (spawnCall([command, args, options])[1][0] === "ps") throw fault;
             return original(command, args, options);
         });
         try { repairWindowsCodexPrivateState(cli, target); throw new Error("missing failure"); }
@@ -545,7 +554,7 @@ describe.skipIf(process.platform !== "win32")("actual Windows Codex recovery nat
         expect(trace.indexOf("socket repair")).toBeGreaterThan(trace.indexOf("private repair"));
         expect(trace.indexOf("access")).toBeGreaterThan(trace.indexOf("socket repair"));
         expect(trace.at(-1)).toBe("access");
-        expect(native.spawn.mock.calls.at(-1)).toEqual([
+        expect(spawnCalls().at(-1)).toEqual([
             cli, ["exec", target, "python3", "-c", expect.any(String)],
             { encoding: "utf-8", input: undefined, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 },
         ]);

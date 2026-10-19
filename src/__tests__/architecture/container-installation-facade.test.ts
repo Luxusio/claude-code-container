@@ -1,30 +1,35 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as runtimeFacade from "../../container-runtime.js";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("child_process", async original => ({
     ...await original<typeof import("node:child_process")>(), spawnSync: native.spawn,
 }));
 vi.mock("../../container-runtime.js", async original => ({
-    ...await original<typeof import("../../container-runtime.js")>(), runtimeCli: () => "docker",
+    ...await original<typeof import("../../container-runtime.js")>(),
+    runtimeCli: () => "docker", getRuntimeInfo: () => ({ runtime: "docker", dockerDesktop: false }),
 }));
 const setup = await import("../../container-setup.js");
 const { getToolByName } = await import("../../tool-registry.js");
 const result = (status: number | null, stdout = "", stderr = "") => ({ status, stdout, stderr });
 const timedOut = () => ({ ...result(null), error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) });
+const spawnCalls = () => native.spawn.mock.calls.map(call => normalizeNativeRuntimeCall(call) as [string, string[], unknown]);
 
 beforeEach(() => {
     vi.resetAllMocks();
+    preloadNativeRuntimeFixture(runtimeFacade);
     native.spawn.mockImplementation(() => { throw new Error("Unexpected additional command"); });
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { spawnCalls(); vi.restoreAllMocks(); });
 
 describe("container installation native composition", () => {
     it("bounds Claude probe, installation and confirmation without root authority", () => {
         native.spawn.mockReturnValueOnce(result(0, "INSTALL")).mockReturnValueOnce(result(0)).mockReturnValueOnce(result(0, "VALID"));
         setup.ensureClaudeInContainer("target");
-        const calls = native.spawn.mock.calls;
+        const calls = spawnCalls();
         expect(calls).toHaveLength(3);
         for (const call of calls) {
             expect(call[0]).toBe("docker");
@@ -97,15 +102,15 @@ describe("container installation native composition", () => {
             .mockReturnValueOnce(result(status));
         expect(() => setup.ensureTools("target", getToolByName("gemini")!)).toThrow("Container gemini cleanup timed out");
         expect(native.spawn).toHaveBeenCalledTimes(3);
-        expect(native.spawn.mock.calls[2][1].slice(0, 6)).toEqual(["exec", "-w", "/home/ccc", "target", "sh", "-c"]);
-        expect(native.spawn.mock.calls[2][2]).toEqual({ stdio: "ignore", timeout: setup.CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS });
+        expect(spawnCalls()[2][1].slice(0, 6)).toEqual(["exec", "-w", "/home/ccc", "target", "sh", "-c"]);
+        expect(spawnCalls()[2][2]).toEqual({ stdio: "ignore", timeout: setup.CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS });
     });
 
     it("creates a wrapper for a ready persisted npm executable without reinstalling", () => {
         native.spawn.mockReturnValueOnce(result(0, "gemini")).mockReturnValueOnce(result(0, "READY"))
             .mockReturnValueOnce(result(0)).mockReturnValueOnce(result(0));
         setup.ensureTools("target", getToolByName("gemini")!);
-        const calls = native.spawn.mock.calls;
+        const calls = spawnCalls();
         expect(calls).toHaveLength(4);
         expect(calls[1][1].slice(0, 6)).toEqual(["exec", "-w", "/home/ccc", "target", "sh", "-c"]);
         expect(calls[2][1].slice(0, 6)).toEqual(["exec", "-w", "/home/ccc", "target", "sh", "-c"]);
@@ -129,7 +134,7 @@ describe("container installation native composition", () => {
     it("installs missing uv with bounded inherited output and explicit environment", () => {
         native.spawn.mockReturnValueOnce(result(1)).mockReturnValueOnce(result(0));
         setup.ensureUvAvailable("target");
-        expect(native.spawn.mock.calls[1][1].slice(0, 6)).toEqual(["exec", "-e", "MISE_VERBOSE=1", "target", "sh", "-c"]);
-        expect(native.spawn.mock.calls[1][2]).toEqual({ stdio: "inherit", timeout: setup.CONTAINER_TOOL_MUTATION_TIMEOUT_MS });
+        expect(spawnCalls()[1][1].slice(0, 6)).toEqual(["exec", "-e", "MISE_VERBOSE=1", "target", "sh", "-c"]);
+        expect(spawnCalls()[1][2]).toEqual({ stdio: "inherit", timeout: setup.CONTAINER_TOOL_MUTATION_TIMEOUT_MS });
     });
 });

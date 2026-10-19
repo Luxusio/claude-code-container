@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 import { dirname } from "path";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), filesystem: vi.fn(), lstat: vi.fn() }));
@@ -30,6 +31,7 @@ vi.mock("os", async original => ({ ...await original<typeof import("node:os")>()
 }));
 const docker = await import("../../docker.js");
 const runtime = await import("../../container-runtime.js");
+const nativeCalls = () => native.spawn.mock.calls.map(call => normalizeNativeRuntimeCall(call));
 const utils = await import("../../utils.js");
 const acl = await import("../../codex-config-acl.js");
 const getuidDescriptor = Object.getOwnPropertyDescriptor(process, "getuid");
@@ -54,7 +56,7 @@ function queueRepair() {
 }
 beforeEach(() => {
     vi.resetAllMocks();
-    runtime._setRuntimeInfoForTest({ runtime: "docker" });
+    preloadNativeRuntimeFixture(runtime, { runtime: "docker" });
     native.spawn.mockImplementation(() => { throw new Error("Unplanned fixture native command"); });
     native.lstat.mockImplementation((path: string) => ({ uid: 1001, nlink: 1,
         isDirectory: () => path.endsWith("codex"),
@@ -84,10 +86,10 @@ void compilePublicContract;
 
 describe("Codex preparation actual profile-aware public facade", () => {
     it.each(["docker", "podman"] as const)("probes the directory before config without host mutation on %s", cli => {
-        runtime._setRuntimeInfoForTest({ runtime: cli });
+        preloadNativeRuntimeFixture(runtime, { runtime: cli });
         native.spawn.mockReturnValue({ status: 0 });
         expect(docker.prepareCodexConfigForContainer(target)).toBeUndefined();
-        expect(native.spawn.mock.calls).toEqual([call(directoryProbe, false, cli), call(configProbe, false, cli)]);
+        expect(nativeCalls()).toEqual([call(directoryProbe, false, cli), call(configProbe, false, cli)]);
         // Default-profile resolution may inspect layout provenance but never the config inode.
         expect(native.lstat.mock.calls.some(([path]) => path.endsWith("config.toml"))).toBe(false);
     });
@@ -96,7 +98,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
         native.lstat.mockClear();
         queueRepair();
         expect(docker.prepareCodexConfigForContainer(target, profile)).toBeUndefined();
-        expect(native.spawn.mock.calls).toEqual(repaired);
+        expect(nativeCalls()).toEqual(repaired);
         const validations = native.lstat.mock.calls.slice(-4);
         expect(validations).toEqual([[dirname(config)], [config], [dirname(config)], [config]]);
         expect(native.lstat.mock.calls.filter(([path]) => path.endsWith("config.toml"))).toEqual([[config], [config]]);
@@ -123,7 +125,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
                 ? { stdout: "", stderr: "", ...observation } : { status, stdout: "2001", stderr: "" }));
             expect(thrown(() => docker.prepareCodexConfigForContainer(target, "named"))).toEqual(
                 new Error(`Unable to prepare Codex credentials at ${dirname(config)}: ${operation} failed (${detail})`));
-            expect(native.spawn.mock.calls).toEqual(repaired.slice(0, phase + 1));
+            expect(nativeCalls()).toEqual(repaired.slice(0, phase + 1));
         }
     });
     it("preserves the detailed repair failure without inspecting native timeout code", () => {
@@ -135,7 +137,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
         expect(thrown(() => docker.prepareCodexConfigForContainer(target, "named"))).toEqual(
             new Error(`Unable to prepare Codex credentials at ${dirname(config)}: directory ACL grant failed (grant refused)`));
         expect(readCode).not.toHaveBeenCalled();
-        expect(native.spawn.mock.calls).toEqual(repaired.slice(0, 3));
+        expect(nativeCalls()).toEqual(repaired.slice(0, 3));
     });
     it("retains native error truthiness at the public boundary", () => {
         for (const error of [undefined, null, false, 0, "", NaN, true, 1, "ETIMEDOUT", Symbol("opaque"), 1n, {}, { code: 124 }]) {
@@ -143,10 +145,10 @@ describe("Codex preparation actual profile-aware public facade", () => {
             native.spawn.mockReturnValue({ status: 0, error });
             if (error) {
                 expect(() => docker.prepareCodexConfigForContainer(target, "named")).toThrow("directory access check failed (exit 0)");
-                expect(native.spawn.mock.calls).toEqual([call(directoryProbe)]);
+                expect(nativeCalls()).toEqual([call(directoryProbe)]);
             } else {
                 expect(docker.prepareCodexConfigForContainer(target, "named")).toBeUndefined();
-                expect(native.spawn.mock.calls).toEqual([call(directoryProbe), call(configProbe)]);
+                expect(nativeCalls()).toEqual([call(directoryProbe), call(configProbe)]);
             }
             expect(native.lstat).not.toHaveBeenCalled();
         }
@@ -169,7 +171,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
                     get stderr() { if (field === "stderr") throw failure; return ""; } };
             }));
             expect(thrown(() => docker.prepareCodexConfigForContainer(target))).toBe(failure);
-            expect(native.spawn.mock.calls).toEqual(repaired.slice(0, phase + 1));
+            expect(nativeCalls()).toEqual(repaired.slice(0, phase + 1));
         }
     });
 
@@ -179,14 +181,14 @@ describe("Codex preparation actual profile-aware public facade", () => {
             nlink: invalid === "links" ? 2 : 1,
             isDirectory: () => invalid !== "directory", isFile: () => invalid !== "file" }));
         expect(() => docker.prepareCodexConfigForContainer(target)).toThrow("Unable to prepare Codex credentials");
-        expect(native.spawn.mock.calls).toEqual([call(directoryProbe)]);
+        expect(nativeCalls()).toEqual([call(directoryProbe)]);
     });
     it("refuses absent host user identity before inspecting or mutating host credentials", () => {
         Object.defineProperty(process, "getuid", { configurable: true, value: undefined });
         native.spawn.mockReturnValueOnce({ status: 1 });
         expect(() => docker.prepareCodexConfigForContainer(target, "named")).toThrow("host user identity is unavailable");
         expect(native.lstat).not.toHaveBeenCalled();
-        expect(native.spawn.mock.calls).toEqual([call(directoryProbe)]);
+        expect(nativeCalls()).toEqual([call(directoryProbe)]);
     });
     it.each([null, undefined, "metadata failure", { metadata: true }])("preserves unexpected lstat failure %s before UID discovery or root effects", failure => {
         native.lstat.mockImplementation(path => {
@@ -195,7 +197,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
         });
         native.spawn.mockReturnValueOnce({ status: 1 });
         expect(thrown(() => docker.prepareCodexConfigForContainer(target, "named"))).toBe(failure);
-        expect(native.spawn.mock.calls).toEqual([call(directoryProbe)]);
+        expect(nativeCalls()).toEqual([call(directoryProbe)]);
     });
     it.each(["code", "isDirectory", "uid", "isFile", "nlink"])("preserves host metadata %s getter faults without UID discovery or root effects", field => {
         const failure = { code: "ENOENT", field };
@@ -210,7 +212,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
         });
         native.spawn.mockReturnValueOnce({ status: 1 });
         expect(thrown(() => docker.prepareCodexConfigForContainer(target, "named"))).toBe(failure);
-        expect(native.spawn.mock.calls).toEqual([call(directoryProbe)]);
+        expect(nativeCalls()).toEqual([call(directoryProbe)]);
     });
     it("allows absent config during directory repair but refuses absent config repair", () => {
         const missing = Object.assign(new Error("absent"), { code: "ENOENT" });
@@ -221,7 +223,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
         native.spawn.mockReturnValueOnce({ status: 1 }).mockReturnValueOnce({ status: 0, stdout: "2001" })
             .mockReturnValueOnce({ status: 0 }).mockReturnValueOnce({ status: 0 }).mockReturnValueOnce({ status: 1 });
         expect(thrown(() => docker.prepareCodexConfigForContainer(target))).toBe(missing);
-        expect(native.spawn.mock.calls).toEqual(repaired.slice(0, 5));
+        expect(nativeCalls()).toEqual(repaired.slice(0, 5));
     });
     it("preserves required-file lstat failure identity without inspecting its code", () => {
         const config = utils.getCodexConfigFile("named");
@@ -235,12 +237,12 @@ describe("Codex preparation actual profile-aware public facade", () => {
         expect(thrown(() => docker.prepareCodexConfigForContainer(target, "named"))).toBe(failure);
         expect(readCode).not.toHaveBeenCalled();
         expect(native.lstat.mock.calls).toEqual([[dirname(config)], [config]]);
-        expect(native.spawn.mock.calls).toEqual([call(directoryProbe), call(configProbe)]);
+        expect(nativeCalls()).toEqual([call(directoryProbe), call(configProbe)]);
     });
     it.each(["", "-1", "2001x", "4294967295"])("refuses invalid mapped identity %s without root mutation", uid => {
         native.spawn.mockReturnValueOnce({ status: 1 }).mockReturnValueOnce({ status: 0, stdout: uid });
         expect(() => docker.prepareCodexConfigForContainer(target)).toThrow("invalid container user identity");
-        expect(native.spawn.mock.calls).toEqual(repaired.slice(0, 2));
+        expect(nativeCalls()).toEqual(repaired.slice(0, 2));
     });
 
     it("discovers a fresh mapped UID on the next invocation", () => {
@@ -249,7 +251,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
         docker.prepareCodexConfigForContainer(target, "named");
         const second = [call(directoryProbe), uidCall(), call(acl.codexConfigDirectoryAclScript("3001"), true),
             call(directoryProbe), call(configProbe), call(acl.codexConfigFileAclScript("3001"), true), call(configProbe)];
-        expect(native.spawn.mock.calls).toEqual([...repaired, ...second]);
+        expect(nativeCalls()).toEqual([...repaired, ...second]);
     });
     it("keeps nested facade UID caches independent while resuming the outer repair", () => {
         native.spawn.mockReturnValueOnce({ status: 1 }).mockReturnValueOnce({ status: 0, stdout: "2001" })
@@ -261,7 +263,7 @@ describe("Codex preparation actual profile-aware public facade", () => {
         docker.prepareCodexConfigForContainer(target, "named");
         const nested = [call(directoryProbe), uidCall(), call(acl.codexConfigDirectoryAclScript("3001"), true),
             call(directoryProbe), call(configProbe), call(acl.codexConfigFileAclScript("3001"), true), call(configProbe)];
-        expect(native.spawn.mock.calls).toEqual([...repaired.slice(0, 3), ...nested, ...repaired.slice(3)]);
+        expect(nativeCalls()).toEqual([...repaired.slice(0, 3), ...nested, ...repaired.slice(3)]);
     });
 
     it("keeps calls independent after a failed repair", () => {
@@ -269,6 +271,6 @@ describe("Codex preparation actual profile-aware public facade", () => {
         expect(() => docker.prepareCodexConfigForContainer(target)).toThrow("directory ACL grant failed");
         native.spawn.mockReturnValueOnce({ status: 0 }).mockReturnValueOnce({ status: 0 });
         expect(docker.prepareCodexConfigForContainer(target)).toBeUndefined();
-        expect(native.spawn.mock.calls).toEqual([...repaired.slice(0, 3), call(directoryProbe), call(configProbe)]);
+        expect(nativeCalls()).toEqual([...repaired.slice(0, 3), call(directoryProbe), call(configProbe)]);
     });
 });

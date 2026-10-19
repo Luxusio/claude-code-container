@@ -6,7 +6,23 @@ const native = vi.hoisted(() => ({ spawn: vi.fn(), runtime: vi.fn() }));
 vi.mock("child_process", async original => ({
     ...await original<typeof import("node:child_process")>(), spawnSync: native.spawn,
 }));
-vi.mock("../../container-runtime.js", () => ({ runtimeCli: native.runtime }));
+vi.mock("../../container-runtime.js", async () => {
+    const { validateNativeRuntimeInvocation } = await import("../../adapters/container-runtime-invocation.js");
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../../ports/container-runtime-invocation.js");
+    const invocation = validateNativeRuntimeInvocation({
+        version: 1, runtime: "podman", executable: "/fixture/runtime/podman",
+        transport: { kind: "podman-local", graphRoot: "/fixture/storage", runRoot: "/fixture/run",
+            storageDriver: "overlay", storageOptions: [], transientStore: false },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    // This unit owner supplies the process leaf explicitly; emitted integration owns native routing.
+    const runner = () => { const capturedCli = "podman"; return { invocation,
+        spawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => native.spawn(capturedCli, args, options),
+    }; };
+    return { ...({ runtimeCli: native.runtime }), getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => runner().spawnSync(args, options),
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation() };
+});
 
 const id = "a".repeat(64);
 const name = "fixture-container";
@@ -35,7 +51,7 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
     };
     const destinations = vi.fn(() => ["/fixture/project", "/fixture/auth"]);
     const context: Parameters<typeof createNativeContainerExistingLifecycle>[1] = {
-        startCli: "captured-runtime", requiredMountDestinations: destinations,
+        startCli: "podman", requiredMountDestinations: destinations,
         projectPath: "/fixture/project", profile: "work",
     };
     return { order, ports, context, destinations, lifecycle: createNativeContainerExistingLifecycle(ports, context) };
@@ -94,7 +110,7 @@ describe("existing container application through native composition", () => {
     it("uses captured runtime only for pinned restart, with inherited stdio", () => {
         const f = fixture({ isRunning: () => false });
         expect(f.lifecycle.run({ containerName: name, debug: true })).toEqual({ kind: "joined", containerId: id });
-        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", ["start", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" });
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("podman", ["start", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" });
         expect(native.runtime).not.toHaveBeenCalled();
         expect(console.error).toHaveBeenNthCalledWith(2, `[ccc:debug] Container ${name} exists, restarting`);
         expect(f.order.slice(-4)).toEqual(["mcp", "ssh", "git", `finish:${id}`]);
@@ -184,7 +200,7 @@ describe("existing container application through native composition", () => {
         native.spawn.mockImplementation(() => { f.order.push("native-start"); return { status: 0 }; });
         expect(f.lifecycle.run({ containerName: name })).toEqual({ kind: "joined", containerId: id });
         expect(f.order.slice(-8)).toEqual(["before-start", "native-start", `after-start:${id}`, "live", "mcp", "ssh", "git", `finish:${id}`]);
-        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", ["start", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" });
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("podman", ["start", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" });
     });
     it("reads required destinations only when reporting a mismatch and safely defers without MCP", () => {
         const f = fixture({ inspectContract: (_id, report) => { report("credential mount changed"); return false; } });
@@ -201,13 +217,14 @@ describe("existing container application through native composition", () => {
         expect(native.runtime).not.toHaveBeenCalled();
     });
 
-    it("throws the original restart-guidance class with runtime selected at the unsafe-defer point", () => {
+    it("throws the original restart-guidance class with captured runtime after the ambient selector changes", () => {
         const f = fixture({ inspectContract: () => false, safeToDefer: (_id, report) => { report("unsafe project source"); return false; } });
+        native.runtime.mockReturnValue("docker");
         let failure: unknown;
         try { f.lifecycle.run({ containerName: name, replacementGuard: () => false }); } catch (error) { failure = error; }
         expect(failure).toBeInstanceOf(ContainerRestartRequiredError);
         expect(failure).toMatchObject({ name: "ContainerRestartRequiredError", reason: "unsafe project source", workspacePath: "/fixture/project", runtime: "podman", profile: "work" });
-        expect(native.runtime).toHaveBeenCalledTimes(1);
+        expect(native.runtime).not.toHaveBeenCalled();
         expect(native.spawn).not.toHaveBeenCalled();
         expect(f.ports.finish).not.toHaveBeenCalled();
     });

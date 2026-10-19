@@ -1,3 +1,53 @@
+
+/** This owner fakes native process leaves; captured transport compilation remains real. */
+vi.mock("../container-runtime.js", async original => {
+    const actual = await original<typeof import("../container-runtime.js")>();
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../ports/container-runtime-invocation.js");
+    let info: ReturnType<typeof actual.getRuntimeInfo> = {
+        runtime: "docker", flavor: "docker-native", version: "0.0.0",
+        socketPath: "/var/run/docker.sock", rootless: false, remote: false, dockerDesktop: false,
+    };
+    const preload = (value: Parameters<typeof actual._setRuntimeInfoForTest>[0]) => {
+        actual._setRuntimeInfoForTest(value);
+        info = actual.getRuntimeInfo();
+    };
+    preload(info);
+    const invocation = () => actual.validateNativeRuntimeInvocation({
+        version: 1, runtime: info.runtime, executable: `/fixture/runtime/${info.runtime}`,
+        transport: info.runtime === "docker"
+            ? { kind: "docker", host: "unix:///fixture/engine.sock", configDirectory: "/fixture/config",
+                tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } }
+            : { kind: "podman-local", graphRoot: "/fixture/storage", runRoot: "/fixture/run",
+                storageDriver: "overlay", storageOptions: [], transientStore: false },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    return { ...actual, getRuntimeInfo: () => info, runtimeCli: () => info.runtime,
+        getRuntimeInvocation: invocation,
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) =>
+            actual.bindNativeRuntimeInvocation(invocation()).spawnSync(args, options),
+        runtimeSpawn: (args: readonly string[], options?: import("child_process").SpawnOptions) =>
+            actual.bindNativeRuntimeInvocation(invocation()).spawn(args, options),
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation(),
+        _setRuntimeInfoForTest: preload,
+        _resetRuntimeCacheForTest: () => { actual._resetRuntimeCacheForTest(); preload({runtime: "docker"}); },
+    };
+});
+
+function logicalNativeCall(call: unknown[]): unknown[] {
+    const [program, argv, options] = call;
+    if (program !== "/fixture/runtime/docker" && program !== "/fixture/runtime/podman") return call;
+    const runtime = program.endsWith("/docker") ? "docker" : "podman";
+    const prefix = runtime === "docker"
+        ? ["--config", "/fixture/config", "--host", "unix:///fixture/engine.sock", "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey="]
+        : ["--remote=false", "--root", "/fixture/storage", "--runroot", "/fixture/run", "--storage-driver", "overlay", "--transient-store=false"];
+    expect((argv as string[]).slice(0, prefix.length)).toEqual(prefix);
+    const { env, shell, ...logicalOptions } = options as import("child_process").SpawnSyncOptions;
+    expect(shell).toBe(false);
+    expect(env?.DOCKER_CONTEXT).toBeUndefined();
+    expect(env?.CONTAINER_HOST).toBeUndefined();
+    return [runtime, (argv as string[]).slice(prefix.length), logicalOptions];
+}
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
 import { createHash } from "crypto";
@@ -71,6 +121,7 @@ vi.mock("child_process", async (importOriginal) => {
     return {
         ...actual,
         spawnSync: (...args: unknown[]) => {
+            args = logicalNativeCall(args);
             const argv = args[1] as string[];
             if ((argv?.[0] === "info" && argv.includes("{{.ID}}"))
                 || (argv?.[0] === "exec" && argv.includes("/usr/bin/docker") && argv.includes("{{.ID}}"))) {
@@ -3641,17 +3692,21 @@ describe("docker.ts module exports", () => {
         });
 
         it.each([
-            ["restart without a legacy lab mount", false, false],
-            ["restart with the exact legacy lab mount", true, false],
-            ["image replacement without a legacy lab mount", false, true],
-            ["image replacement with the exact legacy lab mount", true, true],
-        ] as const)("skips unused lab ownership preparation on an unsupported host during %s", (_name, labState, replaceImage) => {
-            vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            ["darwin: restart without a legacy lab mount", false, false, "darwin"],
+            ["darwin: restart with the exact legacy lab mount", true, false, "darwin"],
+            ["darwin: image replacement without a legacy lab mount", false, true, "darwin"],
+            ["darwin: image replacement with the exact legacy lab mount", true, true, "darwin"],
+            ["win32: restart without a legacy lab mount", false, false, "win32"],
+            ["win32: restart with the exact legacy lab mount", true, false, "win32"],
+            ["win32: image replacement without a legacy lab mount", false, true, "win32"],
+            ["win32: image replacement with the exact legacy lab mount", true, true, "win32"],
+        ] as const)("skips unused lab ownership preparation on an unsupported host during %s", (_name, labState, replaceImage, platform) => {
+            vi.spyOn(process, "platform", "get").mockReturnValue(platform);
             _setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-desktop", remote: true, dockerDesktop: true });
             const previousImage = replaceImage ? `sha256:${"3".repeat(64)}` : TEST_IDENTITY_IMAGE;
-            const inspected = JSON.parse(fullCredentialMountsJson([{
+            const inspected = JSON.parse(fullCredentialMountsJson(platform === "darwin" ? [{
                 Source: "/run/host-services/ssh-auth.sock", Destination: "/tmp/ssh-agent.sock",
-            }], {
+            }] : [], {
                 status: "unsupported", kvmDevice: false, groupAdd: [], labState,
             }));
             inspected.State = { Running: false };

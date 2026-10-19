@@ -28,12 +28,20 @@ if (operation === process.env.FIXTURE_HANG) {
         writeFileSync(program, `
 import fs from 'node:fs';
 import cp from 'node:child_process';
+import assert from 'node:assert/strict';
 import {syncBuiltinESMExports} from 'node:module';
+const capturedExecutable = ${JSON.stringify(join(root, "captured-docker"))};
 const originalSpawnSync = cp.spawnSync;
 cp.spawnSync = function(command, args, options) {
-  if (command !== 'docker' && command !== 'podman') return originalSpawnSync(command,args,options);
+  if (command === capturedExecutable) {
+    const prefix = ['--config', ${JSON.stringify(join(root, "native-config"))}, '--host', 'unix:///fixture/guard-engine.sock', '--tls=false', '--tlscacert=', '--tlscert=', '--tlskey='];
+    assert.deepEqual(args.slice(0, prefix.length), prefix);
+    assert.equal(options.shell, false);
+    args = args.slice(prefix.length);
+  }
+  if (command !== capturedExecutable && command !== 'docker' && command !== 'podman') return originalSpawnSync(command,args,options);
   const operation = args[0];
-  fs.appendFileSync(process.env.FIXTURE_TRACE, JSON.stringify({kind:'options',operation,timeout:options?.timeout,killSignal:options?.killSignal})+'\\n');
+  fs.appendFileSync(process.env.FIXTURE_TRACE, JSON.stringify({kind:'options',operation,timeout:options?.timeout,killSignal:options?.killSignal,shell:options?.shell})+'\\n');
   // An absent production bound is deliberately left absent: only the independent
   // parent watchdog can rescue that regression. Keep the production kill signal.
   const timeout = Number.isFinite(options?.timeout) && options.timeout > 0 ? 350 : options?.timeout;
@@ -43,8 +51,20 @@ syncBuiltinESMExports();
 const {withContainerLifecycleLock} = await import(${JSON.stringify(resolve(repository, "dist/session.js"))});
 const {locksDir} = await import(${JSON.stringify(resolve(repository, "dist/home-layout.js"))});
 const {ensureDockerRunning} = await import(${JSON.stringify(resolve(repository, "dist/docker.js"))});
-const {_setRuntimeInfoForTest} = await import(${JSON.stringify(resolve(repository, "dist/container-runtime.js"))});
+const {_setRuntimeInfoForTest,_setRuntimeInvocationForTest,getRuntimeInvocation,getRuntimeInfo,runWithNativeRuntimeInvocation} = await import(${JSON.stringify(resolve(repository, "dist/container-runtime.js"))});
+const {NATIVE_RUNTIME_SELECTOR_KEYS} = await import(${JSON.stringify(resolve(repository, "dist/ports/container-runtime-invocation.js"))});
 _setRuntimeInfoForTest({runtime:'docker'});
+_setRuntimeInvocationForTest({version:1,runtime:'docker',executable:capturedExecutable,
+  transport:{kind:'docker',host:'unix:///fixture/guard-engine.sock',configDirectory:${JSON.stringify(join(root, "native-config"))},
+    tls:{enabled:false,verify:false,caFile:null,certFile:null,keyFile:null}},
+  selectors:Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key,key === 'HOME' ? ${JSON.stringify(root)} : null]))});
+// Prime this explicit invocation's capability facts with only the owned client;
+// the timed phase below must retain its original single guarded operation trace.
+const hang = process.env.FIXTURE_HANG;
+delete process.env.FIXTURE_HANG;
+runWithNativeRuntimeInvocation(getRuntimeInvocation(), () => getRuntimeInfo());
+process.env.FIXTURE_HANG = hang;
+fs.writeFileSync(process.env.FIXTURE_TRACE, '');
 const {createNativeContainerDestructiveLifecycle} = await import(${JSON.stringify(resolve(repository, "dist/composition/container-destructive-lifecycle.js"))});
 const prefix = 'private-runtime-bounds';
 const guard = locksDir()+'/'+prefix+'.container-lifecycle.guard';
@@ -90,6 +110,7 @@ fs.appendFileSync(process.env.FIXTURE_TRACE,JSON.stringify({kind:'result',guarde
             for (const row of options) {
                 expect(row.timeout).toBe(row.operation === "info" ? 10_000 : 30_000);
                 expect(row.killSignal).toBe("SIGKILL");
+                expect(row.shell).toBe(false);
             }
             expect(rows.filter(row => row.kind === "stubborn")).toEqual([{ kind: "stubborn", operation }]);
             expect(rows.at(-1)).toEqual({ kind: "result", guarded: true,

@@ -9,7 +9,23 @@ import { prepareCodexConfigForContainer, restoreCodexConfigHostOwnership } from 
 import { withCodexConfigLock } from "../codex-config-lock.js";
 
 vi.mock("child_process", () => ({ spawnSync: vi.fn() }));
-vi.mock("../container-runtime.js", () => ({ runtimeCli: () => "podman" }));
+vi.mock("../container-runtime.js", async () => {
+    const { validateNativeRuntimeInvocation } = await import("../adapters/container-runtime-invocation.js");
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../ports/container-runtime-invocation.js");
+    const invocation = validateNativeRuntimeInvocation({
+        version: 1, runtime: "podman", executable: "/fixture/runtime/podman",
+        transport: { kind: "podman-local", graphRoot: "/fixture/storage", runRoot: "/fixture/run",
+            storageDriver: "overlay", storageOptions: [], transientStore: false },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    // This unit owner supplies the process leaf explicitly; emitted integration owns native routing.
+    const runner = () => { const capturedCli = "podman"; return { invocation,
+        spawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => spawnSync(capturedCli, args, options),
+    }; };
+    return { ...({ runtimeCli: () => "podman" }), getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => runner().spawnSync(args, options),
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation() };
+});
 vi.mock("../docker.js", () => ({ prepareCodexConfigForContainer: vi.fn(), restoreCodexConfigHostOwnership: vi.fn() }));
 vi.mock("../codex-config-lock.js", () => ({ withCodexConfigLock: vi.fn((operation) => operation()) }));
 const { spawnSync: realSpawn } = await vi.importActual<typeof import("child_process")>("child_process");

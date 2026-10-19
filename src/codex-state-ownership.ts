@@ -1,8 +1,8 @@
-import { spawnSync } from "child_process";
+import { repairWindowsCodexPrivateState } from "./adapters/windows-credential-access.js";
 import { lstatSync, realpathSync } from "fs";
 import { dirname, isAbsolute, sep } from "path";
 import { getCodexDir } from "./utils.js";
-import { getRuntimeInfo, runtimeCli } from "./container-runtime.js";
+import { getRuntimeInfo, runtimeCli, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
 import { createCodexStateOwnershipMigration } from "./application/credentials/codex-state-ownership.js";
 import type { ActiveCodexStateContainer, CodexStateMount, PreviousCodexStateContainer } from "./domain/credentials/codex-state-ownership.js";
 import { normalizeImageId, type ContainerIdentity } from "./container-identity.js";
@@ -11,7 +11,7 @@ interface Mount { Type?: string; Source?: string; Destination?: string }
 interface PreviousContainer { Image?: string; Mounts?: Mount[] }
 
 function checked(args: string[], input?: string): string {
-    const result = spawnSync(runtimeCli(), args, { encoding: "utf-8", input, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 });
+    const result = runtimeSpawnSync(args, { encoding: "utf-8", input, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 });
     if (result.error || result.status !== 0) {
         throw new Error(`Codex state ownership check failed: ${result.error?.message || result.stderr || `exit ${result.status}`}`);
     }
@@ -186,7 +186,7 @@ const ownershipMigration = createCodexStateOwnershipMigration({
 
 /** Caller holds the global startup lock until the replacement container has started. */
 export function prepareCodexStateOwnership(previous: PreviousContainer, imageId: string, identity: ContainerIdentity, profile?: string, proveSource?: (source: string) => boolean): void {
-    ownershipMigration.run(() => observePreviousContainer(previous), imageId, identity, profile, proveSource);
+    runWithNativeRuntimeInvocation(getRuntimeInvocation(), () => ownershipMigration.run(() => observePreviousContainer(previous), imageId, identity, profile, proveSource));
 }
 
 export const codexStateAccessScript = String.raw`
@@ -222,10 +222,13 @@ for directory, dirs, files in os.walk(root, followlinks=False, onerror=walk_erro
 `;
 
 export function assertCodexStateAccessible(containerName: string, profile?: string): void {
-    const CODEX_DIR = getCodexDir(profile);
-    try {
-        checked(["exec", containerName, "python3", "-c", codexStateAccessScript]);
-    } catch (error) {
-        throw new Error(`${error instanceof Error ? error.message : error}\nCCC-managed Codex state (${CODEX_DIR}) is inaccessible. Stop containers using it and repair its confirmed previous UID/GID ownership. Project-folder chown does not repair this separate store; CCC will not guess the previous owner.`);
-    }
+    return runWithNativeRuntimeInvocation(getRuntimeInvocation(), () => {
+        const CODEX_DIR = getCodexDir(profile);
+        try {
+            if (getRuntimeInfo().dockerDesktop) repairWindowsCodexPrivateState(runtimeCli(), containerName, runtimeSpawnSync);
+            checked(["exec", containerName, "python3", "-c", codexStateAccessScript]);
+        } catch (error) {
+            throw new Error(`${error instanceof Error ? error.message : error}\nCCC-managed Codex state (${CODEX_DIR}) is inaccessible. Stop containers using it and repair its confirmed previous UID/GID ownership. Project-folder chown does not repair this separate store; CCC will not guess the previous owner.`);
+        }
+    });
 }

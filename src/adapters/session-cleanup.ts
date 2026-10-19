@@ -1,6 +1,6 @@
-import { spawnSync } from "child_process";
 import { existsSync, unlinkSync } from "fs";
-import { runtimeCli } from "../container-runtime.js";
+import { bindNativeRuntimeInvocation } from "./container-runtime-invocation.js";
+import type { NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
 import { cleanupOwnerDevices } from "../device-lab-cleanup.js";
 
 export function removeNativeSessionClaim(lockFile: string): undefined {
@@ -29,8 +29,9 @@ export function reportNativeSessionDeviceCleanupFailure(error: unknown): undefin
     console.error(`[ccc] device cleanup failed during session cleanup: ${error instanceof Error ? error.message : String(error)}`);
 }
 
-export function stopNativeSessionContainer(readContainerId: () => string | null): undefined {
-    const result = spawnSync(runtimeCli(), ["stop", readContainerId()!], {
+export function stopNativeSessionContainer(readContainerId: () => string | null, runtimeInvocation: NativeRuntimeInvocation): undefined {
+    const runner = bindNativeRuntimeInvocation(runtimeInvocation);
+    const result = runner.spawnSync(["stop", readContainerId()!], {
         stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL",
     });
     if (result.error || result.signal || result.status !== 0) {

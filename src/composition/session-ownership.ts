@@ -3,38 +3,43 @@ export { assertNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, v
 import { armSessionOwnership } from "../application/session-ownership.js";
 import {
     captureNativeSessionOwnership, launchNativeSessionOwnership,
-    nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership,
+    decodeNativeSessionRuntimeInvocation, nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership,
 } from "../adapters/session-ownership.js";
 import { getProjectId } from "@ccc/device-lab/project-identity.js";
 import { sessionClaimPrefix } from "../domain/session-claims.js";
-import { setRuntimeOverride } from "../container-runtime.js";
+import { getRuntimeInvocation, runWithNativeRuntimeInvocation } from "../container-runtime.js";
 import { createNativeSessionClaims } from "./session-claims.js";
 import { createNativeSessionCleanup } from "./session-cleanup.js";
 import type {
-    SessionOwnershipBinding, SessionOwnershipHandle, SessionOwnershipReceipt, SessionOwnershipRuntime,
+    SessionOwnershipBinding, SessionOwnershipHandle, SessionOwnershipReceipt,
 } from "../ports/session-ownership.js";
+import type { NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
 
 export async function cleanupCapturedNativeSessionOwnership(
     binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt,
-    containerId: string | null = null, runtime: SessionOwnershipRuntime = "docker",
+    containerId: string | null, runtimeInvocation: NativeRuntimeInvocation,
 ): Promise<void> {
-    const prefix = sessionClaimPrefix(getProjectId(binding.projectPath), binding.profile);
-    await withLifecycleLockAsync(prefix, () => {
-        if (!nativeSessionOwnershipMatches(receipt)) return;
-        const claims = createNativeSessionClaims(withLifecycleLock);
-        const cleanup = createNativeSessionCleanup(
-            withLifecycleLock,
-            (claimPrefix, ownPath) => claims.hasOtherReconciledSessionClaims(claimPrefix, ownPath),
-            () => removeCapturedNativeSessionOwnership(receipt),
-        );
-        if (containerId !== null) setRuntimeOverride(runtime);
-        cleanup.setSession(binding.lockFile, binding.projectPath, binding.profile, binding.toolName);
-        cleanup.setSessionContainerId(containerId);
-        cleanup.cleanupSessionInHeldLifecycleLock();
+    const captured = decodeNativeSessionRuntimeInvocation(runtimeInvocation);
+    await runWithNativeRuntimeInvocation(captured, async () => {
+        const prefix = sessionClaimPrefix(getProjectId(binding.projectPath), binding.profile);
+        await withLifecycleLockAsync(prefix, () => {
+            if (!nativeSessionOwnershipMatches(receipt)) return;
+            const claims = createNativeSessionClaims(withLifecycleLock);
+            const cleanup = createNativeSessionCleanup(
+                withLifecycleLock,
+                (claimPrefix, ownPath) => claims.hasOtherReconciledSessionClaims(claimPrefix, ownPath),
+                () => removeCapturedNativeSessionOwnership(receipt),
+                () => captured,
+            );
+            cleanup.setSession(binding.lockFile, binding.projectPath, binding.profile, binding.toolName);
+            cleanup.setSessionContainerId(containerId);
+            cleanup.cleanupSessionInHeldLifecycleLock();
+        });
     });
 }
 
 export interface NativeSessionOwnershipOptions {
+    runtimeInvocation?: NativeRuntimeInvocation;
     onCaptured?(receipt: SessionOwnershipReceipt): void;
     rollback?(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void | Promise<void>;
 }
@@ -43,11 +48,13 @@ export async function armNativeSessionOwnership(
     binding: SessionOwnershipBinding, onFailure: (error: Error) => void,
     options: NativeSessionOwnershipOptions = {},
 ): Promise<SessionOwnershipHandle> {
+    const runtimeInvocation = decodeNativeSessionRuntimeInvocation(options.runtimeInvocation ?? getRuntimeInvocation());
     binding = Object.freeze({ ...binding });
     const receipt = Object.freeze(captureNativeSessionOwnership(binding.lockFile));
     validateNativeSessionOwnership(binding, receipt, process.pid);
     options.onCaptured?.(receipt);
-    return armSessionOwnership(binding, receipt, {
+    return armSessionOwnership(binding, receipt, runtimeInvocation, {
+        decodeRuntimeInvocation: decodeNativeSessionRuntimeInvocation,
         launch: launchNativeSessionOwnership,
         cleanup: options.rollback ?? rollbackCapturedNativeSessionOwnership,
         assertOwnership: () => assertNativeSessionOwnership(receipt),

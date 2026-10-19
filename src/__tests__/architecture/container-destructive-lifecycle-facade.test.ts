@@ -14,11 +14,44 @@ const native = vi.hoisted(() => ({
     order: [] as string[],
 }));
 vi.mock("child_process", async original => ({
-    ...await original<typeof import("node:child_process")>(), spawnSync: native.spawn,
+    ...await original<typeof import("node:child_process")>(), spawnSync: (...args: unknown[]) => native.spawn(...logicalNativeCall(args)),
 }));
-vi.mock("../../container-runtime.js", async original => ({
-    ...await original<typeof import("../../container-runtime.js")>(), runtimeCli: native.runtime,
-}));
+vi.mock("../../container-runtime.js", async original => {
+    const actual = await original<typeof import("../../container-runtime.js")>();
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../../ports/container-runtime-invocation.js");
+    const invocation = () => {
+        const current = actual.currentNativeRuntimeInvocation();
+        if (current) return current;
+        const runtime = native.runtime();
+        return actual.validateNativeRuntimeInvocation({
+            version: 1, runtime, executable: `/fixture/runtime/${runtime}`,
+            transport: runtime === "docker"
+                ? { kind: "docker", host: "unix:///fixture/engine-a.sock", configDirectory: "/fixture/config",
+                    tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } }
+                : { kind: "podman-local", graphRoot: "/fixture/storage", runRoot: "/fixture/run",
+                    storageDriver: "overlay", storageOptions: [], transientStore: false },
+            selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+        });
+    };
+    return { ...actual, runtimeCli: native.runtime, getRuntimeInvocation: invocation,
+        getRuntimeInfo: () => ({runtime: "docker", flavor: "docker-native", rootless: false, remote: false, dockerDesktop: false}),
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) =>
+            actual.bindNativeRuntimeInvocation(invocation()).spawnSync(args, options) };
+});
+
+function logicalNativeCall(call: unknown[]): unknown[] {
+    const [program, args, options] = call;
+    if (program !== "/fixture/runtime/docker" && program !== "/fixture/runtime/podman") return call;
+    const runtime = program.endsWith("/docker") ? "docker" : "podman";
+    const prefix = runtime === "docker"
+        ? ["--config", "/fixture/config", "--host", "unix:///fixture/engine-a.sock", "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey="]
+        : ["--remote=false", "--root", "/fixture/storage", "--runroot", "/fixture/run", "--storage-driver", "overlay", "--transient-store=false"];
+    expect((args as string[]).slice(0, prefix.length)).toEqual(prefix);
+    const {env, shell, ...logicalOptions} = options as import("child_process").SpawnSyncOptions;
+    expect(shell).toBe(false);
+    expect(env?.DOCKER_CONTEXT).toBeUndefined();
+    return [runtime, (args as string[]).slice(prefix.length), logicalOptions];
+}
 vi.mock("../../device-lab-admin.js", () => ({ cleanupOwnerDevices: native.cleanup }));
 vi.mock("../../session.js", () => ({
     getSessionLockClaimsForContainer: native.claims,
@@ -74,14 +107,14 @@ describe("native destructive lifecycle composition", () => {
         expect(native.runtime).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
     });
 
-    it("selects the current runtime separately for exact-ID stop and plain rm with inherited stdio", () => {
+    it("captures once before identity and retains the same native authority for exact-ID stop and plain rm", () => {
         native.runtime.mockReturnValueOnce("docker").mockReturnValueOnce("podman");
         const f = fixture(); expect(f.lifecycle.remove("input")).toBeUndefined();
         expect(native.spawn.mock.calls).toEqual([
             ["docker", ["stop", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }],
-            ["podman", ["rm", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }],
+            ["docker", ["rm", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }],
         ]);
-        expect(native.runtime).toHaveBeenCalledTimes(2);
+        expect(native.runtime).toHaveBeenCalledTimes(1);
         expect(native.order).toEqual([fixtureStopping, "log:Container stopped", fixtureRemoving, "log:Container removed"]);
         expect(f.order).toEqual([
             "resolve:input", "project:/full/project", "lock:project-id", "claims:project-id", "runtime-ready",
@@ -108,7 +141,7 @@ describe("native destructive lifecycle composition", () => {
         const cleanup = vi.fn<SuppliedPorts["cleanupDevices"]>();
         const f = fixture({ sessionClaims: () => ["claim"], managedIdentity: () => null, cleanupDevices: cleanup });
         f.lifecycle[operation]("input", undefined, { force: true });
-        expect(cleanup).not.toHaveBeenCalled(); expect(native.runtime).not.toHaveBeenCalled();
+        expect(cleanup).not.toHaveBeenCalled(); expect(native.runtime).toHaveBeenCalledTimes(1);
         expect(native.spawn).not.toHaveBeenCalled(); expect(console.log).toHaveBeenCalledExactlyOnceWith("Container not found");
     });
 
@@ -161,7 +194,7 @@ describe("native destructive lifecycle composition", () => {
     it.each(["stop", "remove"] as const)("%s propagates current runtime selection failure before subprocess dispatch", operation => {
         const failure = new Error("runtime-selection"); native.runtime.mockImplementation(() => { throw failure; });
         const f = fixture(); expect(() => f.lifecycle[operation]("input")).toThrow(failure);
-        expect(native.spawn).not.toHaveBeenCalled(); expect(console.log).toHaveBeenCalledExactlyOnceWith('Stopping container "fixture-container" for workspace "/full/project"...');
+        expect(native.spawn).not.toHaveBeenCalled(); expect(console.log).not.toHaveBeenCalled();
     });
 
     it("propagates presentation failure after stop without removal or rollback", () => {

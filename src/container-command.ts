@@ -1,10 +1,15 @@
 import { spawn, spawnSync } from "child_process";
+import { bindNativeRuntimeInvocation, captureNativeRuntimeInvocation, currentNativeRuntimeInvocation, type BoundNativeRuntimeRunner } from "./container-runtime.js";
 
-export async function runContainerCommand(runtime: string, args: string[], interactive: boolean): Promise<number> {
-    if (!interactive) return spawnSync(runtime, args, { stdio: "inherit" }).status ?? 1;
+export async function runContainerCommand(runtime: string, args: string[], interactive: boolean, runner?: BoundNativeRuntimeRunner): Promise<number> {
+    if (!runner && (runtime === "docker" || runtime === "podman")) {
+        const current = currentNativeRuntimeInvocation();
+        runner = bindNativeRuntimeInvocation(current?.runtime === runtime ? current : captureNativeRuntimeInvocation(runtime));
+    }
+    if (!interactive) return (runner ? runner.spawnSync(args, { stdio: "inherit" }) : spawnSync(runtime, args, { stdio: "inherit" })).status ?? 1;
 
     return new Promise<number>((resolve) => {
-        const child = spawn(runtime, args, { stdio: "inherit" });
+        const child = runner ? runner.spawn(args, { stdio: "inherit" }) : spawn(runtime, args, { stdio: "inherit" });
         const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
         let settled = false;
         let interrupted = false;

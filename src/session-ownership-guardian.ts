@@ -2,6 +2,7 @@ import { writeSync } from "fs";
 import { sessionLockLiveness } from "./session-lock-liveness.js";
 import { createSessionOwnershipGuardian } from "./application/session-ownership.js";
 import { assertNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, validateNativeSessionOwnership } from "./composition/session-ownership-native.js";
+import { decodeNativeSessionRuntimeInvocation } from "./adapters/session-ownership.js";
 
 const ownerPid = Number(process.argv[2]);
 if (!process.send || !process.connected || !Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
@@ -53,6 +54,7 @@ function finish(status: 0 | 1 = 0, error?: unknown): void {
     if (pendingSends === 0) process.exit(exitStatus);
 }
 const guardian = createSessionOwnershipGuardian({
+    decodeRuntimeInvocation: decodeNativeSessionRuntimeInvocation,
     async validate(binding, receipt) {
         validateNativeSessionOwnership(binding, receipt, ownerPid);
         assertNativeSessionOwnership(receipt);
@@ -72,9 +74,9 @@ const guardian = createSessionOwnershipGuardian({
         }
     },
     rollback: rollbackCapturedNativeSessionOwnership,
-    async cleanup(binding, receipt, containerId, runtime) {
+    async cleanup(binding, receipt, containerId, runtimeInvocation) {
         const { cleanupCapturedNativeSessionOwnership } = await import("./composition/session-ownership.js");
-        await cleanupCapturedNativeSessionOwnership(binding, receipt, containerId, runtime);
+        await cleanupCapturedNativeSessionOwnership(binding, receipt, containerId, runtimeInvocation);
     },
     send(message) {
         return new Promise<void>((resolve, reject) => {

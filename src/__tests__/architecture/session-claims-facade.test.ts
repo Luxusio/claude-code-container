@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as runtimeFacade from "../../container-runtime.js";
+import { preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
 const effects = vi.hoisted(() => ({
     directory: "", mkdir: vi.fn(), stat: vi.fn(), chmod: vi.fn(), list: vi.fn(),
@@ -15,7 +17,6 @@ vi.mock("crypto", async original => ({ ...await original<typeof import("node:cry
 vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawnSync: effects.spawn }));
 vi.mock("../../home-layout.js", () => ({ locksDir: () => effects.directory }));
 vi.mock("../../utils.js", () => ({ getProjectId: () => "project" }));
-vi.mock("../../container-runtime.js", () => ({ runtimeCli: () => "fixture-runtime" }));
 vi.mock("../../device-lab-admin.js", () => ({ cleanupOwnerDevices: effects.cleanup }));
 vi.mock("../../session-lock-liveness.js", async original => ({
     ...await original<typeof import("../../session-lock-liveness.js")>(),
@@ -34,6 +35,7 @@ describe("session claims compatibility facade", () => {
     beforeEach(() => {
         vi.resetAllMocks(); session.clearSession();
         Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+        preloadNativeRuntimeFixture(runtimeFacade);
         effects.directory = join("fixture-home", "locks");
         effects.stat.mockReturnValue(realDirectory); effects.list.mockReturnValue([]);
         effects.random.mockReturnValue(Buffer.from(id, "hex")); effects.token.mockReturnValue("opaque-start");

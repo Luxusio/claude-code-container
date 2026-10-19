@@ -1,8 +1,7 @@
-import { spawnSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { getRuntimeInfo, runtimeCli } from "./container-runtime.js";
+import { getRuntimeInfo, getRuntimeInvocation, bindNativeRuntimeInvocation, type BoundNativeRuntimeRunner } from "./container-runtime.js";
 
 export interface BindSourceIdentity {
     dev: string | number | bigint;
@@ -23,8 +22,10 @@ function numericIdentity(value: string | number | bigint): string | null {
  */
 export function proveWslBindSourceIdentity(source: string, expected: BindSourceIdentity, imageId: string): boolean | null {
     let scratch: string | undefined;
-    let runtime: string | undefined;
+    let runner: BoundNativeRuntimeRunner | undefined;
     try {
+        const invocation = getRuntimeInvocation();
+        runner = bindNativeRuntimeInvocation(invocation);
         const info = getRuntimeInfo();
         if (process.platform !== "linux" || info.runtime !== "docker" || !info.dockerDesktop || info.rootless
             || !/microsoft/i.test(readFileSync("/proc/sys/kernel/osrelease", "utf-8"))) return null;
@@ -33,9 +34,8 @@ export function proveWslBindSourceIdentity(source: string, expected: BindSourceI
         const dev = numericIdentity(expected.dev);
         const ino = numericIdentity(expected.ino);
         if (dev === null || ino === null) return null;
-        runtime = runtimeCli();
         scratch = mkdtempSync(join(tmpdir(), "ccc-wsl-bind-proof-"));
-        const result = spawnSync(runtime, [
+        const result = runner.spawnSync([
             "run", "--rm", "--cidfile", join(scratch, "cid"), "--network", "none", "--read-only",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "0:0",
             "--mount", `type=bind,source=${source},target=/ccc-bind-proof,readonly`,
@@ -53,8 +53,8 @@ export function proveWslBindSourceIdentity(source: string, expected: BindSourceI
             // the exact ID written by this invocation into our private directory.
             try {
                 const cid = readFileSync(join(scratch, "cid"), "utf-8").trim();
-                if (runtime && /^[a-f0-9]{64}$/.test(cid)) {
-                    spawnSync(runtime, ["rm", "-f", cid], { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL", stdio: "ignore" });
+                if (runner && /^[a-f0-9]{64}$/.test(cid)) {
+                    runner.spawnSync(["rm", "-f", cid], { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL", stdio: "ignore" });
                 }
             } catch { /* --rm may already have completed, or creation never succeeded. */ }
             rmSync(scratch, { recursive: true, force: true });

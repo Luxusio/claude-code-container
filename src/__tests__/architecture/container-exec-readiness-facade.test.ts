@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpawnSyncReturns } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
 const native = vi.hoisted(() => ({
     spawn: vi.fn(), exists: vi.fn(), stat: vi.fn(), lstat: vi.fn(), read: vi.fn(), write: vi.fn(),
@@ -17,12 +18,12 @@ vi.mock("fs", async original => ({
     existsSync: native.exists, statSync: native.stat, lstatSync: native.lstat,
     readFileSync: (selected: unknown, ...args: unknown[]) => {
         // The real device-lab module reads only this owned manifest during import.
-        if (selected instanceof URL && selected.href === new URL("../../../packages/device-lab/package.json", import.meta.url).href) {
+        if (selected instanceof URL && selected.href === new URL("../package.json", import.meta.resolve("@ccc/device-lab/version.js")).href) {
             return JSON.stringify({ version: "0.0.0-fixture" });
         }
         return native.read(selected, ...args);
     },
-    writeFileSync: native.write, realpathSync: native.realpath,
+    writeFileSync: native.write, realpathSync: Object.assign(native.realpath, { native: native.realpath }),
     mkdirSync: native.mkdir, openSync: native.open, fstatSync: native.fstat,
     closeSync: native.close, rmSync: native.rm, chmodSync: native.chmod,
     readdirSync: native.readdir, unlinkSync: native.unlink, renameSync: native.rename,
@@ -32,6 +33,11 @@ vi.mock("os", async original => ({
     ...await original<typeof import("node:os")>(),
     homedir: () => `${native.root}${process.platform === "win32" ? "\\" : "/"}home`,
 }));
+
+const actualFs = await vi.importActual<typeof import("node:fs")>("fs");
+const actualOs = await vi.importActual<typeof import("node:os")>("os");
+native.root = actualFs.mkdtempSync(path.join(actualOs.tmpdir(), "ccc-exec-readiness-"));
+const lockDescriptors = new Set<number>();
 
 function fixturePaths(host: typeof path, root: string) {
     const contains = (parent: string, selected: string) => {
@@ -50,12 +56,21 @@ function fixturePaths(host: typeof path, root: string) {
     };
 }
 const fixtureHost = fixturePaths(path, native.root);
+const runtimeSocket = path.join(native.root, "engine.sock");
+const lockHome = path.join(fixtureHost.home, ".ccc");
+const lockDirectories = new Set([lockHome, path.join(lockHome, "locks"), path.join(lockHome, "run", "locks")]);
+function ownedLockFile(selected: string): boolean {
+    if (!lockDirectories.has(path.dirname(selected))) return false;
+    const name = path.basename(selected);
+    const lock = /^(?:codex-state\.lock|identity-[a-f0-9]{64}\.lock|[a-z0-9-]+\.(?:container-lifecycle|project-family-lifecycle)\.guard)(?:\.[a-f0-9]{16}\.release)?$/;
+    return lock.test(name) && (path.dirname(selected) !== lockHome || /^codex-state\.lock(?:\.|$)/.test(name));
+}
 const ownedSource = fileURLToPath(new URL("../../", import.meta.url));
 const unavailablePowerShell = path.win32.join("\\\\?\\GLOBALROOT\\SystemRoot\\System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 function fakePath(selected: string): string {
     if (selected === unavailablePowerShell) throw Object.assign(new Error("unavailable fixture process identity"), { code: "ENOENT" });
     expect(fixtureHost.contains(native.root, selected) || fixtureHost.contains(ownedSource, selected)
-        || /^\/proc\/(?:\d+\/(?:stat|cmdline)|sys\/kernel\/random\/boot_id)$/.test(selected)).toBe(true);
+        || /^\/proc\/(?:\d+\/(?:stat|cmdline)|sys\/kernel\/random\/boot_id)$/.test(selected), `Unexpected fixture filesystem path: ${selected}`).toBe(true);
     return selected;
 }
 
@@ -69,6 +84,8 @@ const identityImageId = `sha256:${"c".repeat(64)}`;
 const project = fixtureHost.project;
 type Path = "running" | "restart" | "deferred";
 const NativeSharedArrayBuffer = globalThis.SharedArrayBuffer;
+const nativeCall = (call: unknown[]) => normalizeNativeRuntimeCall(call) as [string, string[], { encoding?: string | null; timeout?: number }];
+const nativeCalls = () => native.spawn.mock.calls.map(nativeCall);
 
 function result(status = 0, stdout = ""): SpawnSyncReturns<string> {
     return { status, stdout, stderr: "", pid: 1, output: [], signal: null };
@@ -92,12 +109,12 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
         trace.push(entry);
         if (state.failureStep === step) throw state.failure;
     };
-    runtime._setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-native", remote: false, dockerDesktop: false });
+    preloadNativeRuntimeFixture(runtime, { runtime: "docker", flavor: "docker-native", remote: false, dockerDesktop: false, socketPath: runtimeSocket });
     const identity = containerIdentity.resolveContainerIdentity();
     const identityLabels = { ...containerIdentity.getIdentityLabels(identity), "ccc.identity.base": baseImageId };
     native.exists.mockImplementation((selected: string) => { if (selected !== "/dev/kvm") fakePath(selected); return false; });
     native.realpath.mockImplementation(fakePath);
-    const stat = (selected: string) => { fakePath(selected); return ({
+    const stat = (selected: string) => { fakePath(selected); if (ownedLockFile(selected)) return actualFs.lstatSync(selected); return ({
         isSymbolicLink: () => false,
         isDirectory: () => !selected.endsWith(".json") && !selected.includes(".guard"),
         isFile: () => selected.endsWith(".json") || selected.includes(".guard"),
@@ -105,15 +122,43 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
     }); };
     native.lstat.mockImplementation(stat);
     native.stat.mockImplementation(stat);
-    native.fstat.mockImplementation(() => stat(path.join(native.root, "owner.json")));
+    native.fstat.mockImplementation((descriptor: number) => lockDescriptors.has(descriptor) ? actualFs.fstatSync(descriptor) : stat(path.join(native.root, "owner.json")));
     native.read.mockImplementation((selected: string, encoding) => { fakePath(selected); return encoding ? "fixture" : Buffer.from("fixture"); });
-    native.readdir.mockReturnValue([]);
-    native.readSync.mockReturnValue(0);
+    native.readdir.mockImplementation((selected: string) => {
+        fakePath(selected);
+        return lockDirectories.has(selected) ? actualFs.readdirSync(selected).filter(entry => ownedLockFile(path.join(selected, entry))) : [];
+    });
+    native.readSync.mockImplementation((descriptor: number, buffer: Buffer, offset: number, length: number, position: number | null) =>
+        lockDescriptors.has(descriptor) ? actualFs.readSync(descriptor, buffer, offset, length, position) : 0);
     const markers = new Map<string, string>();
     native.write.mockImplementation((selected: string | number, content: string) => {
+        if (typeof selected === "number" && lockDescriptors.has(selected)) return actualFs.writeFileSync(selected, content);
         if (typeof selected === "string") markers.set(fixtureHost.hostMarker(fakePath(selected)), content);
     });
-    native.open.mockReturnValue(1);
+    // Only genuine lock files use owned native storage. Their records and tokens
+    // are written and reread by the unchanged package lock implementation.
+    native.open.mockImplementation((selected: string, flags: string | number, mode?: number) => {
+        fakePath(selected);
+        if (!ownedLockFile(selected)) return 1;
+        actualFs.mkdirSync(path.dirname(selected), { recursive: true, mode: 0o700 });
+        const descriptor = actualFs.openSync(selected, flags, mode);
+        lockDescriptors.add(descriptor);
+        return descriptor;
+    });
+    native.close.mockImplementation((descriptor: number) => {
+        if (lockDescriptors.delete(descriptor)) actualFs.closeSync(descriptor);
+    });
+    native.rename.mockImplementation((source: string, destination: string) => {
+        fakePath(source); fakePath(destination);
+        if (ownedLockFile(source) || ownedLockFile(destination)) {
+            expect(ownedLockFile(source) && ownedLockFile(destination)).toBe(true);
+            actualFs.renameSync(source, destination);
+        }
+    });
+    native.rm.mockImplementation((selected: string) => {
+        fakePath(selected);
+        if (ownedLockFile(selected)) actualFs.rmSync(selected, { force: true });
+    });
     vi.spyOn(Date, "now").mockImplementation(function (this: unknown) {
         if (state.active) visit(`clock:${++state.clocks}`, `now:${state.now}`);
         return state.now;
@@ -132,7 +177,23 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
             return Reflect.construct(constructor, args);
         },
     }));
-    native.spawn.mockImplementation((_cli, args: string[], options?: { encoding?: string | null; timeout?: number }) => {
+    native.spawn.mockImplementation((...rawCall) => {
+        const [, args, options] = nativeCall(rawCall);
+        if (args[0] === "info" && args.includes("{{.ID}}")) {
+            expect(rawCall[0]).toBe("/fixture/runtime/docker");
+            expect(args).toEqual(["info", "--format", "{{.ID}}"]);
+            expect(options).toEqual({ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000, killSignal: "SIGKILL", windowsHide: true });
+            return result(0, "fixture-daemon-id\n");
+        }
+        if (args[0] === "exec" && args.includes("/usr/bin/docker")) {
+            expect(rawCall[0]).toBe("/fixture/runtime/docker");
+            expect(args).toEqual(["exec", "--user", "root", id, "/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "info", "--format", "{{.ID}}"]);
+            expect(options).toEqual({ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000, killSignal: "SIGKILL", windowsHide: true });
+            return result(0, "fixture-daemon-id\n");
+        }
+        if (args[0] === "--version") return result(0, "Docker version 28.0.0");
+        if (args[0] === "info" && args[2] === "{{.OperatingSystem}}") return result(0, "Linux");
+        if (args[0] === "info" && args[2] === "{{json .SecurityOptions}}") return result(0, "[]");
         if (args[0] === "images") return result(0, "image-id");
         if (args[0] === "image" && args[1] === "inspect") {
             expect(args[2]).toMatch(/^ccc-identity:[a-f0-9]{64}$/);
@@ -209,7 +270,7 @@ function fixture(lifecyclePath: Path, outcomes = [false, false, true], guarded =
 }
 
 function assertPreserved() {
-    expect(native.spawn.mock.calls.filter(call => ["stop", "rm"].includes(call[1][0])
+    expect(nativeCalls().filter(call => ["stop", "rm"].includes(call[1][0])
         || (call[1][0] === "run" && call[1][1] !== "--rm"))).toEqual([]);
 }
 const successTrace = ["allocate:4", "now:0", "now:0", `probe:${id}:5000`, "now:10", "sleep:75", "now:85", `probe:${id}:5000`, "now:95", "sleep:75", "now:170", `probe:${id}:5000`];
@@ -229,12 +290,22 @@ function assertStartupLockFinalized() {
 
 beforeEach(() => {
     vi.resetAllMocks();
-    vi.stubEnv("DEBUG", ""); vi.stubEnv("SSH_AUTH_SOCK", "");
+    vi.stubEnv("DEBUG", ""); vi.stubEnv("SSH_AUTH_SOCK", ""); vi.stubEnv("WSL_DISTRO_NAME", "");
+    vi.stubEnv("container", ""); vi.stubEnv("CCC_RUNTIME_SOCKET", runtimeSocket);
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
 });
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); runtime._resetRuntimeCacheForTest(); });
+afterEach(() => {
+    try { nativeCalls(); }
+    finally {
+        for (const descriptor of lockDescriptors) actualFs.closeSync(descriptor);
+        lockDescriptors.clear();
+        actualFs.rmSync(fixtureHost.home, { recursive: true, force: true });
+        vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); runtime._resetRuntimeCacheForTest();
+    }
+});
+afterAll(() => actualFs.rmSync(native.root, { recursive: true, force: true }));
 
 describe("public startProjectContainer through real exec readiness", () => {
     it.each([
@@ -256,14 +327,14 @@ describe("public startProjectContainer through real exec readiness", () => {
         expect(f.start()).toBe(docker.getContainerName(project));
         expect(f.ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: path === "restart" });
         expect(f.trace).toEqual(path === "deferred" ? successTrace : [...successTrace, ...liveProofTrace]);
-        const probes = native.spawn.mock.calls.filter(call => call[1].length === 3 && call[1][0] === "exec" && call[1][2] === "true");
-        expect(probes.map(call => call.slice(0, 3))).toEqual(Array.from({ length: 3 }, () => ["docker", ["exec", id, "true"], { stdio: ["ignore", "ignore", "ignore"], timeout: 5000 }]));
+        const probes = nativeCalls().filter(call => call[1].length === 3 && call[1][0] === "exec" && call[1][2] === "true");
+        expect(probes.map(call => call.slice(0, 3))).toEqual(Array.from({ length: 3 }, () => ["docker", ["exec", id, "true"], { stdio: ["ignore", "ignore", "ignore"], timeout: 5000, killSignal: "SIGKILL" }]));
         expect(f.waits).toHaveLength(2);
         expect(f.waits[0][0]).toBeInstanceOf(Int32Array);
         expect((f.waits[0][0] as Int32Array).byteLength).toBe(4);
         expect(f.waits[1][0]).toBe(f.waits[0][0]);
         expect(f.waits.map(wait => wait.slice(1))).toEqual([[0, 0, 75], [0, 0, 75]]);
-        expect(native.spawn.mock.calls.filter(call => call[1][0] === "start").map(call => call[1])).toEqual(path === "restart" ? [["start", id]] : []);
+        expect(nativeCalls().filter(call => call[1][0] === "start").map(call => call[1])).toEqual(path === "restart" ? [["start", id]] : []);
         expect(f.guard).toHaveBeenCalledTimes(path === "deferred" ? 1 : 0);
         assertPreserved();
     });

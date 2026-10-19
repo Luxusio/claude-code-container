@@ -1,11 +1,18 @@
+import { normalizeNativeRuntimeCall } from "./helpers/native-runtime-fixture.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-const fixture = vi.hoisted(() => ({ home: "", spawn: vi.fn() }));
+const fixture = vi.hoisted(() => ({ home: "", spawn: vi.fn(), capture: vi.fn() }));
 vi.mock("os", async original => ({ ...await original<typeof import("os")>(), homedir: () => fixture.home }));
-vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: fixture.spawn }));
+vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: (...args: unknown[]) => fixture.spawn(...normalizeNativeRuntimeCall(args)) }));
+vi.mock("../adapters/container-runtime-invocation.js", async original => {
+    const actual = await original<typeof import("../adapters/container-runtime-invocation.js")>();
+    const {nativeRuntimeInvocationFixture} = await import("./helpers/native-runtime-fixture.js");
+    fixture.capture.mockImplementation((runtime: "docker" | "podman") => actual.validateNativeRuntimeInvocation(nativeRuntimeInvocationFixture(runtime)));
+    return {...actual, captureNativeRuntimeInvocation: fixture.capture};
+});
 vi.mock("../utils.js", async original => ({
     ...await original<typeof import("../utils.js")>(),
     get DATA_DIR() { return join(fixture.home, ".ccc"); },
@@ -20,6 +27,7 @@ beforeEach(() => {
     mkdirSync(join(fixture.home, ".ccc", "codex"), { recursive: true, mode: 0o700 });
     writeFileSync(join(fixture.home, ".ccc", "codex", "sentinel"), "retained-state");
     _resetRuntimeCacheForTest();
+    fixture.capture.mockClear();
     vi.stubEnv("CCC_RUNTIME", "docker");
     vi.stubEnv("container", "");
     // Stop dispatch after the migration boundary without starting any tool.
@@ -45,6 +53,7 @@ it("uses an explicit runtime's stopped-container inventory before moving legacy 
     process.argv = [process.execPath, "ccc", "--runtime", "podman", "codex"];
     await expect(main()).rejects.toThrow("end dispatch fixture");
     expect(readFileSync(join(fixture.home, ".ccc", "codex", "sentinel"), "utf8")).toBe("retained-state");
+    expect(fixture.capture).toHaveBeenCalledExactlyOnceWith("podman");
     expect(existsSync(join(fixture.home, ".ccc", "profiles", "default", "codex"))).toBe(false);
     expect(fixture.spawn.mock.calls.filter(([, args]) => args[0] === "ps" || args[0] === "inspect")).toEqual([
         ["podman", ["ps", "-aq", "--no-trunc"], expect.any(Object)],
@@ -57,7 +66,9 @@ it("allows migration when the selected default runtime has no retained container
     await expect(main()).rejects.toThrow("end dispatch fixture");
     expect(existsSync(join(fixture.home, ".ccc", "codex"))).toBe(false);
     expect(readFileSync(join(fixture.home, ".ccc", "profiles", "default", "codex", "sentinel"), "utf8")).toBe("retained-state");
-    expect(fixture.spawn.mock.calls.map(([runtime]) => runtime)).toEqual(["docker"]);
+    expect(fixture.spawn.mock.calls.filter(([, args]) => args[0] === "ps" || args[0] === "inspect").map(([runtime]) => runtime)).toEqual(["docker"]);
+    expect(fixture.spawn.mock.calls.every(([runtime]) => runtime === "docker")).toBe(true);
+    expect(fixture.capture).toHaveBeenCalledExactlyOnceWith("docker");
 });
 
 it.each([{ flags: ["--runtime"] }, { flags: ["--runtime", "invalid"] }])("rejects invalid runtime arguments before layout mutation: %j", async ({ flags }) => {

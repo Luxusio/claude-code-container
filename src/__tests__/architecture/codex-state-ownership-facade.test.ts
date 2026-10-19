@@ -1,34 +1,42 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dirname } from "path";
+import * as runtimeFacade from "../../container-runtime.js";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), stat: vi.fn(), realpath: vi.fn(), root: vi.fn(), runtime: vi.fn(), cli: vi.fn(), normalize: vi.fn() }));
 vi.mock("child_process", () => ({ spawnSync: mocks.spawn }));
 vi.mock("fs", () => ({ lstatSync: mocks.stat, realpathSync: mocks.realpath }));
 vi.mock("../../utils.js", () => ({ getCodexDir: mocks.root }));
-vi.mock("../../container-runtime.js", () => ({ runtimeCli: mocks.cli, getRuntimeInfo: mocks.runtime }));
+vi.mock("../../container-runtime.js", async original => ({
+    ...await original<typeof import("../../container-runtime.js")>(), runtimeCli: mocks.cli, getRuntimeInfo: mocks.runtime,
+}));
 vi.mock("../../container-identity.js", () => ({ normalizeImageId: mocks.normalize }));
 const native = await import("../../codex-state-ownership.js");
 const root = "/private/ccc/codex";
 const principal = { uid: 1000, gid: 1000, mapping: "host" as const, contractVersion: "1" };
 const previous = { Image: "old", Mounts: [{ Type: "bind", Source: root, Destination: "/home/ccc/.codex" }] };
 const trace: unknown[][] = [];
+const spawnCall = (call: unknown[]) => normalizeNativeRuntimeCall(call, "private-runtime") as [string, string[], unknown];
+const spawnCalls = () => mocks.spawn.mock.calls.map(spawnCall);
 beforeEach(() => {
     vi.stubEnv("container", ""); vi.stubGlobal("process", { ...process, platform: "linux", geteuid: () => 1000, getegid: () => 1000 });
+    preloadNativeRuntimeFixture(runtimeFacade);
     mocks.root.mockReset().mockImplementation(profile => { trace.push(["root", profile]); return root; });
     mocks.runtime.mockReset().mockReturnValue({ rootless: false, flavor: "docker-native" });
     mocks.cli.mockReset().mockReturnValue("private-runtime");
     mocks.normalize.mockReset().mockImplementation(value => { trace.push(["normalize", value]); return value + "-normalized"; });
     mocks.stat.mockReset().mockImplementation((path, options) => { trace.push(["stat", path, options]); return { mode: 0o40755n, uid: 1000n, gid: 1000n, dev: 8n, ino: 9n, isDirectory: () => true, isSymbolicLink: () => false }; });
     mocks.realpath.mockReset().mockImplementation(value => value);
-    mocks.spawn.mockReset().mockImplementation((cli, args, options) => { trace.push(["spawn", cli, args, options]); return { status: 0, stdout: args[0] === "run" && !args.includes("--mount") ? " 1001:1002 \n" : "", stderr: "" }; });
+    mocks.spawn.mockReset().mockImplementation((...rawCall) => { const [cli, args, options] = spawnCall(rawCall); trace.push(["spawn", cli, args, options]); return { status: 0, stdout: args[0] === "run" && !args.includes("--mount") ? " 1001:1002 \n" : "", stderr: "" }; });
     trace.length = 0;
 });
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+afterEach(() => { spawnCalls(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 const invoke = () => native.prepareCodexStateOwnership(previous, "new", principal, "chosen");
-const noHelper = () => expect(mocks.spawn.mock.calls.filter(call => call[1].includes("--mount"))).toHaveLength(0);
+const noHelper = () => expect(spawnCalls().filter(call => call[1].includes("--mount"))).toHaveLength(0);
 const invokePrevious = (value: unknown) => native.prepareCodexStateOwnership(value as Parameters<typeof native.prepareCodexStateOwnership>[0], "new", principal, "chosen");
-const withActiveInspection = (payload: string, ids = "active") => mocks.spawn.mockImplementation((_cli, args) => ({
-    status: 0, stdout: args[0] === "run" && !args.includes("--mount") ? "1001:1002" : args[0] === "ps" ? ids : args[0] === "inspect" ? payload : "", stderr: "",
-}));
+const withActiveInspection = (payload: string, ids = "active") => mocks.spawn.mockImplementation((...rawCall) => {
+    const [, args] = spawnCall(rawCall);
+    return { status: 0, stdout: args[0] === "run" && !args.includes("--mount") ? "1001:1002" : args[0] === "ps" ? ids : args[0] === "inspect" ? payload : "", stderr: "" };
+});
 
 describe("actual Codex retained-state native composition", () => {
     it("retains public synchronous names, arities, scripts and exact bounded argv", () => {
@@ -38,7 +46,7 @@ describe("actual Codex retained-state native composition", () => {
         expect(native.assertCodexStateAccessible.length).toBe(2);
         expect(invoke()).toBeUndefined();
         const options = { encoding: "utf-8", input: undefined, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 };
-        expect(mocks.spawn.mock.calls).toEqual([
+        expect(spawnCalls()).toEqual([
             ["private-runtime", ["run", "--rm", "--network", "none", "--user", "root", "--entrypoint", "/bin/sh", "old-normalized", "-c", 'set -eu; printf "%s:%s" "$(id -u ccc)" "$(id -g ccc)"'], options],
             ["private-runtime", ["ps", "-q"], options],
             ["private-runtime", ["run", "--rm", "--network", "none", "--user", "root", "--mount", `type=bind,src=${root},dst=/state`, "--entrypoint", "python3", "new-normalized", "-c", native.codexStateMigrationScript, "/state", "1001", "1002", "1000", "1000", "8", "9"], options],
@@ -56,19 +64,19 @@ describe("actual Codex retained-state native composition", () => {
         try { invoke(); throw new Error("missing exception"); } catch (error) { expect(error).toBe(opaque); }
     });
     it("does not dispatch current-image helper after active overlap or replacement", () => {
-        mocks.spawn.mockImplementation((_cli, args) => ({ status: 0, stdout: args[0] === "run" ? "1001:1002" : args[0] === "ps" ? "active" : JSON.stringify([{ Id: "active", Mounts: previous.Mounts }]), stderr: "" }));
+        mocks.spawn.mockImplementation((...rawCall) => { const [, args] = spawnCall(rawCall); return { status: 0, stdout: args[0] === "run" ? "1001:1002" : args[0] === "ps" ? "active" : JSON.stringify([{ Id: "active", Mounts: previous.Mounts }]), stderr: "" }; });
         expect(invoke).toThrow("Codex state is in use by container active.");
         expect(mocks.normalize.mock.calls).toEqual([["old"]]); noHelper();
     });
     it("does not retry a final native failure or swallow its stdout trim error", () => {
-        mocks.spawn.mockImplementation((_cli, args) => ({ status: args.includes("--mount") ? 1 : 0, stdout: args[0] === "run" ? "1001:1002" : "", stderr: args.includes("--mount") ? "partial ownership write" : "" }));
+        mocks.spawn.mockImplementation((...rawCall) => { const [, args] = spawnCall(rawCall); return { status: args.includes("--mount") ? 1 : 0, stdout: args[0] === "run" ? "1001:1002" : "", stderr: args.includes("--mount") ? "partial ownership write" : "" }; });
         expect(invoke).toThrow("Codex state ownership check failed: partial ownership write");
         expect(mocks.spawn).toHaveBeenCalledTimes(3);
     });
     it("keeps retained access support native and reports the same recovery advice", () => {
         mocks.spawn.mockReturnValue({ status: 1, stderr: "denied" });
         expect(() => native.assertCodexStateAccessible("pinned", "chosen")).toThrow(`Codex state ownership check failed: denied\nCCC-managed Codex state (${root}) is inaccessible.`);
-        expect(mocks.spawn.mock.calls[0][1]).toEqual(["exec", "pinned", "python3", "-c", native.codexStateAccessScript]);
+        expect(spawnCalls()[0][1]).toEqual(["exec", "pinned", "python3", "-c", native.codexStateAccessScript]);
     });
     it.each(["desktop", "podman-keep-id"] as const)("never reads prior getters for irrelevant %s mapping", mapping => {
         const prior = { get Mounts(): never { throw new Error("mounts observed too early"); }, get Image(): never { throw new Error("image observed too early"); } };
@@ -173,7 +181,7 @@ describe("actual Codex retained-state native composition", () => {
         expect(native.prepareCodexStateOwnership(prior, "new", principal, "chosen", proof)).toBeUndefined();
         expect(reads).toBe(1);
         expect(proof).toHaveBeenCalledExactlyOnceWith("runtime-alias");
-        expect(mocks.spawn.mock.calls.at(-1)?.[1]).toContain(`type=bind,src=${root},dst=/state`);
+        expect(spawnCalls().at(-1)?.[1]).toContain(`type=bind,src=${root},dst=/state`);
     });
     it.each(["Mounts", "Image", "proof"])("propagates the original previous %s getter or callback fault", field => {
         const fault = { field }; const prior = {
@@ -195,14 +203,14 @@ describe("actual Codex retained-state native composition", () => {
     it.each(["null", "{}", "[]", "not JSON", '[{"Id":"active"}]', '[{"Mounts":null}]', '[null]', '[17]'])("refuses malformed native active inspection %s before the ownership helper", payload => {
         withActiveInspection(payload);
         expect(invoke).toThrow();
-        expect(mocks.spawn.mock.calls.map(call => call[1][0])).toEqual(["run", "ps", "inspect"]);
+        expect(spawnCalls().map(call => call[1][0])).toEqual(["run", "ps", "inspect"]);
         expect(mocks.normalize.mock.calls).toEqual([["old"]]);
         noHelper();
     });
     it("splits actual ps output into one bounded inspection and refuses a count mismatch", () => {
         withActiveInspection('[{"Id":"a","Mounts":[]}]', " a \n b ");
         expect(invoke).toThrow("Cannot inspect active Codex state users.");
-        expect(mocks.spawn.mock.calls[2]).toEqual(["private-runtime", ["inspect", "a", "b"], { encoding: "utf-8", input: undefined, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 }]);
+        expect(spawnCalls()[2]).toEqual(["private-runtime", ["inspect", "a", "b"], { encoding: "utf-8", input: undefined, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 }]);
         noHelper();
     });
     it.each([undefined, "", "relative"])("rejects an unqualified native active bind Source %s before realpath", Source => {
@@ -214,7 +222,7 @@ describe("actual Codex retained-state native composition", () => {
     it("keeps non-bind mounts with omitted destinations harmless and missing container identity diagnostic", () => {
         withActiveInspection(JSON.stringify([{ Mounts: [{ Type: "volume" }] }]));
         expect(invoke()).toBeUndefined();
-        expect(mocks.spawn.mock.calls.at(-1)?.[1]).toContain("--mount");
+        expect(spawnCalls().at(-1)?.[1]).toContain("--mount");
         mocks.spawn.mockClear();
         withActiveInspection(JSON.stringify([{ Mounts: [{ Type: "bind", Source: root }] }]));
         expect(invoke).toThrow("Codex state is in use by container unknown.");
@@ -222,7 +230,7 @@ describe("actual Codex retained-state native composition", () => {
     });
     it("propagates raw native observation failures without dispatching the final helper", () => {
         const fault = { spawn: true };
-        mocks.spawn.mockImplementation((_cli, args) => { if (args[0] === "ps") throw fault; return { status: 0, stdout: "1001:1002", stderr: "" }; });
+        mocks.spawn.mockImplementation((...rawCall) => { const [, args] = spawnCall(rawCall); if (args[0] === "ps") throw fault; return { status: 0, stdout: "1001:1002", stderr: "" }; });
         try { invoke(); throw new Error("missing exception"); } catch (actual) { expect(actual).toBe(fault); }
         expect(mocks.spawn).toHaveBeenCalledTimes(2);
         noHelper();
@@ -244,7 +252,7 @@ describe("actual Codex retained-state native composition", () => {
     });
     it("rechecks the caller's original principal before the native helper", () => {
         const changing = { ...principal };
-        mocks.spawn.mockImplementation((_cli, args) => { if (args[0] === "ps") changing.uid = 77; return { status: 0, stdout: args[0] === "run" ? "1001:1002" : "", stderr: "" }; });
+        mocks.spawn.mockImplementation((...rawCall) => { const [, args] = spawnCall(rawCall); if (args[0] === "ps") changing.uid = 77; return { status: 0, stdout: args[0] === "run" ? "1001:1002" : "", stderr: "" }; });
         expect(() => native.prepareCodexStateOwnership(previous, "new", changing)).toThrow("Host principal changed before Codex state migration.");
         expect(mocks.stat).toHaveBeenCalledTimes(8);
         expect(mocks.normalize.mock.calls).toEqual([["old"]]);
@@ -253,7 +261,7 @@ describe("actual Codex retained-state native composition", () => {
     it("retains BigInt device and inode strings in native helper argv without numeric rounding", () => {
         mocks.stat.mockReturnValue({ mode: 0o40755n, uid: 1000n, gid: 1000n, dev: 9007199254740993n, ino: 12345678901234567890n, isDirectory: () => true, isSymbolicLink: () => false });
         expect(invoke()).toBeUndefined();
-        expect(mocks.spawn.mock.calls.at(-1)?.[1].slice(-2)).toEqual(["9007199254740993", "12345678901234567890"]);
+        expect(spawnCalls().at(-1)?.[1].slice(-2)).toEqual(["9007199254740993", "12345678901234567890"]);
     });
 
 });

@@ -1,4 +1,6 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import * as runtime from "../container-runtime.js";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "./helpers/native-runtime-fixture.js";
 import { ContainerEngineUnavailableError } from "../domain/container-runtime.js";
 import { containerEngineFailureHint } from "../container-runtime.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -10,31 +12,40 @@ vi.mock("child_process", async () => ({ ...await vi.importActual("child_process"
 vi.mock("../container-runtime.js", async () => ({ ...await vi.importActual("../container-runtime.js"), runtimeCli: () => "docker" }));
 import { getManagedProjectContainerIdentity, getContainerIdentity } from "../docker.js";
 const failure = "request returned 500 Internal Server Error for API route and version http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.56/exec/18c123/json, check if the server supports the requested api version";
-beforeEach(() => native.spawnSync.mockReset());
+beforeEach(() => {
+    native.spawnSync.mockReset();
+    runtime._resetRuntimeCacheForTest();
+    preloadNativeRuntimeFixture(runtime);
+});
+afterEach(() => { calls(); runtime._resetRuntimeCacheForTest(); });
+const calls = () => native.spawnSync.mock.calls.map(call => normalizeNativeRuntimeCall(call) as [string, string[], Record<string, unknown>]);
 
 it("stops JSON inspection retries after a known unavailable engine", () => {
     native.spawnSync.mockReturnValue({ status: 1, stderr: failure });
     expect(() => getManagedProjectContainerIdentity("ccc-fixture", "/project/fixture")).toThrow(ContainerEngineUnavailableError);
     expect(native.spawnSync).toHaveBeenCalledTimes(1);
-    expect(native.spawnSync.mock.calls[0][1]).toEqual(["inspect", "-f", "{{json .}}", "ccc-fixture"]);
-    expect(native.spawnSync.mock.calls[0][2].timeout).toBe(5000);
+    expect(calls()[0][1]).toEqual(["inspect", "-f", "{{json .}}", "ccc-fixture"]);
+    expect(calls()[0][2].timeout).toBe(5000);
 });
 
 it("keeps failed identity inspection unknown and bounded", () => {
     native.spawnSync.mockReturnValue({ status: 1, stderr: failure });
     expect(getContainerIdentity("ccc-fixture")).toBeNull();
     expect(native.spawnSync).toHaveBeenCalledTimes(1);
-    expect(native.spawnSync.mock.calls[0][2].timeout).toBe(5000);
+    expect(calls()[0][2].timeout).toBe(5000);
 });
 
 it("preserves engine diagnosis after successful inspection followed by a live mount-proof failure", () => {
     const project = mkdtempSync(join(tmpdir(), "ccc-engine-proof-"));
     try {
-        native.spawnSync.mockImplementation((_command, args = []) => args[0] === "inspect"
-            ? { status: 0, stdout: JSON.stringify({ Id: "fixture-id", State: { Running: true }, Config: { Labels: { "ccc.managed": "true", "ccc.project.path": project } }, Mounts: [{ Type: "bind", Source: project, Destination: `/project/${getProjectId(project)}`, RW: true }] }) }
-            : { status: 1, stderr: failure });
+        native.spawnSync.mockImplementation((...rawCall) => {
+            const [, args] = normalizeNativeRuntimeCall(rawCall) as [string, string[]];
+            return args[0] === "inspect"
+                ? { status: 0, stdout: JSON.stringify({ Id: "fixture-id", State: { Running: true }, Config: { Labels: { "ccc.managed": "true", "ccc.project.path": project } }, Mounts: [{ Type: "bind", Source: project, Destination: `/project/${getProjectId(project)}`, RW: true }] }) }
+                : { status: 1, stderr: failure };
+        });
         expect(() => getManagedProjectContainerIdentity("ccc-fixture", project)).toThrow(ContainerEngineUnavailableError);
-        expect(native.spawnSync.mock.calls.filter(call => call[0] === "docker").map(call => call[1][0])).toEqual(["inspect", "exec"]);
+        expect(calls().filter(call => call[0] === "docker").map(call => call[1][0])).toEqual(["inspect", "exec"]);
     } finally {
         rmSync(project, { recursive: true, force: true });
     }

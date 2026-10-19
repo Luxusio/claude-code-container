@@ -1,9 +1,11 @@
-import { spawnSync } from "child_process";
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "child_process";
 
 import { interactiveCommand, type CodexLaunchPreparation, type CodexLaunchSemanticPreparation } from "./domain/tool-session/codex-launch.js";
 import { createCodexLaunchPreparation } from "./application/tool-session/codex-launch.js";
-import { containerEngineFailureHint } from "./container-runtime.js";
+import { containerEngineFailureHint, bindNativeRuntimeInvocation, captureNativeRuntimeInvocation, currentNativeRuntimeInvocation } from "./container-runtime.js";
 import type { CodexDaemonInitializationObservation, CodexInitializationFailure } from "./ports/tool-session/codex-launch.js";
+
+export type CodexLaunchRunner = (runtime: string, args: readonly string[], options: SpawnSyncOptionsWithStringEncoding) => SpawnSyncReturns<string>;
 
 export function isInteractiveCodexCommand(command: readonly string[]): boolean {
     return interactiveCommand(command) !== null;
@@ -69,7 +71,7 @@ export function prepareCodexLaunch(
     runtime: string,
     execPrefix: readonly string[],
     command: readonly string[],
-    runner: typeof spawnSync = spawnSync,
+    runner?: CodexLaunchRunner,
 ): CodexLaunchPreparation {
     return presentCodexLaunchPreparation(prepareCodexLaunchSemantic(runtime, execPrefix, command, runner));
 }
@@ -78,12 +80,19 @@ export function prepareCodexLaunchSemantic(
     runtime: string,
     execPrefix: readonly string[],
     command: readonly string[],
-    runner: typeof spawnSync = spawnSync,
+    runner?: CodexLaunchRunner,
 ): CodexLaunchSemanticPreparation {
+    let native = runner;
+    if (!native && interactiveCommand(command) && (runtime === "docker" || runtime === "podman")) {
+        const current = currentNativeRuntimeInvocation();
+        const bound = bindNativeRuntimeInvocation(current?.runtime === runtime ? current : captureNativeRuntimeInvocation(runtime));
+        native = (_cli, args, options) => bound.spawnSync(args, options);
+    }
+    const run: CodexLaunchRunner = native ?? spawnSync;
     const probeOptions = { encoding: "utf8" as const, timeout: 5000, maxBuffer: 64 * 1024, stdio: "pipe" as const };
     const preparation = createCodexLaunchPreparation({
         probeDaemonExecutable: () => {
-            const result = runner(runtime, [...execPrefix, "node", "-e", DAEMON_EXECUTABLE_PROBE], probeOptions);
+            const result = run(runtime, [...execPrefix, "node", "-e", DAEMON_EXECUTABLE_PROBE], probeOptions);
             const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
             if (engineFailure) return { kind: "engine-unavailable", cause: engineFailure };
             const missing = !result.error && !result.signal && result.status === 1
@@ -92,16 +101,16 @@ export function prepareCodexLaunchSemantic(
         },
         prepareStart: () => [...execPrefix, command[0], "app-server", "daemon", "start"],
         probeDaemonStartHelp: start => {
-            const result = runner(runtime, [...start, "--help"], probeOptions);
+            const result = run(runtime, [...start, "--help"], probeOptions);
             const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
             if (engineFailure) return { kind: "engine-unavailable", cause: engineFailure };
             const supported = !result.error && !result.signal && result.status === 0
                 && /Usage:\s+\S+\s+app-server\s+daemon\s+start\b/.test(String(result.stdout));
             return { kind: supported ? "supported" : "unsupported-or-inconclusive" };
         },
-        initializeDaemon: (start, configuration) => observeInitialization(runner(runtime, [...start, ...configuration], { ...probeOptions, timeout: 60000 })),
+        initializeDaemon: (start, configuration) => observeInitialization(run(runtime, [...start, ...configuration], { ...probeOptions, timeout: 60000 })),
         probeDaemonFallbackHelp: () => {
-            const result = runner(runtime, [...execPrefix, command[0], "--help"], probeOptions);
+            const result = run(runtime, [...execPrefix, command[0], "--help"], probeOptions);
             const supported = !result.error && !result.signal && result.status === 0
                 && /^\s+--no-daemon\s*$/m.test(String(result.stdout));
             return { kind: supported ? "supported" : "unsupported" };

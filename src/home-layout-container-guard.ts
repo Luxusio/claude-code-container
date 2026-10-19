@@ -1,7 +1,6 @@
-import { spawnSync } from "child_process";
 import { lstatSync, realpathSync } from "fs";
 import { dirname, isAbsolute, join, normalize, relative, sep } from "path";
-import { runtimeCli } from "./container-runtime.js";
+import { getRuntimeInvocation, bindNativeRuntimeInvocation } from "./container-runtime.js";
 import { cccHome, DEFAULT_PROFILE_MARKER } from "./home-layout.js";
 
 const LEGACY_ENTRIES = ["claude", "claude.json", "codex", "locks", "clipboard-files", "bin", "clipboard.port"];
@@ -49,13 +48,13 @@ export function hasLegacyHomeLayoutContainerMounts(): boolean {
         if (["claude", "claude.json", "codex"].some(entry => present(join(home, entry)))
             && present(defaultProfile) && !present(join(defaultProfile, DEFAULT_PROFILE_MARKER))) paths.push(defaultProfile);
         const canonicalPaths = paths.map(canonicalWithoutSymlinks);
-        const runtime = runtimeCli();
-        const listed = spawnSync(runtime, ["ps", "-aq", "--no-trunc"], { encoding: "utf-8", timeout: 10_000, maxBuffer: 4 * 1024 * 1024 });
+        const runner = bindNativeRuntimeInvocation(getRuntimeInvocation());
+        const listed = runner.spawnSync(["ps", "-aq", "--no-trunc"], { encoding: "utf-8", timeout: 10_000, maxBuffer: 4 * 1024 * 1024 });
         if (listed.error || listed.status !== 0 || typeof listed.stdout !== "string") return true;
         const ids = listed.stdout.trim() ? listed.stdout.trim().split(/\s+/) : [];
         if (ids.some(id => !/^[a-f0-9]{64}$/.test(id)) || new Set(ids).size !== ids.length) return true;
         if (!ids.length) return false;
-        const inspected = spawnSync(runtime, ["inspect", ...ids], { encoding: "utf-8", timeout: 10_000, maxBuffer: 16 * 1024 * 1024 });
+        const inspected = runner.spawnSync(["inspect", ...ids], { encoding: "utf-8", timeout: 10_000, maxBuffer: 16 * 1024 * 1024 });
         if (inspected.error || inspected.status !== 0 || typeof inspected.stdout !== "string") return true;
         const containers: unknown = JSON.parse(inspected.stdout);
         if (!Array.isArray(containers) || containers.length !== ids.length) return true;

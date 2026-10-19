@@ -6,7 +6,8 @@ import { armNativeSessionOwnership, assertNativeSessionOwnership, validateNative
 import { captureNativeSessionOwnership, nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership } from "./adapters/session-ownership.js";
 import { createSessionAcquisition } from "./application/session-acquisition.js";
 import type { SessionAcquisitionPorts, SessionAcquisitionRequest } from "./ports/session-acquisition.js";
-import { runtimeCli } from "./container-runtime.js";
+import { getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
+import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
 import type { SessionOwnershipHandle, SessionOwnershipReceipt } from "./ports/session-ownership.js";
 import {
     createNativeSessionCleanup,
@@ -65,6 +66,11 @@ const sessionCleanup = createNativeSessionCleanup(
         return operation();
     }),
     (prefix, ownPath) => sessionClaims.hasOtherReconciledSessionClaims(prefix, ownPath),
+    undefined,
+    () => {
+        if (!capturedRuntimeInvocation) throw new Error("No captured native runtime invocation for session cleanup.");
+        return capturedRuntimeInvocation;
+    },
 );
 
 let ownership: SessionOwnershipHandle | null = null;
@@ -76,6 +82,7 @@ type AcquisitionOutcome = { kind: "completed" } | { kind: "failed"; error: unkno
 let acquisitionSettled: Promise<AcquisitionOutcome> = Promise.resolve({ kind: "completed" });
 let ownershipAuthorization: (() => void) | null = null;
 let capturedOwnership: SessionOwnershipReceipt | null = null;
+let capturedRuntimeInvocation: NativeRuntimeInvocation | null = null;
 let pendingOwnershipUpdate: Promise<void> = Promise.resolve();
 let capturedContainerId: string | null = null;
 let sessionCleanupEnabled = true;
@@ -95,6 +102,7 @@ async function armOwnershipInContext(rollback?: (binding: unknown, receipt: Sess
     if (!current.lockFile || !current.projectPath || ownership || armingOwnership) {
         throw new Error("Cannot arm host session ownership without a unique current session.");
     }
+    if (!capturedRuntimeInvocation) throw new Error("Cannot arm host session ownership without a captured native runtime invocation.");
     armingOwnership = true;
     if (!ownershipAuthorization) {
         ownershipAuthorization = () => { throw new Error("Host session ownership was not established."); };
@@ -105,6 +113,7 @@ async function armOwnershipInContext(rollback?: (binding: unknown, receipt: Sess
             lockFile: current.lockFile, projectPath: current.projectPath,
             profile: current.profile, toolName: current.toolName ?? undefined,
         }, ownershipFailed, {
+            runtimeInvocation: capturedRuntimeInvocation,
             onCaptured: (receipt) => {
                 if (capturedOwnership) ownershipAuthorization!();
                 else {
@@ -133,6 +142,7 @@ export async function acquireHostSessionOwnership(
     if (ownership || armingOwnership || acquiringOwnership || sessionCleanup.getCurrentSession().lockFile) {
         throw new Error("Host session ownership is already being acquired.");
     }
+    const runtimeInvocation = getRuntimeInvocation();
     acquiringOwnership = true;
     acquisitionFailure = null;
     acquisitionCancellation = null;
@@ -147,11 +157,12 @@ export async function acquireHostSessionOwnership(
         if (nativeSessionOwnershipMatches(receipt)) removeCapturedNativeSessionOwnership(receipt);
     };
     try {
-        const acquired = await createSessionAcquisition({
+        const acquired = await runWithNativeRuntimeInvocation(runtimeInvocation, () => createSessionAcquisition({
             withLifecycleLock: withContainerLifecycleLockAsync,
             reserve: sessionClaims.reserveSessionLockInHeldLifecycleLock,
             initializeCapture(binding, lockFile) {
                 sessionCleanup.clearSession();
+                capturedRuntimeInvocation = runtimeInvocation;
                 sessionCleanup.setSession(lockFile, binding.projectPath, binding.profile, binding.toolName);
                 capturedContainerId = null;
                 sessionCleanupEnabled = false;
@@ -171,7 +182,8 @@ export async function acquireHostSessionOwnership(
                 if (acquisitionFailure) throw acquisitionFailure;
             },
             async acknowledge(id, runtime) {
-                await ownership!.updateContainer(id, runtime, false);
+                if (runtime !== runtimeInvocation.runtime) throw new Error("Existing session container runtime does not match its captured invocation.");
+                await ownership!.updateContainer(id, false);
                 capturedContainerId = id;
                 sessionCleanup.setSessionContainerId(id);
             },
@@ -191,6 +203,7 @@ export async function acquireHostSessionOwnership(
                 sessionCleanup.clearSession();
                 ownershipAuthorization = null;
                 capturedOwnership = null;
+                capturedRuntimeInvocation = null;
                 pendingOwnershipUpdate = Promise.resolve();
                 capturedContainerId = null;
                 sessionCleanupEnabled = true;
@@ -198,7 +211,7 @@ export async function acquireHostSessionOwnership(
                 if (previous) await previous.release();
                 acquisitionRolledBack = true;
             },
-        }).run(request, checkCancelled);
+        }).run(request, checkCancelled));
         if (acquisitionFailure) throw acquisitionFailure;
         return acquired;
     } catch (error) {
@@ -225,7 +238,9 @@ export function setSession(lockFile: string, projectPath: string, profile?: stri
     if (ownership || armingOwnership || acquiringOwnership || ownershipAuthorization) {
         throw new Error("Cannot replace an owned host session before cleanup.");
     }
+    const runtimeInvocation = getRuntimeInvocation();
     sessionCleanup.setSession(lockFile, projectPath, profile, toolName);
+    capturedRuntimeInvocation = runtimeInvocation;
     capturedContainerId = null;
     sessionCleanupEnabled = true;
     cleanupAuthorizationVersion++;
@@ -248,10 +263,8 @@ function queueOwnershipUpdate(version: number): void {
     const activeOwnership = ownership;
     const containerId = capturedContainerId;
     const enabled = sessionCleanupEnabled;
-    const runtime = runtimeCli();
-    if (runtime !== "docker" && runtime !== "podman") throw new Error("Invalid session container runtime.");
     pendingOwnershipUpdate = pendingOwnershipUpdate.then(async () => {
-        await activeOwnership.updateContainer(containerId, runtime, enabled);
+        await activeOwnership.updateContainer(containerId, enabled);
         // A stale successful ACK must not reauthorize a subsequently revoked session.
         if (ownership === activeOwnership && cleanupAuthorizationVersion === version) {
             sessionCleanup.setSessionCleanupEnabled(enabled);
@@ -287,6 +300,7 @@ export function clearSession(): void {
     cleanupAuthorizationVersion++;
     ownershipAuthorization = null;
     capturedOwnership = null;
+    capturedRuntimeInvocation = null;
     disposeSessionCleanupSignals?.();
 }
 
@@ -382,7 +396,11 @@ export function recreateContainerWithoutInterruptingSessions(
 
 export function cleanupSession(): void {
     if (acquiringOwnership) throw new Error("Cannot clean up host session ownership during acquisition.");
-    sessionCleanup.cleanupSession();
+    if (capturedRuntimeInvocation) {
+        runWithNativeRuntimeInvocation(capturedRuntimeInvocation, () => sessionCleanup.cleanupSession());
+    } else {
+        sessionCleanup.cleanupSession();
+    }
     if (!sessionCleanup.getCurrentSession().lockFile) {
         const previous = ownership;
         ownership = null;
@@ -392,6 +410,7 @@ export function cleanupSession(): void {
         cleanupAuthorizationVersion++;
         ownershipAuthorization = null;
         capturedOwnership = null;
+        capturedRuntimeInvocation = null;
         disposeSessionCleanupSignals?.();
         if (previous) void previous.release().catch(() => undefined);
     }
@@ -400,7 +419,8 @@ export function cleanupSession(): void {
 // Setup signal handlers for cleanup
 export function setupSignalHandlers(): void {
     disposeSessionCleanupSignals?.();
-    disposeSessionCleanupSignals = setupNativeSessionCleanupSignals(() => {
+    const runtimeInvocation = capturedRuntimeInvocation;
+    const cleanup = () => {
         if (!acquiringOwnership) return cleanupSession();
         acquisitionCancellation ??= new Error("Host session ownership acquisition cancelled by signal.");
         return acquisitionSettled.then((outcome) => {
@@ -414,5 +434,8 @@ export function setupSignalHandlers(): void {
             }
             if (failed && outcome.kind === "failed") throw outcome.error;
         });
-    });
+    };
+    disposeSessionCleanupSignals = setupNativeSessionCleanupSignals(() => runtimeInvocation
+        ? runWithNativeRuntimeInvocation(runtimeInvocation, cleanup)
+        : cleanup());
 }

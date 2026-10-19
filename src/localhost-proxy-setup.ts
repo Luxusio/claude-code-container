@@ -13,10 +13,9 @@
 //      If it isn't, surface a single actionable warning pointing at the
 //      docker logs.
 
-import { spawnSync } from "child_process";
 import { createLocalhostProxyVerifier } from "./application/localhost-proxy-setup.js";
 import { PROXY_PORT } from "./localhost-proxy.js";
-import { runtimeCli, isContainerHostRemote } from "./container-runtime.js";
+import { runtimeCli, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation, isContainerHostRemote } from "./container-runtime.js";
 import { detectHostNetworkReach } from "./network-reach.js";
 
 const STEP_TIMEOUT_MS = 5_000;
@@ -29,16 +28,14 @@ function proxyListenerPresent(containerName: string): boolean {
         `while read -r slot local_address remote_address state rest; do ` +
         `if [[ "$local_address" == "${address}" && "$state" == "0A" ]]; then exit 0; fi; ` +
         `done < /proc/net/tcp; exit 1`;
-    const result = spawnSync(
-        runtimeCli(),
-        ["exec", containerName, "bash", "-c", script],
+    const result = runtimeSpawnSync(["exec", containerName, "bash", "-c", script],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: STEP_TIMEOUT_MS },
     );
     return !result.error && result.status === 0;
 }
 
 export function setupLocalhostProxy(containerName: string): void {
-    createLocalhostProxyVerifier({
+    runWithNativeRuntimeInvocation(getRuntimeInvocation(), () => createLocalhostProxyVerifier({
         platform: () => process.platform,
         containerHostRemote: () => isContainerHostRemote(),
         directReach: (container, timeoutMs) => detectHostNetworkReach(container, {timeoutMs}),
@@ -61,5 +58,5 @@ export function setupLocalhostProxy(containerName: string): void {
                 return undefined;
             };
         },
-    }).setup(containerName);
+    }).setup(containerName));
 }

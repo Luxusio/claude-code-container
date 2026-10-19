@@ -6,7 +6,23 @@ import { hasLegacyHomeLayoutContainerMounts } from "../home-layout-container-gua
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), runtime: vi.fn(() => "docker"), home: "" }));
 vi.mock("child_process", () => ({ spawnSync: mocks.spawn }));
-vi.mock("../container-runtime.js", () => ({ runtimeCli: mocks.runtime }));
+vi.mock("../container-runtime.js", async () => {
+    const { validateNativeRuntimeInvocation } = await import("../adapters/container-runtime-invocation.js");
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../ports/container-runtime-invocation.js");
+    const invocation = validateNativeRuntimeInvocation({
+        version: 1, runtime: "docker", executable: "/fixture/runtime/docker",
+        transport: { kind: "docker", host: "unix:///fixture/engine.sock", configDirectory: "/fixture/config",
+            tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    // This unit owner supplies the process leaf explicitly; emitted integration owns native routing.
+    const runner = () => { const capturedCli = mocks.runtime(); return { invocation,
+        spawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => mocks.spawn(capturedCli, args, options),
+    }; };
+    return { ...({ runtimeCli: mocks.runtime }), getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => runner().spawnSync(args, options),
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation() };
+});
 vi.mock("../home-layout.js", () => ({ cccHome: () => mocks.home, DEFAULT_PROFILE_MARKER: ".ccc-default-profile" }));
 const id = "a".repeat(64);
 let root: string;

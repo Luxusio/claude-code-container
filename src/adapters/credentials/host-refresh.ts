@@ -1,11 +1,20 @@
-import { spawnSync } from "child_process";
+import { spawnSync, type SpawnSyncOptions } from "child_process";
+import { bindNativeRuntimeInvocation, captureNativeRuntimeInvocation, currentNativeRuntimeInvocation, type BoundNativeSpawnSync } from "../../container-runtime.js";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { HostCredentialRefreshPorts } from "../../ports/credentials/host-refresh.js";
 import { gitSigningKeyRewriteShell, sshCredentialCopyShell } from "./ssh-material.js";
 
-export function createNativeHostCredentialRefreshPorts(selectRuntime: () => string): HostCredentialRefreshPorts {
+export function createNativeHostCredentialRefreshPorts(selectRuntime: () => string, runner?: BoundNativeSpawnSync): HostCredentialRefreshPorts {
+    let bound = runner;
+    const native = (cli: string, args: readonly string[], options: SpawnSyncOptions) => {
+        if (!bound && (cli === "docker" || cli === "podman")) {
+            const current = currentNativeRuntimeInvocation();
+            bound = bindNativeRuntimeInvocation(current?.runtime === cli ? current : captureNativeRuntimeInvocation(cli)).spawnSync;
+        }
+        return bound ? bound(args, options) : spawnSync(cli, args, options);
+    };
     let hostSshDir: string;
     let hostGitConfig: string;
     let gitCli: string;
@@ -16,8 +25,7 @@ export function createNativeHostCredentialRefreshPorts(selectRuntime: () => stri
         refreshSsh(target) {
             hostSshDir = join(homedir(), ".ssh");
             const cli = selectRuntime();
-            const copied = spawnSync(
-                cli,
+            const copied = native(cli,
                 [
                     "exec",
                     target,
@@ -42,12 +50,11 @@ export function createNativeHostCredentialRefreshPorts(selectRuntime: () => stri
         stageHostGitConfig(target) {
             gitCli = selectRuntime();
             hostSshRoot = join(homedir(), ".ssh").replace(/\\/g, "/").replace(/\/+$/, "");
-            const copied = spawnSync(gitCli, ["cp", hostGitConfig, `${target}:${stagedPath}`], { stdio: "ignore" });
+            const copied = native(gitCli, ["cp", hostGitConfig, `${target}:${stagedPath}`], { stdio: "ignore" });
             return { get status() { return copied.status; } };
         },
         installHostGitConfig(target) {
-            const installed = spawnSync(
-                gitCli,
+            const installed = native(gitCli,
                 [
                     "exec",
                     "--user",

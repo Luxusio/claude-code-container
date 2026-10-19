@@ -1,4 +1,5 @@
-import { spawnSync } from "child_process";
+import type { spawnSync } from "child_process";
+import { getRuntimeInvocation, bindNativeRuntimeInvocation, runWithNativeRuntimeInvocation } from "../container-runtime.js";
 import type { ContainerCreateLifecyclePorts } from "../ports/container-create-lifecycle.js";
 
 type NativeCreatePorts = "failCreate" | "prepareCreate" | "create" | "removeRejected" | "explicitlyAbsent"
@@ -16,6 +17,8 @@ export interface NativeContainerCreateLifecycleContext {
 export function createNativeContainerCreatePorts(
     context: NativeContainerCreateLifecycleContext,
 ): Pick<ContainerCreateLifecyclePorts<{ cli: string; args: string[] }>, NativeCreatePorts> {
+    const invocation = getRuntimeInvocation();
+    const runner = bindNativeRuntimeInvocation(invocation);
     let createCause: unknown;
     return {
         failCreate: (failure) => {
@@ -57,9 +60,9 @@ export function createNativeContainerCreatePorts(
         },
         reportCreateFailure: () => { console.error(context.createFailureHint); },
         // Preparation captures native argv before inward source assertions.
-        prepareCreate: () => ({ cli: context.createCli, args: context.prepareRunArgs() }),
+        prepareCreate: () => ({ cli: context.createCli, args: runWithNativeRuntimeInvocation(invocation, () => context.prepareRunArgs()) }),
         create: (prepared) => {
-            const result = spawnSync(prepared.cli, prepared.args, {
+            const result = runner.spawnSync(prepared.args, {
                 timeout: 30_000, killSignal: "SIGKILL",
                 encoding: "utf-8",
                 stdio: ["inherit", "pipe", "inherit"],
@@ -73,14 +76,14 @@ export function createNativeContainerCreatePorts(
             return { kind: "created", containerId };
         },
         removeRejected: (id) => {
-            const removed = spawnSync(context.createCli, ["rm", "-f", id], {
+            const removed = runner.spawnSync(["rm", "-f", id], {
                 timeout: 30_000, killSignal: "SIGKILL",
                 encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
             });
             if (removed.error || removed.status !== 0) throw new Error("Failed to remove rejected container", { cause: removed.error ?? new Error(removed.stderr || `Runtime exited with status ${removed.status}`) });
         },
         explicitlyAbsent: (id) => {
-            const result = spawnSync(context.createCli, ["inspect", "-f", "{{.Id}}", id],
+            const result = runner.spawnSync(["inspect", "-f", "{{.Id}}", id],
                 { encoding: "utf-8", timeout: 5_000, killSignal: "SIGKILL", stdio: ["pipe", "pipe", "pipe"] });
             if (result.error) throw result.error;
             if (result.status === null) throw new Error("Rejected container absence inspection did not complete.");

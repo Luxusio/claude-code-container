@@ -4,7 +4,23 @@ import { proveWslBindSourceIdentity } from "../wsl-bind-source-proof.js";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), info: vi.fn(), kernel: "6.6.87.2-microsoft-standard-WSL2" }));
 vi.mock("child_process", () => ({ spawnSync: mocks.spawn }));
-vi.mock("../container-runtime.js", () => ({ getRuntimeInfo: mocks.info, runtimeCli: () => "docker" }));
+vi.mock("../container-runtime.js", async () => {
+    const { validateNativeRuntimeInvocation } = await import("../adapters/container-runtime-invocation.js");
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../ports/container-runtime-invocation.js");
+    const invocation = validateNativeRuntimeInvocation({
+        version: 1, runtime: "docker", executable: "/fixture/runtime/docker",
+        transport: { kind: "docker", host: "unix:///fixture/engine.sock", configDirectory: "/fixture/config",
+            tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    // This unit owner supplies the process leaf explicitly; emitted integration owns native routing.
+    const runner = () => { const capturedCli = "docker"; return { invocation,
+        spawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => mocks.spawn(capturedCli, args, options),
+    }; };
+    return { ...({ getRuntimeInfo: mocks.info, runtimeCli: () => "docker" }), getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => runner().spawnSync(args, options),
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation() };
+});
 vi.mock("fs", async original => {
     const actual = await original<typeof import("fs")>();
     return { ...actual, readFileSync: (...args: Parameters<typeof actual.readFileSync>) => args[0] === "/proc/sys/kernel/osrelease" ? mocks.kernel : actual.readFileSync(...args) };

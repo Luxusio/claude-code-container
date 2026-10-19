@@ -3,18 +3,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createNativeContainerImagePreparation, distributionImageBuildCommand, distributionImageBuildHint } from "../../composition/container-image-preparation.js";
 import { ensureImage, getImageLabel, isImageExists, pullImage, qualifyImageRefForRuntime, tagImage } from "../../docker.js";
 import { CLI_VERSION, DOCKER_REGISTRY_IMAGE, IMAGE_NAME } from "../../utils.js";
+import * as runtimeFacade from "../../container-runtime.js";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
-const native = vi.hoisted(() => ({ spawn: vi.fn(), runtime: vi.fn() }));
+const native = vi.hoisted(() => ({ spawn: vi.fn(), runtime: vi.fn(), bind: vi.fn() }));
 vi.mock("child_process", async original => ({
     ...await original<typeof import("node:child_process")>(), spawnSync: native.spawn,
 }));
 vi.mock("../../container-runtime.js", async original => ({
     ...await original<typeof import("../../container-runtime.js")>(), runtimeCli: native.runtime,
 }));
+// Delegate ordinary dispatch to the real binder; failures can be injected at
+// the authority boundary without inventing runtimeCli calls before native leaves.
+vi.mock("../../adapters/container-runtime-invocation.js", async original => ({
+    ...await original<typeof import("../../adapters/container-runtime-invocation.js")>(),
+    bindNativeRuntimeInvocation: (...args: Parameters<typeof import("../../adapters/container-runtime-invocation.js").bindNativeRuntimeInvocation>) => native.bind(...args),
+}));
 vi.mock("../../device-lab-admin.js", () => ({ cleanupOwnerDevices: vi.fn() }));
 vi.mock("../../session.js", () => ({
     getSessionLockClaimsForContainer: vi.fn(), withContainerLifecycleLock: vi.fn(), withProjectFamilyLifecycleLock: vi.fn(),
 }));
+
+const nativeInvocation = await vi.importActual<typeof import("../../adapters/container-runtime-invocation.js")>("../../adapters/container-runtime-invocation.js");
 
 const localBuildScript = fileURLToPath(new URL("../../../scripts/build-distribution-image.mjs", import.meta.url));
 const expectedBuildHint = (runtime: string) => process.platform === "win32"
@@ -29,11 +39,15 @@ let results: Record<string, unknown>;
 
 beforeEach(() => {
     vi.resetAllMocks();
+    runtimeFacade._resetRuntimeCacheForTest();
+    preloadNativeRuntimeFixture(runtimeFacade);
+    native.bind.mockImplementation(nativeInvocation.bindNativeRuntimeInvocation);
     cli = "docker";
     trace = [];
     results = { images: { stdout: "" }, inspect: { status: 0, stdout: "0.9.0" }, pull: { status: 0 }, tag: undefined };
     native.runtime.mockImplementation(() => { trace.push(`runtime:${cli}`); return cli; });
-    native.spawn.mockImplementation((runtime: string, args: string[]) => {
+    native.spawn.mockImplementation((...rawCall) => {
+        const [runtime, args] = normalizeNativeRuntimeCall(rawCall) as [string, string[]];
         trace.push(`spawn:${runtime}:${args[0]}`);
         return results[args[0]];
     });
@@ -42,7 +56,11 @@ beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(message => { trace.push(`error:${message}`); });
     vi.spyOn(process, "exit").mockImplementation(code => { trace.push(`exit:${code}`); return undefined as never; });
 });
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { runtimeFacade._resetRuntimeCacheForTest(); vi.restoreAllMocks(); });
+
+function calls() {
+    return native.spawn.mock.calls.map(call => normalizeNativeRuntimeCall(call) as [string, string[], Record<string, unknown>]);
+}
 
 function thrown(operation: () => unknown): unknown {
     try { operation(); } catch (error) { return error; }
@@ -83,8 +101,8 @@ describe("image preparation native composition and public facade", () => {
         results.images = { stdout: "image-id" };
         results.inspect = { status: 0, stdout: label };
         expect(ensureImage()).toBeUndefined();
-        expect(trace).toEqual(["runtime:docker", "spawn:docker:images", "runtime:docker", "spawn:docker:inspect"]);
-        expect(native.spawn.mock.calls).toEqual([
+        expect(trace).toEqual(["spawn:docker:images", "spawn:docker:inspect"]);
+        expect(calls()).toEqual([
             ["docker", ["images", "-q", IMAGE_NAME], { encoding: "utf-8" }],
             ["docker", ["inspect", IMAGE_NAME, "--format", '{{index .Config.Labels "cli.version"}}'], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }],
         ]);
@@ -94,11 +112,11 @@ describe("image preparation native composition and public facade", () => {
         results.images = { stdout: local ? "image-id" : "" };
         expect(ensureImage()).toBeUndefined();
         expect(trace).toEqual([
-            "runtime:docker", "spawn:docker:images",
-            ...(local ? ["runtime:docker", "spawn:docker:inspect"] : []),
-            `log:${local ? staleMessage : pulling}`, "runtime:docker", "runtime:docker", "spawn:docker:pull", "runtime:docker", "spawn:docker:tag",
+            "spawn:docker:images",
+            ...(local ? ["spawn:docker:inspect"] : []),
+            `log:${local ? staleMessage : pulling}`, "runtime:docker", "spawn:docker:pull", "spawn:docker:tag",
         ]);
-        expect(native.spawn.mock.calls.slice(-2)).toEqual([
+        expect(calls().slice(-2)).toEqual([
             ["docker", ["pull", remote], { stdio: "inherit" }],
             ["docker", ["tag", remote, IMAGE_NAME], { stdio: "ignore" }],
         ]);
@@ -112,8 +130,8 @@ describe("image preparation native composition and public facade", () => {
         results.pull = { status: 1 };
         expect(ensureImage()).toBeUndefined();
         expect(trace).toEqual([
-            "runtime:docker", "spawn:docker:images", "runtime:docker", "spawn:docker:inspect", `log:${staleMessage}`,
-            "runtime:docker", "runtime:docker", "spawn:docker:pull", `warn:Warning: Failed to pull ${remote}. Using existing image.`,
+            "spawn:docker:images", "spawn:docker:inspect", `log:${staleMessage}`,
+            "runtime:docker", "spawn:docker:pull", `warn:Warning: Failed to pull ${remote}. Using existing image.`,
         ]);
         expect(console.error).not.toHaveBeenCalled();
         expect(process.exit).not.toHaveBeenCalled();
@@ -123,10 +141,10 @@ describe("image preparation native composition and public facade", () => {
         results.pull = { status: null };
         expect(ensureImage).toThrow("Failed to pull CCC image; container startup was aborted.");
         expect(trace).toEqual([
-            "runtime:docker", "spawn:docker:images", `log:${pulling}`, "runtime:docker", "runtime:docker", "spawn:docker:pull",
+            "spawn:docker:images", `log:${pulling}`, "runtime:docker", "spawn:docker:pull",
             `error:Error: Failed to pull ${remote}.`, "runtime:docker", `error:${expectedBuildHint("docker")}`,
         ]);
-        expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(["images", "pull"]);
+        expect(calls().map(call => call[1][0])).toEqual(["images", "pull"]);
         expect(console.warn).not.toHaveBeenCalled();
         expect(process.exit).not.toHaveBeenCalled();
     });
@@ -137,7 +155,7 @@ describe("image preparation native composition and public facade", () => {
         try {
             preparation().run();
             expect(trace.indexOf("registry")).toBe(trace.indexOf(`log:${pulling}`) + 1);
-            expect(native.spawn).toHaveBeenCalledWith("docker", ["pull", remote], { stdio: "inherit" });
+            expect(calls()).toContainEqual(["docker", ["pull", remote], { stdio: "inherit" }]);
         } finally {
             if (previous === undefined) delete process.env.CCC_REGISTRY;
             else process.env.CCC_REGISTRY = previous;
@@ -160,7 +178,7 @@ describe("unchanged native result interpretation", () => {
                 expect(ignored).toBe(0);
                 ensureImage();
                 expect(ignored).toBe(0);
-                expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(
+                expect(calls().map(call => call[1][0])).toEqual(
                     typeof stdout === "string" && stdout.trim().length > 0
                         ? ["images", "images", "inspect", "pull", "tag"] : ["images", "images", "pull", "tag"],
                 );
@@ -181,16 +199,17 @@ describe("unchanged native result interpretation", () => {
             expect(getImageLabel(IMAGE_NAME, "cli.version")).toBe(expected);
             expect(reads).toBe(status === 0 ? 1 : 0);
             ensureImage();
-            expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(expected === null
+            expect(calls().map(call => call[1][0])).toEqual(expected === null
                 ? ["inspect", "images", "inspect"] : ["inspect", "images", "inspect", "pull", "tag"]);
         });
     }
 
-    it.each(["runtime", "spawn", "status", "stdout"] as const)("inspection catches thrown %s and retains the local image", stage => {
+    it.each(["binding", "spawn", "status", "stdout"] as const)("inspection catches thrown %s and retains the local image", stage => {
         const failure = { inspect: stage };
         results.images = { stdout: "image-id" };
-        if (stage === "runtime") native.runtime.mockImplementationOnce(() => "docker").mockImplementationOnce(() => { throw failure; });
-        if (stage === "spawn") native.spawn.mockImplementation((runtime, args) => {
+        if (stage === "binding") native.bind.mockImplementationOnce(nativeInvocation.bindNativeRuntimeInvocation).mockImplementationOnce(() => { throw failure; });
+        if (stage === "spawn") native.spawn.mockImplementation((...rawCall) => {
+            const [runtime, args] = normalizeNativeRuntimeCall(rawCall) as [string, string[]];
             trace.push(`spawn:${runtime}:${args[0]}`);
             if (args[0] === "inspect") throw failure;
             return results[args[0]];
@@ -201,7 +220,7 @@ describe("unchanged native result interpretation", () => {
         expect(console.log).not.toHaveBeenCalled();
         expect(console.error).not.toHaveBeenCalled();
         expect(process.exit).not.toHaveBeenCalled();
-        expect(native.spawn.mock.calls.some(call => call[1][0] === "pull")).toBe(false);
+        expect(calls().some(call => call[1][0] === "pull")).toBe(false);
     });
 
     it.each([0, 1, -1, null, undefined])("pull accepts status zero only and never reads error/stdout, status=%s", status => {
@@ -241,8 +260,9 @@ describe("runtime qualification and observation schedule", () => {
         ["podman", "registry:5000/image", "registry:5000/image"],
     ])("runs actual policy/composition with %s registry %s", (runtime, registry, qualified) => {
         cli = runtime;
+        preloadNativeRuntimeFixture(runtimeFacade, { runtime: runtime as "docker" | "podman" });
         preparation(registry).run();
-        expect(native.spawn.mock.calls).toEqual([
+        expect(calls()).toEqual([
             [runtime, ["images", "-q", IMAGE_NAME], { encoding: "utf-8" }],
             [runtime, ["pull", `${qualified}:${CLI_VERSION}`], { stdio: "inherit" }],
             [runtime, ["tag", `${qualified}:${CLI_VERSION}`, IMAGE_NAME], { stdio: "ignore" }],
@@ -264,31 +284,26 @@ describe("runtime qualification and observation schedule", () => {
         expect(native.spawn).not.toHaveBeenCalled();
     });
 
-    it("observes runtime changes separately at report, qualification, pull and tag", () => {
+    it("keeps native execution captured while qualification observes a changed runtime name", () => {
         vi.mocked(console.log).mockImplementation(message => { trace.push(`log:${message}`); cli = "podman"; });
-        let observations = 0;
-        native.runtime.mockImplementation(() => {
-            const current = cli;
-            trace.push(`runtime:${current}`);
-            if (++observations === 2) cli = "docker";
-            return current;
-        });
-        native.spawn.mockImplementation((runtime, args) => {
+        native.spawn.mockImplementation((...rawCall) => {
+            const [runtime, args] = normalizeNativeRuntimeCall(rawCall) as [string, string[]];
             trace.push(`spawn:${runtime}:${args[0]}`);
-            if (args[0] === "pull") cli = "podman";
+            if (args[0] === "pull") cli = "docker";
             return results[args[0]];
         });
         preparation("team/image").run();
         const qualified = `docker.io/team/image:${CLI_VERSION}`;
-        expect(native.spawn.mock.calls).toEqual([
+        expect(calls()).toEqual([
             ["docker", ["images", "-q", IMAGE_NAME], { encoding: "utf-8" }],
             ["docker", ["pull", qualified], { stdio: "inherit" }],
-            ["podman", ["tag", qualified, IMAGE_NAME], { stdio: "ignore" }],
+            ["docker", ["tag", qualified, IMAGE_NAME], { stdio: "ignore" }],
         ]);
         expect(trace).toEqual([
-            "runtime:docker", "spawn:docker:images", `log:${pulling}`, "registry", "runtime:podman",
-            "runtime:docker", "spawn:docker:pull", "runtime:podman", "spawn:podman:tag",
+            "spawn:docker:images", `log:${pulling}`, "registry", "runtime:podman",
+            "spawn:docker:pull", "spawn:docker:tag",
         ]);
+        expect(native.runtime).toHaveBeenCalledTimes(1);
     });
 
     it("observes the runtime after the failure diagnostic for the build hint", () => {
@@ -302,24 +317,28 @@ describe("runtime qualification and observation schedule", () => {
 });
 
 describe("native and presentation fault identity with no downstream effects", () => {
-    const absentPre = ["runtime:docker", "spawn:docker:images", `log:${pulling}`];
-    const stalePre = ["runtime:docker", "spawn:docker:images", "runtime:docker", "spawn:docker:inspect", `log:${staleMessage}`];
-    const absentPulled = [...absentPre, "runtime:docker", "runtime:docker", "spawn:docker:pull"];
-    const stalePulled = [...stalePre, "runtime:docker", "runtime:docker", "spawn:docker:pull"];
+    const absentPre = ["spawn:docker:images", `log:${pulling}`];
+    const stalePre = ["spawn:docker:images", "spawn:docker:inspect", `log:${staleMessage}`];
+    const absentPulled = [...absentPre, "runtime:docker", "spawn:docker:pull"];
+    const stalePulled = [...stalePre, "runtime:docker", "spawn:docker:pull"];
 
     for (const local of [false, true]) {
         const pre = local ? stalePre : absentPre;
         const stages = [
-            { name: "existence runtime", observation: 1, prefix: [] },
-            { name: "qualification runtime", observation: local ? 3 : 2, prefix: pre },
-            { name: "pull runtime", observation: local ? 4 : 3, prefix: [...pre, "runtime:docker"] },
-            { name: "tag runtime", observation: local ? 5 : 4, prefix: [...pre, "runtime:docker", "runtime:docker", "spawn:docker:pull"] },
+            { name: "existence binding", boundary: "binding", observation: 1, prefix: [] },
+            { name: "qualification runtime", boundary: "runtime", observation: 1, prefix: pre },
+            { name: "pull binding", boundary: "binding", observation: local ? 3 : 2, prefix: [...pre, "runtime:docker"] },
+            { name: "tag binding", boundary: "binding", observation: local ? 4 : 3, prefix: [...pre, "runtime:docker", "spawn:docker:pull"] },
         ];
         for (const stage of stages) {
             it.each([new Error("native runtime"), { runtime: true }, "native runtime"])(`${stage.name}, local=${local}, preserves %s`, failure => {
                 results.images = { stdout: local ? "image-id" : "" };
                 let observations = 0;
-                native.runtime.mockImplementation(() => {
+                if (stage.boundary === "binding") native.bind.mockImplementation(invocation => {
+                    if (++observations === stage.observation) throw failure;
+                    return nativeInvocation.bindNativeRuntimeInvocation(invocation);
+                });
+                else native.runtime.mockImplementation(() => {
                     if (++observations === stage.observation) throw failure;
                     trace.push("runtime:docker");
                     return "docker";
@@ -331,23 +350,24 @@ describe("native and presentation fault identity with no downstream effects", ()
         for (const operation of ["images", "pull", "tag"] as const) {
             it.each([new Error("spawn"), { spawn: true }, "spawn"])(`native ${operation} throw, local=${local}, preserves %s`, failure => {
                 results.images = { stdout: local ? "image-id" : "" };
-                native.spawn.mockImplementation((runtime, args) => {
+                native.spawn.mockImplementation((...rawCall) => {
+                    const [runtime, args] = normalizeNativeRuntimeCall(rawCall) as [string, string[]];
                     trace.push(`spawn:${runtime}:${args[0]}`);
                     if (args[0] === operation) throw failure;
                     return results[args[0]];
                 });
                 expect(thrown(ensureImage)).toBe(failure);
-                const expected = operation === "images" ? ["runtime:docker", "spawn:docker:images"]
-                    : operation === "pull" ? [...pre, "runtime:docker", "runtime:docker", "spawn:docker:pull"]
-                    : [...pre, "runtime:docker", "runtime:docker", "spawn:docker:pull", "runtime:docker", "spawn:docker:tag"];
+                const expected = operation === "images" ? ["spawn:docker:images"]
+                    : operation === "pull" ? [...pre, "runtime:docker", "spawn:docker:pull"]
+                    : [...pre, "runtime:docker", "spawn:docker:pull", "spawn:docker:tag"];
                 expect(trace).toEqual(expected);
             });
         }
     }
 
     const reports = [
-        { name: "missing report", local: false, pull: true, stream: "log", nth: 1, prefix: ["runtime:docker", "spawn:docker:images"] },
-        { name: "stale report", local: true, pull: true, stream: "log", nth: 1, prefix: ["runtime:docker", "spawn:docker:images", "runtime:docker", "spawn:docker:inspect"] },
+        { name: "missing report", local: false, pull: true, stream: "log", nth: 1, prefix: ["spawn:docker:images"] },
+        { name: "stale report", local: true, pull: true, stream: "log", nth: 1, prefix: ["spawn:docker:images", "spawn:docker:inspect"] },
         { name: "fallback warning", local: true, pull: false, stream: "warn", nth: 1, prefix: stalePulled },
         { name: "failure error", local: false, pull: false, stream: "error", nth: 1, prefix: absentPulled },
         { name: "build hint error", local: false, pull: false, stream: "error", nth: 2, prefix: [...absentPulled, `error:Error: Failed to pull ${remote}.`, "runtime:docker"] },
@@ -370,7 +390,7 @@ describe("native and presentation fault identity with no downstream effects", ()
         results.pull = { status: 1 };
         let observations = 0;
         native.runtime.mockImplementation(() => {
-            if (++observations === 4) throw failure;
+            if (++observations === 2) throw failure;
             trace.push("runtime:docker");
             return "docker";
         });
@@ -389,7 +409,7 @@ describe("native and presentation fault identity with no downstream effects", ()
     it.each([new Error("stdout"), { stdout: true }])("existence stdout failure escapes before any report: %s", failure => {
         results.images = { get stdout() { throw failure; } };
         expect(thrown(ensureImage)).toBe(failure);
-        expect(trace).toEqual(["runtime:docker", "spawn:docker:images"]);
+        expect(trace).toEqual(["spawn:docker:images"]);
     });
 
     it.each([new Error("status"), { status: true }])("pull status failure escapes before tag/failure presentation: %s", failure => {

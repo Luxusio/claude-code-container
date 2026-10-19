@@ -90,7 +90,7 @@ import {
 } from "./profile.js";
 import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
-import { formatRuntimeSummary, runtimeCli, setRuntimeOverride } from "./container-runtime.js";
+import { formatRuntimeSummary, runtimeCli, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation, setRuntimeOverride } from "./container-runtime.js";
 import { devicesCliAsync } from "./device-lab-admin.js";
 import { labsCli } from "./lab-runner-admin.js";
 
@@ -356,7 +356,8 @@ const containerExec = createContainerExec(createNativeContainerExecPorts({
 }));
 
 async function exec(projectPath: string, cmd: string[], options: ContainerExecOptions = {}, profile?: string): Promise<void> {
-    const status = await containerExec.exec(projectPath, cmd, options, profile);
+    const invocation = getRuntimeInvocation();
+    const status = await runWithNativeRuntimeInvocation(invocation, () => containerExec.exec(projectPath, cmd, options, profile));
     process.exit(status);
 }
 
@@ -379,9 +380,7 @@ function showStatus(): void {
     }
 
     // List all ccc containers
-    const result = spawnSync(
-        runtimeCli(),
-        [
+    const result = runtimeSpawnSync([
             "ps",
             "-a",
             "--filter",

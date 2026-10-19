@@ -6,7 +6,7 @@ import { runContainerCommand } from "../container-command.js";
 import { getProjectId, collectForwardedEnv, writeOwnedEnvFile, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE } from "../utils.js";
 import { ensureClipboardServer } from "../clipboard-server.js";
 import { clipboardPortFile } from "../home-layout.js";
-import { runtimeCli } from "../container-runtime.js";
+import { runtimeCli, runtimeSpawnSync, getRuntimeInvocation, currentNativeRuntimeInvocation, bindNativeRuntimeInvocation, runWithNativeRuntimeInvocation, type NativeRuntimeInvocation, type BoundNativeRuntimeRunner } from "../container-runtime.js";
 import { getToolByName, getDefaultTool } from "../tool-registry.js";
 import { isWorktreeWorkspace, assertWorkspaceReady, getWorktreeGitMounts } from "../worktree.js";
 import {
@@ -68,6 +68,7 @@ export interface ContainerExecNativeBindings {
 
 interface PreparedContainerExecCommand {
     runtime: string;
+    runner: BoundNativeRuntimeRunner;
     prefix: string[];
     target: string;
     command: string[];
@@ -121,7 +122,13 @@ export function presentContainerExecReport(report: ContainerExecReport): void {
 }
 
 export function createNativeContainerExecPorts(bindings: ContainerExecNativeBindings): ContainerExecPorts<PreparedContainerExecCommand> {
-    return {
+    let invocation: NativeRuntimeInvocation | undefined;
+    function inRuntime<T>(operation: () => T): T {
+        const current = currentNativeRuntimeInvocation();
+        invocation ??= current ?? getRuntimeInvocation();
+        return runWithNativeRuntimeInvocation(current ?? invocation, operation);
+    }
+    const ports: ContainerExecPorts<PreparedContainerExecCommand> = {
         ensureRuntime: ensureDockerRunning,
         resolveProject: resolve,
         ensureDirectories: profile => bindings.ensureDirectories(profile),
@@ -186,7 +193,7 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         attachClipboardImage: maybeAttachCodexClipboardImage,
         installProjectTools(target, workdir) {
             // Keep download progress visible and retain the existing nonfatal shell.
-            spawnSync(runtimeCli(), ["exec", "-w", workdir, target, "sh", "-c",
+            runtimeSpawnSync(["exec", "-w", workdir, target, "sh", "-c",
                 "mise trust -a >/dev/null 2>&1 || true; mise install -y || true"], { stdio: "inherit" });
         },
         startClipboardBridge(target, connection) {
@@ -194,7 +201,7 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
             const environment: string[] = [];
             if (connection.url) environment.push("-e", `CCC_CLIPBOARD_URL=${connection.url}`);
             if (connection.token) environment.push("-e", `CCC_CLIPBOARD_TOKEN=${connection.token}`);
-            spawnSync(runtimeCli(), ["exec", "-d", ...environment, target, "/usr/local/bin/ccc-x11-bridge"], { stdio: "ignore" });
+            runtimeSpawnSync(["exec", "-d", ...environment, target, "/usr/local/bin/ccc-x11-bridge"], { stdio: "ignore" });
         },
         observeCommandEnvironment() {
             const forwarded = collectForwardedEnv(process.env);
@@ -212,13 +219,14 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
             // The use case owns this artifact's lifetime, including nested cleanup.
             const file = writeOwnedEnvFile(intent.environment);
             return {
-                runtime: intent.runtime, prefix: ["exec", "-w", intent.workdir, "--env-file", file.path], target: intent.target,
+                runtime: intent.runtime, runner: bindNativeRuntimeInvocation(getRuntimeInvocation()), prefix: ["exec", "-w", intent.workdir, "--env-file", file.path], target: intent.target,
                 command: intent.command.kind === "claude" ? [CLAUDE_BIN_PATH, ...intent.command.arguments] : [...intent.command.arguments],
                 dispose: () => file.dispose(),
             };
         },
         prepareCodexCommand(prepared) {
-            const result = prepareCodexLaunchSemantic(prepared.runtime, [...prepared.prefix, prepared.target], prepared.command);
+            const result = prepareCodexLaunchSemantic(prepared.runtime, [...prepared.prefix, prepared.target], prepared.command,
+                (_runtime, args, options) => prepared.runner.spawnSync(args, options));
             if (result.ok) prepared.command = presentCodexLaunchPreparation(result).command;
             if (result.ok) return { ok: true, ...(result.reason ? { reason: result.reason } : {}) };
             return { ok: false, status: result.status, reason: result.reason, ...(result.cause === undefined ? {} : { cause: result.cause }) };
@@ -226,12 +234,12 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         launchCommand(prepared, interaction) {
             const command = interaction.codexRecovery ? buildCodexResumeRecoveryCommand(prepared.command) : prepared.command;
             return runContainerCommand(prepared.runtime,
-                [...prepared.prefix, ...(interaction.terminal ? ["-it"] : []), prepared.target, ...command], interaction.interactive);
+                [...prepared.prefix, ...(interaction.terminal ? ["-it"] : []), prepared.target, ...command], interaction.interactive, prepared.runner);
         },
         disposeCommand: prepared => prepared.dispose(),
         reportConversationFiles(target, projectId) {
             const directory = `/home/ccc/.claude/projects/-project-${projectId}`;
-            const result = spawnSync(runtimeCli(), ["exec", target, "sh", "-c",
+            const result = runtimeSpawnSync(["exec", target, "sh", "-c",
                 `ls -1 "${directory}"/*.jsonl 2>/dev/null | wc -l; echo "dir:${directory}"`],
                 { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
             console.error(`[ccc:debug] post-exit conversation check: ${(result.stdout ?? "").trim()}`);
@@ -245,5 +253,51 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         invalidRuntimeFailure: () => new Error("Invalid session container runtime."),
         cleanupSession,
         report: presentContainerExecReport,
+    };
+    // These ports keep their operation binding across awaited prompts and returned work.
+    return {
+        ...ports,
+        ensureRuntime: () => {
+            invocation = getRuntimeInvocation();
+            return inRuntime(ports.ensureRuntime);
+        },
+        runtime: () => inRuntime(ports.runtime),
+        ensureDirectories: profile => inRuntime(() => ports.ensureDirectories(profile)),
+        ensureProjectTools: path => inRuntime(() => ports.ensureProjectTools(path)),
+        familyLock: (path, operation) => inRuntime(() => ports.familyLock(path, operation)),
+        acquireOwnership: (request, inspect) => inRuntime(() => ports.acquireOwnership(request, inspect)),
+        inspectSessionContainer: (path, profile) => inRuntime(() => ports.inspectSessionContainer(path, profile)),
+        ensureClipboard: () => inRuntime(ports.ensureClipboard),
+        clipboardConnection: port => inRuntime(() => ports.clipboardConnection(port)),
+        worktreeMounts: (...args) => inRuntime(() => ports.worktreeMounts(...args)),
+        containerStatus: name => inRuntime(() => ports.containerStatus(name)),
+        lifecycleLock: (path, operation) => inRuntime(() => ports.lifecycleLock(path, operation)),
+        setupLock: (path, operation) => inRuntime(() => ports.setupLock(path, operation)),
+        startContainer: (...args) => inRuntime(() => ports.startContainer(...args)),
+        prepareContainer: () => inRuntime(ports.prepareContainer),
+        stateLock: operation => inRuntime(() => ports.stateLock(operation)),
+        setSessionContainer: (...args) => inRuntime(() => ports.setSessionContainer(...args)),
+        setCleanupEnabled: enabled => inRuntime(() => ports.setCleanupEnabled(enabled)),
+        confirmOwnership: () => inRuntime(ports.confirmOwnership),
+        configLock: (operation, profile) => inRuntime(() => ports.configLock(operation, profile)),
+        restoreConfig: (id, profile) => inRuntime(() => ports.restoreConfig(id, profile)),
+        ensureUv: id => inRuntime(() => ports.ensureUv(id)),
+        buildMcpConfig: (...args) => inRuntime(() => ports.buildMcpConfig(...args)),
+        setupProxy: id => inRuntime(() => ports.setupProxy(id)),
+        containerRunning: (...args) => inRuntime(() => ports.containerRunning(...args)),
+        installTools: (...args) => inRuntime(() => ports.installTools(...args)),
+        ensureClaude: id => inRuntime(() => ports.ensureClaude(id)),
+        prepareCodexConfig: (...args) => inRuntime(() => ports.prepareCodexConfig(...args)),
+        assertCodexState: (...args) => inRuntime(() => ports.assertCodexState(...args)),
+        ensureCodexHarness: (...args) => inRuntime(() => ports.ensureCodexHarness(...args)),
+        syncClipboard: id => inRuntime(() => ports.syncClipboard(id)),
+        ensureSocketAccess: id => inRuntime(() => ports.ensureSocketAccess(id)),
+        installProjectTools: (...args) => inRuntime(() => ports.installProjectTools(...args)),
+        startClipboardBridge: (...args) => inRuntime(() => ports.startClipboardBridge(...args)),
+        prepareCommand: intent => inRuntime(() => ports.prepareCommand(intent)),
+        prepareCodexCommand: prepared => inRuntime(() => ports.prepareCodexCommand(prepared)),
+        launchCommand: (...args) => inRuntime(() => ports.launchCommand(...args)),
+        reportConversationFiles: (...args) => inRuntime(() => ports.reportConversationFiles(...args)),
+        cleanupSession: () => inRuntime(ports.cleanupSession),
     };
 }

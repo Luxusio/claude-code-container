@@ -4,16 +4,26 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import * as runtimeFacade from "../../container-runtime.js";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
+import type { RuntimeName } from "../../domain/container-runtime.js";
 import { proxyConnection, startProxy, stopProxy, tryConnect, PROXY_PORT } from "../../localhost-proxy.js";
 import { setupLocalhostProxy } from "../../localhost-proxy-setup.js";
 
 const probe = vi.hoisted(() => ({ runtime: "docker", spawn: vi.fn(), reach: vi.fn(() => ({reachable:false,latencyMs:7})) }));
 vi.mock("child_process", () => ({spawnSync:probe.spawn}));
-vi.mock("../../container-runtime.js", () => ({runtimeCli:()=>probe.runtime,isContainerHostRemote:()=>true}));
+vi.mock("../../container-runtime.js", async original => ({
+    ...await original<typeof import("../../container-runtime.js")>(),
+    runtimeCli:()=>probe.runtime,isContainerHostRemote:()=>true,
+}));
 vi.mock("../../network-reach.js", () => ({detectHostNetworkReach:probe.reach}));
 
 const sockets = new Set<net.Socket>(); const servers = new Set<net.Server>();
+beforeEach(() => {
+    probe.runtime = "docker";
+    preloadNativeRuntimeFixture(runtimeFacade);
+});
 function track(socket: net.Socket) { sockets.add(socket); return socket; }
 const fixtureHost = "::1";
 const refusalHolders = new Set<() => Promise<void>>();
@@ -105,6 +115,7 @@ async function refusalPort() {
     return receipt.address[1] as number;
 }
 afterEach(async () => {
+    probe.spawn.mock.calls.forEach(call => normalizeNativeRuntimeCall(call));
     for (const socket of sockets) socket.destroy(); sockets.clear();
     await Promise.all([...servers].map(server => server.listening ? new Promise<void>(resolve => server.close(() => resolve())) : Promise.resolve())); servers.clear();
     await Promise.all([...refusalHolders].map(stop => stop()));
@@ -123,9 +134,10 @@ it.each([false, true])("actual native Socket forwarding is bidirectional with fa
 }, 5000);
 
 it.each(["docker","podman"])("actual setup selects %s and exact 5000ms proc inspection without any TCP probe", runtime => {
-    probe.runtime=runtime; probe.spawn.mockReturnValue({status:0}); const warn=vi.spyOn(console,"warn").mockImplementation(()=>{});
+    probe.runtime=runtime; preloadNativeRuntimeFixture(runtimeFacade, {runtime: runtime as RuntimeName});
+    probe.spawn.mockReturnValue({status:0}); const warn=vi.spyOn(console,"warn").mockImplementation(()=>{});
     setupLocalhostProxy("private-container"); expect(probe.reach).toHaveBeenCalledWith("private-container",{timeoutMs:1500});
-    const [command,args,options]=probe.spawn.mock.calls[0]; expect(command).toBe(runtime);
+    const [command,args,options]=normalizeNativeRuntimeCall(probe.spawn.mock.calls[0]) as [string, string[], unknown]; expect(command).toBe(runtime);
     expect(args.slice(0,4)).toEqual(["exec","private-container","bash","-c"]);
     expect(args[4]).toBe('while read -r slot local_address remote_address state rest; do if [[ "$local_address" == "0100007F:4E1F" && "$state" == "0A" ]]; then exit 0; fi; done < /proc/net/tcp; exit 1');
     expect(options).toEqual({encoding:"utf-8",stdio:["pipe","pipe","pipe"],timeout:5000}); expect(warn).not.toHaveBeenCalled();
@@ -135,7 +147,7 @@ it.each([
     ["0100007F:4E20","0A",1], ["0100007F:14E1F","0A",1], ["0100007F:4E1F","01",1],
 ])("actual production proc script inspects private table %s %s", async (address,state,status) => {
     probe.spawn.mockReturnValue({status:0}); setupLocalhostProxy("private-container");
-    const script: string = probe.spawn.mock.calls[0][1][4];
+    const script = (normalizeNativeRuntimeCall(probe.spawn.mock.calls[0])[1] as string[])[4];
     const actual = await vi.importActual<typeof import("child_process")>("child_process");
     const directory=mkdtempSync(join(tmpdir(),"ccc-proxy-proc-")); const table=join(directory,"tcp");
     try {
@@ -147,7 +159,8 @@ it.each([
     } finally {rmSync(directory,{recursive:true,force:true});}
 });
 it.each([{status:127},{status:null,error:new Error("timeout")},{status:0,error:new Error("spawn failure")}])("actual setup warns on native observation failure %o", result => {
-    probe.runtime="podman"; probe.spawn.mockReturnValue(result); const warn=vi.spyOn(console,"warn").mockImplementation(()=>{});
+    probe.runtime="podman"; preloadNativeRuntimeFixture(runtimeFacade, {runtime: "podman"});
+    probe.spawn.mockReturnValue(result); const warn=vi.spyOn(console,"warn").mockImplementation(()=>{});
     setupLocalhostProxy("private-container"); expect(warn.mock.calls).toEqual([
         ["[ccc] WARNING: localhost proxy daemon not detected — host port access may fail."],
         ["[ccc]   check `podman logs private-container` for entrypoint errors."],

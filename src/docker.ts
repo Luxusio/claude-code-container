@@ -5,7 +5,7 @@
 // avoid a noisy rename; all CLI invocations go through `runtimeCli()` /
 // `bindMountArgs()` / `runtimeExtraRunArgs()`.
 
-import { spawnSync } from "child_process";
+import { prepareWindowsCredentialAccess } from "./adapters/windows-credential-access.js";
 import { createHash, randomBytes } from "crypto";
 import {
     accessSync,
@@ -59,6 +59,10 @@ import {
 } from "./utils.js";
 import {
     runtimeCli,
+    runtimeSpawnSync,
+    getRuntimeInvocation,
+    bindNativeRuntimeInvocation,
+    runWithNativeRuntimeInvocation,
     containerManagerSocketPath,
     containerManagerSocketMountArgs,
     bindMountArgs,
@@ -549,9 +553,7 @@ export function findManagedProjectNamespaceCollision(
     profile?: string,
 ): ManagedProjectNamespaceCollision | null {
     if (process.platform !== "win32") return null;
-    const listed = spawnSync(
-        runtimeCli(),
-        ["ps", "-aq", "--no-trunc", "--filter", "label=ccc.managed=true"],
+    const listed = runtimeSpawnSync(["ps", "-aq", "--no-trunc", "--filter", "label=ccc.managed=true"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (listed.error || listed.status !== 0) {
@@ -677,7 +679,7 @@ export function ensureCredentialHostDir(mount: CredentialMount, profile?: string
 }
 
 function getCodexContainerUid(containerName: string): string {
-    const result = spawnSync(runtimeCli(), ["exec", containerName, "sh", "-c", "id -u"], { encoding: "utf-8", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
+    const result = runtimeSpawnSync(["exec", containerName, "sh", "-c", "id -u"], { encoding: "utf-8", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
     if (result.error || result.status !== 0) {
         throw new Error(`Unable to prepare Codex credentials: container user lookup failed (${result.error?.message ?? (result.stderr?.trim() || `exit ${result.status ?? "unknown"}`)})`);
     }
@@ -706,7 +708,7 @@ export function restoreCodexConfigHostOwnership(containerName: string, profile?:
         inspectConfig: (configFile) => lstatSync(configFile),
         currentHostUid: () => process.getuid!(),
         repairConfig: (target) => {
-            const repaired = spawnSync(runtimeCli(), [
+            const repaired = runtimeSpawnSync([
                 "exec", "--user", "root", target, "sh", "-c",
                 codexConfigMutation(codexConfigFileAclScript(getCodexContainerUid(target))),
             ], { encoding: "utf-8", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
@@ -744,7 +746,7 @@ export const CONTAINER_MANAGER_SOCKET_GRANT =
 
 const containerSocketAccess = createContainerSocketAccess({
     probe: target => {
-        const probe = spawnSync(runtimeCli(), ["exec", target, "sh", "-c", CONTAINER_MANAGER_SOCKET_PROBE], {
+        const probe = runtimeSpawnSync(["exec", target, "sh", "-c", CONTAINER_MANAGER_SOCKET_PROBE], {
             encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: SOCKET_ACCESS_TIMEOUT_MS,
         });
         if (probe.status === 0) return { kind: "usable" };
@@ -757,7 +759,7 @@ const containerSocketAccess = createContainerSocketAccess({
         return { kind: "requires-group", user, gid };
     },
     grant: (target, user, gid) => {
-        const grant = spawnSync(runtimeCli(), [
+        const grant = runtimeSpawnSync([
             "exec", "--user", "root", target,
             "timeout", "-k", "2s", "8s", "sh", "-c", CONTAINER_MANAGER_SOCKET_GRANT, "ccc-socket-grant", user, gid,
         ], { stdio: "ignore", timeout: SOCKET_ACCESS_TIMEOUT_MS });
@@ -784,6 +786,7 @@ export function resetContainerManagerSocketAccessWarningForTest(): void {
 }
 
 export function prepareCodexConfigForContainer(containerName: string, profile?: string): void {
+    if (getRuntimeInfo().dockerDesktop) prepareWindowsCredentialAccess(runtimeCli(), containerName, "/home/ccc/.codex", runtimeSpawnSync);
     const directoryGuard = 'dir=/home/ccc/.codex; [ ! -L "$dir" ] && [ -d "$dir" ]';
     const directoryProbe = `${directoryGuard} && [ -r "$dir" ] && [ -w "$dir" ] && [ -x "$dir" ]`;
     const configGuard = `${directoryGuard} && file="$dir/config.toml" && [ ! -L "$file" ]`;
@@ -791,7 +794,7 @@ export function prepareCodexConfigForContainer(containerName: string, profile?: 
     function run(target: string, configFile: string, operation: string, script: string, root?: boolean, probe?: false): CodexConfigPreparationResult;
     function run(target: string, configFile: string, operation: string, script: string, root: boolean, probe: true): CodexConfigPreparationObservation;
     function run(target: string, configFile: string, operation: string, script: string, root = false, probe = false): CodexConfigPreparationObservation {
-        const result = spawnSync(runtimeCli(), [
+        const result = runtimeSpawnSync([
             "exec", ...(root ? ["--user", "root"] : []), target, "sh", "-c", codexConfigMutation(script),
         ], { encoding: "utf-8", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
         if (result.error || (result.status !== 0 && !(probe && result.status === 1))) {
@@ -826,7 +829,7 @@ export function prepareCodexConfigForContainer(containerName: string, profile?: 
 }
 
 export function isDockerRunning(): boolean {
-    const result = spawnSync(runtimeCli(), ["info"], {
+    const result = runtimeSpawnSync(["info"], {
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
         timeout: 10_000,
@@ -867,9 +870,7 @@ export function isContainerRunning(
     const containerFilter = identifierKind === "id"
         ? `id=${containerIdentifier}`
         : `name=^${containerIdentifier}$`;
-    const result = spawnSync(
-        runtimeCli(),
-        ["ps", "-q", "-f", containerFilter],
+    const result = runtimeSpawnSync(["ps", "-q", "-f", containerFilter],
         { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL" },
     );
     return (result.stdout ?? "").trim().length > 0;
@@ -882,9 +883,7 @@ export interface ContainerIdentity {
 
 /** Destructive lifecycle operations require a successful, explicit identity result. */
 export function getContainerIdentity(containerName: string): ContainerIdentity | null {
-    const result = spawnSync(
-        runtimeCli(),
-        ["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}"],
+    const result = runtimeSpawnSync(["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (result.error || result.status !== 0) return null;
@@ -966,9 +965,7 @@ export function getConfirmedRunningContainerId(containerName: string): string | 
 const CONTAINER_EXEC_TIMEOUT_MS = 5000;
 
 export function canExecContainer(containerName: string, timeoutMs = CONTAINER_EXEC_TIMEOUT_MS): boolean {
-    const result = spawnSync(
-        runtimeCli(),
-        ["exec", containerName, "true"],
+    const result = runtimeSpawnSync(["exec", containerName, "true"],
         { stdio: ["ignore", "ignore", "ignore"], timeout: Math.max(1, timeoutMs), killSignal: "SIGKILL" },
     );
     return result.status === 0;
@@ -987,9 +984,7 @@ function canExecContainerAfterBriefRetry(containerName: string): boolean {
 }
 
 export function isContainerExists(containerName: string): boolean {
-    const result = spawnSync(
-        runtimeCli(),
-        ["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
+    const result = runtimeSpawnSync(["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
         { encoding: "utf-8", timeout: 5000, killSignal: "SIGKILL" },
     );
     // Unknown must not bypass contract validation or authorize creation of a
@@ -1000,9 +995,7 @@ export function isContainerExists(containerName: string): boolean {
 }
 
 function getListedContainerId(containerName: string): { known: boolean; containerId: string | null } {
-    const result = spawnSync(
-        runtimeCli(),
-        ["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
+    const result = runtimeSpawnSync(["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (result.error || result.status !== 0) return { known: false, containerId: null };
@@ -1022,7 +1015,7 @@ export function inspectSessionContainerOwnership(projectPath: string, profile?: 
 }
 
 export function isImageExists(): boolean {
-    const result = spawnSync(runtimeCli(), ["images", "-q", IMAGE_NAME], {
+    const result = runtimeSpawnSync(["images", "-q", IMAGE_NAME], {
         encoding: "utf-8",
     });
     return (result.stdout ?? "").trim().length > 0;
@@ -1033,17 +1026,12 @@ export function isImageExists(): boolean {
  */
 export function isContainerImageOutdated(containerName: string): boolean {
     try {
-        const cli = runtimeCli();
-        const containerResult = spawnSync(
-            cli,
-            ["inspect", containerName, "--format", "{{.Image}}"],
+        const containerResult = runtimeSpawnSync(["inspect", containerName, "--format", "{{.Image}}"],
             { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
         if (containerResult.status !== 0) return false;
 
-        const imageResult = spawnSync(
-            cli,
-            ["inspect", IMAGE_NAME, "--format", "{{.Id}}"],
+        const imageResult = runtimeSpawnSync(["inspect", IMAGE_NAME, "--format", "{{.Id}}"],
             { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
         if (imageResult.status !== 0) return false;
@@ -1069,9 +1057,7 @@ export interface ContainerStatus {
 }
 
 export function getContainerStatus(containerName: string): ContainerStatus {
-    const result = spawnSync(
-        runtimeCli(),
-        ["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}|{{.Image}}"],
+    const result = runtimeSpawnSync(["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}|{{.Image}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     if (result.error || result.status !== 0) {
@@ -1090,9 +1076,7 @@ export function getContainerStatus(containerName: string): ContainerStatus {
 }
 
 export function getCurrentImageId(): string | null {
-    const result = spawnSync(
-        runtimeCli(),
-        ["inspect", IMAGE_NAME, "--format", "{{.Id}}"],
+    const result = runtimeSpawnSync(["inspect", IMAGE_NAME, "--format", "{{.Id}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (result.status !== 0) return null;
@@ -1101,9 +1085,7 @@ export function getCurrentImageId(): string | null {
 
 export function getImageLabel(imageName: string, label: string): string | null {
     try {
-        const result = spawnSync(
-            runtimeCli(),
-            ["inspect", imageName, "--format", `{{index .Config.Labels "${label}"}}`],
+        const result = runtimeSpawnSync(["inspect", imageName, "--format", `{{index .Config.Labels "${label}"}}`],
             { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
         if (result.status !== 0) return null;
@@ -1116,12 +1098,12 @@ export function getImageLabel(imageName: string, label: string): string | null {
 }
 
 export function pullImage(imageRef: string): boolean {
-    const result = spawnSync(runtimeCli(), ["pull", imageRef], { stdio: "inherit" });
+    const result = runtimeSpawnSync(["pull", imageRef], { stdio: "inherit" });
     return result.status === 0;
 }
 
 export function tagImage(source: string, target: string): void {
-    spawnSync(runtimeCli(), ["tag", source, target], { stdio: "ignore" });
+    runtimeSpawnSync(["tag", source, target], { stdio: "ignore" });
 }
 
 function hasExplicitRegistry(imageRef: string): boolean {
@@ -1149,19 +1131,18 @@ const CLIPBOARD_SHIMS = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"];
 export function syncClipboardShims(containerName: string, distDir: string): void {
     const shimsDir = join(distDir, "..", "scripts", "clipboard-shims");
     const copied: string[] = [];
-    const cli = runtimeCli();
     for (const shim of CLIPBOARD_SHIMS) {
         const src = join(shimsDir, shim);
         if (existsSync(src)) {
-            const result = spawnSync(cli, ["cp", src, `${containerName}:/usr/local/bin/${shim}`]);
+            const result = runtimeSpawnSync(["cp", src, `${containerName}:/usr/local/bin/${shim}`]);
             if (!result.error && result.status === 0) copied.push(`/usr/local/bin/${shim}`);
         }
     }
     // Already-copied shims must remain runnable even if asset staging fails.
     if (copied.length > 0) {
-        const normalized = spawnSync(cli, ["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...copied]);
+        const normalized = runtimeSpawnSync(["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...copied]);
         if (normalized.error || normalized.status !== 0) return;
-        const executable = spawnSync(cli, ["exec", "-u", "root", containerName, "chmod", "+x", ...copied]);
+        const executable = runtimeSpawnSync(["exec", "-u", "root", containerName, "chmod", "+x", ...copied]);
         if (executable.error || executable.status !== 0) return;
     }
     const bridgeSource = join(distDir, "..", "scripts", "ccc-x11-bridge");
@@ -1175,42 +1156,42 @@ export function syncClipboardShims(containerName: string, distDir: string): void
         // A bridge replacement requires its complete policy asset. Publish the
         // normalized policy first; failures leave the old bridge runnable.
         if (existsSync(bridgeSource) && existsSync(policySource)) {
-            const policyDirectory = spawnSync(cli, [
+            const policyDirectory = runtimeSpawnSync([
                 "exec", "-u", "root", containerName,
                 "install", "-d", "-m", "755", "-o", "root", "-g", "root", "/usr/local/lib/ccc",
             ]);
             if (policyDirectory.error || policyDirectory.status !== 0) return;
-            const policy = spawnSync(cli, ["cp", policySource, `${containerName}:${policyStage}`]);
+            const policy = runtimeSpawnSync(["cp", policySource, `${containerName}:${policyStage}`]);
             policyCopied = !policy.error && policy.status === 0;
             if (!policyCopied) return;
-            const bridge = spawnSync(cli, ["cp", bridgeSource, `${containerName}:${bridgeStage}`]);
+            const bridge = runtimeSpawnSync(["cp", bridgeSource, `${containerName}:${bridgeStage}`]);
             bridgeCopied = !bridge.error && bridge.status === 0;
             if (!bridgeCopied) return;
         }
         if (!bridgeCopied || !policyCopied) return;
         const stages = [bridgeStage, policyStage];
-        const normalized = spawnSync(cli, ["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...stages]);
+        const normalized = runtimeSpawnSync(["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...stages]);
         if (normalized.error || normalized.status !== 0) return;
-        const executable = spawnSync(cli, ["exec", "-u", "root", containerName, "chmod", "+x", ...stages]);
+        const executable = runtimeSpawnSync(["exec", "-u", "root", containerName, "chmod", "+x", ...stages]);
         if (executable.error || executable.status !== 0) return;
         if (bridgeCopied && policyCopied) {
-            const policyOwner = spawnSync(cli, ["exec", "-u", "root", containerName, "chown", "root:root", policyStage]);
+            const policyOwner = runtimeSpawnSync(["exec", "-u", "root", containerName, "chown", "root:root", policyStage]);
             if (policyOwner.error || policyOwner.status !== 0) return;
-            const policyMode = spawnSync(cli, ["exec", "-u", "root", containerName, "chmod", "644", policyStage]);
+            const policyMode = runtimeSpawnSync(["exec", "-u", "root", containerName, "chmod", "644", policyStage]);
             if (policyMode.error || policyMode.status !== 0) return;
             // Root installs files; the daemon remains the ordinary ccc process.
-            const stateDirectory = spawnSync(cli, [
+            const stateDirectory = runtimeSpawnSync([
                 "exec", "-u", "root", containerName,
                 "install", "-d", "-m", "700", "-o", "ccc", "-g", "ccc", "/run/ccc-x11-bridge",
             ]);
             if (stateDirectory.error || stateDirectory.status !== 0) return;
-            const publishedPolicy = spawnSync(cli, ["exec", "-u", "root", containerName, "mv", "-f", policyStage, "/usr/local/lib/ccc/clipboard-x11-sync.sh"]);
+            const publishedPolicy = runtimeSpawnSync(["exec", "-u", "root", containerName, "mv", "-f", policyStage, "/usr/local/lib/ccc/clipboard-x11-sync.sh"]);
             if (publishedPolicy.error || publishedPolicy.status !== 0) return;
-            spawnSync(cli, ["exec", "-u", "root", containerName, "mv", "-f", bridgeStage, "/usr/local/bin/ccc-x11-bridge"]);
+            runtimeSpawnSync(["exec", "-u", "root", containerName, "mv", "-f", bridgeStage, "/usr/local/bin/ccc-x11-bridge"]);
         }
     } finally {
         // cp may fail after creating a partial stage; both names are ours.
-        spawnSync(cli, ["exec", "-u", "root", containerName, "rm", "-f", bridgeStage, policyStage]);
+        runtimeSpawnSync(["exec", "-u", "root", containerName, "rm", "-f", bridgeStage, policyStage]);
     }
 }
 
@@ -1277,7 +1258,7 @@ function verifyCreatedContainerMounts(
 }
 
 function containerInspectExplicitlyNotFound(
-    result: ReturnType<typeof spawnSync>,
+    result: ReturnType<typeof runtimeSpawnSync>,
 ): boolean {
     return !result.error
         && result.status !== null
@@ -1579,11 +1560,11 @@ export function getHostGitIdentityMounts(): Array<{ hostPath: string; containerP
 }
 
 function syncHostGitConfig(containerName: string): void {
-    createHostCredentialRefresh(createNativeHostCredentialRefreshPorts(runtimeCli)).syncGit(containerName);
+    createHostCredentialRefresh(createNativeHostCredentialRefreshPorts(runtimeCli, bindNativeRuntimeInvocation(getRuntimeInvocation()).spawnSync)).syncGit(containerName);
 }
 
 function fixSshPermissions(containerName: string): void {
-    createHostCredentialRefresh(createNativeHostCredentialRefreshPorts(runtimeCli)).refreshSsh(containerName);
+    createHostCredentialRefresh(createNativeHostCredentialRefreshPorts(runtimeCli, bindNativeRuntimeInvocation(getRuntimeInvocation()).spawnSync)).refreshSsh(containerName);
 }
 
 /**
@@ -1592,7 +1573,6 @@ function fixSshPermissions(containerName: string): void {
  * hotfix build must not silently keep an older bundled MCP implementation.
  */
 export function syncManagedMcpBundles(containerName: string): void {
-    const cli = runtimeCli();
     for (const bundle of MANAGED_MCP_BUNDLES) {
         const source = join(DIST_DIR, bundle, "server.mjs");
         let sourceStat: ReturnType<typeof lstatSync>;
@@ -1618,7 +1598,7 @@ export function syncManagedMcpBundles(containerName: string): void {
             continue;
         }
 
-        const currentDigest = spawnSync(cli, ["exec", containerName, "sha256sum", destination], {
+        const currentDigest = runtimeSpawnSync(["exec", containerName, "sha256sum", destination], {
             encoding: "utf-8",
             stdio: ["ignore", "pipe", "ignore"],
             timeout: 5000,
@@ -1628,15 +1608,13 @@ export function syncManagedMcpBundles(containerName: string): void {
             continue;
         }
 
-        const copied = spawnSync(cli, ["cp", source, `${containerName}:${staging}`], { stdio: "ignore" });
+        const copied = runtimeSpawnSync(["cp", source, `${containerName}:${staging}`], { stdio: "ignore" });
         if (copied.status !== 0) {
             console.error(`[ccc] WARNING: failed to stage managed MCP bundle inside container (${bundle})`);
             continue;
         }
 
-        const installed = spawnSync(
-            cli,
-            [
+        const installed = runtimeSpawnSync([
                 "exec",
                 "--user",
                 "root",
@@ -1648,19 +1626,19 @@ export function syncManagedMcpBundles(containerName: string): void {
             { stdio: "ignore" },
         );
         if (installed.status !== 0) {
-            spawnSync(cli, ["exec", "--user", "root", containerName, "rm", "-f", staging], { stdio: "ignore" });
+            runtimeSpawnSync(["exec", "--user", "root", containerName, "rm", "-f", staging], { stdio: "ignore" });
             console.error(`[ccc] WARNING: failed to install managed MCP bundle inside container (${bundle})`);
             continue;
         }
 
-        const installedDigest = spawnSync(cli, ["exec", containerName, "sha256sum", destination], {
+        const installedDigest = runtimeSpawnSync(["exec", containerName, "sha256sum", destination], {
             encoding: "utf-8",
             stdio: ["ignore", "pipe", "ignore"],
             timeout: 5000,
             windowsHide: true,
         });
         if (installedDigest.status !== 0 || installedDigest.stdout.trim().split(/\s+/, 1)[0] !== sourceDigest) {
-            spawnSync(cli, ["exec", "--user", "root", containerName, "rm", "-f", destination], { stdio: "ignore" });
+            runtimeSpawnSync(["exec", "--user", "root", containerName, "rm", "-f", destination], { stdio: "ignore" });
             console.error(`[ccc] WARNING: managed MCP bundle verification failed; removed invalid destination (${bundle})`);
         }
     }
@@ -1668,7 +1646,7 @@ export function syncManagedMcpBundles(containerName: string): void {
 
 /** Validate the effective exec user, never infer it from mutable labels alone. */
 function containerExecIdentityMatches(containerId: string, identity: ContainerUserIdentity): boolean {
-    const result = spawnSync(runtimeCli(), ["exec", containerId, "sh", "-c",
+    const result = runtimeSpawnSync(["exec", containerId, "sh", "-c",
         'printf "%s:%s:%s:%s" "$(id -u)" "$(id -g)" "$(id -un)" "$HOME"'],
         { encoding: "utf-8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
     return !result.error && result.status === 0
@@ -1677,24 +1655,27 @@ function containerExecIdentityMatches(containerId: string, identity: ContainerUs
 
 /** Preparation pins the image before any shared mutation guard is acquired. */
 export function prepareProjectContainerStartup() {
-    ensureImage();
-    const identity = resolveContainerIdentity();
-    const baseImageId = getCurrentImageId();
-    if (!baseImageId) throw new Error("Cannot resolve the current CCC base image.");
-    const imageId = ensureIdentityImage(baseImageId, identity);
-    const helpers = new Map<string, Array<() => void>>();
-    return {
-        start: (...args: Parameters<typeof startProjectContainer>) => {
-            helpers.clear();
-            return startProjectContainerLocked({ identity, imageId, helpers }, ...args);
-        },
-        initialize: (id: string) => {
-            const pending = helpers.get(id);
-            if (!pending) throw new Error("Container initialization has no exact startup identity.");
-            for (const helper of pending) helper();
-            helpers.delete(id);
-        },
-    };
+    const invocation = getRuntimeInvocation();
+    return runWithNativeRuntimeInvocation(invocation, () => {
+        ensureImage();
+        const identity = resolveContainerIdentity();
+        const baseImageId = getCurrentImageId();
+        if (!baseImageId) throw new Error("Cannot resolve the current CCC base image.");
+        const imageId = ensureIdentityImage(baseImageId, identity);
+        const helpers = new Map<string, Array<() => void>>();
+        return {
+            start: (...args: Parameters<typeof startProjectContainer>) => runWithNativeRuntimeInvocation(invocation, () => {
+                helpers.clear();
+                return startProjectContainerLocked({ identity, imageId, helpers }, ...args);
+            }),
+            initialize: (id: string) => runWithNativeRuntimeInvocation(invocation, () => {
+                const pending = helpers.get(id);
+                if (!pending) throw new Error("Container initialization has no exact startup identity.");
+                for (const helper of pending) helper();
+                helpers.delete(id);
+            }),
+        };
+    });
 }
 
 export function withProjectContainerStateLockAsync<T>(operation: () => Promise<T> | T): Promise<T> {

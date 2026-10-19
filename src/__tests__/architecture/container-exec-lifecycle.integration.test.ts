@@ -9,6 +9,8 @@ const sessionUrl = new URL("../../../dist/session.js", import.meta.url).href;
 const dockerUrl = new URL("../../../dist/docker.js", import.meta.url).href;
 const applicationUrl = new URL("../../../dist/application/container-exec.js", import.meta.url).href;
 const cleanupApplicationUrl = new URL("../../../dist/application/session-cleanup.js", import.meta.url).href;
+const runtimeUrl = new URL("../../../dist/container-runtime.js", import.meta.url).href;
+const invocationPortUrl = new URL("../../../dist/ports/container-runtime-invocation.js", import.meta.url).href;
 
 it("native exec lifecycle acquisition yields to the real owner's timer and enters only after release", async () => {
     const root = mkdtempSync(join(tmpdir(), "ccc-exec-lifecycle-"));
@@ -17,6 +19,14 @@ const {withContainerLifecycleLockAsync} = await import(${JSON.stringify(sessionU
 const {createNativeContainerExecPorts} = await import(${JSON.stringify(compositionUrl)});
 const {withProjectContainerStateLockAsync} = await import(${JSON.stringify(dockerUrl)});
 const {createContainerExec} = await import(${JSON.stringify(applicationUrl)});
+const {_setRuntimeInvocationForTest} = await import(${JSON.stringify(runtimeUrl)});
+const {NATIVE_RUNTIME_SELECTOR_KEYS} = await import(${JSON.stringify(invocationPortUrl)});
+// The real lock ports may enter native operation scope. This fixture supplies
+// all process effects below, so unexpected dispatch cannot reach a host runtime.
+_setRuntimeInvocationForTest({version: 1, runtime: 'docker', executable: ${JSON.stringify(join(root, "unexpected-native-cli"))},
+ transport: {kind: 'docker', host: 'unix:///fixture/lock-only.sock', configDirectory: ${JSON.stringify(join(root, "native-config"))},
+ tls: {enabled: false, verify: false, caFile: null, certFile: null, keyFile: null}},
+ selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null]))});
 const ports = createNativeContainerExecPorts({
   ensureDirectories() { throw new Error('unexpected directories callback'); },
   async ensureProjectTools() { throw new Error('unexpected project callback'); },

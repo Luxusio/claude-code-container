@@ -1,8 +1,7 @@
-import { spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { locksDir } from "./home-layout.js";
 import { join } from "path";
-import { getRuntimeInfo, runtimeCli, runtimeExtraRunArgs, type RuntimeInfo } from "./container-runtime.js";
+import { getRuntimeInfo, getRuntimeInvocation, runWithNativeRuntimeInvocation, runtimeSpawnSync, runtimeExtraRunArgs, type RuntimeInfo } from "./container-runtime.js";
 import { withSharedMutationLock } from "@ccc/device-lab/device-lab-shared-state.js";
 
 import { prepareIdentityImage } from "./application/container/identity-image.js";
@@ -26,7 +25,7 @@ export function resolveContainerIdentity(
 
 function checked(args: string[], input?: string): string {
     const timeout = args[0] === "build" ? IDENTITY_BUILD_TIMEOUT_MS : 600_000;
-    const result = spawnSync(runtimeCli(), args, { encoding: "utf-8", input, timeout, maxBuffer: 16 * 1024 * 1024 });
+    const result = runtimeSpawnSync(args, { encoding: "utf-8", input, timeout, maxBuffer: 16 * 1024 * 1024 });
     if (result.error || result.status !== 0) {
         const detail = result.error?.message || `exit ${result.status}`;
         const recentStderr = result.stderr?.trim().slice(-4096);
@@ -36,7 +35,7 @@ function checked(args: string[], input?: string): string {
 }
 
 function inspectImage(name: string): IdentityImageObservation | null {
-    const result = spawnSync(runtimeCli(), ["image", "inspect", name], { encoding: "utf-8", timeout: 30_000 });
+    const result = runtimeSpawnSync(["image", "inspect", name], { encoding: "utf-8", timeout: 30_000 });
     if (result.error || result.status !== 0) return null;
     try {
         const [image] = JSON.parse(result.stdout);
@@ -87,7 +86,7 @@ function buildImage(baseTag: string, name: string, identity: ContainerIdentity, 
 
 /** Build-time account changes have no access to projects or credentials. */
 export function ensureIdentityImage(baseImageId: string, identity: ContainerIdentity): string {
-    return prepareIdentityImage(baseImageId, identity, {
+    return runWithNativeRuntimeInvocation(getRuntimeInvocation(), () => prepareIdentityImage(baseImageId, identity, {
         labelsDigest: serializedLabels => createHash("sha256").update(serializedLabels).digest("hex"),
         withIdentityLock: (key, operation) => {
             const lock = join(locksDir(), `identity-${key}.lock`);
@@ -104,5 +103,5 @@ export function ensureIdentityImage(baseImageId: string, identity: ContainerIden
             checked(["image", "rm", name]);
             return undefined;
         },
-    });
+    }));
 }

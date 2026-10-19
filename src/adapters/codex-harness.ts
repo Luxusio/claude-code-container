@@ -1,16 +1,17 @@
-import { spawnSync } from "child_process";
-import { runtimeCli } from "../container-runtime.js";
+import { getRuntimeInvocation, bindNativeRuntimeInvocation, runWithNativeRuntimeInvocation } from "../container-runtime.js";
 import { withCodexConfigLock } from "../codex-config-lock.js";
 import { prepareCodexConfigForContainer, restoreCodexConfigHostOwnership } from "../docker.js";
 import { CODEX_HARNESS_BOOTSTRAP } from "./codex-harness-bootstrap.js";
 import type { CodexHarnessPorts } from "../ports/codex-harness.js";
 
 export function createNativeCodexHarnessPorts(): CodexHarnessPorts {
+    const invocation = getRuntimeInvocation();
+    const runner = bindNativeRuntimeInvocation(invocation);
     return {
         withConfigLock: <T>(operation: () => T, profile?: string): T => withCodexConfigLock(operation, profile),
-        prepareConfig: (container: string, profile?: string): void => prepareCodexConfigForContainer(container, profile),
+        prepareConfig: (container: string, profile?: string): void => runWithNativeRuntimeInvocation(invocation, () => prepareCodexConfigForContainer(container, profile)),
         executeBootstrap: (containerName: string) => {
-            const result = spawnSync(runtimeCli(), [
+            const result = runner.spawnSync([
                 "exec", "-i", "--workdir", "/home/ccc",
                 "--env", "HOME=/home/ccc", "--env", "GIT_TERMINAL_PROMPT=0",
                 containerName, "python3", "-",
@@ -21,7 +22,7 @@ export function createNativeCodexHarnessPorts(): CodexHarnessPorts {
             }
             return {kind: "completed", output};
         },
-        restoreAccess: (container: string, profile?: string): void => restoreCodexConfigHostOwnership(container, profile),
+        restoreAccess: (container: string, profile?: string): void => runWithNativeRuntimeInvocation(invocation, () => restoreCodexConfigHostOwnership(container, profile)),
         publishBootstrapOutput: (message: string): undefined => { console.error(message); return undefined; },
         publishUnavailable: (error: unknown): undefined => {
             console.warn(`[ccc] Harness is unavailable: ${error instanceof Error ? error.message : String(error)}. Codex will continue. Check the container's ~/.codex/config.toml and Harness installation, then retry ccc codex.`);

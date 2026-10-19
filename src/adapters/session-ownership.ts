@@ -4,6 +4,8 @@ import { fileURLToPath } from "url";
 import { sessionLockOwner } from "../domain/session-lock.js";
 import type { SessionOwnershipChannel, SessionOwnershipReceipt } from "../ports/session-ownership.js";
 
+export { validateNativeRuntimeInvocation as decodeNativeSessionRuntimeInvocation } from "./container-runtime-invocation.js";
+
 export function captureNativeSessionOwnership(path: string): SessionOwnershipReceipt {
     const named = lstatSync(path, { bigint: true });
     if (!named.isFile()) throw new Error("Invalid session ownership receipt.");

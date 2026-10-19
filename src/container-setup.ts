@@ -3,10 +3,11 @@
 // Extracted from index.ts for separation of concerns.
 // Contains: claude binary caching, npm tools installation, mise shim detection.
 
-import { spawnSync } from "child_process";
+import { prepareWindowsCredentialAccess } from "./adapters/windows-credential-access.js";
+import { prepareCodexDaemonPackage } from "./adapters/codex-daemon-package.js";
 import { getNpmTools, getToolByName, type ToolDefinition } from "./tool-registry.js";
 import { prepareOpenCodeDataDirectory } from "./opencode-data-access.js";
-import { runtimeCli } from "./container-runtime.js";
+import { runtimeCli, getRuntimeInfo, runtimeSpawnSync, getRuntimeInvocation, bindNativeRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
 import { CLAUDE_BIN_PATH } from "./domain/tool-layout.js";
 import { createRequestedToolSetup } from "./application/requested-tool-setup.js";
 import { createContainerToolInstallation } from "./application/tooling/container-installation.js";
@@ -775,7 +776,7 @@ export function buildClaudeLauncherReportCommand(
     ].join("\n");
 }
 
-type ToolProcessEvidence = Pick<ReturnType<typeof spawnSync>, "status" | "error"> & {
+type ToolProcessEvidence = Pick<ReturnType<typeof runtimeSpawnSync>, "status" | "error"> & {
     stdout?: string | Buffer | null;
     stderr?: string | Buffer | null;
 };
@@ -791,8 +792,7 @@ function nativeContainerToolInstallation() {
         return result.error || result.status !== 0 ? failed(result) : { kind: "succeeded" as const };
     }
     function runClaude(target: string, probe: PreparedClaudeProbe) {
-        return spawnSync(runtimeCli(),
-            ["exec", target, "sh", "-c", boundedContainerMutation(probe.script, CLAUDE_PROBE_INNER_TIMEOUT_SECONDS)],
+        return runtimeSpawnSync(["exec", target, "sh", "-c", boundedContainerMutation(probe.script, CLAUDE_PROBE_INNER_TIMEOUT_SECONDS)],
             { encoding: "utf-8", timeout: CLAUDE_PROBE_TIMEOUT_MS });
     }
     return createContainerToolInstallation<PreparedClaudeProbe, ToolProcessEvidence>({
@@ -816,8 +816,7 @@ function nativeContainerToolInstallation() {
             return { kind: "usable" };
         },
         installClaude: (containerName: string) => {
-            const result = spawnSync(runtimeCli(),
-                [
+            const result = runtimeSpawnSync([
                     "exec",
                     containerName,
                     "sh",
@@ -830,8 +829,7 @@ function nativeContainerToolInstallation() {
         },
         getNpmTools: () => getNpmTools(),
         probeNpmWrapper: (containerName: string, tool: NpmInstallationDefinition) => {
-            const result = spawnSync(runtimeCli(),
-                ["exec", containerName, "sh", "-c",
+            const result = runtimeSpawnSync(["exec", containerName, "sh", "-c",
                 `[ -x /home/ccc/.local/bin/${tool.cmd} ] || echo ${tool.cmd}`],
                 { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
             );
@@ -839,7 +837,7 @@ function nativeContainerToolInstallation() {
             return { kind: (result.stdout ?? "").trim() === tool.cmd ? "missing" : "present" };
         },
         probeNpmCache: (containerName: string, tool: NpmInstallationDefinition) => {
-            const result = spawnSync(runtimeCli(), [
+            const result = runtimeSpawnSync([
                 "exec", "-w", "/home/ccc", containerName, "sh", "-c",
                 `if [ ! -x /usr/bin/timeout ]; then echo "Tool verification requires timeout" >&2; exit 1; fi
 [ -x ~/.local/bin/mise ] || { echo "mise is unavailable for tool verification" >&2; exit 1; }
@@ -868,8 +866,7 @@ esac`,
             const name = tool.pkg.split("/").pop();
             const scope = tool.pkg.includes("/") ? tool.pkg.split("/")[0] + "/" : "";
             const cleanupPattern = `"$gdir/${scope}.${name}-"*`;
-            const result = spawnSync(runtimeCli(),
-                [
+            const result = runtimeSpawnSync([
                     "exec", "-w", "/home/ccc", containerName, "sh", "-c",
                     boundedShortContainerMutation(`gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPattern} 2>/dev/null`),
                 ],
@@ -878,15 +875,13 @@ esac`,
             return effect(result);
         },
         cleanupNpmShim: (containerName: string, tool: NpmInstallationDefinition) => {
-            const result = spawnSync(runtimeCli(),
-                ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation(`rm -f ~/.local/share/mise/shims/${tool.cmd}`)],
+            const result = runtimeSpawnSync(["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation(`rm -f ~/.local/share/mise/shims/${tool.cmd}`)],
                 { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
             );
             return effect(result);
         },
         installNpm: (containerName: string, tool: NpmInstallationDefinition) => {
-            const result = spawnSync(runtimeCli(),
-                [
+            const result = runtimeSpawnSync([
                     "exec", "-w", "/home/ccc", containerName, "sh", "-c",
                     boundedContainerMutation(`~/.local/bin/mise exec node@22 -- npm install -g ${tool.pkg}`),
                 ],
@@ -895,15 +890,13 @@ esac`,
             return effect(result);
         },
         reshimNpm: (containerName: string) => {
-            const result = spawnSync(runtimeCli(),
-                ["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation("~/.local/bin/mise reshim")],
+            const result = runtimeSpawnSync(["exec", "-w", "/home/ccc", containerName, "sh", "-c", boundedShortContainerMutation("~/.local/bin/mise reshim")],
                 { stdio: "ignore", timeout: CONTAINER_TOOL_SHORT_MUTATION_TIMEOUT_MS },
             );
             return effect(result);
         },
         writeNpmWrapper: (containerName: string, tool: NpmInstallationDefinition) => {
-            const result = spawnSync(runtimeCli(),
-                [
+            const result = runtimeSpawnSync([
                     "exec", "-w", "/home/ccc", containerName, "sh", "-c",
                     boundedShortContainerMutation(`if cat > /home/ccc/.local/bin/${tool.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${tool.cmd} "$@"\nWRAPPER\nthen\n    chmod +x /home/ccc/.local/bin/${tool.cmd} && exit 0\nfi\nrm -f /home/ccc/.local/bin/${tool.cmd}\nexit 1`),
                 ],
@@ -912,10 +905,10 @@ esac`,
             return effect(result);
         },
         createBubblewrapSession: (containerName) => {
-            const cli = runtimeCli();
+            const runner = bindNativeRuntimeInvocation(getRuntimeInvocation());
             return {
                 probe: () => {
-                    const result = spawnSync(cli, [
+                    const result = runner.spawnSync([
                         "exec", containerName, "timeout", "-k", "2s", "8s", "sh", "-c",
                         // Distinguish a missing dependency from runtime/probe failures. Run as
                         // the same unprivileged container user that starts Codex.
@@ -924,12 +917,12 @@ esac`,
                     if (!result.error && result.status === 42) return { kind: "missing" };
                     return result.error || result.status !== 0 ? failed(result) : { kind: "available" };
                 },
-                updatePackageIndex: () => effect(spawnSync(cli, [
+                updatePackageIndex: () => effect(runner.spawnSync([
                     "exec", "-u", "root", containerName,
                     "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
                     "apt-get", "-o", "APT::Update::Error-Mode=any", "update",
                 ], { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS })),
-                install: () => effect(spawnSync(cli, [
+                install: () => effect(runner.spawnSync([
                     "exec", "-u", "root", containerName,
                     "timeout", "-k", "5s", `${CONTAINER_TOOL_MUTATION_INNER_TIMEOUT_SECONDS}s`,
                     "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "--no-install-recommends", "bubblewrap",
@@ -937,8 +930,7 @@ esac`,
             };
         },
         probeUv: (containerName: string) => {
-            const result = spawnSync(runtimeCli(),
-                ["exec", containerName, "sh", "-c",
+            const result = runtimeSpawnSync(["exec", containerName, "sh", "-c",
                 "~/.local/bin/mise ls --global 2>/dev/null | grep -q '^uv '"],
                 { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
             );
@@ -946,8 +938,7 @@ esac`,
             return { kind: result.status === 0 ? "available" : "missing" };
         },
         installUv: (containerName: string) => {
-            const result = spawnSync(runtimeCli(),
-                ["exec", "-e", "MISE_VERBOSE=1", containerName, "sh", "-c",
+            const result = runtimeSpawnSync(["exec", "-e", "MISE_VERBOSE=1", containerName, "sh", "-c",
                 boundedContainerMutation("~/.local/bin/mise use -g uv@latest")],
                 { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
             );
@@ -1002,7 +993,10 @@ esac`,
  * the installer actually produced a usable launcher instead of trusting it.
  */
 export function ensureClaudeInContainer(containerName: string): void {
-    nativeContainerToolInstallation().ensureClaude(containerName);
+    return runWithNativeRuntimeInvocation(getRuntimeInvocation(), () => {
+        if (getRuntimeInfo().dockerDesktop) prepareWindowsCredentialAccess(runtimeCli(), containerName, "/home/ccc/.claude", runtimeSpawnSync);
+        nativeContainerToolInstallation().ensureClaude(containerName);
+    });
 }
 
 /**
@@ -1011,17 +1005,20 @@ export function ensureClaudeInContainer(containerName: string): void {
  * - npm tools: lazily install only the active tool
  */
 export function ensureTools(containerName: string, activeTool: ToolDefinition): void {
-    if (activeTool.name === "opencode") prepareOpenCodeDataDirectory(containerName);
-    createRequestedToolSetup({
-        ensureClaudeLauncher: target => { ensureClaudeInContainer(target); return undefined; },
-        ensureNpmTool: (target, tool) => { ensureNpmTool(target, tool); return undefined; },
-        probeLauncher: (target, path) => spawnSync(
-            runtimeCli(),
-            ["exec", target, "test", "-x", path],
-            { stdio: "ignore", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
-        ),
-        ensureCodexSandbox: target => { ensureCodexBubblewrap(target); return undefined; },
-    }).ensure(containerName, activeTool);
+    return runWithNativeRuntimeInvocation(getRuntimeInvocation(), () => {
+        if (activeTool.name === "opencode") prepareOpenCodeDataDirectory(containerName);
+        createRequestedToolSetup({
+            ensureClaudeLauncher: target => { ensureClaudeInContainer(target); return undefined; },
+            ensureNpmTool: (target, tool) => { ensureNpmTool(target, tool); return undefined; },
+            probeLauncher: (target, path) => runtimeSpawnSync(["exec", target, "test", "-x", path],
+                { stdio: "ignore", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
+            ),
+            ensureCodexSandbox: target => { ensureCodexBubblewrap(target); return undefined; },
+        }).ensure(containerName, activeTool);
+        if (activeTool.name === "codex" && process.platform === "win32" && getRuntimeInfo().dockerDesktop) {
+            prepareCodexDaemonPackage(runtimeCli(), containerName, runtimeSpawnSync);
+        }
+    });
 }
 
 function ensureCodexBubblewrap(containerName: string): void {
@@ -1048,5 +1045,5 @@ function ensureNpmTool(containerName: string, activeTool: ToolDefinition): void 
  * without bash profile activation — they rely on the global mise shim.
  */
 export function ensureUvAvailable(containerName: string): void {
-    nativeContainerToolInstallation().ensureUv(containerName);
+    runWithNativeRuntimeInvocation(getRuntimeInvocation(), () => nativeContainerToolInstallation().ensureUv(containerName));
 }

@@ -7,7 +7,18 @@ const f = vi.hoisted(() => ({
     locked: false, failPostExitLock: false, failTool: false, failState: false, launchFailure: false,
     probeRunning: vi.fn(), spawn: vi.fn(), start: vi.fn(), prepare: vi.fn(), restore: vi.fn(), state: vi.fn(), harness: vi.fn(), claude: vi.fn(), confirm: vi.fn(), command: vi.fn(), clipboard: vi.fn(), socket: vi.fn(),
 }));
-vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: f.spawn }));
+vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: (...args: unknown[]) => f.spawn(...logicalNativeCall(args)) }));
+
+function logicalNativeCall(call: unknown[]): unknown[] {
+    const [program, args, options] = call;
+    if (program !== "/fixture/runtime/docker") return call;
+    const prefix = ["--config", "/fixture/config", "--host", "unix:///fixture/engine.sock", "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey="];
+    expect((args as string[]).slice(0, prefix.length)).toEqual(prefix);
+    const {env, shell, ...logicalOptions} = options as import("child_process").SpawnSyncOptions;
+    expect(shell).toBe(false);
+    expect(env?.DOCKER_CONTEXT).toBeUndefined();
+    return ["docker", (args as string[]).slice(prefix.length), logicalOptions];
+}
 // Native filesystem metadata stays real. Only the exact synthetic claim is removed
 // by a fixture; the isolated verification HOME contains all config directories.
 vi.mock("fs", async original => {
@@ -29,10 +40,28 @@ vi.mock("../docker.js", () => ({
     isDockerDesktop: () => false,
     getContainerName: () => "ccc-fixture", getContainerStatus: () => ({ exists: f.exists, running: f.running, imageId: "sha256:old", containerId: "old-id" }),
     startProjectContainer: f.start, isContainerRunning: f.probeRunning,
+    prepareProjectContainerStartup: () => ({ start: f.start, initialize: () => {} }),
+    withProjectContainerStateLockAsync: (operation: () => unknown) => operation(),
     restoreCodexConfigHostOwnership: f.restore, prepareCodexConfigForContainer: f.prepare,
     syncClipboardShims: f.clipboard, ensureContainerManagerSocketAccess: f.socket,
 }));
-vi.mock("../container-runtime.js", async original => ({ ...await original<typeof import("../container-runtime.js")>(), runtimeCli: () => "docker", deviceBrokerBindHostForContainer: () => "127.0.0.1" }));
+vi.mock("../container-runtime.js", async original => {
+    const actual = await original<typeof import("../container-runtime.js")>();
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../ports/container-runtime-invocation.js");
+    const invocation = actual.validateNativeRuntimeInvocation({
+        version: 1, runtime: "docker", executable: "/fixture/runtime/docker",
+        transport: { kind: "docker", host: "unix:///fixture/engine.sock", configDirectory: "/fixture/config",
+            tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    const runner = () => { const capturedCli = "docker"; return { invocation,
+        spawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => f.spawn(capturedCli, args, options),
+    }; };
+    return { ...actual, runtimeCli: () => "docker", deviceBrokerBindHostForContainer: () => "127.0.0.1",
+        getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => runner().spawnSync(args, options),
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation() };
+});
 vi.mock("../worktree.js", async original => ({ ...await original<typeof import("../worktree.js")>(), detectWorktreeWorkspaceBranch: () => null, getWorktreeGitMounts: () => [] }));
 vi.mock("../profile.js", async original => ({ ...await original<typeof import("../profile.js")>(), profileExists: () => true }));
 vi.mock("../clipboard-server.js", () => ({ ensureClipboardServer: async () => null, hasAnyActiveSessionsExcept: () => false, retireClipboardServerFromPortFile: vi.fn() }));
@@ -283,7 +312,7 @@ it.each([false, true])("native prepared command preserves literal arguments and 
     try {
         expect(await ports.launchCommand(prepared, { interactive: true, terminal, codexRecovery: false })).toBe(17);
         expect(f.envEntries).toEqual(environment);
-        expect(f.command).toHaveBeenCalledExactlyOnceWith("podman", ["exec", "-w", "/project/repo-id", "--env-file", "/fixture/exec.env", ...(terminal ? ["-it"] : []), "final-id", ...argumentsToCommand], true);
+        expect(f.command).toHaveBeenCalledExactlyOnceWith("podman", ["exec", "-w", "/project/repo-id", "--env-file", "/fixture/exec.env", ...(terminal ? ["-it"] : []), "final-id", ...argumentsToCommand], true, expect.objectContaining({invocation: expect.objectContaining({version: 1}), spawnSync: expect.any(Function)}));
         expect(f.events).not.toContain("unlink");
     } finally { ports.disposeCommand(prepared); }
     expect(f.events).toEqual(["unlink"]);
@@ -313,7 +342,8 @@ it("outer CLI cleanup settles its started container when environment preparation
     await expect(runCli()).rejects.toMatchObject({status: 1});
     expect(f.command).not.toHaveBeenCalled();
     expect(f.events).not.toContain("launch-preparation"); expect(f.events).not.toContain("unlink");
-    expect(f.events.filter(event => event === "restore")).toHaveLength(2);
+    // Startup restores access before MCP setup; application and CLI cleanup restore it again.
+    expect(f.events.filter(event => event === "restore")).toHaveLength(3);
     expect(f.devices).toHaveBeenCalledOnce();
     expect(f.spawn).toHaveBeenCalledWith("docker", ["stop", "final-id"], {stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL"});
     expect(getCurrentSession().lockFile).toBeNull();

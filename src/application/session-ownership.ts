@@ -1,22 +1,24 @@
 import type {
     SessionOwnershipBinding, SessionOwnershipReceipt, SessionOwnershipPorts,
     SessionOwnershipHandle, SessionOwnershipMessage, SessionOwnershipGuardianPorts,
-    SessionOwnershipRuntime,
 } from "../ports/session-ownership.js";
+import type { NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
 
 export async function armSessionOwnership(
     binding: SessionOwnershipBinding,
     receipt: SessionOwnershipReceipt,
+    runtimeInvocation: NativeRuntimeInvocation,
     ports: SessionOwnershipPorts,
     onFailure: (error: Error) => void,
 ): Promise<SessionOwnershipHandle> {
-    for (const name of ["launch", "cleanup", "assertOwnership", "setTimer", "clearTimer"] as const) {
+    for (const name of ["decodeRuntimeInvocation", "launch", "cleanup", "assertOwnership", "setTimer", "clearTimer"] as const) {
         if (typeof ports?.[name] !== "function") throw new TypeError(`Session ownership requires a callable ${name} port.`);
     }
     binding = Object.freeze({ ...binding });
     receipt = Object.freeze({ ...receipt });
     let channel: ReturnType<SessionOwnershipPorts["launch"]>;
     try {
+        runtimeInvocation = ports.decodeRuntimeInvocation(runtimeInvocation);
         channel = ports.launch();
     } catch (error) {
         try {
@@ -75,7 +77,7 @@ export async function armSessionOwnership(
     }));
     listeners.push(channel.onLoss(lost));
     try {
-        await request(0, { type: "init", binding, receipt });
+        await request(0, { type: "init", binding, receipt, runtimeInvocation });
         if (currentPhase() === "closed") throw new Error("Session ownership guardian was lost during readiness.");
         phase = "active";
         channel.unref();
@@ -91,10 +93,10 @@ export async function armSessionOwnership(
     return {
         pid: channel.pid,
         assertOwnership() { ports.assertOwnership(binding, receipt); },
-        async updateContainer(containerId, runtime, cleanupEnabled = false) {
+        async updateContainer(containerId, cleanupEnabled = false) {
             if (typeof cleanupEnabled !== "boolean") throw new TypeError("Invalid session cleanup authorization.");
             if (phase !== "active") throw new Error("Session ownership guardian is unavailable.");
-            await request(++sequence, { type: "update", sequence, containerId, runtime, cleanupEnabled });
+            await request(++sequence, { type: "update", sequence, containerId, cleanupEnabled });
         },
         async release() {
             if (phase === "closed") return;
@@ -109,12 +111,11 @@ export async function armSessionOwnership(
 }
 
 export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPorts) {
-    for (const name of ["validate", "rollback", "cleanup", "send", "pause", "finish"] as const) {
+    for (const name of ["decodeRuntimeInvocation", "validate", "rollback", "cleanup", "send", "pause", "finish"] as const) {
         if (typeof ports?.[name] !== "function") throw new TypeError(`Session ownership guardian requires a callable ${name} port.`);
     }
-    let ownership: { binding: SessionOwnershipBinding; receipt: SessionOwnershipReceipt } | null = null;
+    let ownership: { binding: SessionOwnershipBinding; receipt: SessionOwnershipReceipt; runtimeInvocation: NativeRuntimeInvocation } | null = null;
     let containerId: string | null = null;
-    let runtime: SessionOwnershipRuntime = "docker";
     let cleanupEnabled = false;
     let finished = false;
     let sequence = 0;
@@ -133,7 +134,7 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
             for (let attempt = 0; attempt < 3; attempt++) {
                 try {
                     if (containerId === null || !cleanupEnabled) await ports.rollback(ownership.binding, ownership.receipt);
-                    else await ports.cleanup(ownership.binding, ownership.receipt, containerId, runtime);
+                    else await ports.cleanup(ownership.binding, ownership.receipt, containerId, ownership.runtimeInvocation);
                 } catch (error) {
                     failures.push(error);
                     if (attempt < 2) {
@@ -171,23 +172,25 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
                 if (!message || typeof message !== "object") throw new Error("Invalid ownership frame.");
                 const frame = message as SessionOwnershipMessage;
                 if (frame.type === "init" && !ownership) {
+                    if (Object.keys(frame).some(key => !["type", "binding", "receipt", "runtimeInvocation"].includes(key))) throw new Error("Invalid ownership frame.");
+                    const runtimeInvocation = ports.decodeRuntimeInvocation(frame.runtimeInvocation);
                     await ports.validate(frame.binding, frame.receipt);
-                    ownership = { binding: Object.freeze({ ...frame.binding }), receipt: Object.freeze({ ...frame.receipt }) };
+                    ownership = { binding: Object.freeze({ ...frame.binding }), receipt: Object.freeze({ ...frame.receipt }), runtimeInvocation };
                     await ports.send({ type: "ready" });
                     return;
                 }
                 if (!ownership || !("sequence" in frame) || !Number.isSafeInteger(frame.sequence)
                     || frame.sequence <= sequence) throw new Error("Invalid ownership sequence.");
                 if (frame.type === "update") {
-                    if ((frame.containerId !== null && (typeof frame.containerId !== "string" || !/^[a-f0-9]{12,64}$/.test(frame.containerId)))
-                        || (frame.runtime !== "docker" && frame.runtime !== "podman")
+                    if (Object.keys(frame).some(key => !["type", "sequence", "containerId", "cleanupEnabled"].includes(key))
+                        || (frame.containerId !== null && (typeof frame.containerId !== "string" || !/^[a-f0-9]{12,64}$/.test(frame.containerId)))
                         || typeof frame.cleanupEnabled !== "boolean") throw new Error("Invalid container handoff.");
                     await ports.send({ type: "ack", sequence: frame.sequence });
                     sequence = frame.sequence;
                     containerId = frame.containerId;
-                    runtime = frame.runtime;
                     cleanupEnabled = frame.cleanupEnabled;
                 } else if (frame.type === "release") {
+                    if (Object.keys(frame).some(key => !["type", "sequence"].includes(key))) throw new Error("Invalid ownership frame.");
                     await ports.send({ type: "ack", sequence: frame.sequence });
                     sequence = frame.sequence;
                     finished = true;

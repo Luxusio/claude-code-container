@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), filesystem: vi.fn() }));
 vi.mock("child_process", async original => ({
@@ -27,9 +28,15 @@ vi.mock("fs", async original => {
     };
 });
 vi.mock("os", async original => ({ ...await original<typeof import("node:os")>(), homedir: () => "/ccc-lab-state-fake/home" }));
+// Capability facts are explicit in this facade fixture; native invocation compilation stays real.
+vi.mock("../../container-runtime.js", async original => ({
+    ...await original<typeof import("../../container-runtime.js")>(),
+    runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation(),
+}));
 
 const { prepareLabStateOwnership } = await import("../../lab-state-ownership.js");
 const runtime = await import("../../container-runtime.js");
+const nativeCalls = () => native.spawn.mock.calls.map(call => normalizeNativeRuntimeCall(call) as [string, string[], unknown]);
 const application = await import("../../application/container/lab-state-ownership.js");
 const volume = "ccc-example-lab-state";
 const image = `sha256:${"a".repeat(64)}`;
@@ -49,10 +56,10 @@ beforeEach(() => {
     vi.resetAllMocks();
     vi.stubEnv("container", "");
     vi.stubEnv("CCC_PODMAN_CGROUPS", "");
-    runtime._setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-native", rootless: false, remote: false });
+    preloadNativeRuntimeFixture(runtime, { runtime: "docker", flavor: "docker-native", rootless: false, remote: false });
     native.spawn.mockImplementation((_cli: string, args: string[]) => {
-        if (args[0] === "volume") return success(volume + "\n");
-        if (args[0] === "ps" || args.includes("--mount")) return success();
+        if (args.includes("volume")) return success(volume + "\n");
+        if (args.includes("ps") || args.includes("--mount")) return success();
         if (args.includes(previous)) return success("1001:1002");
         throw new Error("Unplanned fixture native command");
     });
@@ -75,7 +82,7 @@ describe("Lab ownership actual public facade and retained native bindings", () =
     });
     it("preserves complete native argv/options and selective-owner shell bytes", () => {
         prepareLabStateOwnership(volume, image, identity, previous);
-        expect(native.spawn.mock.calls).toEqual([
+        expect(nativeCalls()).toEqual([
             ["docker", ["volume", "ls", "--format", "{{.Name}}"], options],
             ["docker", ["ps", "-q", "--filter", `volume=${volume}`], options],
             ["docker", [...runArgs(), "--user", "ccc", previous, "-c", oldScript], options],
@@ -84,32 +91,32 @@ describe("Lab ownership actual public facade and retained native bindings", () =
     });
     it.each([undefined, ""])("keeps exact root verification bytes with previous %s", prior => {
         prepareLabStateOwnership(volume, image, identity, prior);
-        expect(native.spawn.mock.calls).toEqual([
+        expect(nativeCalls()).toEqual([
             ["docker", ["volume", "ls", "--format", "{{.Name}}"], options],
             ["docker", ["ps", "-q", "--filter", `volume=${volume}`], options],
             ["docker", [...runArgs(), "--user", "root", "--mount", `type=volume,source=${volume},target=/state`, image, "-c", verifyScript], options],
         ]);
     });
-    it("captures actual Podman extras once and retains them while runtime changes during account probe", () => {
-        runtime._setRuntimeInfoForTest({ runtime: "podman", flavor: "podman-rootless", rootless: true, remote: false });
+    it("captures actual Podman extras and runner once while runtime changes during account probe", () => {
+        preloadNativeRuntimeFixture(runtime, { runtime: "podman", flavor: "podman-rootless", rootless: true, remote: false });
         vi.stubEnv("CCC_PODMAN_CGROUPS", "disabled");
         native.spawn.mockImplementation((_cli: string, args: string[]) => {
-            if (args[0] === "volume") return success(volume + "\n");
-            if (args[0] === "ps" || args.includes("--mount")) return success();
-            runtime._setRuntimeInfoForTest({ runtime: "docker", flavor: "docker-native", rootless: false, remote: false });
+            if (args.includes("volume")) return success(volume + "\n");
+            if (args.includes("ps") || args.includes("--mount")) return success();
+            preloadNativeRuntimeFixture(runtime, { runtime: "docker", flavor: "docker-native", rootless: false, remote: false });
             return success("1001:1002");
         });
         prepareLabStateOwnership(volume, image, identity, previous);
         const extras = ["--cgroups=disabled", "--userns=keep-id:uid=1000,gid=1000"];
-        expect(native.spawn.mock.calls[2]).toEqual(["podman", [...runArgs(extras), "--user", "ccc", previous, "-c", oldScript], options]);
-        expect(native.spawn.mock.calls[3]).toEqual(["docker", [...runArgs(extras), "--user", "root", "--mount", `type=volume,source=${volume},target=/state`, image, "-c", migrateScript], options]);
+        expect(nativeCalls()[2]).toEqual(["podman", [...runArgs(extras), "--user", "ccc", previous, "-c", oldScript], options]);
+        expect(nativeCalls()[3]).toEqual(["podman", [...runArgs(extras), "--user", "root", "--mount", `type=volume,source=${volume},target=/state`, image, "-c", migrateScript], options]);
     });
 
 
     it.each(["list", "users", "account", "helper"])("does not translate a thrown %s native runner failure", stage => {
         const failure = Object.freeze({ stage }), original = native.spawn.getMockImplementation()!;
         native.spawn.mockImplementation((cli, args, supplied) => {
-            const current = args[0] === "volume" ? "list" : args[0] === "ps" ? "users" : args.includes("--mount") ? "helper" : "account";
+            const current = args.includes("volume") ? "list" : args.includes("ps") ? "users" : args.includes("--mount") ? "helper" : "account";
             if (current === stage) throw failure;
             return original(cli, args, supplied);
         });
@@ -122,7 +129,7 @@ describe("Lab ownership actual public facade and retained native bindings", () =
         native.spawn.mockImplementation((cli, args, supplied) => args.includes("--mount") ? { status } : original(cli, args, supplied));
         expect(() => prepareLabStateOwnership(volume, image, identity, previous)).toThrow(`Lab state ownership preparation failed for ${volume}. Existing data was retained; repair its ownership before retrying.`);
         expect(native.spawn).toHaveBeenCalledTimes(4);
-        expect(native.spawn.mock.calls.every(([, args]) => ["volume", "ps", "run"].includes(args[0]))).toBe(true);
+        expect(nativeCalls().every(([, args]) => ["volume", "ps", "run"].includes(args[0]))).toBe(true);
     });
     it.each(["", volume + "\r\n", " " + volume + "\n", volume + "-other\n", volume.toUpperCase() + "\n"])("stops after the list when exact volume is absent in %j", listed => {
         native.spawn.mockReturnValueOnce(success(listed));
@@ -135,7 +142,7 @@ describe("Lab ownership actual public facade and retained native bindings", () =
     });
     it("normalizes bare immutable IDs without changing native account authority", () => {
         prepareLabStateOwnership(volume, image.slice(7), identity, previous.slice(7));
-        expect(native.spawn.mock.calls[2][1]).toContain(previous);
-        expect(native.spawn.mock.calls[3][1]).toContain(image);
+        expect(nativeCalls()[2][1]).toContain(previous);
+        expect(nativeCalls()[3][1]).toContain(image);
     });
 });

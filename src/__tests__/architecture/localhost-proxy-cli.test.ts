@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 const f = vi.hoisted(() => ({
     home: "", reach: vi.fn(),
     events: [] as string[], running: false, exists: true, profile: undefined as string | undefined,
@@ -11,7 +12,7 @@ const f = vi.hoisted(() => ({
     probeRunning: vi.fn(), spawn: vi.fn(), start: vi.fn(), prepare: vi.fn(), restore: vi.fn(), state: vi.fn(), harness: vi.fn(), confirm: vi.fn(), command: vi.fn(),
 }));
 vi.mock("os", async original => ({ ...await original<typeof import("os")>(), homedir: () => f.home }));
-vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: f.spawn }));
+vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: (...args: unknown[]) => f.spawn(...normalizeNativeRuntimeCall(args)) }));
 // Native filesystem metadata stays real. Only the exact synthetic claim is removed
 // by a fixture; the isolated verification HOME contains all config directories.
 vi.mock("fs", async original => {
@@ -40,7 +41,10 @@ vi.mock("../../docker.js", async original => ({
     restoreCodexConfigHostOwnership: f.restore, prepareCodexConfigForContainer: f.prepare,
     syncClipboardShims: () => f.events.push("clipboard"), ensureContainerManagerSocketAccess: vi.fn(),
 }));
-vi.mock("../../container-runtime.js", async original => ({ ...await original<typeof import("../../container-runtime.js")>(), runtimeCli: () => "podman", isContainerHostRemote: () => true, deviceBrokerBindHostForContainer: () => "127.0.0.1" }));
+vi.mock("../../container-runtime.js", async original => ({ ...await original<typeof import("../../container-runtime.js")>(),
+    // Runtime facts are explicit here; emitted integration owns native scope lifetime.
+    runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation(),
+    runtimeCli: () => "podman", isContainerHostRemote: () => true, deviceBrokerBindHostForContainer: () => "127.0.0.1" }));
 vi.mock("../../worktree.js", async original => ({ ...await original<typeof import("../../worktree.js")>(), detectWorktreeWorkspaceBranch: () => null, getWorktreeGitMounts: () => [] }));
 vi.mock("../../profile.js", async original => ({ ...await original<typeof import("../../profile.js")>(), profileExists: () => true }));
 vi.mock("../../clipboard-server.js", () => ({ ensureClipboardServer: async () => null, hasAnyActiveSessionsExcept: () => false, retireClipboardServerFromPortFile: vi.fn() }));
@@ -87,6 +91,7 @@ vi.mock("../../codex-launch.js", async original => ({ ...await original<typeof i
     return f.launchFailure ? { ok: false, status: 9, reason: "engine-unavailable", cause: "daemon unavailable", command } : { ok: true, command };
 } }));
 import { clearSession } from "../../session.js";
+import * as runtime from "../../container-runtime.js";
 import { main } from "../../index.js";
 class Exit extends Error { constructor(readonly status: number) { super(`exit ${status}`); } }
 const originalArgv = process.argv;
@@ -94,6 +99,7 @@ beforeEach(() => {
     f.home = mkdtempSync(join(tmpdir(), "ccc-proxy-cli-"));
     clearSession(); f.realCleanup = false; f.handoffStarted = undefined;
     vi.clearAllMocks(); vi.stubEnv("CCC_PROFILE", ""); vi.stubEnv("DEBUG", ""); vi.stubEnv("container", "");
+    preloadNativeRuntimeFixture(runtime, { runtime: "podman", flavor: "podman-machine", remote: true });
     process.argv = [process.execPath, "ccc", "codex", "resume", "--last"];
     f.events = []; f.running = false; f.exists = true; f.profile = undefined; f.locked = false; f.failPostExitLock = false; f.failTool = false; f.failState = false; f.launchFailure = false;
     vi.spyOn(process, "exit").mockImplementation(code => { throw new Exit(Number(code)); });
@@ -115,7 +121,7 @@ beforeEach(() => {
     f.harness.mockImplementation((id, profile) => { expect(id).toBe("final-id"); expect(profile).toBe(f.profile); f.events.push("harness"); });
     f.spawn.mockImplementation((_runtime, args: string[]) => { if (args.includes("codex")) f.events.push("command"); return { status: 0, stdout: "", stderr: "" }; });
 });
-afterEach(() => { rmSync(f.home, { recursive: true, force: true }); process.argv = originalArgv; vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+afterEach(() => { runtime._resetRuntimeCacheForTest(); rmSync(f.home, { recursive: true, force: true }); process.argv = originalArgv; vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 const cases = [false, true].flatMap(running => ["codex", "claude"].map(tool => ({ running, tool })));
 it.each(cases)("actual CLI verifier: running=$running tool=$tool", async ({ running, tool }) => {

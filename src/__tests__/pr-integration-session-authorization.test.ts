@@ -4,6 +4,16 @@ import { createSessionOwnershipGuardian } from "../application/session-ownership
 import type { SessionCleanupPorts } from "../ports/session-cleanup.js";
 import type { SessionOwnershipGuardianPorts, SessionOwnershipMessage } from "../ports/session-ownership.js";
 
+import { validateNativeRuntimeInvocation } from "../adapters/container-runtime-invocation.js";
+import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation, type NativeRuntimeSelectors } from "../ports/container-runtime-invocation.js";
+
+const runtimeInvocation: NativeRuntimeInvocation = validateNativeRuntimeInvocation({
+    version: 1, runtime: "docker", executable: process.execPath,
+    transport: { kind: "docker", host: "unix:///fixture/engine-a.sock", configDirectory: "/fixture/config-a",
+        tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+    selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])) as NativeRuntimeSelectors,
+});
+
 const id = "a".repeat(64);
 const successorId = "b".repeat(64);
 const binding = { lockFile: "/fixture/owner.lock", projectPath: "/fixture/project", toolName: "codex" };
@@ -33,6 +43,7 @@ function guardianFixture() {
     const statuses: unknown[] = [];
     const frames: SessionOwnershipMessage[] = [];
     const ports: SessionOwnershipGuardianPorts = {
+        decodeRuntimeInvocation: validateNativeRuntimeInvocation,
         validate: () => undefined,
         rollback: (...args) => { rollbacks.push(args); },
         cleanup: (...args) => { cleanups.push(args); },
@@ -42,7 +53,7 @@ function guardianFixture() {
     };
     const guardian = createSessionOwnershipGuardian(ports);
     return { guardian, ports, cleanups, rollbacks, statuses,
-        init: () => guardian.receive({ type: "init", binding, receipt }) };
+        init: () => guardian.receive({ type: "init", binding, receipt, runtimeInvocation }) };
 }
 
 describe("PR integration separates captured identity from shutdown authorization", () => {
@@ -76,7 +87,7 @@ describe("PR integration separates captured identity from shutdown authorization
     it("guardian EOF after a failed join rolls back only its owned claim despite an acknowledged ID", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId: id, runtime: "docker", cleanupEnabled: false });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId: id, cleanupEnabled: false });
         await f.guardian.disconnect();
         await f.guardian.disconnect();
         expect(f.rollbacks).toEqual([[binding, receipt]]);
@@ -87,7 +98,7 @@ describe("PR integration separates captured identity from shutdown authorization
     it.each([undefined, null, "true", 1, {}])("malformed authorization %j never grants guardian shutdown", async permission => {
         const f = guardianFixture();
         await f.init();
-        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId: id, runtime: "docker",
+        await expect(f.guardian.receive({ type: "update", sequence: 1, containerId: id,
             ...(permission === undefined ? {} : { cleanupEnabled: permission }) })).rejects.toThrow();
         await f.guardian.disconnect();
         expect(f.cleanups).toEqual([]);
@@ -97,11 +108,11 @@ describe("PR integration separates captured identity from shutdown authorization
     it("failed permission ACK preserves the earlier acknowledged disabled permission", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId: id, runtime: "docker", cleanupEnabled: false });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId: id, cleanupEnabled: false });
         const failure = new Error("owned fixture ACK unavailable");
         f.ports.send = async frame => { if (frame.type === "ack") throw failure; };
         await expect(f.guardian.receive({ type: "update", sequence: 2, containerId: successorId,
-            runtime: "podman", cleanupEnabled: true })).rejects.toBe(failure);
+            cleanupEnabled: true })).rejects.toBe(failure);
         await f.guardian.disconnect();
         expect(f.cleanups).toEqual([]);
         expect(f.rollbacks).toEqual([[binding, receipt]]);
@@ -110,8 +121,8 @@ describe("PR integration separates captured identity from shutdown authorization
     it("guardian EOF after an acknowledged replacement-ID revocation never inherits prior ID shutdown permission", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId: id, runtime: "docker", cleanupEnabled: true });
-        await f.guardian.receive({ type: "update", sequence: 2, containerId: successorId, runtime: "podman", cleanupEnabled: false });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId: id, cleanupEnabled: true });
+        await f.guardian.receive({ type: "update", sequence: 2, containerId: successorId, cleanupEnabled: false });
         // The parent may die before its later explicit index revocation/grant.
         await f.guardian.disconnect();
         expect(f.cleanups).toEqual([]);
@@ -119,17 +130,17 @@ describe("PR integration separates captured identity from shutdown authorization
         expect(f.statuses).toHaveLength(1);
     });
 
-    it("disconnect waits for permission ACK and then cleans only the committed ID and runtime", async () => {
+    it("disconnect waits for permission ACK and then cleans only the committed ID and initialized native authority", async () => {
         const f = guardianFixture();
         await f.init();
-        await f.guardian.receive({ type: "update", sequence: 1, containerId: id, runtime: "docker", cleanupEnabled: false });
+        await f.guardian.receive({ type: "update", sequence: 1, containerId: id, cleanupEnabled: false });
         let started!: () => void;
         const sending = new Promise<void>(resolve => { started = resolve; });
         let acknowledge!: () => void;
         const ack = new Promise<void>(resolve => { acknowledge = resolve; });
         f.ports.send = async frame => { if (frame.type === "ack") { started(); await ack; } };
         const update = f.guardian.receive({ type: "update", sequence: 2, containerId: successorId,
-            runtime: "podman", cleanupEnabled: true });
+            cleanupEnabled: true });
         await sending;
         const disconnected = f.guardian.disconnect();
         await Promise.resolve();
@@ -138,7 +149,7 @@ describe("PR integration separates captured identity from shutdown authorization
         acknowledge();
         await update;
         await disconnected;
-        expect(f.cleanups).toEqual([[binding, receipt, successorId, "podman"]]);
+        expect(f.cleanups).toEqual([[binding, receipt, successorId, runtimeInvocation]]);
         expect(f.rollbacks).toEqual([]);
     });
 });

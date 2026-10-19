@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 import { dirname } from "path";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), access: vi.fn(), lstat: vi.fn(), forbidden: vi.fn(), modeReads: [] as string[], modeFailure: undefined as unknown }));
@@ -10,14 +11,16 @@ vi.mock("child_process", async original => {
 vi.mock("fs", async original => {
     const actual = await original<typeof import("node:fs")>();
     const blocked = () => { native.forbidden(); throw new Error("Forbidden filesystem"); };
+    const manifest = new URL("../package.json", import.meta.resolve("@ccc/device-lab"));
     const constants = { ...actual.constants, get R_OK() { native.modeReads.push("R"); if (native.modeFailure) throw native.modeFailure; return 4; }, get W_OK() { native.modeReads.push("W"); return 2; } };
     return { ...actual, ...Object.fromEntries(Object.entries(actual).filter(([, value]) => typeof value === "function").map(([name]) => [name, blocked])),
         constants, promises: Object.fromEntries(Object.keys(actual.promises).map(name => [name, blocked])), accessSync: native.access, lstatSync: native.lstat,
-        readFileSync: (selected: unknown) => selected instanceof URL && selected.href === new URL("../../../packages/device-lab/package.json", import.meta.url).href ? JSON.stringify({ version: "fixture" }) : blocked() };
+        readFileSync: (selected: unknown) => selected instanceof URL && selected.href === manifest.href ? JSON.stringify({ version: "fixture" }) : blocked() };
 });
 vi.mock("os", async original => ({ ...await original<typeof import("node:os")>(), homedir: () => "/ccc-codex-host-fake/home", tmpdir: () => "/ccc-codex-host-fake/temp" }));
 const docker = await import("../../docker.js");
 const runtime = await import("../../container-runtime.js");
+const nativeCalls = () => native.spawn.mock.calls.map(call => normalizeNativeRuntimeCall(call));
 const utils = await import("../../utils.js");
 const acl = await import("../../codex-config-acl.js");
 const uidDescriptor = Object.getOwnPropertyDescriptor(process, "getuid");
@@ -29,7 +32,7 @@ function thrown(fn: () => unknown): unknown { try { fn(); } catch (error) { retu
 function denied() { native.access.mockImplementationOnce(() => { throw { code: "EACCES" }; }); }
 beforeEach(() => {
     vi.resetAllMocks(); native.modeReads.length = 0; native.modeFailure = undefined;
-    runtime._setRuntimeInfoForTest({ runtime: "docker" });
+    preloadNativeRuntimeFixture(runtime, { runtime: "docker" });
     native.access.mockReturnValue(undefined); native.spawn.mockReturnValue({ status: 0, stdout: "2001\n", stderr: "" });
     native.lstat.mockImplementation(() => ({ uid: 1001, isDirectory() { return true; }, isFile() { return true; }, get nlink(): never { throw new Error("Forbidden nlink"); } }));
     Object.defineProperty(process, "getuid", { configurable: true, value: function(this: unknown) { return 1001; } });
@@ -58,15 +61,15 @@ describe("Codex actual native restoration facade", () => {
         expect(docker.restoreCodexConfigHostOwnership(target, profile)).toBeUndefined();
         expect(native.access.mock.calls).toEqual([[config, 6], [config, 6]]);
         expect(native.lstat.mock.calls.slice(-2)).toEqual([[dirname(config)], [config]]);
-        expect(native.spawn.mock.calls).toEqual([uidCall(), repairCall()]); expect(native.modeReads).toEqual(["R", "W"]);
-        expect(console.warn).not.toHaveBeenCalled(); expect(JSON.stringify(native.spawn.mock.calls)).not.toContain("chown");
+        expect(nativeCalls()).toEqual([uidCall(), repairCall()]); expect(native.modeReads).toEqual(["R", "W"]);
+        expect(console.warn).not.toHaveBeenCalled(); expect(JSON.stringify(nativeCalls())).not.toContain("chown");
     });
 
     it.each(["", "-1", "2001x", "4294967295"])("warns invalid mapped UID %s without repair", uid => {
         denied(); native.spawn.mockReturnValue({ status: 0, stdout: uid, stderr: "" }); docker.restoreCodexConfigHostOwnership(target, "named");
-        expect(native.spawn.mock.calls).toEqual([uidCall()]); expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("invalid container user identity")); expect(native.access).toHaveBeenCalledTimes(1);
+        expect(nativeCalls()).toEqual([uidCall()]); expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("invalid container user identity")); expect(native.access).toHaveBeenCalledTimes(1);
     });
-    it("retains leading zeros and whitespace parsing", () => { denied(); native.spawn.mockReturnValueOnce({ status: 0, stdout: "  002001\n", stderr: "" }); docker.restoreCodexConfigHostOwnership(target, "named"); expect(native.spawn.mock.calls).toEqual([uidCall(), repairCall("docker", "002001")]); });
+    it("retains leading zeros and whitespace parsing", () => { denied(); native.spawn.mockReturnValueOnce({ status: 0, stdout: "  002001\n", stderr: "" }); docker.restoreCodexConfigHostOwnership(target, "named"); expect(nativeCalls()).toEqual([uidCall(), repairCall("docker", "002001")]); });
     it.each(["identity", "directory", "owner", "file"])("warns unsafe %s without native commands", invalid => {
         denied(); if (invalid === "identity") Object.defineProperty(process, "getuid", { configurable: true, value: undefined });
         native.lstat.mockReturnValue({ uid: invalid === "owner" ? 2 : 1001, isDirectory: () => invalid !== "directory", isFile: () => invalid !== "file" });
@@ -78,7 +81,7 @@ describe("Codex actual native restoration facade", () => {
             native.spawn.mockReset(); native.access.mockReset().mockReturnValue(undefined); denied();
             if (stage === "repair") native.spawn.mockReturnValueOnce({ status: 0, stdout: "2001" }); native.spawn.mockReturnValueOnce(observation);
             docker.restoreCodexConfigHostOwnership(target, "named");
-            expect(native.spawn.mock.calls).toEqual(stage === "repair" ? [uidCall(), repairCall()] : [uidCall()]);
+            expect(nativeCalls()).toEqual(stage === "repair" ? [uidCall(), repairCall()] : [uidCall()]);
             expect(console.warn).toHaveBeenLastCalledWith(expect.stringContaining(stage === "repair" ? "container ACL repair failed" : "container user lookup failed"));
             expect(console.warn).toHaveBeenLastCalledWith(expect.stringContaining("error" in observation ? "timed out" : observation.status === null ? "exit unknown" : "diagnostic"));
             expect(native.access).toHaveBeenCalledTimes(1);

@@ -1,6 +1,5 @@
-import { spawnSync } from "child_process";
 import { createContainerExistingLifecycle } from "../application/container-existing-lifecycle.js";
-import { runtimeCli } from "../container-runtime.js";
+import { getRuntimeInvocation, bindNativeRuntimeInvocation, runWithNativeRuntimeInvocation } from "../container-runtime.js";
 import { ContainerRestartRequiredError } from "../container-restart-guidance.js";
 import type { ContainerExistingLifecyclePorts } from "../ports/container-existing-lifecycle.js";
 
@@ -22,18 +21,20 @@ export function createNativeContainerExistingLifecycle(
     ports: Omit<ContainerExistingLifecyclePorts, NativeLifecyclePorts>,
     context: NativeContainerExistingLifecycleContext,
 ) {
-    return createContainerExistingLifecycle({
+    const invocation = getRuntimeInvocation();
+    const runner = bindNativeRuntimeInvocation(invocation);
+    const lifecycle = createContainerExistingLifecycle({
         ...ports,
         start: (id) => {
             context.beforeStart?.();
-            const started = spawnSync(context.startCli, ["start", id], { stdio: "inherit", timeout: 30_000, killSignal: "SIGKILL" });
+            const started = runner.spawnSync(["start", id], { stdio: "inherit", timeout: 30_000, killSignal: "SIGKILL" });
             if (started.error || started.status !== 0) {
                 throw new Error("Stopped container could not be restarted; automatic replacement was refused.", { cause: started.error ?? new Error((started.stderr ?? "").toString() || `Runtime exited with status ${started.status}`) });
             }
             context.afterStart?.(id);
         },
         stop: (id) => {
-            const stopped = spawnSync(runtimeCli(), ["stop", id], {
+            const stopped = runner.spawnSync(["stop", id], {
                 timeout: 30_000, killSignal: "SIGKILL",
                 encoding: "utf-8",
                 stdio: ["ignore", "pipe", "pipe"],
@@ -45,7 +46,7 @@ export function createNativeContainerExistingLifecycle(
         remove: (id) => {
             context.beforeRemove?.();
             // Ordinary rm refuses removal if an external actor starts the container.
-            const removed = spawnSync(runtimeCli(), ["rm", id], {
+            const removed = runner.spawnSync(["rm", id], {
                 timeout: 30_000, killSignal: "SIGKILL",
                 encoding: "utf-8",
                 stdio: ["ignore", "pipe", "pipe"],
@@ -73,7 +74,11 @@ export function createNativeContainerExistingLifecycle(
             console.warn(`[ccc] Container update deferred (${reason}) because the existing container is running. It will be applied after the container stops.`);
         },
         throwUnsafeDefer: (reason) => {
-            throw new ContainerRestartRequiredError(reason, context.projectPath, runtimeCli(), context.profile);
+            throw new ContainerRestartRequiredError(reason, context.projectPath, invocation.runtime, context.profile);
         },
     });
+    return {
+        run: (...args: Parameters<typeof lifecycle.run>) => runWithNativeRuntimeInvocation(invocation, () => lifecycle.run(...args)),
+        replace: (...args: Parameters<typeof lifecycle.replace>) => runWithNativeRuntimeInvocation(invocation, () => lifecycle.replace(...args)),
+    };
 }

@@ -1,6 +1,25 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { SpawnSyncReturns } from 'child_process';
 import { detectHostNetworkReach } from '../network-reach.js';
+
+const native = vi.hoisted(() => ({ spawn: vi.fn(), capture: vi.fn(), cached: vi.fn() }));
+vi.mock('child_process', async original => ({
+    ...await original<typeof import('child_process')>(), spawnSync: native.spawn,
+}));
+vi.mock('../container-runtime.js', async original => {
+    const actual = await original<typeof import('../container-runtime.js')>();
+    const { nativeRuntimeInvocationFixture } = await import('./helpers/native-runtime-fixture.js');
+    native.capture.mockImplementation((runtime: 'docker' | 'podman') => actual.validateNativeRuntimeInvocation(nativeRuntimeInvocationFixture(runtime)));
+    native.cached.mockImplementation(() => actual.validateNativeRuntimeInvocation(nativeRuntimeInvocationFixture('docker')));
+    return {...actual, runtimeCli: () => 'docker', currentNativeRuntimeInvocation: () => undefined,
+        getRuntimeInvocation: native.cached, captureNativeRuntimeInvocation: native.capture};
+});
+
+beforeEach(() => {
+    native.spawn.mockReset();
+    native.capture.mockClear();
+    native.cached.mockClear();
+});
 
 function spawnResult(overrides: Partial<SpawnSyncReturns<string>> = {}): SpawnSyncReturns<string> {
     return {
@@ -15,6 +34,51 @@ function spawnResult(overrides: Partial<SpawnSyncReturns<string>> = {}): SpawnSy
 }
 
 describe('detectHostNetworkReach', () => {
+    it.each(['docker', 'podman'] as const)('honors an option-only %s selector instead of the cached default runtime', runtime => {
+        native.spawn.mockReturnValue(spawnResult({status: 0}));
+        const select = vi.fn(() => runtime);
+        expect(detectHostNetworkReach('same-id', {runtimeCli: select, timeoutMs: 1234}).reachable).toBe(true);
+        expect(select).toHaveBeenCalledOnce();
+        expect(native.capture).toHaveBeenCalledExactlyOnceWith(runtime);
+        expect(native.cached).not.toHaveBeenCalled();
+        expect(native.spawn).toHaveBeenCalledOnce();
+        const [program, args, options] = native.spawn.mock.calls[0];
+        expect(program).toBe(`/fixture/runtime/${runtime}`);
+        expect(args.slice(-5, -1)).toEqual(['exec', 'same-id', 'sh', '-c']);
+        expect(args.at(-1)).toContain('nc -z -w 2 host.docker.internal 53');
+        expect(options).toMatchObject({encoding: 'utf-8', timeout: 1234, stdio: ['pipe', 'pipe', 'pipe'], shell: false});
+        expect(options.env.CONTAINER_CONNECTION).toBeUndefined();
+        expect(options.env.DOCKER_CONTEXT).toBeUndefined();
+    });
+
+    it.each(['fixture-command', '/owned/custom command'])('passes an option-only custom command %s directly to the native process seam', command => {
+        native.spawn.mockReturnValue(spawnResult({status: 127}));
+        expect(detectHostNetworkReach('same-id', {runtimeCli: () => command, timeoutMs: 4321}).reason).toBe('no-probe');
+        expect(native.capture).not.toHaveBeenCalled();
+        expect(native.cached).not.toHaveBeenCalled();
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith(command, ['exec', 'same-id', 'sh', '-c', expect.any(String)],
+            {encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 4321});
+    });
+
+    it('retains an explicit spawn implementation when a runtime selector is also supplied', () => {
+        const spawnImpl = vi.fn().mockReturnValue(spawnResult({status: 0}));
+        expect(detectHostNetworkReach('same-id', {runtimeCli: () => 'podman', spawnImpl: spawnImpl as unknown as typeof import('child_process').spawnSync}).reachable).toBe(true);
+        expect(spawnImpl).toHaveBeenCalledExactlyOnceWith('podman', ['exec', 'same-id', 'sh', '-c', expect.any(String)],
+            {encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000});
+        expect(native.spawn).not.toHaveBeenCalled();
+        expect(native.capture).not.toHaveBeenCalled();
+        expect(native.cached).not.toHaveBeenCalled();
+    });
+
+    it('preserves a thrown custom-command native failure', () => {
+        const failure = {native: 'custom command failed'};
+        native.spawn.mockImplementation(() => {throw failure;});
+        try {detectHostNetworkReach('same-id', {runtimeCli: () => '/owned/custom-command'}); throw new Error('missing failure');}
+        catch (error) {expect(error).toBe(failure);}
+        expect(native.capture).not.toHaveBeenCalled();
+        expect(native.cached).not.toHaveBeenCalled();
+    });
+
     it('returns reachable=true when probe exits 0', () => {
         const spawnImpl = vi.fn().mockReturnValue(spawnResult({ status: 0 }));
         let t = 1000;

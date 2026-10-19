@@ -23,14 +23,27 @@ vi.mock("fs", async original => ({
 vi.mock("os", async original => ({
     ...await original<typeof import("node:os")>(), homedir: () => "/fixture/home",
 }));
-vi.mock("../../container-runtime.js", async original => ({
-    ...await original<typeof import("../../container-runtime.js")>(),
-    runtimeCli: native.runtime,
+vi.mock("../../container-runtime.js", async original => {
+    const actual = await original<typeof import("../../container-runtime.js")>();
+    const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import("../../ports/container-runtime-invocation.js");
+    const invocation = actual.validateNativeRuntimeInvocation({
+        version: 1, runtime: "docker", executable: "/fixture/runtime/docker",
+        transport: { kind: "docker", host: "unix:///fixture/engine.sock", configDirectory: "/fixture/config",
+            tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])),
+    });
+    const runner = () => { const capturedCli = "captured-runtime"; return { invocation,
+        spawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => native.spawn(capturedCli, args, options),
+    }; };
+    return { ...actual, runtimeCli: native.runtime,
     isContainerHostRemote: native.remote,
     getRuntimeInfo: () => ({ runtime: "docker", dockerDesktop: false, socketPath: "/var/run/docker.sock" }),
     runtimeExtraRunArgs: () => [],
     bindMountArgs: (host: string, container: string, options?: { readonly?: boolean }) => ["-v", `${host}:${container}${options?.readonly ? ":ro" : ""}`],
-}));
+        getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
+        runtimeSpawnSync: (args: readonly string[], options?: import("child_process").SpawnSyncOptions) => runner().spawnSync(args, options),
+        runWithNativeRuntimeInvocation: <T>(_invocation: unknown, operation: () => T): T => operation() };
+});
 vi.mock("../../tool-registry.js", () => ({ getAllCredentialMounts: () => [] }));
 vi.mock("../../device-lab-admin.js", () => ({ cleanupOwnerDevices: vi.fn() }));
 vi.mock("../../session.js", () => ({
@@ -485,22 +498,23 @@ describe("public Docker creation cutover", () => {
         expect(native.spawn.mock.calls.filter(call => call[1][0] === "rm")).toEqual([["captured-runtime", ["rm", "-f", id], cleanupOptions]]);
         expect(native.spawn.mock.calls.some(call => call[1].includes("ccc-ssh-copy"))).toBe(false);
     });
-    it("creates, verifies, synchronizes with current runtime and returns the unchanged public name", () => {
+    it("creates, verifies, synchronizes with captured runtime and returns the unchanged public name", () => {
         const state = publicFixture(); state.createResult = result(0, id);
         const ready = vi.fn();
         expect(docker.startProjectContainer(project, () => {}, undefined, undefined, undefined, undefined, undefined, ready)).toBe(docker.getContainerName(project));
         expect(ready).toHaveBeenCalledExactlyOnceWith(id, { startedByInvocation: true });
         expect(state.familyCalls).toBe(1);
+        expect(state.currentCli).toBe("changed-runtime");
         const run = native.spawn.mock.calls.find(call => call[1][0] === "run" && call[1][1] !== "--rm");
         expect(run?.[0]).toBe("captured-runtime");
         const proof = native.spawn.mock.calls.find(call => call[1].includes("{{json .}}"));
-        expect(proof?.[0]).toBe("changed-runtime");
+        expect(proof?.[0]).toBe("captured-runtime");
         expect(proof?.[1]).toEqual(["inspect", "-f", "{{json .}}", id]);
         const ssh = native.spawn.mock.calls.filter(call => call[1][0] === "exec" && call[1][2] === "sh" && !call[1][4]?.includes('$(id -un)'));
         expect(ssh).toHaveLength(1);
         expect(ssh[0][1]).toContain("ccc-ssh-copy");
         expect(native.spawn.mock.calls.filter(call => call[1][0] === "exec" && call[1][4]?.includes('$(id -un)'))).toHaveLength(1);
-        expect(ssh.every(call => call[0] === "changed-runtime" && call[1][1] === id)).toBe(true);
+        expect(ssh.every(call => call[0] === "captured-runtime" && call[1][1] === id)).toBe(true);
         expect(native.spawn.mock.calls.some(call => call[1][0] === "rm")).toBe(false);
     });
 

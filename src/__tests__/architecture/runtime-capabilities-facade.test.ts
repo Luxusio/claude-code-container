@@ -1,18 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeName } from "../../domain/container-runtime.js";
 
-const native = vi.hoisted(() => ({ spawn: vi.fn(), exists: vi.fn<(...args: unknown[]) => boolean>(() => false), trace: [] as unknown[][] }));
+const native = vi.hoisted(() => ({ spawn: vi.fn(), exists: vi.fn<(...args: unknown[]) => boolean>(() => false), access: vi.fn(), stat: vi.fn(), contextHost: "unix:///selected.sock", trace: [] as unknown[][] }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawnSync: (...args: unknown[]) => { native.trace.push(["spawn", ...args]); return native.spawn(...args); } }));
-vi.mock("fs", async original => ({ ...await original<typeof import("node:fs")>(), existsSync: (...args: unknown[]) => { native.trace.push(["exists", ...args]); return native.exists(...args); } }));
+vi.mock("fs", async original => ({ ...await original<typeof import("node:fs")>(), accessSync: native.access, statSync: native.stat, existsSync: (...args: unknown[]) => { native.trace.push(["exists", ...args]); return native.exists(...args); } }));
 import * as runtime from "../../container-runtime.js";
 import { createNativeRuntimeCapabilitiesObservations } from "../../adapters/runtime-capabilities.js";
 
 const result = (status: number | null, stdout: string | null | undefined) => ({ status, stdout, stderr: "", signal: null });
 const uidDescriptor = Object.getOwnPropertyDescriptor(process, "getuid");
+function pinWindowsCaptureEnvironment(): void {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.spyOn(process, "cwd").mockReturnValue("C:\\fixture\\work");
+    vi.stubEnv("PATH", "C:\\fixture\\bin"); vi.stubEnv("PATHEXT", ".EXE");
+    vi.stubEnv("HOME", "C:\\fixture\\home"); vi.stubEnv("USERPROFILE", "C:\\fixture\\home");
+    vi.stubEnv("DOCKER_CONFIG", "C:\\fixture\\docker-config");
+}
 function mockProbes() {
     native.spawn.mockImplementation((command: string, args: string[]) => {
-        if (args[0] === "--version") return result(0, command === "docker" ? "Docker 27.1.1" : "podman 5.2.3");
-        if (args[0] === "context") return result(0, "unix:///selected.sock");
+        if (args.includes("--version")) return result(0, /(?:^|[/\\])docker(?:\.exe)?$/i.test(command) ? "Docker 27.1.1" : "podman 5.2.3");
+        if (args.includes("context")) return result(0, JSON.stringify({ Name: process.env.DOCKER_HOST && !process.env.DOCKER_CONTEXT ? "default" : "native-fixture", Endpoints: { docker: { Host: !process.env.DOCKER_CONTEXT && process.env.DOCKER_HOST ? process.env.DOCKER_HOST : native.contextHost, SkipTLSVerify: false } }, TLSMaterial: {}, Storage: { TLSPath: process.platform === "win32" ? "C:\\fixture\\docker-config\\contexts\\tls\\native-fixture" : "/fixture/docker-config/contexts/tls/native-fixture" } }));
+        if (args.includes("info") && args.at(-1) === "json") return result(0, JSON.stringify({ host: { serviceIsRemote: false }, store: { graphRoot: "/fixture/store", runRoot: "/fixture/run", graphDriverName: "overlay" } }));
         if (args.at(-1) === "{{.OperatingSystem}}") return result(0, "Ubuntu");
         if (args.at(-1) === "{{json .SecurityOptions}}") return result(0, "[]");
         if (args.at(-1) === "{{.Host.Remote}}" || args.at(-1) === "{{.Host.Security.Rootless}}") return result(0, "false");
@@ -21,7 +29,11 @@ function mockProbes() {
 }
 beforeEach(() => {
     vi.resetAllMocks(); native.trace = []; native.exists.mockReturnValue(false); runtime._resetRuntimeCacheForTest(); runtime._resetSelinuxCacheForTest();
-    for (const name of ["CCC_RUNTIME", "DOCKER_CONTEXT", "DOCKER_HOST", "WSL_DISTRO_NAME", "CCC_RUNTIME_SOCKET", "XDG_RUNTIME_DIR", "VITEST", "CCC_SELINUX_RELABEL", "CCC_PODMAN_CGROUPS", "container"]) vi.stubEnv(name, undefined);
+    native.contextHost = "unix:///selected.sock";
+    native.access.mockImplementation((path: string) => { if (!/(?:^|[/\\])(?:docker|podman)(?:\.exe)?$/i.test(path)) throw Error("synthetic executable missing"); });
+    native.stat.mockReturnValue({ isFile: () => true });
+    for (const name of ["CCC_RUNTIME", "DOCKER_CONTEXT", "DOCKER_HOST", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "CONTAINER_HOST", "CONTAINER_CONNECTION", "CONTAINER_SSHKEY", "WSL_DISTRO_NAME", "CCC_RUNTIME_SOCKET", "XDG_RUNTIME_DIR", "VITEST", "CCC_SELINUX_RELABEL", "CCC_PODMAN_CGROUPS", "container"]) vi.stubEnv(name, undefined);
+    vi.stubEnv("PATH", "/fixture/bin"); vi.stubEnv("HOME", "/fixture/home"); vi.stubEnv("DOCKER_CONFIG", "/fixture/docker-config");
     vi.spyOn(process, "platform", "get").mockReturnValue("linux"); runtime.setRuntimeOverride("docker"); mockProbes();
 });
 afterEach(() => { runtime._resetRuntimeCacheForTest(); runtime._resetSelinuxCacheForTest(); vi.restoreAllMocks(); vi.unstubAllEnvs(); if (uidDescriptor) Object.defineProperty(process, "getuid", uidDescriptor); else Reflect.deleteProperty(process, "getuid"); });
@@ -73,11 +85,11 @@ describe("runtime capability native facade", () => {
     it.each(["--version", "{{.OperatingSystem}}", "{{json .SecurityOptions}}"])("retries complete native collection after %s failure", failedProbe => {
         const implementation = native.spawn.getMockImplementation()!; const fault = Error("probe failure"); let fail = true;
         native.spawn.mockImplementation((command: string, args: string[]) => {
-            if (fail && (args[0] === failedProbe || args.at(-1) === failedProbe)) throw fault;
+            if (fail && (args.includes(failedProbe) || args.at(-1) === failedProbe)) throw fault;
             return implementation(command, args);
         });
         expect(() => runtime.getRuntimeInfo()).toThrow(fault); expect(() => runtime.getRuntimeInfo()).toThrow(fault);
-        expect(native.spawn.mock.calls.filter(call => call[1][0] === "--version")).toHaveLength(2);
+        expect(native.spawn.mock.calls.filter(call => call[1].includes("--version"))).toHaveLength(2);
         fail = false; expect(runtime.getRuntimeInfo()).toMatchObject({ version: "27.1.1", socketPath: "/var/run/docker.sock" });
         const complete = runtime.getRuntimeInfo(); const calls = native.spawn.mock.calls.length;
         expect(runtime.getRuntimeInfo()).toBe(complete); expect(native.spawn).toHaveBeenCalledTimes(calls);
@@ -109,21 +121,65 @@ describe("runtime capability native facade", () => {
         native.spawn.mockImplementation((command: string, args: string[]) => args.at(-1) === "{{.Host.Security.Rootless}}" ? result(0, "true") : implementation(command, args));
         const fault = Error("socket UID failed"); const uid = vi.spyOn(process, "getuid").mockImplementation(() => { throw fault; });
         expect(() => runtime.getRuntimeInfo()).toThrow(fault); expect(() => runtime.getRuntimeInfo()).toThrow(fault);
-        expect(native.spawn.mock.calls.filter(call => call[1][0] === "--version")).toHaveLength(2);
+        expect(native.spawn.mock.calls.filter(call => call[1].includes("--version"))).toHaveLength(2);
         uid.mockReturnValue(1001); expect(runtime.getRuntimeInfo()).toMatchObject({ rootless: true, socketPath: "/run/user/1001/podman/podman.sock" });
         const complete = runtime.getRuntimeInfo(); uid.mockImplementation(() => { throw fault; }); expect(runtime.getRuntimeInfo()).toBe(complete);
     });
+    it("runs capability probes through the captured executable/transport after ambient selection changes", () => {
+        vi.stubEnv("DOCKER_CONTEXT", "native-a");
+        const implementation = native.spawn.getMockImplementation()!;
+        native.spawn.mockImplementation((command: string, args: string[]) => {
+            if (args.includes("context")) {
+                const metadata = implementation(command, args);
+                vi.stubEnv("DOCKER_CONTEXT", "native-b"); vi.stubEnv("DOCKER_HOST", "tcp://native-b.test:2375"); vi.stubEnv("PATH", "/fixture/native-b-bin");
+                return metadata;
+            }
+            return implementation(command, args);
+        });
+        expect(runtime.getRuntimeInfo()).toMatchObject({ runtime: "docker", version: "27.1.1", rootless: false, dockerDesktop: false });
+        const invocation = runtime.getRuntimeInvocation();
+        expect(invocation.transport).toMatchObject({ kind: "docker", host: "unix:///selected.sock" });
+        const probes = native.spawn.mock.calls.filter(call => !call[1].includes("context"));
+        expect(probes.length).toBeGreaterThan(0);
+        for (const [command, args, options] of probes) {
+            expect(command).toBe("/fixture/bin/docker");
+            expect(args.slice(0, 5)).toEqual(["--config", "/fixture/docker-config", "--host", "unix:///selected.sock", "--tls=false"]);
+            expect(options.env.PATH).toBe("/fixture/bin");
+            expect(options.env).not.toHaveProperty("DOCKER_CONTEXT");
+            expect(options.env).not.toHaveProperty("DOCKER_HOST");
+        }
+        const count = native.spawn.mock.calls.length;
+        expect(runtime.getRuntimeInvocation()).toBe(invocation);
+        expect(runtime.getRuntimeInfo().version).toBe("27.1.1");
+        expect(native.spawn).toHaveBeenCalledTimes(count);
+        expect(native.spawn.mock.calls.filter(call => call[1].includes("context"))).toHaveLength(1);
+    });
+    it("publishes neither capture nor capabilities when a capability probe fails, then retries with fresh authority", () => {
+        const implementation = native.spawn.getMockImplementation()!;
+        native.spawn.mockImplementation((command: string, args: string[]) => {
+            if (args.includes("--version")) throw Error("synthetic capability failure");
+            return implementation(command, args);
+        });
+        expect(() => runtime.getRuntimeInfo()).toThrow("synthetic capability failure");
+        vi.stubEnv("DOCKER_CONTEXT", "native-b"); native.contextHost = "ssh://builder@native-b.test";
+        mockProbes();
+        const invocation = runtime.getRuntimeInvocation();
+        expect(invocation.transport).toMatchObject({ host: "ssh://builder@native-b.test" });
+        expect(runtime.getRuntimeInfo()).toMatchObject({ runtime: "docker", version: "27.1.1" });
+        expect(native.spawn.mock.calls.filter(call => call[1].includes("context"))).toHaveLength(2);
+    });
     it.each(["Docker Desktop", "Ubuntu", ""])("Windows native OS '%s' retains selected pipe qualification", operatingSystem => {
-        vi.spyOn(process, "platform", "get").mockReturnValue("win32"); vi.stubEnv("DOCKER_HOST", "npipe:////./pipe/dockerDesktopLinuxEngine");
+        pinWindowsCaptureEnvironment(); vi.stubEnv("DOCKER_HOST", "npipe:////./pipe/dockerDesktopLinuxEngine");
         const implementation = native.spawn.getMockImplementation()!;
         native.spawn.mockImplementation((command: string, args: string[]) => args.at(-1) === "{{.OperatingSystem}}" ? result(0, operatingSystem) : implementation(command, args));
         expect(runtime.getRuntimeInfo()).toMatchObject({ dockerDesktop: operatingSystem !== "Ubuntu", remote: true, flavor: "docker-desktop" });
     });
-    it("retains raw selected context operand, precedence and fail-closed endpoint", () => {
+    it("retains raw selected context operand and refuses failed capture before capability publication", () => {
         vi.stubEnv("DOCKER_CONTEXT", " --format=hostile "); vi.stubEnv("DOCKER_HOST", "unix:///shadowed");
-        native.spawn.mockImplementation((_command: string, args: string[]) => args[0] === "--version" ? result(0, "Docker 27.1.1") : args[0] === "context" ? result(1, "unix:///local") : args.at(-1) === "{{.OperatingSystem}}" ? result(0, "Docker Desktop") : result(0, "[]"));
-        expect(runtime.getRuntimeInfo()).toMatchObject({ dockerDesktop: false });
-        expect(native.spawn.mock.calls.find(call => call[1][0] === "context")?.[1]).toEqual(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}", "--", " --format=hostile "]);
+        native.spawn.mockImplementation((_command: string, args: string[]) => args.includes("context") ? result(1, "unix:///local") : result(0, "Docker Desktop"));
+        expect(() => runtime.getRuntimeInfo()).toThrow();
+        expect(native.spawn.mock.calls.find(call => call[1].includes("context"))?.[1]).toEqual(["--config", "/fixture/docker-config", "context", "inspect", "--format", "{{json .}}", "--", " --format=hostile "]);
+        expect(native.spawn.mock.calls.some(call => call[1].includes("info"))).toBe(false);
     });
     it.each([false, true])("preserves WSL kernel observation, mirrored=%s", mirrored => {
         vi.stubEnv("WSL_DISTRO_NAME", "Ubuntu"); native.exists.mockReturnValue(mirrored);

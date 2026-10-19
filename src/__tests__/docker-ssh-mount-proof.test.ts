@@ -1,14 +1,22 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import * as runtime from "../container-runtime.js";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "./helpers/native-runtime-fixture.js";
 const native = vi.hoisted(() => ({ spawnSync: vi.fn() }));
 vi.mock("child_process", async () => ({ ...await vi.importActual("child_process"), spawnSync: native.spawnSync }));
 vi.mock("../container-runtime.js", async () => ({ ...await vi.importActual("../container-runtime.js"), runtimeCli: () => "docker" }));
 import { readDirectoryMountMarker } from "../docker.js";
 const marker = `/home/ccc/.ssh/.ccc-mount-identity-${"a".repeat(32)}`;
-beforeEach(() => native.spawnSync.mockReset());
+beforeEach(() => {
+    native.spawnSync.mockReset();
+    runtime._resetRuntimeCacheForTest();
+    preloadNativeRuntimeFixture(runtime);
+});
+afterEach(() => { calls(); runtime._resetRuntimeCacheForTest(); });
+const calls = () => native.spawnSync.mock.calls.map(call => normalizeNativeRuntimeCall(call) as [string, string[], Record<string, unknown>]);
 it("retries an unreadable SSH mount challenge as root without reading a key", () => {
     native.spawnSync.mockReturnValueOnce({ status: 1 }).mockReturnValueOnce({ status: 0, stdout: "challenge" });
     expect(readDirectoryMountMarker("container-id", marker).stdout).toBe("challenge");
-    expect(native.spawnSync.mock.calls[1][1]).toEqual(["exec", "--user", "root", "container-id", "cat", marker]);
+    expect(calls()[1][1]).toEqual(["exec", "--user", "root", "container-id", "cat", marker]);
 });
 it.each(["/home/ccc/.ssh/id_ed25519", "/other/.ccc-mount-identity-" + "a".repeat(32), "/home/ccc/.ssh/../secret"])("never elevates non-challenge path %s", path => {
     native.spawnSync.mockReturnValue({ status: 1 });
@@ -28,7 +36,7 @@ it.each([
     native.spawnSync.mockReturnValue(result);
     expect(() => readDirectoryMountMarker("container-id", marker)).toThrow("Container engine is unavailable");
     expect(native.spawnSync).toHaveBeenCalledTimes(1);
-    expect(native.spawnSync.mock.calls[0][2].timeout).toBe(5000);
+    expect(calls()[0][2].timeout).toBe(5000);
 });
 
 it.each([

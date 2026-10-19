@@ -21,16 +21,28 @@
 //   - docker.sock host path substitution (Podman ships Docker-compatible socket)
 //   - `isContainerHostRemote()` unifies docker-desktop + podman-machine
 
-import { spawnSync } from "child_process";
+import { spawnSync, type SpawnSyncOptions } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { parseRuntimeOverride, type RuntimeName } from "./domain/container-runtime.js";
 import { createContainerRuntimeSelector } from "./application/container-runtime-selection.js";
-import { createDockerEndpointResolver } from "./application/docker-endpoint-selection.js";
 import type { BindMountArgumentOptions } from "./domain/container-launch-arguments.js";
 import { createRuntimeCapabilitiesCollector } from "./application/runtime-capabilities.js";
 import { createNativeRuntimeCapabilitiesObservations } from "./adapters/runtime-capabilities.js";
 import type { RuntimeInfo } from "./domain/runtime-capabilities.js";
+import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
+import {
+    bindNativeRuntimeInvocation, captureNativeRuntimeInvocation,
+    currentNativeRuntimeInvocation, validateNativeRuntimeInvocation,
+    type BoundNativeRuntimeRunner, type BoundNativeSpawnSync,
+} from "./adapters/container-runtime-invocation.js";
+
+export {
+    bindNativeRuntimeInvocation, captureNativeRuntimeInvocation, compileNativeRuntimeInvocation,
+    currentNativeRuntimeInvocation, runWithNativeRuntimeInvocation, validateNativeRuntimeInvocation,
+} from "./adapters/container-runtime-invocation.js";
+export type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
+export type { BoundNativeRuntimeRunner, BoundNativeSpawnSync } from "./adapters/container-runtime-invocation.js";
 
 export type { RuntimeName } from "./domain/container-runtime.js";
 
@@ -46,6 +58,8 @@ export type { RuntimeFlavor, RuntimeInfo } from "./domain/runtime-capabilities.j
 
 let _runtimeOverride: RuntimeName | null = null;
 let _cachedInfo: RuntimeInfo | null = null;
+let _cachedInvocation: NativeRuntimeInvocation | null = null;
+const _scopedInfo = new WeakMap<NativeRuntimeInvocation, RuntimeInfo>();
 
 /**
  * Reset the runtime cache. Tests only.
@@ -53,6 +67,7 @@ let _cachedInfo: RuntimeInfo | null = null;
 export function _resetRuntimeCacheForTest(): void {
     _runtimeOverride = null;
     _cachedInfo = null;
+    _cachedInvocation = null;
     _selinuxCached = null;
 }
 
@@ -73,6 +88,15 @@ export function _setRuntimeInfoForTest(info: Partial<RuntimeInfo> & { runtime: R
     };
     _cachedInfo = { ...defaults, ...info };
     _runtimeOverride = info.runtime;
+    _cachedInvocation = null;
+}
+
+/** An explicit fixture, separate from capability preloads and the legacy Vitest info shortcut. */
+export function _setRuntimeInvocationForTest(value: NativeRuntimeInvocation): void {
+    const invocation = validateNativeRuntimeInvocation(value);
+    if (_cachedInfo?.runtime !== invocation.runtime) _cachedInfo = null;
+    _cachedInvocation = invocation;
+    _runtimeOverride = invocation.runtime;
 }
 
 /**
@@ -87,6 +111,7 @@ export function setRuntimeOverride(name: string | undefined | null): void {
     }
     _runtimeOverride = runtime;
     _cachedInfo = null;
+    _cachedInvocation = null;
 }
 
 // === Runtime detection ===
@@ -117,27 +142,39 @@ function resolveRuntime(): RuntimeName {
     })();
 }
 
-// Selected Docker endpoint authority is shared with the native collector.
-const dockerEndpoint = createDockerEndpointResolver({
-    readContextOverride: () => process.env.DOCKER_CONTEXT,
-    readHostOverride: () => process.env.DOCKER_HOST,
-    inspectContextEndpoint: (context) => {
-        const args = ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"];
-        if (context !== undefined) args.push("--", context);
-        const result = spawnSync(
-            "docker",
-            args,
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
-        );
-        if (result.status !== 0) return null;
-        return (result.stdout ?? "").trim() || null;
-    },
-});
+function collectRuntimeCapabilities(invocation: NativeRuntimeInvocation): RuntimeInfo {
+    const runner = bindNativeRuntimeInvocation(invocation);
+    return createRuntimeCapabilitiesCollector({
+        ...createNativeRuntimeCapabilitiesObservations(
+            () => invocation.transport.kind === "docker" ? invocation.transport.host : null,
+            runner,
+        ),
+        selectRuntime: () => invocation.runtime,
+    })();
+}
 
-const collectRuntimeCapabilities = createRuntimeCapabilitiesCollector({
-    ...createNativeRuntimeCapabilitiesObservations(dockerEndpoint),
-    selectRuntime: resolveRuntime,
-});
+function publishNativeRuntime(): void {
+    // Capture and all native observations must succeed before either cache becomes visible.
+    const invocation = _cachedInvocation ?? captureNativeRuntimeInvocation(resolveRuntime());
+    const info = collectRuntimeCapabilities(invocation);
+    _cachedInvocation = invocation;
+    _cachedInfo = info;
+}
+
+/** Ordinary native composition captures before inspection or session reservation. */
+export function getRuntimeInvocation(): NativeRuntimeInvocation {
+    const scoped = currentNativeRuntimeInvocation();
+    if (scoped) return scoped;
+    if (!_cachedInvocation) publishNativeRuntime();
+    return _cachedInvocation!;
+}
+
+/** Native dispatch always uses the current operation's capture, including nested helper calls. */
+export const runtimeSpawnSync: BoundNativeSpawnSync = ((args: readonly string[], options: SpawnSyncOptions = {}) =>
+    bindNativeRuntimeInvocation(getRuntimeInvocation()).spawnSync(args, options)) as BoundNativeSpawnSync;
+
+export const runtimeSpawn: BoundNativeRuntimeRunner["spawn"] = (args, options) =>
+    bindNativeRuntimeInvocation(getRuntimeInvocation()).spawn(args, options);
 
 // === Public info ===
 
@@ -145,6 +182,15 @@ const collectRuntimeCapabilities = createRuntimeCapabilitiesCollector({
  * Return cached runtime info, running detection on first call.
  */
 export function getRuntimeInfo(): RuntimeInfo {
+    const scoped = currentNativeRuntimeInvocation();
+    if (scoped) {
+        let info = _scopedInfo.get(scoped);
+        if (!info) {
+            info = collectRuntimeCapabilities(scoped);
+            _scopedInfo.set(scoped, info);
+        }
+        return info;
+    }
     if (_cachedInfo) return _cachedInfo;
     if (process.env.VITEST && !_runtimeOverride) {
         _cachedInfo = {
@@ -153,14 +199,12 @@ export function getRuntimeInfo(): RuntimeInfo {
         };
         return _cachedInfo;
     }
-    const info = collectRuntimeCapabilities();
-    _cachedInfo = info;
-    return info;
+    publishNativeRuntime();
+    return _cachedInfo!;
 }
 
 /**
- * Short accessor for the CLI name. This is what you pass as the first arg to
- * `spawnSync`/`spawn`/`execSync`. Never hardcode "docker" elsewhere.
+ * Runtime-name compatibility accessor. Native execution uses runtimeSpawnSync/runtimeSpawn.
  */
 export function runtimeCli(): RuntimeName {
     return getRuntimeInfo().runtime;
@@ -192,10 +236,10 @@ export function getHostInternalAlias(): string {
  * Read via /sys/fs/selinux/enforce (== "1") with a getenforce fallback.
  */
 let _selinuxCached: boolean | null = null;
-let _currentContainerMounts: Array<{ source: string; destination: string }> | null = null;
+let _currentContainerMounts = new WeakMap<NativeRuntimeInvocation, Array<{ source: string; destination: string }>>();
 export function _resetSelinuxCacheForTest(): void {
     _selinuxCached = null;
-    _currentContainerMounts = null;
+    _currentContainerMounts = new WeakMap();
 }
 
 export function isSelinuxEnforcing(): boolean {
@@ -318,34 +362,37 @@ function isVitestProcess(): boolean {
 }
 
 function getCurrentContainerMounts(): Array<{ source: string; destination: string }> {
-    if (_currentContainerMounts) return _currentContainerMounts;
-    _currentContainerMounts = [];
+    const invocation = getRuntimeInvocation();
+    const cached = _currentContainerMounts.get(invocation);
+    if (cached) return cached;
+    let mounts: Array<{ source: string; destination: string }> = [];
+    _currentContainerMounts.set(invocation, mounts);
 
     const name = process.env.HOSTNAME;
-    if (!name) return _currentContainerMounts;
+    if (!name) return mounts;
 
-    const result = spawnSync(
-        "docker",
+    const result = runtimeSpawnSync(
         ["inspect", name, "--format", "{{json .Mounts}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
-    if (result.status !== 0) return _currentContainerMounts;
+    if (result.status !== 0) return mounts;
 
     try {
-        const mounts = JSON.parse((result.stdout ?? "").trim()) as Array<{
+        const observed = JSON.parse((result.stdout ?? "").trim()) as Array<{
             Source?: string;
             Destination?: string;
         }>;
-        _currentContainerMounts = mounts
+        mounts = observed
             .filter((mount) => mount.Source && mount.Destination)
             .map((mount) => ({
                 source: mount.Source!,
                 destination: mount.Destination!,
             }));
     } catch {
-        _currentContainerMounts = [];
+        mounts = [];
     }
-    return _currentContainerMounts;
+    _currentContainerMounts.set(invocation, mounts);
+    return mounts;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,11 +6,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SpawnSyncReturns } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nodeProviderFixturePreloadSource } from "../helpers/node-provider-fixture.js";
+import { nativeRuntimeInvocationFixture, normalizeNativeRuntimeCall } from "../helpers/native-runtime-fixture.js";
 
-const { probe } = vi.hoisted(() => ({ probe: vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>() }));
+const { probe, capture } = vi.hoisted(() => ({ probe: vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>(), capture: vi.fn() }));
 vi.mock("child_process", async (importOriginal) => ({
     ...await importOriginal<typeof import("node:child_process")>(),
     spawnSync: probe,
+}));
+// This owner tests selection policy and cache invalidation. Native capture itself
+// remains real in the separate Node source/built consumers below.
+vi.mock("../../adapters/container-runtime-invocation.js", async original => ({
+    ...await original<typeof import("../../adapters/container-runtime-invocation.js")>(),
+    captureNativeRuntimeInvocation: capture,
 }));
 const { spawnSync: nativeSpawnSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
 const runtime = await import("../../container-runtime.js");
@@ -24,13 +31,15 @@ function response(status: number | null, stdout = ""): SpawnSyncReturns<string> 
 }
 
 function calls(): unknown[][] {
-    return probe.mock.calls.map(([command, args]) => [command, args]);
+    return probe.mock.calls.map(call => normalizeNativeRuntimeCall(call).slice(0, 2));
 }
 
 describe("container runtime selection compatibility facade", () => {
     beforeEach(() => {
         runtime._resetRuntimeCacheForTest();
-        probe.mockReset().mockImplementation((command, args) => {
+        capture.mockReset().mockImplementation(nativeRuntimeInvocationFixture);
+        probe.mockReset().mockImplementation((...rawCall) => {
+            const [command, args] = normalizeNativeRuntimeCall(rawCall);
             if (JSON.stringify(args) === JSON.stringify(versionArgs)) {
                 return response(0, command === "podman" ? "podman version 5.2.3" : "Docker version 27.1.1");
             }
@@ -57,6 +66,7 @@ describe("container runtime selection compatibility facade", () => {
         expect(runtime.getRuntimeInfo()).toBe(cached);
         expect(runtime.runtimeCli()).toBe("podman");
         expect(probe).not.toHaveBeenCalled();
+        expect(capture).not.toHaveBeenCalled();
     });
 
     it.each(["lxc", " Docker", "DOCKER", "podman ", "ｄｏｃｋｅｒ"])("invalid CLI override %s preserves state and exact error", value => {
@@ -67,6 +77,7 @@ describe("container runtime selection compatibility facade", () => {
         ));
         expect(runtime.getRuntimeInfo()).toBe(cached);
         expect(probe).not.toHaveBeenCalled();
+        expect(capture).not.toHaveBeenCalled();
     });
 
     it("a valid override, including a repeated value, invalidates info and defeats invalid environment", () => {
@@ -77,6 +88,7 @@ describe("container runtime selection compatibility facade", () => {
         const first = runtime.getRuntimeInfo();
         expect(first).not.toBe(cached);
         expect(first.version).toBe("27.1.1");
+        expect(capture).toHaveBeenCalledExactlyOnceWith("docker");
         expect(calls()).toEqual([
             ["docker", versionArgs],
             ["docker", ["info", "--format", "{{.OperatingSystem}}"]],
@@ -84,8 +96,10 @@ describe("container runtime selection compatibility facade", () => {
         ]);
         runtime.setRuntimeOverride("docker");
         expect(runtime.getRuntimeInfo()).not.toBe(first);
+        expect(capture.mock.calls).toEqual([["docker"], ["docker"]]);
         runtime.setRuntimeOverride("podman");
         expect(runtime.runtimeCli()).toBe("podman");
+        expect(capture.mock.calls).toEqual([["docker"], ["docker"], ["podman"]]);
     });
 
     it("cache lookup precedes changed environment, while uncached calls read current environment", () => {
@@ -113,6 +127,7 @@ describe("container runtime selection compatibility facade", () => {
         });
         expect(runtime.getRuntimeInfo()).toBe(stub);
         expect(probe).not.toHaveBeenCalled();
+        expect(capture).not.toHaveBeenCalled();
         runtime.setRuntimeOverride("podman");
         expect(runtime.getRuntimeInfo().version).toBe("5.2.3");
         expect(calls()[0]).toEqual(["podman", versionArgs]);
@@ -124,6 +139,7 @@ describe("container runtime selection compatibility facade", () => {
             `Invalid CCC_RUNTIME value: '${value}'. Allowed: 'docker' or 'podman'.`,
         ));
         expect(probe).not.toHaveBeenCalled();
+        expect(capture).not.toHaveBeenCalled();
     });
 
     it("empty environment prefers podman and preserves discovery argv/options and subsequent host facts", () => {
@@ -134,10 +150,10 @@ describe("container runtime selection compatibility facade", () => {
         });
         expect(calls()).toEqual([
             ["podman", versionArgs], ["podman", versionArgs],
-            ["podman", ["info", "--format", "{{.Host.Remote}}"]],
             ["podman", ["info", "--format", "{{.Host.Security.Rootless}}"]],
         ]);
-        for (const [, , options] of probe.mock.calls) expect(options).toEqual(probeOptions);
+        for (const call of probe.mock.calls) expect(normalizeNativeRuntimeCall(call)[2]).toEqual(probeOptions);
+        expect(capture).toHaveBeenCalledExactlyOnceWith("podman");
     });
 
     it.each([1, 127, null])("podman status %s falls back to docker only on exact zero success", status => {
@@ -187,30 +203,46 @@ describe.each(["source", "built"] as const)("actual Node %s facade with portable
         const trace = join(root, "trace.jsonl");
         const preload = join(root, "routing.cjs");
         mkdirSync(binDir); mkdirSync(home);
+        // These extensionless native CLI fixtures use CommonJS even when TMPDIR
+        // is inside this repository's ES module package scope.
+        writeFileSync(join(root, "package.json"), JSON.stringify({ type: "commonjs" }));
         writeFileSync(trace, "");
         try {
             for (const name of ["docker", "podman"] as const) {
                 const status = name === "docker" ? scenario.dockerStatus : scenario.podmanStatus;
-                writeFileSync(join(binDir, name), `#!${process.execPath}\n
+                const fixtureSource = `#!${process.execPath}\n
 const fs = require('node:fs');
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify([${JSON.stringify(name)}, args]) + '\\n');
+const raw = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify([${JSON.stringify(name)}, raw]) + '\\n');
+const commandIndex = raw.findIndex(arg => ['--version', 'context', 'info'].includes(arg));
+const args = raw.slice(commandIndex);
 if (args[0] === '--version') {
     process.stdout.write(${JSON.stringify(name === "docker" ? "Docker version 27.1.1\n" : "podman version 5.2.3\n")});
     process.exit(${status});
 }
+if (args[0] === 'context') {
+    process.stdout.write(JSON.stringify({ Name: 'default', Endpoints: { docker: { Host: 'unix:///fixture/engine.sock' } } }));
+    process.exit(0);
+}
 if (args[0] === 'info') {
-    process.stdout.write(args[2] === '{{.OperatingSystem}}' ? 'Ubuntu fixture\\n' : 'false\\n');
+    process.stdout.write(args[2] === 'json'
+        ? JSON.stringify({ host: { serviceIsRemote: false }, store: { graphRoot: ${JSON.stringify(join(root, "store"))}, runRoot: ${JSON.stringify(join(root, "run"))}, graphDriverName: 'overlay' } })
+        : args[2] === '{{.OperatingSystem}}' ? 'Ubuntu fixture\\n' : 'false\\n');
     process.exit(0);
 }
 process.exit(91);
-`);
+`;
+                for (const suffix of process.platform === "win32" ? ["", ".EXE"] : [""]) {
+                    const fixturePath = join(binDir, name + suffix);
+                    writeFileSync(fixturePath, fixtureSource);
+                    chmodSync(fixturePath, 0o700);
+                }
             }
             writeFileSync(preload, nodeProviderFixturePreloadSource(binDir));
             const moduleUrl = new URL(artifact === "source" ? "../../container-runtime.ts" : "../../../dist/container-runtime.js", import.meta.url);
             const loader = createRequire(import.meta.url).resolve("tsx");
             const env: NodeJS.ProcessEnv = {
-                PATH: binDir, HOME: home, USERPROFILE: home, TMPDIR: home, TEMP: home, TMP: home,
+                PATH: binDir, PATHEXT: ".EXE", HOME: home, USERPROFILE: home, TMPDIR: home, TEMP: home, TMP: home,
             };
             for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR"]) {
                 if (originalEnv[key]) env[key] = originalEnv[key];
@@ -224,7 +256,7 @@ const runtime = await import(${JSON.stringify(moduleUrl.href)});
 try {
     runtime.setRuntimeOverride(${JSON.stringify(scenario.explicit) ?? "undefined"});
     const info = runtime.getRuntimeInfo();
-    process.stdout.write(JSON.stringify({ info, cached: runtime.getRuntimeInfo() === info, cli: runtime.runtimeCli() }));
+    process.stdout.write(JSON.stringify({ info, cached: runtime.getRuntimeInfo() === info, cli: runtime.runtimeCli(), executable: runtime.getRuntimeInvocation().executable }));
 } catch (error) {
     process.stdout.write(JSON.stringify({ error: error.message }));
 }
@@ -233,7 +265,7 @@ try {
             expect(child.error, `${artifact}: ${fileURLToPath(moduleUrl)}`).toBeUndefined();
             expect(child.status, child.stderr).toBe(0);
             expect(child.stderr).toBe("");
-            const outcome = JSON.parse(child.stdout) as { info?: { runtime: string; version: string | null }; cached?: boolean; cli?: string; error?: string };
+            const outcome = JSON.parse(child.stdout) as { info?: { runtime: string; version: string | null }; cached?: boolean; cli?: string; executable?: string; error?: string };
             const argv = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as [string, string[]]);
             const expected: [string, string[]][] = [];
             if (!scenario.environment && !scenario.explicit) {
@@ -242,11 +274,16 @@ try {
             }
             if (scenario.selected) {
                 const selected = scenario.selected;
-                expected.push([selected, versionArgs]);
-                if (selected === "docker") expected.push([selected, ["info", "--format", "{{.OperatingSystem}}"]]);
+                const prefix = selected === "docker"
+                    ? ["--config", join(home, ".docker"), "--host", "unix:///fixture/engine.sock", "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey="]
+                    : ["--remote=false", "--root", join(root, "store"), "--runroot", join(root, "run"), "--storage-driver", "overlay", "--transient-store=false"];
+                expected.push([selected, selected === "docker"
+                    ? ["--config", join(home, ".docker"), "context", "inspect", "--format", "{{json .}}"]
+                    : ["info", "--format", "json"]]);
+                expected.push([selected, [...prefix, ...versionArgs]]);
+                if (selected === "docker") expected.push([selected, [...prefix, "info", "--format", "{{.OperatingSystem}}"]]);
                 if (process.platform === "linux") {
-                    if (selected === "podman") expected.push([selected, ["info", "--format", "{{.Host.Remote}}"]]);
-                    expected.push([selected, ["info", "--format", selected === "docker" ? "{{json .SecurityOptions}}" : "{{.Host.Security.Rootless}}"]]);
+                    expected.push([selected, [...prefix, "info", "--format", selected === "docker" ? "{{json .SecurityOptions}}" : "{{.Host.Security.Rootless}}"]]);
                 }
                 expect(outcome.error).toBeUndefined();
                 expect(outcome.info?.runtime).toBe(selected);
@@ -254,6 +291,7 @@ try {
                 expect(outcome.info?.version).toBe(versionStatus === 0 ? selected === "docker" ? "27.1.1" : "5.2.3" : null);
                 expect(outcome.cached).toBe(true);
                 expect(outcome.cli).toBe(selected);
+                expect(outcome.executable).toBe(join(binDir, selected + (process.platform === "win32" ? ".EXE" : "")));
             } else {
                 expect(outcome).toEqual({ error: scenario.error });
             }

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation, type NativeRuntimeSelectors } from "../../ports/container-runtime-invocation.js";
 import { captureNativeSessionOwnership } from "../../adapters/session-ownership.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -12,7 +13,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // These children import the shipped JavaScript, outside Vitest's source aliases.
 // After SIGKILL the observer uses only native filesystem/process operations:
 // no session query can reconcile the claim on behalf of the guardian.
-const distribution = fileURLToPath(new URL("../../../dist/", import.meta.url));
+const distribution = process.env.CCC_NATIVE_RUNTIME_AUTHORITY_DIST ?? fileURLToPath(new URL("../../../dist/", import.meta.url));
+function fixtureInvocation(executable: string, home: string): NativeRuntimeInvocation {
+    return {
+        version: 1, runtime: "docker", executable,
+        transport: { kind: "docker", host: "unix:///fixture/engine-a.sock", configDirectory: join(home, ".docker"),
+            tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key,
+            key === "HOME" || key === "USERPROFILE" ? home : process.env[key] ?? null])) as NativeRuntimeSelectors,
+    };
+}
+
 const idA = "a".repeat(64);
 const idB = "b".repeat(64);
 
@@ -66,7 +77,16 @@ fs.closeSync = function(descriptor) {
     finally { guardDescriptors.delete(descriptor); }
 };
 cp.spawnSync = function(command, args, options) {
-    if (!/^(docker|podman)(\\.exe)?$/i.test(String(command))) return original.apply(this, arguments);
+    if (String(command) !== process.env.CCC_FIXTURE_EXECUTABLE && !/^(docker|podman)(\\.exe)?$/i.test(String(command))) return original.apply(this, arguments);
+    let index = 0, host;
+    while (index < args.length) {
+        if (args[index] === '--config') { index += 2; continue; }
+        if (args[index] === '--host') { host = args[index + 1]; index += 2; continue; }
+        if (/^--tls(?:verify|cacert|cert|key)?=/.test(args[index])) { index++; continue; }
+        break;
+    }
+    args = args.slice(index);
+    if (args[0] === 'stop' && host !== 'unix:///fixture/engine-a.sock') throw new Error('fixture refused uncaptured authority');
     fs.appendFileSync(process.env.CCC_FIXTURE_LOG, JSON.stringify(args) + '\\n');
     let status = 0, stdout = '';
     if (args[0] === '--version') stdout = 'Docker version 27.1.1\\n';
@@ -101,7 +121,7 @@ require('node:module').syncBuiltinESMExports();
         const child = spawn(process.execPath, [join(distribution, "session-ownership-guardian.js"), String(process.pid)], {
             env: { ...process.env, HOME: home, USERPROFILE: home, CCC_RUNTIME: "docker",
                 CCC_DEVICE_BROKER_AUTO_START: "0", NODE_OPTIONS: "--require " + JSON.stringify(shim),
-                CCC_FIXTURE_LOG: log, CCC_FIXTURE_GUARD: guard, CCC_FIXTURE_FAILURES: String(failures) },
+                CCC_FIXTURE_EXECUTABLE: join(root, "docker"), CCC_FIXTURE_LOG: log, CCC_FIXTURE_GUARD: guard, CCC_FIXTURE_FAILURES: String(failures) },
             stdio: ["ignore", "pipe", "pipe", "ipc"],
         });
         children.push(child);
@@ -110,10 +130,10 @@ require('node:module').syncBuiltinESMExports();
         child.stdout!.resume();
         child.stderr!.on("data", chunk => { stderr += String(chunk); });
         child.on("message", message => { messages.push(message); });
-        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt: captureNativeSessionOwnership(lock) });
+        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt: captureNativeSessionOwnership(lock), runtimeInvocation: fixtureInvocation(join(root, "docker"), home) });
         await eventually(() => messages.some(m => (m as { type: string }).type === "ready"), "real guardian READY: " + stderr);
         if (acknowledged) {
-            child.send({ type: "update", sequence: 1, containerId: idA, runtime: "docker", cleanupEnabled: true });
+            child.send({ type: "update", sequence: 1, containerId: idA, cleanupEnabled: true });
             await eventually(() => messages.some(m => (m as { type: string }).type === "ack"), "real guardian ACK");
         }
         return { child, stderr: () => stderr, stderrEnded: () => child.stderr!.readableEnded };
@@ -141,7 +161,7 @@ require('node:module').syncBuiltinESMExports();
         const { child, stderr, stderrEnded } = await launch(3);
         writeFileSync(log + ".release", "release");
         if (protocol) {
-            child.send({ type: "update", sequence: 1, containerId: idB, runtime: "docker",
+            child.send({ type: "update", sequence: 1, containerId: idB,
                 cleanupEnabled: true, secret: "fixture-private-causal-secret" });
         } else child.disconnect();
         await eventually(() => child.exitCode !== null, "native terminal causal evidence");
@@ -332,7 +352,15 @@ describe("emitted session facade owns a real host process lifetime", () => {
         const docker = join(bin, "docker");
         writeFileSync(docker, `#!${process.execPath}
 import { appendFileSync } from 'node:fs';
-const args = process.argv.slice(2);
+let args = process.argv.slice(2), index = 0, host;
+while (index < args.length) {
+    if (args[index] === '--config') { index += 2; continue; }
+    if (args[index] === '--host') { host = args[index + 1]; index += 2; continue; }
+    if (/^--tls(?:verify|cacert|cert|key)?=/.test(args[index])) { index++; continue; }
+    break;
+}
+args = args.slice(index);
+if (args[0] === 'stop' && host !== 'unix:///fixture/engine-a.sock') process.exit(96);
 appendFileSync(process.env.CCC_TEST_RUNTIME_LOG, JSON.stringify(args) + '\\n');
 if (args[0] === '--version') console.log('Docker version 27.1.1');
 if (args[0] === 'info' && args[2] === '{{.OperatingSystem}}') console.log('Linux');
@@ -359,13 +387,20 @@ import { createSessionLock, setSession, clearSession, setupSignalHandlers, armSe
     setSessionContainerId, setSessionCleanupEnabled, confirmSessionOwnership, cleanupSession, acquireHostSessionOwnership,
     getCurrentSession, observeActiveSessionsForContainer } from ${moduleUrl("session.js")};
 import { getProjectId } from ${moduleUrl("utils.js")};
-import { setRuntimeOverride } from ${moduleUrl("container-runtime.js")};
+import { _setRuntimeInvocationForTest, _setRuntimeInfoForTest, getRuntimeInvocation } from ${moduleUrl("container-runtime.js")};
+import { NATIVE_RUNTIME_SELECTOR_KEYS } from ${moduleUrl("ports/container-runtime-invocation.js")};
 import { captureNativeSessionOwnership } from ${moduleUrl("adapters/session-ownership.js")};
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 const [project, profileArg, initialId, mode] = process.argv.slice(2);
 const profile = profileArg || undefined;
-setRuntimeOverride('docker');
+_setRuntimeInfoForTest({ runtime: 'docker' });
+_setRuntimeInvocationForTest({
+    version: 1, runtime: 'docker', executable: ${JSON.stringify(docker)},
+    transport: { kind: 'docker', host: 'unix:///fixture/engine-a.sock', configDirectory: ${JSON.stringify(join(home, ".docker"))},
+        tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+    selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, process.env[key] ?? null])),
+});
 let lock;
 if (!mode.startsWith('acquire')) {
     lock = createSessionLock(getProjectId(project), profile);
@@ -448,10 +483,10 @@ if (mode.startsWith('acquire')) {
         directGuardian.once('error', reject);
     });
     const ready = waitFrame('ready');
-    directGuardian.send({ type: 'init', binding: { lockFile: lock, projectPath: project, profile }, receipt: captureNativeSessionOwnership(lock) });
+    directGuardian.send({ type: 'init', binding: { lockFile: lock, projectPath: project, profile }, receipt: captureNativeSessionOwnership(lock), runtimeInvocation: getRuntimeInvocation() });
     await ready;
     const acknowledged = waitFrame('ack');
-    directGuardian.send({ type: 'update', sequence: 1, containerId: initialId, runtime: 'docker', cleanupEnabled: true });
+    directGuardian.send({ type: 'update', sequence: 1, containerId: initialId, cleanupEnabled: true });
     await acknowledged;
     guardian = directGuardian.pid;
     directGuardian.once('exit', (code, signal) => process.send({ event: 'guardian-exit', code, signal }));
@@ -573,7 +608,7 @@ export async function load(url, context, nextLoad) {
         child.on("error", error => { owner.output += error.message; });
         child.on("message", message => { owner.messages.push(message); });
         const started = Date.now();
-        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt });
+        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt, runtimeInvocation: fixtureInvocation(join(bin, "docker"), home) });
         await eventually(() => owner.messages.some(message => (message as { type?: string }).type === "ready"),
             `native guardian READY while cleanup loader held: ${owner.output}`, 5000);
         expect(Date.now() - started).toBeLessThan(5000);
@@ -581,7 +616,7 @@ export async function load(url, context, nextLoad) {
         const startupLoads = readFileSync(trace, "utf8").trim().split("\n").map(line => JSON.parse(line) as string);
         expect(startupLoads).toContain(pathToFileURL(join(distribution, "composition/session-ownership-native.js")).href);
         expect(startupLoads.some(url => /session-cleanup|device-lab-admin|device-lab-broker/.test(url))).toBe(false);
-        child.send({ type: "update", sequence: 1, containerId: idA, runtime: "docker", cleanupEnabled: true });
+        child.send({ type: "update", sequence: 1, containerId: idA, cleanupEnabled: true });
         await eventually(() => owner.messages.some(message => (message as { type?: string }).type === "ack"), "captured ID ACK", 5000);
         child.disconnect();
         await eventually(() => existsSync(held), "authorized cleanup reaches actual held module");

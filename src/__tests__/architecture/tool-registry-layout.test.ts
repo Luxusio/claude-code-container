@@ -1,3 +1,4 @@
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLAUDE_BIN_PATH } from "../../domain/tool-layout.js";
 
@@ -41,12 +42,26 @@ describe("shared tool launcher authority", () => {
     it.each([false, true])("keeps the public setup paths on actual ensureTools (install needed=%s)", async installNeeded => {
         vi.doUnmock("../../container-setup.js");
         const spawn = vi.fn();
-        vi.doMock("child_process", async importOriginal => ({ ...await importOriginal<object>(), spawnSync: spawn }));
+        vi.doMock("child_process", async importOriginal => ({ ...await importOriginal<object>(), spawnSync: (...args: unknown[]) => spawn(...normalizeNativeRuntimeCall(args)) }));
         vi.resetModules();
         const setup = await import("../../container-setup.js");
         const runtime = await import("../../container-runtime.js");
         const registry = await import("../../tool-registry.js");
-        runtime._setRuntimeInfoForTest({ runtime: "docker" });
+        const invocation = preloadNativeRuntimeFixture(runtime, { runtime: "docker" });
+        spawn.mockImplementation((_cli, args: string[]) => {
+            if (args[0] === "--version") return { status: 0, stdout: "Docker version 27.0.0\n", stderr: "" };
+            if (args[0] === "info" && args[2] === "{{.OperatingSystem}}") return { status: 0, stdout: "Fixture Linux\n", stderr: "" };
+            if (args[0] === "info" && args[2] === "{{json .SecurityOptions}}") return { status: 0, stdout: "[]", stderr: "" };
+            throw new Error(`unexpected capability fixture command: ${JSON.stringify(args)}`);
+        });
+        expect(runtime.runWithNativeRuntimeInvocation(invocation, () => runtime.getRuntimeInfo())).toMatchObject({
+            runtime: "docker", version: "27.0.0", dockerDesktop: false, rootless: false,
+        });
+        expect(spawn.mock.calls.map(call => call[1])).toEqual([
+            ["--version"], ["info", "--format", "{{.OperatingSystem}}"],
+            ...(process.platform === "linux" ? [["info", "--format", "{{json .SecurityOptions}}"]] : []),
+        ]);
+        spawn.mockClear();
         vi.spyOn(console, "log").mockImplementation(() => {});
         expect(setup.CLAUDE_BIN_PATH).toBe(CLAUDE_BIN_PATH);
         expect(setup.CLAUDE_LAYOUT_PATHS).toEqual({ bin: CLAUDE_BIN_PATH, dataDir: "/home/ccc/.local/share/claude",
