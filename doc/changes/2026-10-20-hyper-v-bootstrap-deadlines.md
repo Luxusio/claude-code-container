@@ -1,0 +1,3 @@
+# Hyper-V bootstrap deadline observations
+
+Bootstrap discovery and teardown preserve a locally refused dispatch separately from completed native failures, so an expired probe cannot replace preceding successful bootstrap evidence. Native errors retain their existing diagnostics, cleanup still uses its independent allowance, and failed confirmation never establishes containment. Shared broker protocol7 replaces daemons with the old in-memory adapter through existing identity checks. Regression clocks now use the production monotonic seam, including image hashing and the complete lifecycle journey. Known ceiling: portable one-shot/session and broker fixtures do not certify native macOS or Windows Hyper-V behavior; native acceptance remains separate.

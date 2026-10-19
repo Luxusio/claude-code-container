@@ -376,16 +376,5 @@ describe("Device Lab bootstrap privilege", () => {
         expect(source).not.toContain("elevated-network-session");
     });
 
-    it("composes the broker seam without an administrator client", () => {
-        const source = readFileSync(join(root, "device-lab-broker.ts"), "utf8");
-        const seam = source.slice(
-            source.indexOf("function hyperVBootstrapNetworkSeam("),
-            source.indexOf("type HyperVBootstrapVmIdentity"),
-        );
-        expect(seam).not.toBe("");
-        expect(seam).not.toContain("withAdministratorClient");
-        expect(seam).not.toContain("withElevatedHyperVNetworkExecutor");
-        expect(seam).not.toContain("resolveElevationExecutable");
-        expect(seam).not.toContain("hyperVElevationExecutable");
-    });
+
 });

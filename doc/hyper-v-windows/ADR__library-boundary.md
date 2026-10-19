@@ -180,6 +180,11 @@ rejects a protocol-5 daemon before its old in-memory asset pin can be reused. CL
 MCP and Level 3 consume the same protocol constant and retain the existing identity-fenced
 replacement and newer-protocol refusal.
 
+Protocol 7 additionally replaces a protocol-6 daemon retaining the previous bootstrap adapter.
+The correction preserves per-invocation local dispatch cutoff provenance without replacing
+genuine native failures or completed bootstrap observations. It changes no operation asset
+or persisted schema; all shared consumers continue using the same protocol constant.
+
 Level 3 invokes the repair-capable CLI status once per attestation attempt, then
 confirms its OS-verified broker identity with two independent read-only loopback
 status requests. It never uses another repair-capable status invocation as an

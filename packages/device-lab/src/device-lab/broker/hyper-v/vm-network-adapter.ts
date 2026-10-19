@@ -17,6 +17,7 @@ import {
     type HyperVVirtualMachineSelector,
     type HyperVWindowsNetworkClient,
 } from "@ccc/hyper-v/low-level/index.js";
+import { HyperVOperationDeadlineError } from "./deadline.js";
 
 // Device Lab's names for the two adapters it puts on a Linux guest, and the switch the
 // bootstrap one rides. These are consumer policy and live here rather than in the library,
@@ -35,7 +36,7 @@ export type DeviceLabHyperVOwnedVm = {
     readonly ownershipMarker: string;
 };
 
-type DeviceLabHyperVVmNetworkClient = Pick<HyperVWindowsNetworkClient,
+export type DeviceLabHyperVVmNetworkClient = Pick<HyperVWindowsNetworkClient,
     "getVMsByExactNames" | "getVMNetworkAdapters" | "getManagementNetworkAdapters"
     | "getNetIPAddresses" | "getNetNeighbors" | "getAllVMNetworkAdapters"
     | "removeVMNetworkAdapter">;
@@ -145,7 +146,8 @@ async function observeForDiscovery(
         neighborBatches = await Promise.all(
             interfaceIndexes.map((interfaceIndex) => client.getNetNeighbors({ interfaceIndex })),
         );
-    } catch {
+    } catch (error) {
+        if (error instanceof HyperVOperationDeadlineError) throw error;
         throw new DeviceLabHyperVVmNetworkAdapterError("hyper-v-bootstrap-neighbor-inspection-failed");
     }
     return {

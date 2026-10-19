@@ -8,6 +8,7 @@ vi.mock("os", async (importOriginal) => ({
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { promises as fsPromises } from "fs";
 import { createHash } from "crypto";
 import { deflateSync } from "zlib";
 import { tmpdir } from "os";
@@ -1031,7 +1032,6 @@ describe("device-lab Hyper-V broker", () => {
         let recoveryCalls = 0;
         let typedVmCreateReached = false;
         let createdPrivateRoot = "";
-        const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
         const commandRunner = vi.fn((command: { mode: string; provider: string; args?: string[]; input?: string }) => {
             const networkCleanup = hyperVNetworkCleanupResult(command);
             if (networkCleanup) return networkCleanup;
@@ -1075,6 +1075,7 @@ describe("device-lab Hyper-V broker", () => {
             platform: "win32",
             providerPaths: { "powershell.exe": "/fake/powershell.exe" },
             commandRunner,
+            hyperVMonotonicNow: () => now,
         });
         const baseUrl = await listen(server);
         try {
@@ -1101,7 +1102,6 @@ describe("device-lab Hyper-V broker", () => {
                 allocations: [],
             });
         } finally {
-            nowSpy.mockRestore();
             await close(server);
             cleanupOwner(ownerId);
         }
@@ -1136,46 +1136,32 @@ describe("device-lab Hyper-V broker", () => {
             preparedAt: new Date().toISOString(),
         }));
         let now = 1_500_000;
-        let deadlineChecksBeforeExpiry = Number.POSITIVE_INFINITY;
+        let preflightCompleted = false;
         let recoveryCalls = 0;
-        const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
-            if (Number.isFinite(deadlineChecksBeforeExpiry)) {
-                if (deadlineChecksBeforeExpiry <= 0) return now + DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS + 1;
-                deadlineChecksBeforeExpiry -= 1;
-            }
-            return now;
-        });
         const commandRunner = vi.fn((command: { args?: string[]; input?: string }) => {
             const networkCleanup = hyperVNetworkCleanupResult(command);
             if (networkCleanup) return networkCleanup;
             const nativeRequest = hyperVWindowsOperationRequest(command);
-            if (nativeRequest?.operation === "Get-VM") {
+            if (nativeRequest?.operation === "Get-VM" && nativeRequest.selector?.kind === "name") {
+                if (!preflightCompleted) {
+                    preflightCompleted = true;
+                    now += DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS + 1;
+                }
                 return { ...command, ...hyperVWindowsOperationSuccess("Get-VM", []) };
             }
+            if (nativeRequest?.operation === "New-VM") throw new Error("provider must not run after the operation deadline");
             const script = providerScript(command);
             if (script.includes("hyper-v-orphan-vm-ownership-mismatch")) {
                 recoveryCalls += 1;
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, recoveredVm: recoveryCalls > 1, removedDisk: recoveryCalls > 1 }), stderr: "" };
             }
             if (script.includes("New-NetNat -Name $NatName")) {
-                deadlineChecksBeforeExpiry = 1;
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
             }
             if (script.includes("$CreatedVm = New-VM")) throw new Error("provider must not run after the operation deadline");
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
-        let typedNatCreated = false;
-        configureTypedHyperVNetworkOperations(commandRunner, {
-            onOperation(request) {
-                if (request.operation === "New-NetNat") {
-                    typedNatCreated = true;
-                } else if (typedNatCreated && request.operation === "Get-NetNat") {
-                    typedNatCreated = false;
-                    deadlineChecksBeforeExpiry = 1;
-                }
-            },
-        });
-        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner, hyperVMonotonicNow: () => now });
         try {
             const baseUrl = await listen(server);
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
@@ -1189,6 +1175,8 @@ describe("device-lab Hyper-V broker", () => {
                 error: "hyper-v-operation-deadline-exceeded",
                 rollback: expect.objectContaining({ ok: true, releasedAddress: true }),
             }));
+            expect(preflightCompleted).toBe(true);
+            expect(commandRunner.mock.calls.some(([command]) => hyperVWindowsOperationRequest(command)?.operation === "New-VM")).toBe(false);
             expect(commandRunner.mock.calls.some(([command]) => providerScript(command).includes("$CreatedVm = New-VM"))).toBe(false);
             expect(recoveryCalls).toBe(0);
             const networkStatePath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
@@ -1199,7 +1187,6 @@ describe("device-lab Hyper-V broker", () => {
                 allocations: [],
             });
         } finally {
-            nowSpy.mockRestore();
             await close(server);
             cleanupOwner(ownerId);
         }
@@ -1240,7 +1227,6 @@ describe("device-lab Hyper-V broker", () => {
         let now = 3_000_000;
         let recoveryCalls = 0;
         let createdPrivateRoot = "";
-        const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
         const commandRunner = vi.fn((command: { args?: string[]; input?: string }) => {
             const networkCleanup = hyperVNetworkCleanupResult(command);
             if (networkCleanup) return networkCleanup;
@@ -1275,7 +1261,7 @@ describe("device-lab Hyper-V broker", () => {
                 return null;
             },
         });
-        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe", ssh: "/fake/ssh", scp: "/fake/scp" }, commandRunner });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe", ssh: "/fake/ssh", scp: "/fake/scp" }, commandRunner, hyperVMonotonicNow: () => now });
         try {
             const baseUrl = await listen(server);
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
@@ -1290,7 +1276,6 @@ describe("device-lab Hyper-V broker", () => {
             expect(createdPrivateRoot).toContain(`${backend}-`);
             expect(existsSync(createdPrivateRoot)).toBe(false);
         } finally {
-            nowSpy.mockRestore();
             await close(server);
             cleanupOwner(ownerId);
         }
@@ -1302,7 +1287,6 @@ describe("device-lab Hyper-V broker", () => {
         const ownerId = deviceLabOwnerId(cwd);
         const profileRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "images", "hyper-v", "ubuntu-lts");
         let now = 2_000_000;
-        const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
         const commandRunner = vi.fn((command: { args?: string[]; input?: string }) => {
             const networkCleanup = hyperVNetworkCleanupResult(command);
             if (networkCleanup) return networkCleanup;
@@ -1318,7 +1302,7 @@ describe("device-lab Hyper-V broker", () => {
             }
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
-        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner, hyperVMonotonicNow: () => now });
         try {
             const baseUrl = await listen(server);
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
@@ -1333,7 +1317,6 @@ describe("device-lab Hyper-V broker", () => {
             expect(readdirSync(profileRoot).filter((name) => name.includes("-uncertain-"))).toHaveLength(2);
             expect(existsSync(join(profileRoot, "base.vhdx"))).toBe(false);
         } finally {
-            nowSpy.mockRestore();
             await close(server);
             cleanupOwner(ownerId);
         }
@@ -1424,10 +1407,20 @@ describe("device-lab Hyper-V broker", () => {
         const imageContents = Buffer.alloc(10 * 1024 * 1024, 1);
         const operationBudget = DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS;
         let now = 4_000_000;
-        let hashing = false;
-        const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
-            if (hashing) now += Math.ceil(operationBudget / 8);
-            return now;
+        let finalImageReads = 0;
+        const realOpen = fsPromises.open.bind(fsPromises);
+        const openSpy = vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+            const handle = await realOpen(...args);
+            if (args[0] === imagePath) {
+                const read = handle.read.bind(handle);
+                vi.spyOn(handle, "read").mockImplementation(async (...readArgs: Parameters<typeof handle.read>) => {
+                    const result = await read(...readArgs);
+                    finalImageReads += 1;
+                    now += operationBudget + 1;
+                    return result;
+                });
+            }
+            return handle;
         });
         const commandRunner = vi.fn((command: { args?: string[]; input?: string }) => {
             const networkCleanup = hyperVNetworkCleanupResult(command);
@@ -1442,12 +1435,11 @@ describe("device-lab Hyper-V broker", () => {
             }
             if (script.includes("$ExpectedPartialHash =")) {
                 const stdout = automaticUbuntuFinalizeOutput(profileRoot);
-                hashing = true;
                 return { ...command, status: 0, stdout, stderr: "" };
             }
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
-        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner, hyperVMonotonicNow: () => now });
         try {
             const baseUrl = await listen(server);
             const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
@@ -1457,10 +1449,11 @@ describe("device-lab Hyper-V broker", () => {
             });
             expect(response.status, JSON.stringify(await response.clone().json())).toBe(504);
             expect(await response.json()).toEqual(expect.objectContaining({ error: "hyper-v-operation-deadline-exceeded" }));
+            expect(finalImageReads).toBeGreaterThan(0);
             expect(existsSync(imagePath)).toBe(true);
             expect(existsSync(join(profileRoot, "manifest.json"))).toBe(false);
         } finally {
-            nowSpy.mockRestore();
+            openSpy.mockRestore();
             await close(server);
             cleanupOwner(ownerId);
         }
@@ -2230,6 +2223,7 @@ describe("device-lab Hyper-V broker", () => {
         let invalidDownloadEncoding = false;
         let foreignVmObservation = false;
         let afterNativeStop: (() => void) | null = null;
+        let stopClockOffset = 0;
         let duringVmObservation: (() => void) | null = null;
         let pendingElevatedNetwork: "setup" | "cleanup" | null = null;
         let standardNetworkCommand: { args?: string[]; input?: string } | null = null;
@@ -2626,6 +2620,7 @@ describe("device-lab Hyper-V broker", () => {
             platform: "win32",
             providerPaths: { "powershell.exe": "/fake/powershell.exe", "ssh.exe": "/fake/ssh.exe", "scp.exe": "/fake/scp.exe" },
             commandRunner,
+            hyperVMonotonicNow: () => performance.now() + stopClockOffset,
         });
         const baseUrl = await listen(server);
         const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
@@ -3145,9 +3140,6 @@ describe("device-lab Hyper-V broker", () => {
             foreignVmObservation = false;
             // Each fault below starts an ordinary stop, independently of retained replay state.
             rmSync(stopJournalPath, { force: true });
-            const realNow = Date.now;
-            let stopClockOffset = 0;
-            const stopClock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + stopClockOffset);
             afterNativeStop = () => { stopClockOffset = DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS + 1; };
             try {
                 const expiredStop = await invoke({ backend: "linux-vm", command: "device_stop", deviceId });
@@ -3159,7 +3151,7 @@ describe("device-lab Hyper-V broker", () => {
                 expect(JSON.parse(readFileSync(stopJournalPath, "utf8"))).toMatchObject({ command: "device_stop", deviceId, incarnationId: activeIncarnationId });
             } finally {
                 afterNativeStop = null;
-                stopClock.mockRestore();
+                stopClockOffset = 0;
             }
             rmSync(stopJournalPath, { force: true });
             let successorBytes: string | null = null;

@@ -19,7 +19,7 @@ describe("one broker protocol", () => {
     it.each([undefined, null, String(DEVICE_BROKER_PROTOCOL_VERSION), true, 0, DEVICE_BROKER_PROTOCOL_VERSION - 1, DEVICE_BROKER_PROTOCOL_VERSION + 1, NaN, {}, []])("rejects absent, malformed or different protocol %s", (value) => {
         expect(isCompatibleBrokerProtocol(value)).toBe(false);
     });
-    it.each([undefined, 0, 1, 2, 5, DEVICE_BROKER_PROTOCOL_VERSION, "1"])("checks protocol over actual HTTP: %s", async (protocolVersion) => {
+    it.each([undefined, 0, 1, 2, 5, 6, DEVICE_BROKER_PROTOCOL_VERSION, "1"])("checks protocol over actual HTTP: %s", async (protocolVersion) => {
         const server = createServer((_req, res) => {
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ok: true, broker: {protocolVersion, version: "999.0.0"}}));

@@ -143,14 +143,15 @@ import { planHyperVVirtualMachineCreationCompensation } from "@ccc/hyper-v/lifec
 import { createHyperVCreateStartApplication } from "./device-lab/application/lifecycle/hyper-v-create-start.js";
 import type { HyperVCreateStartPorts } from "./device-lab/ports/lifecycle/hyper-v-create-start.js";
 import { deviceLabVmCreationPorts } from "./device-lab/broker/hyper-v/vm-create-adapter.js";
-import { discoverDeviceLabHyperVBootstrapNetwork, teardownDeviceLabHyperVBootstrapNetwork, type DeviceLabHyperVOwnedVm } from "./device-lab/broker/hyper-v/vm-network-adapter.js";
+import { cleanupDeviceLabHyperVBootstrapNetwork, probeDeviceLabHyperVBootstrapNetwork } from "./device-lab/broker/hyper-v/bootstrap-network-adapter.js";
+import type { DeviceLabHyperVOwnedVm } from "./device-lab/broker/hyper-v/vm-network-adapter.js";
 
-import type { HyperVWindowsNetworkClient, HyperVWindowsOperation } from "@ccc/hyper-v/low-level/index.js";
+import type { HyperVWindowsOperation } from "@ccc/hyper-v/low-level/index.js";
 import { withElevatedHyperVNetworkExecutor, type WithElevatedHyperVNetworkExecutorOptions } from "./device-lab/broker/hyper-v/elevated-network-session.js";
 import { hyperVElevationGateStatus, withHyperVElevationGate } from "./device-lab/broker/hyper-v/elevation-gate.js";
 import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, hyperVTypedErrorCode, hyperVTypedErrorOperation, hyperVTypedNativeDiagnostics, publicHyperVCreateConfiguration, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
-import { type DeviceLabHyperVCommandResult, createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
+import { type DeviceLabHyperVCommandResult, type DeviceLabHyperVWindowsClientOptions, createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
 import { brokerHyperVWindowsSession, retainBrokerHyperVWindowsSessions } from "./device-lab/broker/hyper-v/session-pool.js";
 import { createHyperVWindowsNetworkClient, HyperVWindowsError, type HyperVWindowsExecutor } from "@ccc/hyper-v/index.js";
 import {
@@ -161,7 +162,7 @@ import {
     restoreDeviceLabHyperVSnapshot,
 } from "./device-lab/broker/hyper-v/snapshots.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
-import { decodeHyperVLinuxSeedObservation, hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker, type HyperVBootstrapNetworkCleanupObservation, type HyperVBootstrapNetworkObservation } from "./host-control/hyper-v/index.js";
+import { decodeHyperVLinuxSeedObservation, hyperVCreateCommand, hyperVCreateCompensationCommand, hyperVCreatePrologueCommand, hyperVDeleteCommand, hyperVGuestProvisionMediaCommand, hyperVLinuxGuiPrepareCommand, hyperVLinuxGuiReadyCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVSnapshotName, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVCreatePrologueFailure, parseHyperVCreatePrologueObservation, parseHyperVDeleteObservation, parseHyperVReadiness, parseHyperVVmObservation, ownershipMarker } from "./host-control/hyper-v/index.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "@ccc/device-lab/device-lab/providers/ios-simulator.js";
 import { DEVICE_LAB_VERSION } from "./version.js";
 
@@ -9320,19 +9321,18 @@ function commandSucceeded(result: ProviderCommandResult) {
     return result.status === 0 && !result.error;
 }
 
-function hyperVBootstrapNetworkSeam(
+function hyperVBootstrapNetworkOptions(
     normalized: NormalizedBrokerOptions,
     executable: string,
     deadlineAt: number,
-): HyperVWindowsNetworkClient {
-    if (!executable) throw new Error("hyper-v-provider-executable-missing");
-    return createDeviceLabHyperVWindowsNetworkClient({
+): DeviceLabHyperVWindowsClientOptions {
+    return {
         executable,
         now: normalized.hyperVMonotonicNow,timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 30_000, normalized.hyperVMonotonicNow),
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         // An injected runner owns execution; only the default runner uses a broker session.
         ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(executable) } : {}),
-    });
+    };
 }
 
 type HyperVBootstrapVmIdentity = {
@@ -9354,50 +9354,31 @@ function hyperVOwnedVmIdentity(identity: HyperVBootstrapVmIdentity): DeviceLabHy
 }
 
 /**
- * One owner-fenced typed bootstrap discovery probe. A failure becomes a null observation
- * alongside its execution because the caller's retry loop reads both.
+ * Compose the broker's operation allowance and owner identity for bootstrap discovery.
  */
-async function hyperVProbeBootstrapNetwork(
+function hyperVProbeBootstrapNetwork(
     normalized: NormalizedBrokerOptions,
     identity: HyperVBootstrapVmIdentity,
-): Promise<{ execution: ProviderCommandResult; observation: HyperVBootstrapNetworkObservation | null }> {
-    try {
-        const client = hyperVBootstrapNetworkSeam(normalized, identity.executable, identity.deadlineAt);
-        const observation = await discoverDeviceLabHyperVBootstrapNetwork(
-            client,
-            hyperVOwnedVmIdentity(identity),
-        );
-        return { execution: { mode: "exec", provider: "hyper-v", status: 0 }, observation };
-    } catch (error) {
-        const code = error instanceof Error ? error.message : String(error);
-        return { execution: { mode: "exec", provider: "hyper-v", status: 1, error: code }, observation: null };
-    }
+) {
+    return probeDeviceLabHyperVBootstrapNetwork(
+        hyperVBootstrapNetworkOptions(normalized, identity.executable, identity.deadlineAt),
+        hyperVOwnedVmIdentity(identity),
+    );
 }
 
 /**
- * Removes the bootstrap adapter and proves its address is free again.
- *
- * A null observation means the address may still be held, which both callers treat as a
- * reason to stop the VM rather than leave it running on a bootstrap network it should have
- * left -- so a typed failure has to collapse to null exactly as a command failure does.
+ * Compose the same owner fence and allowance for removal and containment confirmation.
  */
-async function hyperVCleanupBootstrapNetwork(
+function hyperVCleanupBootstrapNetwork(
     normalized: NormalizedBrokerOptions,
     identity: HyperVBootstrapVmIdentity,
     managedMacAddress: string,
-): Promise<{ execution: ProviderCommandResult; observation: HyperVBootstrapNetworkCleanupObservation | null }> {
-    try {
-        const client = hyperVBootstrapNetworkSeam(normalized, identity.executable, identity.deadlineAt);
-        const observation = await teardownDeviceLabHyperVBootstrapNetwork(
-            client,
-            hyperVOwnedVmIdentity(identity),
-            managedMacAddress,
-        );
-        return { execution: { mode: "exec", provider: "hyper-v", status: 0 }, observation };
-    } catch (error) {
-        const code = error instanceof Error ? error.message : String(error);
-        return { execution: { mode: "exec", provider: "hyper-v", status: 1, error: code }, observation: null };
-    }
+) {
+    return cleanupDeviceLabHyperVBootstrapNetwork(
+        hyperVBootstrapNetworkOptions(normalized, identity.executable, identity.deadlineAt),
+        hyperVOwnedVmIdentity(identity),
+        managedMacAddress,
+    );
 }
 
 function providerFailureDetail(result: ProviderCommandResult): string {

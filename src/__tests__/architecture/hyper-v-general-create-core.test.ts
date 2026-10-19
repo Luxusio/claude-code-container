@@ -1,5 +1,9 @@
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { cleanupDeviceLabHyperVBootstrapNetwork, probeDeviceLabHyperVBootstrapNetwork } from "../../../packages/device-lab/src/device-lab/broker/hyper-v/bootstrap-network-adapter.js";
+import { hyperVRemainingTimeout } from "../../../packages/device-lab/src/device-lab/broker/hyper-v/deadline.js";
+import type { DeviceLabHyperVWindowsClientOptions } from "../../../packages/device-lab/src/device-lab/broker/hyper-v/lifecycle-adapter.js";
+import type { HyperVWindowsExecutionRequest } from "@ccc/hyper-v/index.js";
 import { createHyperVCreateStartApplication } from "../../../packages/device-lab/src/device-lab/application/lifecycle/hyper-v-create-start.js";
 import type { HyperVCreateStartPorts, VmCreationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/hyper-v-create-start.js";
 import type { HyperVCreateStartRequest, HyperVLinuxReadinessObservation, HyperVNativeExecution, VmCreationEffect, VmCreationRequest, VmObservation } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/hyper-v-create-start.js";
@@ -274,10 +278,70 @@ function bootstrapFixture() {
     } satisfies Partial<Ports>;
     const application = createHyperVCreateStartApplication(ports as unknown as Ports);
     const request: HyperVCreateStartRequest = { ...f.request, command: "device_start", waitForBoot: true, bootTimeoutMs: 1000 };
-    return { ...f, device, ports, bootstrap, cleanup, application, request };
+    return { ...f, device, ports, bootstrap, cleanup, application, request, setNow: (value: number) => { now = value; } };
 }
 
 describe("Hyper-V inward bootstrap facts", () => {
+    it("retains completed discovery and SSH evidence when a later native dispatch has only a fractional allowance", async () => {
+        const f = bootstrapFixture();
+        const requests: HyperVWindowsExecutionRequest[] = [];
+        const ownedVm = { vmId, vmName: f.vm.name, ownershipMarker: f.vm.notes };
+        const guestAdapter = { vmId, vmName: f.vm.name, name: "CCC Bootstrap DHCP", switchId: null, switchName: "Default Switch",
+            status: "Ok", managementOperatingSystem: false, macAddress: "06:11:22:33:44:55", ipAddresses: ["172.20.1.8"] };
+        const options = (deadlineAt: number): DeviceLabHyperVWindowsClientOptions => ({
+            executable: "powershell.exe", now: f.ports.now,
+            timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, 30000, f.ports.now),
+            run: command => {
+                const memory = JSON.parse(Buffer.from(command.input || "", "base64").toString("utf8")) as { input: string };
+                const request = JSON.parse(memory.input) as HyperVWindowsExecutionRequest;
+                requests.push(request);
+                let items: readonly unknown[] = [];
+                switch (request.operation) {
+                    case "Get-VM": items = [{ id: vmId, name: f.vm.name, notes: f.vm.notes }]; break;
+                    case "Get-VMNetworkAdapter": items = "managementSwitchName" in request
+                        ? [{ ...guestAdapter, vmId: null, vmName: null, managementOperatingSystem: true, ipAddresses: ["172.20.1.1"] }]
+                        : [guestAdapter]; break;
+                    case "Get-NetIPAddress": items = [{ interfaceIndex: 12, address: "172.20.1.1", prefixLength: 24,
+                        prefixOrigin: "Dhcp", suffixOrigin: "Dhcp", addressState: "Preferred", interfaceAlias: "vEthernet (Default Switch)" }]; break;
+                    case "Get-NetNeighbor": break;
+                    // Even the independent cleanup allowance is not proof that removal completed.
+                    case "Remove-VMNetworkAdapter": return { status: null, stdout: "", timedOut: true };
+                    default: throw new Error(`unexpected-native-operation:${request.operation}`);
+                }
+                return { status: 0, stdout: JSON.stringify({ schemaVersion: 1, operation: request.operation, ok: true, items }) };
+            },
+        });
+        f.ports.bootstrapProbe.mockImplementation(async (_connection, identity) => {
+            const result = await probeDeviceLabHyperVBootstrapNetwork(options(identity.deadlineAt), ownedVm);
+            return { diagnostics: { status: result.execution.status }, failureCode: null, observation: result.observation,
+                execution: { ...evidence, ok: result.execution.status === 0 } };
+        });
+        f.ports.bootstrapCleanup.mockImplementation(async (_connection, identity) => {
+            const result = await cleanupDeviceLabHyperVBootstrapNetwork(options(identity.deadlineAt), ownedVm, "02:11:22:33:44:55");
+            return { observation: result.observation, execution: { ...evidence, ok: result.execution.status === 0 } };
+        });
+        f.ports.probeLinuxReadiness.mockResolvedValue(linuxReadiness(false));
+        let pauses = 0;
+        f.ports.sleep = async () => { f.setNow(++pauses === 1 ? 100999.5 : 101000); };
+
+        const outcome = await f.application.execute(owner, f.request, {}, 200000, 230000);
+        expect(outcome).toMatchObject({ kind: "operation-failed", device: { bootReady: false, runtimeState: "Off" }, boot: {
+            ready: false, error: "ssh-unavailable", readiness: {
+                managedSshAttempts: 2, bootstrapProbeAttempts: 2, bootstrapProbeSuccesses: 1,
+                bootstrapProbeEvidence: { status: 0 }, bootstrapProbeLastError: null,
+                bootstrapAddressCount: 1, bootstrapSshAttempts: 1,
+                bootstrapSshEvidence: { status: 255, timedOut: false }, bootstrapSshLastError: "ssh-unavailable",
+                networkFinalizeAttempts: 0, networkFinalizeSucceeded: false,
+            },
+        } });
+        // The refused second probe never reaches native Get-VM; the second inventory is containment.
+        expect(requests.filter(request => request.operation === "Get-VM")).toHaveLength(2);
+        expect(f.ports.bootstrapCleanup).toHaveBeenCalledWith(connection, expect.objectContaining({ deadlineAt: 230000 }), f.device.macAddress);
+        expect(f.ports.power).toHaveBeenLastCalledWith(connection, expect.objectContaining({ vmId, vmName: f.vm.name }), "stop", 230000, 30000, { force: true });
+        expect(f.ports.finalizeLinuxNetwork).not.toHaveBeenCalled();
+        expect(f.ports.probeLinuxGui).not.toHaveBeenCalled();
+    });
+
     it("carries supplied trace evidence and diagnostic without reclassifying native evidence", async () => {
         const f = bootstrapFixture();
         const diagnostics = Object.freeze({ status: 23 });
