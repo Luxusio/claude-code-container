@@ -1279,7 +1279,8 @@ if (args[0] === '-s' && args[2] === 'shell' && args[3] === 'getprop' && args[4] 
         expect(deleted.isError).not.toBe(true);
         expect(parseToolJson(deleted)).toEqual(expect.objectContaining({ deleted: deviceId }));
         const addedLog = readFileSync(logPath, "utf8").slice(beforeLog.length);
-        expect(addedLog).toContain("adb -s emulator-5670 get-state");
+        expect(addedLog).toContain("adb devices -l");
+        expect(addedLog).toContain("android-avd-liveness process-query");
         expect(addedLog).not.toContain("adb -s emulator-5670 emu kill");
     });
 

@@ -6,7 +6,7 @@ import { createAndroidEmulatorLifecycle } from "../../../packages/device-lab/pro
 import { createBrokerAndroidEmulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidCreatePortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidLifecycleInput } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/android-emulator-lifecycle.js";
-import type { AndroidEmulatorDevice, AndroidEmulatorLifecyclePorts } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
+import type { AndroidEmulatorDevice, AndroidEmulatorLifecyclePorts, AndroidEmulatorStopBudget, AndroidEmulatorStopObservation } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
 import { directLifecyclePorts, type DirectLifecycleResult, type DirectOwnedChild, type BrokerAndroidTestPorts as BrokerAndroidEmulatorLifecyclePorts, type BrokerAndroidTestEffect } from "../helpers/android-emulator-lifecycle-fixture.js";
 
 // ORIGINAL checked contract for the already-inward broker preview allocator.
@@ -53,7 +53,23 @@ function directOperationContractNegatives(): void {
     const weakTermination: DirectPorts = { ...direct, terminateOwnedRuntimeProcessTree: async () => ({ ok: true }) };
     // @ts-expect-error raw native device ids are strings
     const malformedRecord: DirectPorts = { ...direct, readAndroidDevices: () => [{ id: 5 }] };
+    // @ts-expect-error a successful stop observation requires both native facts
+    const missingProcess: AndroidEmulatorStopObservation = { kind: "observed", serialPresent: false };
+    // @ts-expect-error an untyped liveness Boolean cannot establish confirmed native absence
+    const bareLiveness: DirectPorts = { ...direct, observeAndroidEmulator: () => ({ live: false }) };
+    // @ts-expect-error unavailable native facts carry a finite semantic reason
+    const arbitraryReason: AndroidEmulatorStopObservation = { kind: "unavailable", reason: "raw command output" };
+    const { stopBudget, ...withoutStopBudget } = direct; void stopBudget;
+    // @ts-expect-error one supplied monotonic budget is required for stop confirmation
+    createAndroidEmulatorLifecycle(withoutStopBudget);
+    // @ts-expect-error native admission must receive the current operation budget
+    direct.observeAndroidEmulator({ adbAvailable: true, native: {}, available: true, missing: [], provisioningAvailable: true, provisioningMissing: [] }, { id: "unit" });
+    // @ts-expect-error the native timeout selector is synchronous
+    const asyncTimeout: AndroidEmulatorStopBudget = { remaining: () => 1, requestTimeout: async () => 1, pause: async () => {} };
+    // @ts-expect-error recorder effects must return a settled guarded observation or no effect
+    const recorderWithoutEvidence: DirectPorts = { ...direct, stopAndroidRecorder: () => undefined };
     void asyncAllocation; void asyncCommand; void weakTransition; void pidOnlySpawn; void syncIdentity; void weakTermination; void malformedRecord;
+    void [missingProcess, bareLiveness, arbitraryReason, asyncTimeout, recorderWithoutEvidence];
 }
 void directOperationContractNegatives;
 

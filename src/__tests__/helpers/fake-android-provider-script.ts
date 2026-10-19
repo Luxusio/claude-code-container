@@ -20,7 +20,8 @@ async function main() {
         if (allArgs[0] === '-list-avds') { console.log('host_pixel\nccc-external-other'); return; }
         replaceState('fake-android-start-conflict-state', 92);
         const portIndex = allArgs.indexOf('-port');
-        if (portIndex >= 0 && allArgs[portIndex + 1]) fs.writeFileSync(active('emulator-' + allArgs[portIndex + 1]), '');
+        const avdIndex = allArgs.indexOf('-avd');
+        if (portIndex >= 0 && allArgs[portIndex + 1]) fs.writeFileSync(active('emulator-' + allArgs[portIndex + 1]), allArgs[avdIndex + 1] || 'host_pixel');
         await sleep(20000); return;
     }
     if (tool === 'avdmanager') {
@@ -38,12 +39,16 @@ async function main() {
     if (args[0] === '-s') { serial = args[1]; args = args.slice(2); }
     if (args[0] === 'devices' && args[1] === '-l') {
         if (has('fake-adb-devices-fail')) { console.error('adb server unavailable'); process.exit(12); }
-        console.log('List of devices attached\nR5CREAL123 device usb:1-1 product:oriole model:Pixel_6 device:oriole transport_id:7\n192.168.1.50:5555 device product:oriole model:Pixel_6 device:oriole transport_id:9\n192.168.1.60:5555 device product:oriole model:Pixel_6 device:oriole transport_id:10\nR5LEASED999 device usb:1-4 product:oriole model:Pixel_6 device:oriole transport_id:8\nUNAUTHORIZED unauthorized usb:1-2 model:Pixel_5\nOFFLINE offline usb:1-3 model:Pixel_4\nemulator-5554 device product:sdk_gphone');
+        if (has('fake-adb-devices-headerless')) { console.log('emulator-5554 device product:sdk_gphone'); return; }
+        if (has('fake-adb-devices-truncated')) { console.log('List of devices attached\nemulator-'); return; }
+        console.log('List of devices attached\nR5CREAL123 device usb:1-1 product:oriole model:Pixel_6 device:oriole transport_id:7\n192.168.1.50:5555 device product:oriole model:Pixel_6 device:oriole transport_id:9\n192.168.1.60:5555 device product:oriole model:Pixel_6 device:oriole transport_id:10\nR5LEASED999 device usb:1-4 product:oriole model:Pixel_6 device:oriole transport_id:8\nUNAUTHORIZED unauthorized usb:1-2 model:Pixel_5\nOFFLINE offline usb:1-3 model:Pixel_4');
         for (const file of fs.readdirSync(home).filter(name => name.startsWith('fake-adb-active-emulator-'))) {
             const port = file.split('-').at(-1);
-            if (port !== '5554') console.log('emulator-' + port + ' device product:sdk_gphone');
+            const targetState = has('fake-adb-target-offline') && read('fake-adb-target-offline').trim() === 'emulator-' + port ? 'offline' : 'device';
+            console.log('emulator-' + port + ' ' + targetState + ' product:sdk_gphone');
         }
         if (has('fake-adb-extra-emulator')) console.log('emulator-' + read('fake-adb-extra-emulator').trim() + ' device product:sdk_gphone');
+        if (has('fake-stop-expire-after-inventory')) fs.writeFileSync(marker('fake-stop-clock-offset'), '30001');
         return;
     }
     if (args[0] === 'connect') { if (args[1] === '192.168.1.50:5555') { console.log('connected to ' + args[1]); return; } console.error('failed to connect to ' + args[1]); process.exit(1); }
@@ -51,9 +56,15 @@ async function main() {
     if (args[0] === 'pair') { if (args[1] === '192.168.1.70:37099' && args[2] === '123456') { console.log('Successfully paired to ' + args[1]); return; } console.error('Failed to pair to ' + args[1]); process.exit(1); }
     if (args[0] === 'get-state') { if (!serial || !fs.existsSync(active(serial))) { console.error('device not found'); process.exit(1); } console.log('device'); return; }
     if (args[0] === 'emu' && args[1] === 'avd' && args[2] === 'name') {
-        console.log(has('fake-adb-avd-name-' + encodeURIComponent(serial)) ? read('fake-adb-avd-name-' + encodeURIComponent(serial)).trimEnd() : 'host_pixel'); console.log('OK'); return;
+        if (has('fake-stop-expire-after-empty-identity')) { fs.writeFileSync(marker('fake-stop-clock-offset'), '30001'); console.log('OK'); return; }
+        console.log(has('fake-adb-avd-name-' + encodeURIComponent(serial)) ? read('fake-adb-avd-name-' + encodeURIComponent(serial)).trimEnd() : fs.existsSync(active(serial)) ? fs.readFileSync(active(serial), 'utf8').trim() || 'host_pixel' : 'host_pixel'); console.log('OK');
+        if (has('fake-stop-reuse-after-identity')) { fs.writeFileSync(active(serial), 'foreign_avd'); fs.rmSync(marker('fake-stop-reuse-after-identity')); }
+        return;
     }
-    if (args[0] === 'emu' && args[1] === 'kill') { fs.rmSync(active(serial), { force: true }); return; }
+    if (args[0] === 'emu' && args[1] === 'kill') {
+        if (has('fake-adb-emu-kill-fail')) process.exit(1);
+        fs.rmSync(active(serial), { force: true }); return;
+    }
     if (args[0] === 'shell' && args[1] === 'getprop' && args[2] === 'sys.boot_completed') {
         for (let i = 0; has('fake-android-start-conflict-state-path') && i < 200; i++) await sleep(10);
         console.log('1'); return;
@@ -79,7 +90,10 @@ async function main() {
         }
         await sleep(20000); return;
     }
-    if (args[0] === 'shell' && args[1] === 'pkill') replaceState('fake-android-real-state-conflict', 93);
+    if (args[0] === 'shell' && args[1] === 'pkill') {
+        replaceState('fake-android-real-state-conflict', 93);
+        if (has('fake-adb-pkill-no-match')) process.exit(1);
+    }
     if (args[0] === 'pull') {
         if (args[1]?.includes('fail-pull')) process.exit(8);
         if (args[1]?.includes('fail-once-pull') && !has('fake-adb-pull-retried')) { fs.writeFileSync(marker('fake-adb-pull-retried'), ''); process.exit(8); }
@@ -99,6 +113,11 @@ const androidSpawnSync = cp.spawnSync;
 const androidSystemPowerShell = ${JSON.stringify(canonicalWindowsPowerShellPath())};
 const androidResolverCandidate = ${JSON.stringify("\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")};
 const androidLstatSync = fs.lstatSync;
+const androidMonotonicNow = performance.now.bind(performance);
+Object.defineProperty(performance, 'now', { configurable: true, value: function() {
+    const offsetPath = path.join(process.env.HOME, 'fake-stop-clock-offset');
+    return androidMonotonicNow() + (fs.existsSync(offsetPath) ? Number(fs.readFileSync(offsetPath, 'utf8')) : 0);
+} });
 fs.lstatSync = function(file, ...args) {
     if (String(file).toLowerCase() === androidResolverCandidate.toLowerCase()
         && fs.existsSync(path.join(process.env.HOME, 'fake-android-avd-resolver-fail'))) {
@@ -110,9 +129,14 @@ fs.lstatSync = function(file, ...args) {
 cp.spawnSync = function(command, args = [], options = {}) {
     // This SDK fixture owns no native emulator.exe/qemu processes. Model only
     // the exact AVD liveness probe; process identity probes remain native.
-    const avdProbe = "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }";
+    const avdProbe = "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { if ([string]::IsNullOrWhiteSpace([string]$_.CommandLine)) { throw 'android-emulator-process-command-unavailable' }; [string]$_.CommandLine }";
     const probeArgs = args[0] === '-WindowStyle' && args[1] === 'Hidden' ? args.slice(2) : args;
+    if (command === '/bin/ps' && args.length === 2 && args[0] === '-eo' && args[1] === 'args=') {
+        fs.appendFileSync(process.env.FAKE_ANDROID_LOG, 'android-avd-liveness process-query\n');
+        if (fs.existsSync(path.join(process.env.HOME, 'fake-android-avd-query-fail'))) return { status: 17, signal: null, pid: 0, stdout: '', stderr: 'injected AVD process query failure', output: [null, '', 'injected AVD process query failure'] };
+    }
     if (androidSystemPowerShell && command === androidSystemPowerShell && probeArgs.length === 4 && probeArgs[0] === '-NoProfile' && probeArgs[1] === '-NonInteractive' && probeArgs[2] === '-Command' && probeArgs[3] === avdProbe) {
+        fs.appendFileSync(process.env.FAKE_ANDROID_LOG, 'android-avd-liveness process-query\n');
         if (fs.existsSync(path.join(process.env.HOME, 'fake-android-avd-query-fail'))) {
             fs.appendFileSync(process.env.FAKE_ANDROID_LOG, 'android-avd-liveness query-failed\\n');
             return { status: 17, signal: null, pid: 0, stdout: '', stderr: 'injected AVD process query failure', output: [null, '', 'injected AVD process query failure'] };

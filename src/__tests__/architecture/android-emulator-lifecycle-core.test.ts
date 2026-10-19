@@ -3,7 +3,7 @@ import { createAndroidPreviewPortAllocation } from "../../../packages/device-lab
 import type { LifecyclePreviewRequest } from "../../../packages/device-lab/src/device-lab/domain/broker-observation-command-plan.js";
 import type { AndroidPreviewPortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-observation.js";
 import { createAndroidEmulatorLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/android-emulator-lifecycle.mjs";
-import type { AndroidEmulatorDevice } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
+import type { AndroidEmulatorDevice, AndroidEmulatorStopObservation } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
 import { brokerLifecyclePorts, deferredAndroidEffect, directLifecyclePorts, type BrokerAndroidTestPorts } from "../helpers/android-emulator-lifecycle-fixture.js";
 import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidCreatePortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/android-emulator-lifecycle.js";
@@ -498,7 +498,12 @@ describe("canonical direct Android emulator lifecycle policy", () => {
         f.ports.signalAndroidRecorder = () => { f.trace.push("recorder-signal"); return { signaled: true }; };
         const result = await createAndroidEmulatorLifecycle(f.ports).stop({ deviceId: original.id });
         expect(result).toMatchObject({ kind: "stopped", device: { status: "stopped", pid: null, runtime: null, appium: null, recording: null, lifecycle: null, extra: original.extra } });
-        expect(f.trace).toEqual(["transition", "discovery", "recorder-signal", "stop-recorder", "wait-exit:1000", "observe-emulator", "stop-emulator", "terminate:Android Emulator:3000", "transition"]);
+        expect(f.trace.indexOf("observe-emulator")).toBeLessThan(f.trace.indexOf("recorder-signal"));
+        expect(f.trace.indexOf("stop-recorder")).toBeLessThan(f.trace.indexOf("stop-emulator"));
+        expect(f.trace.filter(step => step === "stop-emulator")).toHaveLength(1);
+        expect(f.trace.filter(step => step === "observe-emulator").length).toBeGreaterThanOrEqual(2);
+        expect(f.trace).toContain("wait-exit:1000");
+        expect(f.trace.indexOf("terminate:Android Emulator:3000")).toBeLessThan(f.trace.lastIndexOf("transition"));
     });
     it("uncertain native stop restores original lifecycle presence and keeps a successor during abort", async () => {
         const original = { ...stoppedDevice(), status: "running", runtime: { pid: 9 } }, f = directLifecyclePorts(original);
@@ -527,5 +532,141 @@ describe("canonical direct Android emulator lifecycle policy", () => {
         expect(refused).toMatchObject({ kind: "force-delete-stop-failed", stateReverted: true }); expect(f.current()?.status).toBe("running");
         f.replace(stoppedDevice()); const deleted = await createAndroidEmulatorLifecycle(f.ports).delete({ deviceId: original.id });
         expect(deleted).toEqual({ kind: "deleted", deviceId: original.id, avdDeleted: false }); expect(f.transitions.at(-1)?.replacement).toBeNull(); expect(f.transitions.at(-1)?.expected.status).toBe("deleting"); expect(f.current()).toBeUndefined();
+    });
+});
+
+describe("direct Android stop requires trustworthy completion", () => {
+    const operationNames = ["stop", "forced-delete"] as const;
+    const live = (): AndroidEmulatorStopObservation => ({ kind: "observed", serialPresent: true, processActive: true });
+    const absent = (): AndroidEmulatorStopObservation => ({ kind: "observed", serialPresent: false, processActive: false });
+    const recoverable = (): AndroidEmulatorDevice => ({ ...stoppedDevice(), status: "running", pid: 9,
+        runtime: { pid: 9, runtimeId: "owned-runtime", processIdentity: { startToken: "owned-token" } },
+        recording: { active: true, pid: 8, runtimeId: "owned-recorder" }, appium: { sessionId: "retained-appium" } });
+
+    for (const operation of operationNames) {
+        it.each(["inventory-unavailable", "inventory-invalid", "target-unavailable", "identity-unavailable", "identity-mismatch", "process-unavailable"] as const)(`${operation} preserves all recovery evidence when admission is %s`, async reason => {
+            const original = recoverable(), f = directLifecyclePorts(original);
+            f.ports.observeAndroidEmulator = () => ({ kind: "unavailable", reason });
+            const app = createAndroidEmulatorLifecycle(f.ports);
+            const result = operation === "stop" ? await app.stop({ deviceId: original.id }) : await app.delete({ deviceId: original.id, force: true, deleteAvd: true });
+            expect(result).toMatchObject({ kind: operation === "stop" ? "stop-unconfirmed" : "force-delete-stop-failed", reason, stateReverted: true });
+            expect({ ...f.current(), updatedAt: undefined }).toEqual({ ...original, updatedAt: undefined });
+            expect(f.current()?.runtime).toBe(original.runtime); expect(f.current()?.recording).toBe(original.recording); expect(f.current()?.appium).toBe(original.appium);
+            expect(f.trace).not.toContain("recorder-signal"); expect(f.trace).not.toContain("stop-recorder");
+            expect(f.trace).not.toContain("stop-emulator"); expect(f.trace).not.toContain("remove-avd");
+            expect(f.trace.some(step => step.startsWith("terminate:"))).toBe(false);
+        });
+
+        it(`${operation} converts a thrown native read into uncertainty without clearing metadata`, async () => {
+            const original = recoverable(), f = directLifecyclePorts(original);
+            f.ports.observeAndroidEmulator = () => { throw new Error("native inventory disappeared"); };
+            const app = createAndroidEmulatorLifecycle(f.ports);
+            const result = operation === "stop" ? await app.stop({ deviceId: original.id }) : await app.delete({ deviceId: original.id, force: true });
+            expect(result).toMatchObject({ kind: operation === "stop" ? "stop-unconfirmed" : "force-delete-stop-failed", reason: "observation-failed", stateReverted: true });
+            expect({ ...f.current(), updatedAt: undefined }).toEqual({ ...original, updatedAt: undefined }); expect(f.trace).not.toContain("stop-emulator");
+        });
+
+        it.each(["serial", "process", "both"] as const)(`${operation} waits for delayed %s absence after one kill acknowledgement`, async delayed => {
+            const original = recoverable(), f = directLifecyclePorts(original), observations: number[] = [];
+            f.ports.observeAndroidEmulator = () => {
+                observations.push(f.time());
+                if (observations.length === 1) return live();
+                if (observations.length === 2) return { kind: "observed", serialPresent: delayed !== "process", processActive: delayed !== "serial" };
+                return absent();
+            };
+            const app = createAndroidEmulatorLifecycle(f.ports);
+            const result = operation === "stop" ? await app.stop({ deviceId: original.id }) : await app.delete({ deviceId: original.id, force: true });
+            expect(result).toMatchObject({ kind: operation === "stop" ? "stopped" : "deleted" });
+            expect(observations).toHaveLength(3); expect(observations[2] - observations[1]).toBe(250);
+            expect(f.trace.filter(step => step === "stop-emulator")).toHaveLength(1);
+            expect(f.trace.filter(step => step.startsWith("stop-budget:"))).toEqual(["stop-budget:30000:250"]);
+            if (operation === "stop") expect(f.current()).toMatchObject({ status: "stopped", runtime: null, recording: null, appium: null });
+            else expect(f.current()).toBeUndefined();
+        });
+
+        it(`${operation} rejects acknowledgement while the target remains and never renews the observation budget`, async () => {
+            const original = recoverable(), f = directLifecyclePorts(original); let observations = 0;
+            f.ports.observeAndroidEmulator = () => { observations++; return live(); };
+            const app = createAndroidEmulatorLifecycle(f.ports);
+            const result = operation === "stop" ? await app.stop({ deviceId: original.id }) : await app.delete({ deviceId: original.id, force: true, deleteAvd: true });
+            expect(result).toMatchObject({ kind: operation === "stop" ? "stop-unconfirmed" : "force-delete-stop-failed", stateReverted: true });
+            expect(observations).toBeGreaterThan(1); expect(f.time()).toBe(30000);
+            expect(f.trace.filter(step => step === "stop-emulator")).toHaveLength(1);
+            expect(f.trace.filter(step => step.startsWith("stop-budget:"))).toHaveLength(1);
+            expect(f.trace).not.toContain("remove-avd"); expect({ ...f.current(), updatedAt: undefined }).toEqual({ ...original, updatedAt: undefined });
+        });
+
+        it.each(["running", "stopped"])(`${operation} accepts already absent native state with stale %s metadata and no runtime`, async status => {
+            const original = { ...stoppedDevice(), status }, f = directLifecyclePorts(original);
+            f.ports.observeAndroidEmulator = absent;
+            const app = createAndroidEmulatorLifecycle(f.ports);
+            const result = operation === "stop" ? await app.stop({ deviceId: original.id }) : await app.delete({ deviceId: original.id, force: true });
+            expect(result).toMatchObject({ kind: operation === "stop" ? "stopped" : "deleted" });
+            expect(f.trace).not.toContain("stop-emulator"); expect(f.trace.some(step => step.startsWith("terminate:"))).toBe(false);
+        });
+
+        it(`${operation} refuses a late absent result and dispatches no effect after admission exhausts the allowance`, async () => {
+            const original = recoverable(), f = directLifecyclePorts(original); let observations = 0;
+            f.ports.observeAndroidEmulator = () => { observations++; f.advanceTime(30000); return absent(); };
+            const app = createAndroidEmulatorLifecycle(f.ports);
+            const result = operation === "stop" ? await app.stop({ deviceId: original.id }) : await app.delete({ deviceId: original.id, force: true });
+            expect(result).toMatchObject({ kind: operation === "stop" ? "stop-unconfirmed" : "force-delete-stop-failed", reason: "deadline-exhausted", stateReverted: true });
+            expect(observations).toBe(1); expect({ ...f.current(), updatedAt: undefined }).toEqual({ ...original, updatedAt: undefined });
+            expect(f.trace).not.toContain("stop-emulator"); expect(f.trace).not.toContain("stop-recorder");
+        });
+
+        it(`${operation} cannot publish absence returned at the confirmation deadline`, async () => {
+            const original = recoverable(), f = directLifecyclePorts(original); let observations = 0;
+            f.ports.observeAndroidEmulator = () => { if (++observations === 1) return live(); f.advanceTime(30001); return absent(); };
+            const app = createAndroidEmulatorLifecycle(f.ports);
+            const result = operation === "stop" ? await app.stop({ deviceId: original.id }) : await app.delete({ deviceId: original.id, force: true });
+            expect(result).toMatchObject({ kind: operation === "stop" ? "stop-unconfirmed" : "force-delete-stop-failed", reason: "deadline-exhausted", stateReverted: true });
+            expect(observations).toBe(2); expect({ ...f.current(), updatedAt: undefined }).toEqual({ ...original, updatedAt: undefined }); expect(f.trace).not.toContain("remove-avd");
+        });
+
+        it.each(["admission", "abort", "publication"] as const)(`${operation} preserves an exact successor installed during %s`, async phase => {
+            const original = recoverable(), successor = { ...original, lifecycle: { operation: "start", runtimeId: "successor", claimedAt: "successor-time" }, extra: { raw: "successor" } }, f = directLifecyclePorts(original);
+            if (phase === "publication") f.ports.terminateOwnedRuntimeProcessTree = async () => { f.replace(successor); return { exited: true }; };
+            else f.ports.observeAndroidEmulator = () => { f.replace(successor); return phase === "abort" ? { kind: "unavailable", reason: "inventory-unavailable" } : live(); };
+            const app = createAndroidEmulatorLifecycle(f.ports);
+            const result = operation === "stop" ? await app.stop({ deviceId: original.id }) : await app.delete({ deviceId: original.id, force: true });
+            expect(result && "kind" in result ? result.kind : undefined).not.toBe(operation === "stop" ? "stopped" : "deleted");
+            expect(f.current()).toBe(successor); expect(f.trace).not.toContain("remove-avd");
+            if (phase !== "publication") { expect(f.trace).not.toContain("stop-emulator"); expect(f.trace).not.toContain("stop-recorder"); }
+        });
+    }
+
+    it("recorder cleanup may consume the remaining allowance but cannot authorize another native callback", async () => {
+        const original = recoverable(), f = directLifecyclePorts(original); let observations = 0;
+        f.ports.observeAndroidEmulator = () => { observations++; return live(); };
+        f.ports.stopAndroidRecorder = () => { f.advanceTime(30000); return { ok: true, diagnostic: {} }; };
+        const result = await createAndroidEmulatorLifecycle(f.ports).stop({ deviceId: original.id });
+        expect(result).toMatchObject({ kind: "stop-unconfirmed", reason: "deadline-exhausted", stateReverted: true });
+        expect(observations).toBe(1); expect(f.trace).not.toContain("stop-emulator"); expect({ ...f.current(), updatedAt: undefined }).toEqual({ ...original, updatedAt: undefined });
+    });
+
+    it("force-delete requires recorded owned-runtime exit rather than falling back to a live PID observation", async () => {
+        const original = recoverable(), f = directLifecyclePorts(original);
+        f.ports.terminateOwnedRuntimeProcessTree = async () => ({ exited: false, reason: "identity-unverified" });
+        f.ports.waitForProcessExit = async () => { throw new Error("PID-only fallback must never be used"); };
+        const result = await createAndroidEmulatorLifecycle(f.ports).delete({ deviceId: original.id, force: true });
+        expect(result).toMatchObject({ kind: "force-delete-stop-failed", runtimeStop: { exited: false }, stateReverted: true });
+        expect({ ...f.current(), updatedAt: undefined }).toEqual({ ...original, updatedAt: undefined });
+    });
+
+    it("a recorder identity refusal keeps all recoverable evidence and does not send emulator kill", async () => {
+        const original = recoverable(), f = directLifecyclePorts(original), diagnostic = { error: "identity-mismatch" };
+        f.ports.stopAndroidRecorder = () => ({ ok: false, diagnostic });
+        const result = await createAndroidEmulatorLifecycle(f.ports).stop({ deviceId: original.id });
+        expect(result).toMatchObject({ kind: "native-failure", diagnostic });
+        expect({ ...f.current(), updatedAt: undefined }).toEqual({ ...original, updatedAt: undefined }); expect(f.trace).not.toContain("stop-emulator");
+    });
+
+    it("repository publication failures retain their original storage error identity", async () => {
+        const original = recoverable(), f = directLifecyclePorts(original), storageError = new Error("state file cannot be replaced");
+        const transition = f.ports.transitionAndroidDevice;
+        f.ports.transitionAndroidDevice = (...args) => { if (args[2]?.status === "stopped") throw storageError; return transition(...args); };
+        await expect(createAndroidEmulatorLifecycle(f.ports).stop({ deviceId: original.id })).rejects.toBe(storageError);
+        expect(f.current()?.runtime).toBe(original.runtime);
     });
 });

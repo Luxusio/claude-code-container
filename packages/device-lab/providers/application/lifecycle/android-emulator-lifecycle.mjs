@@ -46,6 +46,41 @@ export function createAndroidEmulatorLifecycle(ports) {
         return ports.transitionAndroidDevice(deviceId, current, restored);
     }
 
+    /** Native reads alone become unavailable; repository/claim errors stay storage errors.
+     * @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorDiscovery} discovery
+     * @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorDevice} device
+     * @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorStopBudget} budget
+     * @returns {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorStopObservation} */
+    function observeStop(discovery, device, budget) {
+        if (budget.remaining() <= 0) return { kind: "unavailable", reason: "deadline-exhausted" };
+        let observation;
+        try {
+            observation = ports.observeAndroidEmulator(discovery, device, budget);
+        } catch {
+            return { kind: "unavailable", reason: "observation-failed" };
+        }
+        return budget.remaining() > 0 ? observation : { kind: "unavailable", reason: "deadline-exhausted" };
+    }
+
+    /** @param {string | undefined} deviceId
+     * @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorLifecycleClaim} lifecycle
+     * @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorDiscovery} discovery
+     * @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorDevice} device
+     * @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorStopBudget} budget
+     * @returns {Promise<{kind:"confirmed"}|{kind:"conflict"}|{kind:"unconfirmed",reason:import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorStopFailureReason}>} */
+    async function confirmStopped(deviceId, lifecycle, discovery, device, budget) {
+        while (budget.remaining() > 0) {
+            if (!currentAndroidLifecycleDevice(deviceId, lifecycle)) return { kind: "conflict" };
+            const observation = observeStop(discovery, device, budget);
+            if (!currentAndroidLifecycleDevice(deviceId, lifecycle)) return { kind: "conflict" };
+            if (observation.kind === "unavailable") return { kind: "unconfirmed", reason: observation.reason };
+            if (budget.remaining() <= 0) return { kind: "unconfirmed", reason: "deadline-exhausted" };
+            if (!observation.serialPresent && !observation.processActive) return { kind: "confirmed" };
+            await budget.pause();
+        }
+        return { kind: "unconfirmed", reason: "deadline-exhausted" };
+    }
+
     /** @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorDiscovery} discovery
      * @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorDevice} device
      * @param {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorRuntime} runtime */
@@ -305,30 +340,63 @@ export function createAndroidEmulatorLifecycle(ports) {
         if (!claim.transition.matched) return androidLifecycleConflict(deviceId, "stop-claim", claim.transition);
 
         const discovery = ports.androidDiscovery();
+        const budget = ports.stopBudget(30000, 250);
+        const admission = observeStop(discovery, device, budget);
+        if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+        if (admission.kind === "unavailable" || budget.remaining() <= 0) {
+            const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+            return { kind: "stop-unconfirmed", deviceId, reason: admission.kind === "unavailable" ? admission.reason : "deadline-exhausted", stateReverted: restored.matched };
+        }
         const recorderSignal = ports.signalAndroidRecorder(device.recording);
-        if (device.recording?.active) ports.stopAndroidRecorder(discovery, device);
+        if (device.recording?.active && admission.serialPresent) {
+            if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+            if (budget.remaining() <= 0) {
+                const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                return { kind: "stop-unconfirmed", deviceId, reason: "deadline-exhausted", stateReverted: restored.matched };
+            }
+            const recorderStop = ports.stopAndroidRecorder(discovery, device, budget);
+            if (recorderStop && !recorderStop.ok) {
+                abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                return { kind: "native-failure", diagnostic: recorderStop.diagnostic };
+            }
+        }
         if (recorderSignal.signaled) {
             await ports.waitForProcessExit((/** @type {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorRuntime} */ (device.recording)).pid, 1000);
         }
-        if (ports.observeAndroidEmulator(discovery, device).live) {
-            const stopped = ports.stopAndroidEmulator(discovery, device);
+        if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+        if (budget.remaining() <= 0) {
+            const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+            return { kind: "stop-unconfirmed", deviceId, reason: "deadline-exhausted", stateReverted: restored.matched };
+        }
+        if (admission.serialPresent) {
+            const stopped = ports.stopAndroidEmulator(discovery, device, budget);
             if (stopped && !stopped.ok) {
                 abortAndroidLifecycle(deviceId, claim.lifecycle, device);
                 return { kind: "native-failure", diagnostic: stopped.diagnostic };
             }
         }
-        const runtimeStop = device.runtime
-            ? await ports.terminateOwnedRuntimeProcessTree(ports.refreshOwnedRuntimeProcessIdentity(device.runtime), "Android Emulator", { timeoutMs: 3000 })
+        if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+        const runtime = device.runtime ? ports.refreshOwnedRuntimeProcessIdentity(device.runtime) : null;
+        if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+        const runtimeStop = runtime
+            ? await ports.terminateOwnedRuntimeProcessTree(runtime, "Android Emulator", { timeoutMs: 3000 })
             : null;
         if (runtimeStop && !runtimeStop.exited) {
             abortAndroidLifecycle(deviceId, claim.lifecycle, device);
-            return { kind: "runtime-stop-failed",
-                deviceId,
-                runtimeStop,
-            };
+            return { kind: "runtime-stop-failed", deviceId, runtimeStop };
+        }
+        const confirmation = await confirmStopped(deviceId, claim.lifecycle, discovery, device, budget);
+        if (confirmation.kind === "conflict") return androidLifecycleConflict(deviceId, "stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+        if (confirmation.kind === "unconfirmed") {
+            const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+            return { kind: "stop-unconfirmed", deviceId, reason: confirmation.reason, stateReverted: restored.matched };
         }
         const current = currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
         if (!current) return androidLifecycleConflict(deviceId, "stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+        if (budget.remaining() <= 0) {
+            const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+            return { kind: "stop-unconfirmed", deviceId, reason: "deadline-exhausted", stateReverted: restored.matched };
+        }
         const updated = {
             ...current,
             status: "stopped",
@@ -371,64 +439,70 @@ export function createAndroidEmulatorLifecycle(ports) {
         let deleteCurrent = null;
         if (force) {
             discovery ||= ports.androidDiscovery();
-            const adbLive = ports.observeAndroidEmulator(discovery, device).live;
-            const adbStop = adbLive ? ports.stopAndroidEmulator(discovery, device) : null;
-            const needsStop = device.status !== "stopped" || adbLive;
-            if (needsStop) {
-                const runtimeStop = device.runtime
-                    ? await ports.terminateOwnedRuntimeProcessTree(ports.refreshOwnedRuntimeProcessIdentity(device.runtime), "Android Emulator", { timeoutMs: 3000 })
-                    : null;
-                const runtimePid = device.runtime?.pid || device.pid;
-                const adbProcessExited = adbStop?.ok === true && runtimePid
-                    ? await ports.waitForProcessExit(runtimePid, 3000)
-                    : false;
-                const runtimeStopped = runtimeStop?.exited === true || adbProcessExited;
-                const adbStopped = adbStop?.ok === true;
-                if ((runtimeStop && !runtimeStopped) || (!runtimeStop && !adbStopped)) {
-                    const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
-                    return { kind: "force-delete-stop-failed",
-                        deviceId,
-                        adbStop: adbStop?.diagnostic ?? null,
-                        runtimeStop,
-                        stateReverted: restored.matched,
-                    };
-                }
-                const current = currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
-                if (!current) return androidLifecycleConflict(deviceId, "delete-stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
-                const stopped = {
-                    ...current,
-                    status: "stopped",
-                    pid: null,
-                    runtime: null,
-                    bootReady: false,
-                    lifecycle: null,
-                    updatedAt: ports.wallTimestamp(),
-                };
-                const stoppedTransition = ports.transitionAndroidDevice(deviceId, current, stopped);
-                if (!stoppedTransition.matched) return androidLifecycleConflict(deviceId, "delete-stop", stoppedTransition);
-                deleteCurrent = stopped;
+            const budget = ports.stopBudget(30000, 250);
+            const admission = observeStop(discovery, device, budget);
+            if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "delete-stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+            if (admission.kind === "unavailable" || budget.remaining() <= 0) {
+                const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                return { kind: "force-delete-stop-failed", deviceId, adbStop: null, runtimeStop: null, reason: admission.kind === "unavailable" ? admission.reason : "deadline-exhausted", stateReverted: restored.matched };
             }
+            const adbStop = admission.serialPresent ? ports.stopAndroidEmulator(discovery, device, budget) : null;
+            if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "delete-stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+            const runtime = device.runtime ? ports.refreshOwnedRuntimeProcessIdentity(device.runtime) : null;
+            if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "delete-stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+            const runtimeStop = runtime
+                ? await ports.terminateOwnedRuntimeProcessTree(runtime, "Android Emulator", { timeoutMs: 3000 })
+                : null;
+            if ((adbStop && !adbStop.ok) || (runtimeStop && !runtimeStop.exited)) {
+                const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                return { kind: "force-delete-stop-failed", deviceId, adbStop: adbStop?.diagnostic ?? null, runtimeStop, stateReverted: restored.matched };
+            }
+            const confirmation = await confirmStopped(deviceId, claim.lifecycle, discovery, device, budget);
+            if (confirmation.kind === "conflict") return androidLifecycleConflict(deviceId, "delete-stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+            if (confirmation.kind === "unconfirmed") {
+                const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                return { kind: "force-delete-stop-failed", deviceId, adbStop: adbStop?.diagnostic ?? null, runtimeStop, reason: confirmation.reason, stateReverted: restored.matched };
+            }
+            const current = currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
+            if (!current) return androidLifecycleConflict(deviceId, "delete-stop", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
+            if (budget.remaining() <= 0) {
+                const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                return { kind: "force-delete-stop-failed", deviceId, adbStop: adbStop?.diagnostic ?? null, runtimeStop, reason: "deadline-exhausted", stateReverted: restored.matched };
+            }
+            const stopped = {
+                ...current,
+                status: "stopped",
+                pid: null,
+                runtime: null,
+                bootReady: false,
+                updatedAt: ports.wallTimestamp(),
+            };
+            const stoppedTransition = ports.transitionAndroidDevice(deviceId, current, stopped);
+            if (!stoppedTransition.matched) return androidLifecycleConflict(deviceId, "delete-stop", stoppedTransition);
+            deleteCurrent = stopped;
         }
         if (deleteAvd) {
+            if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "delete", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
             if (!ports.androidAvdIsInactive(/** @type {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorDiscovery} */ (discovery), deleteCurrent || device)) {
-                if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                abortAndroidLifecycle(deviceId, claim.lifecycle, deleteCurrent ? { ...deleteCurrent, lifecycle: null } : device);
                 return androidLifecycleRefused("android-avd-active-or-liveness-unverified");
             }
             const avdRoot = ports.approvedAndroidAvdRoot(device.avdRoot);
             if (!avdRoot) {
-                if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                abortAndroidLifecycle(deviceId, claim.lifecycle, deleteCurrent ? { ...deleteCurrent, lifecycle: null } : device);
                 return androidLifecycleRefused("android-avd-root-unavailable");
             }
+            if (!currentAndroidLifecycleDevice(deviceId, claim.lifecycle)) return androidLifecycleConflict(deviceId, "delete", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
             const deletion = ports.deleteOwnedAndroidAvd(device.avdName, {
                 avdRoot,
                 verifyInactive: () => ports.androidAvdIsInactive(/** @type {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorDiscovery} */ (discovery), deleteCurrent || device),
             });
             if (!deletion.ok) {
-                if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                abortAndroidLifecycle(deviceId, claim.lifecycle, deleteCurrent ? { ...deleteCurrent, lifecycle: null } : device);
                 return androidLifecycleRefused(`Android AVD artifact cleanup failed: ${deletion.error}`);
             }
         }
-        const current = deleteCurrent || currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
+        const current = currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
         if (!current) return androidLifecycleConflict(deviceId, "delete", { found: Boolean(ports.findAndroidDevice(deviceId)), matched: false });
         const transition = ports.transitionAndroidDevice(deviceId, current, null);
         if (!transition.matched) return androidLifecycleConflict(deviceId, "delete", transition);

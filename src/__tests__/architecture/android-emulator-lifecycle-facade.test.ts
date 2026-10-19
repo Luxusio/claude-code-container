@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -123,5 +123,180 @@ describe("Android emulator lifecycle current public MCP lifecycle", () => {
             expect(existsSync(join(c.homeDir, ".android", "avd", avdName + ".avd"))).toBe(false);
 
         });
+    }, 30000);
+});
+
+describe.each(["source", "emitted"] as const)("direct Android stop completion through %s MCP", route => {
+    const options = route === "emitted" ? { entrypoint: join(project, "dist/device-lab-mcp/server.mjs") } : {};
+
+    it("native stop evidence rejects failed, malformed and offline inventory, preserves recovery data, then permits a trustworthy retry", async () => {
+        await withAndroidLifecycleFixture("stop-inventory-" + route, async (c, ownerId) => {
+            const deviceId = "android-stop-facts", serial = "emulator-5678", avdName = `ccc-${ownerId}-stop-facts`;
+            const created = await c.client.callTool({ name: "create_android_emulator", arguments: { deviceId, name: "Stop Facts", avdName, port: 5678, systemImage: ANDROID_SYSTEM_IMAGE } });
+            expect(created.isError, toolText(created)).not.toBe(true);
+            const state = androidRawState(c.homeDir, ownerId);
+            const original = { ...state.devices[0], status: "running", appium: { sessionId: "recoverable-appium" }, recording: { active: false, remotePath: "/sdcard/recoverable.mp4" }, extra: { raw: "recoverable" } };
+            writeFileSync(androidStatePath(c.homeDir, ownerId), JSON.stringify({ ...state, devices: [original] }));
+            writeFileSync(join(c.homeDir, "fake-adb-active-" + serial), avdName);
+            for (const [marker, content] of [
+                ["fake-adb-devices-fail", "1"], ["fake-adb-devices-headerless", "1"],
+                ["fake-adb-devices-truncated", "1"], ["fake-adb-target-offline", serial], ["fake-android-avd-query-fail", "1"],
+            ]) {
+                writeFileSync(join(c.homeDir, marker), content);
+                const before = readFileSync(c.logPath, "utf8");
+                try {
+                    const refused = await c.client.callTool({ name: "stop", arguments: { deviceId } });
+                    expect(refused.isError, toolText(refused)).toBe(true);
+                    expect(toolText(refused)).toContain("android-emulator-stop-unconfirmed");
+                    expect(androidRawState(c.homeDir, ownerId).devices[0]).toMatchObject({ status: "running", appium: original.appium, recording: original.recording, extra: original.extra });
+                    expect(androidRawState(c.homeDir, ownerId).devices[0]).not.toHaveProperty("lifecycle");
+                    expect(existsSync(join(c.homeDir, ".android", "avd", avdName + ".avd"))).toBe(true);
+                    expect(readFileSync(c.logPath, "utf8").slice(before.length)).not.toContain(`adb -s ${serial} emu kill`);
+                } finally { rmSync(join(c.homeDir, marker), { force: true }); }
+            }
+            const stopped = await c.client.callTool({ name: "stop", arguments: { deviceId } });
+            expect(stopped.isError, toolText(stopped)).not.toBe(true);
+            expect(androidRawState(c.homeDir, ownerId).devices[0]).toMatchObject({ status: "stopped", runtime: null, appium: null, recording: null });
+            const deleted = await c.client.callTool({ name: "delete", arguments: { deviceId, deleteAvd: true, confirmDestructive: true } });
+            expect(deleted.isError, toolText(deleted)).not.toBe(true); expect(androidRawState(c.homeDir, ownerId).devices).toEqual([]);
+        }, options);
+    }, 30000);
+
+    it("native forced delete preserves registered state and AVD artifacts after failed inventory, then removes only the confirmed target", async () => {
+        await withAndroidLifecycleFixture("delete-inventory-" + route, async (c, ownerId) => {
+            const deviceId = "android-delete-facts", serial = "emulator-5678", avdName = `ccc-${ownerId}-delete-facts`;
+            const created = await c.client.callTool({ name: "create_android_emulator", arguments: { deviceId, name: "Delete Facts", avdName, port: 5678, systemImage: ANDROID_SYSTEM_IMAGE } });
+            expect(created.isError, toolText(created)).not.toBe(true);
+            const state = androidRawState(c.homeDir, ownerId), original = { ...state.devices[0], status: "running", recording: { active: false, remotePath: "/sdcard/preserve.mp4" }, appium: { sessionId: "preserve" } };
+            writeFileSync(androidStatePath(c.homeDir, ownerId), JSON.stringify({ ...state, devices: [original] }));
+            writeFileSync(join(c.homeDir, "fake-adb-active-" + serial), avdName);
+            writeFileSync(join(c.homeDir, "fake-adb-devices-fail"), "1");
+            try {
+                const refused = await c.client.callTool({ name: "delete", arguments: { deviceId, force: true, deleteAvd: true, confirmDestructive: true } });
+                expect(refused.isError, toolText(refused)).toBe(true);
+                expect(androidRawState(c.homeDir, ownerId).devices[0]).toMatchObject({ status: "running", recording: original.recording, appium: original.appium });
+                expect(existsSync(join(c.homeDir, ".android", "avd", avdName + ".avd"))).toBe(true);
+                expect(readFileSync(c.logPath, "utf8")).not.toContain(`adb -s ${serial} emu kill`);
+            } finally { rmSync(join(c.homeDir, "fake-adb-devices-fail"), { force: true }); }
+            const deleted = await c.client.callTool({ name: "delete", arguments: { deviceId, force: true, deleteAvd: true, confirmDestructive: true } });
+            expect(deleted.isError, toolText(deleted)).not.toBe(true);
+            expect(androidRawState(c.homeDir, ownerId).devices).toEqual([]);
+            expect(existsSync(join(c.homeDir, ".android", "avd", avdName + ".avd"))).toBe(false);
+        }, options);
+    }, 30000);
+
+    it("native foreign serial identity prevents both recorder pkill and emulator kill before an exact-target retry", async () => {
+        await withAndroidLifecycleFixture("foreign-serial-" + route, async (c, ownerId) => {
+            const deviceId = "android-serial-reused", serial = "emulator-5678", avdName = `ccc-${ownerId}-serial-reused`;
+            const created = await c.client.callTool({ name: "create_android_emulator", arguments: { deviceId, name: "Serial Reused", avdName, port: 5678, systemImage: ANDROID_SYSTEM_IMAGE } });
+            expect(created.isError, toolText(created)).not.toBe(true);
+            const state = androidRawState(c.homeDir, ownerId), original = { ...state.devices[0], status: "running", recording: { active: true, remotePath: "/sdcard/preserve.mp4" }, appium: { sessionId: "preserve" } };
+            writeFileSync(androidStatePath(c.homeDir, ownerId), JSON.stringify({ ...state, devices: [original] }));
+            const activePath = join(c.homeDir, "fake-adb-active-" + serial);
+            writeFileSync(activePath, "foreign_avd");
+            const before = readFileSync(c.logPath, "utf8");
+            const refused = await c.client.callTool({ name: "stop", arguments: { deviceId } });
+            expect(refused.isError, toolText(refused)).toBe(true);
+            expect(readFileSync(c.logPath, "utf8").slice(before.length)).not.toContain(`adb -s ${serial} shell pkill`);
+            expect(readFileSync(c.logPath, "utf8").slice(before.length)).not.toContain(`adb -s ${serial} emu kill`);
+            expect(readFileSync(activePath, "utf8")).toBe("foreign_avd");
+            expect(androidRawState(c.homeDir, ownerId).devices[0]).toMatchObject({ status: "running", recording: original.recording, appium: original.appium });
+            // The AVD may change after admission. Exercise each serial effect's
+            // own identity check with and without the recorder cleanup phase.
+            for (const recordingActive of [true, false]) {
+                const current = androidRawState(c.homeDir, ownerId);
+                writeFileSync(androidStatePath(c.homeDir, ownerId), JSON.stringify({ ...current, devices: [{ ...current.devices[0], recording: { ...original.recording, active: recordingActive } }] }));
+                writeFileSync(activePath, avdName);
+                writeFileSync(join(c.homeDir, "fake-stop-reuse-after-identity"), "1");
+                const changed = await c.client.callTool({ name: "stop", arguments: { deviceId } });
+                expect(changed.isError, toolText(changed)).toBe(true);
+                expect(readFileSync(activePath, "utf8")).toBe("foreign_avd");
+                expect(readFileSync(c.logPath, "utf8").slice(before.length)).not.toContain(`adb -s ${serial} shell pkill`);
+                expect(readFileSync(c.logPath, "utf8").slice(before.length)).not.toContain(`adb -s ${serial} emu kill`);
+            }
+            const current = androidRawState(c.homeDir, ownerId);
+            writeFileSync(androidStatePath(c.homeDir, ownerId), JSON.stringify({ ...current, devices: [{ ...current.devices[0], recording: original.recording }] }));
+            writeFileSync(activePath, avdName);
+            const stopped = await c.client.callTool({ name: "stop", arguments: { deviceId } });
+            expect(stopped.isError, toolText(stopped)).not.toBe(true);
+            const effects = readFileSync(c.logPath, "utf8").slice(before.length);
+            expect(effects.match(new RegExp(`adb -s ${serial} shell pkill`, "g"))).toHaveLength(1);
+            expect(effects.match(new RegExp(`adb -s ${serial} emu kill`, "g"))).toHaveLength(1);
+            expect(existsSync(activePath)).toBe(false);
+        }, options);
+    }, 30000);
+
+    it("native stale recorder no-match permits emulator stop while nonzero emulator kill still fails", async () => {
+        await withAndroidLifecycleFixture("stale-recorder-" + route, async (c, ownerId) => {
+            const deviceId = "android-stale-recorder", serial = "emulator-5678", avdName = `ccc-${ownerId}-stale-recorder`;
+            const created = await c.client.callTool({ name: "create_android_emulator", arguments: { deviceId, name: "Stale Recorder", avdName, port: 5678 } });
+            expect(created.isError, toolText(created)).not.toBe(true);
+            const state = androidRawState(c.homeDir, ownerId);
+            writeFileSync(androidStatePath(c.homeDir, ownerId), JSON.stringify({ ...state, devices: [{ ...state.devices[0], status: "running", recording: { active: true, remotePath: "/sdcard/stale.mp4" }, appium: { sessionId: "old-session" } }] }));
+            const activePath = join(c.homeDir, "fake-adb-active-" + serial);
+            writeFileSync(activePath, avdName);
+            writeFileSync(join(c.homeDir, "fake-adb-pkill-no-match"), "1");
+            const before = readFileSync(c.logPath, "utf8");
+            const stopped = await c.client.callTool({ name: "stop", arguments: { deviceId } });
+            expect(stopped.isError, toolText(stopped)).not.toBe(true);
+            expect(androidRawState(c.homeDir, ownerId).devices[0]).toMatchObject({ status: "stopped", pid: null, runtime: null, recording: null, appium: null, lifecycle: null });
+            const effects = readFileSync(c.logPath, "utf8").slice(before.length);
+            const serialEffects = effects.split("\n").filter(line => / shell pkill | emu kill$/.test(line));
+            expect(serialEffects).toEqual([`adb -s ${serial} shell pkill -2 screenrecord`, `adb -s ${serial} emu kill`]);
+            expect(existsSync(activePath)).toBe(false);
+
+            // An identical nonzero/empty result from emu kill is a real failure,
+            // not the recorder command's documented absence result.
+            const current = androidRawState(c.homeDir, ownerId);
+            writeFileSync(androidStatePath(c.homeDir, ownerId), JSON.stringify({ ...current, devices: [{ ...current.devices[0], status: "running" }] }));
+            writeFileSync(activePath, avdName);
+            writeFileSync(join(c.homeDir, "fake-adb-emu-kill-fail"), "1");
+            try {
+                const failed = await c.client.callTool({ name: "stop", arguments: { deviceId } });
+                expect(failed.isError, toolText(failed)).toBe(true);
+                expect(androidRawState(c.homeDir, ownerId).devices[0]).toMatchObject({ status: "running", avdName });
+                expect(readFileSync(activePath, "utf8")).toBe(avdName);
+            } finally { rmSync(join(c.homeDir, "fake-adb-emu-kill-fail"), { force: true }); }
+        }, options);
+    }, 30000);
+
+    it("native registered non-prefixed AVD stops but never grants owner artifact deletion", async () => {
+        await withAndroidLifecycleFixture("registered-stop-" + route, async (c, ownerId) => {
+            const deviceId = "android-registered-host";
+            const activePath = join(c.homeDir, "fake-adb-active-emulator-5554");
+            rmSync(activePath);
+            const created = await c.client.callTool({ name: "create_android_emulator", arguments: { deviceId, name: "Registered Host", avdName: "host_pixel", port: 5554 } });
+            expect(created.isError, toolText(created)).not.toBe(true);
+            writeFileSync(activePath, "host_pixel");
+            const stopped = await c.client.callTool({ name: "stop", arguments: { deviceId } });
+            expect(stopped.isError, toolText(stopped)).not.toBe(true);
+            expect(androidRawState(c.homeDir, ownerId).devices[0]).toMatchObject({ status: "stopped", avdName: "host_pixel" });
+            expect(readFileSync(c.logPath, "utf8")).toContain("adb -s emulator-5554 emu kill");
+            const refused = await c.client.callTool({ name: "delete", arguments: { deviceId, deleteAvd: true, confirmDestructive: true } });
+            expect(refused.isError, toolText(refused)).toBe(true); expect(toolText(refused)).toContain("non-owned Android AVD name");
+            expect(androidRawState(c.homeDir, ownerId).devices).toHaveLength(1);
+            expect(readFileSync(c.logPath, "utf8")).not.toContain("avdmanager delete");
+            const deleted = await c.client.callTool({ name: "delete", arguments: { deviceId, confirmDestructive: true } });
+            expect(deleted.isError, toolText(deleted)).not.toBe(true);
+        }, options);
+    }, 30000);
+
+    it.each(["inventory", "empty-identity"] as const)("native observation expiry after %s refuses the next callback without a zero-timeout dispatch", async phase => {
+        await withAndroidLifecycleFixture("stop-native-deadline-" + route, async (c, ownerId) => {
+            const deviceId = "android-native-deadline", serial = "emulator-5678", avdName = `ccc-${ownerId}-native-deadline`;
+            const created = await c.client.callTool({ name: "create_android_emulator", arguments: { deviceId, name: "Native Deadline", avdName, port: 5678 } });
+            expect(created.isError, toolText(created)).not.toBe(true);
+            writeFileSync(join(c.homeDir, "fake-adb-active-" + serial), avdName);
+            writeFileSync(join(c.homeDir, phase === "inventory" ? "fake-stop-expire-after-inventory" : "fake-stop-expire-after-empty-identity"), "1");
+            const before = readFileSync(c.logPath, "utf8");
+            const refused = await c.client.callTool({ name: "stop", arguments: { deviceId } });
+            expect(refused.isError, toolText(refused)).toBe(true); expect(toolText(refused)).toContain("deadline-exhausted");
+            const calls = readFileSync(c.logPath, "utf8").slice(before.length);
+            expect(calls).not.toContain("android-avd-liveness process-query");
+            expect(calls).not.toContain(`adb -s ${serial} emu kill`);
+            if (phase === "inventory") expect(calls).not.toContain(`adb -s ${serial} emu avd`);
+            else expect(calls.match(new RegExp(`adb -s ${serial} emu avd`, "g"))).toHaveLength(1);
+            expect(androidRawState(c.homeDir, ownerId).devices[0]).toMatchObject({ status: "stopped", avdName });
+        }, options);
     }, 30000);
 });

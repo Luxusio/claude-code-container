@@ -1,0 +1,3 @@
+# Direct Android stop observations
+
+Direct Android stop and forced deletion use trustworthy serial and named-process observations before clearing recovery state. Both serial recorder and emulator stop commands verify the recorded AVD name immediately before dispatch; a different AVD at a reused serial receives neither command. Acknowledgement alone is not completion, and already absent targets remain idempotent. The application retains current lifecycle claims, conditional publication and owned process identity guards while reusing the existing monotonic budget and native readers. Known ceiling: portable source/emitted MCP fixtures do not certify native platforms, whole-tool timing, full auxiliary cleanup or same-name runtime-incarnation fencing.

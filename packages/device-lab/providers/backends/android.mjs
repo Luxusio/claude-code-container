@@ -227,25 +227,117 @@ function liveAndroidAvdNames(discovery) {
     return { ok: true, names };
 }
 
-function androidAvdProcessState(avdName) {
-    if (!isSafeProvisionedAvdName(avdName)) return { ok: false, active: false };
+function androidAvdProcessState(avdName, budget) {
+    // Process inspection is read-only and also supports registered external AVDs.
+    // Creation and artifact deletion keep their owner-prefixed name guards.
+    if (!isSafeAndroidAvdName(avdName)) return { ok: false, active: false };
     const powershell = process.platform === "win32" ? canonicalWindowsPowerShellPath() : null;
     if (process.platform === "win32" && !powershell) return { ok: false, active: false };
+    const timeout = budget ? Math.min(10000, budget.requestTimeout(10000)) : 10000;
+    if ((budget && budget.remaining() <= 0) || timeout <= 0) return { ok: false, active: false };
     const result = process.platform === "win32"
         ? run(powershell, [
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }",
-        ])
-        : run("/bin/ps", ["-eo", "args="]);
-    if (result.status !== 0) return { ok: false, active: false };
+            "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { if ([string]::IsNullOrWhiteSpace([string]$_.CommandLine)) { throw 'android-emulator-process-command-unavailable' }; [string]$_.CommandLine }",
+        ], { timeout })
+        : run("/bin/ps", ["-eo", "args="], { timeout });
+    if (result.status !== 0 || result.error || result.signal || String(result.stderr || "").trim()
+        || (process.platform !== "win32" && !result.stdout)
+        || (result.stdout && !String(result.stdout).endsWith("\n"))) return { ok: false, active: false };
     const escaped = avdName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const matcher = new RegExp(`(?:^|\\s)(?:-avd(?:\\s+|=)["']?${escaped}(?=["'\\s]|$)|@${escaped}(?=\\s|$))`);
     return {
         ok: true,
         active: String(result.stdout || "").split(/\r?\n/).some((line) => matcher.test(line)),
     };
+}
+
+/** @param {unknown} avdName
+ * @returns {avdName is string} */
+function isSafeAndroidAvdName(avdName) {
+    return typeof avdName === "string" && avdName.length > 0 && avdName.length <= 128
+        && /^[A-Za-z0-9._-]+$/.test(avdName);
+}
+
+/** The budget is re-read for every console command, including its compatibility fallback.
+ * @param {{adb?:string|null}} discovery
+ * @param {string} serial
+ * @param {string} avdName
+ * @param {import('../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorStopBudget} budget
+ * @returns {{ok:true}|{ok:false,reason:import('../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorStopFailureReason}} */
+function verifyAndroidStopIdentity(discovery, serial, avdName, budget) {
+    const identity = readAndroidAvdIdentity(serial, args => {
+        const timeout = budget.requestTimeout(10000);
+        if (budget.remaining() <= 0 || timeout <= 0) return { status: null, stderr: "deadline-exhausted" };
+        return run(discovery.adb, args, { timeout });
+    });
+    if (budget.remaining() <= 0) return { ok: false, reason: "deadline-exhausted" };
+    if (!identity.ok) return { ok: false, reason: "identity-unavailable" };
+    return identity.name === avdName ? { ok: true } : { ok: false, reason: "identity-mismatch" };
+}
+
+/** @param {{adb?:string|null}} discovery
+ * @param {import('../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorDevice} device
+ * @param {import('../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorStopBudget} budget
+ * @returns {import('../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorStopObservation} */
+function observeAndroidEmulatorStop(discovery, device, budget) {
+    if (!discovery.adb) return { kind: "unavailable", reason: "adb-unavailable" };
+    const serial = androidSerial(device);
+    if (typeof serial !== "string" || !/^emulator-\d+$/.test(serial)) return { kind: "unavailable", reason: "serial-unavailable" };
+    if (!isSafeAndroidAvdName(device.avdName)) return { kind: "unavailable", reason: "avd-name-invalid" };
+    const timeout = budget.requestTimeout(10000);
+    if (budget.remaining() <= 0 || timeout <= 0) return { kind: "unavailable", reason: "deadline-exhausted" };
+    const inventory = run(discovery.adb, ["devices", "-l"], { timeout });
+    if (budget.remaining() <= 0) return { kind: "unavailable", reason: "deadline-exhausted" };
+    if (inventory.status !== 0 || inventory.error || inventory.signal
+        || /(?:^|\n)\s*(?:adb:\s*)?(?:error\b|fatal\b|failed\b|cannot\b|unable\b)/i.test(String(inventory.stderr || ""))) {
+        return { kind: "unavailable", reason: "inventory-unavailable" };
+    }
+    const output = String(inventory.stdout || "");
+    const lines = output.split(/\r?\n/);
+    if (lines.shift() !== "List of devices attached" || !output.endsWith("\n")) return { kind: "unavailable", reason: "inventory-invalid" };
+    let serialPresent = false;
+    const seen = new Set();
+    for (const line of lines) {
+        if (!line.trim()) continue;
+        const match = /^(\S+)\s+(device|offline|unauthorized|recovery|sideload|bootloader|host|connecting|authorizing)(?:\s+[^\r\n]*)?$/.exec(line);
+        if (!match || seen.has(match[1])) return { kind: "unavailable", reason: "inventory-invalid" };
+        seen.add(match[1]);
+        if (match[1] !== serial) continue;
+        if (match[2] !== "device") return { kind: "unavailable", reason: "target-unavailable" };
+        serialPresent = true;
+    }
+    if (serialPresent) {
+        const identity = verifyAndroidStopIdentity(discovery, serial, device.avdName, budget);
+        if (!identity.ok) return { kind: "unavailable", reason: identity.reason };
+    }
+    if (budget.remaining() <= 0) return { kind: "unavailable", reason: "deadline-exhausted" };
+    const processState = androidAvdProcessState(device.avdName, budget);
+    if (budget.remaining() <= 0) return { kind: "unavailable", reason: "deadline-exhausted" };
+    if (!processState.ok) return { kind: "unavailable", reason: "process-unavailable" };
+    return { kind: "observed", serialPresent, processActive: processState.active };
+}
+
+/** @param {{adb?:string|null}} discovery
+ * @param {import('../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorDevice} device
+ * @param {string[]} command
+ * @param {import('../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorStopBudget} [budget]
+ * @returns {import('../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorNativeObservation | null} */
+function runGuardedAndroidStopCommand(discovery, device, command, budget = createWaitBudget(30000, 250)) {
+    const serial = androidSerial(device);
+    if (!discovery.adb || typeof serial !== "string" || !/^emulator-\d+$/.test(serial)) return null;
+    if (!isSafeAndroidAvdName(device.avdName)) return { ok: false, diagnostic: { status: 1, stderr: "android-emulator-avd-name-invalid" } };
+    const identity = verifyAndroidStopIdentity(discovery, serial, device.avdName, budget);
+    if (!identity.ok) return { ok: false, diagnostic: { status: 1, stderr: `android-emulator-stop-${identity.reason}` } };
+    const timeout = budget.requestTimeout(10000);
+    if (budget.remaining() <= 0 || timeout <= 0) return { ok: false, diagnostic: { status: 1, stderr: "android-emulator-stop-deadline-exhausted" } };
+    const result = run(discovery.adb, ["-s", serial, ...command], { timeout });
+    // SIGINT may already have ended screenrecord before its guest-side fallback.
+    const recorderAlreadyStopped = command.join(" ") === "shell pkill -2 screenrecord"
+        && result.status === 1 && !result.stdout && !result.stderr;
+    return { ok: (result.status === 0 || recorderAlreadyStopped) && !result.error && !result.signal, diagnostic: { status: result.status, stdout: result.stdout, stderr: result.stderr } };
 }
 
 function androidRecordingDir(device) {
@@ -571,8 +663,9 @@ function presentAndroidLifecycleOutcome(outcome) {
         case "native-failure": return fail(outcome.diagnostic);
         case "identity-unavailable": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-process-identity-unavailable",backend:"android-emulator",deviceId:outcome.deviceId,termination:outcome.termination,stateReverted:outcome.stateReverted,runtimeStatePreserved:outcome.runtimeStatePreserved}));
         case "boot-process-exited": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-process-exited-during-boot",backend:"android-emulator",deviceId:outcome.deviceId,boot:outcome.boot,rollback:outcome.rollback,stateReverted:outcome.stateReverted}));
+        case "stop-unconfirmed": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-stop-unconfirmed",backend:"android-emulator",deviceId:outcome.deviceId,reason:outcome.reason,stateReverted:outcome.stateReverted}));
         case "runtime-stop-failed": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-process-stop-failed",backend:"android-emulator",deviceId:outcome.deviceId,runtimeStop:outcome.runtimeStop}));
-        case "force-delete-stop-failed": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-force-delete-stop-failed",backend:"android-emulator",deviceId:outcome.deviceId,adbStop:outcome.adbStop,runtimeStop:outcome.runtimeStop,stateReverted:outcome.stateReverted}));
+        case "force-delete-stop-failed": return textResult(false,JSON.stringify({ok:false,error:"android-emulator-force-delete-stop-failed",backend:"android-emulator",deviceId:outcome.deviceId,adbStop:outcome.adbStop,runtimeStop:outcome.runtimeStop,stateReverted:outcome.stateReverted,...(outcome.reason?{reason:outcome.reason}:{})}));
         case "conflict": return textResult(false, JSON.stringify({ ok: false, error: "owner-device-state-conflict", backend: "android-emulator", deviceId: outcome.deviceId, operation: outcome.operation, found: outcome.found, ...(outcome.rollback ? { rollback: outcome.rollback } : {}) }));
         case "created": case "stopped": return jsonResult({ device: publicAndroidDevice(outcome.device) });
         case "started": return jsonResult({ device: publicAndroidDevice(outcome.device), boot: outcome.boot });
@@ -620,20 +713,10 @@ const androidEmulatorLifecycle = createAndroidEmulatorLifecycle({
     launchAndroidEmulator(discovery, device, input) {
         return spawnAndroidEmulator(discovery.native, device, ["-avd", device.avdName, ...(device.port ? ["-port", String(device.port)] : []), ...androidEmulatorStartArgs(device, input)]);
     },
-    observeAndroidEmulator(discovery, device) {
-        const serial = androidSerial(device);
-        return { live: Boolean(discovery.native.adb && serial && run(discovery.native.adb, ["-s", serial, "get-state"]).status === 0) };
-    },
-    stopAndroidEmulator(discovery, device) {
-        const serial = androidSerial(device);
-        if (!discovery.native.adb || !serial) return null;
-        const command = run(discovery.native.adb, ["-s", serial, "emu", "kill"]);
-        return { ok: command.status === 0, diagnostic: { status: command.status, stdout: command.stdout, stderr: command.stderr } };
-    },
-    stopAndroidRecorder(discovery, device) {
-        const serial = androidSerial(device);
-        if (discovery.native.adb && serial) run(discovery.native.adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"]);
-    },
+    stopBudget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
+    observeAndroidEmulator: (discovery, device, budget) => observeAndroidEmulatorStop(discovery.native, device, budget),
+    stopAndroidEmulator: (discovery, device, budget) => runGuardedAndroidStopCommand(discovery.native, device, ["emu", "kill"], budget),
+    stopAndroidRecorder: (discovery, device, budget) => runGuardedAndroidStopCommand(discovery.native, device, ["shell", "pkill", "-2", "screenrecord"], budget),
     androidAvdHome,
     androidAvdIsInactive: (discovery,device) => androidAvdIsInactive(discovery.native,device),
     androidDeviceId,

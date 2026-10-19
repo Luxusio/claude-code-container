@@ -44,8 +44,8 @@ export function androidRawState(home: string, ownerId: string): { devices: Recor
 // first assertion failure even when teardown also fails. This wrapper adds no
 // syscall sandbox; PATH and existing native identity/file guards remain the
 // authorities, with provider counters in the broker tests reported separately.
-export async function withAndroidLifecycleFixture(name: string, check: (context: FakeAndroidMcpContext, ownerId: string) => Promise<void>): Promise<void> {
-    const context = await createFakeAndroidMcpContext();
+export async function withAndroidLifecycleFixture(name: string, check: (context: FakeAndroidMcpContext, ownerId: string) => Promise<void>, options: { entrypoint?: string } = {}): Promise<void> {
+    const context = await createFakeAndroidMcpContext(options);
     const failures: unknown[] = [];
     let ownerId: string | undefined;
     const unknown = join(context.homeDir, "unknown-retained");
@@ -84,7 +84,7 @@ export interface DirectOwnedChild extends AndroidEmulatorProcessHandle { readonl
 // authority for storage, real process identity and teardown; this fixture tests
 // only the moved policy against its precise current step contracts.
 export function directLifecyclePorts(initial?: AndroidEmulatorDevice) {
-    let current = initial, clockReads = 0;
+    let current = initial, clockReads = 0, time = 0, emulatorActive = true;
     const trace: string[] = [], transitions: Array<{ expected: AndroidEmulatorDevice; replacement: AndroidEmulatorDevice | null }> = [];
     const child: DirectOwnedChild = { pid: 424242, nativeHandle: {} };
     const discovery = { adbAvailable: true, native: {}, available: true, missing: [], provisioningAvailable: true, provisioningMissing: [] };
@@ -110,9 +110,18 @@ export function directLifecyclePorts(initial?: AndroidEmulatorDevice) {
         readAndroidDevices: () => { trace.push("read"); return current ? [current] : []; },
         refreshOwnedRuntimeProcessIdentity: runtime => runtime,
         resolveAndroidEmulatorPort: (_owner, _id, port) => { trace.push("allocate"); return { ok: true, port: port || 5630 }; },
-        observeAndroidEmulator: () => { trace.push("observe-emulator"); return { live: true }; },
-        stopAndroidEmulator: () => { trace.push("stop-emulator"); return { ok: true, diagnostic: {} }; },
-        stopAndroidRecorder: () => { trace.push("stop-recorder"); },
+        stopBudget: (timeoutMs, intervalMs) => {
+            const deadline = time + timeoutMs;
+            trace.push("stop-budget:" + timeoutMs + ":" + intervalMs);
+            return {
+                remaining: () => Math.max(0, deadline - time),
+                requestTimeout: (maximum = 10000) => Math.min(maximum, Math.max(0, deadline - time)),
+                pause: async () => { const delay = Math.min(intervalMs, Math.max(0, deadline - time)); trace.push("stop-pause:" + delay); time += delay; },
+            };
+        },
+        observeAndroidEmulator: () => { trace.push("observe-emulator"); return { kind: "observed", serialPresent: emulatorActive, processActive: emulatorActive }; },
+        stopAndroidEmulator: () => { trace.push("stop-emulator"); emulatorActive = false; return { ok: true, diagnostic: {} }; },
+        stopAndroidRecorder: () => { trace.push("stop-recorder"); return { ok: true, diagnostic: {} }; },
         provisionAndroidAvd: () => { trace.push("provision"); return { ok: true, diagnostic: {} }; },
         signalAndroidRecorder: () => { trace.push("recorder-signal"); return { signaled: false }; },
         slug: () => "unit",
@@ -126,7 +135,7 @@ export function directLifecyclePorts(initial?: AndroidEmulatorDevice) {
         runtimeId: () => "unit-runtime",
         wallTimestamp: () => "timestamp-" + ++clockReads,
     };
-    return { ports, child, discovery, trace, transitions, current: () => current, replace: (next: AndroidEmulatorDevice | undefined) => { current = next; }, clockReads: () => clockReads };
+    return { ports, child, discovery, trace, transitions, current: () => current, replace: (next: AndroidEmulatorDevice | undefined) => { current = next; }, clockReads: () => clockReads, advanceTime: (milliseconds: number) => { time += milliseconds; }, time: () => time };
 }
 
 export type BrokerAndroidTestEffect = { action: "create" | "start" | "stop" | "delete" | "stop-inventory" | "boot-probe" };

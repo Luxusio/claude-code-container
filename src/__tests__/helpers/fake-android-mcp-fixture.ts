@@ -17,7 +17,7 @@ export interface FakeAndroidMcpContext {
     logPath: string;
 }
 
-export async function createFakeAndroidMcpContext(options: { platform?: "win32" } = {}): Promise<FakeAndroidMcpContext> {
+export async function createFakeAndroidMcpContext(options: { platform?: "win32"; entrypoint?: string } = {}): Promise<FakeAndroidMcpContext> {
     let client: Client | undefined;
     let homeDir = "";
     let binDir = "";
@@ -32,6 +32,9 @@ export async function createFakeAndroidMcpContext(options: { platform?: "win32" 
         for (const serial of ["R5CREAL123", "192.168.1.50:5555", "192.168.1.60:5555", "R5LEASED999"]) {
             writeFileSync(join(homeDir, `fake-adb-active-${encodeURIComponent(serial)}`), "1");
         }
+        // The initial host emulator is an explicit member of this SDK world;
+        // inventory and console identity disappear together after a real kill.
+        writeFileSync(join(homeDir, "fake-adb-active-emulator-5554"), "host_pixel");
 
         for (const name of ["emulator", "adb", "avdmanager"]) {
             const path = join(binDir, name);
@@ -44,7 +47,7 @@ export async function createFakeAndroidMcpContext(options: { platform?: "win32" 
 
         const transport = new StdioClientTransport({
             command: process.execPath,
-            args: [join(repoRoot, "device-lab-mcp/server.mjs")],
+            args: [options.entrypoint || join(repoRoot, "device-lab-mcp/server.mjs")],
             env: {
                 ...deviceLabTestHomeEnvironment(homeDir),
                 PATH: binDir,

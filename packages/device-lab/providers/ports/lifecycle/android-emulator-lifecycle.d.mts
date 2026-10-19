@@ -62,13 +62,27 @@ export interface AndroidEmulatorDiscovery {
 }
 
 export type AndroidEmulatorNativeObservation = { ok: boolean; diagnostic: unknown };
+export type AndroidEmulatorStopFailureReason =
+    | "adb-unavailable" | "serial-unavailable" | "avd-name-invalid"
+    | "inventory-unavailable" | "inventory-invalid" | "target-unavailable"
+    | "identity-unavailable" | "identity-mismatch" | "process-unavailable"
+    | "deadline-exhausted" | "observation-failed" | "target-still-active";
+export type AndroidEmulatorStopObservation =
+    | { kind: "observed"; serialPresent: boolean; processActive: boolean }
+    | { kind: "unavailable"; reason: AndroidEmulatorStopFailureReason };
+export interface AndroidEmulatorStopBudget {
+    remaining(): number;
+    requestTimeout(maximum?: number): number;
+    pause(): Promise<void>;
+}
 export type AndroidEmulatorLifecycleOutcome =
     | { kind: "refused"; message: string }
     | { kind: "native-failure"; diagnostic: unknown }
     | { kind: "identity-unavailable"; deviceId: string | undefined; termination: AndroidEmulatorTermination; stateReverted: boolean; runtimeStatePreserved: boolean }
     | { kind: "boot-process-exited"; deviceId: string | undefined; boot: AndroidEmulatorBoot; rollback: unknown; stateReverted: boolean }
+    | { kind: "stop-unconfirmed"; deviceId: string | undefined; reason: AndroidEmulatorStopFailureReason; stateReverted: boolean }
     | { kind: "runtime-stop-failed"; deviceId: string | undefined; runtimeStop: AndroidEmulatorTermination }
-    | { kind: "force-delete-stop-failed"; deviceId: string | undefined; adbStop: unknown; runtimeStop: AndroidEmulatorTermination | null; stateReverted: boolean }
+    | { kind: "force-delete-stop-failed"; deviceId: string | undefined; adbStop: unknown; runtimeStop: AndroidEmulatorTermination | null; stateReverted: boolean; reason?: AndroidEmulatorStopFailureReason }
     | { kind: "conflict"; deviceId: string | undefined; operation: string; found: boolean; rollback?: unknown }
     | { kind: "created" | "stopped"; device: AndroidEmulatorDevice }
     | { kind: "started"; device: AndroidEmulatorDevice; boot: AndroidEmulatorBoot }
@@ -104,9 +118,10 @@ export interface AndroidEmulatorBoot {
 export interface AndroidEmulatorLifecyclePorts<Child extends AndroidEmulatorProcessHandle = AndroidEmulatorProcessHandle> {
     provisionAndroidAvd(discovery: AndroidEmulatorDiscovery, input: { avdName: string; systemImage: string; deviceProfile?: string }): AndroidEmulatorNativeObservation;
     launchAndroidEmulator(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice, input: AndroidEmulatorLifecycleInput): Promise<Child>;
-    observeAndroidEmulator(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice): { live: boolean };
-    stopAndroidEmulator(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice): AndroidEmulatorNativeObservation | null;
-    stopAndroidRecorder(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice): void;
+    stopBudget(timeoutMs: number, intervalMs: number): AndroidEmulatorStopBudget;
+    observeAndroidEmulator(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice, budget: AndroidEmulatorStopBudget): AndroidEmulatorStopObservation;
+    stopAndroidEmulator(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice, budget?: AndroidEmulatorStopBudget): AndroidEmulatorNativeObservation | null;
+    stopAndroidRecorder(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice, budget?: AndroidEmulatorStopBudget): AndroidEmulatorNativeObservation | null;
     androidAvdHome(): string;
     androidAvdIsInactive(discovery: AndroidEmulatorDiscovery, device: AndroidEmulatorDevice | { avdName: string }): boolean;
     androidDeviceId(name: string | undefined): string;

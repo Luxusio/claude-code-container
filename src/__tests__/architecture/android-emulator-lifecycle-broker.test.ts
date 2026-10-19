@@ -110,7 +110,7 @@ describe("Android emulator lifecycle original authenticated broker witnesses", (
             expect(c.calls.some(row => row.command.provider === "emulator" && row.command.mode === "detached")).toBe(true);
             expect(c.calls.some(row => row.command.args?.includes("sys.boot_completed"))).toBe(true);
             // Broker confirms stop with both complete ADB and process inventory;
-            // the direct binding separately uses get-state before emu kill.
+            // the direct binding independently confirms its native stop facts.
             expect(c.calls.filter(row => row.command.provider === "process-inventory")).toHaveLength(2);
         });
     });
