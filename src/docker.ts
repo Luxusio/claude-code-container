@@ -101,6 +101,7 @@ import {
     inspectContainerJsonOnce,
     normalizedHostPath,
     projectPathIdentityMatches,
+    proveStoppedContainerProjectBindSource,
     sameFileIdentity,
     type BindMountSourceIdentity,
     type InspectedContainerMount,
@@ -958,22 +959,36 @@ function inspectManagedProjectContainerIdentity(
                 presence: "core",
                 sourceProof: { kind: "filesystem", identity: currentIdentity },
             };
-            if (expectedSessionId !== undefined && inspected.State.Running === false) {
+            if (inspected.State.Running === false) {
                 // Keep every matching destination so the normal shape gate rejects
-                // duplicates. Static evidence authorizes startup only, never cleanup.
+                // duplicates. Static evidence alone authorizes startup, never cleanup.
                 // A null image also prevents opaque WSL aliases from launching a proof helper.
+                if (!/^[a-f0-9]{64}$/i.test(inspected.Id)) return { reason: "container-id-invalid" };
                 const projectMounts = Array.isArray(inspected.Mounts)
                     ? inspected.Mounts.filter(mount => mount?.Destination === projectMountPath)
                     : [];
                 const preflight = preflightStoppedContainerMounts(inspected.Id, projectMounts, [
                     projectMount,
                 ], () => null);
-                return preflight.kind === "preflight-verified"
+                if (preflight.kind !== "preflight-verified") return { reason: "project-bind-unverified" };
+                const proof = proveStoppedContainerProjectBindSource(
+                    inspected.Id, projectPath, projectMountPath, currentIdentity,
+                );
+                if (proof.kind === "verified") {
+                    const current = inspectContainerJsonWithRetry(inspected.Id) as {
+                        Id?: unknown;
+                        State?: { Running?: unknown };
+                    } | null;
+                    assertBindMountSourceIdentity(projectPath, currentIdentity);
+                    if (!current || current.Id !== inspected.Id || current.State?.Running !== false) {
+                        return { reason: "project-bind-unverified" };
+                    }
+                    return { identity: { containerId: inspected.Id, running: false } };
+                }
+                return expectedSessionId !== undefined && proof.kind === "retryable"
                     ? { identity: { containerId: inspected.Id, running: false }, requiresLiveVerification: true }
                     : { reason: "project-bind-unverified" };
             }
-            // A stale fingerprint never turns static evidence into cleanup authority.
-            if (inspected.State.Running === false) return { reason: "project-bind-unverified" };
             const verification = verifyRequiredContainerMounts(
                 inspected.Id, inspected.Mounts ?? [], [projectMount], "strict", true,
             );
@@ -1043,7 +1058,8 @@ export function isContainerExists(containerName: string): boolean {
 }
 
 function getListedContainerId(containerName: string): SessionContainerInspection {
-    const result = runtimeSpawnSync(["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
+    const literalName = containerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const result = runtimeSpawnSync(["ps", "-aq", "--no-trunc", "-f", `name=^${literalName}$`],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" },
     );
     if (result.error || result.signal || result.status !== 0) {
@@ -2180,7 +2196,21 @@ function projectContainerDestructiveLifecycle() {
         withLifecycleLock: (prefix, operation) => { withContainerLifecycleLock(prefix, operation); },
         sessionClaims: getSessionLockClaimsForContainer,
         ensureRuntime: () => { ensureDockerRunning(); },
-        managedIdentity: getManagedProjectContainerIdentity,
+        managedIdentity: (name, path) => {
+            const listed = getListedContainerId(name);
+            if (!listed.known) {
+                throw new Error("Container inventory could not be inspected; the existing container was preserved.");
+            }
+            if (listed.containerId === null) return null;
+            const inspected = inspectManagedProjectContainerIdentity(listed.containerId, path);
+            if (!("identity" in inspected)) {
+                throw new Error(`Existing container ownership could not be verified (${inspected.reason}); the existing container was preserved.`);
+            }
+            if (inspected.identity.containerId !== listed.containerId) {
+                throw new Error("Existing container ownership could not be verified (container-id-changed); the existing container was preserved.");
+            }
+            return inspected.identity;
+        },
         cleanupDevices: (fullPath, timeoutMs, profile) => { cleanupOwnerDevices(fullPath, timeoutMs, profile); },
     });
 }

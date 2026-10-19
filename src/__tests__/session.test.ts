@@ -314,6 +314,14 @@ describe("session.ts", () => {
             expect(mockWriteFileSync).not.toHaveBeenCalled();
         }
 
+        function expectStoppedCopyAttempt() {
+            expect(mockSpawnSync.mock.calls.every(call => ["ps", "inspect", "cp"].includes(call[1]?.[0]))).toBe(true);
+            expect(mockSpawnSync.mock.calls.some(call => call[1]?.[0] === "cp"
+                && call[1]?.[1].startsWith(`${exactId}:/project/project/.ccc-mount-identity-`))).toBe(true);
+            expect(mockWriteFileSync).toHaveBeenCalledWith(expect.stringContaining(".ccc-mount-identity-"),
+                expect.stringMatching(/^[a-f0-9]{64}$/), { flag: "wx", mode: 0o600 });
+        }
+
         it("admits a stopped legacy managed container for live verification after startup without executing it", async () => {
             const docker = await inspectActual();
             const { projectPath, inspected } = legacyFixture();
@@ -322,7 +330,7 @@ describe("session.ts", () => {
             expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
                 known: true, containerId: exactId, requiresLiveVerification: true,
             });
-            expectReadOnlyAdmission();
+            expectStoppedCopyAttempt();
         });
 
         it.each(["/host_mnt", "/run/desktop/mnt/host"])("admits a stopped legacy macOS Docker Desktop project alias through %s", async prefix => {
@@ -338,7 +346,7 @@ describe("session.ts", () => {
             expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
                 known: true, containerId: exactId, requiresLiveVerification: true,
             });
-            expectReadOnlyAdmission();
+            expectStoppedCopyAttempt();
         });
 
         it.each([
@@ -420,7 +428,7 @@ describe("session.ts", () => {
             if (running) {
                 expect(mockWriteFileSync).toHaveBeenCalled();
                 expect(mockSpawnSync.mock.calls.some(call => call[1]?.[0] === "exec" && call[1]?.[1] === exactId)).toBe(true);
-            } else expectReadOnlyAdmission();
+            } else expectStoppedCopyAttempt();
             expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
         });
 
@@ -463,7 +471,7 @@ describe("session.ts", () => {
             expect(docker.getManagedProjectContainerIdentity(exactId, projectPath)).toEqual(running
                 ? { containerId: exactId, running: true } : null);
             if (running) expect(mockWriteFileSync).toHaveBeenCalled();
-            else expectReadOnlyAdmission();
+            else expectStoppedCopyAttempt();
             expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
         });
 
@@ -471,8 +479,53 @@ describe("session.ts", () => {
             const docker = await inspectActual();
             const { projectPath } = legacyFixture();
             expect(docker.getManagedProjectContainerIdentity(exactId, projectPath)).toBeNull();
-            expectReadOnlyAdmission();
+            expectStoppedCopyAttempt();
             expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
+        });
+
+        it.each(["missing", "stale"])("grants stopped ownership without pending authority only after a successful %s-fingerprint native copy", async fingerprint => {
+            const docker = await inspectActual();
+            const { projectPath, inspected } = legacyFixture();
+            if (fingerprint === "stale") inspected.Config.Labels["ccc.project.mount-identity"] = "f".repeat(64);
+            let content = "";
+            mockWriteFileSync.mockImplementation((_path: string, value: string) => { content = value; });
+            mockLstatSync.mockImplementation((path: string) => String(path).endsWith("/marker")
+                ? { isFile: () => true, isSymbolicLink: () => false, size: 64n, dev: 3n, ino: 4n }
+                : { isDirectory: () => true, isSymbolicLink: () => false, dev: 1n, ino: 2n });
+            mockReadFileSync.mockImplementation((path: string) => String(path).endsWith("/marker") ? content : undefined);
+            mockSpawnSync.mockImplementation((_command: string, args: string[]) => {
+                if (args[0] === "ps") return { status: 0, stdout: exactId };
+                if (args[0] === "inspect") return { status: 0, stdout: JSON.stringify(inspected) };
+                if (args[0] === "cp") return { status: 0, stdout: "" };
+                throw new Error(`unexpected native effect ${args[0]}`);
+            });
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: true, containerId: exactId });
+            expect(mockSpawnSync.mock.calls.filter(call => call[1]?.[0] === "inspect")).toHaveLength(2);
+            expectStoppedCopyAttempt();
+            expect(docker.getManagedProjectContainerIdentity(exactId, projectPath)).toEqual({containerId: exactId, running: false});
+        });
+
+        it.each(["successor", "started"])("refuses a stopped copy proof if the exact target became %s before handoff", async fault => {
+            const docker = await inspectActual();
+            const { projectPath, inspected } = legacyFixture();
+            let content = "";
+            mockWriteFileSync.mockImplementation((_path: string, value: string) => { content = value; });
+            mockLstatSync.mockImplementation((path: string) => String(path).endsWith("/marker")
+                ? { isFile: () => true, isSymbolicLink: () => false, size: 64n, dev: 3n, ino: 4n }
+                : { isDirectory: () => true, isSymbolicLink: () => false, dev: 1n, ino: 2n });
+            mockReadFileSync.mockImplementation((path: string) => String(path).endsWith("/marker") ? content : undefined);
+            mockSpawnSync.mockImplementation((_command: string, args: string[]) => {
+                if (args[0] === "ps") return { status: 0, stdout: exactId };
+                if (args[0] === "inspect") return { status: 0, stdout: JSON.stringify(inspected) };
+                if (args[0] === "cp") {
+                    if (fault === "successor") inspected.Id = "b".repeat(64);
+                    else inspected.State.Running = true;
+                    return { status: 0, stdout: "" };
+                }
+                throw new Error(`unexpected native effect ${args[0]}`);
+            });
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: false, containerId: null, reason: "project-bind-unverified" });
+            expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm", "exec"].includes(call[1]?.[0]))).toBe(false);
         });
     });
 

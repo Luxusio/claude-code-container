@@ -109,10 +109,16 @@ describe("existing lifecycle observations and contract", () => {
     it.each(["unsafe", "stopped", "unready", "safe"])("unconfirmed mismatch follows %s defer", mode => {
         const f = fixture(); f.state.contract = false; f.state.safe = mode !== "unsafe";
         f.state.running = mode !== "stopped"; f.state.ready = mode !== "unready";
+        f.state.identity = {containerId: "id", running: f.state.running};
         const run = () => f.app.run({ containerName: "name", replacementGuard: () => false });
         if (mode === "safe") expect(run()).toEqual({ kind: "joined", containerId: "id" });
-        else expect(run).toThrow(mode === "unsafe" ? "unsafe:unknown safety mismatch" : mode === "stopped" ? "automatic replacement was not authorized" : "destructive recovery was refused");
-        const expected = [...pre, "identity:name", "safe:id"];
+        else expect(run).toThrow(mode === "unsafe" ? "unsafe:unknown safety mismatch" : mode === "stopped" ? "Stopped container requires replacement (container contract changed), but replacement was not authorized" : "destructive recovery was refused");
+        const expected = [...pre, "identity:name", "identity:id"];
+        if (mode === "stopped") {
+            expect(f.trace).toEqual(expected);
+            return;
+        }
+        expected.push("safe:id");
         if (mode === "unsafe") expected.push("unsafe:unknown safety mismatch");
         else {
             expected.push("running:name");
@@ -123,6 +129,7 @@ describe("existing lifecycle observations and contract", () => {
     });
     it("propagates the actual unsafe reason through the required outer throw", () => {
         const f = fixture(); f.state.contract = false;
+        f.state.identity = {containerId: "id", running: true};
         f.ports.safeToDefer = (_id, report) => { report("unsafe mount"); return false; };
         const original = { failure: "restart" };
         f.ports.throwUnsafeDefer = reason => { expect(reason).toBe("unsafe mount"); throw original; };
@@ -131,14 +138,16 @@ describe("existing lifecycle observations and contract", () => {
     });
     it("defer observes mismatch reason mutations from later readiness callbacks", () => {
         const f = fixture(); let report: (reason: string) => void = () => {};
+        f.state.identity = {containerId: "id", running: true};
         f.ports.inspectContract = (id, callback) => { f.trace.push(`contract:${id}`); report = callback; callback("initial mismatch"); return false; };
         f.ports.isRunning = name => { f.trace.push(`running:${name}`); report("running mismatch"); return true; };
         f.ports.canExecAfterBriefRetry = id => { f.trace.push(`brief:${id}`); report("latest mismatch"); return true; };
         expect(f.app.run({ containerName: "name", replacementGuard: () => false })).toEqual({ kind: "joined", containerId: "id" });
-        expect(f.trace).toEqual([...pre, "identity:name", "safe:id", "running:name", "brief:id", "defer:latest mismatch", "ssh:id", "git:id", "finish:id"]);
+        expect(f.trace).toEqual([...pre, "identity:name", "identity:id", "safe:id", "running:name", "brief:id", "defer:latest mismatch", "ssh:id", "git:id", "finish:id"]);
     });
     it.each(["safeToDefer", "canExecAfterBriefRetry", "reportDeferred", "fixSsh", "syncGit", "finish"] as const)("defer propagates %s failure without completed join", name => {
         const f = fixture(); f.state.contract = false; const failure = { port: name };
+        f.state.identity = {containerId: "id", running: true};
         Object.assign(f.ports, { [name]: () => { throw failure; } });
         try { f.app.run({ containerName: "name", replacementGuard: () => false }); throw new Error("unexpected join"); }
         catch (error) { expect(error).toBe(failure); }
@@ -338,9 +347,9 @@ describe("identity-fenced replacement callbacks", () => {
         if (mode === "callback" || mode === "guard") expected.push("callback");
         expect(f.trace).toEqual(expected);
     });
-    it("false after successful lifecycle callback defers listed ID rather than restarting cleared ID", () => {
+    it("a false guard result after its callback preserves the stopped mismatch instead of pretending it is running", () => {
         const f = fixture(); f.state.contract = false;
-        expect(f.app.run({ containerName: "name", replacementGuard: operation => { operation(); return false; } })).toEqual({ kind: "joined", containerId: "id" });
-        expect(f.trace).toEqual([...pre, "identity:name", "identity:id", "recreate:container contract changed", "remove:id", "safe:id", "running:name", "brief:id", "defer:container contract changed", "ssh:id", "git:id", "finish:id"]);
+        expect(() => f.app.run({ containerName: "name", replacementGuard: operation => { operation(); return false; } })).toThrow("Stopped container requires replacement (container contract changed), but replacement was not authorized");
+        expect(f.trace).toEqual([...pre, "identity:name", "identity:id", "recreate:container contract changed", "remove:id", "identity:id"]);
     });
 });

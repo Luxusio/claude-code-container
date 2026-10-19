@@ -2,6 +2,18 @@ import {describe, expect, it, vi} from "vitest";
 import {createContainerExec, containerExecReplacementBlockReason} from "../../application/container-exec.js";
 import type {ContainerExecPorts} from "../../ports/container-exec.js";
 import {createDefaultToolCatalog} from "../../domain/tool-registry.js";
+import {createContainerExistingLifecycle} from "../../application/container-existing-lifecycle.js";
+import {assertBindMountSourceIdentity, captureBindMountSourceIdentity} from "../../adapters/container-mount-observations.js";
+import {inspectSessionContainerOwnership} from "../../docker.js";
+import * as nativeRuntime from "../../container-runtime.js";
+import {getProjectId} from "../../utils.js";
+import {mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {basename, join} from "node:path";
+import {normalizeNativeRuntimeCall, preloadNativeRuntimeFixture} from "../helpers/native-runtime-fixture.js";
+
+const stoppedNative = vi.hoisted(() => ({spawnSync: vi.fn()}));
+vi.mock("child_process", async () => ({...await vi.importActual("child_process"), spawnSync: stoppedNative.spawnSync}));
 
 function fixture(options: {running?: boolean; replace?: boolean} = {}) {
     const catalog = createDefaultToolCatalog(), events: string[] = [];
@@ -232,6 +244,83 @@ describe("acquired session lifetime", () => {
         expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
         if (started) expect(f.ports.setCleanupEnabled).toHaveBeenCalledWith(true);
         else expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+    });
+
+    it.each(["missing", "stale"])("replaces a stopped incompatible container through the real session guard after %s fingerprint bind proof", async fingerprint => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-stopped-replacement-"));
+        const oldId = "a".repeat(64), nextId = "b".repeat(64);
+        const files = new Map([[".git", "gitdir: /persistent/git/worktrees/task\n"], ["untracked.txt", "local work\n"], ["scratch.txt", "AI scratch\n"]]);
+        for (const [name, content] of files) writeFileSync(join(root, name), content);
+        const sourceIdentity = captureBindMountSourceIdentity(root);
+        const projectId = getProjectId(root), commands: string[][] = [];
+        let removed = false;
+        nativeRuntime._resetRuntimeCacheForTest();
+        preloadNativeRuntimeFixture(nativeRuntime);
+        stoppedNative.spawnSync.mockReset().mockImplementation((...call: unknown[]) => {
+            const [, args] = normalizeNativeRuntimeCall(call) as [string, string[]];
+            commands.push(args);
+            if (args[0] === "ps") return {status: 0, stdout: removed ? "" : `${oldId}\n`};
+            if (args[0] === "inspect") return {status: 0, stdout: JSON.stringify({
+                Id: oldId, State: {Running: false}, Config: {Labels: {
+                    "ccc.managed": "true", "ccc.project.path": root,
+                    ...(fingerprint === "stale" ? {"ccc.project.mount-identity": "f".repeat(64)} : {}),
+                }}, Mounts: [{Source: root, Destination: `/project/${projectId}`, Type: "bind", RW: true}],
+            })};
+            if (args[0] === "cp") {
+                expect(args[1]).toMatch(new RegExp(`^${oldId}:/project/${projectId}/\\.ccc-mount-identity-[a-f0-9]{32}$`));
+                writeFileSync(args[2], readFileSync(join(root, basename(args[1]))));
+                return {status: 0, stdout: ""};
+            }
+            if (args[0] === "rm") { expect(args).toEqual(["rm", oldId]); removed = true; return {status: 0, stdout: oldId}; }
+            throw new Error(`Unexpected native effect: ${JSON.stringify(args)}`);
+        });
+        const f = fixture();
+        f.ports.resolveProject = () => root;
+        f.ports.projectId = () => projectId;
+        f.ports.containerStatus = () => ({exists: !removed, running: false, containerId: removed ? null : oldId, imageId: "old-image"});
+        f.ports.inspectSessionContainer = inspectSessionContainerOwnership;
+        f.ports.acquireOwnership = async (request, inspect) => {
+            const ownership = inspect(request);
+            if (!ownership.known || !ownership.containerId) throw new Error("native project ownership was not established");
+            return {lockFile: "/owned/session.lock", existingId: ownership.containerId,
+                ...(ownership.requiresLiveVerification ? {requiresLiveVerification: true} : {})};
+        };
+        const noEffect = () => undefined;
+        const lifecycle = createContainerExistingLifecycle({
+            listContainer: () => ({known: true, containerId: removed ? null : oldId}),
+            identity: () => removed ? null : ({containerId: oldId, running: false}),
+            managedIdentity: () => { throw new Error("running authority must not be used for stopped replacement"); },
+            assertProjectSources: () => { assertBindMountSourceIdentity(root, sourceIdentity); },
+            assertDeviceSources: noEffect, assertFilesystemSources: noEffect,
+            inspectContract: (_id, reason) => { reason("container UID/GID does not match the host identity"); return false; },
+            verifyBeforeSetup: noEffect,
+            safeToDefer: (_id, reason) => { reason("container is not confirmed running for safe defer"); return false; },
+            isRunning: () => false, canExec: () => false, canExecAfterBriefRetry: () => false,
+            deviceSourcesMatch: () => true, syncMcp: noEffect, fixSsh: noEffect, syncGit: noEffect,
+            start: () => { throw new Error("old image must never start"); }, stop: () => { throw new Error("stopped target needs no stop"); },
+            remove: id => { nativeRuntime.runtimeSpawnSync(["rm", id], {encoding: "utf8", timeout: 30000}); },
+            reportContractMismatch: noEffect, reportContractMatch: noEffect, reportRestart: noEffect,
+            reportRecreation: noEffect, reportDeferred: noEffect,
+            throwUnsafeDefer: reason => { throw new Error(reason); }, finish: noEffect,
+        });
+        f.ports.startContainer = (...args) => {
+            expect(lifecycle.run({containerName: "ccc-repo", managedProjectPath: root, replacementGuard: args[6]})).toEqual({kind: "continue-to-create"});
+            args[9](nextId); args[7](nextId, {startedByInvocation: true}); return "ccc-repo";
+        };
+        f.ports.containerRunning = () => true;
+        try {
+            await expect(f.exec(root, ["codex"])).resolves.toBe(0);
+            expect(commands.filter(args => args[0] === "cp")).toHaveLength(1);
+            expect(commands.filter(args => args[0] === "rm")).toEqual([["rm", oldId]]);
+            expect(commands.some(args => ["start", "stop", "exec", "volume"].includes(args[0]))).toBe(false);
+            for (const [name, content] of files) expect(readFileSync(join(root, name), "utf8")).toBe(content);
+            expect(readdirSync(root).sort()).toEqual([...files.keys()].sort());
+            expect(f.ports.setSessionContainer).toHaveBeenCalledWith(nextId);
+            expect(f.ports.launchCommand).toHaveBeenCalledOnce();
+        } finally {
+            nativeRuntime._resetRuntimeCacheForTest();
+            rmSync(root, {recursive: true, force: true});
+        }
     });
 
     it("uses normal guarded replacement only after a legacy candidate reaches verified live-ready", async () => {

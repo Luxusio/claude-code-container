@@ -97,6 +97,13 @@ export function createContainerExistingLifecycle(ports: ContainerExistingLifecyc
                 if (replacementGuard) {
                     const recreated = replaceCurrent(contractMismatchReason, listedContainer.containerId);
                     if (!recreated) {
+                        const preservedIdentity = ports.identity(listedContainer.containerId);
+                        if (preservedIdentity?.containerId === listedContainer.containerId && !preservedIdentity.running) {
+                            throw new Error(
+                                `Stopped container requires replacement (${contractMismatchReason}), but replacement was not authorized; `
+                                + "the stopped container and its retained data were preserved.",
+                            );
+                        }
                         let unsafeDeferReason = "unknown safety mismatch";
                         if (!ports.safeToDefer(
                             listedContainer.containerId,

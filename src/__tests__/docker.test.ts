@@ -2590,7 +2590,7 @@ describe("docker.ts module exports", () => {
                 () => false, ready, undefined, started);
             const refusedPreflight = outcome === "unknown inspection" || outcome.startsWith("static ");
             if (outcome === "verified") expect(start()).toBe(getContainerName(projectPath));
-            else expect(start).toThrow(outcome === "unknown inspection" ? "temporarily unavailable" : outcome.startsWith("static ") ? "not confirmed running for safe defer" : outcome === "live mismatch" ? "live verification failed" : "UID/GID validation failed before setup");
+            else expect(start).toThrow(outcome === "unknown inspection" ? "temporarily unavailable" : outcome.startsWith("static ") ? "Stopped container requires replacement" : outcome === "live mismatch" ? "live verification failed" : "UID/GID validation failed before setup");
             expect(stoppedExecAttempts).toBe(0);
             const starts = spawnSyncMock.mock.calls.filter((call: unknown[]) => (call[1] as string[])[0] === "start");
             expect(starts.map((call: unknown[]) => call[1])).toEqual(refusedPreflight ? [] : [["start", TEST_CONTAINER_SHORT_ID]]);
@@ -4826,7 +4826,7 @@ describe("docker.ts module exports", () => {
             }, false), { identityRunning: false });
             const guard = vi.fn((replace: () => void) => { replace(); return true; });
             expect(() => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined,
-                undefined, guard, undefined, TEST_CONTAINER_ID)).toThrow(/not confirmed running for safe defer/);
+                undefined, guard, undefined, TEST_CONTAINER_ID)).toThrow(/Stopped container requires replacement/);
             expectNoContainerReplacement();
             expect(mockPrepareCodexStateOwnership).not.toHaveBeenCalled();
         });
@@ -7121,12 +7121,61 @@ describe("docker.ts module exports", () => {
             Config: { Labels: labels },
         });
 
+        it.each([
+            ["stop", false], ["remove", false], ["stop", true], ["remove", true],
+        ] as const)("selects the literal dotted profile during %s, requested present=%s", (operation, present) => {
+            const siblingId = "f".repeat(64);
+            const sibling = getContainerName(projectPath, "a-b");
+            const requested = getContainerName(projectPath, "a.b");
+            spawnSyncMock.mockImplementation((_command: string, args: string[]) => {
+                if (args[0] === "info") return makeResult(0);
+                if (args[0] === "ps") {
+                    const filter = args.find(arg => arg.startsWith("name="))!;
+                    const pattern = new RegExp(filter.slice("name=".length));
+                    const matches = [[sibling, siblingId], ...(present ? [[requested, TEST_CONTAINER_ID]] : [])]
+                        .filter(([name]) => pattern.test(name)).map(([, id]) => id);
+                    return makeResult(0, matches.join("\n"));
+                }
+                if (args[0] === "inspect") return makeResult(0, managedIdentity(args[3], true));
+                if (args[0] === "stop" || args[0] === "rm") return makeResult(0);
+                throw new Error("Unexpected native command");
+            });
+
+            if (operation === "stop") stopProjectContainer(projectPath, "a.b");
+            else removeProjectContainer(projectPath, "a.b");
+
+            const effects = spawnSyncMock.mock.calls.map((call) => call[1] as string[])
+                .filter(args => args[0] === "stop" || args[0] === "rm");
+            expect(effects).toEqual(present
+                ? operation === "stop" ? [["stop", TEST_CONTAINER_ID]] : [["stop", TEST_CONTAINER_ID], ["rm", TEST_CONTAINER_ID]]
+                : []);
+            if (!present) {
+                expect(console.log).toHaveBeenCalledWith("Container not found");
+                expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
+            }
+        });
+
+        it.each(["stop", "remove"] as const)("reports an existing unverified stopped target honestly during %s", operation => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID))
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, false, {
+                    "ccc.managed": "true", "ccc.project.path": projectPath,
+                })));
+
+            expect(() => operation === "stop" ? stopProjectContainer(projectPath) : removeProjectContainer(projectPath))
+                .toThrow("Existing container ownership could not be verified");
+            expect(console.log).not.toHaveBeenCalledWith("Container not found");
+            expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
+            expect(spawnSyncMock.mock.calls.some((call) => ["start", "stop", "rm"].includes((call[1] as string[])[0]))).toBe(false);
+        });
+
         it("logs 'Container not found' when container does not exist", () => {
             // ensureDockerRunning: isDockerRunning -> true
             // isContainerExists -> false
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))    // docker info (ensureDockerRunning)
-                .mockReturnValueOnce(makeResult(1, "")); // inspect -> unavailable/not found
+                .mockReturnValueOnce(makeResult(0, "")); // positively empty inventory
 
             const consoleSpy = vi.spyOn(console, "log");
             stopProjectContainer(projectPath);
@@ -7137,7 +7186,8 @@ describe("docker.ts module exports", () => {
         it("stops container when it exists", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))           // docker info
-                .mockReturnValueOnce(makeResult(0, managedIdentity("abc123", true))) // pinned identity
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, true))) // pinned identity
                 .mockReturnValueOnce(makeResult(0));            // docker stop
 
             stopProjectContainer(projectPath);
@@ -7147,14 +7197,15 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
             expect(stopCall).toBeDefined();
-            expect(stopCall![1]).toEqual(["stop", "abc123"]);
+            expect(stopCall![1]).toEqual(["stop", TEST_CONTAINER_ID]);
             expect(mockWithContainerLifecycleLock).toHaveBeenCalledWith(expect.any(String), expect.any(Function));
         });
 
         it("reports stop failure instead of claiming the container stopped", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))
-                .mockReturnValueOnce(makeResult(0, managedIdentity("abc123", true)))
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, true)))
                 .mockReturnValueOnce(makeResult(1));
 
             expect(() => stopProjectContainer(projectPath)).toThrow("Failed to stop container");
@@ -7174,7 +7225,8 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))
-                .mockReturnValueOnce(makeResult(0, managedIdentity("abc123", true)))
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, true)))
                 .mockReturnValueOnce(makeResult(0));
             stopProjectContainer(projectPath, undefined, { force: true });
             expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "stop")).toBe(true);
@@ -7183,7 +7235,8 @@ describe("docker.ts module exports", () => {
         it("still stops container when device cleanup throws", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))           // docker info
-                .mockReturnValueOnce(makeResult(0, managedIdentity("abc123", true))) // pinned identity
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, true))) // pinned identity
                 .mockReturnValueOnce(makeResult(0));            // docker stop
             mockCleanupOwnerDevices.mockImplementation(() => {
                 throw new Error("cleanup failed");
@@ -7195,7 +7248,7 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
             expect(stopCall).toBeDefined();
-            expect(stopCall![1]).toEqual(["stop", "abc123"]);
+            expect(stopCall![1]).toEqual(["stop", TEST_CONTAINER_ID]);
         });
 
         it("does not stop by name when identity inspection is unknown", () => {
@@ -7203,8 +7256,9 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce({ ...makeResult(null), error: Object.assign(new Error("EINVAL"), { code: "EINVAL" }) });
 
-            stopProjectContainer(projectPath);
+            expect(() => stopProjectContainer(projectPath)).toThrow(/inventory could not be inspected|ownership could not be verified/);
 
+            expect(console.log).not.toHaveBeenCalledWith("Container not found");
             expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "stop")).toBe(false);
             expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
@@ -7212,13 +7266,15 @@ describe("docker.ts module exports", () => {
         it("does not stop a foreign same-name container", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))
-                .mockReturnValueOnce(makeResult(0, managedIdentity("foreign123", true, {
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, true, {
                     "ccc.managed": "false",
                     "ccc.project.path": projectPath,
                 })));
 
-            stopProjectContainer(projectPath);
+            expect(() => stopProjectContainer(projectPath)).toThrow(/inventory could not be inspected|ownership could not be verified/);
 
+            expect(console.log).not.toHaveBeenCalledWith("Container not found");
             expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "stop")).toBe(false);
             expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
@@ -7250,7 +7306,7 @@ describe("docker.ts module exports", () => {
         it("logs 'Container not found' when container does not exist", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))    // docker info (ensureDockerRunning)
-                .mockReturnValueOnce(makeResult(1, "")); // inspect -> unavailable/not found
+                .mockReturnValueOnce(makeResult(0, "")); // positively empty inventory
 
             const consoleSpy = vi.spyOn(console, "log");
             removeProjectContainer(projectPath);
@@ -7260,7 +7316,8 @@ describe("docker.ts module exports", () => {
         it("stops and removes container when it exists", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))             // docker info
-                .mockReturnValueOnce(makeResult(0, managedIdentity("abc123", true))) // pinned identity
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, true))) // pinned identity
                 .mockReturnValueOnce(makeResult(0))            // docker stop
                 .mockReturnValueOnce(makeResult(0));            // docker rm
 
@@ -7272,26 +7329,28 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "rm"
             );
             expect(rmCall).toBeDefined();
-            expect(rmCall![1]).toEqual(["rm", "abc123"]);
-            expect(spawnSyncMock.mock.calls.find((call) => (call[1] as string[])[0] === "stop")![1]).toEqual(["stop", "abc123"]);
+            expect(rmCall![1]).toEqual(["rm", TEST_CONTAINER_ID]);
+            expect(spawnSyncMock.mock.calls.find((call) => (call[1] as string[])[0] === "stop")![1]).toEqual(["stop", TEST_CONTAINER_ID]);
         });
 
         it("removes a stopped container by pinned ID without stopping it", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))
-                .mockReturnValueOnce(makeResult(0, managedIdentity("stopped123456", false)))
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, false)))
                 .mockReturnValueOnce(makeResult(0));
 
             removeProjectContainer(projectPath);
 
             expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "stop")).toBe(false);
-            expect(spawnSyncMock.mock.calls.find((call) => (call[1] as string[])[0] === "rm")![1]).toEqual(["rm", "stopped123456"]);
+            expect(spawnSyncMock.mock.calls.find((call) => (call[1] as string[])[0] === "rm")![1]).toEqual(["rm", TEST_CONTAINER_ID]);
         });
 
         it("does not remove after a failed stop", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))
-                .mockReturnValueOnce(makeResult(0, managedIdentity("abc123", true)))
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, true)))
                 .mockReturnValueOnce(makeResult(1));
 
             expect(() => removeProjectContainer(projectPath)).toThrow("Failed to stop container");
@@ -7301,7 +7360,8 @@ describe("docker.ts module exports", () => {
         it("reports remove failure instead of claiming removal", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))
-                .mockReturnValueOnce(makeResult(0, managedIdentity("abc123", false)))
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, false)))
                 .mockReturnValueOnce(makeResult(1));
 
             expect(() => removeProjectContainer(projectPath)).toThrow("Failed to remove container");
@@ -7311,13 +7371,15 @@ describe("docker.ts module exports", () => {
         it("does not remove a foreign same-name container", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0))
-                .mockReturnValueOnce(makeResult(0, managedIdentity("foreign123", false, {
+                .mockReturnValueOnce(makeResult(0, TEST_CONTAINER_ID)) // exact inventory
+                .mockReturnValueOnce(makeResult(0, managedIdentity(TEST_CONTAINER_ID, false, {
                     "ccc.managed": "true",
                     "ccc.project.path": "/foreign/project",
                 })));
 
-            removeProjectContainer(projectPath);
+            expect(() => removeProjectContainer(projectPath)).toThrow("ownership could not be verified");
 
+            expect(console.log).not.toHaveBeenCalledWith("Container not found");
             expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "rm")).toBe(false);
             expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });

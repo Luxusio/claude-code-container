@@ -93,14 +93,30 @@ to establish a startup candidate. When its project fingerprint is absent or
 well-formed but stale, require the exact managed ID, matching project label,
 current host filesystem identity and one writable project bind with a verified
 source or supported alias.
-This static admission carries a pending live-verification marker through the
+For a stopped container, CCC may prove that same project binding without
+running its image: copy only a freshly generated nonce from the exact full
+container ID into a private temporary directory. Require the exact 64-byte
+regular, non-symlink marker, unchanged host identity, and the same stopped ID
+after the copy. Use the captured runtime, bound the command, and clean up both
+markers. This proves project ownership, not the full run contract or readiness.
+It permits the existing guarded replacement when an immutable contract changed;
+retained volumes and project files remain subject to the normal preservation
+checks. Never start an old image just to obtain ownership proof.
+
+If stopped copy proof is unavailable, static admission carries a pending live-verification marker through the
 session acquisition and startup boundary. A pending ownership ACK does not enable
 cleanup of an existing container; the ordinary own-start callback retains its
 separate responsibility. Automatic replacement stays blocked until full live
 verification produces the ready handoff. Strict destructive ownership inspection
-still requires its live proof for missing or stale project fingerprints; a
+still requires fresh target filesystem proof for missing or stale project fingerprints; a
 static stopped observation grants no destructive authority. Foreign, changed or
 unavailable evidence must not authorize deletion, replacement or joining.
+
+Stop/remove must distinguish verified absence from an existing target whose
+ownership cannot be verified. Preserve the latter and report the bounded
+verification reason. If replacement of a stopped target is refused, retain the
+original contract mismatch in the diagnostic and do not recommend the
+running-container stop-and-retry path.
 
 Reuse, stopped preflight and safe-defer decisions must reach their actual
 required-mount checks even when project or Device Lab fingerprints are stale.

@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "crypto";
-import { lstatSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join, normalize, posix, resolve } from "path";
 import { containerEngineFailureHint, getRuntimeInfo, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation } from "../container-runtime.js";
 import { ContainerEngineUnavailableError } from "../domain/container-runtime.js";
@@ -178,6 +179,35 @@ export function readDirectoryMountMarker(containerId: string, markerPath: string
     return result;
 }
 
+type DirectoryMountMarkerResult = Pick<ReturnType<typeof readDirectoryMountMarker>, "error" | "status" | "stdout">;
+
+function readStoppedProjectMountMarker(containerId: string, markerPath: string): DirectoryMountMarkerResult {
+    const directory = mkdtempSync(join(tmpdir(), "ccc-stopped-project-proof-"));
+    const destination = join(directory, "marker");
+    try {
+        const result = runtimeSpawnSync(["cp", `${containerId}:${markerPath}`, destination], {
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+            timeout: 5000,
+            killSignal: "SIGKILL",
+        });
+        const engineFailure = result.status !== 0 ? containerEngineFailureHint(result.stderr) : undefined;
+        if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
+        if (result.error || result.signal || result.status !== 0) return result;
+        const before = lstatSync(destination, { bigint: true });
+        if (!before.isFile() || before.isSymbolicLink() || before.size !== 64n) {
+            return { status: 0, stdout: "" };
+        }
+        const content = readFileSync(destination, "utf8");
+        const after = lstatSync(destination, { bigint: true });
+        return after.isFile() && !after.isSymbolicLink() && after.size === 64n && sameFileIdentity(before, after)
+            ? { status: 0, stdout: content }
+            : { status: 0, stdout: "" };
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+}
+
 function proveContainerSeesCurrentBindSource(
     containerId: string,
     hostPath: string,
@@ -186,6 +216,7 @@ function proveContainerSeesCurrentBindSource(
     session: MountVerificationSession,
     finalProofAttempt = false,
     canExec: (id: string, timeoutMs: number) => boolean,
+    readMarker: (id: string, path: string) => DirectoryMountMarkerResult = readDirectoryMountMarker,
 ): LiveSourceProof {
     let verification: LiveSourceProof = {
         kind: "retryable",
@@ -202,7 +233,7 @@ function proveContainerSeesCurrentBindSource(
             const challenge = getDirectoryMountChallenge(session, expected, containerPath);
             const markerIdentity = observeBindMountSourceIdentity(hostPath, expected);
             if (markerIdentity.kind !== "verified") return markerIdentity;
-            const result = readDirectoryMountMarker(containerId, posix.join(containerPath, challenge.markerName));
+            const result = readMarker(containerId, posix.join(containerPath, challenge.markerName));
             let containerExecReady = false;
             if (result.error || result.status !== 0) {
                 session.containerExecReady ??= canExec(containerId, 200);
@@ -279,6 +310,35 @@ function proveContainerSeesCurrentBindSource(
             });
     }
     return verification;
+}
+
+/** Read only a fresh project nonce from an exact stopped target, without executing its image. */
+export function proveStoppedContainerProjectBindSource(
+    containerId: string,
+    hostPath: string,
+    containerPath: string,
+    expected: BindMountSourceIdentity,
+): LiveSourceProof {
+    if (!/^[a-f0-9]{64}$/i.test(containerId) || !/^\/project\/[^/]+$/.test(containerPath)
+        || pathHasTraversalSegments(containerPath)) {
+        return { kind: "mismatch", reason: "stopped project proof requires an exact container and project mount" };
+    }
+    const invocation = getRuntimeInvocation();
+    const session = createMountVerificationSession();
+    try {
+        if (!lstatSync(expected.realpath).isDirectory()) {
+            return { kind: "mismatch", reason: "stopped project proof requires a project directory" };
+        }
+        return runWithNativeRuntimeInvocation(invocation, () => proveContainerSeesCurrentBindSource(
+            containerId, hostPath, containerPath, expected, session, true, () => false,
+            readStoppedProjectMountMarker,
+        ));
+    } catch (error) {
+        if (error instanceof ContainerEngineUnavailableError) throw error;
+        return { kind: "retryable", reason: "stopped project bind proof is temporarily unavailable" };
+    } finally {
+        cleanupMountVerificationSession(session);
+    }
 }
 
 export function bindMountSourceIdentityDigest(
