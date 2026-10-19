@@ -50,4 +50,15 @@ verified repair. Broader publication-only privilege handling remains separate.
 
 Known ceiling: portable native-leaf identity-option tests and an actual ordinary-user bootstrap do not certify macOS credential switching, this host's ownership/dependency state, or a live global installation. Actual host recovery requires its subsequent run.
 
+## Installed Unix CLI runtime
+
+The Unix launcher uses POSIX `exec` with the installer's absolute Node executable
+and the installed entry point. Both paths are shell-quoted, and arguments and
+terminal streams are forwarded unchanged. Project-local mise/PATH Node versions
+do not select CCC's runtime. Installation/postinstall rejects Node below 20.19.0
+before build or publication; uninstall and importing the installer remain inert
+with respect to that check. Removing the selected Node requires reinstalling CCC;
+there is no fallback to a different PATH executable. See
+[the runtime requirement](REQ__installed-cli-node-runtime.md).
+
 Sudo identity inputs must be canonical decimal integers within Node child-process credential limits: UID 1..2147483647 and GID 0..2147483647. Values above the signed 32-bit maximum are rejected before dispatch.

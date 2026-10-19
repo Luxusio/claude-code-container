@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 const fixtures: string[] = [];
@@ -10,10 +10,10 @@ afterEach(() => { for (const dir of fixtures.splice(0)) rmSync(dir, { recursive:
 
 // Execute the actual installer in an owned copy. Only its Unix destination is
 // redirected; no fixture can touch the machine's global CLI or User PATH.
-function fixture(packaged = false) {
+function fixture(packaged = false, directoryName?: string) {
     const sandbox = mkdtempSync(join(tmpdir(), "ccc-install-"));
     fixtures.push(sandbox);
-    const root = packaged ? join(sandbox, "node_modules", "ccc") : sandbox;
+    const root = packaged ? join(sandbox, "node_modules", "ccc") : directoryName ? join(sandbox, directoryName) : sandbox;
     mkdirSync(root, { recursive: true });
     const installDir = join(root, "owned-bin");
     const commands = join(root, "commands");
@@ -43,7 +43,7 @@ function fixture(packaged = false) {
         writeFileSync(join(commands, name), script);
         chmodSync(join(commands, name), 0o755);
     }
-    const run = (args: string[] = [], env: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [join(root, "scripts/install.js"), ...args], {
+    const run = (args: string[] = [], env: NodeJS.ProcessEnv = {}, nodeArgs: string[] = []) => spawnSync(process.execPath, [...nodeArgs, join(root, "scripts/install.js"), ...args], {
         encoding: "utf8", timeout: 10000,
         env: { ...process.env, CCC_RUNTIME: "", FIXTURE_LOG: log, ...env, PATH: commands },
     });
@@ -60,7 +60,7 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
         expect(f.calls()).toBe("npm run build\n");
         expect(result.stdout).toContain("CLI installed.");
         expect(result.stdout).toContain("skipped (--skip-image)");
-        const cli = spawnSync(process.execPath, [join(f.installDir, "ccc")], { encoding: "utf8" });
+        const cli = spawnSync(join(f.installDir, "ccc"), [], { encoding: "utf8", env: { ...process.env, PATH: "" } });
         expect(cli.status).toBe(0);
         expect(cli.stdout).toContain("fixture CLI");
         expect(existsSync(join(f.installDir, "ccc-dist/dist/index.js"))).toBe(true);
@@ -70,8 +70,130 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
         const installedManifest = JSON.parse(readFileSync(join(f.installDir, "ccc-dist/package.json"), "utf8"));
         expect(installedManifest).toEqual({ type: "module", version: "1.0.0", imports: { "#fixture": "./dist/index.js" } });
         expect(readFileSync(join(f.installDir, "ccc-dist/package.json"), "utf8")).toBe(JSON.stringify(installedManifest, null, 2));
-        expect(readFileSync(join(f.installDir, "ccc"), "utf8")).toBe(`#!/usr/bin/env node\nimport(${JSON.stringify(pathToFileURL(join(f.installDir, "ccc-dist/dist/index.js")).href)});\n`);
         expect(statSync(join(f.installDir, "ccc")).mode & 0o777).toBe(0o755);
+    });
+
+    it("pins the installer Node and preserves literal arguments, streams and exit status with quoted paths", () => {
+        const f = fixture(false, "payload ' $HOME $(touch injected-dollar) `touch injected-backtick`");
+        const pinnedNode = join(f.root, "node ' $HOME $(touch injected-node-dollar) `touch injected-node-backtick`");
+        symlinkSync(process.execPath, pinnedNode);
+        const preload = join(f.root, "installer-node.mjs");
+        writeFileSync(preload, `Object.defineProperty(process, "execPath", { value: ${JSON.stringify(pinnedNode)} });`);
+        writeFileSync(join(f.root, "dist/index.js"), 'import { readFileSync } from "node:fs";process.stdout.write(JSON.stringify({argv:process.argv.slice(2),stdin:readFileSync(0,"utf8")}));process.stderr.write("fixture stderr\\n");process.exit(37);');
+        const installed = f.run(["--skip-image"], {}, ["--import", pathToFileURL(preload).href]);
+        expect(installed.status, installed.stderr).toBe(0);
+        const trap = join(f.root, "path-node-called");
+        const fakeNode = join(f.root, "commands/node");
+        writeFileSync(fakeNode, '#!/bin/sh\nprintf called > "$FIXTURE_NODE_TRAP"\nexit 97\n');
+        chmodSync(fakeNode, 0o755);
+        const args = ["", "two words", "'quoted'", "$HOME", "$(touch injected-arg-dollar)", "`touch injected-arg-backtick`", "한글🙂", "--flag=value", "line\nbreak"];
+        const input = "stdin: 한글🙂\nsecond line\n";
+        const cli = spawnSync(join(f.installDir, "ccc"), args, {
+            cwd: f.root, encoding: "utf8", input,
+            env: { ...process.env, PATH: join(f.root, "commands"), FIXTURE_NODE_TRAP: trap },
+        });
+        expect(cli.error).toBeUndefined();
+        expect(cli.status, cli.stderr).toBe(37);
+        expect(cli.signal).toBeNull();
+        expect(JSON.parse(cli.stdout)).toEqual({ argv: args, stdin: input });
+        expect(cli.stderr).toBe("fixture stderr\n");
+        expect(existsSync(trap)).toBe(false);
+        for (const marker of ["injected-dollar", "injected-backtick", "injected-node-dollar", "injected-node-backtick", "injected-arg-dollar", "injected-arg-backtick"]) {
+            expect(existsSync(join(f.root, marker)), marker).toBe(false);
+        }
+    });
+
+    it("keeps the launcher's PID and lets signals reach the running CLI", async () => {
+        const f = fixture();
+        writeFileSync(join(f.root, "dist/index.js"), 'process.stdout.write(JSON.stringify({pid:process.pid})+"\\n");setInterval(()=>{},1000);');
+        const installed = f.run(["--skip-image"]);
+        expect(installed.status, installed.stderr).toBe(0);
+        const child = spawn(join(f.installDir, "ccc"), [], { env: { ...process.env, PATH: "" }, stdio: ["ignore", "pipe", "pipe"] });
+        let stdout = "", stderr = "";
+        child.stderr.on("data", chunk => { stderr += String(chunk); });
+        const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
+            child.once("error", reject);
+            child.once("close", (code, signal) => { resolveExit({ code, signal }); });
+        });
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+            const ready = new Promise<number>((resolveReady, reject) => {
+                child.stdout.on("data", chunk => {
+                    stdout += String(chunk);
+                    if (stdout.includes("\n")) {
+                        try { resolveReady((JSON.parse(stdout.trim()) as { pid: number }).pid); } catch (cause) { reject(cause); }
+                    }
+                });
+                child.once("error", reject);
+                child.once("close", () => { reject(new Error(`CLI exited before ready: ${stderr}`)); });
+            });
+            const deadline = new Promise<never>((_resolve, reject) => {
+                timeout = setTimeout(() => { reject(new Error("installed CLI did not become ready or stop")); }, 5000);
+            });
+            expect(await Promise.race([ready, deadline])).toBe(child.pid);
+            expect(child.kill("SIGTERM")).toBe(true);
+            expect(await Promise.race([exited, deadline])).toEqual({ code: null, signal: "SIGTERM" });
+            expect(stderr).toBe("");
+        } finally {
+            if (timeout) clearTimeout(timeout);
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+            await exited;
+        }
+    });
+
+    it("fails without falling back to PATH when the installed Node executable is removed", () => {
+        const f = fixture();
+        const pinnedNode = join(f.root, "selected-node");
+        symlinkSync(process.execPath, pinnedNode);
+        const preload = join(f.root, "installer-node.mjs");
+        writeFileSync(preload, `Object.defineProperty(process, "execPath", { value: ${JSON.stringify(pinnedNode)} });`);
+        const installed = f.run(["--skip-image"], {}, ["--import", pathToFileURL(preload).href]);
+        expect(installed.status, installed.stderr).toBe(0);
+        rmSync(pinnedNode);
+        const trap = join(f.root, "path-node-called");
+        writeFileSync(join(f.root, "commands/node"), '#!/bin/sh\nprintf called > "$FIXTURE_NODE_TRAP"\nexit 97\n');
+        chmodSync(join(f.root, "commands/node"), 0o755);
+        const cli = spawnSync(join(f.installDir, "ccc"), [], {
+            encoding: "utf8", env: { ...process.env, PATH: join(f.root, "commands"), FIXTURE_NODE_TRAP: trap },
+        });
+        expect(cli.error).toBeUndefined();
+        expect(cli.status).toBe(127);
+        expect(cli.stderr).toContain(pinnedNode);
+        expect(cli.stdout).toBe("");
+        expect(existsSync(trap)).toBe(false);
+        expect(existsSync(join(f.installDir, "ccc-dist/dist/index.js"))).toBe(true);
+    });
+
+    it.each(["16.20.2", "20.18.9"].flatMap(version => ["--skip-image", "--postinstall"].map(operation => ({ version, operation }))))("refuses Node $version before build or publication for $operation", ({ version, operation }) => {
+        const f = fixture();
+        writeFileSync(join(f.installDir, "ccc"), "previous CLI");
+        mkdirSync(join(f.installDir, "ccc-dist"));
+        writeFileSync(join(f.installDir, "ccc-dist/previous"), "previous payload");
+        const previousSource = readFileSync(join(f.root, "dist/index.js"));
+        const preload = join(f.root, "node-version.mjs");
+        writeFileSync(preload, `Object.defineProperty(process.versions, "node", { value: ${JSON.stringify(version)} });`);
+        const result = f.run([operation], {}, ["--import", pathToFileURL(preload).href]);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(version);
+        expect(result.stderr).toContain("20.19.0");
+        expect(result.stdout).not.toContain("Building...");
+        expect(f.calls()).toBe("");
+        expect(readFileSync(join(f.installDir, "ccc"), "utf8")).toBe("previous CLI");
+        expect(readFileSync(join(f.installDir, "ccc-dist/previous"), "utf8")).toBe("previous payload");
+        expect(readFileSync(join(f.root, "dist/index.js"))).toEqual(previousSource);
+        expect(existsSync(join(f.installDir, "ccc-dist/dist"))).toBe(false);
+    });
+
+    it("accepts the declared Node 20.19.0 installer boundary", () => {
+        const f = fixture();
+        const preload = join(f.root, "node-version.mjs");
+        writeFileSync(preload, 'Object.defineProperty(process.versions, "node", { value: "20.19.0" });');
+        const result = f.run(["--skip-image"], {}, ["--import", pathToFileURL(preload).href]);
+        expect(result.status, result.stderr).toBe(0);
+        expect(f.calls()).toBe("npm run build\n");
+        const cli = spawnSync(join(f.installDir, "ccc"), [], { encoding: "utf8", env: { ...process.env, PATH: "" } });
+        expect(cli.status, cli.stderr).toBe(0);
+        expect(cli.stdout).toContain("fixture CLI");
     });
 
     it.each([{ FIXTURE_IMAGE_STATUS: "7", reason: "exited with code 7" }, { FIXTURE_RUNTIME_SIGNAL: "1", reason: "terminated by SIGTERM" }, { FIXTURE_RUNTIME_DISAPPEAR: "1", reason: "ENOENT" }])("installs the CLI and reports image failure accurately: $reason", ({ reason, ...env }) => {

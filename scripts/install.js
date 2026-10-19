@@ -314,7 +314,8 @@ export function materializeUnixInstallPayload(sourceRoot, targetDir) {
 /** @param {string} targetDir */
 export function unixWrapperContent(targetDir) {
     const entryPoint = join(resolve(targetDir), "dist", "index.js");
-    return `#!/usr/bin/env node\nimport(${JSON.stringify(pathToFileURL(entryPoint).href)});\n`;
+    const quotedPaths = [process.execPath, entryPoint].map(path => `'${path.replace(/'/g, "'\\''")}'`);
+    return `#!/bin/sh\nexec ${quotedPaths[0]} ${quotedPaths[1]} "$@"\n`;
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
@@ -323,9 +324,15 @@ if (invokedPath && (isWindows ? invokedPath.toLowerCase() === modulePath.toLower
     const args = process.argv.slice(2);
     if (args.includes("--uninstall") || args.includes("-u")) {
         installerApplication().uninstall();
-    } else if (args.includes("--postinstall")) {
-        installerApplication().postinstall();
     } else {
-        installerApplication().install({ skipImage: args.includes("--skip-image") });
+        const [major, minor] = process.versions.node.split(".").map(Number);
+        if (major < 20 || (major === 20 && minor < 19)) {
+            throw new Error(`CCC installation requires Node.js >=20.19.0 (current: ${process.versions.node}). Run the installer with a supported Node.js version, for example: mise exec node@22 -- npm run install:global.`);
+        }
+        if (args.includes("--postinstall")) {
+            installerApplication().postinstall();
+        } else {
+            installerApplication().install({ skipImage: args.includes("--skip-image") });
+        }
     }
 }

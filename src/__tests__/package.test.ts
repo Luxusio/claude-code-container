@@ -42,7 +42,7 @@ describe("npm package contents", () => {
             expect(existsSync(join(packageRoot, "dist", "packages", "device-lab", "providers", "display", "x11.mjs"))).toBe(true);
             expect(existsSync(join(packageRoot, "x11-mcp"))).toBe(false);
             expect(existsSync(join(packageRoot, "dist", "x11-mcp"))).toBe(false);
-            expect(unixWrapperContent(packageRoot)).toContain(pathToFileURL(join(packageRoot, "dist", "index.js")).href);
+            expect(unixWrapperContent(packageRoot)).toContain(join(packageRoot, "dist", "index.js"));
             await expect(import(`${pathToFileURL(brokerPath).href}?installed=${Date.now()}`)).resolves.toBeDefined();
 
             writeFileSync(join(packageRoot, "stale-install-marker"), "stale");

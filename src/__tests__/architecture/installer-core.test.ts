@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { posix, resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { createInstallerApplication } from "../../../scripts/install/application.mjs";
 import { unixWrapperContent } from "../../../scripts/install.js";
 import type { InstallerEvent, InstallerPorts } from "../../../scripts/install/ports.mjs";
@@ -79,9 +82,24 @@ describe("installer application decisions", () => {
         expect(f.mutations).toEqual([]);
     });
 
-    it("keeps the real native facade's Unix wrapper connected to the selected payload URL", () => {
-        const target = resolve("owned payload ' space");
-        expect(unixWrapperContent(target)).toContain(JSON.stringify(pathToFileURL(resolve(target, "dist/index.js")).href));
+    it.skipIf(process.platform === "win32")("executes the selected payload literally through the native Unix launcher", () => {
+        const root = mkdtempSync(resolve(tmpdir(), "ccc-native-launcher-"));
+        try {
+            const target = resolve(root, "owned payload ' space #? $HOME `literal`");
+            mkdirSync(resolve(target, "dist"), { recursive: true });
+            writeFileSync(resolve(target, "package.json"), '{"type":"module"}');
+            writeFileSync(resolve(target, "dist/index.js"), 'process.stdout.write(JSON.stringify({url:import.meta.url,argv:process.argv.slice(2)}));');
+            const launcher = resolve(root, "ccc");
+            writeFileSync(launcher, unixWrapperContent(target));
+            chmodSync(launcher, 0o755);
+            const args = ["", "two words", "' $HOME `literal` #?"];
+            const result = spawnSync(launcher, args, { encoding: "utf8", env: { ...process.env, PATH: "" } });
+            expect(result.status, result.stderr).toBe(0);
+            expect(JSON.parse(result.stdout)).toEqual({ url: pathToFileURL(resolve(target, "dist/index.js")).href, argv: args });
+            expect(result.stderr).toBe("");
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 
     it("preserves an existing normalized User PATH entry without rewriting it", () => {
