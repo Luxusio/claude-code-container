@@ -32,33 +32,41 @@ to retain the native read callee before nested path/proof evaluation.
 Broken replacement requires confirmation before source/path/ownership work. It
 quarantines the old checkout and stale registration, then prepares/adds the
 replacement. The existing status-only failed-add decision remains distinct from
-nested repair's status-or-error decision. Preserved-content conflicts compensate
-the owned replacement and restore old content/registration. Settlement commits
-only the destination's stale registration; displaced unreachable registrations
-remain preserved with the original notice. Once replacement/settlement succeeds,
-late notice or backup cleanup failure does not roll it back. The custom cleanup
-getter is read once at its original late point and its callback is called bare.
+nested repair's status-or-error decision. Its reversible phase includes exceptional
+source/destination observations, addition, receipt qualification and content merge.
+Compensation uses only returned native receipts and checks whether restoration
+actually succeeded. A fully restored content conflict keeps its native error
+class; uncertain recovery instead reports the primary failure and retained data
+locations, preserving any successor.
 
-The frozen source, native helper/class hashes, public declaration comparison and
-self-contained transaction replays establish the extraction's compatibility
-baseline. Replays compare actual facade composition with the original regions,
-including partial effects, field/receiver/error order, compensation and commit
-boundaries. Private Git tests exercise the real retained helpers. Strict core
-types and dependency guard mutations prevent native effects from moving inward.
-Root integration supplies the complete built/extracted/installer closure and one
-combined suite; native Windows/macOS acceptance and global migration completion
-remain separate.
+Rollback admission closes before the first registration settlement attempt:
+settlement can partly delete old metadata before throwing. Settlement commits
+only the destination's stale registration; displaced unreachable registrations
+remain preserved with the original notice. A settlement, late notice or backup
+cleanup failure never rolls back the authoritative replacement. The custom
+cleanup getter remains at its late point and its callback is called bare.
+
+The earlier frozen-source and transaction-replay checks establish the
+extraction's historical compatibility baseline for unchanged contracts. They do
+not require preserving the dispatch and exception-boundary defects corrected by
+the current regression tests. Private Git tests exercise retained native helpers;
+strict core types check the application ports. Genuine emitted CLI checks and a
+combined affected-owner suite qualify current integration separately. Native
+Windows/macOS acceptance and global migration completion remain separate.
 
 ## Known ceiling
 
-Known ceiling: original broken-add/registration-receipt throws can escape after
-partial quarantine/add effects without the later merge compensation — upgrade
-when a separately authorized behavior change adds recovery for that boundary.
+If a native addition changes Git state but throws before returning a registration
+receipt, the application cannot safely invent cleanup authority. It preserves
+the unqualified replacement and original-content backup, reports recovery
+locations and retains the underlying error. It does not claim full restoration
+or expose a content-conflict error that would authorize acting on a successor.
 
 Known ceiling: temporary mkdir/identity failure occurs before root recovery's
 finally, and publication followed by failed installed-identity capture can lack
 rollback authority — upgrade when a separately reviewed recovery change defines
 that ownership and compensation behavior.
 
-These existing limits are preserved during extraction. Reverting this code
-cutover does not require deleting user checkouts, quarantines, branches or metadata.
+Reverting the code does not require deleting user checkouts, quarantines, branches
+or metadata. Native Windows/macOS and whole-migration acceptance remain separate
+from portable private-Git recovery controls.

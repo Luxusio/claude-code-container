@@ -14,10 +14,12 @@ import {
     linkSync,
     chmodSync,
 } from "fs";
-import { join, dirname, basename, posix, relative, resolve } from "path";
+import { join, dirname, basename, posix, relative, resolve, delimiter } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
+import { pathToFileURL } from "url";
+import { NATIVE_RUNTIME_SELECTOR_KEYS } from "../ports/container-runtime-invocation.js";
 import {
     parseWorktreeArg,
     getWorkspacePath,
@@ -9279,20 +9281,46 @@ describe("the removal preflight, through the CLI entry point", () => {
         // Intercept only the external runtime transport inside the child. The real
         // CLI, ownership checks, lifecycle lock, and Git removal all execute. Unknown
         // runtime commands fail closed, and no call can reach the developer's daemon.
+        const runtimeBin = join(root, "bin");
+        const runtimeExecutable = join(runtimeBin, process.platform === "win32" ? "docker.exe" : "docker");
+        const runtimeConfig = join(root, "docker-config");
+        const runtimeEndpoint = pathToFileURL(join(root, "runtime.sock")).href.replace(/^file:/, "unix:");
+        mkdirSync(runtimeBin);
+        mkdirSync(runtimeConfig);
+        // Real executable discovery must find this private file. The preload intercepts
+        // it before OS dispatch; it is deliberately not an executable engine.
+        writeFileSync(runtimeExecutable, "private runtime fixture; must be intercepted\n");
+        chmodSync(runtimeExecutable, 0o755);
+        const captureArgs = ["--config", runtimeConfig, "context", "inspect", "--format", "{{json .}}"];
+        const runtimePrefix = ["--config", runtimeConfig, "--host", runtimeEndpoint,
+            "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey="];
         const runtimeLog = join(root, "runtime-calls.jsonl");
         const runtimePreload = join(root, "runtime-fixture.cjs");
         writeFileSync(runtimePreload, `
 const cp = require("node:child_process");
 const fs = require("node:fs");
 const original = cp.spawnSync;
+const runtimeExecutable = ${JSON.stringify(runtimeExecutable)};
+const captureArgs = ${JSON.stringify(captureArgs)};
+const runtimePrefix = ${JSON.stringify(runtimePrefix)};
 cp.spawnSync = function(command, args, options) {
-    if (command !== "docker" && command !== "podman") return original.apply(this, arguments);
+    if (command !== runtimeExecutable) {
+        if (/^(?:docker|podman)(?:\\.(?:com|exe|cmd|bat))?$/i.test(String(command).split(/[\\\\/]/).pop())) {
+            throw new Error("Unexpected unpinned runtime: " + command);
+        }
+        return original.apply(this, arguments);
+    }
+    if (!Array.isArray(args)) throw new Error("Missing runtime arguments");
+    const capture = JSON.stringify(args) === JSON.stringify(captureArgs);
+    if (!capture && JSON.stringify(args.slice(0, runtimePrefix.length)) !== JSON.stringify(runtimePrefix)) {
+        throw new Error("Unexpected runtime transport: " + JSON.stringify(args));
+    }
     fs.appendFileSync(process.env.CCC_FIXTURE_RUNTIME_LOG, JSON.stringify([command, ...args]) + "\\n");
-    const key = JSON.stringify(args);
+    const key = JSON.stringify(capture ? args : args.slice(runtimePrefix.length));
     let stdout = "";
     let status = 0;
-    if (command !== "docker") throw new Error("Unexpected runtime: " + command);
-    if (key === JSON.stringify(["--version"])) stdout = "Docker version 27.1.1";
+    if (capture) stdout = JSON.stringify({ Name: "default", Endpoints: { docker: { Host: ${JSON.stringify(runtimeEndpoint)} } } });
+    else if (key === JSON.stringify(["--version"])) stdout = "Docker version 27.1.1";
     else if (key === JSON.stringify(["info", "--format", "{{.OperatingSystem}}"])) stdout = "Linux";
     else if (key === JSON.stringify(["info", "--format", "{{json .SecurityOptions}}"])) stdout = "[]";
     else if (key === JSON.stringify(["info"])) stdout = "isolated fixture";
@@ -9302,14 +9330,19 @@ cp.spawnSync = function(command, args, options) {
 };
 require("node:module").syncBuiltinESMExports();
 `);
+        const nativeSelectorKeys = new Set(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => key.toUpperCase()));
         const childEnvironment = Object.fromEntries([
-            ...Object.entries(process.env).filter(([key]) => (
-                key !== "NODE_OPTIONS" && !key.startsWith("VITEST")
-            )),
+            ...Object.entries(process.env).filter(([key]) => {
+                const upper = key.toUpperCase();
+                return !nativeSelectorKeys.has(upper) && upper !== "NODE_OPTIONS" && upper !== "CCC_RUNTIME"
+                    && !upper.startsWith("VITEST") && !upper.startsWith("CCC_FIXTURE_");
+            }),
             ["GIT_ALLOW_PROTOCOL", "file"],
             // Keep lifecycle locks and any migration state inside this fixture too.
             ["HOME", root],
             ["USERPROFILE", root],
+            ["PATH", [runtimeBin, process.env.PATH ?? ""].join(delimiter)],
+            ["DOCKER_CONFIG", runtimeConfig],
             ["CCC_RUNTIME", "docker"],
             ["NODE_OPTIONS", `--require=${JSON.stringify(runtimePreload)}`],
             ["CCC_FIXTURE_RUNTIME_LOG", runtimeLog],
@@ -9333,9 +9366,18 @@ require("node:module").syncBuiltinESMExports();
         // this on a workspace `removeWorkspace()` removes and reports {"errors":[]} for.
         expect(output, "the CLI must not refuse what the library it wraps removes")
             .not.toContain("not owned by");
-        const calls = readFileSync(runtimeLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-        expect(calls).toContainEqual(["docker", "info"]);
-        expect(calls).toContainEqual(["docker", "ps", "-a", "--format", "{{.Names}}"]);
+        const nativeCalls: string[][] = readFileSync(runtimeLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+        const captureCall = [runtimeExecutable, ...captureArgs];
+        expect(nativeCalls, "real native capture inspects the private executable and config").toContainEqual(captureCall);
+        const boundCalls = nativeCalls.filter(call => JSON.stringify(call) !== JSON.stringify(captureCall));
+        expect(boundCalls.length, "runtime inventory must use the captured transport").toBeGreaterThan(0);
+        for (const call of boundCalls) {
+            expect(call.slice(0, runtimePrefix.length + 1), "every bound runtime prefix is pinned")
+                .toEqual([runtimeExecutable, ...runtimePrefix]);
+        }
+        const calls = boundCalls.map(call => ["docker", ...call.slice(runtimePrefix.length + 1)]);
+        expect(calls, output).toContainEqual(["docker", "info"]);
+        expect(calls, output).toContainEqual(["docker", "ps", "-a", "--format", "{{.Names}}"]);
         expect(output).toContain("Removing workspace");
         if (inventoryAvailable) {
             expect(ran.status, output).toBe(0);

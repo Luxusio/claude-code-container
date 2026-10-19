@@ -93,13 +93,22 @@ else if (command === 'inspect') {
     else out([inspected()]);
   }
 }
-else if (command === 'ps') out(state.exists && (args.includes('-aq') || state.running) ? state.id : '');
+else if (command === 'ps') {
+  if (args.includes('{{.Names}}')) {
+    if (state.inventoryUnavailable) process.exit(1);
+    out(state.exists ? state.name : '');
+  } else out(state.exists && (args.includes('-aq') || state.running) ? state.id : '');
+}
 else if (command === 'run') {
   if (args.includes('--rm')) out('1000:1000:/home/ccc:ccc');
   else { state.exists = true; state.running = true; state.runArgs = args; state.created++; save(); out(state.id + '\n'); }
 }
 else if (command === 'start') { if (!state.exists) absent(); state.running = true; state.starts++; save(); }
-else if (command === 'stop') { if (!state.exists) absent(); state.running = false; state.stops++; save(); }
+else if (command === 'stop') {
+  if (!state.exists) absent();
+  if (state.stopUnavailable) { process.stderr.write('fixture stop refused'); process.exit(1); }
+  state.running = false; state.stops++; save();
+}
 else if (command === 'rm') { state.exists = false; state.running = false; state.removals++; save(); }
 else if (command === 'exec') {
   state.execs++; save();
@@ -149,6 +158,7 @@ const noop = () => undefined;
 function late(phase) {
   writeFileSync(join(root, 'choice.json'), JSON.stringify({ alias: 'redefined-alias', host: 'unix:///fixture/engine-b.sock', url: 'ssh://fixture@engine-b.test/run/podman.sock' }));
   process.env.PATH = join(root, 'b'); process.env.DOCKER_CONTEXT = 'redefined-alias';
+  process.env.DOCKER_CONFIG = join(root, 'home', 'later-docker-config');
   process.env.DOCKER_HOST = 'unix:///fixture/engine-b.sock'; process.env.DOCKER_API_VERSION = '9.99';
   process.env.DOCKER_SSH_COMMAND = 'later-selector-must-be-absent';
   process.env.CONTAINER_CONNECTION = 'redefined-alias'; process.env.CONTAINER_HOST = 'ssh://fixture@engine-b.test/run/podman.sock';
@@ -169,6 +179,13 @@ if (captured) {
   assert.equal(captured.executable, expectedExecutable);
   assert.equal(captured.selectors.DOCKER_API_VERSION, '1.44');
 }
+// Suppress index's automatic CLI launch only during import. Native capture and
+// every default helper below execute with this variable absent.
+process.env.VITEST = 'suppress-index-auto-run';
+const workspace = await load('index.js');
+delete process.env.VITEST;
+const { createNativeWorkspaceCliContainerRuntime } = await load('adapters/workspace-cli-container-runtime.js');
+const { getContainerName, captureBindMountSourceIdentity, bindMountSourceIdentityDigest } = await load('docker.js');
 try {
 late('before-preparation');
 let preparedStartup, readyId;
@@ -250,10 +267,61 @@ const rejected = withCaptured(() => createNativeContainerCreateLifecycle({
 late('create-after-preparation');
 assert.throws(() => rejected.run({containerName: 'same-name', projectMountIdentity: 'fixture-identity'}), /fixture mount identity mismatch/);
 assert.equal(readA().exists, false);
+// Use the real exported defaults and real managed inspector. Both owned engines
+// contain the same full ID, so a late bare executable or alias must be observable.
+const workspaceName = getContainerName(project);
+const projectIdentity = bindMountSourceIdentityDigest(captureBindMountSourceIdentity(project));
+function resetWorkspaceContainer(running, overrides = {}) {
+  writeA({...readA(), exists: true, running, name: workspaceName, inventoryUnavailable: false, stopUnavailable: false,
+    runArgs: ['--name', workspaceName, '--label', 'ccc.managed=true', '--label', 'ccc.project.path=' + project,
+      '--label', 'ccc.project.mount-identity=' + projectIdentity], ...overrides});
+}
+resetWorkspaceContainer(true);
+late('workspace-default-inventory');
+assert.deepEqual(withCaptured(() => workspace.listWorkspaceContainerNames(project)), [workspaceName]);
+late('workspace-default-running');
+assert.equal(withCaptured(() => workspace.removeWorkspaceContainerByIdentity(workspaceName)), true);
+assert.equal(readA().exists, false);
+resetWorkspaceContainer(false);
+late('workspace-default-stopped');
+assert.equal(withCaptured(() => workspace.removeWorkspaceContainerByIdentity(workspaceName)), true);
+assert.equal(readA().exists, false);
+resetWorkspaceContainer(true);
+late('workspace-default-managed');
+assert.equal(withCaptured(() => workspace.removeManagedWorkspaceContainerByIdentity(workspaceName, project)), true);
+assert.equal(readA().exists, false);
+resetWorkspaceContainer(true);
+late('workspace-default-prepare');
+const workspacePlan = withCaptured(() => workspace.prepareWorkspaceContainerRemovalPlan(project));
+assert.deepEqual(workspacePlan, [{containerName: workspaceName, identity: {containerId: id, running: true}}]);
+late('workspace-default-prepared-remove');
+assert.deepEqual(withCaptured(() => workspace.removePreparedWorkspaceContainers(workspacePlan)), [workspaceName]);
+assert.equal(readA().exists, false);
+resetWorkspaceContainer(true);
+const retainedWorkspaceRuntime = withCaptured(() => createNativeWorkspaceCliContainerRuntime());
+late('workspace-retained-adapter');
+// These calls deliberately run outside the construction scope after cache,
+// executable, alias and config changes toward B.
+assert.deepEqual(retainedWorkspaceRuntime.listNames(), {kind: 'listed', names: [workspaceName]});
+retainedWorkspaceRuntime.stop(id);
+retainedWorkspaceRuntime.remove(id);
+assert.equal(readA().exists, false);
+resetWorkspaceContainer(true, {inventoryUnavailable: true});
+const beforeInventoryRefusal = readA();
+late('workspace-inventory-refused');
+assert.throws(() => withCaptured(() => workspace.listWorkspaceContainerNames(project)), /Unable to list workspace containers/);
+assert.deepEqual(readA(), beforeInventoryRefusal, 'unavailable inventory changed the container');
+resetWorkspaceContainer(true, {stopUnavailable: true});
+const beforeStopRefusal = readA();
+late('workspace-stop-refused');
+assert.throws(() => withCaptured(() => workspace.removeWorkspaceContainerByIdentity(workspaceName)), /Failed to stop workspace container/);
+assert.deepEqual(readA(), beforeStopRefusal, 'failed stop removed or changed the container');
 assert.equal(readFileSync(bFile, 'utf8'), bOriginal, 'identical B ID was touched');
 assert.equal(readFileSync(join(root, 'original-connections.json'), 'utf8'), originalConnections);
 const trace = readFileSync(join(root, 'trace.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
 const phases = ['inspection', 'setup', 'final-sync', 'passed-native-runners', 'daemon-preparation', 'interactive-exec', 'direct-command', 'restart', 'remove-stopped', 'destructive-stop-and-remove', 'create-after-preparation', 'rejected-create-compensation'];
+phases.push('workspace-default-inventory', 'workspace-default-running', 'workspace-default-stopped', 'workspace-default-managed',
+  'workspace-default-prepare', 'workspace-default-prepared-remove', 'workspace-retained-adapter', 'workspace-inventory-refused', 'workspace-stop-refused');
 if (mode === 'docker') phases.push('prepared-start-outside-scope', 'prepared-initialize-outside-scope');
 for (const phase of phases) assert(trace.some(row => row.phase === phase), 'missing actual native phase: ' + phase);
 for (const row of trace) {
@@ -266,6 +334,7 @@ for (const row of trace) {
   for (const key of ['DOCKER_CONTEXT', 'DOCKER_HOST', 'DOCKER_SSH_COMMAND', 'CONTAINER_HOST', 'CONTAINER_CONNECTION']) assert.equal(row.selectors[key], null);
   if (mode === 'docker') {
     assert.equal(row.host, 'unix:///fixture/engine-a.sock');
+    assert.equal(row.raw[row.raw.indexOf('--config') + 1], join(root, 'home', '.docker'));
     assert.equal(row.raw.filter(arg => arg === '--host').length, row.args.includes('/usr/bin/docker') ? 2 : 1);
     if (row.args.includes('/usr/bin/docker')) assert.deepEqual(row.args.slice(row.args.indexOf('/usr/bin/docker'), row.args.indexOf('/usr/bin/docker') + 3), ['/usr/bin/docker', '--host', 'unix:///var/run/docker.sock']);
   }
@@ -282,6 +351,20 @@ assert.equal(trace.filter(row => row.args[0] === 'system').length, mode === 'pod
 assert(trace.some(row => row.phase === 'interactive-exec' && row.args.at(-1) === '$(never shell)'));
 assert.deepEqual(trace.filter(row => row.phase === 'rejected-create-compensation').map(row => row.args[0]), ['rm', 'inspect']);
 assert.deepEqual(trace.filter(row => row.phase === 'destructive-stop-and-remove').map(row => row.args[0]), ['stop', 'rm']);
+for (const [phase, commands] of [
+  ['workspace-default-inventory', ['ps']],
+  ['workspace-default-running', ['inspect', 'stop', 'rm']],
+  ['workspace-default-stopped', ['inspect', 'rm']],
+  ['workspace-default-managed', ['inspect', 'stop', 'rm']],
+  ['workspace-default-prepare', ['ps', 'inspect']],
+  ['workspace-default-prepared-remove', ['stop', 'rm']],
+  ['workspace-retained-adapter', ['ps', 'stop', 'rm']],
+  ['workspace-inventory-refused', ['ps']],
+  ['workspace-stop-refused', ['inspect', 'stop']],
+]) assert.deepEqual(trace.filter(row => row.phase === phase).map(row => row.args[0]), commands, phase);
+for (const row of trace.filter(row => row.phase.startsWith('workspace-') && ['stop', 'rm'].includes(row.args[0]))) {
+  assert.deepEqual(row.args, [row.args[0], id], 'workspace effects must use the captured full ID');
+}
 console.log('CCC_NATIVE_RUNTIME_RESULT=' + JSON.stringify({mode, phases, nativeCommands: trace.length, bUntouched: true}));
 } finally {
   // Preserve genuine native effects as the old-compatible regression witness,
@@ -295,7 +378,7 @@ console.log('CCC_NATIVE_RUNTIME_RESULT=' + JSON.stringify({mode, phases, nativeC
 `;
 
 describe.skipIf(process.platform === "win32")("emitted ordinary native invocation authority", () => {
-    it.each(["docker", "podman-local", "podman-remote"] as const)("retains %s executable and engine across prepared callbacks, setup, launch and compensation", mode => {
+    it.each(["docker", "podman-local", "podman-remote"] as const)("retains %s authority across prepared callbacks, setup, launch, compensation and default workspace removal", mode => {
         const root = mkdtempSync(join(tmpdir(), "ccc-runtime-authority-"));
         const id = "a".repeat(64);
         try {

@@ -79,6 +79,14 @@ export function createBrokenWorkspaceRepair<A extends WorkspaceRepairAuthority>(
         let backup: QuarantineLocation | null = null;
         let backupIdentity: DirectoryIdentity | null = null;
         let quarantinedStaleRegistration: QuarantinedMissingWorktreeRegistration | null = null;
+        let creation: {
+            action: WorktreeRepoResult["action"];
+            expectedBranchOid: BranchCreationFence;
+            destinationIdentity: DirectoryIdentity;
+        } | null = null;
+        let registrationFence: A["WorktreeRegistrationFence"] | null = null;
+        let rollbackAllowed = true;
+        let failedAddReason: string | undefined;
         // The directory rollback renames the quarantined content back INTO, which is the
         // destination's own parent — not the workspace root. Those are the same path only for a
         // top-level repository name; for a nested one such as `services/catchy-api` they never are,
@@ -87,11 +95,6 @@ export function createBrokenWorkspaceRepair<A extends WorkspaceRepairAuthority>(
         // it as `ccc` losing a submodule on every attempt: answering the repair prompt moved the
         // directory away and the failed rollback left it there.
         const destinationParentIdentity = ports.captureDirectoryIdentity(ports.dirname(destPath));
-        const restoreStaleRegistration = (): void => {
-            if (!quarantinedStaleRegistration) return;
-            ports.restoreQuarantinedMissingWorktreeRegistration(quarantinedStaleRegistration);
-            quarantinedStaleRegistration = null;
-        };
         // Committing a quarantined registration DELETES it. That is right for the destination's
         // own stale entry — it describes this very path and this repair is what replaces it. It
         // is not right for one displaced from somewhere else: what we cannot reach, we cannot
@@ -100,36 +103,61 @@ export function createBrokenWorkspaceRepair<A extends WorkspaceRepairAuthority>(
         // deleting it on a wrong guess loses work that is not even on this machine to look at.
         // Kept in the quarantine instead, and the operator is told where.
         const displacedRegistration = staleRegistrationPath !== destPath;
-        const settleStaleRegistration = (): void => {
-            if (!quarantinedStaleRegistration) return;
-            if (displacedRegistration) {
-                ports.warnDisplacedWorktreeRegistration(
-                    staleRegistrationPath,
-                    quarantinedStaleRegistration.location.path,
-                );
-            } else {
-                ports.commitQuarantinedMissingWorktreeRegistration(quarantinedStaleRegistration);
+        const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+        // Diagnostics observe the retained paths too: a failed registration restore may follow
+        // a successful checkout restore, and late cleanup may already have removed the backup.
+        const recoveryLocations = (): string => {
+            const locations: string[] = [];
+            if (backup && backupIdentity) {
+                try {
+                    if (ports.pathExistsStrict(backup.path)) {
+                        ports.assertQuarantinedIdentity(backup.path, backupIdentity, "directory");
+                        locations.push(rollbackAllowed
+                            ? `original content remains in '${backup.directory}' (checkout '${backup.path}'; destination '${destPath}')`
+                            : `remaining original-content backup is at '${backup.path}'`);
+                    } else if (rollbackAllowed) {
+                        ports.assertDirectoryIdentity(destPath, backupIdentity);
+                        locations.push(`original content was restored to '${destPath}'`);
+                    }
+                } catch (error) {
+                    locations.push(`original content location could not be verified at '${destPath}' or '${backup.path}': ${errorMessage(error)}`);
+                }
             }
-            quarantinedStaleRegistration = null;
+            if (quarantinedStaleRegistration && staleRegistrationFence) {
+                const path = quarantinedStaleRegistration.location.path;
+                try {
+                    if (ports.pathExistsStrict(path)) {
+                        ports.assertQuarantinedIdentity(path, staleRegistrationFence.managementIdentity, "directory");
+                        locations.push(`original registration recovery location is '${path}'`);
+                    } else {
+                        locations.push(`original registration quarantine '${path}' is absent; restoration for '${staleRegistrationPath}' was not verified`);
+                    }
+                } catch (error) {
+                    locations.push(`original registration recovery location '${path}' could not be verified: ${errorMessage(error)}`);
+                }
+            }
+            if (!rollbackAllowed && creation) {
+                try {
+                    ports.assertDirectoryIdentity(destPath, creation.destinationIdentity);
+                    locations.push(`authoritative replacement remains at '${destPath}'`);
+                } catch (error) {
+                    locations.push(`authoritative replacement location '${destPath}' could not be verified: ${errorMessage(error)}`);
+                }
+            }
+            return locations.length ? `; ${locations.join("; ")}` : "";
         };
-        if (ports.pathExistsStrict(destPath)) {
-            operationGuard();
-            backupIdentity = ports.captureDirectoryIdentity(destPath);
-            backup = ports.createPrivateQuarantine(destPath, ports.dirname(wsPath));
-            try {
+        try {
+            if (ports.pathExistsStrict(destPath)) {
+                operationGuard();
+                backupIdentity = ports.captureDirectoryIdentity(destPath);
+                backup = ports.createPrivateQuarantine(destPath, ports.dirname(wsPath));
                 operationGuard();
                 ports.assertDirectoryIdentity(destPath, backupIdentity);
                 ports.renameBrokenCheckout(destPath, backup.path);
                 operationGuard();
                 ports.assertQuarantinedIdentity(backup.path, backupIdentity, "directory");
-            } catch (error) {
-                if (!ports.pathExistsStrict(backup.path)) ports.removePrivateQuarantine(backup);
-                throw error;
             }
-        }
-
-        if (staleRegistrationFence) {
-            try {
+            if (staleRegistrationFence) {
                 operationGuard();
                 quarantinedStaleRegistration = ports.withPinnedNestedRepository(
                     sourceIdentity,
@@ -140,134 +168,45 @@ export function createBrokenWorkspaceRepair<A extends WorkspaceRepairAuthority>(
                     ),
                 );
                 operationGuard();
-            } catch (error) {
-                if (backup && backupIdentity) {
-                    operationGuard();
-                    ports.rollbackQuarantinedPath(
-                        destPath,
-                        backup,
-                        backupIdentity,
-                        destinationParentIdentity,
-                        "directory",
-                    );
-                    operationGuard();
-                }
-                throw error;
             }
-        }
 
-        // Create worktree
-        operationGuard();
-        const existence = ports.branchExistsInRepo(sourceRepo.path, branch);
-        operationGuard();
-        let action: WorktreeRepoResult["action"];
-
-        switch (existence) {
-            case "local":
-                action = "worktree-existing";
-                break;
-            case "remote":
-                action = "worktree-remote";
-                break;
-            case "none":
-                action = "worktree-new";
-                break;
-        }
-        let expectedBranchOid: BranchCreationFence;
-        let destinationIdentity: DirectoryIdentity;
-        try {
-            ({
-                expectedBranchOid,
-                destinationIdentity,
-            } = ports.withPinnedNestedRepository(
-                sourceIdentity,
-                () => ports.prepareWorktreeCreation(
-                    sourceRepo.path,
-                    destPath,
-                    branch,
-                    action,
-                    operationGuard,
-                    ports.dirname(wsPath),
-                ),
-            ));
-        } catch (error) {
-            if (backup && backupIdentity) {
-                operationGuard();
-                ports.rollbackQuarantinedPath(
-                    destPath,
-                    backup,
-                    backupIdentity,
-                    destinationParentIdentity,
-                    "directory",
-                );
-                operationGuard();
-            }
-            restoreStaleRegistration();
-            throw error;
-        }
-        const { result, registrationFence } = ports.runPreparedWorktreeAdd(
-            sourceRepo.path,
-            destPath,
-            branch,
-            expectedBranchOid.expectedOid,
-            destinationIdentity,
-            operationGuard,
-            sourceIdentity,
-        );
-
-        if (!result.succeeded) {
-            try {
-                operationGuard();
-                ports.rollbackFailedWorktreeAdd(
-                    sourceRepo.path,
-                    destPath,
-                    branch,
-                    action,
-                    expectedBranchOid,
-                    destinationIdentity,
-                    registrationFence,
-                    ports.dirname(wsPath),
+            operationGuard();
+            const existence = ports.branchExistsInRepo(sourceRepo.path, branch);
+            operationGuard();
+            const action: WorktreeRepoResult["action"] = existence === "local" ? "worktree-existing"
+                : existence === "remote" ? "worktree-remote" : "worktree-new";
+            creation = {
+                action,
+                ...ports.withPinnedNestedRepository(
                     sourceIdentity,
-                    operationGuard,
-                );
-                operationGuard();
-            } catch (rollbackError) {
-                const preservation = backup
-                    ? `; original content remains in '${backup.directory}'`
-                    : "";
-                throw new Error(
-                    `Failed worktree repair rollback: ${(rollbackError as Error).message}${preservation}.`,
-                    { cause: rollbackError },
-                );
+                    () => ports.prepareWorktreeCreation(
+                        sourceRepo.path,
+                        destPath,
+                        branch,
+                        action,
+                        operationGuard,
+                        ports.dirname(wsPath),
+                    ),
+                ),
+            };
+            const added = ports.runPreparedWorktreeAdd(
+                sourceRepo.path,
+                destPath,
+                branch,
+                creation.expectedBranchOid.expectedOid,
+                creation.destinationIdentity,
+                operationGuard,
+                sourceIdentity,
+            );
+            registrationFence = added.registrationFence;
+            if (!added.result.succeeded) {
+                failedAddReason = added.result.failureReason ?? "";
+                throw new Error(`Worktree creation failed: ${failedAddReason}`);
             }
+            ports.requireWorktreeRegistrationFence(registrationFence, destPath);
+            let preservedContentMerge: PreservedContentMerge | null = null;
             if (backup && backupIdentity) {
-                operationGuard();
-                const restored = ports.rollbackQuarantinedPath(
-                    destPath,
-                    backup,
-                    backupIdentity,
-                    destinationParentIdentity,
-                    "directory",
-                );
-                operationGuard();
-                if (!restored) {
-                    throw new Error(
-                        `Failed worktree creation could not restore original content from '${backup.directory}'.`,
-                    );
-                }
-            }
-            restoreStaleRegistration();
-            ports.warnWorktreeRepairFailure(destPath, result.failureReason ?? "");
-            return null;
-        }
-        const createdRegistrationFence = ports.requireWorktreeRegistrationFence(
-            registrationFence,
-            destPath,
-        );
-
-        if (backup && backupIdentity) {
-            const preservedContentMerge: PreservedContentMerge = ports.createPreservedContentMerge(destPath);
-            try {
+                preservedContentMerge = ports.createPreservedContentMerge(destPath);
                 operationGuard();
                 if (!ports.isValidWorktree(destPath, sourceRepo.path)) {
                     throw new Error("Created worktree ownership could not be verified.");
@@ -285,70 +224,118 @@ export function createBrokenWorkspaceRepair<A extends WorkspaceRepairAuthority>(
                 if (preservedContentMerge.conflicts.length > 0) {
                     throw ports.createContentConflictError(destPath, preservedContentMerge);
                 }
-            } catch (error) {
-                if (ports.pathExistsStrict(destPath)) {
+            }
+
+            // Settlement can partly delete registration metadata before it throws. The new
+            // worktree is authoritative BEFORE the first attempt, not after it succeeds.
+            rollbackAllowed = false;
+            if (quarantinedStaleRegistration) {
+                if (displacedRegistration) {
+                    ports.warnDisplacedWorktreeRegistration(
+                        staleRegistrationPath,
+                        quarantinedStaleRegistration.location.path,
+                    );
+                } else {
+                    ports.commitQuarantinedMissingWorktreeRegistration(quarantinedStaleRegistration);
+                    quarantinedStaleRegistration = null;
+                }
+            }
+            if (backup && backupIdentity && preservedContentMerge) {
+                if (preservedContentMerge.skippedIgnoredDependencyTrees.length > 0) {
+                    ports.noticeSkippedDependencyTrees(destPath, preservedContentMerge);
+                }
+                const removeMergedBackup = cleanupOperations.removeMergedBackup
+                    ?? (ports.defaultRemoveMergedBackup());
+                operationGuard();
+                ports.assertQuarantinedIdentity(backup.path, backupIdentity, "directory");
+                ports.unlinkMergeDependencyLinks(preservedContentMerge);
+                ports.assertQuarantinedIdentity(backup.path, backupIdentity, "directory");
+                removeMergedBackup(backup.path);
+                operationGuard();
+                if (ports.pathExistsStrict(backup.path)) {
+                    throw new Error(`Broken-worktree backup was not removed: ${backup.path}`);
+                }
+                ports.removePrivateQuarantine(backup);
+            }
+            return { name: repoName, branch, action };
+        } catch (error) {
+            if (!rollbackAllowed) {
+                throw new Error(`Worktree repair cleanup failed: ${errorMessage(error)}${recoveryLocations()}.`, { cause: error });
+            }
+            const rollbackErrors: unknown[] = [];
+            let creationRemoved = creation === null;
+            if (creation) {
+                try {
                     operationGuard();
-                    if (!ports.isValidWorktree(destPath, sourceRepo.path)) {
-                        throw new Error(
-                            `${(error as Error).message}; created worktree ownership changed during rollback`,
-                            { cause: error },
-                        );
-                    }
-                    ports.removeRegisteredWorktree(
+                    // An add that throws without returning a receipt grants no registration
+                    // authority. The native inverse preserves any such registration or successor.
+                    ports.rollbackFailedWorktreeAdd(
                         sourceRepo.path,
                         destPath,
-                        createdRegistrationFence.destinationIdentity,
-                        true,
+                        branch,
+                        creation.action,
+                        creation.expectedBranchOid,
+                        creation.destinationIdentity,
+                        registrationFence,
                         ports.dirname(wsPath),
-                        createdRegistrationFence,
-                        ports.pinnedNestedRepositoryEnvironment(sourceIdentity),
+                        sourceIdentity,
                         operationGuard,
                     );
+                    creationRemoved = true;
                     operationGuard();
-                    ports.withPinnedNestedRepository(sourceIdentity, () => (
-                        ports.rollbackFailedCreatedBranch(
-                            sourceRepo.path,
-                            branch,
-                            action,
-                            expectedBranchOid,
-                        )
-                    ));
+                } catch (rollbackError) {
+                    rollbackErrors.push(rollbackError);
                 }
-                operationGuard();
-                ports.rollbackQuarantinedPath(
-                    destPath,
-                    backup,
-                    backupIdentity,
-                    destinationParentIdentity,
-                    "directory",
+            }
+            let checkoutRestored = backup === null;
+            if (backup && backupIdentity) {
+                try {
+                    operationGuard();
+                    if (ports.pathExistsStrict(backup.path)) {
+                        const restored = ports.rollbackQuarantinedPath(
+                            destPath,
+                            backup,
+                            backupIdentity,
+                            destinationParentIdentity,
+                            "directory",
+                        );
+                        if (!restored) throw new Error(`Could not restore original content from '${backup.directory}'.`);
+                    } else {
+                        // A pre-rename failure left the original in place. Verify it before
+                        // removing the still-empty private quarantine.
+                        ports.assertDirectoryIdentity(destPath, backupIdentity);
+                        if (ports.pathExistsStrict(backup.directory)) ports.removePrivateQuarantine(backup);
+                    }
+                    checkoutRestored = true;
+                    operationGuard();
+                } catch (rollbackError) {
+                    rollbackErrors.push(rollbackError);
+                }
+            }
+            if (creationRemoved && checkoutRestored && quarantinedStaleRegistration) {
+                try {
+                    operationGuard();
+                    ports.restoreQuarantinedMissingWorktreeRegistration(quarantinedStaleRegistration);
+                    quarantinedStaleRegistration = null;
+                    operationGuard();
+                } catch (rollbackError) {
+                    rollbackErrors.push(rollbackError);
+                }
+            }
+            if (rollbackErrors.length > 0) {
+                throw new Error(
+                    `Failed worktree repair rollback: ${rollbackErrors.map(errorMessage).join("; ")}; original failure: ${errorMessage(error)}${recoveryLocations()}.`,
+                    { cause: error },
                 );
-                operationGuard();
-                restoreStaleRegistration();
-                throw error;
             }
-
-            // The replacement is now the authoritative worktree. Cleanup failures
-            // must not roll it back after either quarantine has been settled.
-            settleStaleRegistration();
-            if (preservedContentMerge.skippedIgnoredDependencyTrees.length > 0) {
-                ports.noticeSkippedDependencyTrees(destPath, preservedContentMerge);
+            if (failedAddReason !== undefined) {
+                ports.warnWorktreeRepairFailure(destPath, failedAddReason);
+                return null;
             }
-            const removeMergedBackup = cleanupOperations.removeMergedBackup
-                ?? (ports.defaultRemoveMergedBackup());
-            operationGuard();
-            ports.assertQuarantinedIdentity(backup.path, backupIdentity, "directory");
-            ports.unlinkMergeDependencyLinks(preservedContentMerge);
-            ports.assertQuarantinedIdentity(backup.path, backupIdentity, "directory");
-            removeMergedBackup(backup.path);
-            operationGuard();
-            if (ports.pathExistsStrict(backup.path)) {
-                throw new Error(`Broken-worktree backup was not removed: ${backup.path}`);
-            }
-            ports.removePrivateQuarantine(backup);
+            // In particular, the native conflict object is safe for the CLI set-aside
+            // prompt only after both the original checkout and registration were restored.
+            throw error;
         }
-
-        settleStaleRegistration();
-        return { name: repoName, branch, action };
     }
     return { fixBrokenWorktreeSanitized };
 }

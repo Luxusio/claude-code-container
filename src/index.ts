@@ -90,7 +90,7 @@ import {
 } from "./profile.js";
 import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
-import { formatRuntimeSummary, runtimeCli, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation, setRuntimeOverride } from "./container-runtime.js";
+import { formatRuntimeSummary, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation, setRuntimeOverride } from "./container-runtime.js";
 import { devicesCliAsync } from "./device-lab-admin.js";
 import { labsCli } from "./lab-runner-admin.js";
 
@@ -470,7 +470,7 @@ const admitWorkspaceContentRepair = createWorkspaceContentRepairAdmission({
                     : `  ${event.name}: failed to fix (content unchanged)`);
                 break;
             case "failure":
-                console.log(`  ${event.name}: failed to fix (content unchanged) - ${(event.cause as { message: unknown }).message}`);
+                console.log(`  ${event.name}: failed to fix - ${(event.cause as { message: unknown }).message}`);
                 break;
             case "conflicts":
                 console.log(`  ${event.name}: cannot merge - these files differ between your copy and branch '${event.branch}':`);
@@ -486,7 +486,7 @@ const admitWorkspaceContentRepair = createWorkspaceContentRepairAdmission({
                 console.log(`  ${event.name}: your versions moved to ${event.preserved}`);
                 break;
             case "retry-failure":
-                console.log(`  ${event.name}: failed to fix (content unchanged) - ${(event.cause as { message: unknown }).message}`);
+                console.log(`  ${event.name}: failed to fix - ${(event.cause as { message: unknown }).message}`);
                 console.log(`      Your set-aside versions remain in ${event.preserved}`);
                 break;
         }
@@ -577,8 +577,8 @@ export function withWorkspaceRemovalLifecycleLock<T>(
 
 export function listWorkspaceContainerNames(
     workspacePath: string,
-    runner: typeof spawnSync = spawnSync,
-    cli = runtimeCli(),
+    runner?: typeof spawnSync,
+    cli?: string,
 ): string[] {
     return workspaceCliRemoval.listWorkspaceContainerNames(workspacePath, createNativeWorkspaceCliContainerRuntime(runner, cli), getContainerName);
 }
@@ -586,8 +586,8 @@ export function listWorkspaceContainerNames(
 export function removeWorkspaceContainerByIdentity(
     containerName: string,
     identityProbe: typeof getContainerIdentity = getContainerIdentity,
-    runner: typeof spawnSync = spawnSync,
-    cli = runtimeCli(),
+    runner?: typeof spawnSync,
+    cli?: string,
     existsProbe: typeof isContainerExists = isContainerExists,
 ): boolean {
     return workspaceCliRemoval.removeWorkspaceContainerByIdentity(containerName, identityProbe, createNativeWorkspaceCliContainerRuntime(runner, cli), existsProbe);
@@ -597,8 +597,8 @@ export function removeManagedWorkspaceContainerByIdentity(
     containerName: string,
     workspacePath: string,
     identityProbe: typeof getManagedProjectContainerIdentity = getManagedProjectContainerIdentity,
-    runner: typeof spawnSync = spawnSync,
-    cli = runtimeCli(),
+    runner?: typeof spawnSync,
+    cli?: string,
     existsProbe: typeof isContainerExists = isContainerExists,
 ): boolean {
     return workspaceCliRemoval.removeManagedWorkspaceContainerByIdentity(containerName, workspacePath, identityProbe, createNativeWorkspaceCliContainerRuntime(runner, cli), existsProbe);
@@ -631,8 +631,8 @@ export function prepareWorkspaceContainerRemovalPlan(
 
 export function removePreparedWorkspaceContainers(
     plan: readonly WorkspaceContainerRemoval[],
-    runner: typeof spawnSync = spawnSync,
-    cli = runtimeCli(),
+    runner?: typeof spawnSync,
+    cli?: string,
 ): string[] {
     return workspaceCliRemoval.removePreparedWorkspaceContainers(plan, createNativeWorkspaceCliContainerRuntime(runner, cli), isContainerExists);
 }
@@ -688,7 +688,7 @@ function handleWorktreeRemove(cwd: string, branch: string, force: boolean): void
         selectContainerName: () => getContainerName,
         selectManagedIdentity: () => getManagedProjectContainerIdentity,
         selectExists: () => isContainerExists,
-        selectContainerRuntime: () => createNativeWorkspaceCliContainerRuntime(spawnSync, runtimeCli()),
+        selectContainerRuntime: () => createNativeWorkspaceCliContainerRuntime(),
         selectRemoveWorkspace: () => removeWorkspace,
         selectLog: () => {
             const receiver = console;
@@ -992,9 +992,9 @@ export async function main(): Promise<void> {
     }
 
     // Handle --default flag
-    const defaultIdx = filteredArgs.indexOf("--default");
+    const defaultIdx = cmdArgs.indexOf("--default");
     if (defaultIdx !== -1) {
-        const nextArg = filteredArgs[defaultIdx + 1];
+        const nextArg = cmdArgs[defaultIdx + 1];
         if (nextArg && !nextArg.startsWith("-")) {
             if (!getToolByName(nextArg)) {
                 console.error(`Unknown tool: ${nextArg}. Available: ${getAllTools().map(t => t.name).join(", ")}`);
@@ -1042,7 +1042,7 @@ export async function main(): Promise<void> {
             expectedWorktreeSourcePath = cwd;
             cwd = await prepareWorktree(cwd, parsed.branch);
             worktreeWorkspace = true;
-            // command stays as filteredArgs[0] (parseArgs already separated @branch)
+            // command stays as cmdArgs[0] (parseArgs already separated @branch)
         }
     }
     worktreeWorkspace ||= isWorktreeWorkspace(cwd);
@@ -1127,7 +1127,7 @@ export async function main(): Promise<void> {
         }
 
         case "clean": {
-            const cleanFlags = filteredArgs.slice(1);
+            const cleanFlags = cmdArgs.slice(1);
             const { cleanContainers } = await import("./clean.js");
             await cleanContainers({
                 volumes: cleanFlags.includes("--volumes"),
@@ -1139,7 +1139,7 @@ export async function main(): Promise<void> {
         }
 
         case "remote": {
-            const subcommand = filteredArgs[1];
+            const subcommand = cmdArgs[1];
             if (subcommand === "setup") {
                 await remoteSetup();
             } else if (subcommand === "check") {
@@ -1150,15 +1150,15 @@ export async function main(): Promise<void> {
                 // subcommand is either a host or undefined (use saved config)
                 // remaining args after host are passed to ccc on remote
                 const host = subcommand;
-                const remoteArgs = host ? filteredArgs.slice(2) : [];
+                const remoteArgs = host ? cmdArgs.slice(2) : [];
                 await remoteExec(cwd, host, remoteArgs);
             }
             break;
         }
 
         case "profile": {
-            const sub = filteredArgs[1];
-            const name = filteredArgs[2];
+            const sub = cmdArgs[1];
+            const name = cmdArgs[2];
             switch (sub) {
                 case "list": {
                     const profiles = listProfiles();
