@@ -43,3 +43,11 @@ On Windows, a pathname stat may omit the device number even when an opened descr
 ## Known ceiling
 
 Native timeouts bound individual client operations; daemon work may continue after timeout. Preserve uncertainty during qualification.
+
+## Session cleanup target stability
+
+One cleanup attempt captures its own claim path, project/profile, container ID and authorization generation before invoking project lookup or lifecycle callbacks. Shared-device cleanup, diagnostic reporting and native runtime binding cannot retarget that attempt. Before successful own-claim retirement, a target, claim, project/profile or authorization change (including revoke then regrant or an ID changed away and back) interrupts cleanup without stopping a replacement container or removing a replacement claim. Keep the interrupted session available for an explicitly authorized retry. A native stop reads the pinned target only while that captured authorization is still current. Failed stop retains the claim.
+
+Successful own-claim removal is the irreversible completion boundary under the held lifecycle guard. Settle that retired session there, without requiring its absent receipt for a later retry or repeating completed stop/removal effects. Authorization changes after this boundary do not reopen the retired session. Preserve a distinct replacement session and its claim; a new session after completed cleanup retains the existing clear-then-set admission contract. A guard-return failure still propagates, while retry may settle the already-retired ownership without another destructive cleanup. Unchanged cleanup retains its existing peer veto and exact-target stop behavior.
+
+Verify mutation during project lookup, guard admission, peer lookup, device cleanup, error reporting and native binding, plus interrupted retry and revoke/regrant. Verify same-owned-session authorization changes during successful removal and guard return, and guard-return failure after retirement, without repeated stop or missing-receipt deadlock. Runtime-name inequality alone grants no shutdown permission. The separately planned guardian-record preservation and dual-veto work is not established by these target-stability regressions.

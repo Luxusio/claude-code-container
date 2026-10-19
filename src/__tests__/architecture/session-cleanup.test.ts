@@ -221,22 +221,6 @@ describe("session context", () => {
         expect(f.trace.filter(row => row[0] === "remove")).toHaveLength(2);
         expect(f.trace.some(row => row[0] === "stop")).toBe(false);
     });
-    it("successful cleanup retains the hidden captured ID until a setter or clear changes it", () => {
-        const f = fixture();
-        f.setActive();
-        let reader: () => string | null = () => { throw new Error("stop did not receive its reader"); };
-        f.ports.stopContainer = readId => { reader = readId; return undefined; };
-        f.app.cleanupSession();
-        expect(reader()).toBe("captured-container-id");
-        expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
-        f.app.setSessionContainerId("changed-id");
-        expect(reader()).toBe("changed-id");
-        f.app.setSession("next.lock", "/next");
-        expect(reader()).toBe(null);
-        f.app.setSessionContainerId("another-id");
-        f.app.clearSession();
-        expect(reader()).toBe(null);
-    });
 });
 
 describe("cleanup gates and raw ownership veto", () => {
@@ -386,7 +370,7 @@ describe("cleanup failures and retries", () => {
         expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", "captured-container-id"]]);
         expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
     });
-    it("lock return failure follows effects but preserves context and repeats effects on retry", () => {
+    it("propagates lock return failure after retirement without repeating cleanup on retry", () => {
         const f = fixture();
         f.setActive();
         const original = f.ports.withLifecycleLock;
@@ -398,130 +382,224 @@ describe("cleanup failures and retries", () => {
         let caught: unknown;
         try { f.app.cleanupSession(); } catch (error) { caught = error; }
         expect(caught).toBe(failure);
-        expect(f.app.getCurrentSession()).toEqual(active);
+        expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
         expect(f.trace.filter(row => row[0] === "stop")).toHaveLength(1);
         f.ports.withLifecycleLock = original;
         f.app.cleanupSession();
-        for (const effect of ["remove", "devices", "stop"]) expect(f.trace.filter(row => row[0] === effect)).toHaveLength(2);
+        for (const effect of ["remove", "devices", "stop"]) expect(f.trace.filter(row => row[0] === effect)).toHaveLength(1);
         expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
     });
 });
 
-describe("cleanup reads mutable context at each callback boundary", () => {
-    it("reads profile after project identity, while retaining the identity from the original path", () => {
-        const f = fixture();
-        f.setActive();
-        f.ports.projectId = path => {
-            expect(path).toBe(active.projectPath);
-            f.app.setSession("identity.lock", "/identity", "identity-profile", "identity-tool");
-            f.app.setSessionContainerId("identity-id");
-            return "original-project-id";
-        };
-        f.app.cleanupSession();
-        expect(f.trace).toEqual([
-            ["lock", "original-project-id--p--identity-profile"],
-            ["raw", "original-project-id--p--identity-profile", "identity.lock"],
-            ["devices", "/identity", 5000, "identity-profile"], ["stop", "identity-id"],
-            ["remove", "identity.lock"],
-            ["unlock", "original-project-id--p--identity-profile"],
-        ]);
-        expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "identity-tool" });
-    });
-    it.each(["lock", "raw", "remove", "devices", "report", "runtime", "lock-return"] as const)("preserves dynamic reads during %s callback mutation", phase => {
-        const f = fixture();
-        f.setActive();
-        const mutate = () => {
-            f.app.setSession("mutated.lock", "/mutated", "mutated-profile", "mutated-tool");
-            f.app.setSessionContainerId("mutated-id");
-        };
-        const lock = f.ports.withLifecycleLock;
-        const raw = f.ports.hasOtherClaims;
-        const remove = f.ports.removeClaim;
-        const devices = f.ports.cleanupDevices;
-        const report = f.ports.reportDeviceCleanupFailure;
-        if (phase === "lock" || phase === "lock-return") {
-            f.ports.withLifecycleLock = <T>(prefix: string, operation: () => T): T => {
-                if (phase === "lock") mutate();
-                const result = lock(prefix, operation);
-                if (phase === "lock-return") mutate();
+describe("cleanup pins its target and authorization across callbacks", () => {
+    const authorizationChanged = /cleanup.*authorization.*changed/i;
+    const replacement = {
+        lockFile: "/claims/replacement.lock", projectPath: "/replacement",
+        profile: "replacement-profile", toolName: "replacement-tool",
+    };
+    const phases = [
+        "project lookup", "guard admission", "peer lookup", "foreign peer lookup", "device cleanup",
+        "diagnostic reporting", "native binding", "claim removal", "guard return",
+    ] as const;
+
+    for (const entry of ["ordinary", "held"] as const) {
+        const callbacks = phases.filter(phase => entry === "ordinary" || (phase !== "guard admission" && phase !== "guard return"));
+        it.each(callbacks)(`${entry} cleanup preserves a replacement session created during %s`, phase => {
+            const f = fixture();
+            f.setActive();
+            const claims = new Set([active.lockFile, replacement.lockFile]);
+            const replaceSession = () => {
+                f.app.setSession(replacement.lockFile, replacement.projectPath, replacement.profile, replacement.toolName);
+                f.app.setSessionContainerId("replacement-container-id");
+            };
+            const project = f.ports.projectId;
+            const lock = f.ports.withLifecycleLock;
+            const peers = f.ports.hasOtherClaims;
+            const devices = f.ports.cleanupDevices;
+            const report = f.ports.reportDeviceCleanupFailure;
+            const remove = f.ports.removeClaim;
+            f.ports.removeClaim = path => {
+                remove(path);
+                claims.delete(path);
+                if (phase === "claim removal") replaceSession();
+                return undefined;
+            };
+            if (phase === "project lookup") f.ports.projectId = path => {
+                const id = project(path);
+                replaceSession();
+                return id;
+            };
+            if (phase === "guard admission" || phase === "guard return") {
+                f.ports.withLifecycleLock = <T>(prefix: string, operation: () => T): T => {
+                    const result = lock(prefix, () => {
+                        if (phase === "guard admission") replaceSession();
+                        return operation();
+                    });
+                    if (phase === "guard return") {
+                        f.app.clearSession();
+                        replaceSession();
+                    }
+                    return result;
+                };
+            }
+            if (phase === "peer lookup" || phase === "foreign peer lookup") {
+                f.setForeign(phase === "foreign peer lookup");
+                f.ports.hasOtherClaims = (prefix, path) => {
+                    const result = peers(prefix, path);
+                    replaceSession();
+                    return result;
+                };
+            }
+            if (phase === "device cleanup" || phase === "diagnostic reporting") {
+                f.ports.cleanupDevices = (path, timeout, profile) => {
+                    devices(path, timeout, profile);
+                    if (phase === "diagnostic reporting") throw "device failure";
+                    replaceSession();
+                    return undefined;
+                };
+            }
+            if (phase === "diagnostic reporting") f.ports.reportDeviceCleanupFailure = error => {
+                report(error);
+                replaceSession();
+                return undefined;
+            };
+            if (phase === "native binding") f.ports.stopContainer = readId => {
+                expect(f.isHeld()).toBe(true);
+                replaceSession();
+                f.trace.push(["stop", readId()]);
+                return undefined;
+            };
+
+            const effectsCompletedBeforeMutation = phase === "claim removal" || phase === "guard return";
+            const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
+            if (effectsCompletedBeforeMutation) expect(run).not.toThrow();
+            else expect(run).toThrow(authorizationChanged);
+            expect(f.app.getCurrentSession()).toEqual(replacement);
+            expect(claims.has(replacement.lockFile)).toBe(true);
+            expect(f.trace.filter(row => row[0] === "stop")).toEqual(effectsCompletedBeforeMutation ? [["stop", "captured-container-id"]] : []);
+            expect(f.trace.filter(row => row[0] === "remove")).toEqual(effectsCompletedBeforeMutation ? [["remove", active.lockFile]] : []);
+            expect(claims.has(active.lockFile)).toBe(!effectsCompletedBeforeMutation);
+            for (const row of f.trace.filter(row => row[0] === "devices")) {
+                expect(row).toEqual(["devices", active.projectPath, 5000, active.profile]);
+            }
+            expect(f.isHeld()).toBe(false);
+        });
+
+        it.each([
+            [null, "late-container-id"], ["captured-container-id", null],
+            ["captured-container-id", "replacement-container-id"],
+        ] as const)(`${entry} cleanup rejects an ID change from %j to %j and permits an explicit retry`, (before, after) => {
+            const f = fixture();
+            f.setActive();
+            f.app.setSessionContainerId(before);
+            const devices = f.ports.cleanupDevices;
+            f.ports.cleanupDevices = (path, timeout, profile) => {
+                devices(path, timeout, profile);
+                f.app.setSessionContainerId(after);
+                return undefined;
+            };
+            const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
+            expect(run).toThrow(authorizationChanged);
+            expect(f.trace.some(row => row[0] === "stop" || row[0] === "remove")).toBe(false);
+            expect(f.app.getCurrentSession()).toEqual(active);
+
+            f.ports.cleanupDevices = devices;
+            f.app.setSessionContainerId("authorized-retry-id");
+            f.trace.length = 0;
+            run();
+            expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", "authorized-retry-id"]]);
+            expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
+            expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: active.toolName });
+        });
+
+        it.each(["target away and back", "authorization revoked and regranted"] as const)(`${entry} cleanup detects %s even when final values match`, mutation => {
+            const f = fixture();
+            f.setActive();
+            const devices = f.ports.cleanupDevices;
+            f.ports.cleanupDevices = (path, timeout, profile) => {
+                devices(path, timeout, profile);
+                if (mutation === "target away and back") {
+                    f.app.setSessionContainerId("temporary-id");
+                    f.app.setSessionContainerId("captured-container-id");
+                } else {
+                    f.app.setSessionCleanupEnabled(false);
+                    f.app.setSessionCleanupEnabled(true);
+                }
+                return undefined;
+            };
+            const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
+            expect(run).toThrow(authorizationChanged);
+            expect(f.trace.some(row => row[0] === "stop" || row[0] === "remove")).toBe(false);
+            expect(f.app.getCurrentSession()).toEqual(active);
+
+            f.ports.cleanupDevices = devices;
+            run();
+            expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", "captured-container-id"]]);
+            expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
+        });
+
+        it(`${entry} cleanup rejects a native lazy read after an earlier read was authorized`, () => {
+            const f = fixture();
+            f.setActive();
+            const stop = f.ports.stopContainer;
+            f.ports.stopContainer = readId => {
+                expect(readId()).toBe("captured-container-id");
+                f.app.setSessionContainerId("replacement-container-id");
+                f.trace.push(["stop", readId()]);
+                return undefined;
+            };
+            const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
+            expect(run).toThrow(authorizationChanged);
+            expect(f.trace.some(row => row[0] === "stop" || row[0] === "remove")).toBe(false);
+            expect(f.app.getCurrentSession()).toEqual(active);
+            f.ports.stopContainer = stop;
+            run();
+            expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", "replacement-container-id"]]);
+        });
+
+        it(`${entry} cleanup respects clearSession during peer lookup and permits a later session`, () => {
+            const f = fixture();
+            f.setActive();
+            const peers = f.ports.hasOtherClaims;
+            f.ports.hasOtherClaims = (prefix, path) => {
+                const result = peers(prefix, path);
+                f.app.clearSession();
                 return result;
             };
-        }
-        if (phase === "raw") f.ports.hasOtherClaims = (prefix, path) => { const result = raw(prefix, path); mutate(); return result; };
-        if (phase === "remove") f.ports.removeClaim = path => { remove(path); mutate(); return undefined; };
-        if (phase === "devices" || phase === "report") f.ports.cleanupDevices = (path, timeout, profile) => {
-            devices(path, timeout, profile);
-            if (phase === "devices") mutate();
-            else throw "device failure";
-            return undefined;
-        };
-        if (phase === "report") f.ports.reportDeviceCleanupFailure = error => { report(error); mutate(); return undefined; };
-        if (phase === "runtime") f.ports.stopContainer = readId => {
-            expect(f.isHeld()).toBe(true);
-            mutate();
-            f.trace.push(["stop", readId()]);
-            return undefined;
-        };
-        f.app.cleanupSession();
-        const earlyMutation = phase === "lock";
-        const beforeDevicesMutation = earlyMutation || phase === "raw";
-        const beforeRemovalMutation = beforeDevicesMutation || phase === "devices" || phase === "report" || phase === "runtime";
-        expect(f.trace.find(row => row[0] === "raw")).toEqual(["raw", "project-id--p--work", earlyMutation ? "mutated.lock" : active.lockFile]);
-        expect(f.trace.find(row => row[0] === "remove")).toEqual(["remove", beforeRemovalMutation ? "mutated.lock" : active.lockFile]);
-        expect(f.trace.find(row => row[0] === "devices")).toEqual([
-            "devices", beforeDevicesMutation ? "/mutated" : active.projectPath, 5000,
-            beforeDevicesMutation ? "mutated-profile" : active.profile,
-        ]);
-        expect(f.trace.find(row => row[0] === "stop")).toEqual(["stop", phase === "lock-return" || phase === "remove" ? "captured-container-id" : "mutated-id"]);
-        expect(f.trace.find(row => row[0] === "lock")).toEqual(["lock", "project-id--p--work"]);
-        expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "mutated-tool" });
-        f.trace.length = 0;
-        f.setActive();
-        f.app.cleanupSession();
-        expect(f.trace).toEqual([]);
-    });
-    it.each(["devices", "report"] as const)("reads container truthiness after %s clears it", phase => {
-        const f = fixture();
-        f.setActive();
-        f.ports.cleanupDevices = () => {
-            if (phase === "report") throw "device";
-            f.app.setSessionContainerId(null);
-            return undefined;
-        };
-        f.ports.reportDeviceCleanupFailure = () => { f.app.setSessionContainerId(null); return undefined; };
-        f.app.cleanupSession();
-        expect(f.trace.some(row => row[0] === "stop")).toBe(false);
-    });
-    it("an ID assigned during devices permits stopping even when no ID existed initially", () => {
-        const f = fixture();
-        f.app.setSession(active.lockFile, active.projectPath);
-        f.ports.cleanupDevices = () => { f.app.setSessionContainerId("late-id"); return undefined; };
-        f.app.cleanupSession();
-        expect(f.trace.find(row => row[0] === "stop")).toEqual(["stop", "late-id"]);
-    });
-    it.each([null, ""])("stop's lazy reader preserves runtime mutation to %j without a second truthiness gate", id => {
-        const f = fixture();
-        f.setActive();
-        f.ports.stopContainer = readId => {
-            f.app.setSessionContainerId(id);
-            f.trace.push(["stop", readId()]);
-            return undefined;
-        };
-        f.app.cleanupSession();
-        expect(f.trace.find(row => row[0] === "stop")).toEqual(["stop", id]);
-    });
-    it("clearSession during raw query does not insert new lock/path gates inside cleanup", () => {
-        const f = fixture();
-        f.setActive();
-        f.ports.hasOtherClaims = () => { f.app.clearSession(); return false; };
-        f.app.cleanupSession();
-        expect(f.trace.find(row => row[0] === "remove")).toEqual(["remove", null]);
-        expect(f.trace.find(row => row[0] === "devices")).toEqual(["devices", null, 5000, undefined]);
-        expect(f.trace.some(row => row[0] === "stop")).toBe(false);
-        expect(f.app.getCurrentSession()).toEqual(initial);
-        f.trace.length = 0;
-        f.setActive();
-        f.app.cleanupSession();
-        expect(f.trace).toEqual([]);
-    });
+            const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
+            expect(run).toThrow(authorizationChanged);
+            expect(f.trace.some(row => row[0] === "devices" || row[0] === "stop" || row[0] === "remove")).toBe(false);
+            expect(f.app.getCurrentSession()).toEqual(initial);
+
+            f.ports.hasOtherClaims = peers;
+            f.setActive();
+            run();
+            expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", "captured-container-id"]]);
+            expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
+        });
+
+        it(`${entry} cleanup preserves a replacement session's disabled shutdown authorization`, () => {
+            const f = fixture();
+            f.setActive();
+            const devices = f.ports.cleanupDevices;
+            f.ports.cleanupDevices = (path, timeout, profile) => {
+                devices(path, timeout, profile);
+                f.app.setSession(replacement.lockFile, replacement.projectPath, replacement.profile, replacement.toolName);
+                f.app.setSessionContainerId("replacement-container-id");
+                f.app.setSessionCleanupEnabled(false);
+                return undefined;
+            };
+            const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
+            expect(run).toThrow(authorizationChanged);
+            expect(f.app.getCurrentSession()).toEqual(replacement);
+            expect(f.trace.some(row => row[0] === "stop" || row[0] === "remove")).toBe(false);
+
+            f.ports.cleanupDevices = devices;
+            f.trace.length = 0;
+            run();
+            expect(f.trace.some(row => row[0] === "devices" || row[0] === "stop")).toBe(false);
+            expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", replacement.lockFile]]);
+            expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: replacement.toolName });
+        });
+    }
 });

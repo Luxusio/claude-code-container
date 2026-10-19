@@ -252,37 +252,105 @@ describe("native session cleanup through the public facade", () => {
         expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
     });
 
-    it("uses device callback mutations before choosing whether and which captured ID to stop", () => {
-        effects.devices.mockImplementation(() => { session.setSessionContainerId("device-updated-id"); });
-        start(); session.cleanupSession();
-        expect(effects.spawn).toHaveBeenCalledWith(invocation.executable, stopArgs("device-updated-id"), stopOptions);
-        session.clearSession(); start();
-        effects.devices.mockImplementation(() => { session.setSessionContainerId(null); });
-        session.cleanupSession();
-        expect(effects.spawn).toHaveBeenCalledTimes(1); expect(effects.runtime).not.toHaveBeenCalled();
-    });
-
-    it("keeps mutable facade reads across native identity, lock, raw query and removal callbacks", () => {
-        effects.identity.mockImplementation(() => { session.setSession(own, project, "identity-profile"); return "project"; });
-        const lockPath = join(fixtureLocks, "project--p--identity-profile--lock.lock");
-        const queriedPath = join(fixtureLocks, "project--p--identity-profile--query.lock");
-        effects.lock.mockImplementation((_path, operation) => { session.setSession(lockPath, join("/", "lock", "project"), "lock-profile"); return operation(); });
-        effects.list.mockImplementation(() => { session.setSession(queriedPath, join("/", "query", "project"), "query-profile"); return ["project--p--identity-profile--lock.lock"]; });
-        effects.unlink.mockImplementation(() => { session.setSession(join("/", "removed.lock"), join("/", "removal", "project"), "removal-profile", "updated-tool"); session.setSessionContainerId("removal-id"); });
-        start(); session.cleanupSession();
-        expect(effects.lock).toHaveBeenCalledWith(join(fixtureLocks, "project--p--identity-profile.container-lifecycle.guard"), expect.any(Function), { waitMs: 180000 });
-        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(queriedPath);
-        expect(effects.devices).toHaveBeenCalledExactlyOnceWith(join("/", "query", "project"), 5000, "query-profile");
+    it.each([
+        ["captured-id", "device-updated-id"], ["captured-id", null], [null, "late-id"],
+    ] as const)("interrupts device target mutation from %j to %j and permits a fresh cleanup", (before, after) => {
+        start();
+        session.setSessionContainerId(before);
+        effects.invocation.mockClear();
+        effects.invocation.mockReturnValue(podmanInvocation);
+        effects.devices.mockImplementationOnce(() => { session.setSessionContainerId(after); });
+        expect(() => session.cleanupSession()).toThrow(/cleanup.*authorization.*changed/i);
+        expect(session.getCurrentSession()).toEqual({ lockFile: own, projectPath: project, profile: undefined, toolName: "claude" });
         expect(effects.spawn).not.toHaveBeenCalled();
-        expect(session.getCurrentSession()).toEqual({ ...emptyContext, toolName: "updated-tool" });
+        expect(effects.unlink).not.toHaveBeenCalled();
+
+        session.cleanupSession();
+        if (after === null) expect(effects.spawn).not.toHaveBeenCalled();
+        else expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs(after), stopOptions);
+        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(own);
+        expect(effects.invocation).not.toHaveBeenCalled();
+        expect(effects.runtime).not.toHaveBeenCalled();
+        expect(session.getCurrentSession()).toEqual({ ...emptyContext, toolName: "claude" });
     });
 
-    it.each([new Error("device failure"), "non-Error failure"])("reports device failure exactly and continues using reporter mutations: %s", failure => {
-        const report = vi.spyOn(console, "error").mockImplementation(() => { session.setSessionContainerId("reported-id"); });
+    it.each(["identity", "guard admission", "peer lookup", "claim removal", "guard return"] as const)("preserves a replacement session made by native %s callbacks until explicit retry", phase => {
+        const replacement = {
+            lockFile: join(fixtureLocks, "project--replacement.lock"), projectPath: join("/", "fixture", "replacement"),
+            profile: "replacement-profile", toolName: "updated-tool",
+        };
+        const claims = new Set([own, replacement.lockFile]);
+        const replaceSession = () => {
+            session.setSession(replacement.lockFile, replacement.projectPath, replacement.profile, replacement.toolName);
+            session.setSessionContainerId("replacement-id");
+        };
+        effects.unlink.mockImplementation(path => { claims.delete(String(path)); });
+        if (phase === "identity") effects.identity.mockImplementationOnce(() => { replaceSession(); return "project"; });
+        if (phase === "guard admission" || phase === "guard return") {
+            effects.lock.mockImplementationOnce((_path, operation) => {
+                if (phase === "guard admission") replaceSession();
+                const result = operation();
+                if (phase === "guard return") {
+                    session.clearSession();
+                    replaceSession();
+                }
+                return result;
+            });
+        }
+        if (phase === "peer lookup") effects.list.mockImplementationOnce(() => { replaceSession(); return []; });
+        if (phase === "claim removal") effects.unlink.mockImplementationOnce(path => {
+            claims.delete(String(path));
+            replaceSession();
+        });
+        start();
+        const effectsCompletedBeforeMutation = phase === "claim removal" || phase === "guard return";
+        if (effectsCompletedBeforeMutation) expect(() => session.cleanupSession()).not.toThrow();
+        else expect(() => session.cleanupSession()).toThrow(/cleanup.*authorization.*changed/i);
+        expect(session.getCurrentSession()).toEqual(replacement);
+        expect(claims.has(replacement.lockFile)).toBe(true);
+        if (effectsCompletedBeforeMutation) {
+            expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
+            expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(own);
+        } else {
+            expect(effects.spawn).not.toHaveBeenCalled();
+            expect(effects.unlink).not.toHaveBeenCalled();
+        }
+        expect(claims.has(own)).toBe(!effectsCompletedBeforeMutation);
+        for (const call of effects.devices.mock.calls) expect(call).toEqual([project, 5000, undefined]);
+
+        effects.devices.mockClear();
+        effects.spawn.mockClear();
+        effects.unlink.mockClear();
+        effects.invocation.mockClear();
+        effects.invocation.mockReturnValue(podmanInvocation);
+        session.cleanupSession();
+        expect(effects.devices).toHaveBeenCalledExactlyOnceWith(replacement.projectPath, 5000, replacement.profile);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("replacement-id"), stopOptions);
+        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(replacement.lockFile);
+        expect(claims.has(replacement.lockFile)).toBe(false);
+        expect(effects.invocation).not.toHaveBeenCalled();
+        expect(effects.runtime).not.toHaveBeenCalled();
+        expect(session.getCurrentSession()).toEqual({ ...emptyContext, toolName: replacement.toolName });
+    });
+
+    it.each([new Error("device failure"), "non-Error failure"])("reports device failure exactly and interrupts reporter retargeting: %s", failure => {
+        const report = vi.spyOn(console, "error").mockImplementationOnce(() => { session.setSessionContainerId("reported-id"); }).mockImplementation(() => {});
         effects.devices.mockImplementation(() => { throw failure; });
-        start(); session.cleanupSession();
+        start();
+        effects.invocation.mockClear();
+        effects.invocation.mockReturnValue(podmanInvocation);
+        expect(() => session.cleanupSession()).toThrow(/cleanup.*authorization.*changed/i);
         expect(report).toHaveBeenCalledExactlyOnceWith(`[ccc] device cleanup failed during session cleanup: ${failure instanceof Error ? failure.message : String(failure)}`);
+        expect(effects.spawn).not.toHaveBeenCalled();
+        expect(effects.unlink).not.toHaveBeenCalled();
+        expect(session.getCurrentSession()).toEqual({ lockFile: own, projectPath: project, profile: undefined, toolName: "claude" });
+
+        session.cleanupSession();
         expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("reported-id"), stopOptions);
+        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(own);
+        expect(effects.invocation).not.toHaveBeenCalled();
+        expect(effects.runtime).not.toHaveBeenCalled();
+        expect(session.getCurrentSession()).toEqual({ ...emptyContext, toolName: "claude" });
     });
 
     it("propagates reporter failure without stop or finalization and retries", () => {
@@ -774,6 +842,112 @@ describe("host ownership acquisition through the facade", () => {
         expect(effects.unlink).not.toHaveBeenCalled(); expect(effects.list).not.toHaveBeenCalled();
         expect(effects.devices).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
         expect(session.getCurrentSession().lockFile).toBe(own); expect(release).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ["claim removal", "revocation"], ["guard return", "revocation"],
+        ["claim removal", "ID change"], ["guard return", "ID change"],
+    ] as const)("settles owned cleanup after %s %s without authorizing its absent receipt again", async (phase, mutation) => {
+        const captured = receiptFor(own);
+        const present = new Set([own]);
+        effects.write.mockImplementation(path => { present.add(String(path)); });
+        effects.unlink.mockImplementation(path => {
+            expect(present.delete(String(path))).toBe(true);
+        });
+        effects.authorize.mockImplementation((receipt: SessionOwnershipReceipt = captured) => {
+            if (!present.has(receipt.path)) throw new Error("Captured ownership receipt is absent");
+        });
+        effects.arm.mockImplementationOnce(async (_binding, _failure, options) => {
+            options.onCaptured(captured);
+            return handle;
+        });
+        start();
+        await expect(session.armSessionOwnership()).resolves.toBe(321);
+        const mutate = () => {
+            if (mutation === "revocation") session.setSessionCleanupEnabled(false);
+            else session.setSessionContainerId("post-retirement-id");
+        };
+        if (phase === "claim removal") {
+            const unlink = effects.unlink.getMockImplementation()!;
+            effects.unlink.mockImplementationOnce(path => { unlink(path); mutate(); });
+        } else effects.lock.mockImplementationOnce((_path, operation) => {
+            const result = operation();
+            mutate();
+            return result;
+        });
+
+        expect(() => session.cleanupSession()).not.toThrow();
+        expect(present.has(own)).toBe(false);
+        expect(effects.authorize).toHaveBeenCalledWith(captured);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
+        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(own);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(session.getCurrentSession()).toEqual({ ...emptyContext, toolName: "claude" });
+        const authorizationCount = effects.authorize.mock.calls.length;
+
+        expect(() => session.cleanupSession()).not.toThrow();
+        expect(effects.authorize).toHaveBeenCalledTimes(authorizationCount);
+        expect(effects.spawn).toHaveBeenCalledTimes(1);
+        expect(effects.unlink).toHaveBeenCalledTimes(1);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(() => session.clearSession()).not.toThrow();
+
+        const nextRelease = vi.fn<SessionOwnershipHandle["release"]>().mockResolvedValue(undefined);
+        effects.arm.mockResolvedValueOnce({ ...handle, release: nextRelease });
+        const next = await session.acquireHostSessionOwnership(request, () => ({
+            known: true, containerId: null, runtime: "docker",
+        }));
+        expect(next.lockFile).not.toBe(own);
+        expect(present.has(next.lockFile)).toBe(true);
+        expect(session.getCurrentSession().lockFile).toBe(next.lockFile);
+        session.cleanupSession();
+        expect(effects.unlink.mock.calls).toEqual([[own], [next.lockFile]]);
+        expect(effects.spawn).toHaveBeenCalledTimes(1);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(nextRelease).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries only ownership settlement after guard return fails following owned claim retirement", async () => {
+        const captured = receiptFor(own);
+        const present = new Set([own]);
+        effects.unlink.mockImplementation(path => {
+            expect(present.delete(String(path))).toBe(true);
+        });
+        effects.authorize.mockImplementation((receipt: SessionOwnershipReceipt = captured) => {
+            if (!present.has(receipt.path)) throw new Error("Captured ownership receipt is absent");
+        });
+        effects.arm.mockImplementationOnce(async (_binding, _failure, options) => {
+            options.onCaptured(captured);
+            return handle;
+        });
+        start();
+        await expect(session.armSessionOwnership()).resolves.toBe(321);
+        const failure = new Error("lifecycle guard release failed");
+        effects.lock.mockImplementationOnce((_path, operation) => {
+            operation();
+            throw failure;
+        });
+        let caught: unknown;
+        try { session.cleanupSession(); } catch (error) { caught = error; }
+        expect(caught).toBe(failure);
+        expect(present.has(own)).toBe(false);
+        expect(effects.authorize).toHaveBeenCalledWith(captured);
+        expect(session.getCurrentSession()).toEqual({ ...emptyContext, toolName: "claude" });
+        expect(release).not.toHaveBeenCalled();
+        const authorizationCount = effects.authorize.mock.calls.length;
+
+        expect(() => session.cleanupSession()).not.toThrow();
+        expect(effects.authorize).toHaveBeenCalledTimes(authorizationCount);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs("captured-id"), stopOptions);
+        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(own);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(() => session.clearSession()).not.toThrow();
+        const nextLock = join(fixtureLocks, "project--next.lock");
+        expect(() => session.setSession(nextLock, project, "next-profile")).not.toThrow();
+        expect(session.getCurrentSession()).toEqual({ lockFile: nextLock, projectPath: project, profile: "next-profile", toolName: "claude" });
+        expect(effects.spawn).toHaveBeenCalledTimes(1);
+        expect(effects.unlink).toHaveBeenCalledTimes(1);
+        expect(release).toHaveBeenCalledTimes(1);
     });
 
     it("rolls back only the captured new reservation on unknown inspection without arming or pruning foreign claims", async () => {

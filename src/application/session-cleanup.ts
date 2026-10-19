@@ -18,8 +18,22 @@ export function createSessionCleanup(ports: SessionCleanupPorts) {
     let currentContainerId: string | null = null;
     let cleanedUp = false;
     let cleanupEnabled = true;
+    let authorizationGeneration = 0;
+    let currentSessionIdentity: object | null = null;
+
+    type CleanupContext = {
+        sessionIdentity: object | null;
+        lockFile: string;
+        projectPath: string;
+        profile: string | undefined;
+        containerId: string | null;
+        cleanupEnabled: boolean;
+        generation: number;
+    };
 
     function setSession(lockFile: string, projectPath: string, profile?: string, toolName?: string): void {
+        authorizationGeneration++;
+        currentSessionIdentity = {};
         currentSessionLockFile = lockFile;
         currentProjectPath = projectPath;
         currentProfile = profile;
@@ -29,11 +43,13 @@ export function createSessionCleanup(ports: SessionCleanupPorts) {
     }
 
     function setSessionContainerId(containerId: string | null): void {
+        authorizationGeneration++;
         currentContainerId = containerId;
     }
 
     function setSessionCleanupEnabled(enabled: boolean): void {
         if (typeof enabled !== "boolean") throw new TypeError("Invalid session cleanup authorization.");
+        authorizationGeneration++;
         cleanupEnabled = enabled;
     }
 
@@ -42,6 +58,8 @@ export function createSessionCleanup(ports: SessionCleanupPorts) {
     }
 
     function clearSession(): void {
+        authorizationGeneration++;
+        currentSessionIdentity = null;
         currentSessionLockFile = null;
         currentProjectPath = null;
         currentProfile = undefined;
@@ -51,50 +69,88 @@ export function createSessionCleanup(ports: SessionCleanupPorts) {
         cleanedUp = false;
     }
 
-    function cleanupSessionBody(containerPrefix: string): void {
+    function captureCleanupContext(): CleanupContext | null {
+        if (cleanedUp || !currentSessionLockFile || !currentProjectPath) {
+            return null;
+        }
+        return {
+            sessionIdentity: currentSessionIdentity,
+            lockFile: currentSessionLockFile,
+            projectPath: currentProjectPath,
+            profile: currentProfile,
+            containerId: currentContainerId,
+            cleanupEnabled,
+            generation: authorizationGeneration,
+        };
+    }
+
+    function assertCleanupContext(context: CleanupContext, cause?: unknown): void {
+        if (authorizationGeneration !== context.generation
+            || currentSessionLockFile !== context.lockFile
+            || currentProjectPath !== context.projectPath
+            || currentProfile !== context.profile
+            || currentContainerId !== context.containerId
+            || cleanupEnabled !== context.cleanupEnabled) {
+            throw new Error("cleanup-authorization-changed: Session cleanup authorization changed; cleanup remains incomplete.", { cause });
+        }
+    }
+
+    function cleanupContainerPrefix(context: CleanupContext): string {
+        const projectId = ports.projectId(context.projectPath);
+        assertCleanupContext(context);
+        return sessionClaimPrefix(projectId, context.profile);
+    }
+
+    function cleanupSessionBody(containerPrefix: string, context: CleanupContext): void {
+        assertCleanupContext(context);
         // The composed query reconciles proven stale foreign owners, then uses
         // remaining raw claims as the shutdown veto under this same guard.
-        const hasOthers = ports.hasOtherClaims(containerPrefix, currentSessionLockFile!);
-        if (!hasOthers && cleanupEnabled) {
+        const hasOthers = ports.hasOtherClaims(containerPrefix, context.lockFile);
+        assertCleanupContext(context);
+        if (!hasOthers && context.cleanupEnabled) {
             try {
-                ports.cleanupDevices(currentProjectPath!, 5000, currentProfile);
+                ports.cleanupDevices(context.projectPath, 5000, context.profile);
             } catch (error) {
+                assertCleanupContext(context, error);
                 ports.reportDeviceCleanupFailure(error);
             }
-            if (currentContainerId) {
-                // Native runtime selection happens before this mutable ID is read.
-                ports.stopContainer(() => currentContainerId);
+            assertCleanupContext(context);
+            if (context.containerId) {
+                // Native runtime selection happens before this guarded ID read.
+                ports.stopContainer(() => {
+                    assertCleanupContext(context);
+                    return context.containerId;
+                });
+                assertCleanupContext(context);
             }
         }
         // Keep the receipt through a failed stop so owned cleanup can retry.
-        ports.removeClaim(currentSessionLockFile!);
+        ports.removeClaim(context.lockFile);
+        // Successful retirement settles this session before the guard returns.
+        finalizeSessionCleanup(context);
     }
 
-    function finalizeSessionCleanup(): void {
+    function finalizeSessionCleanup(context: CleanupContext): void {
+        if (currentSessionIdentity !== context.sessionIdentity) return;
         cleanedUp = true;
+        currentSessionIdentity = null;
         currentSessionLockFile = null;
         currentProjectPath = null;
         currentProfile = undefined;
     }
 
     function cleanupSessionInHeldLifecycleLock(): void {
-        if (cleanedUp || !currentSessionLockFile || !currentProjectPath) {
-            return;
-        }
-        const projectId = ports.projectId(currentProjectPath);
-        const containerPrefix = sessionClaimPrefix(projectId, currentProfile);
-        cleanupSessionBody(containerPrefix);
-        finalizeSessionCleanup();
+        const context = captureCleanupContext();
+        if (!context) return;
+        const containerPrefix = cleanupContainerPrefix(context);
+        cleanupSessionBody(containerPrefix, context);
     }
 
     function cleanupSession(): void {
-        if (cleanedUp || !currentSessionLockFile || !currentProjectPath) {
-            return;
-        }
-        const projectId = ports.projectId(currentProjectPath);
-        const containerPrefix = sessionClaimPrefix(projectId, currentProfile);
-        ports.withLifecycleLock(containerPrefix, () => cleanupSessionBody(containerPrefix));
-        finalizeSessionCleanup();
+        const context = captureCleanupContext();
+        if (!context) return;
+        const containerPrefix = cleanupContainerPrefix(context);
+        ports.withLifecycleLock(containerPrefix, () => cleanupSessionBody(containerPrefix, context));
     }
 
     return {
