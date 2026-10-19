@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { createInstallerApplication } from "./install/application.mjs";
-import { existsSync, lstatSync, lchownSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync, readdirSync } from "fs";
+import { existsSync, lstatSync, lchownSync, mkdirSync, mkdtempSync, rmdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync, readdirSync } from "fs";
 import { createHash } from "crypto";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { execSync, execFileSync, spawnSync } from "child_process";
 import { homedir } from "os";
@@ -277,8 +277,26 @@ function installerApplication() {
         resolvePath: path => resolve(path),
         joinPath: (...parts) => join(...parts),
         parentPath: path => dirname(path),
+        basePath: path => basename(path),
+        realPath: path => realpathSync(path),
+        pathKind: path => {
+            let stat;
+            try {
+                stat = lstatSync(path);
+            } catch (cause) {
+                if (cause && typeof cause === "object" && "code" in cause && cause.code === "ENOENT") return "missing";
+                throw cause;
+            }
+            if (stat.isSymbolicLink()) return "symlink";
+            if (stat.isDirectory()) return "directory";
+            if (stat.isFile()) return "file";
+            return "other";
+        },
+        createExclusiveDirectory: path => { mkdirSync(path, { mode: 0o700 }); },
+        createTemporaryDirectory: prefix => mkdtempSync(prefix),
+        removeEmptyDirectory: path => { rmdirSync(path); },
+        renamePath: (source, destination) => { renameSync(source, destination); },
         exists: path => existsSync(path),
-        isSymlink: path => lstatSync(path).isSymbolicLink(),
         removeFile: path => { unlinkSync(path); },
         removeDirectory: (path, force) => {
             if (force) rmSync(path, { recursive: true, force: true });

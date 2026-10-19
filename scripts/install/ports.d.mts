@@ -28,8 +28,14 @@ export interface InstallerPorts {
     resolvePath(path: string): string;
     joinPath(...parts: string[]): string;
     parentPath(path: string): string;
+    basePath(path: string): string;
+    realPath(path: string): string;
+    pathKind(path: string): "missing" | "directory" | "file" | "symlink" | "other";
+    createExclusiveDirectory(path: string): undefined;
+    createTemporaryDirectory(prefix: string): string;
+    removeEmptyDirectory(path: string): undefined;
+    renamePath(source: string, destination: string): undefined;
     exists(path: string): boolean;
-    isSymlink(path: string): boolean;
     removeFile(path: string): undefined;
     removeDirectory(path: string, force: boolean): undefined;
     ensureDirectory(path: string): undefined;

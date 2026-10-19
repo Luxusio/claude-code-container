@@ -6,7 +6,11 @@ Required synchronous ports bind individual filesystem/path operations, source np
 
 Install builds source before modifying the previous installation. Missing runtime skips image preparation; a matching image label avoids rebuilding. Failed image preparation remains a failed image outcome while CLI installation may succeed. Uninstall uses no runtime. Packaged postinstall skips source build; source postinstall warns on a build failure without recursively installing dependencies.
 
-Windows PATH policy reads and writes only the User value, preserving entry trimming, separator/case comparison and the 32767-character limit. It does not overwrite the merged process PATH. Unix installation refuses root or source-equal payload targets before removal, preserves symlink replacement and wrapper mode 0755, and retains permission-denied exit behavior. Copy and publication failures keep actual partial effects; no transaction or rollback is added. The existing native install-directory leaf remains the owned subprocess fixture's redirection boundary.
+Windows PATH policy reads and writes only the User value, preserving entry trimming, separator/case comparison and the 32767-character limit. It does not overwrite the merged process PATH. Unix installation prepares the complete payload and executable launcher in a private sibling directory before replacing the active paths. Application policy controls the staging, rename publication and caught-failure restoration through finite filesystem ports. The existing native install-directory leaf remains the owned subprocess fixture's redirection boundary.
+
+Unix payload materialization, installation publication and uninstall share a cooperative exclusive destination guard. An existing guard is a prompt refusal, with no automatic stale-owner reclamation. Source and image builds remain outside the guard. Preparation failures preserve the previous regular or symlink launcher; publication failures restore the previous payload when restoration succeeds. A restoration failure preserves and names its recovery directory. See [Unix replacement requirements](REQ__unix-install-replacement.md).
+
+Known ceiling: caught synchronous failures are recoverable under cooperative serialization; the two-path publication is not a crash transaction or a guarantee of uninterrupted concurrent CLI startup. Process/power-loss recovery, hostile noncooperative writers and native macOS sudo acceptance remain separate.
 
 Ordinary core/type tests exercise policy and required synchronous capabilities; the existing private installer subprocess tests exercise real source and installed modules with owned destinations. Strict compilation must consume the native adapter and actual applications. Packaging, build and runtime acceptance belong to independent QA. No live global installation, Windows PATH modification or external container runtime certification is claimed by source inspection.
 
@@ -62,3 +66,16 @@ there is no fallback to a different PATH executable. See
 [the runtime requirement](REQ__installed-cli-node-runtime.md).
 
 Sudo identity inputs must be canonical decimal integers within Node child-process credential limits: UID 1..2147483647 and GID 0..2147483647. Values above the signed 32-bit maximum are rejected before dispatch.
+
+## Installed MCP diagnostic
+
+The MCP build emits `diagnostic.mjs` beside each selected server output. The
+production admin smoke command runs that standalone bundle; it does not import
+the development real-test client or a runtime TypeScript loader. Its bundled
+SDK checks the canonical advertised surface and read-only current-display
+aliases in an owned server child with a private home/profile and a bounded
+lifetime. The comprehensive Level 0 public-dispatch suite remains a separate
+verification command. See [installed diagnostic requirements](REQ__installed-mcp-diagnostic.md).
+
+Known ceiling: this installed protocol check does not certify native providers
+or replace their real-platform acceptance tests.

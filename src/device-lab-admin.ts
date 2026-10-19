@@ -856,7 +856,7 @@ function runInstalledMcpSmoke(script: string, server: string, timeoutMs: number)
         stdout: result.stdout || "", stderr: result.stderr || result.error?.message || "" };
 }
 function installedMcpSmokeScriptPath(options: SmokeFormatOptions): string {
-    return options.mcpSmokeScriptPath || join(packageRoot(), "scripts", "real-tests", "installed-mcp-smoke.ts");
+    return options.mcpSmokeScriptPath || join(packageRoot(), "dist", "device-lab-mcp", "diagnostic.mjs");
 }
 
 function installedDeviceLabMcpServerPath(options: SmokeFormatOptions): string {

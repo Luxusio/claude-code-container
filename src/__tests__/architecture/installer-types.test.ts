@@ -7,8 +7,10 @@ const ports: InstallerPorts = {
     installDirectory: () => "/owned-bin", runtimeOverride: () => undefined, githubTokenConfigured: () => false,
     sourceBuild: () => undefined, contentHash: () => "current-content", runtimeAvailable: () => false,
     imageLabel: () => null, buildContainer: () => ({ status: "ready" }),
-    resolvePath: path => path, joinPath: (...parts) => parts.join("/"), parentPath: () => "/",
-    exists: () => false, isSymlink: () => false,
+    resolvePath: path => path, joinPath: (...parts) => parts.join("/"), parentPath: () => "/", basePath: path => path,
+    exists: () => false, pathKind: () => "missing", realPath: path => path,
+    createExclusiveDirectory: () => undefined, createTemporaryDirectory: prefix => prefix + "owned",
+    removeEmptyDirectory: () => undefined, renamePath: () => undefined,
     removeFile: () => undefined, removeDirectory: () => undefined, ensureDirectory: () => undefined,
     copy: () => undefined, writeUnixPackage: () => undefined, unixWrapperContent: () => "native Unix launcher",
     writeUnixLauncher: () => undefined, writeWindowsLauncher: () => undefined,
@@ -27,6 +29,27 @@ function consumedContracts() {
     const { copy, ...missingCopy } = ports; void copy;
     // @ts-expect-error materialization requires its native copy capability
     createInstallerApplication(missingCopy);
+    const { renamePath, ...missingRename } = ports; void renamePath;
+    // @ts-expect-error publication and restoration require explicit native rename
+    createInstallerApplication(missingRename);
+    const { createExclusiveDirectory, ...missingGuard } = ports; void createExclusiveDirectory;
+    // @ts-expect-error cooperative exclusion cannot be omitted
+    createInstallerApplication(missingGuard);
+    const { createTemporaryDirectory, ...missingStage } = ports; void createTemporaryDirectory;
+    // @ts-expect-error staging requires a fresh owned sibling directory
+    createInstallerApplication(missingStage);
+    const { pathKind, ...missingKind } = ports; void pathKind;
+    // @ts-expect-error destination safety requires immediate lstat facts
+    createInstallerApplication(missingKind);
+    const { realPath, ...missingCanonicalPath } = ports; void realPath;
+    // @ts-expect-error destination overlap safety requires canonical paths
+    createInstallerApplication(missingCanonicalPath);
+    const { removeEmptyDirectory, ...missingRelease } = ports; void removeEmptyDirectory;
+    // @ts-expect-error the destination guard needs an explicit native release
+    createInstallerApplication(missingRelease);
+    const { basePath, ...missingBasePath } = ports; void basePath;
+    // @ts-expect-error canonical target resolution requires its final path component
+    createInstallerApplication(missingBasePath);
     const { writeUserPath, ...missingPathWrite } = ports; void writeUserPath;
     // @ts-expect-error Windows User PATH persistence cannot be omitted
     createInstallerApplication(missingPathWrite);
@@ -34,6 +57,20 @@ function consumedContracts() {
     const deferredBuild: InstallerPorts = { ...ports, sourceBuild: async () => undefined };
     // @ts-expect-error native copy cannot become an unawaited Promise
     const deferredCopy: InstallerPorts = { ...ports, copy: async () => undefined };
+    // @ts-expect-error publication cannot continue before a rename settles
+    const deferredRename: InstallerPorts = { ...ports, renamePath: async () => undefined };
+    // @ts-expect-error guard acquisition must be exclusive before publication begins
+    const deferredGuard: InstallerPorts = { ...ports, createExclusiveDirectory: async () => undefined };
+    // @ts-expect-error stage creation must return an immediate owned path
+    const deferredStage: InstallerPorts = { ...ports, createTemporaryDirectory: async () => "/stage" };
+    // @ts-expect-error guard release cannot become an unawaited operation
+    const deferredRelease: InstallerPorts = { ...ports, removeEmptyDirectory: async () => undefined };
+    // @ts-expect-error destination type must be observed synchronously
+    const deferredKind: InstallerPorts = { ...ports, pathKind: async () => "missing" as const };
+    // @ts-expect-error canonical path must be a concrete native observation
+    const deferredCanonicalPath: InstallerPorts = { ...ports, realPath: async path => path };
+    // @ts-expect-error destination types are finite native facts
+    const arbitraryKind: InstallerPorts = { ...ports, pathKind: () => "arbitrary" };
     // @ts-expect-error User PATH writes must settle synchronously
     const deferredPathWrite: InstallerPorts = { ...ports, writeUserPath: async () => undefined };
     // @ts-expect-error User PATH must be observed as a concrete string
@@ -70,6 +107,7 @@ function consumedContracts() {
     const returningExit: InstallerPorts = { ...ports, terminate: () => undefined };
     void image; void installed; void removed; void postinstalled; void wrapper;
     void deferredBuild; void deferredCopy; void deferredPathWrite; void deferredPathRead; void deferredImage; void thenableImage; void returningExit;
+    void deferredRename; void deferredGuard; void deferredStage; void deferredRelease; void deferredKind; void deferredCanonicalPath; void arbitraryKind;
     void processReceipt; void missingCause; void failedImage; void imageLikeSource; void deferredPresentation;
     void deferredUnixLauncher; void deferredWindowsLauncher; void deferredPackage; void missingPackage; void missingPresentation; void skippedSource;
 }

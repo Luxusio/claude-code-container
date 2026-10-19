@@ -39,6 +39,10 @@ describe("npm package contents", () => {
             expect(existsSync(brokerPath)).toBe(true);
             expect(existsSync(androidStoragePath)).toBe(true);
             expect(existsSync(join(packageRoot, "dist", "device-lab-mcp", "server.mjs"))).toBe(true);
+            expect(existsSync(join(packageRoot, "dist", "device-lab-mcp", "diagnostic.mjs"))).toBe(true);
+            for (const developmentPath of ["src", "device-lab-mcp/src", "node_modules"]) {
+                expect(existsSync(join(packageRoot, developmentPath)), developmentPath).toBe(false);
+            }
             expect(existsSync(join(packageRoot, "dist", "packages", "device-lab", "providers", "display", "x11.mjs"))).toBe(true);
             expect(existsSync(join(packageRoot, "x11-mcp"))).toBe(false);
             expect(existsSync(join(packageRoot, "dist", "x11-mcp"))).toBe(false);
@@ -113,6 +117,7 @@ describe("npm package contents", () => {
         expect(files).toContain("dist/index.js");
         expect([...files].some((file) => file.startsWith("dist/x11-mcp/"))).toBe(false);
         expect(files).toContain("dist/device-lab-mcp/server.mjs");
+        expect(files).toContain("dist/device-lab-mcp/diagnostic.mjs");
         expect(files).not.toContain("dist/lab-mcp/server.mjs");
         expect(files).toContain("Dockerfile");
         expect(files).toContain("Containerfile");

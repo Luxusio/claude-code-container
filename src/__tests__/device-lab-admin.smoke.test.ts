@@ -116,11 +116,11 @@ describe("device-lab admin smoke diagnostics", () => {
         expect(output).toContain("device-lab-mcp-installed: PASS");
     });
 
-    it("uses the package smoke script fallback with an explicit server", () => {
+    it("uses the installed diagnostic bundle by default with an explicit server", () => {
         fixture.setupFixture("/project/admin-installed-script-default-test");
         const server = join(fixture.homeDir, "server.mjs");
         writeFileSync(server, "export {};");
-        const script = resolve(dirname(fileURLToPath(import.meta.url)), "../..", "scripts", "real-tests", "installed-mcp-smoke.ts");
+        const script = resolve(dirname(fileURLToPath(import.meta.url)), "../..", "dist", "device-lab-mcp", "diagnostic.mjs");
         const exists = nativeFs.existsSync;
         vi.spyOn(nativeFs, "existsSync").mockImplementation(path => String(path) === script || exists(path));
         const routedSpawn = childProcess.spawnSync;

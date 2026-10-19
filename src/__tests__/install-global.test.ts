@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -50,6 +50,276 @@ function fixture(packaged = false, directoryName?: string) {
     const calls = () => existsSync(log) ? readFileSync(log, "utf8") : "";
     return { root, installDir, run, calls };
 }
+
+type PublicationFault = "copy" | "package" | "launcher-write" | "launcher-chmod" | "backup-payload" | "publish-payload" | "publish-launcher" | "restore-payload" | "hold-copy";
+
+// Patch only synchronous filesystem calls whose destination is this fixture's
+// private install directory. The production installer still owns every step.
+function publicationPreload(f: ReturnType<typeof fixture>) {
+    const preload = join(f.root, "publication-fault.mjs"), capture = join(f.root, "publication-calls.jsonl");
+    const ready = join(f.root, "publication-ready"), release = join(f.root, "publication-release");
+    writeFileSync(preload, `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';import {basename,resolve,sep} from 'node:path';
+        const owned=${JSON.stringify(f.installDir)},payload=resolve(owned,'ccc-dist'),launcher=resolve(owned,'ccc');
+        const capture=${JSON.stringify(capture)},ready=${JSON.stringify(ready)},release=${JSON.stringify(release)};
+        const native={cp:fs.cpSync,write:fs.writeFileSync,chmod:fs.chmodSync,rename:fs.renameSync,rm:fs.rmSync,mkdtemp:fs.mkdtempSync};
+        const mode=process.env.FIXTURE_PUBLICATION_FAULT;let backup,preparedLauncher,held=false;
+        const inside=path=>typeof path==='string'&&(resolve(path)===owned||resolve(path).startsWith(owned+sep));
+        function record(event){fs.appendFileSync(capture,JSON.stringify(event)+'\\n');}
+        function fail(point){record({kind:'fault',point});throw Error('fixture '+point+' denied');}
+        fs.mkdtempSync=(prefix,...args)=>{if(inside(prefix))record({kind:'stage',path:String(prefix)});return native.mkdtemp(prefix,...args);};
+        fs.cpSync=(source,target,...args)=>{
+            if(inside(target)&&basename(String(source))==='Dockerfile'){
+                if(mode==='copy')fail('copy');
+                if(mode==='hold-copy'&&!held){held=true;native.write(ready,'ready');const deadline=Date.now()+8000;
+                    while(!fs.existsSync(release)){if(Date.now()>deadline)throw Error('fixture publication release timed out');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}}
+            }return native.cp(source,target,...args);
+        };
+        fs.writeFileSync=(path,data,...args)=>{
+            if(inside(path)&&basename(String(path))==='package.json'&&mode==='package')fail('package');
+            if(inside(path)&&String(data).startsWith('#!/bin/sh\\nexec ')){
+                preparedLauncher=resolve(path);if(mode==='launcher-write')fail('launcher-write');
+            }
+            return native.write(path,data,...args);
+        };
+        fs.chmodSync=(path,...args)=>{if(resolve(path)===preparedLauncher&&mode==='launcher-chmod')fail('launcher-chmod');return native.chmod(path,...args);};
+        fs.renameSync=(source,target)=>{
+            if(inside(source)||inside(target)){
+                record({kind:'rename',source:String(source),target:String(target)});
+                if(resolve(source)===payload&&!backup){backup=String(target);if(mode==='backup-payload')fail('backup-payload');}
+                if(resolve(target)===payload){
+                    if(mode==='publish-payload'&&String(source)!==backup)fail('publish-payload');
+                    if(mode==='restore-payload'&&String(source)===backup)fail('restore-payload');
+                }
+                if(resolve(target)===launcher&&(mode==='publish-launcher'||mode==='restore-payload'))fail('publish-launcher');
+            }return native.rename(source,target);
+        };
+        fs.rmSync=(path,...args)=>{if(inside(path))record({kind:'remove',path:String(path)});return native.rm(path,...args);};
+        syncBuiltinESMExports();
+    `);
+    const records = () => existsSync(capture) ? readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line) as { kind: string; point?: string; source?: string; target?: string; path?: string }) : [];
+    return { preload, capture, ready, release, records };
+}
+
+function previousRunnableInstall(kind: "file" | "symlink" = "file") {
+    const f = fixture();
+    writeFileSync(join(f.root, "dist/index.js"), 'process.stdout.write("previous runnable CLI\\n");');
+    const installed = f.run(["--skip-image"]);
+    expect(installed.status, installed.stderr).toBe(0);
+    const launcher = join(f.installDir, "ccc"), payload = join(f.installDir, "ccc-dist");
+    const legacy = join(f.root, "legacy-launcher");
+    if (kind === "symlink") {
+        renameSync(launcher, legacy);
+        symlinkSync("../legacy-launcher", launcher);
+    }
+    const oldLauncher = privateEntry(launcher), oldPayload = privateEntry(payload);
+    const oldEntry = privateEntry(join(payload, "dist/index.js"));
+    const oldLegacy = kind === "symlink" ? privateEntry(legacy) : undefined;
+    writeFileSync(join(f.root, "dist/index.js"), 'process.stdout.write("replacement runnable CLI\\n");');
+    const expectOld = () => {
+        expect(privateEntry(launcher)).toEqual(oldLauncher);
+        expect(privateEntry(payload)).toEqual(oldPayload);
+        expect(privateEntry(join(payload, "dist/index.js"))).toEqual(oldEntry);
+        if (oldLegacy) expect(privateEntry(legacy)).toEqual(oldLegacy);
+        const cli = spawnSync(launcher, [], { encoding: "utf8", env: { ...process.env, PATH: "" } });
+        expect(cli.status, cli.stderr).toBe(0);
+        expect(cli.stdout).toBe("previous runnable CLI\n");
+    };
+    return { ...f, launcher, payload, oldLauncher, oldPayload, oldEntry, expectOld };
+}
+
+describe.skipIf(process.platform === "win32")("failure-preserving native Unix publication", () => {
+    it("creates the missing destination parent on a first private install", () => {
+        const f = fixture();
+        rmSync(f.installDir, { recursive: true });
+        const installed = f.run(["--skip-image"]);
+        expect(installed.status, installed.stderr).toBe(0);
+        const cli = spawnSync(join(f.installDir, "ccc"), [], { encoding: "utf8", env: { ...process.env, PATH: "" } });
+        expect(cli.status, cli.stderr).toBe(0);
+        expect(cli.stdout).toContain("fixture CLI");
+        expect(readdirSync(f.installDir).sort()).toEqual(["ccc", "ccc-dist"]);
+    });
+
+    it.each((["copy", "package", "launcher-write", "launcher-chmod", "backup-payload", "publish-payload", "publish-launcher"] as const)
+        .flatMap(point => (["file", "symlink"] as const).map(kind => ({ point, kind }))))("keeps the previous $kind launcher and executable payload after $point fails", ({ point, kind }) => {
+        const f = previousRunnableInstall(kind), fault = publicationPreload(f);
+        const result = f.run(["--skip-image"], { FIXTURE_PUBLICATION_FAULT: point satisfies PublicationFault }, ["--import", pathToFileURL(fault.preload).href]);
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(`fixture ${point} denied`);
+        expect(fault.records()).toContainEqual({ kind: "fault", point });
+        expect(result.stdout).not.toContain("CLI installed.");
+        expect(result.stdout).not.toContain("Installed:");
+        f.expectOld();
+        expect(fault.records()).not.toContainEqual({ kind: "remove", path: f.payload });
+        expect(readdirSync(f.installDir).sort()).toEqual(["ccc", "ccc-dist"]);
+    });
+
+    it("publishes a complete replacement with the stable payload path and executable launcher", () => {
+        const f = previousRunnableInstall("symlink");
+        const result = f.run(["--skip-image"]);
+        expect(result.status, result.stderr).toBe(0);
+        expect(lstatSync(f.launcher).isFile()).toBe(true);
+        expect(statSync(f.launcher).mode & 0o777).toBe(0o755);
+        const cli = spawnSync(f.launcher, [], { encoding: "utf8", env: { ...process.env, PATH: "" } });
+        expect(cli.status, cli.stderr).toBe(0);
+        expect(cli.stdout).toBe("replacement runnable CLI\n");
+        expect(readFileSync(f.launcher, "utf8")).toContain(join(f.payload, "dist/index.js"));
+        expect(readdirSync(f.installDir).sort()).toEqual(["ccc", "ccc-dist"]);
+    });
+
+    it("retains the exact old backup and reports its path when restoration fails", () => {
+        const f = previousRunnableInstall(), fault = publicationPreload(f);
+        const result = f.run(["--skip-image"], { FIXTURE_PUBLICATION_FAULT: "restore-payload" satisfies PublicationFault }, ["--import", pathToFileURL(fault.preload).href]);
+        expect(result.status).not.toBe(0);
+        const records = fault.records();
+        const backup = records.find(event => event.kind === "rename" && event.source === f.payload)?.target;
+        expect(backup).toBeTruthy();
+        expect(privateEntry(backup!)).toEqual(f.oldPayload);
+        expect(privateEntry(join(backup!, "dist/index.js"))).toEqual(f.oldEntry);
+        expect(result.stderr).toContain(backup!);
+        expect(result.stderr).toContain("fixture publish-launcher denied");
+        expect(result.stderr).toContain("fixture restore-payload denied");
+        expect(result.stdout).not.toContain("CLI installed.");
+        expect(records.some(event => event.kind === "remove" && (event.path === backup || event.path === dirname(backup!)))).toBe(false);
+        expect(records).not.toContainEqual({ kind: "remove", path: f.payload });
+    });
+
+    it.each(["--skip-image", "--uninstall"])("refuses %s while a cooperating installer holds the destination guard", async operation => {
+        const f = previousRunnableInstall(), fault = publicationPreload(f);
+        const child = spawn(process.execPath, ["--import", pathToFileURL(fault.preload).href, join(f.root, "scripts/install.js"), "--skip-image"], {
+            env: { ...process.env, PATH: join(f.root, "commands"), CCC_RUNTIME: "", FIXTURE_LOG: join(f.root, "calls"), FIXTURE_PUBLICATION_FAULT: "hold-copy" satisfies PublicationFault },
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "", stderr = "";
+        child.stdout.on("data", chunk => { stdout += String(chunk); });
+        child.stderr.on("data", chunk => { stderr += String(chunk); });
+        const exited = new Promise<number | null>((resolveExit, reject) => {
+            child.once("error", reject); child.once("close", code => { resolveExit(code); });
+        });
+        try {
+            const deadline = Date.now() + 5000;
+            while (!existsSync(fault.ready)) {
+                if (child.exitCode !== null || Date.now() > deadline) throw new Error(`installer did not hold publication: ${stderr}`);
+                await new Promise(resolveWait => { setTimeout(resolveWait, 10); });
+            }
+            const started = Date.now(), rejected = f.run([operation]);
+            expect(rejected.status).not.toBe(0);
+            expect(Date.now() - started).toBeLessThan(3000);
+            expect(rejected.stderr).toContain(`${f.payload}.install-lock`);
+            expect(rejected.stdout).not.toContain("CLI installed.");
+            expect(rejected.stdout).not.toContain("Removed:");
+            f.expectOld();
+            expect(existsSync(`${f.payload}.install-lock`)).toBe(true);
+        } finally {
+            writeFileSync(fault.release, "release");
+            expect(await exited, stderr).toBe(0);
+        }
+        expect(stdout).toContain("CLI installed.");
+        expect(existsSync(`${f.payload}.install-lock`)).toBe(false);
+        expect(readdirSync(f.installDir).sort()).toEqual(["ccc", "ccc-dist"]);
+    });
+
+    it("refuses an existing guard without reclaiming or changing it", () => {
+        const f = previousRunnableInstall(), guard = `${f.payload}.install-lock`;
+        mkdirSync(guard); writeFileSync(join(guard, "operator-sentinel"), "preserve this guard");
+        const before = privateEntry(guard);
+        for (const args of [["--skip-image"], ["--uninstall"]]) {
+            const result = f.run(args);
+            expect(result.status).not.toBe(0);
+            expect(result.stderr).toContain(guard);
+            f.expectOld();
+            expect(privateEntry(guard)).toEqual(before);
+            expect(readFileSync(join(guard, "operator-sentinel"), "utf8")).toBe("preserve this guard");
+        }
+    });
+
+    it.each(["file", "symlink", "dangling-symlink"] as const)("refuses an unsafe %s payload without touching its target or launcher", kind => {
+        const f = fixture(), payload = join(f.installDir, "ccc-dist"), external = join(f.root, "external-payload");
+        writeFileSync(join(f.installDir, "ccc"), "previous launcher bytes");
+        mkdirSync(external); writeFileSync(join(external, "sentinel"), "external bytes");
+        if (kind === "file") writeFileSync(payload, "foreign payload file");
+        else symlinkSync(kind === "symlink" ? external : join(f.root, "missing-target"), payload);
+        const before = privateEntry(payload), launcher = privateEntry(join(f.installDir, "ccc"));
+        for (const args of [["--skip-image"], ["--uninstall"]]) {
+            const result = f.run(args);
+            expect(result.status).not.toBe(0);
+            expect(result.stdout).not.toContain("CLI installed.");
+            expect(privateEntry(payload)).toEqual(before);
+            expect(privateEntry(join(f.installDir, "ccc"))).toEqual(launcher);
+            expect(readFileSync(join(external, "sentinel"), "utf8")).toBe("external bytes");
+        }
+    });
+
+    it("refuses a directory at the launcher path before replacing the old payload", () => {
+        const f = previousRunnableInstall();
+        rmSync(f.launcher); mkdirSync(f.launcher);
+        writeFileSync(join(f.launcher, "sentinel"), "preserve launcher directory");
+        const before = privateEntry(f.launcher);
+        for (const args of [["--skip-image"], ["--uninstall"]]) {
+            const result = f.run(args);
+            expect(result.status).not.toBe(0);
+            expect(privateEntry(f.launcher)).toEqual(before);
+            expect(readFileSync(join(f.launcher, "sentinel"), "utf8")).toBe("preserve launcher directory");
+            expect(privateEntry(f.payload)).toEqual(f.oldPayload);
+            expect(privateEntry(join(f.payload, "dist/index.js"))).toEqual(f.oldEntry);
+        }
+    });
+
+    it("refuses unsafe public materialization paths before changing source bytes", () => {
+        const f = fixture(), script = pathToFileURL(join(f.root, "scripts/install.js")).href;
+        const boundary = join(f.root, "refuse-foreign-writes.mjs");
+        writeFileSync(boundary, `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';import {resolve,sep} from 'node:path';
+            const root=${JSON.stringify(f.root)};const check=path=>{const target=resolve(String(path));if(target!==root&&!target.startsWith(root+sep))throw Error('fixture refused foreign filesystem mutation');};
+            for(const name of ['mkdirSync','mkdtempSync','rmdirSync','rmSync','unlinkSync','writeFileSync','chmodSync']){
+                const native=fs[name];fs[name]=(path,...args)=>{check(path);return native(path,...args);};
+            }
+            const copy=fs.cpSync;fs.cpSync=(source,target,...args)=>{check(target);return copy(source,target,...args);};
+            const rename=fs.renameSync;fs.renameSync=(source,target)=>{check(source);check(target);return rename(source,target);};syncBuiltinESMExports();
+        `);
+        const sourceBefore = privateEntry(join(f.root, "dist/index.js"));
+        const alias = join(f.root, "source-alias"); symlinkSync(f.root, alias);
+        const targets = ["/", f.root, dirname(f.root), join(f.root, "dist/nested"), join(f.root, "scripts/nested"), join(alias, "dist")];
+        for (const target of targets) {
+            const result = spawnSync(process.execPath, ["--import", pathToFileURL(boundary).href, "--input-type=module", "-e", `const m=await import(${JSON.stringify(script)});m.materializeUnixInstallPayload(${JSON.stringify(f.root)},${JSON.stringify(target)});`], { encoding: "utf8", timeout: 5000 });
+            expect(result.status, target).not.toBe(0);
+            expect(result.stderr).toContain("Refusing unsafe global install payload target");
+            expect(privateEntry(join(f.root, "dist/index.js"))).toEqual(sourceBefore);
+            expect(f.calls()).toBe("");
+        }
+        expect(readdirSync(f.installDir)).toEqual([]);
+    });
+
+    it.each(["dist", "Dockerfile", "package.json"] as const)("refuses materialization when source %s resolves inside the destination", input => {
+        const f = fixture(false, "source"), owned = join(dirname(f.root), "owned"), payload = join(owned, "ccc-dist");
+        const generated = join(payload, "generated"), sourceLink = join(f.root, input);
+        mkdirSync(payload, { recursive: true });
+        if (input === "dist") {
+            mkdirSync(generated);
+            writeFileSync(join(generated, "index.js"), "linked source bytes must survive\n");
+            chmodSync(generated, 0o750); chmodSync(join(generated, "index.js"), 0o640);
+        } else {
+            writeFileSync(generated, readFileSync(sourceLink));
+            chmodSync(generated, 0o640);
+        }
+        writeFileSync(join(payload, "destination-marker"), "previous destination bytes\n");
+        chmodSync(join(payload, "destination-marker"), 0o600);
+        rmSync(sourceLink, { recursive: true }); symlinkSync(generated, sourceLink);
+        const preserved = [sourceLink, generated, ...(input === "dist" ? [join(generated, "index.js")] : []), payload, join(payload, "destination-marker")];
+        const before = preserved.map(path => privateEntry(path));
+        const observation = publicationPreload({ ...f, installDir: owned });
+        const script = pathToFileURL(join(f.root, "scripts/install.js")).href;
+        const result = spawnSync(process.execPath, ["--import", pathToFileURL(observation.preload).href, "--input-type=module", "-e", `const m=await import(${JSON.stringify(script)});m.materializeUnixInstallPayload(${JSON.stringify(f.root)},${JSON.stringify(payload)});`], {
+            encoding: "utf8", timeout: 5000,
+            env: { ...process.env, PATH: join(f.root, "commands"), FIXTURE_PUBLICATION_FAULT: "" },
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Refusing unsafe global install payload target");
+        expect(observation.records()).toEqual([]);
+        expect(preserved.map(path => privateEntry(path))).toEqual(before);
+        expect(readdirSync(owned)).toEqual(["ccc-dist"]);
+        expect(readdirSync(payload).sort()).toEqual(["destination-marker", "generated"]);
+        expect(f.calls()).toBe("");
+    });
+});
 
 // These process fixtures use POSIX executable shims and exercise Unix payloads.
 describe.skipIf(process.platform === "win32")("source global installer", () => {
@@ -324,7 +594,7 @@ function sudoSourceBuildFixture(options: {
     `;
     // Real private files, modes, links and inode metadata pass through unchanged.
     // Only ownership and lchown are simulated; this does not certify macOS sudo.
-    const filesystemModule = `export {existsSync,mkdirSync,unlinkSync,writeFileSync,chmodSync,cpSync,rmSync,readFileSync,readdirSync} from 'node:fs';
+    const filesystemModule = `export {existsSync,mkdirSync,mkdtempSync,realpathSync,rmdirSync,renameSync,unlinkSync,writeFileSync,chmodSync,cpSync,rmSync,readFileSync,readdirSync} from 'node:fs';
         import * as fs from 'node:fs';
         import {resolve} from 'node:path';
         const statePath=process.env.FIXTURE_OWNERSHIP;

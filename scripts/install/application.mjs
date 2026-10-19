@@ -109,19 +109,187 @@ export function createInstallerApplication(ports) {
         }
     }
 
-    /** @param {string} sourceRoot @param {string} targetDir */
-    function materializeUnixInstallPayload(sourceRoot, targetDir) {
+    /** @param {unknown} cause */
+    function failureDetail(cause) {
+        return cause instanceof Error ? cause.message : String(cause);
+    }
+
+    /** @param {string} path @param {string} ancestor */
+    function isWithin(path, ancestor) {
+        for (;;) {
+            if (path === ancestor) return true;
+            const parent = ports.parentPath(path);
+            if (parent === path) return false;
+            path = parent;
+        }
+    }
+
+    /** @param {string} sourceRoot @param {string} targetDir @param {boolean} [canonical] */
+    function assertSeparatePayloadSource(sourceRoot, targetDir, canonical = false) {
+        if (isWithin(sourceRoot, targetDir)
+            || [...unixPayloadCopies.map(entry => entry.path), "package.json"].some(path => {
+                const input = ports.joinPath(sourceRoot, path);
+                const resolvedInput = canonical ? ports.realPath(input) : input;
+                return isWithin(targetDir, resolvedInput) || isWithin(resolvedInput, targetDir);
+            })) {
+            throw new Error(`Refusing unsafe global install payload target: ${targetDir} overlaps source ${sourceRoot}`);
+        }
+    }
+
+    /** @param {string} targetDir */
+    function canonicalMissingTarget(targetDir) {
+        const names = [ports.basePath(targetDir)];
+        let parent = ports.parentPath(targetDir);
+        for (;;) {
+            try {
+                return ports.joinPath(ports.realPath(parent), ...names);
+            } catch (cause) {
+                if (errorCode(cause) !== "ENOENT") throw cause;
+                const nextParent = ports.parentPath(parent);
+                if (nextParent === parent) throw cause;
+                names.unshift(ports.basePath(parent));
+                parent = nextParent;
+            }
+        }
+    }
+
+    /** @param {string} targetDir */
+    function payloadTargetKind(targetDir) {
+        const kind = ports.pathKind(targetDir);
+        if (targetDir === ports.parentPath(targetDir) || (kind !== "missing" && kind !== "directory")) {
+            throw new Error(`Refusing unsafe global install payload target: ${targetDir} (${kind})`);
+        }
+        return kind;
+    }
+
+    /** @param {string} targetBin */
+    function launcherTargetKind(targetBin) {
+        const kind = ports.pathKind(targetBin);
+        if (kind !== "missing" && kind !== "file" && kind !== "symlink") {
+            throw new Error(`Refusing unsafe global install launcher target: ${targetBin} (${kind})`);
+        }
+        return kind;
+    }
+
+    /** @param {string} targetDir @param {() => void} operation @param {() => void} [prepareParent] */
+    function withUnixDestinationGuard(targetDir, operation, prepareParent) {
+        const guard = `${targetDir}.install-lock`;
+        function acquire() {
+            try {
+                ports.createExclusiveDirectory(guard);
+            } catch (cause) {
+                if (errorCode(cause) === "EEXIST") {
+                    throw new Error(`Refusing concurrent Unix installation: guard exists at ${guard}. Inspect it before retrying.`, { cause });
+                }
+                throw cause;
+            }
+        }
+        try {
+            acquire();
+        } catch (cause) {
+            if (errorCode(cause) !== "ENOENT") throw cause;
+            // Missing parents cannot contain an installation or its sibling guard.
+            if (prepareParent === undefined) return false;
+            prepareParent();
+            acquire();
+        }
+        let failed = false;
+        /** @type {unknown} */
+        let failure;
+        try {
+            operation();
+        } catch (cause) {
+            failed = true;
+            failure = cause;
+        }
+        try {
+            ports.removeEmptyDirectory(guard);
+        } catch (cause) {
+            const detail = `Could not remove owned Unix installation guard ${guard}: ${failureDetail(cause)}`;
+            if (failed) throw new AggregateError([failure, cause], `${failureDetail(failure)}; ${detail}`, { cause: failure });
+            throw new Error(`Unix destination operation completed; ${detail}`, { cause });
+        }
+        if (failed) throw failure;
+        return true;
+    }
+
+    /** @param {string} sourceRoot @param {string} targetDir @param {string} [targetBin] */
+    function replaceUnixPayload(sourceRoot, targetDir, targetBin) {
         const resolvedSourceRoot = ports.resolvePath(sourceRoot);
         const resolvedTargetDir = ports.resolvePath(targetDir);
-        if (resolvedTargetDir === ports.parentPath(resolvedTargetDir) || resolvedTargetDir === resolvedSourceRoot) {
-            throw new Error(`Refusing unsafe global install payload target: ${resolvedTargetDir}`);
-        }
-        ports.removeDirectory(resolvedTargetDir, true);
-        ports.ensureDirectory(resolvedTargetDir);
-        for (const entry of unixPayloadCopies) {
-            ports.copy(ports.joinPath(resolvedSourceRoot, entry.path), ports.joinPath(resolvedTargetDir, entry.path), entry.recursive);
-        }
-        ports.writeUnixPackage(resolvedSourceRoot, resolvedTargetDir);
+        assertSeparatePayloadSource(resolvedSourceRoot, resolvedTargetDir);
+        withUnixDestinationGuard(resolvedTargetDir, () => {
+            const previousKind = payloadTargetKind(resolvedTargetDir);
+            const canonicalSource = ports.realPath(resolvedSourceRoot);
+            const canonicalTarget = previousKind === "directory" ? ports.realPath(resolvedTargetDir) : canonicalMissingTarget(resolvedTargetDir);
+            assertSeparatePayloadSource(canonicalSource, canonicalTarget, true);
+            if (targetBin !== undefined) launcherTargetKind(targetBin);
+
+            const stage = ports.createTemporaryDirectory(`${resolvedTargetDir}.install-stage-`);
+            const payload = ports.joinPath(stage, "payload");
+            const previousPayload = ports.joinPath(stage, "previous-payload");
+            const launcher = ports.joinPath(stage, "launcher");
+            let retainStage = false;
+            let failed = false;
+            /** @type {unknown} */
+            let failure;
+            try {
+                ports.ensureDirectory(payload);
+                for (const entry of unixPayloadCopies) {
+                    ports.copy(ports.joinPath(resolvedSourceRoot, entry.path), ports.joinPath(payload, entry.path), entry.recursive);
+                }
+                ports.writeUnixPackage(resolvedSourceRoot, payload);
+                if (targetBin !== undefined) ports.writeUnixLauncher(launcher, resolvedTargetDir);
+
+                let previousMoved = false;
+                let payloadPublished = false;
+                try {
+                    if (previousKind === "directory") {
+                        ports.renamePath(resolvedTargetDir, previousPayload);
+                        previousMoved = true;
+                    }
+                    ports.renamePath(payload, resolvedTargetDir);
+                    payloadPublished = true;
+                    // The old regular file or symlink remains intact until this last rename.
+                    if (targetBin !== undefined) ports.renamePath(launcher, targetBin);
+                } catch (cause) {
+                    try {
+                        // Move only our new payload away; never recursively remove a live target.
+                        if (payloadPublished) ports.renamePath(resolvedTargetDir, payload);
+                        if (previousMoved) ports.renamePath(previousPayload, resolvedTargetDir);
+                    } catch (restoreCause) {
+                        retainStage = true;
+                        const recovery = previousMoved ? `Recovery payload: ${previousPayload}` : `New payload remains at ${resolvedTargetDir}; no previous payload existed`;
+                        throw new AggregateError([cause, restoreCause],
+                            `Unix installation publication failed: ${failureDetail(cause)}; restoration failed: ${failureDetail(restoreCause)}. ${recovery}; retained staging directory: ${stage}.`,
+                            { cause });
+                    }
+                    throw cause;
+                }
+            } catch (cause) {
+                failed = true;
+                failure = cause;
+            }
+            if (!retainStage) {
+                try {
+                    ports.removeDirectory(stage, false);
+                } catch (cause) {
+                    const detail = `Could not clean owned Unix installation staging directory ${stage}: ${failureDetail(cause)}`;
+                    if (failed) throw new AggregateError([failure, cause], `${failureDetail(failure)}; ${detail}`, { cause: failure });
+                    throw new Error(`Unix installation publication completed; ${detail}`, { cause });
+                }
+            }
+            if (failed) throw failure;
+        }, () => {
+            // Validate aliases before creating absent parent scaffolding.
+            assertSeparatePayloadSource(ports.realPath(resolvedSourceRoot), canonicalMissingTarget(resolvedTargetDir), true);
+            ports.ensureDirectory(ports.parentPath(resolvedTargetDir));
+        });
+    }
+
+    /** @param {string} sourceRoot @param {string} targetDir */
+    function materializeUnixInstallPayload(sourceRoot, targetDir) {
+        replaceUnixPayload(sourceRoot, targetDir);
     }
     /** @param {string} targetDir */
     function unixWrapperContent(targetDir) {
@@ -144,14 +312,7 @@ export function createInstallerApplication(ports) {
         const targetDir = ports.joinPath(installDir, "ccc-dist");
         const targetBin = ports.joinPath(installDir, "ccc");
         try {
-            try {
-                if (ports.isSymlink(targetBin)) ports.removeFile(targetBin);
-            } catch (e) {
-                if (errorCode(e) !== "ENOENT") throw e;
-            }
-
-            materializeUnixInstallPayload(ports.sourceRoot(), targetDir);
-            ports.writeUnixLauncher(targetBin, targetDir);
+            replaceUnixPayload(ports.sourceRoot(), targetDir, targetBin);
             ports.present({ kind: "installed", path: targetBin });
         } catch (e) {
             if (errorCode(e) === "EACCES") {
@@ -203,21 +364,26 @@ export function createInstallerApplication(ports) {
             return;
         }
 
-        const targetDir = ports.joinPath(installDir, "ccc-dist");
+        const targetDir = ports.resolvePath(ports.joinPath(installDir, "ccc-dist"));
         const targetBin = ports.joinPath(installDir, "ccc");
         try {
-            let removed = false;
-            if (ports.exists(targetBin)) {
-                ports.removeFile(targetBin);
-                ports.present({ kind: "removed", path: targetBin });
-                removed = true;
-            }
-            if (ports.exists(targetDir)) {
-                ports.removeDirectory(targetDir, false);
-                ports.present({ kind: "removed", path: targetDir });
-                removed = true;
-            }
-            if (!removed) ports.present({ kind: "not-installed" });
+            const guarded = withUnixDestinationGuard(targetDir, () => {
+                const payloadKind = payloadTargetKind(targetDir);
+                const launcherKind = launcherTargetKind(targetBin);
+                let removed = false;
+                if (launcherKind !== "missing") {
+                    ports.removeFile(targetBin);
+                    ports.present({ kind: "removed", path: targetBin });
+                    removed = true;
+                }
+                if (payloadKind === "directory") {
+                    ports.removeDirectory(targetDir, false);
+                    ports.present({ kind: "removed", path: targetDir });
+                    removed = true;
+                }
+                if (!removed) ports.present({ kind: "not-installed" });
+            });
+            if (!guarded) ports.present({ kind: "not-installed" });
         } catch (e) {
             if (errorCode(e) === "EACCES") {
                 ports.present({ kind: "permission-denied", operation: "uninstall" });
