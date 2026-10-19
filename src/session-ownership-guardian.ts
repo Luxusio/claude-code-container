@@ -1,8 +1,11 @@
 import { writeSync } from "fs";
-import { sessionLockLiveness } from "./session-lock-liveness.js";
+import { processStartToken, sessionLockLiveness } from "./session-lock-liveness.js";
 import { createSessionOwnershipGuardian } from "./application/session-ownership.js";
 import { assertNativeSessionOwnership, rollbackCapturedNativeSessionOwnership, validateNativeSessionOwnership } from "./composition/session-ownership-native.js";
 import { decodeNativeSessionRuntimeInvocation } from "./adapters/session-ownership.js";
+import { createNativeSessionClaimObservationStore } from "./adapters/session-claim-observation.js";
+import { sessionClaimPrefix } from "./domain/session-claims.js";
+import { getProjectId } from "@ccc/device-lab/project-identity.js";
 
 const ownerPid = Number(process.argv[2]);
 if (!process.send || !process.connected || !Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
@@ -55,9 +58,19 @@ function finish(status: 0 | 1 = 0, error?: unknown): void {
 }
 const guardian = createSessionOwnershipGuardian({
     decodeRuntimeInvocation: decodeNativeSessionRuntimeInvocation,
-    async validate(binding, receipt) {
+    async validate(binding, receipt, runtimeInvocation) {
         validateNativeSessionOwnership(binding, receipt, ownerPid);
         assertNativeSessionOwnership(receipt);
+        // READY must not acquire the lifecycle guard held by the awaiting parent.
+        const snapshot = createNativeSessionClaimObservationStore().read(receipt, {
+            ...binding, prefix: sessionClaimPrefix(getProjectId(binding.projectPath), binding.profile),
+        });
+        if (!snapshot || snapshot.observation.guardian.pid !== process.pid
+            || (snapshot.observation.guardian.startToken !== null
+                && snapshot.observation.guardian.startToken !== processStartToken(process.pid))
+            || JSON.stringify(snapshot.runtimeInvocation) !== JSON.stringify(runtimeInvocation)) {
+            throw new Error("Session guardian registration could not be verified.");
+        }
         if (process.ppid !== ownerPid) {
             // A parent can die before its queued initialization is received.
             // Preserve uncertain owners; only a proven dead receipt permits cleanup.

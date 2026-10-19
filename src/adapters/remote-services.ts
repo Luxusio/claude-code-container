@@ -5,7 +5,7 @@ import { join, resolve } from "path";
 import { hashPath, getProjectId, prompt, IMAGE_NAME, COMMON_IGNORE_DIRS, collectForwardedEnv, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE } from "../utils.js";
 import { getContainerName } from "../docker.js";
 import { legacyRemoteConfigDir, readCccConfig, updateCccConfig } from "../home-layout.js";
-import { createSessionLock, removeSessionLock, withContainerLifecycleLock, withContainerLifecycleLockAsync } from "../session.js";
+import { createSessionLock, removeSessionLock, removeSessionLockInHeldLifecycleLock, withContainerLifecycleLock, withContainerLifecycleLockAsync } from "../session.js";
 import { remoteContainerStartScript, remoteSessionReservationShell, remoteRefreshSessionShell, remoteReleaseSessionShell, remoteStopShell, shellEscapeArg } from "./remote-shell.js";
 import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteSyncObservation } from "../domain/remote-services.js";
 import type { RemoteServicesPorts } from "../ports/remote-services.js";
@@ -269,6 +269,7 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
         report, fail,
         createSessionLock: prefix => createSessionLock(prefix),
         removeSessionLock: file => { removeSessionLock(file); return undefined; },
+        removeSessionLockInHeldLifecycleLock: file => { removeSessionLockInHeldLifecycleLock(file); return undefined; },
         withLifecycleLock: (prefix, operation) => withContainerLifecycleLock(prefix, operation),
         withLifecycleLockAsync: (prefix, operation) => withContainerLifecycleLockAsync(prefix, operation),
         startHeartbeat: (callback, milliseconds) => {

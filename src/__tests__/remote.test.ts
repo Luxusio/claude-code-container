@@ -12,7 +12,10 @@ const remoteSessionMocks = vi.hoisted(() => ({
   withContainerLifecycleLockAsync: vi.fn((_prefix: string, operation: () => unknown) => operation()),
 }))
 
-vi.mock('../session.js', () => remoteSessionMocks)
+vi.mock('../session.js', () => ({
+  ...remoteSessionMocks,
+  removeSessionLockInHeldLifecycleLock: remoteSessionMocks.removeSessionLock,
+}))
 
 vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof childProcess>('child_process')
@@ -1166,7 +1169,7 @@ describe('remoteExec', () => {
     const spawnEmitter = makeSpawnMock(0)
     mockSpawn.mockReturnValue(spawnEmitter as any)
 
-    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
 
     await expect(remoteExec('/home/user/project', 'new-host')).rejects.toThrow('exit:0')
 
@@ -1321,7 +1324,7 @@ describe('remoteExec', () => {
     mockSpawn.mockReturnValue(spawnEmitter as any)
     mockPrompt.mockResolvedValue('n')
 
-    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
 
     await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:0')
 
@@ -1361,7 +1364,7 @@ describe('remoteExec', () => {
     mockSpawn.mockReturnValue(spawnEmitter as any)
     mockPrompt.mockResolvedValue('n')
 
-    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
 
     await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:0')
 
@@ -1424,10 +1427,15 @@ describe('remoteExec', () => {
       (c) => c[0] === 'ssh' && Array.isArray(c[1]) && c[1].some((a: string) => a.includes('docker stop'))
     )
     expect(sshStopCalls.length).toBeGreaterThan(0)
-    expect(sshStopCalls[0][1][1]).toContain('$_ccc_runtime/lifecycle-')
-    expect(sshStopCalls[0][2]).toMatchObject({ timeout: 60000 })
-    expect(sshStopCalls[0][1][1]).toContain('_ccc_expiry')
-    expect(sshStopCalls[0][1][1]).toContain('date +%s')
+    const sshStopCall = sshStopCalls[0]
+    expect(sshStopCall).toBeDefined()
+    if (!sshStopCall || !Array.isArray(sshStopCall[1])) {
+      throw new Error('Expected an SSH stop call with an argument list')
+    }
+    expect(sshStopCall[1][1]).toContain('$_ccc_runtime/lifecycle-')
+    expect(sshStopCall[2]).toMatchObject({ timeout: 60000 })
+    expect(sshStopCall[1][1]).toContain('_ccc_expiry')
+    expect(sshStopCall[1][1]).toContain('date +%s')
     expect(remoteSessionMocks.withContainerLifecycleLock).toHaveBeenCalledTimes(1)
     expect(remoteSessionMocks.withContainerLifecycleLockAsync).toHaveBeenCalledTimes(1)
     expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledWith('/locks/remote.lock')
@@ -1466,7 +1474,7 @@ describe('remoteExec', () => {
     mockSpawn.mockReturnValue(spawnEmitter as any)
     mockPrompt.mockResolvedValue('n')
 
-    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
 
     await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:0')
 
@@ -1618,7 +1626,7 @@ describe('remoteExec', () => {
     mockSpawn.mockReturnValue(spawnEmitter as any)
     mockPrompt.mockResolvedValue('n')
 
-    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
 
     const malicious = '$(touch /tmp/ccc-injected)"`whoami`'
     await expect(remoteExec('/home/user/project', undefined, ['--continue', malicious])).rejects.toThrow('exit:0')

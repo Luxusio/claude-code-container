@@ -33,6 +33,7 @@ export interface SessionAcquisitionResult {
 
 export interface SessionAcquisitionPorts {
     withLifecycleLock<T>(prefix: string, operation: () => Promise<T>): Promise<T>;
+    recoverPredecessors(prefix: string): void | Promise<void>;
     reserve(projectId: string, profile?: string): string;
     initializeCapture(request: SessionAcquisitionRequest, lockFile: string): void | Promise<void>;
     inspectExisting(request: SessionAcquisitionRequest): SessionAcquisitionInspection | Promise<SessionAcquisitionInspection>;

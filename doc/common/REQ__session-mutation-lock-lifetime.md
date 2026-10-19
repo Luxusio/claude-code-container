@@ -51,3 +51,37 @@ One cleanup attempt captures its own claim path, project/profile, container ID a
 Successful own-claim removal is the irreversible completion boundary under the held lifecycle guard. Settle that retired session there, without requiring its absent receipt for a later retry or repeating completed stop/removal effects. Authorization changes after this boundary do not reopen the retired session. Preserve a distinct replacement session and its claim; a new session after completed cleanup retains the existing clear-then-set admission contract. A guard-return failure still propagates, while retry may settle the already-retired ownership without another destructive cleanup. Unchanged cleanup retains its existing peer veto and exact-target stop behavior.
 
 Verify mutation during project lookup, guard admission, peer lookup, device cleanup, error reporting and native binding, plus interrupted retry and revoke/regrant. Verify same-owned-session authorization changes during successful removal and guard return, and guard-return failure after retirement, without repeated stop or missing-receipt deadlock. Runtime-name inequality alone grants no shutdown permission. The separately planned guardian-record preservation and dual-veto work is not established by these target-stability regressions.
+
+## Guardian responsibility and orphan recovery
+
+Provenance: the following rules are derived implementation decisions for the
+[session-exit cleanup requirement](REQ__session-exit-cleanup.md). The user requested
+reliable cleanup and the architecture transition; they did not prescribe claim
+kinds, sidecars, generations or a publication protocol. The full recovery contract
+in the local PLAN for `TASK__architecture-shared-claim-veto-followup-20261019`
+selected these mechanisms to preserve existing guarded cleanup and avoid granting
+effects from uncertain observations. Their application is owned by
+[session claim recovery](../../src/application/session-claims.ts) and
+[session ownership publication](../../src/application/session-ownership.ts).
+
+A monitored session keeps its cleanup responsibility independently of the lifetime of its parent process. Its immutable main claim identifies the owner and remains bounded to 4096 bytes. Separate bounded evidence binds the exact claim file and contents, project/profile, captured native runtime authority, guardian process identity, and current cleanup authorization. Direct claims used without a guardian must be distinguishable from monitored claims. Missing, replaced, unreadable, or older ambiguous evidence is an incomplete observation, never proof that cleanup succeeded.
+
+Initial guardian registration and each authorization update are published by the parent under the container lifecycle guard. Code already holding that guard uses an explicit held-guard operation. Other callers acquire it separately; neither path relies on reentry. The guardian must send READY and ACK without first waiting for that same guard, so a parent awaiting the response can make progress. Acknowledgement becomes current only after qualified publication; pending revocation and a newer generation prevent an older response from restoring permission.
+
+A qualified initial registration with no pending request, acknowledged authority, or positive own-start has no cleanup obligation and can be rolled back before or after READY. An absent registration does not establish that fact. Direct claim creation and capture of its original file receipt occur under one lifecycle guard, so a replacement after guard release cannot become removal authority. Guardian startup must not load the device-cleanup module before READY; terminal cleanup awaits that module when it is needed.
+
+Startup records uncertainty before attempting a native effect. Such an intent alone grants no shutdown permission. A verified positive own-start callback synchronously records the exact full container ID before queued IPC, independently of an earlier rejected acknowledgement promise. A failed join, a cleanup-disabled acknowledgement, an attempted start, or a later running observation cannot substitute for positive own-start or current acknowledged cleanup authority.
+
+Queries must not remove a monitored claim because only its parent is dead. Before a new monitored reservation is admitted, guarded recovery observes both parent and guardian identities. A live or uncertain participant remains protected. When both are positively dead, recovery uses the retained exact authority and captured runtime, not the caller's current runtime selection. Failed recovery retains the qualified claim and concrete incomplete state for a later retry. Successful recovery retires only its own qualified evidence. All other claim-removal entrances must respect the same responsibility; a failed startup cannot erase another session's obligation.
+
+Shared device cleanup and exact container shutdown have separate peer decisions. Every live, uncertain, or recovery-needed peer blocks shared device cleanup. A peer stops blocking our exact container shutdown only when its current qualified acknowledgement names a different full 64-hex container ID. Missing, short, aliased, equal, pending, or replaced IDs remain vetoes; a different runtime or endpoint is not evidence of a different target. A cleanup obligation may transfer only to a qualified current cleanup-enabled successor for the same exact container and captured native authority. A cleanup-disabled join cannot receive it. All-dead recovery must make progress without transferring responsibility in a cycle or dropping the last responsible claim.
+
+For redundant dead obligations, recovery chooses a deterministic qualified acknowledged recipient and settles that surviving obligation after transferring the others. If no such recipient exists, or the captured native authorities differ, recovery retains the unresolved claims and reports incomplete responsibility; it must not invent a handoff.
+
+Verify the actual parent/guardian process boundary: owner exit while cleanup retries, owner and guardian death, admission during retry, failed cleanup-disabled join, stale ACK after revocation, positive own-start before ACK failure, PID reuse, replaced evidence, and independent/equal/unknown peers. Tests using an inert native runtime must still exercise genuine guardian IPC, filesystem identities, lifecycle guards and emitted entry points. Portable fixtures do not establish actual Mac or Windows acceptance.
+
+### Known ceiling
+
+The native runtime can complete a start before the parent publishes a positive callback. If that parent dies in this interval, an intent plus a later running observation cannot establish who started the container. Preserve the unresolved responsibility and report incomplete recovery rather than guessing shutdown authority. This contract does not claim an atomic daemon effect and host receipt, migrate legacy uncertainty into permission, or guarantee recovery of running application processes.
+
+Before downgrading to a version that does not implement monitored responsibility, quiesce the new monitored participants and settle their claims. Older readers do not implement this recovery protocol and cannot be relied on to preserve its guarantees.

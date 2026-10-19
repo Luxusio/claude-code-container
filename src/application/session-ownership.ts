@@ -1,6 +1,6 @@
 import type {
     SessionOwnershipBinding, SessionOwnershipReceipt, SessionOwnershipPorts,
-    SessionOwnershipHandle, SessionOwnershipMessage, SessionOwnershipGuardianPorts,
+    SessionOwnershipHandle, SessionOwnershipMessage, SessionOwnershipGuardianPorts, SessionOwnershipPublication,
 } from "../ports/session-ownership.js";
 import type { NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
 
@@ -13,6 +13,9 @@ export async function armSessionOwnership(
 ): Promise<SessionOwnershipHandle> {
     for (const name of ["decodeRuntimeInvocation", "launch", "cleanup", "assertOwnership", "setTimer", "clearTimer"] as const) {
         if (typeof ports?.[name] !== "function") throw new TypeError(`Session ownership requires a callable ${name} port.`);
+    }
+    for (const name of ["withLifecycleLock", "registerGuardian", "ready", "stageUpdate", "acknowledgeUpdate", "beginStartup", "recordOwnStart"] as const) {
+        if (typeof ports.publication?.[name] !== "function") throw new TypeError(`Session ownership requires a callable publication ${name} port.`);
     }
     binding = Object.freeze({ ...binding });
     receipt = Object.freeze({ ...receipt });
@@ -51,6 +54,9 @@ export async function armSessionOwnership(
         if (active) onFailure(error);
     }
     function request(key: number, message: SessionOwnershipMessage): Promise<void> {
+        const permitted = message.type === "init" ? phase === "starting"
+            : message.type === "release" ? phase === "releasing" : phase === "active";
+        if (!permitted) return Promise.reject(new Error("Session ownership guardian is unavailable."));
         return new Promise((resolve, reject) => {
             const timer = ports.setTimer(() => {
                 if (pending.has(key)) lost(new Error("Session ownership guardian acknowledgement timed out."));
@@ -77,8 +83,10 @@ export async function armSessionOwnership(
     }));
     listeners.push(channel.onLoss(lost));
     try {
+        ports.publication.registerGuardian(channel.pid);
         await request(0, { type: "init", binding, receipt, runtimeInvocation });
         if (currentPhase() === "closed") throw new Error("Session ownership guardian was lost during readiness.");
+        ports.publication.ready();
         phase = "active";
         channel.unref();
     } catch (error) {
@@ -90,14 +98,45 @@ export async function armSessionOwnership(
         }
         throw error;
     }
+    function prepareUpdate(containerId: string | null, cleanupEnabled: boolean): {
+        publication: SessionOwnershipPublication;
+        message: SessionOwnershipMessage;
+    } {
+        if (typeof cleanupEnabled !== "boolean") throw new TypeError("Invalid session cleanup authorization.");
+        if (phase !== "active") throw new Error("Session ownership guardian is unavailable.");
+        const next = ++sequence;
+        return {
+            publication: ports.publication.stageUpdate(next, containerId, cleanupEnabled),
+            message: { type: "update", sequence: next, containerId, cleanupEnabled },
+        };
+    }
+    async function sendPrepared(prepared: ReturnType<typeof prepareUpdate>, held: boolean): Promise<boolean> {
+        if (phase !== "active") throw new Error("Session ownership guardian is unavailable.");
+        await request(prepared.publication.sequence, prepared.message);
+        try {
+            return held ? ports.publication.acknowledgeUpdate(prepared.publication)
+                : await ports.publication.withLifecycleLock(() => ports.publication.acknowledgeUpdate(prepared.publication));
+        } catch (error) {
+            lost(error instanceof Error ? error : new Error("Session ownership acknowledgement publication failed."));
+            throw error;
+        }
+    }
     return {
         pid: channel.pid,
         assertOwnership() { ports.assertOwnership(binding, receipt); },
         async updateContainer(containerId, cleanupEnabled = false) {
-            if (typeof cleanupEnabled !== "boolean") throw new TypeError("Invalid session cleanup authorization.");
-            if (phase !== "active") throw new Error("Session ownership guardian is unavailable.");
-            await request(++sequence, { type: "update", sequence, containerId, cleanupEnabled });
+            const prepared = await ports.publication.withLifecycleLock(() => prepareUpdate(containerId, cleanupEnabled));
+            return sendPrepared(prepared, false);
         },
+        async updateContainerInHeldLifecycleLock(containerId, cleanupEnabled = false) {
+            return sendPrepared(prepareUpdate(containerId, cleanupEnabled), true);
+        },
+        prepareContainerUpdateInHeldLifecycleLock(containerId, cleanupEnabled = false) {
+            const prepared = prepareUpdate(containerId, cleanupEnabled);
+            return () => sendPrepared(prepared, false);
+        },
+        beginStartupInHeldLifecycleLock() { ports.publication.beginStartup(); },
+        recordOwnStartInHeldLifecycleLock(containerId) { ports.publication.recordOwnStart(containerId); },
         async release() {
             if (phase === "closed") return;
             phase = "releasing";
@@ -174,7 +213,7 @@ export function createSessionOwnershipGuardian(ports: SessionOwnershipGuardianPo
                 if (frame.type === "init" && !ownership) {
                     if (Object.keys(frame).some(key => !["type", "binding", "receipt", "runtimeInvocation"].includes(key))) throw new Error("Invalid ownership frame.");
                     const runtimeInvocation = ports.decodeRuntimeInvocation(frame.runtimeInvocation);
-                    await ports.validate(frame.binding, frame.receipt);
+                    await ports.validate(frame.binding, frame.receipt, runtimeInvocation);
                     ownership = { binding: Object.freeze({ ...frame.binding }), receipt: Object.freeze({ ...frame.receipt }), runtimeInvocation };
                     await ports.send({ type: "ready" });
                     return;

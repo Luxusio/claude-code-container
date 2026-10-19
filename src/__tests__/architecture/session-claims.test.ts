@@ -1,52 +1,207 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createSessionClaims } from "../../application/session-claims.js";
 import {
     encodeSessionClaim, sessionClaimName, sessionClaimPrefix,
     sessionLockClaimsForContainer, sessionLockClaimsForProjectFamily,
 } from "../../domain/session-claims.js";
+import type { SessionClaimObservation } from "../../domain/session-claim-observation.js";
 import type { ProcessStartObservation, SessionLockLiveness } from "../../domain/session-lock.js";
+import { sessionLockOwner } from "../../domain/session-lock.js";
+import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation, type NativeRuntimeSelectors } from "../../ports/container-runtime-invocation.js";
+import type { SessionClaimObservationSnapshot } from "../../ports/session-claim-observation.js";
 import type { SessionClaimsPorts } from "../../ports/session-claims.js";
+import type { SessionOwnershipReceipt } from "../../ports/session-ownership.js";
 
 const current = "project--current.lock";
 const old = "project--old.lock";
 const other = "project--other.lock";
+const fullId = "a".repeat(64);
+const differentId = "b".repeat(64);
+const generation = "generation-1";
 const versioned = (pid = 42, token = "opaque") => JSON.stringify({ version: 2, pid, startToken: token });
+const direct = (pid = 42) => encodeSessionClaim(pid, "owner-start", "direct");
+const monitored = (pid = 42) => encodeSessionClaim(pid, "owner-start", "monitored");
+const digest = (bytes: string) => createHash("sha256").update(bytes).digest("hex");
 
+function invocation(host = "unix:///captured-a.sock"): NativeRuntimeInvocation {
+    return {
+        version: 1, runtime: "docker", executable: "/captured/bin/docker",
+        transport: { kind: "docker", host, configDirectory: "/captured/config",
+            tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, null])) as NativeRuntimeSelectors,
+    };
+}
+
+/** In-memory core ports: these tests prove policy/effect ordering, not native file or IPC qualification. */
 function fixture(entries: string[] = [], contents: Record<string, string> = {}) {
     const trace: string[] = [];
+    const names = [...entries];
     const records = { ...contents };
+    const receipts = new Map<string, SessionOwnershipReceipt>();
+    const snapshots = new Map<string, SessionClaimObservationSnapshot>();
     const writes: Array<[string, string]> = [];
     const removals: string[] = [];
+    const cleanups: SessionClaimObservationSnapshot[] = [];
     const batches: Array<readonly number[]> = [];
-    const classifications: Array<[string, ReadonlyMap<number, ProcessStartObservation>]> = [];
     const observations = new Map<number, ProcessStartObservation>();
+    let nextIdentity = 1;
     let held = false;
+    let app: ReturnType<typeof createSessionClaims>;
+    const nameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+    const sameReceipt = (left: SessionOwnershipReceipt, right: SessionOwnershipReceipt | undefined) =>
+        right !== undefined && left.path === right.path && left.bytes === right.bytes && left.device === right.device
+        && left.inode === right.inode && left.birthtime === right.birthtime && left.ownerPid === right.ownerPid;
+    const matchesClaim = (receipt: SessionOwnershipReceipt) => sameReceipt(receipt, receipts.get(nameOf(receipt.path)));
+    const install = (name: string, content: string) => {
+        records[name] = content;
+        if (!names.includes(name)) names.push(name);
+        const receipt: SessionOwnershipReceipt = { path: `/claims/${name}`, bytes: Buffer.from(content).toString("base64"), device: "1",
+            inode: String(nextIdentity++), birthtime: "1", ownerPid: sessionLockOwner(content)?.pid ?? 1 };
+        receipts.set(name, receipt);
+        return receipt;
+    };
+    for (const [name, content] of Object.entries(contents)) install(name, content);
     const ports: SessionClaimsPorts = {
-        ensureDirectory() { trace.push("ensure"); return undefined; },
-        listEntries() { trace.push("list"); return entries; },
-        claimPath(name) { trace.push(`path:${name}`); return `/claims/${name}`; },
-        claimName(path) { trace.push(`name:${path}`); return path.slice(path.lastIndexOf("/") + 1); },
+        ensureDirectory() { return undefined; },
+        listEntries() { trace.push("list"); return [...names]; },
+        claimPath(name) { return `/claims/${name}`; },
+        claimName: nameOf,
         readClaim(name) { trace.push(`read:${name}`); if (!(name in records)) throw new Error("unreadable"); return records[name]; },
-        writeClaim(path, content) { trace.push(`write:${path}`); writes.push([path, content]); return undefined; },
-        removeClaim(path) { trace.push(`remove:${path}`); removals.push(path); return undefined; },
-        createId() { trace.push("id"); return "abcdef"; },
-        currentPid() { trace.push("pid"); return 42; },
-        startToken(pid) { trace.push(`token:${pid}`); return "opaque"; },
-        observeOwners(pids) { trace.push("observe"); batches.push([...pids]); return observations; },
-        classify(content, observed) { trace.push(`classify:${content}`); classifications.push([content, observed]); return "active"; },
+        writeClaim(path, content) { expect(held).toBe(true); trace.push(`write:${path}`); writes.push([path, content]); install(nameOf(path), content); return undefined; },
+        removeClaim(path) { throw new Error(`Unqualified removal must not be used: ${path}`); },
+        createId() { return "abcdef"; },
+        currentPid() { return 42; },
+        startToken() { return "owner-start"; },
+        observeOwners(pids) { batches.push([...pids]); return observations; },
+        classify(content, observed): SessionLockLiveness {
+            const owner = sessionLockOwner(content);
+            if (!owner) return "unknown";
+            const state = observed.get(owner.pid);
+            if (state?.status === "missing") return "stale";
+            if (state?.status === "found") return owner.startToken && owner.startToken !== state.token ? "stale" : "active";
+            return state?.status === "present" && !owner.startToken ? "active" : "unknown";
+        },
         withLifecycleLock<T>(prefix: string, operation: () => T): T {
+            expect(held).toBe(false);
             trace.push(`lock:${prefix}`);
             held = true;
             try { return operation(); } finally { held = false; trace.push(`unlock:${prefix}`); }
         },
+        responsibility: {
+            captureClaim(name) {
+                trace.push(`capture:${name}`);
+                const receipt = receipts.get(name);
+                if (!receipt) throw new Error("unreadable claim");
+                return { receipt, content: records[name] };
+            },
+            matchesClaim,
+            retireClaim(receipt) {
+                expect(held).toBe(true);
+                if (!matchesClaim(receipt)) throw new Error("claim replaced");
+                trace.push(`retire:${receipt.path}`);
+                removals.push(receipt.path);
+                const name = nameOf(receipt.path);
+                names.splice(names.indexOf(name), 1);
+                receipts.delete(name);
+                delete records[name];
+                return undefined;
+            },
+            observationStore: {
+                begin() { throw new Error("Registration is owned by the parent, not this core fixture"); },
+                read(receipt, binding) {
+                    const snapshot = snapshots.get(nameOf(receipt.path));
+                    return snapshot && matchesClaim(receipt) && sameReceipt(snapshot.receipt, receipt)
+                        && snapshot.observation.binding.prefix === binding.prefix ? snapshot : null;
+                },
+                matches(snapshot) { return snapshots.get(nameOf(snapshot.receipt.path)) === snapshot && matchesClaim(snapshot.receipt); },
+                assertCurrent(snapshot) {
+                    if (snapshots.get(nameOf(snapshot.receipt.path)) !== snapshot || !matchesClaim(snapshot.receipt)) throw new Error("evidence replaced");
+                },
+                update(snapshot, observation) {
+                    expect(held).toBe(true);
+                    this.assertCurrent(snapshot);
+                    const next = { ...snapshot, observation, observationReceipt: { ...snapshot.observationReceipt,
+                        bytes: Buffer.from(JSON.stringify(observation)).toString("base64"), inode: String(nextIdentity++) } };
+                    snapshots.set(nameOf(snapshot.receipt.path), next);
+                    return next;
+                },
+                retire(snapshot) {
+                    expect(held).toBe(true);
+                    if (snapshots.get(nameOf(snapshot.receipt.path)) !== snapshot) throw new Error("evidence replaced");
+                    snapshots.delete(nameOf(snapshot.receipt.path));
+                },
+            },
+            projectId() { return "project"; },
+            cleanup(snapshot) {
+                expect(held).toBe(true);
+                cleanups.push(snapshot);
+                trace.push(`stop:${snapshot.receipt.path}`);
+                app.retireOwnedClaimInHeldLifecycleLock(snapshot.receipt, snapshot.observation.binding, snapshot.runtimeInvocation,
+                    { containerId: snapshot.observation.ownStarted?.containerId ?? snapshot.observation.lastAcknowledged?.containerId ?? null,
+                        cleanupEnabled: true, containerStopped: true, responsibilityTransferred: false });
+            },
+        },
     };
-    return { ports, trace, records, writes, removals, batches, observations, classifications, isHeld: () => held };
+    const attach = (name: string, change: Partial<SessionClaimObservation> = {}, runtimeInvocation = invocation()) => {
+        const receipt = receipts.get(name)!;
+        const runtimeBytes = JSON.stringify(runtimeInvocation);
+        const runtimeReceipt = { path: `${receipt.path}.runtime.json`, bytes: Buffer.from(runtimeBytes).toString("base64"), device: "1", inode: String(nextIdentity++), birthtime: "1" };
+        const observation: SessionClaimObservation = {
+            version: 1, claim: { path: receipt.path, device: receipt.device, inode: receipt.inode,
+                birthtime: receipt.birthtime, digest: digest(records[name]), ownerPid: receipt.ownerPid },
+            binding: { lockFile: receipt.path, projectPath: "/project", prefix: "project" },
+            runtime: { path: runtimeReceipt.path, device: runtimeReceipt.device, inode: runtimeReceipt.inode,
+                birthtime: runtimeReceipt.birthtime, digest: digest(runtimeBytes) },
+            guardian: { pid: receipt.ownerPid + 100, startToken: "guardian-start" }, registration: "ready", generation,
+            pending: null, lastAcknowledged: { generation, sequence: 1, containerId: fullId, cleanupEnabled: true },
+            ownStarted: null, recovery: { status: "active", diagnostic: null }, ...change,
+        };
+        const snapshot: SessionClaimObservationSnapshot = { observation, receipt, runtimeInvocation, runtimeReceipt,
+            observationReceipt: { path: `${receipt.path}.guardian.json`, bytes: Buffer.from(JSON.stringify(observation)).toString("base64"),
+                device: "1", inode: String(nextIdentity++), birthtime: "1" } };
+        snapshots.set(name, snapshot);
+        return snapshot;
+    };
+    app = createSessionClaims(ports);
+    const inGuard = <T>(operation: () => T) => ports.withLifecycleLock("project", operation);
+    const recover = () => inGuard(() => app.recoverPredecessorsInHeldLifecycleLock("project"));
+    const dead = (pid: number) => observations.set(pid, { status: "missing" });
+    const alive = (pid: number, token: string) => observations.set(pid, { status: "found", token });
+    return { app, ports, trace, names, records, receipts, snapshots, writes, removals, cleanups, batches,
+        observations, attach, install, inGuard, recover, dead, alive, isHeld: () => held };
 }
 
-const portNames = ["ensureDirectory", "listEntries", "claimPath", "claimName", "readClaim", "writeClaim", "removeClaim",
-    "createId", "currentPid", "startToken", "observeOwners", "classify", "withLifecycleLock"] as const;
-
 describe("session claim domain compatibility", () => {
+    it.each(["direct", "monitored"] as const)("records explicit %s responsibility without falling back to an unmarked PID", ownershipKind => {
+        for (const startToken of ["opaque", null]) {
+            const encoded = encodeSessionClaim(42, startToken, ownershipKind);
+            const record = JSON.parse(encoded) as { version: number; pid: number; startToken?: string | null; ownershipKind: string };
+            expect(record).toEqual(expect.objectContaining({ version: 3, pid: 42, ownershipKind }));
+            expect(record.startToken ?? null).toBe(startToken);
+            expect(Buffer.byteLength(encoded, "utf8")).toBeLessThanOrEqual(4096);
+            expect(sessionLockOwner(encoded)).toEqual({ pid: 42, ...(startToken ? { startToken } : {}), ownershipKind });
+        }
+    });
+    it("keeps v2 and decimal records unmarked instead of inventing guardian responsibility", () => {
+        expect(sessionLockOwner(encodeSessionClaim(42, "opaque"))).toEqual({ pid: 42, startToken: "opaque" });
+        expect(sessionLockOwner(encodeSessionClaim(42, null))).toEqual({ pid: 42 });
+        expect(sessionLockOwner(" 42\r\n")).toEqual({ pid: 42 });
+    });
+    it.each([null, undefined, "", 42, "x".repeat(257)])("does not loosen malformed v2 token validation for %j", startToken => {
+        expect(sessionLockOwner(JSON.stringify({ version: 2, pid: 42, startToken, ownershipKind: "monitored" }))).toBeNull();
+    });
+    it.each([undefined, null, "", "guardian", 1])("refuses an invalid v3 ownership kind %j", ownershipKind => {
+        expect(sessionLockOwner(JSON.stringify({ version: 3, pid: 42, startToken: "opaque", ownershipKind }))).toBeNull();
+    });
+    it.each(["direct", "monitored"] as const)("accepts an absent or null v3 process token for %s claims", ownershipKind => {
+        for (const tokenFields of [{}, { startToken: null }]) {
+            expect(sessionLockOwner(JSON.stringify({ version: 3, pid: 42, ownershipKind, ...tokenFields }))).toEqual({ pid: 42, ownershipKind });
+        }
+        for (const startToken of ["", 42, "x".repeat(257)]) {
+            expect(sessionLockOwner(JSON.stringify({ version: 3, pid: 42, ownershipKind, startToken }))).toBeNull();
+        }
+    });
     it("preserves prefix and exact record bytes, including legacy fallback without a newline", () => {
         expect(sessionClaimPrefix("project")).toBe("project");
         expect(sessionClaimPrefix("project", "")).toBe("project");
@@ -56,440 +211,333 @@ describe("session claim domain compatibility", () => {
         expect(encodeSessionClaim(42, null)).toBe("42");
         expect(encodeSessionClaim(42, "")).toBe("42");
     });
-
     const names = ["other--a.lock", "project--b.lock", "project-a.lock", "project--p--work--c.lock",
         "project--p--work--extra--d.lock", "project--p--work--.lock", "project--.lock", "project-.lock",
         "project--b.lock.tmp", "project.container-lifecycle.guard", "project--p--work-a.lock", "project--p--work--e.lock"];
     it("preserves nonprofile legacy selection, permissive empty segments, and enumeration order", () => {
-        expect(sessionLockClaimsForContainer(names, "project")).toEqual([
-            "project--b.lock", "project-a.lock", "project--.lock", "project-.lock",
-        ]);
+        expect(sessionLockClaimsForContainer(names, "project")).toEqual(["project--b.lock", "project-a.lock", "project--.lock", "project-.lock"]);
         expect(names).toHaveLength(12);
     });
     it("selects exactly one nonempty session segment after a profile prefix", () => {
-        expect(sessionLockClaimsForContainer(names, "project--p--work")).toEqual([
-            "project--p--work--c.lock", "project--p--work--e.lock",
-        ]);
+        expect(sessionLockClaimsForContainer(names, "project--p--work")).toEqual(["project--p--work--c.lock", "project--p--work--e.lock"]);
         expect(sessionLockClaimsForContainer(names, "project--p--work--extra")).toEqual(["project--p--work--extra--d.lock"]);
     });
     it("family queries retain double-dash claims only, including profiles and empty segments", () => {
-        expect(sessionLockClaimsForProjectFamily(names, "project")).toEqual([
-            "project--b.lock", "project--p--work--c.lock", "project--p--work--extra--d.lock",
-            "project--p--work--.lock", "project--.lock", "project--p--work-a.lock", "project--p--work--e.lock",
-        ]);
+        expect(sessionLockClaimsForProjectFamily(names, "project")).toEqual(["project--b.lock", "project--p--work--c.lock", "project--p--work--extra--d.lock",
+            "project--p--work--.lock", "project--.lock", "project--p--work-a.lock", "project--p--work--e.lock"]);
     });
 });
 
-describe("explicit session claims construction", () => {
-    it.each([null, undefined])("rejects absent ports %s", ports => {
-        expect(() => createSessionClaims(ports as unknown as SessionClaimsPorts)).toThrow(TypeError);
+describe("explicit session reservation and observation", () => {
+    it("marks standalone creation direct and held reservation monitored without reacquiring the guard", () => {
+        const standalone = fixture();
+        expect(standalone.app.createSessionLock("project")).toBe("/claims/project--abcdef.lock");
+        expect(standalone.writes).toEqual([["/claims/project--abcdef.lock", direct()]]);
+        const guarded = fixture();
+        expect(guarded.inGuard(() => guarded.app.reserveSessionLockInHeldLifecycleLock("project"))).toBe("/claims/project--abcdef.lock");
+        expect(guarded.writes).toEqual([["/claims/project--abcdef.lock", monitored()]]);
+        expect(guarded.trace.filter(item => item.startsWith("lock:"))).toEqual(["lock:project"]);
     });
-    for (const name of portNames) {
-        it(`requires callable ${name} without invoking any other port`, () => {
-            for (const invalid of [undefined, null, false, 0, "callback", {}]) {
-                const f = fixture();
-                expect(() => createSessionClaims({ ...f.ports, [name]: invalid } as unknown as SessionClaimsPorts)).toThrow(TypeError);
-                expect(f.trace).toEqual([]);
-            }
-            const f = fixture();
-            const incomplete: Record<string, unknown> = { ...f.ports };
-            delete incomplete[name];
-            expect(() => createSessionClaims(incomplete as unknown as SessionClaimsPorts)).toThrow(TypeError);
-            expect(f.trace).toEqual([]);
-        });
-    }
-    it("constructs without effects and observes replacement callbacks lazily", () => {
-        const f = fixture();
-        const app = createSessionClaims(f.ports);
-        expect(f.trace).toEqual([]);
-        f.ports.listEntries = () => [other];
-        expect(app.getSessionLockClaimsForContainer("project")).toEqual([other]);
-        expect(f.trace).toEqual(["ensure"]);
-    });
-});
-
-describe("session reservation", () => {
-    it.each([undefined, "work"])("reserves in an already-held guard without sweeping or reacquiring profile %j", profile => {
-        const f = fixture([old], { [old]: "7" });
-        const prefix = profile ? "project--p--work" : "project";
-        const path = `/claims/${prefix}--abcdef.lock`;
-        const lock = f.ports.withLifecycleLock;
-        f.ports.withLifecycleLock = (name, operation) => {
-            expect(f.isHeld()).toBe(false);
-            return lock(name, operation);
-        };
-        f.ports.classify = () => { throw new Error("predecessor must not be reconciled before transfer"); };
-        f.ports.withLifecycleLock(prefix, () => {
-            const write = f.ports.writeClaim;
-            f.ports.writeClaim = (destination, content) => { expect(f.isHeld()).toBe(true); return write(destination, content); };
-            expect(createSessionClaims(f.ports).reserveSessionLockInHeldLifecycleLock("project", profile)).toBe(path);
-        });
-        expect(f.writes).toEqual([[path, versioned()]]);
-        expect(f.removals).toEqual([]);
-        expect(f.trace).toEqual([`lock:${prefix}`, "ensure", "id", `path:${prefix}--abcdef.lock`, "pid", "token:42", "pid", `write:${path}`, `unlock:${prefix}`]);
-        expect(f.batches).toEqual([]);
-    });
-    it.each([undefined, "", "work--extra"])("captures ID and destination before locking profile %j", profile => {
-        const f = fixture();
-        const prefix = profile ? `project--p--${profile}` : "project";
-        const path = `/claims/${prefix}--abcdef.lock`;
-        expect(createSessionClaims(f.ports).createSessionLock("project", profile)).toBe(path);
-        expect(f.writes).toEqual([[path, versioned()]]);
-        expect(f.trace).toEqual(["ensure", "id", `path:${prefix}--abcdef.lock`, `lock:${prefix}`, "ensure", "list", "observe", "pid", "token:42", "pid", `write:${path}`, `unlock:${prefix}`]);
-    });
-    it("captures the path before lock callback changes its environment and observes PID after token lookup", () => {
-        const f = fixture();
-        let pid = 42;
-        f.ports.currentPid = () => pid;
-        f.ports.startToken = owner => { expect(owner).toBe(42); pid = 43; f.ports.claimPath = name => `/changed/${name}`; return null; };
-        expect(createSessionClaims(f.ports).createSessionLock("project")).toBe("/claims/project--abcdef.lock");
-        expect(f.writes).toEqual([["/claims/project--abcdef.lock", "43"]]);
-    });
-    it("removes proven stale claims inside the lifecycle guard before reserving the new claim", () => {
-        const entries = [old, other];
-        const f = fixture(entries, { [old]: versioned(7), [other]: versioned(8) });
-        f.ports.classify = content => { expect(f.isHeld()).toBe(true); return content === versioned(7) ? "stale" : "active"; };
-        f.ports.removeClaim = path => {
-            expect(f.isHeld()).toBe(true);
-            expect(f.writes).toEqual([]);
-            f.removals.push(path);
-            entries.splice(entries.indexOf(path.slice(path.lastIndexOf("/") + 1)), 1);
-        };
-        const write = f.ports.writeClaim;
-        f.ports.writeClaim = (path, content) => {
-            expect(f.isHeld()).toBe(true);
-            expect(entries).toEqual([other]);
-            return write(path, content);
-        };
-        expect(createSessionClaims(f.ports).createSessionLock("project")).toBe("/claims/project--abcdef.lock");
-        expect(f.removals).toEqual([`/claims/${old}`]);
-        expect(f.writes).toEqual([["/claims/project--abcdef.lock", versioned()]]);
-    });
-    it("retains active, unknown and unreadable owners while reserving", () => {
-        const unreadable = "project--unreadable.lock";
-        const f = fixture([old, other, unreadable], { [old]: "7", [other]: "8" });
-        f.ports.classify = content => content === "7" ? "active" : "unknown";
-        createSessionClaims(f.ports).createSessionLock("project");
-        expect(f.batches).toEqual([[7, 8]]);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${old}`, `read:${other}`, `read:${unreadable}`]);
-        expect(f.removals).toEqual([]);
-        expect(f.writes).toHaveLength(1);
-    });
-    it.each([undefined, "work"])("sweeps only the exact reservation prefix for profile %j", profile => {
+    it("raw queries select exact container and family prefixes without reading or retiring claims", () => {
         const profiled = "project--p--work--a.lock";
-        const sibling = "project--p--work--extra--b.lock";
-        const unrelated = "other--a.lock";
-        const f = fixture([old, profiled, sibling, unrelated], {
-            [old]: "7", [profiled]: "8", [sibling]: "9", [unrelated]: "10",
-        });
-        f.ports.classify = () => "stale";
-        createSessionClaims(f.ports).createSessionLock("project", profile);
-        const selected = profile ? profiled : old;
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${selected}`]);
-        expect(f.removals).toEqual([`/claims/${selected}`]);
-        expect(f.batches).toEqual([[profile ? 8 : 7]]);
-    });
-    it.each(["ensureDirectory", "createId", "claimPath", "withLifecycleLock", "startToken", "writeClaim"] as const)("propagates reservation %s failure and stops", member => {
-        const f = fixture();
-        const failure = { member, code: member === "writeClaim" ? "EEXIST" : "EACCES" };
-        Object.assign(f.ports, { [member]: () => { f.trace.push(`fail:${member}`); throw failure; } });
-        let caught: unknown;
-        try { createSessionClaims(f.ports).createSessionLock("project"); } catch (error) { caught = error; }
-        expect(caught).toBe(failure);
-        expect(f.writes).toEqual([]);
-        expect(f.removals).toEqual([]);
-        expect(f.trace.at(-1)).toBe(["startToken", "writeClaim"].includes(member) ? "unlock:project" : `fail:${member}`);
-        if (["ensureDirectory", "createId", "claimPath", "withLifecycleLock"].includes(member)) expect(f.trace).not.toContain("pid");
-    });
-});
-
-describe("reconciled foreign claims retain a fresh raw veto", () => {
-    it("reconciles under an already-held guard without reacquiring it or pruning the own receipt", () => {
-        const entries = [current, old];
-        const f = fixture(entries, { [current]: versioned(), [old]: "7" });
-        const lock = f.ports.withLifecycleLock;
-        f.ports.withLifecycleLock = (prefix, operation) => { expect(f.isHeld()).toBe(false); return lock(prefix, operation); };
-        f.ports.classify = () => { expect(f.isHeld()).toBe(true); return "stale"; };
-        f.ports.removeClaim = path => { expect(f.isHeld()).toBe(true); f.removals.push(path); entries.splice(entries.indexOf(old), 1); };
-        expect(f.ports.withLifecycleLock("project", () => createSessionClaims(f.ports)
-            .reconcileForeignClaimsInHeldLifecycleLock("project", `/claims/${current}`))).toBe(false);
-        expect(f.removals).toEqual([`/claims/${old}`]);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${old}`]);
-        expect(f.trace.filter(value => value.startsWith("lock:"))).toEqual(["lock:project"]);
-        expect(entries).toEqual([current]);
-    });
-    it("leaves a proven stale own receipt untouched while removing only foreign stale claims", () => {
-        const entries = [current, old];
-        const f = fixture(entries, { [current]: versioned(42), [old]: versioned(7) });
-        f.observations.set(42, { status: "missing" });
-        f.observations.set(7, { status: "missing" });
-        f.ports.classify = content => { f.classifications.push([content, f.observations]); return "stale"; };
-        f.ports.removeClaim = path => {
-            f.removals.push(path);
-            entries.splice(entries.indexOf(path.slice(path.lastIndexOf("/") + 1)), 1);
-        };
-        expect(createSessionClaims(f.ports).hasOtherReconciledSessionClaims("project", `/claims/${current}`)).toBe(false);
-        expect(entries).toEqual([current]);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${old}`]);
-        expect(f.batches).toEqual([[7]]);
-        expect(f.classifications.map(([content]) => content)).toEqual([versioned(7)]);
-        expect(f.removals).toEqual([`/claims/${old}`]);
-    });
-    it("removes a proven stale foreign claim before deciding no foreign claim remains", () => {
-        const entries = [current, old];
-        const f = fixture(entries, { [current]: versioned(), [old]: versioned(7) });
-        f.ports.classify = content => content === versioned(7) ? "stale" : "active";
-        f.ports.removeClaim = path => {
-            f.removals.push(path);
-            entries.splice(entries.indexOf(old), 1);
-        };
-        expect(createSessionClaims(f.ports).hasOtherReconciledSessionClaims("project", `/claims/${current}`)).toBe(false);
-        expect(f.removals).toEqual([`/claims/${old}`]);
-        expect(f.trace.filter(value => value === "list")).toHaveLength(2);
-    });
-    it("a failed stale unlink remains a raw veto even though the active list would omit it", () => {
-        const f = fixture([current, old], { [current]: versioned(), [old]: "7" });
-        f.ports.classify = content => content === "7" ? "stale" : "active";
-        f.ports.removeClaim = path => { f.removals.push(path); throw new Error("sharing violation"); };
-        expect(createSessionClaims(f.ports).hasOtherReconciledSessionClaims("project", `/claims/${current}`)).toBe(true);
-        expect(f.removals).toEqual([`/claims/${old}`]);
-        expect(f.trace.filter(value => value === "list")).toHaveLength(2);
-    });
-    it.each(["active", "unknown", "unreadable"])("a foreign %s claim remains a veto", status => {
-        const f = fixture([current, old], { [current]: versioned(), ...(status === "unreadable" ? {} : { [old]: "7" }) });
-        f.ports.classify = content => content === versioned() ? "active" : status as SessionLockLiveness;
-        expect(createSessionClaims(f.ports).hasOtherReconciledSessionClaims("project", `/claims/${current}`)).toBe(true);
+        const f = fixture([current, old, profiled, "project-a.lock", "other--a.lock"]);
+        expect(f.app.getSessionLockClaimsForContainer("project")).toEqual([current, old, "project-a.lock"]);
+        expect(f.app.getSessionLockClaimsForProjectFamily("project")).toEqual([current, old, profiled]);
+        expect(f.app.hasOtherSessionClaims("project", `/claims/${current}`)).toBe(true);
+        expect(f.app.hasOtherReconciledSessionClaims("project", `/claims/${current}`)).toBe(true);
+        expect(f.trace.every(item => item === "list")).toBe(true);
         expect(f.removals).toEqual([]);
     });
-    it("preserves a live same-PID legacy claim without treating the current path as replacement proof", () => {
-        const f = fixture([current, old], { [current]: versioned(), [old]: "42" });
-        expect(createSessionClaims(f.ports).hasOtherReconciledSessionClaims("project", `/claims/${current}`)).toBe(true);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${old}`]);
-        expect(f.classifications.map(([content]) => content)).toEqual(["42"]);
+    it("all active queries omit a proven-dead marked direct owner without deleting its receipt", () => {
+        const f = fixture([old], { [old]: direct(7) });
+        f.dead(7);
+        expect(f.app.getActiveSessionsForContainer("project")).toEqual([]);
+        expect(f.app.observeActiveSessionsForContainer("project")).toEqual([]);
+        expect(f.app.getActiveSessionsForProjectFamily("project")).toEqual([]);
+        expect(f.app.hasOtherActiveSessions("project", `/claims/${current}`)).toBe(false);
+        expect(f.app.getSessionLockClaimsForContainer("project")).toEqual([old]);
+        expect(f.removals).toEqual([]);
+        expect(f.cleanups).toEqual([]);
+    });
+    it.each(["7", versioned(7), monitored(7)])("dead-parent observation alone retains legacy or monitored receipt %s", content => {
+        const f = fixture([old], { [old]: content });
+        f.dead(7);
+        if (sessionLockOwner(content)?.ownershipKind === "monitored") {
+            const captured = f.attach(old);
+            f.alive(captured.observation.guardian.pid, "guardian-start");
+        }
+        expect(f.app.getActiveSessionsForContainer("project")).toEqual([old]);
+        expect(f.app.observeActiveSessionsForContainer("project")).toEqual([old]);
+        expect(f.app.getActiveSessionsForProjectFamily("project")).toEqual([old]);
+        expect(f.app.hasOtherActiveSessions("project", `/claims/${current}`)).toBe(true);
+        expect(f.removals).toEqual([]);
+        expect(f.cleanups).toEqual([]);
+    });
+    it("a same-PID current hint does not supersede an unmarked predecessor", () => {
+        const f = fixture([current, old], { [current]: monitored(), [old]: "42" });
+        f.alive(42, "owner-start");
+        expect(f.app.getActiveSessionsForContainer("project", `/claims/${current}`)).toEqual([current, old]);
+        expect(f.app.observeActiveSessionsForContainer("project", `/claims/${current}`)).toEqual([current, old]);
         expect(f.removals).toEqual([]);
     });
-    it("freshly enumerates a successor that appeared after the stale claim was removed", () => {
-        const successor = "project--successor.lock";
-        const entries = [current, old];
-        const f = fixture(entries, { [current]: versioned(), [old]: "7" });
-        f.ports.classify = content => content === "7" ? "stale" : "active";
-        f.ports.removeClaim = path => {
-            f.removals.push(path);
-            entries.splice(entries.indexOf(old), 1, successor);
-        };
-        expect(createSessionClaims(f.ports).hasOtherReconciledSessionClaims("project", `/claims/${current}`)).toBe(true);
-        expect(f.removals).toEqual([`/claims/${old}`]);
-        expect(f.trace).not.toContain(`read:${successor}`);
-        expect(f.trace.filter(value => value === "list")).toHaveLength(2);
-    });
-    it("keeps sibling profiles outside both reconciliation and the raw veto", () => {
-        const profiled = "project--p--work--a.lock";
-        const sibling = "project--p--work--extra--b.lock";
-        const f = fixture([current, profiled, sibling], { [current]: "7", [profiled]: versioned(), [sibling]: "8" });
-        expect(createSessionClaims(f.ports).hasOtherReconciledSessionClaims("project--p--work", `/claims/${profiled}`)).toBe(false);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([]);
-        expect(f.batches).toEqual([[]]);
+    it("unreadable claims and uncertain process observations remain visible without effects", () => {
+        const f = fixture([old, other], { [old]: direct(7) });
+        f.observations.set(7, { status: "unknown" });
+        expect(f.app.getActiveSessionsForContainer("project")).toEqual([old, other]);
         expect(f.removals).toEqual([]);
+        expect(f.cleanups).toEqual([]);
     });
-    it("propagates a fresh raw enumeration failure rather than authorizing shutdown", () => {
-        const f = fixture([current], { [current]: versioned() });
-        const failure = new Error("fresh enumeration unavailable");
-        let lists = 0;
-        f.ports.listEntries = () => { if (++lists === 2) throw failure; return [current]; };
-        expect(() => createSessionClaims(f.ports).hasOtherReconciledSessionClaims("project", `/claims/${current}`)).toThrow(failure);
-        expect(lists).toBe(2);
-    });
-});
-
-describe("raw claims remain independent from inferred liveness", () => {
-    it("raw container, family and foreign queries never read, observe, classify or remove claims", () => {
-        const f = fixture([current, old, "project--p--work--a.lock", "project-a.lock", "other--a.lock"]);
-        const app = createSessionClaims(f.ports);
-        expect(app.getSessionLockClaimsForContainer("project")).toEqual([current, old, "project-a.lock"]);
-        expect(app.getSessionLockClaimsForProjectFamily("project")).toEqual([current, old, "project--p--work--a.lock"]);
-        expect(app.hasOtherSessionClaims("project", `/claims/${current}`)).toBe(true);
-        expect(f.trace).toEqual(["ensure", "list", "ensure", "list", "ensure", "list", `name:/claims/${current}`]);
-        expect(f.batches).toEqual([]);
-        expect(f.classifications).toEqual([]);
-        expect(f.removals).toEqual([]);
-    });
-    it("a missing current claim never hides a foreign raw claim", () => {
-        const f = fixture([old]);
-        expect(createSessionClaims(f.ports).hasOtherSessionClaims("project", `/claims/${current}`)).toBe(true);
-        f.ports.listEntries = () => [current];
-        expect(createSessionClaims(f.ports).hasOtherSessionClaims("project", `/claims/${current}`)).toBe(false);
-    });
-    for (const member of ["ensureDirectory", "listEntries"] as const) {
-        it.each(["ENOENT", "EACCES"])(`propagates ${member} %s rather than returning no claims`, code => {
-            for (const method of ["getSessionLockClaimsForContainer", "getSessionLockClaimsForProjectFamily", "getActiveSessionsForContainer", "getActiveSessionsForProjectFamily"] as const) {
-                const f = fixture();
-                const failure = { code };
-                f.ports[member] = () => { throw failure; };
-                let caught: unknown;
-                try { createSessionClaims(f.ports)[method]("project"); } catch (error) { caught = error; }
-                expect(caught).toBe(failure);
-                expect(f.batches).toEqual([]);
-            }
-        });
-    }
-});
-
-describe("live claims reconciliation", () => {
-    it("diagnostic observation excludes stale results while preserving every raw receipt and uncertain owner", () => {
-        const unreadable = "project--unreadable.lock";
-        const entries = [old, other, current, unreadable];
-        const f = fixture(entries, { [old]: versioned(7), [other]: versioned(8), [current]: versioned(42) });
-        f.ports.classify = content => content === versioned(7) ? "stale" : content === versioned(8) ? "unknown" : "active";
-        const app = createSessionClaims(f.ports);
-        expect(app.observeActiveSessionsForContainer("project")).toEqual([other, current, unreadable]);
-        expect(f.removals).toEqual([]);
-        expect(app.getSessionLockClaimsForContainer("project")).toEqual([old, other, current, unreadable]);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${old}`, `read:${other}`, `read:${current}`, `read:${unreadable}`]);
-        expect(f.batches).toEqual([[7, 8, 42]]);
-    });
-    it("diagnostic current-owner comparison omits same-PID legacy results without deleting their receipts", () => {
-        const entries = [current, old, other];
-        const f = fixture(entries, { [current]: versioned(), [old]: "42", [other]: versioned() });
-        const app = createSessionClaims(f.ports);
-        expect(app.observeActiveSessionsForContainer("project", `/claims/${current}`)).toEqual([current, other]);
-        expect(f.removals).toEqual([]);
-        expect(app.getSessionLockClaimsForContainer("project")).toEqual([current, old, other]);
-        expect(f.classifications.map(([content]) => content)).toEqual([versioned(), versioned()]);
-    });
-    it("diagnostic observation selects only the exact profile and preserves classification uncertainty", () => {
-        const profiled = "project--p--work--a.lock";
-        const sibling = "project--p--work--extra--b.lock";
-        const f = fixture([old, profiled, sibling], { [old]: "7", [profiled]: "8", [sibling]: "9" });
-        f.ports.classify = () => { throw new Error("observation unavailable"); };
-        expect(createSessionClaims(f.ports).observeActiveSessionsForContainer("project--p--work")).toEqual([profiled]);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${profiled}`]);
-        expect(f.removals).toEqual([]);
-    });
-    it("reads each candidate once, trims records and passes one exact observation map to every classification", () => {
-        const f = fixture([current, old, other, "project--broken.lock"], {
-            [current]: ` ${versioned(42)}\r\n`, [old]: " 42\n", [other]: versioned(7), "project--broken.lock": "broken",
-        });
-        expect(createSessionClaims(f.ports).getActiveSessionsForContainer("project")).toEqual([current, old, other, "project--broken.lock"]);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${current}`, `read:${old}`, `read:${other}`, "read:project--broken.lock"]);
-        expect(f.batches).toEqual([[42, 42, 7]]);
-        expect(f.classifications.map(([content]) => content)).toEqual([versioned(42), "42", versioned(7), "broken"]);
-        for (const [, map] of f.classifications) expect(map).toBe(f.observations);
-    });
-    it("observes once even when no parseable owner exists and preserves unreadable claims", () => {
-        const f = fixture([current, old], { [old]: "broken" });
-        expect(createSessionClaims(f.ports).getActiveSessionsForContainer("project")).toEqual([current, old]);
-        expect(f.batches).toEqual([[]]);
-        expect(f.classifications.map(([content]) => content)).toEqual(["broken"]);
-        expect(f.trace).toContain(`path:${current}`);
-        expect(f.removals).toEqual([]);
-    });
-    it("an empty selection still performs the existing single empty batch", () => {
-        const f = fixture(["unrelated--a.lock"]);
-        expect(createSessionClaims(f.ports).getActiveSessionsForContainer("project")).toEqual([]);
-        expect(f.batches).toEqual([[]]);
-    });
-    it.each(["active", "unknown", "stale", "throw"] as const)("retains or excludes a %s candidate without changing the next candidate", result => {
-        const f = fixture([old, other], { [old]: versioned(1), [other]: versioned(2) });
-        f.ports.classify = content => { if (content === versioned(2)) return "active"; if (result === "throw") throw new Error("classification"); return result; };
-        f.ports.removeClaim = path => { f.removals.push(path); throw new Error("sharing violation"); };
-        expect(createSessionClaims(f.ports).getActiveSessionsForContainer("project")).toEqual(result === "stale" ? [other] : [old, other]);
-        expect(f.removals).toEqual(result === "stale" ? [`/claims/${old}`] : []);
-    });
-    it("captures every removal path before classification and targets that path after environment changes", () => {
-        const f = fixture([old], { [old]: "42" });
-        f.ports.classify = () => { f.ports.claimPath = name => `/new-home/${name}`; return "stale"; };
-        expect(createSessionClaims(f.ports).getActiveSessionsForContainer("project")).toEqual([]);
-        expect(f.removals).toEqual([`/claims/${old}`]);
-    });
-    it("path capture failure propagates even when the candidate is unreadable", () => {
-        const f = fixture([old]);
-        const failure = new Error("home layout unavailable");
-        f.ports.claimPath = () => { throw failure; };
-        expect(() => createSessionClaims(f.ports).getActiveSessionsForContainer("project")).toThrow(failure);
-        expect(f.batches).toEqual([[]]);
-    });
-    it("observation failure propagates before path capture, classification or removal", () => {
-        const f = fixture([old], { [old]: "42" });
-        const failure = { reason: "observation" };
+    it("observation failure propagates instead of granting absence", () => {
+        const f = fixture([old], { [old]: direct(7) });
+        const failure = new Error("observation unavailable");
         f.ports.observeOwners = () => { throw failure; };
-        let caught: unknown;
-        try { createSessionClaims(f.ports).getActiveSessionsForContainer("project"); } catch (error) { caught = error; }
-        expect(caught).toBe(failure);
-        expect(f.trace).toEqual(["ensure", "list", `read:${old}`]);
-        expect(f.classifications).toEqual([]);
+        expect(() => f.app.getActiveSessionsForContainer("project")).toThrow(failure);
         expect(f.removals).toEqual([]);
-    });
-    it.each([versioned(), "42"])("supplied valid own current record %s prunes only older PID-only claims", record => {
-        const f = fixture([current, old, other], { [current]: record, [old]: "42", [other]: versioned() });
-        expect(createSessionClaims(f.ports).getActiveSessionsForContainer("project", `/claims/${current}`)).toEqual([current, other]);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${current}`, `read:${current}`, `read:${old}`, `read:${other}`]);
-        expect(f.removals).toEqual([`/claims/${old}`]);
-        expect(f.classifications.map(([content]) => content)).toEqual([record, versioned()]);
-    });
-    it.each(["absent", "unreadable", "malformed", "foreign"])("current hint %s does not supersede a PID-only claim", hint => {
-        const records: Record<string, string> = { [old]: "42" };
-        if (hint === "malformed") records[current] = "bad";
-        if (hint === "foreign") records[current] = "7";
-        const f = fixture(hint === "absent" ? [old] : [current, old], records);
-        expect(createSessionClaims(f.ports).getActiveSessionsForContainer("project", `/claims/${current}`)).toEqual(hint === "absent" ? [old] : [current, old]);
-        expect(f.removals).toEqual([]);
-    });
-    it("the preliminary current observation is retained even if its second read fails", () => {
-        const f = fixture([current, old], { [old]: "42" });
-        let reads = 0;
-        const read = f.ports.readClaim;
-        f.ports.readClaim = name => { if (name === current && reads++ === 0) return versioned(); return read(name); };
-        expect(createSessionClaims(f.ports).getActiveSessionsForContainer("project", `/claims/${current}`)).toEqual([current]);
-        expect(f.removals).toEqual([`/claims/${old}`]);
-    });
-    it("foreign live query intentionally omits the current hint and therefore keeps older same-PID legacy claims", () => {
-        const f = fixture([current, old], { [current]: versioned(), [old]: "42" });
-        expect(createSessionClaims(f.ports).hasOtherActiveSessions("project", `/claims/${current}`)).toBe(true);
-        expect(f.trace.filter(value => value.startsWith("read:"))).toEqual([`read:${current}`, `read:${old}`]);
-        expect(f.removals).toEqual([]);
-    });
-    it("family live query reconciles all double-dash profiles while excluding legacy single-dash claims", () => {
-        const profiled = "project--p--work--a.lock";
-        const f = fixture([old, profiled, "project-a.lock"], { [old]: "42", [profiled]: "7" });
-        expect(createSessionClaims(f.ports).getActiveSessionsForProjectFamily("project")).toEqual([old, profiled]);
-        expect(f.batches).toEqual([[42, 7]]);
     });
 });
 
-describe("guarded container replacement", () => {
-    it("false replacement predicate holds the lock but has no claim observation or pruning effects", () => {
-        const f = fixture([old], { [old]: "42" });
-        const app = createSessionClaims(f.ports);
-        expect(app.recreateContainerWithoutInterruptingSessions("project", `/claims/${current}`, () => { throw new Error("must not recreate"); }, () => {
-            expect(f.isHeld()).toBe(true); f.trace.push("predicate"); return false;
-        })).toBe(false);
-        expect(f.trace).toEqual(["lock:project", "predicate", "unlock:project"]);
+describe("guarded predecessor responsibility recovery", () => {
+    it("retires only positively dead marked direct claims, never the own claim or sibling profile", () => {
+        const sibling = "project--p--work--a.lock";
+        const f = fixture([current, old, sibling], { [current]: direct(), [old]: direct(7), [sibling]: direct(8) });
+        f.dead(42); f.dead(7); f.dead(8);
+        expect(f.inGuard(() => f.app.reconcileForeignClaimsInHeldLifecycleLock("project", `/claims/${current}`))).toBe(false);
+        expect(f.removals).toEqual([`/claims/${old}`]);
+        expect(f.names).toEqual([current, sibling]);
+        expect(f.cleanups).toEqual([]);
     });
-    it.each(["active", "unknown"] as SessionLockLiveness[])("a foreign %s claim blocks replacement within the lock", status => {
-        const f = fixture([old], { [old]: "42" });
-        f.ports.classify = () => { expect(f.isHeld()).toBe(true); return status; };
-        expect(createSessionClaims(f.ports).recreateContainerWithoutInterruptingSessions("project", `/claims/${current}`, () => { throw new Error("must not recreate"); })).toBe(false);
-        expect(f.trace.at(-1)).toBe("unlock:project");
+    it("failed qualified retirement remains incomplete and cannot permit replacement", () => {
+        const f = fixture([old], { [old]: direct(7) });
+        f.dead(7);
+        f.ports.responsibility!.retireClaim = () => { throw new Error("sharing violation"); };
+        expect(() => f.inGuard(() => f.app.reconcileForeignClaimsInHeldLifecycleLock("project", `/claims/${current}`))).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(() => f.app.recreateContainerWithoutInterruptingSessions("project", `/claims/${current}`, () => { throw new Error("must not recreate"); })).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old]);
     });
-    it("prunes stale claims and recreates inside the same critical section", () => {
-        const f = fixture([current, old], { [current]: versioned(), [old]: "7" });
-        f.ports.classify = content => { expect(f.isHeld()).toBe(true); return content === "7" ? "stale" : "active"; };
-        expect(createSessionClaims(f.ports).recreateContainerWithoutInterruptingSessions("project", `/claims/${current}`, () => {
-            expect(f.isHeld()).toBe(true); expect(f.removals).toEqual([`/claims/${old}`]); f.trace.push("recreate");
-        })).toBe(true);
-        expect(f.trace.slice(-2)).toEqual(["recreate", "unlock:project"]);
+    it.each(["guardian-live", "guardian-unknown", "owner-live"] as const)("protects a monitored predecessor when %s", participant => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old);
+        f.dead(7); f.dead(captured.observation.guardian.pid);
+        if (participant === "guardian-live") f.alive(captured.observation.guardian.pid, "guardian-start");
+        if (participant === "guardian-unknown") f.observations.set(captured.observation.guardian.pid, { status: "unknown" });
+        if (participant === "owner-live") f.alive(7, "owner-start");
+        f.recover();
+        expect(f.names).toEqual([old]);
+        expect(f.removals).toEqual([]);
+        expect(f.cleanups).toEqual([]);
     });
-    it.each(["predicate", "enumeration", "recreate"])("propagates %s exception identity and releases the lifecycle lock", stage => {
-        const f = fixture();
-        const failure = { stage };
-        if (stage === "enumeration") f.ports.listEntries = () => { throw failure; };
-        let caught: unknown;
-        try {
-            createSessionClaims(f.ports).recreateContainerWithoutInterruptingSessions("project", `/claims/${current}`,
-                () => { if (stage === "recreate") throw failure; }, () => { if (stage === "predicate") throw failure; return true; });
-        } catch (error) { caught = error; }
-        expect(caught).toBe(failure);
-        expect(f.isHeld()).toBe(false);
-        expect(f.trace.at(-1)).toBe("unlock:project");
+    it.each(["7", versioned(7), monitored(7)])("dead unqualified predecessor %s remains concretely incomplete", content => {
+        const f = fixture([old], { [old]: content });
+        f.dead(7);
+        expect(f.recover).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.removals).toEqual([]);
+    });
+    it("uses the positively dead guardian's captured runtime and exact ACK target before qualified retirement", () => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old);
+        f.dead(7); f.dead(captured.observation.guardian.pid);
+        f.recover();
+        expect(f.cleanups).toHaveLength(1);
+        expect(f.cleanups[0].runtimeInvocation).toEqual(invocation());
+        expect(f.cleanups[0].observation.lastAcknowledged?.containerId).toBe(fullId);
+        expect(f.trace.indexOf(`stop:/claims/${old}`)).toBeLessThan(f.trace.indexOf(`retire:/claims/${old}`));
+        expect(f.names).toEqual([]);
+        expect(f.snapshots.size).toBe(0);
+        expect(f.batches.some(pids => pids.includes(7) && pids.includes(captured.observation.guardian.pid))).toBe(true);
+    });
+    it("recorded parent and guardian token reuse permits qualified recovery without trusting those current PIDs", () => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old);
+        f.alive(7, "new-owner-process");
+        f.alive(captured.observation.guardian.pid, "new-guardian-process");
+        f.recover();
+        expect(f.cleanups).toHaveLength(1);
+        expect(f.names).toEqual([]);
+    });
+    it("three failed cleanup attempts retain a concrete recovery record that a later admission can retry", () => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old);
+        f.dead(7); f.dead(captured.observation.guardian.pid);
+        const complete = f.ports.responsibility!.cleanup;
+        f.ports.responsibility!.cleanup = () => { throw new Error("inert stop refused"); };
+        for (let attempt = 0; attempt < 3; attempt++) {
+            expect(f.recover).toThrow(/session-cleanup-responsibility-incomplete/);
+            expect(f.names).toEqual([old]);
+            expect(f.snapshots.get(old)?.observation.recovery).toEqual({ status: "recovery-needed", diagnostic: "session-cleanup-failed" });
+        }
+        f.ports.responsibility!.cleanup = complete;
+        f.recover();
+        expect(f.cleanups).toHaveLength(1);
+        expect(f.names).toEqual([]);
+    });
+    it.each(["update", "startup"] as const)("a pending %s grant without current ACK or own-start is not stop authority", kind => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old, { lastAcknowledged: null,
+            pending: { kind, generation, sequence: 2, containerId: fullId, cleanupEnabled: true } });
+        f.dead(7); f.dead(captured.observation.guardian.pid);
+        expect(f.recover).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.cleanups).toEqual([]);
+        expect(f.names).toEqual([old]);
+    });
+    it("a positive current own-start survives an earlier unacknowledged enable and supplies compensation authority", () => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old, { registration: "pending", lastAcknowledged: null,
+            pending: { kind: "startup", generation, sequence: 2, containerId: fullId, cleanupEnabled: true },
+            ownStarted: { generation, containerId: fullId } });
+        f.dead(7); f.dead(captured.observation.guardian.pid);
+        f.recover();
+        expect(f.cleanups).toHaveLength(1);
+        expect(f.cleanups[0].observation.ownStarted?.containerId).toBe(fullId);
+        expect(f.names).toEqual([]);
+    });
+    it.each(["stale-ack", "stale-own-start", "pending-revoke"] as const)("%s cannot resurrect shutdown authority", scenario => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old, scenario === "stale-ack" ? { generation: "new-generation" }
+            : scenario === "stale-own-start" ? { lastAcknowledged: null, ownStarted: { generation: "old-generation", containerId: fullId } }
+                : { pending: { kind: "update", generation, sequence: 2, containerId: fullId, cleanupEnabled: false } });
+        f.dead(7); f.dead(captured.observation.guardian.pid);
+        expect(f.recover).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.cleanups).toEqual([]);
+        expect(f.names).toEqual([old]);
+    });
+    it("definite current cleanup-disabled ACK retires no-obligation rollback without a native stop", () => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old, { lastAcknowledged: { generation, sequence: 1, containerId: fullId, cleanupEnabled: false } });
+        f.inGuard(() => f.app.settleCapturedResponsibilityInHeldLifecycleLock(captured.observation.binding, captured.receipt, captured.runtimeInvocation));
+        expect(f.names).toEqual([]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.removals).toEqual([`/claims/${old}`]);
+    });
+    it.each(["pending", "ready"] as const)("initial %s registration without a startup request rolls back only its own no-obligation receipt", registration => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        const captured = f.attach(old, { registration, lastAcknowledged: null });
+        const peer = f.attach(other);
+        f.inGuard(() => f.app.settleCapturedResponsibilityInHeldLifecycleLock(captured.observation.binding, captured.receipt, captured.runtimeInvocation));
+        expect(f.names).toEqual([other]);
+        expect(f.snapshots.get(other)).toBe(peer);
+        expect(f.cleanups).toEqual([]);
+    });
+    it("a generic pending startup cannot be erased through captured rollback", () => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old, { lastAcknowledged: null,
+            pending: { kind: "startup", generation, sequence: 2, containerId: null, cleanupEnabled: true } });
+        expect(() => f.inGuard(() => f.app.settleCapturedResponsibilityInHeldLifecycleLock(captured.observation.binding, captured.receipt, captured.runtimeInvocation)))
+            .toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.removals).toEqual([]);
+    });
+    it("an older cleanup-disabled ACK cannot declare a newer generation free of responsibility", () => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old, { generation: "new-generation",
+            lastAcknowledged: { generation, sequence: 1, containerId: fullId, cleanupEnabled: false } });
+        expect(() => f.inGuard(() => f.app.settleCapturedResponsibilityInHeldLifecycleLock(captured.observation.binding, captured.receipt, captured.runtimeInvocation)))
+            .toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.removals).toEqual([]);
+    });
+    it("a same-byte replacement between qualification and effect survives without a stop or unlink", () => {
+        const f = fixture([old], { [old]: monitored(7) });
+        const captured = f.attach(old);
+        f.dead(7); f.dead(captured.observation.guardian.pid);
+        const observe = f.ports.observeOwners;
+        const content = f.records[old];
+        f.ports.observeOwners = pids => { const result = observe(pids); f.install(old, content); return result; };
+        expect(f.recover).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.receipts.get(old)?.inode).not.toBe(captured.receipt.inode);
+        expect(f.records[old]).toBe(content);
+        expect(f.cleanups).toEqual([]);
+        expect(f.removals).toEqual([]);
+    });
+});
+
+describe("obligation transfer retains a responsible successor", () => {
+    it("a missing own ledger never borrows permission from an otherwise independent peer", () => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        f.attach(other, { lastAcknowledged: { generation, sequence: 1, containerId: differentId, cleanupEnabled: true } });
+        const veto = f.inGuard(() => f.app.peerVetoesInHeldLifecycleLock("project", `/claims/${old}`, fullId, invocation()));
+        expect(veto).toEqual({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false });
+        expect(f.removals).toEqual([]);
+    });
+    it("a same-ID cleanup-disabled peer cannot inherit a predecessor's true obligation", () => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        const source = f.attach(old);
+        const peer = f.attach(other, { lastAcknowledged: { generation, sequence: 1, containerId: fullId, cleanupEnabled: false } });
+        f.alive(8, "owner-start"); f.alive(peer.observation.guardian.pid, "guardian-start");
+        const veto = f.inGuard(() => f.app.peerVetoesInHeldLifecycleLock("project", source.receipt.path, fullId, source.runtimeInvocation));
+        expect(veto).toEqual({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false });
+        expect(() => f.inGuard(() => f.app.retireOwnedClaimInHeldLifecycleLock(source.receipt, source.observation.binding, source.runtimeInvocation,
+            { containerId: fullId, cleanupEnabled: true, containerStopped: false, responsibilityTransferred: false }))).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old, other]);
+        expect(f.cleanups).toEqual([]);
+    });
+    it("qualified current true same-authority peer carries the obligation while its predecessor retires", () => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        const source = f.attach(old);
+        const target = f.attach(other);
+        f.alive(8, "owner-start"); f.alive(target.observation.guardian.pid, "guardian-start");
+        const veto = f.inGuard(() => f.app.peerVetoesInHeldLifecycleLock("project", source.receipt.path, fullId, source.runtimeInvocation));
+        expect(veto).toEqual({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: true });
+        f.inGuard(() => f.app.retireOwnedClaimInHeldLifecycleLock(source.receipt, source.observation.binding, source.runtimeInvocation,
+            { containerId: fullId, cleanupEnabled: true, containerStopped: false, responsibilityTransferred: true }));
+        expect(f.names).toEqual([other]);
+        expect(f.snapshots.get(other)).toBe(target);
+        expect(f.cleanups).toEqual([]);
+    });
+    it("equal opaque ID on a different captured authority remains ambiguous", () => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        const source = f.attach(old);
+        f.attach(other, {}, invocation("unix:///different-authority.sock"));
+        const veto = f.inGuard(() => f.app.peerVetoesInHeldLifecycleLock("project", source.receipt.path, fullId, source.runtimeInvocation));
+        expect(veto).toEqual({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false });
+        expect(f.names).toEqual([old, other]);
+    });
+    it("same-ID obligations with different captured authorities cannot discard either all-dead receipt", () => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        const first = f.attach(old);
+        const second = f.attach(other, {}, invocation("unix:///different-authority.sock"));
+        for (const snapshot of [first, second]) { f.dead(snapshot.receipt.ownerPid); f.dead(snapshot.observation.guardian.pid); }
+        expect(f.recover).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old, other]);
+        expect(f.removals).toEqual([]);
+        expect(f.cleanups).toEqual([]);
+    });
+    it("matching endpoint and ID cannot transfer responsibility across different captured executables", () => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        const source = f.attach(old);
+        const peer = f.attach(other, {}, { ...invocation(), executable: "/different/bin/docker" });
+        f.alive(8, "owner-start"); f.alive(peer.observation.guardian.pid, "guardian-start");
+        const veto = f.inGuard(() => f.app.peerVetoesInHeldLifecycleLock("project", source.receipt.path, fullId, source.runtimeInvocation));
+        expect(veto).toEqual({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false });
+        expect(f.names).toEqual([old, other]);
+    });
+    it("an acknowledged different full ID protects shared devices while allowing the predecessor's exact stop", () => {
+        const f = fixture([old, other], { [old]: monitored(7), [other]: monitored(8) });
+        const source = f.attach(old);
+        f.attach(other, { lastAcknowledged: { generation, sequence: 1, containerId: differentId, cleanupEnabled: true } });
+        const veto = f.inGuard(() => f.app.peerVetoesInHeldLifecycleLock("project", source.receipt.path, fullId, source.runtimeInvocation));
+        expect(veto).toEqual({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: false, responsibilityTransferred: false });
+        expect(f.removals).toEqual([]);
+    });
+    it("an interrupted all-dead cohort leaves the deterministic final obligation for a later recovery", () => {
+        const first = "project--a.lock";
+        const second = "project--z.lock";
+        const f = fixture([second, first], { [second]: monitored(8), [first]: monitored(7) });
+        const survivor = f.attach(first);
+        const redundant = f.attach(second);
+        for (const snapshot of [survivor, redundant]) { f.dead(snapshot.receipt.ownerPid); f.dead(snapshot.observation.guardian.pid); }
+        const complete = f.ports.responsibility!.cleanup;
+        f.ports.responsibility!.cleanup = () => { throw new Error("interrupted before final stop"); };
+        expect(f.recover).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([first]);
+        expect(f.removals).toEqual([`/claims/${second}`]);
+        f.ports.responsibility!.cleanup = complete;
+        f.recover();
+        expect(f.cleanups.map(snapshot => snapshot.receipt.path)).toEqual([`/claims/${first}`]);
+        expect(f.names).toEqual([]);
+        expect(f.removals).toEqual([`/claims/${second}`, `/claims/${first}`]);
     });
 });

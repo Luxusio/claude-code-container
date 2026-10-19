@@ -1,16 +1,13 @@
-import { existsSync, unlinkSync } from "fs";
 import { bindNativeRuntimeInvocation } from "./container-runtime-invocation.js";
+import { captureNativeSessionOwnership, removeCapturedNativeSessionOwnership } from "./session-ownership.js";
+import { sessionLockOwner } from "../domain/session-lock.js";
 import type { NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
+import type { SessionOwnershipReceipt } from "../ports/session-ownership.js";
 import { cleanupOwnerDevices } from "../device-lab-cleanup.js";
+import { processStartToken } from "../session-lock-liveness.js";
 
 export function removeNativeSessionClaim(lockFile: string): undefined {
-    try {
-        if (existsSync(lockFile)) {
-            unlinkSync(lockFile);
-        }
-    } catch {
-        // Ignore errors during cleanup
-    }
+    return removeNativeOwnedSessionClaim(lockFile);
 }
 
 export function cleanupNativeSessionDevices(projectPath: string, timeoutMs: number, profile?: string): undefined {
@@ -18,10 +15,19 @@ export function cleanupNativeSessionDevices(projectPath: string, timeoutMs: numb
 }
 
 export function removeNativeOwnedSessionClaim(lockFile: string): undefined {
-    try { unlinkSync(lockFile); }
+    let receipt: SessionOwnershipReceipt;
+    try { receipt = captureNativeSessionOwnership(lockFile); }
     catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        return undefined;
     }
+    const owner = sessionLockOwner(Buffer.from(receipt.bytes, "base64").toString("utf8"));
+    if (owner?.ownershipKind !== "direct" || owner.pid !== process.pid
+        || !owner.startToken || owner.startToken !== processStartToken(process.pid)) {
+        throw new Error("session-cleanup-responsibility-incomplete: Raw claim removal requires this process's direct claim; monitored or uncertain responsibility must be settled before retirement.");
+    }
+    // The public facade or cleanup composition supplies the already-held guard.
+    removeCapturedNativeSessionOwnership(receipt);
     return undefined;
 }
 

@@ -176,7 +176,8 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                 const answer = await ports.prompt({ kind: "cleanup" });
                 if (answer === "y" || answer === "yes") {
                     ports.withLifecycleLock(remoteContainerPrefix, () => {
-                        ports.removeSessionLock(remoteSessionLock);
+                        ports.removeSessionLockInHeldLifecycleLock(remoteSessionLock);
+                        remoteSessionLock = "";
                         ports.report({ kind: "stopping" });
                         const stopped = ports.stopReservedContainer({ config: resolvedConfig, name: remoteContainer.name, containerId: remoteContainer.id, token: remoteReservationToken });
                         if (stopped.kind === "busy") {
@@ -194,7 +195,6 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                         ports.pauseSync(sessionName);
                         return undefined;
                     });
-                    remoteSessionLock = "";
                 }
             }
 

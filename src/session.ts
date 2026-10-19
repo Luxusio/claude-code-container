@@ -9,9 +9,12 @@ import type { SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisi
 import { getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
 import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
 import type { SessionOwnershipHandle, SessionOwnershipReceipt } from "./ports/session-ownership.js";
+import { createNativeSessionClaimObservationStore } from "./adapters/session-claim-observation.js";
+import { currentSessionClaimAuthority } from "./domain/session-claim-observation.js";
+import { sessionClaimPrefix } from "./domain/session-claims.js";
+import { getProjectId } from "./utils.js";
 import {
     createNativeSessionCleanup,
-    removeNativeSessionClaim,
     setupNativeSessionCleanupSignals,
 } from "./composition/session-cleanup.js";
 
@@ -59,18 +62,30 @@ export async function withContainerSetupLockAsync<T>(containerPrefix: string, op
 const sessionClaims = createNativeSessionClaims((prefix, operation) =>
     withContainerLifecycleLock(prefix, operation),
 );
+const directClaims = new Map<string, { prefix: string; receipt: SessionOwnershipReceipt }>();
+
+function capturedRuntime(): NativeRuntimeInvocation {
+    if (!capturedRuntimeInvocation) throw new Error("No captured native runtime invocation for session cleanup.");
+    return capturedRuntimeInvocation;
+}
 
 const sessionCleanup = createNativeSessionCleanup(
     (prefix, operation) => withContainerLifecycleLock(prefix, () => {
         ownershipAuthorization?.();
         return operation();
     }),
-    (prefix, ownPath) => sessionClaims.hasOtherReconciledSessionClaims(prefix, ownPath),
-    undefined,
-    () => {
-        if (!capturedRuntimeInvocation) throw new Error("No captured native runtime invocation for session cleanup.");
-        return capturedRuntimeInvocation;
+    (prefix, ownPath, pinnedId) => sessionClaims.peerVetoesInHeldLifecycleLock(prefix, ownPath, pinnedId, capturedRuntime()),
+    (path, settlement) => {
+        const current = sessionCleanup.getCurrentSession();
+        const receipt = capturedOwnership?.path === path ? capturedOwnership : directClaims.get(path)?.receipt;
+        if (!receipt || !current.projectPath) throw new Error("Session cleanup lacks its captured ownership receipt.");
+        sessionClaims.retireOwnedClaimInHeldLifecycleLock(receipt, {
+            lockFile: path, projectPath: current.projectPath, profile: current.profile, toolName: current.toolName ?? undefined,
+        }, capturedRuntime(), settlement);
+        directClaims.delete(path);
+        return undefined;
     },
+    capturedRuntime,
 );
 
 let ownership: SessionOwnershipHandle | null = null;
@@ -97,7 +112,7 @@ function ownershipFailed(error: Error): void {
     process.emit("SIGTERM");
 }
 
-async function armOwnershipInContext(rollback?: (binding: unknown, receipt: SessionOwnershipReceipt) => void): Promise<number | undefined> {
+async function armOwnershipInContext(rollback?: (binding: unknown, receipt: SessionOwnershipReceipt) => void, lifecycleLockHeld = false): Promise<number | undefined> {
     const current = sessionCleanup.getCurrentSession();
     if (!current.lockFile || !current.projectPath || ownership || armingOwnership) {
         throw new Error("Cannot arm host session ownership without a unique current session.");
@@ -123,8 +138,12 @@ async function armOwnershipInContext(rollback?: (binding: unknown, receipt: Sess
                 }
             },
             rollback,
+            lifecycleLockHeld,
         });
         return ownership.pid;
+    } catch (error) {
+        ownershipAuthorization = () => { throw error; };
+        throw error;
     } finally {
         armingOwnership = false;
     }
@@ -153,12 +172,30 @@ export async function acquireHostSessionOwnership(
     const checkCancelled = () => {
         if (acquisitionCancellation) throw acquisitionCancellation;
     };
+    // This closure is confined to acquisition, before startup can be entered.
+    // It is never inferred from an absent observation during later recovery.
     const rollbackOwn = (_binding: unknown, receipt: SessionOwnershipReceipt) => {
-        if (nativeSessionOwnershipMatches(receipt)) removeCapturedNativeSessionOwnership(receipt);
+        if (!nativeSessionOwnershipMatches(receipt)) throw new Error("Unarmed session reservation was replaced before rollback.");
+        const current = sessionCleanup.getCurrentSession();
+        const store = createNativeSessionClaimObservationStore();
+        const prefix = sessionClaimPrefix(request.projectId, request.profile);
+        let observation;
+        try { observation = store.read(receipt, { prefix }); }
+        catch { /* Unreferenced auxiliary files are preserved; this acquisition never entered startup. */ }
+        if (observation && (currentSessionClaimAuthority(observation.observation)
+            || observation.observation.pending?.kind === "startup")) {
+            throw new Error("Session reservation acquired a cleanup responsibility before rollback.");
+        }
+        if (current.lockFile !== receipt.path) throw new Error("Session reservation changed before rollback.");
+        removeCapturedNativeSessionOwnership(receipt);
+        if (observation) {
+            try { store.retire(observation); } catch { /* Main retirement is already complete; never reopen its claim. */ }
+        }
     };
     try {
         const acquired = await runWithNativeRuntimeInvocation(runtimeInvocation, () => createSessionAcquisition({
             withLifecycleLock: withContainerLifecycleLockAsync,
+            recoverPredecessors: prefix => sessionClaims.recoverPredecessorsInHeldLifecycleLock(prefix),
             reserve: sessionClaims.reserveSessionLockInHeldLifecycleLock,
             initializeCapture(binding, lockFile) {
                 sessionCleanup.clearSession();
@@ -178,12 +215,14 @@ export async function acquireHostSessionOwnership(
             },
             inspectExisting,
             async arm() {
-                await armOwnershipInContext(rollbackOwn);
+                await armOwnershipInContext(rollbackOwn, true);
                 if (acquisitionFailure) throw acquisitionFailure;
             },
             async acknowledge(id, runtime) {
                 if (runtime !== runtimeInvocation.runtime) throw new Error("Existing session container runtime does not match its captured invocation.");
-                await ownership!.updateContainer(id, false);
+                if (!await ownership!.updateContainerInHeldLifecycleLock(id, false)) {
+                    throw new Error("Existing session ownership acknowledgement was superseded.");
+                }
                 capturedContainerId = id;
                 sessionCleanup.setSessionContainerId(id);
             },
@@ -239,13 +278,15 @@ export function setSession(lockFile: string, projectPath: string, profile?: stri
         throw new Error("Cannot replace an owned host session before cleanup.");
     }
     const runtimeInvocation = getRuntimeInvocation();
+    const receipt = Object.freeze(captureNativeSessionOwnership(lockFile));
+    validateNativeSessionOwnership({ lockFile, projectPath, profile, toolName }, receipt, process.pid);
     sessionCleanup.setSession(lockFile, projectPath, profile, toolName);
     capturedRuntimeInvocation = runtimeInvocation;
     capturedContainerId = null;
     sessionCleanupEnabled = true;
     cleanupAuthorizationVersion++;
-    ownershipAuthorization = null;
-    capturedOwnership = null;
+    ownershipAuthorization = () => assertNativeSessionOwnership(receipt);
+    capturedOwnership = receipt;
 }
 
 /** Capture and shutdown authorization are separate; a failed join only drops its claim. */
@@ -263,15 +304,71 @@ function queueOwnershipUpdate(version: number): void {
     const activeOwnership = ownership;
     const containerId = capturedContainerId;
     const enabled = sessionCleanupEnabled;
-    pendingOwnershipUpdate = pendingOwnershipUpdate.then(async () => {
-        await activeOwnership.updateContainer(containerId, enabled);
+    const current = sessionCleanup.getCurrentSession();
+    // The cleanup application may already have retired this claim while its
+    // outer guard is returning. Its old handle has no record left to publish.
+    if (!current.lockFile) return;
+    if (!current.projectPath) throw new Error("Session update lacks its captured project binding.");
+    const prefix = sessionClaimPrefix(getProjectId(current.projectPath), current.profile);
+    const dispatch = withContainerLifecycleLock(prefix, () =>
+        activeOwnership.prepareContainerUpdateInHeldLifecycleLock(containerId, enabled));
+    enqueueOwnershipUpdate(version, activeOwnership, enabled, dispatch);
+}
+
+function enqueueOwnershipUpdate(version: number, activeOwnership: SessionOwnershipHandle, enabled: boolean,
+    dispatch: () => Promise<boolean>): void {
+    const previous = pendingOwnershipUpdate;
+    // Keep the primary failure, but never discard a later positive start merely
+    // because an older queued transport request rejected.
+    const execution = previous.catch(() => undefined).then(async () => {
+        if (ownership !== activeOwnership || cleanupAuthorizationVersion !== version) return;
+        const acknowledged = await dispatch();
         // A stale successful ACK must not reauthorize a subsequently revoked session.
-        if (ownership === activeOwnership && cleanupAuthorizationVersion === version) {
+        if (acknowledged && ownership === activeOwnership && cleanupAuthorizationVersion === version) {
             sessionCleanup.setSessionCleanupEnabled(enabled);
         }
     });
+    pendingOwnershipUpdate = Promise.allSettled([previous, execution]).then(results => {
+        const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, "Session ownership publication failed.", { cause: failures[0] });
+    });
     // ACK failure invokes ownershipFailed; consume now while confirm retains rejection.
     void pendingOwnershipUpdate.catch(() => undefined);
+}
+
+export function beginSessionStartupInHeldLifecycleLock(): void {
+    if (!ownership || acquiringOwnership) throw new Error("Session startup requires an armed ownership guardian.");
+    ownership.beginStartupInHeldLifecycleLock();
+    cleanupAuthorizationVersion++;
+    sessionCleanupEnabled = false;
+    sessionCleanup.setSessionCleanupEnabled(false);
+}
+
+export function recordSessionOwnStartInHeldLifecycleLock(containerId: string): void {
+    if (!ownership || acquiringOwnership) throw new Error("Session start requires an armed ownership guardian.");
+    // Durable compensation precedes transport and cannot be lost to its queue.
+    ownership.recordOwnStartInHeldLifecycleLock(containerId);
+    capturedContainerId = containerId;
+    sessionCleanup.setSessionContainerId(containerId);
+    sessionCleanupEnabled = true;
+    sessionCleanup.setSessionCleanupEnabled(true);
+    const version = ++cleanupAuthorizationVersion;
+    const active = ownership;
+    const dispatch = active.prepareContainerUpdateInHeldLifecycleLock(containerId, true);
+    enqueueOwnershipUpdate(version, active, true, dispatch);
+}
+
+export function publishSessionReadyInHeldLifecycleLock(containerId: string, handoff: { startedByInvocation: boolean }): void {
+    if (!ownership || acquiringOwnership) throw new Error("Session readiness requires an armed ownership guardian.");
+    capturedContainerId = containerId;
+    sessionCleanup.setSessionContainerId(containerId);
+    sessionCleanupEnabled = handoff.startedByInvocation;
+    if (!sessionCleanupEnabled) sessionCleanup.setSessionCleanupEnabled(false);
+    const version = ++cleanupAuthorizationVersion;
+    const active = ownership;
+    const dispatch = active.prepareContainerUpdateInHeldLifecycleLock(containerId, sessionCleanupEnabled);
+    enqueueOwnershipUpdate(version, active, sessionCleanupEnabled, dispatch);
 }
 
 export function setSessionContainerId(containerId: string | null): void {
@@ -305,11 +402,25 @@ export function clearSession(): void {
 }
 
 export function createSessionLock(projectId: string, profile?: string): string {
-    return sessionClaims.createSessionLock(projectId, profile);
+    const prefix = sessionClaimPrefix(projectId, profile);
+    return withContainerLifecycleLock(prefix, () => {
+        const path = sessionClaims.createSessionLockInHeldLifecycleLock(projectId, profile);
+        directClaims.set(path, { prefix, receipt: Object.freeze(captureNativeSessionOwnership(path)) });
+        return path;
+    });
 }
 
 export function removeSessionLock(lockFile: string): void {
-    removeNativeSessionClaim(lockFile);
+    const claim = directClaims.get(lockFile);
+    if (!claim) throw new Error("Session claim removal lacks its original direct-claim receipt.");
+    withContainerLifecycleLock(claim.prefix, () => removeSessionLockInHeldLifecycleLock(lockFile));
+}
+
+export function removeSessionLockInHeldLifecycleLock(lockFile: string): void {
+    const claim = directClaims.get(lockFile);
+    if (!claim) throw new Error("Session claim removal lacks its original direct-claim receipt.");
+    removeCapturedNativeSessionOwnership(claim.receipt);
+    directClaims.delete(lockFile);
 }
 
 /**
@@ -396,6 +507,7 @@ export function recreateContainerWithoutInterruptingSessions(
 
 export function cleanupSession(): void {
     if (acquiringOwnership) throw new Error("Cannot clean up host session ownership during acquisition.");
+    if (armingOwnership) throw new Error("Cannot clean up host session ownership while its guardian is arming.");
     if (capturedRuntimeInvocation) {
         runWithNativeRuntimeInvocation(capturedRuntimeInvocation, () => sessionCleanup.cleanupSession());
     } else {

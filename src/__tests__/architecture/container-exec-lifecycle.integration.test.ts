@@ -61,7 +61,8 @@ Object.assign(ports, {
    if (!timerRan || !ownerReleased) throw new Error('startup preceded release');
    waiterEntered = true; args[7]('pinned-id', {startedByInvocation: false}); return 'ccc-isolated-exec';
  }, initialize: noop}; },
- setSessionContainer: noop, setCleanupEnabled: noop, confirmOwnership: async () => {},
+ beginSessionStartupInHeldLifecycleLock: noop, recordSessionOwnStartInHeldLifecycleLock: noop,
+ publishSessionReadyInHeldLifecycleLock: noop, setCleanupEnabled: noop, confirmOwnership: async () => {},
  configLock: operation => operation(), restoreConfig: noop, buildMcpConfig: async () => [],
  containerRunning: () => true, syncClipboard: noop, ensureSocketAccess: noop,
  attachClipboardImage: async (_path, args) => ({args}), startClipboardBridge: noop,
@@ -130,12 +131,14 @@ const cleanup = createSessionCleanup({
    if (prefix !== 'isolated-library') throw new Error('wrong cleanup family');
    events.push('cleanup-guard'); return operation();
  },
- hasOtherClaims(prefix, ownPath) {
-   if (prefix !== 'isolated-library' || ownPath !== claim) throw new Error('wrong owned claim');
-   return false;
+ peerVetoes(prefix, ownPath, pinnedId) {
+   if (prefix !== 'isolated-library' || ownPath !== claim || pinnedId !== target) throw new Error('wrong owned cleanup target');
+   return {sharedDeviceCleanupBlocked: false, exactContainerStopBlocked: false, responsibilityTransferred: false};
  },
- removeClaim(path) {
+ removeClaim(path, settlement) {
    if (path !== claim) throw new Error('unrelated claim removal');
+   if (settlement.containerId !== target || settlement.cleanupEnabled !== !reused
+     || settlement.containerStopped !== !reused || settlement.responsibilityTransferred) throw new Error('wrong cleanup settlement');
    events.push('remove-claim'); removals++; rmSync(path); return undefined;
  },
  cleanupDevices(path, timeout, profile) {
@@ -162,6 +165,7 @@ const ports = {
    writeFileSync(claim, 'owned claim');
    cleanup.setSession(claim, '/project/library-repo', undefined, 'command');
    cleanup.setSessionCleanupEnabled(false);
+   if (reused) cleanup.setSessionContainerId(target);
    return {lockFile: claim, existingId: reused ? target : null};
  },
  inspectSessionContainer: () => ({known: true, containerId: reused ? target : null}),
@@ -179,7 +183,14 @@ const ports = {
    initialize(id) { if (id !== target) throw new Error('wrong initialized target'); throw startupFailure; }
  }),
  startContainer: unexpected,
- setSessionContainer: id => cleanup.setSessionContainerId(id),
+ beginSessionStartupInHeldLifecycleLock() { cleanup.setSessionCleanupEnabled(false); },
+ recordSessionOwnStartInHeldLifecycleLock(id) {
+   cleanup.setSessionContainerId(id); permissions.push(true); cleanup.setSessionCleanupEnabled(true);
+ },
+ publishSessionReadyInHeldLifecycleLock(id, handoff) {
+   cleanup.setSessionContainerId(id); permissions.push(handoff.startedByInvocation);
+   cleanup.setSessionCleanupEnabled(handoff.startedByInvocation);
+ },
  setCleanupEnabled(enabled) { permissions.push(enabled); cleanup.setSessionCleanupEnabled(enabled); },
  confirmOwnership: async () => {}, configLock: operation => operation(),
  restoreConfig() { restoreCalls++; }, ensureUv: unexpected, buildMcpConfig: unexpected, setupProxy: unexpected,

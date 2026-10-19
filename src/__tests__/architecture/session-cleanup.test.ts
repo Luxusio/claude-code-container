@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createSessionCleanup } from "../../application/session-cleanup.js";
 import type { SessionCleanupPorts } from "../../ports/session-cleanup.js";
 
-const portNames = ["projectId", "withLifecycleLock", "hasOtherClaims", "removeClaim", "cleanupDevices",
+const portNames = ["projectId", "withLifecycleLock", "peerVetoes", "removeClaim", "cleanupDevices",
     "reportDeviceCleanupFailure", "stopContainer"] as const;
 const initial = { lockFile: null, projectPath: null, profile: undefined, toolName: null };
 const active = { lockFile: "/claims/own.lock", projectPath: "/project", profile: "work", toolName: "custom" };
@@ -22,8 +22,10 @@ it("keeps session cleanup policy inward and its native adapter out of Admin and 
 
 function fixture() {
     const trace: unknown[][] = [];
+    const settlements: Array<Parameters<SessionCleanupPorts["removeClaim"]>[1]> = [];
+    const peerQueries: Array<[string, string, string | null]> = [];
     let held = false;
-    let foreign = false;
+    let vetoes = { sharedDeviceCleanupBlocked: false, exactContainerStopBlocked: false, responsibilityTransferred: false };
     const ports: SessionCleanupPorts = {
         projectId(path) { trace.push(["project", path]); return "project-id"; },
         withLifecycleLock<T>(prefix: string, operation: () => T): T {
@@ -31,8 +33,18 @@ function fixture() {
             held = true;
             try { return operation(); } finally { held = false; trace.push(["unlock", prefix]); }
         },
-        hasOtherClaims(prefix, ownPath) { expect(held).toBe(true); trace.push(["raw", prefix, ownPath]); return foreign; },
-        removeClaim(path) { expect(held).toBe(true); trace.push(["remove", path]); return undefined; },
+        peerVetoes(prefix, ownPath, pinnedId) {
+            expect(held).toBe(true);
+            trace.push(["raw", prefix, ownPath]);
+            peerQueries.push([prefix, ownPath, pinnedId]);
+            return { ...vetoes };
+        },
+        removeClaim(path, settlement) {
+            expect(held).toBe(true);
+            trace.push(["remove", path]);
+            settlements.push({ ...settlement });
+            return undefined;
+        },
         cleanupDevices(path, timeoutMs, profile) { expect(held).toBe(true); trace.push(["devices", path, timeoutMs, profile]); return undefined; },
         reportDeviceCleanupFailure(error) { expect(held).toBe(true); trace.push(["report", error]); return undefined; },
         stopContainer(readContainerId) {
@@ -48,8 +60,12 @@ function fixture() {
         app.setSessionContainerId("captured-container-id");
     };
     return {
-        app, ports, trace, setActive,
-        setForeign: (value: boolean) => { foreign = value; }, isHeld: () => held,
+        app, ports, trace, settlements, peerQueries, setActive,
+        setPeerVetoes: (value: typeof vetoes) => { vetoes = { ...value }; },
+        setForeign: (value: boolean) => {
+            vetoes = { sharedDeviceCleanupBlocked: value, exactContainerStopBlocked: value, responsibilityTransferred: false };
+        },
+        isHeld: () => held,
         runHeld: () => {
             held = true;
             try { return app.cleanupSessionInHeldLifecycleLock(); } finally { held = false; }
@@ -94,18 +110,28 @@ describe("explicit session cleanup construction", () => {
 });
 
 describe("cleanup in an already-held lifecycle guard", () => {
-    it.each([false, true])("matches synchronous cleanup effects and finalization with foreign ownership %s", foreign => {
+    it.each([false, true])("matches synchronous cleanup effects and completion state with foreign ownership %s", foreign => {
         const ordinary = fixture();
         const held = fixture();
         for (const f of [ordinary, held]) { f.setActive(); f.setForeign(foreign); }
-        ordinary.app.cleanupSession();
-        expect(held.runHeld()).toBeUndefined();
+        if (foreign) {
+            expect(() => ordinary.app.cleanupSession()).toThrow("session-cleanup-responsibility-incomplete");
+            expect(() => held.runHeld()).toThrow("session-cleanup-responsibility-incomplete");
+        } else {
+            ordinary.app.cleanupSession();
+            expect(held.runHeld()).toBeUndefined();
+        }
         expect(held.trace).toEqual(ordinary.trace.filter(row => row[0] !== "lock" && row[0] !== "unlock"));
         expect(held.app.getCurrentSession()).toEqual(ordinary.app.getCurrentSession());
-        expect(held.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
+        expect(held.app.getCurrentSession()).toEqual(foreign ? active : { ...initial, toolName: "custom" });
         held.trace.length = 0;
-        held.runHeld();
-        expect(held.trace).toEqual([]);
+        if (foreign) {
+            expect(() => held.runHeld()).toThrow("session-cleanup-responsibility-incomplete");
+            expect(held.trace.map(row => row[0])).toEqual(["project", "raw"]);
+        } else {
+            held.runHeld();
+            expect(held.trace).toEqual([]);
+        }
     });
     it("never reacquires a lifecycle guard while stopping the captured container", () => {
         const f = fixture();
@@ -118,12 +144,12 @@ describe("cleanup in an already-held lifecycle guard", () => {
             ["remove", active.lockFile],
         ]);
     });
-    it.each(["hasOtherClaims", "stopContainer", "removeClaim"] as const)("retains claim and incomplete context after held %s failure, then retries", member => {
+    it.each(["peerVetoes", "stopContainer", "removeClaim"] as const)("retains claim and incomplete context after held %s failure, then retries", member => {
         const f = fixture();
         f.setActive();
         let claimPresent = true;
         const remove = f.ports.removeClaim;
-        f.ports.removeClaim = path => { remove(path); claimPresent = false; return undefined; };
+        f.ports.removeClaim = (path, settlement) => { remove(path, settlement); claimPresent = false; return undefined; };
         const original = f.ports[member];
         const failure = { member };
         Object.assign(f.ports, { [member]: () => {
@@ -138,7 +164,7 @@ describe("cleanup in an already-held lifecycle guard", () => {
         expect(claimPresent).toBe(true);
         expect(f.app.getCurrentSession()).toEqual(active);
         expect(f.trace.some(row => row[0] === "remove")).toBe(false);
-        if (member === "hasOtherClaims") {
+        if (member === "peerVetoes") {
             expect(f.trace.some(row => row[0] === "devices" || row[0] === "stop")).toBe(false);
         }
         Object.assign(f.ports, { [member]: original });
@@ -152,13 +178,14 @@ describe("cleanup in an already-held lifecycle guard", () => {
         expect(claimPresent).toBe(false);
         expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
     });
-    it("rechecks foreign authority on retry before releasing only its own receipt", () => {
+    it("rechecks qualified responsibility transfer on retry before releasing only its own receipt", () => {
         const f = fixture();
         f.setActive();
+        f.app.setSessionContainerId("a".repeat(64));
         f.ports.stopContainer = () => { throw new Error("stop failed"); };
         expect(() => f.runHeld()).toThrow("stop failed");
         expect(f.trace.some(row => row[0] === "remove")).toBe(false);
-        f.setForeign(true);
+        f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: true });
         f.trace.length = 0;
         f.runHeld();
         expect(f.trace).toEqual([
@@ -263,26 +290,23 @@ describe("cleanup gates and raw ownership veto", () => {
         f.app.cleanupSession();
         expect(f.trace.map(row => row[0])).toEqual(["project", "lock", "raw", "devices", "remove", "unlock"]);
     });
-    it("foreign raw claims veto devices and stop but remove own claim and finalize", () => {
+    it("a foreign claim without a responsibility recipient retains own claim and permits a later exact-stop retry", () => {
         const f = fixture();
         f.setActive();
         f.setForeign(true);
-        f.app.cleanupSession();
+        expect(() => f.app.cleanupSession()).toThrow("session-cleanup-responsibility-incomplete");
         expect(f.trace).toEqual([
             ["project", active.projectPath], ["lock", "project-id--p--work"],
-            ["raw", "project-id--p--work", active.lockFile], ["remove", active.lockFile],
+            ["raw", "project-id--p--work", active.lockFile],
             ["unlock", "project-id--p--work"],
         ]);
-        expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
-        f.setActive();
-        f.app.cleanupSession();
-        expect(f.trace).toHaveLength(5);
+        expect(f.settlements).toEqual([]);
         expect(f.app.getCurrentSession()).toEqual(active);
-        f.app.clearSession();
-        f.setActive();
         f.setForeign(false);
         f.app.cleanupSession();
         expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", "captured-container-id"]]);
+        expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
+        expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
     });
     it("setSession after successful cleanup does not rearm cleanup; clearSession does", () => {
         const f = fixture();
@@ -298,6 +322,124 @@ describe("cleanup gates and raw ownership veto", () => {
         f.app.cleanupSession();
         expect(f.trace.filter(row => row[0] === "stop")).toHaveLength(1);
     });
+});
+
+describe("independent shared-device and exact-container cleanup decisions", () => {
+    const containerId = "a".repeat(64);
+    const incomplete = "session-cleanup-responsibility-incomplete";
+
+    for (const entry of ["ordinary", "held"] as const) {
+        const run = (f: ReturnType<typeof fixture>) => entry === "held" ? f.runHeld() : f.app.cleanupSession();
+
+        it(`${entry} stops its pinned container while a qualified different full-ID peer protects shared devices`, () => {
+            const f = fixture();
+            f.setActive();
+            f.app.setSessionContainerId(containerId);
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: false, responsibilityTransferred: false });
+
+            run(f);
+
+            expect(f.peerQueries).toEqual([["project-id--p--work", active.lockFile, containerId]]);
+            expect(f.trace.some(row => row[0] === "devices")).toBe(false);
+            expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", containerId]]);
+            expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
+            expect(f.settlements).toEqual([{
+                containerId, cleanupEnabled: true, containerStopped: true, responsibilityTransferred: false,
+            }]);
+            expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: active.toolName });
+        });
+
+        it(`${entry} keeps its true obligation when an equal or uncertain peer cannot receive responsibility`, () => {
+            const f = fixture();
+            f.setActive();
+            f.app.setSessionContainerId(containerId);
+            // Qualification is the peer port's responsibility. Equal, short,
+            // pending, null, legacy, unreadable and replaced peers all produce
+            // this veto without an authorized transfer.
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false });
+
+            expect(() => run(f)).toThrow(incomplete);
+
+            expect(f.peerQueries).toEqual([["project-id--p--work", active.lockFile, containerId]]);
+            expect(f.trace.some(row => ["devices", "stop", "remove"].includes(String(row[0])))).toBe(false);
+            expect(f.settlements).toEqual([]);
+            expect(f.app.getCurrentSession()).toEqual(active);
+
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: false, responsibilityTransferred: false });
+            run(f);
+            expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", containerId]]);
+            expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
+        });
+
+        it(`${entry} retires only its own receipt after qualified responsibility transfer without shared effects`, () => {
+            const f = fixture();
+            f.setActive();
+            f.app.setSessionContainerId(containerId);
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: true });
+
+            run(f);
+
+            expect(f.trace.some(row => row[0] === "devices" || row[0] === "stop")).toBe(false);
+            expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
+            expect(f.settlements).toEqual([{
+                containerId, cleanupEnabled: true, containerStopped: false, responsibilityTransferred: true,
+            }]);
+            expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: active.toolName });
+            f.trace.length = 0;
+            run(f);
+            expect(f.trace).toEqual([]);
+            expect(f.settlements).toHaveLength(1);
+        });
+
+        it(`${entry} releases a cleanup-false join without claiming a stop or inherited obligation`, () => {
+            const f = fixture();
+            f.setActive();
+            f.app.setSessionContainerId(containerId);
+            f.app.setSessionCleanupEnabled(false);
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false });
+
+            run(f);
+
+            expect(f.trace.some(row => row[0] === "devices" || row[0] === "stop")).toBe(false);
+            expect(f.settlements).toEqual([{
+                containerId, cleanupEnabled: false, containerStopped: false, responsibilityTransferred: false,
+            }]);
+            expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: active.toolName });
+        });
+
+        it.each([null, ""])(`${entry} passes an absent stop target %j to qualified retirement without inventing authority`, id => {
+            const f = fixture();
+            f.setActive();
+            f.app.setSessionContainerId(id);
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false });
+
+            run(f);
+
+            expect(f.trace.some(row => row[0] === "devices" || row[0] === "stop")).toBe(false);
+            expect(f.settlements).toEqual([{
+                containerId: id, cleanupEnabled: true, containerStopped: false, responsibilityTransferred: false,
+            }]);
+        });
+
+        it(`${entry} rechecks a transfer after failed retirement instead of discarding the retained obligation`, () => {
+            const f = fixture();
+            f.setActive();
+            f.app.setSessionContainerId(containerId);
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: true });
+            const remove = f.ports.removeClaim;
+            const failure = new Error("qualified retirement failed");
+            f.ports.removeClaim = () => { throw failure; };
+            expect(() => run(f)).toThrow(failure);
+            expect(f.app.getCurrentSession()).toEqual(active);
+
+            f.ports.removeClaim = remove;
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true, responsibilityTransferred: false });
+            expect(() => run(f)).toThrow(incomplete);
+            expect(f.trace.some(row => row[0] === "stop" || row[0] === "remove")).toBe(false);
+            expect(f.settlements).toEqual([]);
+            expect(f.app.getCurrentSession()).toEqual(active);
+        });
+    }
 });
 
 describe("cleanup failures and retries", () => {
@@ -324,7 +466,7 @@ describe("cleanup failures and retries", () => {
         ]);
         expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
     });
-    it.each(["projectId", "withLifecycleLock", "hasOtherClaims", "removeClaim", "stopContainer"] as const)("propagates %s failure identity without finalization and permits retry", member => {
+    it.each(["projectId", "withLifecycleLock", "peerVetoes", "removeClaim", "stopContainer"] as const)("propagates %s failure identity without finalization and permits retry", member => {
         const f = fixture();
         f.setActive();
         const failure = { member };
@@ -336,7 +478,7 @@ describe("cleanup failures and retries", () => {
         expect(f.app.getCurrentSession()).toEqual(active);
         expect(f.isHeld()).toBe(false);
         const stages = ["project", "lock", "raw", "devices", "stop", "remove"];
-        const faultStage = { projectId: "project", withLifecycleLock: "lock", hasOtherClaims: "raw", removeClaim: "remove", stopContainer: "stop" }[member];
+        const faultStage = { projectId: "project", withLifecycleLock: "lock", peerVetoes: "raw", removeClaim: "remove", stopContainer: "stop" }[member];
         const faultIndex = stages.indexOf(faultStage);
         expect(f.trace.filter(row => row[0] !== "unlock")).toEqual([
             ...[
@@ -414,12 +556,12 @@ describe("cleanup pins its target and authorization across callbacks", () => {
             };
             const project = f.ports.projectId;
             const lock = f.ports.withLifecycleLock;
-            const peers = f.ports.hasOtherClaims;
+            const peers = f.ports.peerVetoes;
             const devices = f.ports.cleanupDevices;
             const report = f.ports.reportDeviceCleanupFailure;
             const remove = f.ports.removeClaim;
-            f.ports.removeClaim = path => {
-                remove(path);
+            f.ports.removeClaim = (path, settlement) => {
+                remove(path, settlement);
                 claims.delete(path);
                 if (phase === "claim removal") replaceSession();
                 return undefined;
@@ -444,8 +586,8 @@ describe("cleanup pins its target and authorization across callbacks", () => {
             }
             if (phase === "peer lookup" || phase === "foreign peer lookup") {
                 f.setForeign(phase === "foreign peer lookup");
-                f.ports.hasOtherClaims = (prefix, path) => {
-                    const result = peers(prefix, path);
+                f.ports.peerVetoes = (prefix, path, pinnedId) => {
+                    const result = peers(prefix, path, pinnedId);
                     replaceSession();
                     return result;
                 };
@@ -560,9 +702,9 @@ describe("cleanup pins its target and authorization across callbacks", () => {
         it(`${entry} cleanup respects clearSession during peer lookup and permits a later session`, () => {
             const f = fixture();
             f.setActive();
-            const peers = f.ports.hasOtherClaims;
-            f.ports.hasOtherClaims = (prefix, path) => {
-                const result = peers(prefix, path);
+            const peers = f.ports.peerVetoes;
+            f.ports.peerVetoes = (prefix, path, pinnedId) => {
+                const result = peers(prefix, path, pinnedId);
                 f.app.clearSession();
                 return result;
             };
@@ -571,7 +713,7 @@ describe("cleanup pins its target and authorization across callbacks", () => {
             expect(f.trace.some(row => row[0] === "devices" || row[0] === "stop" || row[0] === "remove")).toBe(false);
             expect(f.app.getCurrentSession()).toEqual(initial);
 
-            f.ports.hasOtherClaims = peers;
+            f.ports.peerVetoes = peers;
             f.setActive();
             run();
             expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", "captured-container-id"]]);

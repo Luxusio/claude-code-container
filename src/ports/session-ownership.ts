@@ -37,9 +37,29 @@ export interface SessionOwnershipChannel {
 
 export interface SessionOwnershipHandle {
     readonly pid?: number;
-    updateContainer(containerId: string | null, cleanupEnabled?: boolean): Promise<void>;
+    updateContainer(containerId: string | null, cleanupEnabled?: boolean): Promise<boolean>;
+    updateContainerInHeldLifecycleLock(containerId: string | null, cleanupEnabled?: boolean): Promise<boolean>;
+    prepareContainerUpdateInHeldLifecycleLock(containerId: string | null, cleanupEnabled?: boolean): () => Promise<boolean>;
+    beginStartupInHeldLifecycleLock(): void;
+    recordOwnStartInHeldLifecycleLock(containerId: string): void;
     release(): Promise<void>;
     assertOwnership(): void;
+}
+
+export interface SessionOwnershipPublication {
+    readonly generation: string;
+    readonly sequence: number;
+}
+
+/** Each synchronous publication runs inside the caller's lifecycle guard. */
+export interface SessionOwnershipPublicationPorts {
+    withLifecycleLock<T>(operation: () => T | Promise<T>): Promise<T>;
+    registerGuardian(pid: number | undefined): void;
+    ready(): void;
+    stageUpdate(sequence: number, containerId: string | null, cleanupEnabled: boolean): SessionOwnershipPublication;
+    acknowledgeUpdate(publication: SessionOwnershipPublication): boolean;
+    beginStartup(): void;
+    recordOwnStart(containerId: string): void;
 }
 
 export interface SessionOwnershipPorts {
@@ -50,12 +70,13 @@ export interface SessionOwnershipPorts {
     clearTimer(timer: unknown): void;
     timeoutMs: number;
     assertOwnership(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void;
+    publication: SessionOwnershipPublicationPorts;
 }
 
 export interface SessionOwnershipGuardianPorts {
     decodeRuntimeInvocation(value: unknown): NativeRuntimeInvocation;
     rollback(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void | Promise<void>;
-    validate(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt): void | Promise<void>;
+    validate(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt, runtimeInvocation: NativeRuntimeInvocation): void | Promise<void>;
     cleanup(binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt,
         containerId: string | null, runtimeInvocation: NativeRuntimeInvocation): void | Promise<void>;
     send(message: SessionOwnershipMessage): Promise<void>;

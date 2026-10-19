@@ -156,6 +156,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             ): Promise<string> => {
                 const readyId = await ports.stateLock(() => ports.lifecycleLock(sessionContainerPrefix, () => {
                     let readyContainerId: string | null = null;
+                    ports.beginSessionStartupInHeldLifecycleLock();
                     startup.start(
                         fullPath,
                         () => ports.ensureDirectories(profile),
@@ -167,15 +168,15 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                         (containerId, handoff) => {
                             requiresLiveVerification = false;
                             readyContainerId = containerId;
-                            ports.setSessionContainer(containerId);
                             if (handoff.startedByInvocation) invocationStartedContainers.add(containerId);
-                            ports.setCleanupEnabled(invocationStartedContainers.has(containerId));
+                            ports.publishSessionReadyInHeldLifecycleLock(containerId, {
+                                startedByInvocation: invocationStartedContainers.has(containerId),
+                            });
                         },
                         containerStatus.running ? containerStatus.containerId ?? undefined : undefined,
                         (containerId) => {
                             invocationStartedContainers.add(containerId);
-                            ports.setSessionContainer(containerId);
-                            ports.setCleanupEnabled(true);
+                            ports.recordSessionOwnStartInHeldLifecycleLock(containerId);
                         },
                     );
                     if (!readyContainerId) {

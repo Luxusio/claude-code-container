@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { sessionLockOwner } from "../../domain/session-lock.js";
 
 // Real plain-Node consumers of the built public facade. The coordinator builds
 // in the private execution copy before this suite; no Docker/VM is started.
@@ -102,7 +103,11 @@ process.disconnect();
         expect(await first.message("replaced")).toMatchObject({ replaced: true });
         const reserved = await second.message("reserved");
         expect(readFileSync(entered, "utf8")).toBe(reserved.claim);
-        expect(readFileSync(String(reserved.claim), "utf8")).toMatch(/^(?:\d+|\{"version":2,"pid":\d+,"startToken":"[^\n]+"\})$/);
+        const content = readFileSync(String(reserved.claim), "utf8");
+        const owner = sessionLockOwner(content);
+        expect(owner).toMatchObject({ pid: second.child.pid, ownershipKind: "direct" });
+        expect(JSON.parse(content)).toMatchObject({ version: 3, pid: second.child.pid, ownershipKind: "direct" });
+        expect(owner?.startToken === undefined || typeof owner.startToken === "string").toBe(true);
         expect(await first.completed, first.stderr()).toEqual({ code: 0, signal: null });
         expect(await second.completed, second.stderr()).toEqual({ code: 0, signal: null });
     }, 45000);

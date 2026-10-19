@@ -33,6 +33,7 @@ export interface RemoteServicesPorts<Evidence = unknown> {
     fail(kind: RemoteFailureKind, evidence?: Evidence): never;
     createSessionLock(prefix: string): string;
     removeSessionLock(file: string): undefined;
+    removeSessionLockInHeldLifecycleLock(file: string): undefined;
     withLifecycleLock(prefix: string, operation: () => undefined): undefined;
     withLifecycleLockAsync<Value>(prefix: string, operation: () => Promise<Value>): Promise<Value>;
     startHeartbeat(callback: () => void, milliseconds: number): RemoteHeartbeat;

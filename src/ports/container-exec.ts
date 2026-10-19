@@ -93,7 +93,9 @@ export interface ContainerExecPorts<Prepared> {
         onRecreate: (() => void) | undefined, replacement: (recreate: () => void) => boolean,
         onReady: (id: string, handoff: { startedByInvocation: boolean }) => void,
         expectedRunningId: string | undefined, onStarted: (id: string) => void): string;
-    setSessionContainer(id: string): void;
+    beginSessionStartupInHeldLifecycleLock(): void;
+    recordSessionOwnStartInHeldLifecycleLock(id: string): void;
+    publishSessionReadyInHeldLifecycleLock(id: string, handoff: { startedByInvocation: boolean }): void;
     setCleanupEnabled(enabled: boolean): void;
     confirmOwnership(): Promise<void>;
     configLock<T>(operation: () => T, profile?: string): T;

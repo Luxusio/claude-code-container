@@ -6,7 +6,16 @@ export function sessionClaimName(prefix: string, sessionId: string): string {
     return `${prefix}--${sessionId}.lock`;
 }
 
-export function encodeSessionClaim(pid: number, startToken: string | null): string {
+export type SessionClaimOwnershipKind = "direct" | "monitored";
+
+export function encodeSessionClaim(pid: number, startToken: string | null, ownershipKind?: SessionClaimOwnershipKind): string {
+    if (ownershipKind !== undefined) {
+        if ((ownershipKind !== "direct" && ownershipKind !== "monitored") || !Number.isSafeInteger(pid) || pid <= 0
+            || (startToken !== null && (typeof startToken !== "string" || !startToken.length || startToken.length > 256))) {
+            throw new TypeError("Invalid session claim owner.");
+        }
+        return JSON.stringify({ version: 3, pid, startToken, ownershipKind });
+    }
     return startToken ? JSON.stringify({ version: 2, pid, startToken }) : String(pid);
 }
 

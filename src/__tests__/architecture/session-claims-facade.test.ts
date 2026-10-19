@@ -1,23 +1,26 @@
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as runtimeFacade from "../../container-runtime.js";
 import { preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
+import { sessionLockOwner } from "../../domain/session-lock.js";
+import { captureNativeSessionOwnership } from "../../adapters/session-ownership.js";
+import { createNativeSessionClaimObservationStore } from "../../adapters/session-claim-observation.js";
 
 const effects = vi.hoisted(() => ({
-    directory: "", mkdir: vi.fn(), stat: vi.fn(), chmod: vi.fn(), list: vi.fn(),
-    read: vi.fn(), write: vi.fn(), unlink: vi.fn(), exists: vi.fn(), random: vi.fn(),
-    token: vi.fn(), observe: vi.fn(), classify: vi.fn(), lock: vi.fn(), cleanup: vi.fn(), spawn: vi.fn(),
+    directory: "", stat: vi.fn(), random: vi.fn(), token: vi.fn(), observe: vi.fn(), classify: vi.fn(),
+    lock: vi.fn(), cleanup: vi.fn(), spawn: vi.fn(),
 }));
 vi.mock("fs", async original => ({ ...await original<typeof import("node:fs")>(),
-    mkdirSync: effects.mkdir, lstatSync: effects.stat, chmodSync: effects.chmod,
-    readdirSync: effects.list, readFileSync: effects.read, writeFileSync: effects.write,
-    unlinkSync: effects.unlink, existsSync: effects.exists,
+    lstatSync: (...args: unknown[]) => effects.stat(...args),
 }));
 vi.mock("crypto", async original => ({ ...await original<typeof import("node:crypto")>(), randomBytes: effects.random }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawnSync: effects.spawn }));
 vi.mock("../../home-layout.js", () => ({ locksDir: () => effects.directory }));
 vi.mock("../../utils.js", () => ({ getProjectId: () => "project" }));
-vi.mock("../../device-lab-admin.js", () => ({ cleanupOwnerDevices: effects.cleanup }));
+vi.mock("@ccc/device-lab/project-identity.js", () => ({ getProjectId: () => "project" }));
+vi.mock("../../device-lab-cleanup.js", () => ({ cleanupOwnerDevices: effects.cleanup }));
 vi.mock("../../session-lock-liveness.js", async original => ({
     ...await original<typeof import("../../session-lock-liveness.js")>(),
     processStartToken: effects.token, observeProcessStarts: effects.observe, sessionLockLiveness: effects.classify,
@@ -25,146 +28,162 @@ vi.mock("../../session-lock-liveness.js", async original => ({
 vi.mock("@ccc/device-lab/device-lab-shared-state.js", () => ({
     withSharedMutationLock: effects.lock, withSharedMutationLockAsync: effects.lock,
 }));
+const nativeFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+const { lstatSync } = nativeFs;
 const session = await import("../../session.js");
 const { createSessionClaimsStore } = await import("../../adapters/session-claims-store.js");
-const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-const id = "a".repeat(32);
-const realDirectory = { isDirectory: () => true, isSymbolicLink: () => false };
+const id = "a".repeat(32), containerId = "b".repeat(64);
+let root: string;
+let held = false;
+
+function writeClaim(name: string, owner: object | string): string {
+    const path = join(effects.directory, name);
+    writeFileSync(path, typeof owner === "string" ? owner : JSON.stringify(owner), { mode: 0o600 });
+    return path;
+}
+
+beforeEach(() => {
+    vi.resetAllMocks(); session.clearSession(); held = false;
+    root = mkdtempSync(join(tmpdir(), "ccc-claim-facade-"));
+    effects.directory = join(root, "locks"); mkdirSync(effects.directory, { mode: 0o700 });
+    effects.stat.mockImplementation(lstatSync);
+    effects.random.mockReturnValue(Buffer.from(id, "hex")); effects.token.mockReturnValue("opaque-start");
+    effects.observe.mockReturnValue(new Map()); effects.classify.mockReturnValue("active");
+    effects.lock.mockImplementation((_path, operation) => {
+        expect(held).toBe(false); held = true;
+        try { return operation(); } finally { held = false; }
+    });
+    preloadNativeRuntimeFixture(runtimeFacade);
+});
+afterEach(() => { session.clearSession(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
 
 describe("session claims compatibility facade", () => {
-    beforeEach(() => {
-        vi.resetAllMocks(); session.clearSession();
-        Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
-        preloadNativeRuntimeFixture(runtimeFacade);
-        effects.directory = join("fixture-home", "locks");
-        effects.stat.mockReturnValue(realDirectory); effects.list.mockReturnValue([]);
-        effects.random.mockReturnValue(Buffer.from(id, "hex")); effects.token.mockReturnValue("opaque-start");
-        effects.observe.mockReturnValue(new Map()); effects.classify.mockReturnValue("active");
-        effects.lock.mockImplementation((_path, operation) => operation());
-    });
-    afterEach(() => { session.clearSession(); Object.defineProperty(process, "platform", platform); vi.restoreAllMocks(); });
-
-    it("preserves public exports and the deprecated container query alias", () => {
-        expect(Object.keys(session).sort()).toEqual([
-            "acquireHostSessionOwnership", "armSessionOwnership", "confirmSessionOwnership",
-            "cleanupSession", "clearSession", "createSessionLock", "getActiveSessionsForContainer",
-            "getActiveSessionsForProject", "getActiveSessionsForProjectFamily", "getCurrentSession",
-            "observeActiveSessionsForContainer",
-            "getSessionLockClaimsForContainer", "getSessionLockClaimsForProjectFamily", "hasOtherActiveSessions",
-            "hasOtherSessionClaims", "recreateContainerWithoutInterruptingSessions", "removeSessionLock",
-            "setSession", "setSessionContainerId", "setSessionCleanupEnabled", "setupSignalHandlers", "withContainerLifecycleLock",
-            "withContainerLifecycleLockAsync", "withContainerSetupLockAsync", "withProjectFamilyLifecycleLock",
-            "withProjectFamilyLifecycleLockAsync",
-        ].sort());
-        effects.list.mockReturnValue(["project-legacy.lock", "project--current.lock", "project--p--work--other.lock"]);
-        effects.read.mockReturnValue("123");
+    it("exports callable public operations and keeps the deprecated query alias behavior", () => {
+        for (const name of ["createSessionLock", "removeSessionLock", "removeSessionLockInHeldLifecycleLock",
+            "acquireHostSessionOwnership", "getActiveSessionsForContainer", "getActiveSessionsForProject",
+            "getSessionLockClaimsForContainer", "getSessionLockClaimsForProjectFamily", "hasOtherSessionClaims",
+            "recreateContainerWithoutInterruptingSessions"] as const) expect(session[name]).toBeTypeOf("function");
+        writeClaim("project--current.lock", { version: 3, pid: process.pid, startToken: null, ownershipKind: "direct" });
+        writeClaim("project--p--work--other.lock", "123");
         expect(session.getActiveSessionsForProject("project")).toEqual(session.getActiveSessionsForContainer("project"));
+        expect(session.getActiveSessionsForContainer("project")).toEqual(["project--current.lock"]);
     });
 
-    it.each(["opaque-start", null])("writes exact reservation bytes and exclusive permissions for token %s", token => {
+    it.each(["opaque-start", null])("creates an exclusively owned direct claim under its guard for token %s", token => {
         effects.token.mockReturnValue(token);
-        const expected = join(effects.directory, `project--p--work--${id}.lock`);
-        expect(session.createSessionLock("project", "work")).toBe(expected);
-        expect(effects.random).toHaveBeenCalledExactlyOnceWith(16);
+        effects.random.mockImplementation(() => { expect(held).toBe(true); return Buffer.from(id, "hex"); });
+        const own = session.createSessionLock("project", "work");
+        expect(own).toBe(join(effects.directory, `project--p--work--${id}.lock`));
+        const content = readFileSync(own, "utf8"), owner = sessionLockOwner(content);
+        expect(owner).toEqual({ pid: process.pid, ownershipKind: "direct", ...(token ? { startToken: token } : {}) });
+        expect(JSON.parse(content)).toMatchObject({ version: 3, startToken: token });
+        if (process.platform !== "win32") expect(lstatSync(own).mode & 0o777).toBe(0o600);
         expect(effects.lock).toHaveBeenCalledExactlyOnceWith(join(effects.directory, "project--p--work.container-lifecycle.guard"), expect.any(Function), { waitMs: 180000 });
-        expect(effects.token).toHaveBeenCalledExactlyOnceWith(process.pid);
-        expect(effects.write).toHaveBeenCalledExactlyOnceWith(expected,
-            token ? `{"version":2,"pid":${process.pid},"startToken":"opaque-start"}` : String(process.pid),
-            { mode: 0o600, flag: "wx" });
-        expect(effects.mkdir).toHaveBeenCalledTimes(3);
-        expect(effects.random.mock.invocationCallOrder[0]).toBeLessThan(effects.lock.mock.invocationCallOrder[0]!);
-    });
-
-    it("resolves changed directory, platform and start observations at invocation; captures the reservation path before locking", () => {
-        effects.directory = join("second-home", "locks");
-        Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
-        effects.token.mockReturnValue("changed");
-        const captured = join(effects.directory, `project--${id}.lock`);
-        effects.lock.mockImplementation((_path, operation) => { effects.directory = join("third-home", "locks"); return operation(); });
-        expect(session.createSessionLock("project")).toBe(captured);
-        expect(effects.write).toHaveBeenCalledWith(captured, JSON.stringify({ version: 2, pid: process.pid, startToken: "changed" }), { mode: 0o600, flag: "wx" });
-        expect(effects.chmod).not.toHaveBeenCalled();
-        expect(session.getSessionLockClaimsForContainer("project")).toEqual([]);
-        expect(effects.list).toHaveBeenLastCalledWith(join("third-home", "locks"));
-    });
-
-    it("reconciles foreign ownership but keeps unreadable claims as a fresh raw cleanup veto", () => {
-        const current = join(effects.directory, "project--current.lock");
-        session.setSession(current, "/fixture/project"); session.setSessionContainerId("captured-container");
-        effects.list.mockReturnValue(["project--current.lock", "project--foreign.lock"]);
-        effects.exists.mockReturnValue(true);
-        effects.read.mockImplementation(() => { throw new Error("unreadable foreign record"); });
-        session.cleanupSession();
-        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(current);
-        expect(effects.read).toHaveBeenCalledWith(join(effects.directory, "project--foreign.lock"), "utf-8");
-        expect(effects.classify).not.toHaveBeenCalled(); expect(effects.cleanup).not.toHaveBeenCalled();
+        session.removeSessionLock(own);
+        expect(existsSync(own)).toBe(false);
         expect(effects.spawn).not.toHaveBeenCalled();
-        expect(session.getCurrentSession()).toEqual({ lockFile: null, projectPath: null, profile: undefined, toolName: "claude" });
     });
 
-    it("keeps public raw claims and raw veto queries free of liveness inference", () => {
-        effects.list.mockReturnValue(["project--current.lock", "project--foreign.lock"]);
-        const current = join(effects.directory, "project--current.lock");
-        expect(session.hasOtherSessionClaims("project", current)).toBe(true);
-        expect(session.getSessionLockClaimsForContainer("project")).toEqual(["project--current.lock", "project--foreign.lock"]);
-        expect(session.getSessionLockClaimsForProjectFamily("project")).toEqual(["project--current.lock", "project--foreign.lock"]);
-        for (const effect of [effects.read, effects.observe, effects.classify, effects.unlink]) expect(effect).not.toHaveBeenCalled();
+    it("captures the new reservation and its receipt inside the same held guard", () => {
+        const second = join(root, "second-locks"); mkdirSync(second, { mode: 0o700 });
+        effects.lock.mockImplementation((_path, operation) => {
+            effects.directory = second; held = true;
+            try { return operation(); } finally { held = false; }
+        });
+        const own = session.createSessionLock("project");
+        expect(own).toBe(join(second, `project--${id}.lock`));
+        expect(sessionLockOwner(readFileSync(own, "utf8"))?.ownershipKind).toBe("direct");
+        session.removeSessionLock(own);
+        expect(existsSync(own)).toBe(false);
     });
 
-    it.each(["live", "unknown", "unreadable"])("preserves %s prestart reservations before exclusive new reservation", mode => {
-        const foreign = join(effects.directory, "project--foreign.lock");
-        effects.list.mockReturnValue(["project--foreign.lock", "project--p--other--stale.lock"]);
+    it("preserves a true owned responsibility when an unknown foreign claim vetoes cleanup", () => {
+        const own = writeClaim("project--current.lock", { version: 3, pid: process.pid, startToken: "opaque-start", ownershipKind: "monitored" });
+        const foreign = writeClaim("project--foreign.lock", "malformed foreign claim");
+        const observations = createNativeSessionClaimObservationStore();
+        const binding = { lockFile: own, projectPath: root, prefix: "project", toolName: "claude" };
+        const initial = observations.begin({ receipt: captureNativeSessionOwnership(own), binding,
+            runtimeInvocation: runtimeFacade.getRuntimeInvocation(), guardian: { pid: process.pid, startToken: "opaque-start" }, generation: "1" });
+        observations.update(initial, { ...initial.observation, registration: "ready",
+            lastAcknowledged: { generation: "1", sequence: 1, containerId, cleanupEnabled: true } });
+        session.setSession(own, root); session.setSessionContainerId(containerId);
+        effects.classify.mockReturnValue("unknown");
+        expect(() => session.cleanupSession()).toThrow("session-cleanup-responsibility-incomplete");
+        expect(readFileSync(foreign, "utf8")).toBe("malformed foreign claim");
+        expect(existsSync(own)).toBe(true); expect(existsSync(`${own}.guardian.json`)).toBe(true);
+        expect(session.getCurrentSession().lockFile).toBe(own);
+        expect(effects.cleanup).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
+    });
+
+    it("keeps raw claims and raw veto queries free of liveness inference", () => {
+        const own = writeClaim("project--current.lock", "123"); writeClaim("project--foreign.lock", "456");
+        expect(session.hasOtherSessionClaims("project", own)).toBe(true);
+        expect(session.getSessionLockClaimsForContainer("project").sort()).toEqual(["project--current.lock", "project--foreign.lock"]);
+        expect(session.getSessionLockClaimsForProjectFamily("project").sort()).toEqual(["project--current.lock", "project--foreign.lock"]);
+        expect(effects.classify).not.toHaveBeenCalled(); expect(effects.observe).not.toHaveBeenCalled();
+        expect(readdirSync(effects.directory).sort()).toEqual(["project--current.lock", "project--foreign.lock"]);
+    });
+
+    it.each(["live", "unknown", "unreadable"])("preserves %s prestart claims while reserving a distinct direct claim", mode => {
+        const foreign = writeClaim("project--foreign.lock", "123");
+        const other = writeClaim("project--p--other--stale.lock", "456");
         effects.classify.mockReturnValue(mode === "live" ? "active" : "unknown");
-        effects.read.mockImplementation(() => { if (mode === "unreadable") throw new Error("denied"); return "123"; });
-        expect(session.createSessionLock("project")).toBe(join(effects.directory, `project--${id}.lock`));
-        expect(effects.read).toHaveBeenCalledWith(foreign, "utf-8");
-        expect(effects.read).not.toHaveBeenCalledWith(join(effects.directory, "project--p--other--stale.lock"), "utf-8");
-        expect(effects.unlink).not.toHaveBeenCalled(); expect(effects.write).toHaveBeenCalledTimes(1);
+        if (mode === "unreadable") effects.stat.mockImplementation((path, options) => {
+            if (String(path) === foreign) throw Object.assign(new Error("denied"), { code: "EACCES" });
+            return lstatSync(path, options);
+        });
+        const own = session.createSessionLock("project");
+        expect(readFileSync(foreign, "utf8")).toBe("123"); expect(readFileSync(other, "utf8")).toBe("456");
+        expect(existsSync(own)).toBe(true); expect(effects.spawn).not.toHaveBeenCalled();
+        session.removeSessionLock(own);
+    });
+
+    it("classifies only explicitly direct stale claims as inactive without deleting any query result", () => {
+        const direct = writeClaim("project--direct.lock", { version: 3, pid: 4242, startToken: null, ownershipKind: "direct" });
+        const legacy = writeClaim("project--legacy.lock", "4243"); effects.classify.mockReturnValue("stale");
+        expect(session.getActiveSessionsForContainer("project")).toEqual(["project--legacy.lock"]);
+        expect(existsSync(direct)).toBe(true); expect(readFileSync(legacy, "utf8")).toBe("4243");
         expect(effects.spawn).not.toHaveBeenCalled();
     });
 
-    it("uses the path captured before classification even when home resolution changes", () => {
-        const before = effects.directory;
-        effects.list.mockReturnValue(["project--stale.lock"]); effects.read.mockReturnValue("123");
-        effects.classify.mockImplementation(() => { effects.directory = join("other-home", "locks"); return "stale"; });
-        expect(session.getActiveSessionsForContainer("project")).toEqual([]);
-        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(join(before, "project--stale.lock"));
+    it("refuses exclusive-write collisions and failed enumeration without replacing existing content", () => {
+        const existing = writeClaim(`project--${id}.lock`, { version: 3, pid: process.pid, startToken: null, ownershipKind: "direct" });
+        const bytes = readFileSync(existing, "utf8");
+        expect(() => session.createSessionLock("project")).toThrow(); expect(readFileSync(existing, "utf8")).toBe(bytes);
+        effects.directory = join(root, "absent-parent", "locks");
+        writeFileSync(join(root, "absent-parent"), "not a directory");
+        const recreate = vi.fn();
+        expect(() => session.recreateContainerWithoutInterruptingSessions("project", "current.lock", recreate)).toThrow();
+        expect(recreate).not.toHaveBeenCalled(); expect(readFileSync(existing, "utf8")).toBe(bytes);
     });
 
-    it("propagates exclusive-write collision and failed enumeration rather than authorizing replacement", () => {
-        const collision = Object.assign(new Error("collision"), { code: "EEXIST" });
-        effects.write.mockImplementation(() => { throw collision; });
-        expect(() => session.createSessionLock("project")).toThrow(collision);
-        const missing = Object.assign(new Error("concurrent removal"), { code: "ENOENT" });
-        effects.list.mockImplementation(() => { throw missing; });
-        const recreate = vi.fn();
-        expect(() => session.recreateContainerWithoutInterruptingSessions("project", "current.lock", recreate)).toThrow(missing);
-        expect(recreate).not.toHaveBeenCalled();
+    it("refuses a same-path same-content successor after capturing a direct claim", () => {
+        const own = session.createSessionLock("project"), saved = join(root, "original-claim");
+        const bytes = readFileSync(own, "utf8"); renameSync(own, saved); writeFileSync(own, bytes, { mode: 0o600 });
+        expect(() => session.removeSessionLock(own)).toThrow("receipt changed");
+        expect(readFileSync(own, "utf8")).toBe(bytes); expect(readFileSync(saved, "utf8")).toBe(bytes);
+        expect(effects.cleanup).not.toHaveBeenCalled(); expect(effects.spawn).not.toHaveBeenCalled();
     });
 });
 
 describe("session claim filesystem adapter boundaries", () => {
-    beforeEach(() => { vi.resetAllMocks(); effects.stat.mockReturnValue(realDirectory); });
-    it.each([
-        { isDirectory: () => false, isSymbolicLink: () => false },
-        { isDirectory: () => true, isSymbolicLink: () => true },
-    ])("refuses non-directory or linked claim roots before listing or writing %#", observed => {
-        effects.stat.mockReturnValue(observed);
-        const store = createSessionClaimsStore({ directory: () => "/fixture/locks", platform: () => "linux" });
+    it.each(["file", "linked-directory"])("refuses a %s claim root before listing or writing", kind => {
+        const store = createSessionClaimsStore({ directory: () => effects.directory, platform: () => "linux" });
+        effects.stat.mockReturnValue({ isDirectory: () => kind !== "file", isSymbolicLink: () => kind === "linked-directory" });
         expect(() => store.ensureDirectory()).toThrow("CCC session lock path must be a real directory");
-        expect(effects.mkdir).toHaveBeenCalledExactlyOnceWith("/fixture/locks", { recursive: true, mode: 0o700 });
-        expect(effects.chmod).not.toHaveBeenCalled(); expect(effects.list).not.toHaveBeenCalled(); expect(effects.write).not.toHaveBeenCalled();
+        expect(readdirSync(effects.directory)).toEqual([]);
     });
-    it("uses lazy directory and platform callbacks and preserves POSIX root mode", () => {
-        let directory = "/first", host = "linux";
-        const store = createSessionClaimsStore({ directory: () => directory, platform: () => host });
-        expect(effects.mkdir).not.toHaveBeenCalled();
-        store.ensureDirectory(); expect(effects.chmod).toHaveBeenCalledExactlyOnceWith("/first", 0o700);
-        directory = "/second"; host = "win32"; store.ensureDirectory();
-        expect(effects.mkdir).toHaveBeenLastCalledWith("/second", { recursive: true, mode: 0o700 });
-        expect(effects.chmod).toHaveBeenCalledTimes(1);
-        effects.read.mockReturnValue(" 123\n");
+
+    it("resolves directory and platform lazily and reads only the bounded captured file", () => {
+        let directory = effects.directory, platform = "linux";
+        const store = createSessionClaimsStore({ directory: () => directory, platform: () => platform });
+        chmodSync(directory, 0o755); store.ensureDirectory();
+        if (process.platform !== "win32") expect(lstatSync(directory).mode & 0o777).toBe(0o700);
+        directory = join(root, "second"); mkdirSync(directory, { mode: 0o755 }); platform = "win32"; store.ensureDirectory();
+        writeFileSync(join(directory, "claim.lock"), " 123\n", { mode: 0o600 });
         expect(store.readClaim("claim.lock")).toBe(" 123\n");
-        expect(effects.read).toHaveBeenCalledExactlyOnceWith(join("/second", "claim.lock"), "utf-8");
+        const oversized = "x".repeat(4097); writeFileSync(join(directory, "claim.lock"), oversized);
+        expect(() => store.readClaim("claim.lock")).toThrow();
+        expect(readFileSync(join(directory, "claim.lock"), "utf8")).toBe(oversized);
     });
 });

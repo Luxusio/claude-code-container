@@ -3,7 +3,7 @@ import type { SessionCleanupPorts } from "../ports/session-cleanup.js";
 
 export function createSessionCleanup(ports: SessionCleanupPorts) {
     for (const name of [
-        "projectId", "withLifecycleLock", "hasOtherClaims", "removeClaim",
+        "projectId", "withLifecycleLock", "peerVetoes", "removeClaim",
         "cleanupDevices", "reportDeviceCleanupFailure", "stopContainer",
     ] as const) {
         if (typeof ports?.[name] !== "function") {
@@ -103,11 +103,9 @@ export function createSessionCleanup(ports: SessionCleanupPorts) {
 
     function cleanupSessionBody(containerPrefix: string, context: CleanupContext): void {
         assertCleanupContext(context);
-        // The composed query reconciles proven stale foreign owners, then uses
-        // remaining raw claims as the shutdown veto under this same guard.
-        const hasOthers = ports.hasOtherClaims(containerPrefix, context.lockFile);
+        const vetoes = ports.peerVetoes(containerPrefix, context.lockFile, context.containerId);
         assertCleanupContext(context);
-        if (!hasOthers && context.cleanupEnabled) {
+        if (!vetoes.sharedDeviceCleanupBlocked && context.cleanupEnabled) {
             try {
                 ports.cleanupDevices(context.projectPath, 5000, context.profile);
             } catch (error) {
@@ -115,17 +113,28 @@ export function createSessionCleanup(ports: SessionCleanupPorts) {
                 ports.reportDeviceCleanupFailure(error);
             }
             assertCleanupContext(context);
-            if (context.containerId) {
+        }
+        let containerStopped = false;
+        if (context.cleanupEnabled && context.containerId) {
+            if (!vetoes.exactContainerStopBlocked) {
                 // Native runtime selection happens before this guarded ID read.
                 ports.stopContainer(() => {
                     assertCleanupContext(context);
                     return context.containerId;
                 });
                 assertCleanupContext(context);
+                containerStopped = true;
+            } else if (!vetoes.responsibilityTransferred) {
+                throw new Error("session-cleanup-responsibility-incomplete: Exact container shutdown is blocked and no qualified successor owns its cleanup responsibility.");
             }
         }
         // Keep the receipt through a failed stop so owned cleanup can retry.
-        ports.removeClaim(context.lockFile);
+        ports.removeClaim(context.lockFile, {
+            containerId: context.containerId,
+            cleanupEnabled: context.cleanupEnabled,
+            containerStopped,
+            responsibilityTransferred: vetoes.responsibilityTransferred,
+        });
         // Successful retirement settles this session before the guard returns.
         finalizeSessionCleanup(context);
     }

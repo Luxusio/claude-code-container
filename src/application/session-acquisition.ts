@@ -3,7 +3,7 @@ import type { SessionAcquisitionCheckpoint, SessionAcquisitionPorts, SessionAcqu
 
 export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
     for (const name of [
-        "withLifecycleLock", "reserve", "initializeCapture", "inspectExisting",
+        "withLifecycleLock", "recoverPredecessors", "reserve", "initializeCapture", "inspectExisting",
         "arm", "acknowledge", "reconcileForeign", "rollback",
     ] as const) {
         if (typeof ports?.[name] !== "function") {
@@ -14,6 +14,8 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
     async function run(request: SessionAcquisitionRequest, checkCancelled: SessionAcquisitionCheckpoint = () => {}): Promise<SessionAcquisitionResult> {
         const prefix = sessionClaimPrefix(request.projectId, request.profile);
         return ports.withLifecycleLock(prefix, async () => {
+            checkCancelled();
+            await ports.recoverPredecessors(prefix);
             checkCancelled();
             const lockFile = ports.reserve(request.projectId, request.profile);
             let existingOwnershipAcknowledged = false;

@@ -1,5 +1,9 @@
 # CCC session exit cleanup
 
+The [guardian responsibility contract](REQ__session-mutation-lock-lifetime.md#guardian-responsibility-and-orphan-recovery)
+defines the derived implementation rules for qualified observation, publication,
+recovery and transfer used below, and records their requirement and planning basis.
+
 The host CCC process must remain responsive to SIGINT, SIGTERM and SIGHUP while
 an interactive container command runs. It must await that command asynchronously
 with inherited terminal input and output. Noninteractive commands retain their
@@ -11,40 +15,46 @@ kill a daemon, unrelated process, or another project by name or age. Remove the
 command's signal listeners after completion or launch failure. Input must have
 one owner; this change must not add a competing terminal reader or replay a TUI.
 
-After the last authorized session exits, stop only its captured container ID
-under the existing lifecycle lock. Any foreign ownership claim, including an
-unreadable or otherwise uncertain claim, continues to veto shared-container
-shutdown. Do not infer dead ownership from container age.
+After an authorized session exits, stop only its captured container ID under
+the existing lifecycle lock. Any foreign ownership claim, including an unreadable
+or uncertain claim, vetoes shared device cleanup. It also vetoes our exact stop
+unless its current qualified acknowledgement names a different full container
+ID. Do not infer dead ownership from container age or runtime selection.
 
-Reconcile conclusively stale host-process claims under that lifecycle guard at
-session reservation and before the shutdown veto. Missing owners and versioned
-start-token mismatches authorize stale removal; live setup reservations and
-indeterminate, unreadable or malformed claims remain protected. After attempted
-removal, enumerate raw files again: a failed deletion still vetoes shutdown.
+Recover predecessors under that lifecycle guard before session reservation.
+Positive owner death or start-token mismatch permits retiring a marked direct
+claim. A monitored claim also requires qualified guardian observation and
+settlement of its cleanup responsibility; parent death alone never permits
+removal. Live, uncertain, unmarked legacy, unreadable or malformed claims remain
+protected. After attempted retirement, enumerate raw files again: a failed
+deletion still vetoes shared effects.
 
 Diagnostic liveness observation, including `ccc doctor`, must not delete a dead
-owner's receipt. It may omit stale owners from the live count, but consuming a
+owner's receipt. It may omit a stale marked direct owner from the live count,
+but monitored claims remain protected. Consuming a
 receipt before a guardian cleans it or a successor inherits its cleanup obligation
 can leave the container running without an owner.
 
-Production reservation and transfer of cleanup responsibility are one async
-lifecycle-guarded transaction. Write the new reservation without pruning old
-claims, capture its identity, positively inspect an existing managed container,
-and establish guardian readiness and acknowledgment of that existing ID before
-pruning dead predecessor claims. Inspection errors are not confirmed absence.
-Failure before acknowledgment releases only the unchanged new reservation and
-preserves predecessors. The project-family/worktree guard precedes the container
-guard. Failures after an acknowledged existing-ID transfer retain the new receipt
-and cleanup obligation, even if predecessor reconciliation partly completed. A
-pending or rejected acquisition must retain receipt authorization (or
-detach its failed context) through later CLI/signal cleanup so a replacement file
-cannot be deleted by an unguarded fallback.
+Production recovery and reservation are one async lifecycle-guarded transaction.
+Settle positively dead predecessors using their captured native runtime before
+writing a new monitored reservation. Failed recovery retains the obligation and
+prevents a successor reservation. Then capture the new receipt, positively
+inspect an existing managed container, and establish guardian readiness and an
+initial cleanup-disabled acknowledgement of that existing ID. Inspection errors
+are not confirmed absence. A failed acquisition before startup releases only its
+unchanged new reservation; a generic pending grant never becomes shutdown
+authority. The project-family/worktree guard precedes the container guard.
+Subsequent cleanup authority requires a current qualified cleanup-enabled ACK or
+a positive own-start publication. A pending or rejected acquisition retains
+receipt authorization (or detaches its failed context) through later CLI/signal
+cleanup so a replacement cannot be deleted by an unguarded fallback.
 
 Production session setup must establish a host-owned lifetime channel with a
 per-session guardian and await bounded readiness before starting the container.
 Host process disappearance closes that channel. Without waiting for another CCC
-invocation, the guardian removes only its captured unchanged claim under the
-same lifecycle guard. Bind the claim's record and file identity; preserve a
+invocation, the guardian settles only its captured unchanged claim under the
+same lifecycle guard. Removal requires no cleanup obligation, successful cleanup,
+or a qualified handoff. Bind the claim's record and file identity; preserve a
 same-path replacement or unreadable claim and its associated resources.
 
 An acknowledged captured-container-ID handoff permits the guardian to reuse the
@@ -59,7 +69,9 @@ zero status counts as success. Spawn errors, signals, nonzero or absent statuses
 must surface a bounded failure without raw runtime output or configuration
 values. Failed stop must not finalize cleanup; a later call rechecks ownership
 and can retry. Retain the own claim through device/container cleanup and remove
-it only after successful stop (or after another owner vetoes stop). Non-ENOENT
+it only after successful stop or a qualified transfer to a current acknowledged
+cleanup-enabled peer with the same exact ID and captured native authority. A
+veto alone does not discharge an obligation. Non-ENOENT
 claim removal errors remain failures. A timeout leaves the daemon-side outcome unknown.
 
 For an ended host owner, retain the captured unchanged claim through guarded
@@ -67,8 +79,9 @@ foreign enumeration and device/container cleanup. The guardian acquires the
 existing lifecycle guard asynchronously, including process-identity observation
 on Windows, and reuses the cleanup body while that guard is held. It does not
 reacquire a synchronous guard inside the asynchronous one. Unknown foreign
-ownership still vetoes shared effects; successful cleanup or a foreign-owner
-veto removes only the unchanged own claim.
+ownership still vetoes shared effects. Successful cleanup, qualified no-obligation
+rollback, or qualified transfer removes only the unchanged own claim; a blocked
+true obligation remains available for recovery.
 
 The guardian makes at most three cleanup attempts, with an awaited one-second
 pause between failed attempts. Each attempt reacquires the guard and rechecks
@@ -159,4 +172,6 @@ module loading must not consume the existing five-second ownership
 acknowledgment deadline. On an authorized disconnected owner, the guardian
 must await deferred cleanup before reporting its terminal status; cleanup failure
 remains a failed exit. The serialized ACK outcome continues to select the exact
-owned container ID, and native synchronous cleanup facade contracts remain intact.
+owned container ID. A positive current own-start publication also preserves exact
+compensation authority after IPC failure; intent or an unacknowledged generic
+grant does not. Native synchronous cleanup facade contracts remain intact.

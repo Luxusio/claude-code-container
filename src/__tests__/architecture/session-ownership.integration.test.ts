@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation, type NativeRuntimeSelectors } from "../../ports/container-runtime-invocation.js";
 import { captureNativeSessionOwnership } from "../../adapters/session-ownership.js";
+import { createNativeSessionClaimObservationStore } from "../../adapters/session-claim-observation.js";
+import { encodeSessionClaim } from "../../domain/session-claims.js";
+import { processStartToken } from "../../session-lock-liveness.js";
+import { withSharedMutationLock } from "@ccc/device-lab/device-lab-shared-state.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -43,14 +47,14 @@ describe("emitted guardian native lifecycle recovery on every platform", () => {
         home = join(root, "home");
         project = join(root, "project");
         const directory = join(home, ".ccc", "run", "locks");
-        mkdirSync(directory, { recursive: true });
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
         mkdirSync(project);
         const prefix = getProjectId(project);
         lock = join(directory, prefix + "--fixture.lock");
         guard = join(directory, prefix + ".container-lifecycle.guard");
         log = join(root, "runtime.jsonl");
         shim = join(root, "runtime-preload.cjs");
-        writeFileSync(lock, String(process.pid));
+        writeFileSync(lock, encodeSessionClaim(process.pid, processStartToken(process.pid), "monitored"), {mode: 0o600});
         writeFileSync(log, "");
         writeFileSync(shim, `
 const cp = require('node:child_process');
@@ -130,11 +134,20 @@ require('node:module').syncBuiltinESMExports();
         child.stdout!.resume();
         child.stderr!.on("data", chunk => { stderr += String(chunk); });
         child.on("message", message => { messages.push(message); });
-        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt: captureNativeSessionOwnership(lock), runtimeInvocation: fixtureInvocation(join(root, "docker"), home) });
+        const receipt = captureNativeSessionOwnership(lock), runtimeInvocation = fixtureInvocation(join(root, "docker"), home);
+        const binding = {lockFile: lock, projectPath: project, prefix: getProjectId(project)};
+        const store = createNativeSessionClaimObservationStore();
+        let snapshot = withSharedMutationLock(guard, () => store.begin({receipt, binding, runtimeInvocation,
+            guardian: {pid: child.pid!, startToken: processStartToken(child.pid!)}, generation: "native-fixture-generation"}));
+        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt, runtimeInvocation });
         await eventually(() => messages.some(m => (m as { type: string }).type === "ready"), "real guardian READY: " + stderr);
+        snapshot = withSharedMutationLock(guard, () => store.update(snapshot, {...snapshot.observation, registration: "ready"}));
         if (acknowledged) {
+            const update = {generation: snapshot.observation.generation, sequence: 1, containerId: idA, cleanupEnabled: true};
+            snapshot = withSharedMutationLock(guard, () => store.update(snapshot, {...snapshot.observation, pending: {...update, kind: "update"}}));
             child.send({ type: "update", sequence: 1, containerId: idA, cleanupEnabled: true });
-            await eventually(() => messages.some(m => (m as { type: string }).type === "ack"), "real guardian ACK");
+            await eventually(() => messages.some(m => (m as { type: string; sequence?: number }).type === "ack" && (m as {sequence?: number}).sequence === 1), "real guardian ACK");
+            snapshot = withSharedMutationLock(guard, () => store.update(snapshot, {...snapshot.observation, pending: null, lastAcknowledged: update}));
         }
         return { child, stderr: () => stderr, stderrEnded: () => child.stderr!.readableEnded };
     }
@@ -177,7 +190,9 @@ require('node:module').syncBuiltinESMExports();
         expect(stderr()).not.toContain(root);
         expect(stderr()).not.toContain("owned fixture stop failure");
         expect(stderr()).not.toContain("fixture-sensitive-runtime-stderr-secret");
-        const attempts = [73, 74, 75].map(status => ({ kind: "error", operation: "container-stop", status, signal: "none", code: "unknown" }));
+        const attempts = [73, 74, 75].map(status => ({kind: "error", cause: {
+            kind: "error", operation: "container-stop", status, signal: "none", code: "unknown",
+        }}));
         const cleanup = { kind: "aggregate", operation: "cleanup", errors: attempts, cause: attempts[0] };
         expect(JSON.parse(diagnostics[0]!.slice(prefix.length))).toEqual(protocol
             ? { kind: "aggregate", operation: "guardian", errors: [{ kind: "error", operation: "protocol" }, cleanup],
@@ -199,9 +214,11 @@ require('node:module').syncBuiltinESMExports();
             writeFileSync(lock, bytes, { flag: "wx" });
         } else writeFileSync(foreign, String(process.pid), { flag: "wx" });
         await eventually(() => child.exitCode !== null, "retry authority veto");
-        expect(child.exitCode, stderr()).toBe(0);
+        expect(child.exitCode, stderr()).toBe(1);
         expect(stops()).toEqual([["stop", idA]]);
-        expect(existsSync(lock)).toBe(kind === "successor");
+        // A replaced receipt or an unqualified equal/unknown peer prevents
+        // completion; neither is proof that this obligation was discharged.
+        expect(existsSync(lock)).toBe(true);
         if (kind === "successor") expect(readFileSync(lock)).toEqual(bytes);
         else expect(readFileSync(foreign, "utf8")).toBe(String(process.pid));
     }, 30_000);
@@ -383,13 +400,16 @@ if (process.argv[1] === ${JSON.stringify(join(distribution, "session-ownership-g
 `);
         const moduleUrl = (file: string) => JSON.stringify(pathToFileURL(join(distribution, file)).href);
         writeFileSync(ownerScript, `
-import { createSessionLock, setSession, clearSession, setupSignalHandlers, armSessionOwnership,
+import { setSession, clearSession, setupSignalHandlers, armSessionOwnership,
     setSessionContainerId, setSessionCleanupEnabled, confirmSessionOwnership, cleanupSession, acquireHostSessionOwnership,
-    getCurrentSession, observeActiveSessionsForContainer } from ${moduleUrl("session.js")};
+    getCurrentSession, observeActiveSessionsForContainer, withContainerLifecycleLock } from ${moduleUrl("session.js")};
 import { getProjectId } from ${moduleUrl("utils.js")};
 import { _setRuntimeInvocationForTest, _setRuntimeInfoForTest, getRuntimeInvocation } from ${moduleUrl("container-runtime.js")};
 import { NATIVE_RUNTIME_SELECTOR_KEYS } from ${moduleUrl("ports/container-runtime-invocation.js")};
 import { captureNativeSessionOwnership } from ${moduleUrl("adapters/session-ownership.js")};
+import { createNativeSessionClaimObservationStore } from ${moduleUrl("adapters/session-claim-observation.js")};
+import { processStartToken } from ${moduleUrl("session-lock-liveness.js")};
+import { createNativeSessionClaims } from ${moduleUrl("composition/session-claims.js")};
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 const [project, profileArg, initialId, mode] = process.argv.slice(2);
@@ -403,7 +423,9 @@ _setRuntimeInvocationForTest({
 });
 let lock;
 if (!mode.startsWith('acquire')) {
-    lock = createSessionLock(getProjectId(project), profile);
+    const projectId = getProjectId(project), prefix = profile ? projectId + '--p--' + profile : projectId;
+    const claims = createNativeSessionClaims(withContainerLifecycleLock);
+    lock = withContainerLifecycleLock(prefix, () => claims.reserveSessionLockInHeldLifecycleLock(projectId, profile));
     setSession(lock, project, profile);
 }
 setupSignalHandlers();
@@ -482,12 +504,23 @@ if (mode.startsWith('acquire')) {
         directGuardian.on('message', message);
         directGuardian.once('error', reject);
     });
+    const prefix = profile ? getProjectId(project) + '--p--' + profile : getProjectId(project);
+    const receipt = captureNativeSessionOwnership(lock), runtimeInvocation = getRuntimeInvocation();
+    const store = createNativeSessionClaimObservationStore();
+    let snapshot = withContainerLifecycleLock(prefix, () => store.begin({receipt,
+        binding: {lockFile: lock, projectPath: project, ...(profile ? {profile} : {}), prefix}, runtimeInvocation,
+        guardian: {pid: directGuardian.pid, startToken: processStartToken(directGuardian.pid)}, generation: 'direct-native-fixture-generation'}));
     const ready = waitFrame('ready');
-    directGuardian.send({ type: 'init', binding: { lockFile: lock, projectPath: project, profile }, receipt: captureNativeSessionOwnership(lock), runtimeInvocation: getRuntimeInvocation() });
+    directGuardian.send({ type: 'init', binding: { lockFile: lock, projectPath: project, profile }, receipt, runtimeInvocation });
     await ready;
+    snapshot = withContainerLifecycleLock(prefix, () => store.update(snapshot, {...snapshot.observation, registration: 'ready'}));
+    const publication = {generation: snapshot.observation.generation, sequence: 1, containerId: initialId, cleanupEnabled: true};
+    snapshot = withContainerLifecycleLock(prefix, () => store.update(snapshot, {...snapshot.observation, pending: {...publication, kind: 'update'}}));
     const acknowledged = waitFrame('ack');
     directGuardian.send({ type: 'update', sequence: 1, containerId: initialId, cleanupEnabled: true });
-    await acknowledged;
+    const acknowledgement = await acknowledged;
+    if (acknowledgement.sequence !== publication.sequence) throw new Error('Mismatched real guardian ACK');
+    snapshot = withContainerLifecycleLock(prefix, () => store.update(snapshot, {...snapshot.observation, pending: null, lastAcknowledged: publication}));
     guardian = directGuardian.pid;
     directGuardian.once('exit', (code, signal) => process.send({ event: 'guardian-exit', code, signal }));
     process.once('exit', () => directGuardian.kill());
@@ -589,9 +622,9 @@ export async function load(url, context, nextLoad) {
         const project = join(root, "project");
         const projectId = `${basename(project).toLowerCase().replace(/[^a-z0-9-]/g, "-")}-${createHash("sha256").update(project).digest("hex").slice(0, 12)}`;
         const locks = join(home, ".ccc", "run", "locks");
-        mkdirSync(locks, { recursive: true });
+        mkdirSync(locks, { recursive: true, mode: 0o700 });
         const lock = join(locks, `${projectId}--loader-proof.lock`);
-        writeFileSync(lock, String(process.pid));
+        writeFileSync(lock, encodeSessionClaim(process.pid, processStartToken(process.pid), "monitored"), {mode: 0o600});
         const receipt = captureNativeSessionOwnership(lock);
         const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href,
             join(distribution, "session-ownership-guardian.js"), String(process.pid)], {
@@ -607,8 +640,14 @@ export async function load(url, context, nextLoad) {
         child.stderr!.on("data", chunk => { owner.output += String(chunk); });
         child.on("error", error => { owner.output += error.message; });
         child.on("message", message => { owner.messages.push(message); });
+        const runtimeInvocation = fixtureInvocation(join(bin, "docker"), home);
+        const guard = join(locks, `${projectId}.container-lifecycle.guard`);
+        const store = createNativeSessionClaimObservationStore();
+        let snapshot = withSharedMutationLock(guard, () => store.begin({receipt,
+            binding: {lockFile: lock, projectPath: project, prefix: projectId}, runtimeInvocation,
+            guardian: {pid: child.pid!, startToken: processStartToken(child.pid!)}, generation: "loader-native-fixture-generation"}));
         const started = Date.now();
-        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt, runtimeInvocation: fixtureInvocation(join(bin, "docker"), home) });
+        child.send({ type: "init", binding: { lockFile: lock, projectPath: project }, receipt, runtimeInvocation });
         await eventually(() => owner.messages.some(message => (message as { type?: string }).type === "ready"),
             `native guardian READY while cleanup loader held: ${owner.output}`, 5000);
         expect(Date.now() - started).toBeLessThan(5000);
@@ -616,8 +655,13 @@ export async function load(url, context, nextLoad) {
         const startupLoads = readFileSync(trace, "utf8").trim().split("\n").map(line => JSON.parse(line) as string);
         expect(startupLoads).toContain(pathToFileURL(join(distribution, "composition/session-ownership-native.js")).href);
         expect(startupLoads.some(url => /session-cleanup|device-lab-admin|device-lab-broker/.test(url))).toBe(false);
+        snapshot = withSharedMutationLock(guard, () => store.update(snapshot, {...snapshot.observation, registration: "ready"}));
+        const publication = {generation: snapshot.observation.generation, sequence: 1, containerId: idA, cleanupEnabled: true};
+        snapshot = withSharedMutationLock(guard, () => store.update(snapshot, {...snapshot.observation, pending: {...publication, kind: "update"}}));
         child.send({ type: "update", sequence: 1, containerId: idA, cleanupEnabled: true });
-        await eventually(() => owner.messages.some(message => (message as { type?: string }).type === "ack"), "captured ID ACK", 5000);
+        await eventually(() => owner.messages.some(message => (message as { type?: string; sequence?: number }).type === "ack"
+            && (message as {sequence?: number}).sequence === 1), "captured ID ACK", 5000);
+        snapshot = withSharedMutationLock(guard, () => store.update(snapshot, {...snapshot.observation, pending: null, lastAcknowledged: publication}));
         child.disconnect();
         await eventually(() => existsSync(held), "authorized cleanup reaches actual held module");
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -727,19 +771,22 @@ export async function load(url, context, nextLoad) {
         expect(calls()).toEqual([]); // No acknowledged ID means no runtime discovery or stop.
     });
 
-    it.skipIf(process.platform === "win32")("preserves another host owner and stops only the final acknowledged exact ID", async () => {
+    it.skipIf(process.platform === "win32")("stops each acknowledged exact ID independently while preserving the other live owner", async () => {
         const first = await start("", idA);
         const last = await start("", idB);
+        const peerEvidence = [last.ready.lock, last.ready.lock + ".guardian.json", last.ready.lock + ".runtime.json"];
+        const peerBytes = peerEvidence.map(path => readFileSync(path));
         await kill(first);
         await eventually(() => !existsSync(first.ready.lock), "first claim removal");
         await eventually(() => !running(first.ready.guardian), "first guardian exit");
         expect(existsSync(last.ready.lock)).toBe(true);
         expect(running(last.ready.guardian)).toBe(true);
-        expect(stops()).toEqual([]);
+        expect(peerEvidence.map(path => readFileSync(path))).toEqual(peerBytes);
+        expect(stops()).toEqual([["stop", idA]]);
         await kill(last);
         await eventually(() => !existsSync(last.ready.lock), "last claim removal");
         await eventually(() => !running(last.ready.guardian), "last guardian exit");
-        expect(stops()).toEqual([["stop", idB]]);
+        expect(stops()).toEqual([["stop", idA], ["stop", idB]]);
         // Device cleanup may detect runtime flavor. Container name discovery
         // (ps/inspect) and any other runtime operation remain forbidden here.
         const metadata = new Set([
@@ -930,7 +977,7 @@ export async function load(url, context, nextLoad) {
         expect(stops()).toEqual([]);
         candidate.child.send({ event: "resume-inspection", predecessorLock: predecessor.ready.lock });
         const observed = await frame(candidate, "diagnostic-observed");
-        expect(observed.active).not.toContain(basename(predecessor.ready.lock));
+        expect(observed.active).toContain(basename(predecessor.ready.lock));
         expect(observed.active).toContain(basename(inspected.lock));
         expect(observed.predecessorPresent).toBe(true);
         expect(existsSync(predecessor.ready.lock)).toBe(true);

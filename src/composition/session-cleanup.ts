@@ -13,15 +13,15 @@ export { removeNativeSessionClaim, setupNativeSessionCleanupSignals } from "../a
 
 export function createNativeSessionCleanup(
     withLifecycleLock: SessionCleanupPorts["withLifecycleLock"],
-    hasOtherClaims: SessionCleanupPorts["hasOtherClaims"],
+    peerVetoes: SessionCleanupPorts["peerVetoes"],
     removeClaim: SessionCleanupPorts["removeClaim"] = removeNativeOwnedSessionClaim,
     readRuntimeInvocation: () => NativeRuntimeInvocation = () => { throw new Error("No captured native runtime invocation for session cleanup."); },
 ) {
     return createSessionCleanup({
         projectId: (path) => getProjectId(path),
         withLifecycleLock,
-        hasOtherClaims,
-        removeClaim: (path) => removeClaim(path),
+        peerVetoes,
+        removeClaim: (path, settlement) => removeClaim(path, settlement),
         cleanupDevices: (path, timeoutMs, profile) => cleanupNativeSessionDevices(path, timeoutMs, profile),
         reportDeviceCleanupFailure: (error) => reportNativeSessionDeviceCleanupFailure(error),
         stopContainer: (readContainerId) => stopNativeSessionContainer(readContainerId, readRuntimeInvocation()),

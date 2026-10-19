@@ -9,6 +9,7 @@ class FixtureFailure extends Error {
     constructor(readonly kind: RemoteFailureKind, readonly evidence?: symbol) { super(kind); }
 }
 function fixture() {
+    let lifecycleHeld = false;
     const trace: unknown[][] = []; const id = "a".repeat(64); const token = "b".repeat(32);
     const state = {
         stop: false, busy: false, userAnswer: "newuser",
@@ -45,8 +46,13 @@ function fixture() {
         report: event => { trace.push(["report", event]); },
         fail: (kind, original) => { trace.push(["fail", kind, original]); throw new FixtureFailure(kind, original); },
         createSessionLock: prefix => { trace.push(["claim", prefix]); return "claim"; },
-        removeSessionLock: file => { trace.push(["remove", file]); if (state.removalFault) throw state.removalFault; return undefined; },
-        withLifecycleLock: (prefix, operation) => { trace.push(["sync-lock", prefix]); return operation(); },
+        removeSessionLock: file => { expect(lifecycleHeld).toBe(false); trace.push(["remove", file]); if (state.removalFault) throw state.removalFault; return undefined; },
+        removeSessionLockInHeldLifecycleLock: file => { expect(lifecycleHeld).toBe(true); trace.push(["remove", file]); if (state.removalFault) throw state.removalFault; return undefined; },
+        withLifecycleLock: (prefix, operation) => {
+            expect(lifecycleHeld).toBe(false);
+            trace.push(["sync-lock", prefix]); lifecycleHeld = true;
+            try { return operation(); } finally { lifecycleHeld = false; }
+        },
         withLifecycleLockAsync: <Value>(prefix: string, operation: () => Promise<Value>): Promise<Value> => { trace.push(["async-lock", prefix]); return operation(); },
         startHeartbeat: (callback, milliseconds) => {
             state.heartbeat = callback; trace.push(["heartbeat", milliseconds]);
@@ -273,20 +279,20 @@ describe("whole remote semantic workflows", () => {
         expect(trace.some(row => row[0] === "pause" || row[0] === "release")).toBe(false);
     });
 
-    it("failed stop and thrown pause preserve duplicate local removal and failure exit", async () => {
+    it("failed stop and thrown pause preserve failure exit without reopening a retired local claim", async () => {
         const failedStop = fixture(); failedStop.state.stop = true; failedStop.ports.stopReservedContainer = () => ({ kind: "failed", evidence });
         await expect(failedStop.services().remoteExec("relative")).rejects.toThrow("exit:1");
         expect(failedStop.trace).toContainEqual(["fail", "stop-failed", evidence]);
-        expect(failedStop.trace.filter(row => row[0] === "remove")).toHaveLength(2);
+        expect(failedStop.trace.filter(row => row[0] === "remove")).toHaveLength(1);
         expect(failedStop.trace).toContainEqual(["release", { config, name: "expected-name", token: failedStop.token }]);
         expect(index(failedStop.trace, "cancel")).toBeLessThan(index(failedStop.trace, "release"));
-        expect(index(failedStop.trace, "release")).toBeLessThan(failedStop.trace.map(row => row[0]).lastIndexOf("remove"));
+        expect(index(failedStop.trace, "remove")).toBeLessThan(index(failedStop.trace, "release"));
         expect(failedStop.trace.some(row => row[0] === "pause")).toBe(false);
         const thrownPause = fixture(); thrownPause.state.stop = true; const fault = Error("pause");
         thrownPause.ports.pauseSync = name => { thrownPause.trace.push(["pause", name]); throw fault; };
         await expect(thrownPause.services().remoteExec("relative")).rejects.toThrow("exit:1");
         expect(events(thrownPause.trace)).toContainEqual({ kind: "unexpected-error", error: fault });
-        expect(thrownPause.trace.filter(row => row[0] === "remove")).toHaveLength(2);
+        expect(thrownPause.trace.filter(row => row[0] === "remove")).toHaveLength(1);
         expect(thrownPause.trace.some(row => row[0] === "release")).toBe(false);
     });
 

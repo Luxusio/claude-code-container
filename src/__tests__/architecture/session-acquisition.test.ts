@@ -27,6 +27,11 @@ function fixture() {
             try { return await operation(); }
             finally { held = false; trace.push(`unlock:${prefix}`); }
         },
+        recoverPredecessors(prefix) {
+            inGuard("recover");
+            expect(prefix).toBe("project--p--work");
+            expect(claims.has(own)).toBe(false);
+        },
         reserve(projectId, profile) {
             inGuard("reserve");
             expect([projectId, profile]).toEqual([request.projectId, request.profile]);
@@ -68,7 +73,7 @@ function fixture() {
     return { ports, trace, claims, inGuard, isHeld: () => held };
 }
 
-const portNames = ["withLifecycleLock", "reserve", "initializeCapture", "inspectExisting", "arm",
+const portNames = ["withLifecycleLock", "recoverPredecessors", "reserve", "initializeCapture", "inspectExisting", "arm",
     "acknowledge", "reconcileForeign", "rollback"] as const;
 
 describe("explicit session acquisition construction", () => {
@@ -97,6 +102,41 @@ describe("explicit session acquisition construction", () => {
 });
 
 describe("atomic session acquisition", () => {
+    it("awaits predecessor recovery under the same guard before reserving a new monitored owner", async () => {
+        const f = fixture();
+        const entered = deferred();
+        const recovered = deferred();
+        f.ports.recoverPredecessors = async prefix => {
+            f.inGuard("recovery-pending");
+            expect(prefix).toBe("project--p--work");
+            entered.resolve();
+            await recovered.promise;
+            f.inGuard("recovery-complete");
+        };
+        const acquisition = createSessionAcquisition(f.ports).run(request);
+        await entered.promise;
+        expect(f.trace).toEqual(["lock:project--p--work", "recovery-pending"]);
+        expect([...f.claims]).toEqual([predecessor]);
+        expect(f.isHeld()).toBe(true);
+        recovered.resolve();
+        await expect(acquisition).resolves.toEqual({ lockFile: own, existingId: "captured-container-id" });
+        expect(f.trace).toEqual(["lock:project--p--work", "recovery-pending", "recovery-complete", "reserve", "capture", "inspect", "ready", "ack", "reconcile", "unlock:project--p--work"]);
+    });
+
+    it("a predecessor recovery failure neither reserves nor rolls back a successor claim", async () => {
+        const f = fixture();
+        const failure = new Error("predecessor cleanup remains incomplete");
+        f.ports.recoverPredecessors = async () => {
+            f.inGuard("recovery-failed");
+            await Promise.resolve();
+            throw failure;
+        };
+        await expect(createSessionAcquisition(f.ports).run(request)).rejects.toBe(failure);
+        expect(f.trace).toEqual(["lock:project--p--work", "recovery-failed", "unlock:project--p--work"]);
+        expect([...f.claims]).toEqual([predecessor]);
+        expect(f.isHeld()).toBe(false);
+    });
+
     it("holds one guard through pending READY and existing-ID ACK before pruning predecessors", async () => {
         const f = fixture();
         const readyEntered = deferred();
@@ -115,12 +155,12 @@ describe("atomic session acquisition", () => {
         await readyEntered.promise;
         expect(f.isHeld()).toBe(true);
         expect([...f.claims]).toEqual([predecessor, own]);
-        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect", "ready-pending"]);
+        expect(f.trace).toEqual(["lock:project--p--work", "recover", "reserve", "capture", "inspect", "ready-pending"]);
         ready.resolve();
         await ackEntered.promise;
         expect(f.isHeld()).toBe(true);
         expect([...f.claims]).toEqual([predecessor, own]);
-        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect", "ready-pending", "ready-complete", "ack-pending"]);
+        expect(f.trace).toEqual(["lock:project--p--work", "recover", "reserve", "capture", "inspect", "ready-pending", "ready-complete", "ack-pending"]);
         ack.resolve();
         await expect(acquisition).resolves.toEqual({ lockFile: own, existingId: "captured-container-id" });
         expect(f.trace.slice(-3)).toEqual(["ack-complete", "reconcile", "unlock:project--p--work"]);
@@ -155,7 +195,7 @@ describe("atomic session acquisition", () => {
         await expect(createSessionAcquisition(f.ports).run(request)).resolves.toEqual({
             lockFile: own, existingId: "captured-container-id", requiresLiveVerification: true,
         });
-        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect-stopped-legacy", "ready", "ack", "reconcile", "unlock:project--p--work"]);
+        expect(f.trace).toEqual(["lock:project--p--work", "recover", "reserve", "capture", "inspect-stopped-legacy", "ready", "ack", "reconcile", "unlock:project--p--work"]);
         expect([...f.claims]).toEqual([own]);
     });
 
@@ -169,7 +209,7 @@ describe("atomic session acquisition", () => {
             "Existing session container ownership could not be inspected (container-list-timeout; runtime: podman). The existing container was preserved.",
         );
         expect([...f.claims]).toEqual([predecessor]);
-        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect-unknown", "rollback", "unlock:project--p--work"]);
+        expect(f.trace).toEqual(["lock:project--p--work", "recover", "reserve", "capture", "inspect-unknown", "rollback", "unlock:project--p--work"]);
     });
 
     it("unknown inspection cannot stand for proven absence or prune the predecessor", async () => {
@@ -177,14 +217,14 @@ describe("atomic session acquisition", () => {
         f.ports.inspectExisting = () => { f.inGuard("inspect-unknown"); return { known: false, containerId: null, runtime: "docker" }; };
         await expect(createSessionAcquisition(f.ports).run(request)).rejects.toThrow();
         expect([...f.claims]).toEqual([predecessor]);
-        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect-unknown", "rollback", "unlock:project--p--work"]);
+        expect(f.trace).toEqual(["lock:project--p--work", "recover", "reserve", "capture", "inspect-unknown", "rollback", "unlock:project--p--work"]);
     });
 
     it("proven absence commits after READY without sending a fabricated existing-ID acknowledgement", async () => {
         const f = fixture();
         f.ports.inspectExisting = () => { f.inGuard("inspect-absent"); return { known: true, containerId: null, runtime: "docker" }; };
         await expect(createSessionAcquisition(f.ports).run(request)).resolves.toEqual({ lockFile: own, existingId: null });
-        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect-absent", "ready", "reconcile", "unlock:project--p--work"]);
+        expect(f.trace).toEqual(["lock:project--p--work", "recover", "reserve", "capture", "inspect-absent", "ready", "reconcile", "unlock:project--p--work"]);
         expect([...f.claims]).toEqual([own]);
     });
 
@@ -218,7 +258,7 @@ describe("atomic session acquisition", () => {
         f.ports.rollback = path => { f.inGuard("rollback"); f.claims.delete(path); };
         await expect(createSessionAcquisition(f.ports).run(request)).rejects.toBe(failure);
         expect([...f.claims]).toEqual([own]);
-        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect", "ready", "ack-complete", "reconcile-partial", "unlock:project--p--work"]);
+        expect(f.trace).toEqual(["lock:project--p--work", "recover", "reserve", "capture", "inspect", "ready", "ack-complete", "reconcile-partial", "unlock:project--p--work"]);
         expect(f.isHeld()).toBe(false);
     });
 
@@ -229,7 +269,7 @@ describe("atomic session acquisition", () => {
         f.ports.reconcileForeign = () => { f.inGuard("reconcile-failed"); throw failure; };
         await expect(createSessionAcquisition(f.ports).run(request)).rejects.toBe(failure);
         expect([...f.claims]).toEqual([predecessor]);
-        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect-absent", "ready", "reconcile-failed", "rollback", "unlock:project--p--work"]);
+        expect(f.trace).toEqual(["lock:project--p--work", "recover", "reserve", "capture", "inspect-absent", "ready", "reconcile-failed", "rollback", "unlock:project--p--work"]);
         expect(f.isHeld()).toBe(false);
     });
 
@@ -244,7 +284,7 @@ describe("atomic session acquisition", () => {
         expect(rejected.errors).toEqual([readyFailure, rollbackFailure]);
         expect(rejected.cause).toBe(readyFailure);
         expect([...f.claims]).toEqual([predecessor, own]);
-        expect(f.trace).toEqual(["lock:project--p--work", "reserve", "capture", "inspect", "ready-failed", "rollback-failed", "unlock:project--p--work"]);
+        expect(f.trace).toEqual(["lock:project--p--work", "recover", "reserve", "capture", "inspect", "ready-failed", "rollback-failed", "unlock:project--p--work"]);
         expect(f.isHeld()).toBe(false);
     });
 
@@ -269,7 +309,33 @@ describe("acquisition cancellation checkpoints", () => {
         await expect(createSessionAcquisition(f.ports).run(request, () => { throw cancelled; })).rejects.toBe(cancelled);
         expect([...f.claims]).toEqual([predecessor]);
         expect(f.trace).not.toContain("reserve");
+        expect(f.trace).not.toContain("recover");
         expect(f.trace).not.toContain("rollback");
+        expect(f.isHeld()).toBe(false);
+    });
+
+    it("cancellation while recovery is pending waits for settlement, then creates no new reservation", async () => {
+        const f = fixture();
+        const entered = deferred();
+        const recovered = deferred();
+        const cancellation = new Error("cancelled during predecessor recovery");
+        let cancelled = false;
+        f.ports.recoverPredecessors = async () => {
+            f.inGuard("recovery-pending");
+            entered.resolve();
+            await recovered.promise;
+            f.inGuard("recovery-complete");
+        };
+        const acquisition = createSessionAcquisition(f.ports).run(request, () => { if (cancelled) throw cancellation; });
+        const rejected = expect(acquisition).rejects.toBe(cancellation);
+        await entered.promise;
+        cancelled = true;
+        expect(f.isHeld()).toBe(true);
+        expect([...f.claims]).toEqual([predecessor]);
+        recovered.resolve();
+        await rejected;
+        expect(f.trace).toEqual(["lock:project--p--work", "recovery-pending", "recovery-complete", "unlock:project--p--work"]);
+        expect([...f.claims]).toEqual([predecessor]);
         expect(f.isHeld()).toBe(false);
     });
 

@@ -41,7 +41,9 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
             const id = options.replace && first ? "setup-id" : "final-id"; first = false;
             if (!options.running) onStarted(id); onReady(id, {startedByInvocation: !options.running}); return "ccc-repo";
         },
-        setSessionContainer: vi.fn(), setCleanupEnabled: vi.fn(), confirmOwnership: vi.fn(async () => { events.push("confirm"); }),
+        beginSessionStartupInHeldLifecycleLock: vi.fn(), recordSessionOwnStartInHeldLifecycleLock: vi.fn(),
+        publishSessionReadyInHeldLifecycleLock: vi.fn(), setCleanupEnabled: vi.fn(),
+        confirmOwnership: vi.fn(async () => { events.push("confirm"); }),
         configLock<T>(operation: () => T): T { return operation(); },
         restoreConfig: vi.fn(() => { events.push("restore"); }), ensureUv: vi.fn(), buildMcpConfig: vi.fn(async () => []), setupProxy: vi.fn(),
         containerRunning: id => id !== "setup-id", installTools: vi.fn(), ensureClaude: vi.fn(), prepareCodexConfig: vi.fn(), assertCodexState: vi.fn(), ensureCodexHarness: vi.fn(),
@@ -242,8 +244,9 @@ describe("acquired session lifetime", () => {
         expect(remove).not.toHaveBeenCalled();
         expect(f.ports.launchCommand).not.toHaveBeenCalled();
         expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
-        if (started) expect(f.ports.setCleanupEnabled).toHaveBeenCalledWith(true);
-        else expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).toHaveBeenCalledTimes(started ? 1 : 0);
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
     });
 
     it.each(["missing", "stale"])("replaces a stopped incompatible container through the real session guard after %s fingerprint bind proof", async fingerprint => {
@@ -315,7 +318,7 @@ describe("acquired session lifetime", () => {
             expect(commands.some(args => ["start", "stop", "exec", "volume"].includes(args[0]))).toBe(false);
             for (const [name, content] of files) expect(readFileSync(join(root, name), "utf8")).toBe(content);
             expect(readdirSync(root).sort()).toEqual([...files.keys()].sort());
-            expect(f.ports.setSessionContainer).toHaveBeenCalledWith(nextId);
+            expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledWith(nextId, {startedByInvocation: true});
             expect(f.ports.launchCommand).toHaveBeenCalledOnce();
         } finally {
             nativeRuntime._resetRuntimeCacheForTest();
@@ -344,8 +347,8 @@ describe("acquired session lifetime", () => {
         const f = fixture({running: true}), failure = new Error("join initialization failed");
         f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => { throw failure; }});
         await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
-        expect(f.ports.setSessionContainer).toHaveBeenLastCalledWith("final-id");
-        expect(f.ports.setCleanupEnabled).toHaveBeenCalledWith(false);
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenLastCalledWith("final-id", {startedByInvocation: false});
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
         expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
         expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
         expect(f.ports.launchCommand).not.toHaveBeenCalled();
@@ -359,8 +362,9 @@ describe("acquired session lifetime", () => {
         vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "ownership-unconfirmed") throw new Error("report failed"); });
         const result = settled(f.exec("/repo", ["codex"]));
         await entered.promise;
-        expect(f.ports.setSessionContainer).toHaveBeenLastCalledWith("partial-start-id");
-        expect(f.ports.setCleanupEnabled).toHaveBeenLastCalledWith(true);
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).toHaveBeenLastCalledWith("partial-start-id");
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
         expect(f.ports.cleanupSession).not.toHaveBeenCalled();
         if (rejects) gate.reject(acknowledgement); else gate.resolve();
         expect(await result).toMatchObject({ok: false, error: {message: "Container setup failed", cause: primary}});
@@ -502,6 +506,64 @@ describe("acquired session lifetime", () => {
 });
 
 describe("container exec semantic workflow", () => {
+    it("publishes startup intent, positive own start and ready while the one lifecycle guard is held", async () => {
+        const f = fixture(), publications: string[] = [];
+        let held = false;
+        f.ports.lifecycleLock = async (_prefix, operation) => {
+            expect(held).toBe(false);
+            held = true;
+            try { return await operation(); } finally { held = false; publications.push("released"); }
+        };
+        f.ports.beginSessionStartupInHeldLifecycleLock = vi.fn(() => { expect(held).toBe(true); publications.push("intent"); });
+        f.ports.recordSessionOwnStartInHeldLifecycleLock = vi.fn(id => { expect(held).toBe(true); expect(id).toBe("final-id"); publications.push("own-start"); });
+        f.ports.publishSessionReadyInHeldLifecycleLock = vi.fn((id, handoff) => {
+            expect(held).toBe(true); expect(id).toBe("final-id"); expect(handoff).toEqual({startedByInvocation: true}); publications.push("ready");
+        });
+        f.ports.startContainer = (...args) => {
+            expect(publications).toEqual(["intent"]);
+            args[9]("final-id");
+            expect(publications).toEqual(["intent", "own-start"]);
+            // A late reuse observation must not discard this invocation's
+            // positively recorded native start of the same exact target.
+            args[7]("final-id", {startedByInvocation: false});
+            return "ccc-repo";
+        };
+        vi.mocked(f.ports.confirmOwnership).mockImplementation(async () => { expect(held).toBe(false); publications.push("ack"); });
+        const initialize = vi.fn(() => { expect(held).toBe(false); expect(publications.slice(0, 5)).toEqual(["intent", "own-start", "ready", "released", "ack"]); });
+        f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize});
+        await expect(f.exec("/repo", ["codex"])).resolves.toBe(0);
+        expect(initialize).toHaveBeenCalledOnce();
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).toHaveBeenCalledOnce();
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledOnce();
+    });
+
+    it.each(["intent", "own-start", "ready"] as const)("a failed durable %s publication cannot continue into initialization or command execution", async checkpoint => {
+        const f = fixture(), failure = new Error("durable publication rejected: " + checkpoint);
+        const initialize = vi.fn();
+        f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize});
+        if (checkpoint === "intent") f.ports.beginSessionStartupInHeldLifecycleLock = vi.fn(() => { throw failure; });
+        else if (checkpoint === "own-start") f.ports.recordSessionOwnStartInHeldLifecycleLock = vi.fn(() => { throw failure; });
+        else f.ports.publishSessionReadyInHeldLifecycleLock = vi.fn(() => { throw failure; });
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
+        expect(initialize).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        if (checkpoint === "intent") expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
+        if (checkpoint !== "ready") expect(f.ports.publishSessionReadyInHeldLifecycleLock).not.toHaveBeenCalled();
+    });
+
+    it("a reused ready target publishes no own-start compensation before a failing helper", async () => {
+        const f = fixture({running: true}), failure = new Error("joined initialization failed");
+        f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => { throw failure; }});
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).toHaveBeenCalledOnce();
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith("final-id", {startedByInvocation: false});
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+
     it("prepares once before mutation locks and initializes after release and ownership acknowledgement", async () => {
         const f = fixture();
         let stateHeld = false, lifecycleHeld = false, setupHeld = false;
@@ -533,16 +595,18 @@ describe("container exec semantic workflow", () => {
         };
         await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
         expect(stateCalls).toBe(0); expect(lifecycleCalls).toBe(0);
-        expect(f.ports.setSessionContainer).not.toHaveBeenCalled(); expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).not.toHaveBeenCalled(); expect(f.ports.launchCommand).not.toHaveBeenCalled();
     });
     it("helper failure retains acknowledged exact startup identity for cleanup", async () => {
         const f = fixture(), failure = new Error("SSH initialization failed");
         f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => {
-            expect(f.ports.setSessionContainer).toHaveBeenLastCalledWith("final-id");
+            expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenLastCalledWith("final-id", {startedByInvocation: true});
             expect(f.ports.confirmOwnership).toHaveBeenCalled(); throw failure;
         }});
         await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
-        expect(f.ports.setCleanupEnabled).toHaveBeenLastCalledWith(true); expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).toHaveBeenLastCalledWith("final-id");
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true); expect(f.ports.launchCommand).not.toHaveBeenCalled();
     });
     it.each([false, true])("preserves ordered command, disposal and cleanup failures with commandFailure=%s", async commandFails => {
         const f = fixture(), primary = new Error("command failed"), disposal = new Error("disposal failed"), cleanup = new Error("cleanup failed");
@@ -594,7 +658,7 @@ describe("container exec semantic workflow", () => {
         expect(f.ports.installTools).toHaveBeenLastCalledWith(finalId, expect.objectContaining({name: "codex"}));
         expect(f.ports.prepareCodexConfig).toHaveBeenCalledWith(finalId, undefined);
         expect(f.ports.prepareCommand).toHaveBeenCalledWith(expect.objectContaining({target: finalId}));
-        expect(f.ports.setSessionContainer).toHaveBeenLastCalledWith(finalId);
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenLastCalledWith(finalId, {startedByInvocation: true});
     });
     it.each(["initial", "readiness", "tool-retry"] as const)("propagates a rejected %s guard without proceeding", async checkpoint => {
         const f = fixture();
@@ -871,7 +935,8 @@ describe("workspace execution admission", () => {
         expect(f.ports.acquireOwnership).not.toHaveBeenCalled();
         expect(f.ports.worktreeMounts).not.toHaveBeenCalled();
         expect(f.ports.prepareContainer).not.toHaveBeenCalled();
-        expect(f.ports.setSessionContainer).not.toHaveBeenCalled();
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).not.toHaveBeenCalled();
         expect(f.ports.launchCommand).not.toHaveBeenCalled();
     });
     it("waits for the family lock before readiness and session ownership", async () => {

@@ -12,9 +12,11 @@ import {
 import { getProjectId } from "../../utils.js";
 import { setRuntimeOverride } from "../../container-runtime.js";
 import { fileSymlinkOrSkip } from "../helpers/file-symlink-fixture.js";
+import { createNativeSessionClaimObservationStore } from "../../adapters/session-claim-observation.js";
+import { encodeSessionClaim, sessionClaimPrefix } from "../../domain/session-claims.js";
 import type {
     SessionOwnershipBinding, SessionOwnershipChannel, SessionOwnershipGuardianPorts,
-    SessionOwnershipMessage, SessionOwnershipPorts, SessionOwnershipReceipt,
+    SessionOwnershipMessage, SessionOwnershipPorts, SessionOwnershipReceipt, SessionOwnershipPublication,
 } from "../../ports/session-ownership.js";
 
 import { validateNativeRuntimeInvocation } from "../../adapters/container-runtime-invocation.js";
@@ -37,6 +39,9 @@ const secondContainerId = "b".repeat(12);
 
 function parentFixture() {
     const sent: SessionOwnershipMessage[] = [];
+    const publicationEvents: string[] = [];
+    let held = true;
+    let currentPublication: SessionOwnershipPublication | null = null;
     const failures: Error[] = [];
     const cleanups: unknown[][] = [];
     const timers = new Map<object, () => void>();
@@ -46,7 +51,7 @@ function parentFixture() {
     let unreferenced = 0;
     const channel: SessionOwnershipChannel = {
         pid: 70,
-        async send(message) { sent.push(message); },
+        async send(message) { publicationEvents.push(`send:${message.type}`); sent.push(message); },
         onMessage(listener) { messages.add(listener); return () => { messages.delete(listener); }; },
         onLoss(listener) { losses.add(listener); return () => { losses.delete(listener); }; },
         close() { closed++; },
@@ -60,9 +65,47 @@ function parentFixture() {
         clearTimer(timer) { timers.delete(timer as object); },
         timeoutMs: 30,
         assertOwnership: (ownedBinding, ownedReceipt) => { expect(ownedBinding).toEqual(binding); expect(ownedReceipt).toEqual(receipt); },
+        publication: {
+            async withLifecycleLock(operation) {
+                expect(held).toBe(false);
+                publicationEvents.push("lock");
+                held = true;
+                try { return await operation(); }
+                finally { held = false; publicationEvents.push("unlock"); }
+            },
+            registerGuardian(pid) {
+                expect(held).toBe(true);
+                expect(pid).toBe(70);
+                publicationEvents.push("registered");
+            },
+            ready() { expect(held).toBe(true); publicationEvents.push("ready-published"); },
+            stageUpdate(sequence, id, cleanupEnabled) {
+                expect(held).toBe(true);
+                publicationEvents.push(`staged:${sequence}:${id}:${cleanupEnabled}`);
+                currentPublication = Object.freeze({ generation: `generation-${sequence}`, sequence });
+                return currentPublication;
+            },
+            acknowledgeUpdate(publication) {
+                expect(held).toBe(true);
+                publicationEvents.push(`ack-published:${publication.sequence}`);
+                return publication === currentPublication;
+            },
+            beginStartup() {
+                expect(held).toBe(true);
+                publicationEvents.push("startup-published");
+                currentPublication = null;
+            },
+            recordOwnStart(id) {
+                expect(held).toBe(true);
+                publicationEvents.push(`own-start-published:${id}`);
+                currentPublication = null;
+            },
+        },
     };
     return {
-        channel, ports, sent, failures, cleanups, timers,
+        channel, ports, sent, failures, cleanups, timers, publicationEvents,
+        setHeld: (value: boolean) => { held = value; },
+        isHeld: () => held,
         arm: () => armSessionOwnership(binding, receipt, runtimeInvocation, ports, error => { failures.push(error); }),
         message: (message: unknown) => { for (const listener of messages) listener(message); },
         loss: (error: Error) => { for (const listener of losses) listener(error); },
@@ -72,31 +115,40 @@ function parentFixture() {
 }
 
 describe("native Windows receipt capture when named device is unavailable", () => {
-    it.each(["valid", "non-Windows", "cross-volume", "replacement", "birthtime", "second-link", "named-link", "rebound-link", "rebound-name", "named-device", "unknown-handle", "unknown-inode", "size-change", "oversize", "permission", "read-failure"])("qualifies exact ownership and closes every opened descriptor: %s", async outcome => {
+    it.each(["valid", "non-Windows", "cross-volume", "replacement", "birthtime", "second-link", "named-link", "rebound-link", "rebound-name", "named-device", "unknown-handle", "unknown-inode", "size-change", "oversize", "permission", "read-failure", "short-read", "read-growth", "post-read-size", "post-read-inode", "post-read-mtime", "post-read-name"])("qualifies exact ownership and closes every opened descriptor: %s", async outcome => {
         const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
         Object.defineProperty(process, "platform", { configurable: true, value: outcome === "non-Windows" ? "linux" : "win32" });
         const opened: number[] = [];
         const closed: number[] = [];
         let names = 0;
-        const stats = (dev: bigint, ino = 7n, birthtimeNs = 9n, file = true, size = 3n) => ({ dev, ino, birthtimeNs, size, isFile: () => file });
+        const stats = (dev: bigint, ino = 7n, birthtimeNs = 9n, file = true, size = 2n, mtimeNs = 12n) => ({ dev, ino, birthtimeNs, size, mtimeNs, ctimeNs: 13n, isFile: () => file });
         let bytes = Buffer.from("42");
         let volume = 11n;
+        let read = false;
         vi.resetModules();
         vi.doMock("fs", async original => ({ ...await original<typeof import("node:fs")>(),
             lstatSync: () => {
                 names++;
                 return stats(outcome === "named-device" && names > 1 ? 12n : 0n,
-                    outcome === "rebound-name" && names > 1 ? 8n : 7n, 9n, outcome !== "named-link" && !(outcome === "rebound-link" && names > 1));
+                    (outcome === "rebound-name" && names > 1) || (outcome === "post-read-name" && read) ? 8n : 7n,
+                    9n, outcome !== "named-link" && !(outcome === "rebound-link" && names > 1));
             },
             openSync: () => {
                 if (outcome === "permission" && opened.length === 1) throw Object.assign(new Error("second open denied"), { code: "EACCES" });
                 const fd = 100 + opened.length; opened.push(fd); return fd;
             },
             fstatSync: (fd: number) => stats(outcome === "unknown-handle" ? 0n : outcome === "cross-volume" && fd === 101 ? 12n : volume,
-                outcome === "unknown-inode" ? 0n : outcome === "replacement" && fd === 101 ? 8n : 7n,
+                outcome === "unknown-inode" ? 0n : (outcome === "replacement" && fd === 101) || (outcome === "post-read-inode" && read) ? 8n : 7n,
                 outcome === "birthtime" && fd === 101 ? 10n : 9n,
-                !(outcome === "second-link" && fd === 101), outcome === "oversize" && fd === 101 ? 4097n : outcome === "size-change" && fd === 101 ? 4n : 3n),
-            readFileSync: () => { if (outcome === "read-failure") throw new Error("read denied"); return bytes; },
+                !(outcome === "second-link" && fd === 101), outcome === "oversize" && fd === 101 ? 4097n
+                    : (outcome === "size-change" && fd === 101) || (outcome === "post-read-size" && read) ? 3n : 2n,
+                outcome === "post-read-mtime" && read ? 14n : 12n),
+            readSync: (_fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
+                if (outcome === "read-failure") throw new Error("read denied");
+                read = true;
+                const content = outcome === "read-growth" ? Buffer.alloc(4097, 49) : outcome === "short-read" ? bytes.subarray(0, 1) : bytes;
+                return content.copy(buffer, offset, position, Math.min(content.length, position + length));
+            },
             closeSync: (fd: number) => { closed.push(fd); },
         }));
         try {
@@ -134,7 +186,7 @@ describe("parent ownership handshake", () => {
         expect(f.sent[0]).toEqual({ type: "init", binding, receipt, runtimeInvocation });
         f.message({ type: "ready" });
         const handle = await pending;
-        const handoff = handle.updateContainer(containerId, true);
+        const handoff = handle.updateContainerInHeldLifecycleLock(containerId, true);
         expect(f.sent.at(-1)).toEqual({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
         f.message({ type: "ack", sequence: 1 });
         await handoff;
@@ -262,7 +314,7 @@ describe("parent ownership handshake", () => {
         expect(f.failures).toEqual([failure]);
         expect(f.cleanups).toEqual([]);
         expect(f.state().listeners).toBe(0);
-        await expect(handle.updateContainer(containerId)).rejects.toThrow();
+        await expect(handle.updateContainerInHeldLifecycleLock(containerId)).rejects.toThrow();
     });
 
     it("the ownership handle checks the native receipt even after channel loss to guard failure cleanup", async () => {
@@ -286,7 +338,7 @@ describe("parent ownership handshake", () => {
         f.message({ type: "ready" });
         const handle = await pending;
         let acknowledged = false;
-        const update = handle.updateContainer(containerId).then(() => { acknowledged = true; });
+        const update = handle.updateContainerInHeldLifecycleLock(containerId).then(() => { acknowledged = true; });
         expect(f.sent.at(-1)).toEqual({ type: "update", sequence: 1, containerId, cleanupEnabled: false });
         f.message({ type: "ack", sequence: 9 });
         await Promise.resolve();
@@ -294,7 +346,7 @@ describe("parent ownership handshake", () => {
         f.message({ type: "ack", sequence: 1 });
         await update;
         expect(f.timers.size).toBe(0);
-        const next = handle.updateContainer(secondContainerId);
+        const next = handle.updateContainerInHeldLifecycleLock(secondContainerId);
         const rejection = expect(next).rejects.toThrow(/timed out/i);
         f.expire();
         await rejection;
@@ -328,16 +380,247 @@ describe("parent ownership handshake", () => {
         f.message({ type: "ready" });
         const handle = await pending;
         readyDeadline();
-        const update = handle.updateContainer(containerId);
+        const update = handle.updateContainerInHeldLifecycleLock(containerId);
         const handoffDeadline = [...f.timers.values()][0]!;
         f.message({ type: "ack", sequence: 1 });
         await update;
         handoffDeadline();
         expect(f.failures).toEqual([]);
         expect(f.state().closed).toBe(0);
-        const next = handle.updateContainer(secondContainerId);
+        const next = handle.updateContainerInHeldLifecycleLock(secondContainerId);
         f.message({ type: "ack", sequence: 2 });
         await next;
+    });
+});
+
+describe("parent durable ownership publication", () => {
+    it.each(["withLifecycleLock", "registerGuardian", "ready", "stageUpdate", "acknowledgeUpdate", "beginStartup", "recordOwnStart"] as const)("requires callable publication %s before any native effects", async name => {
+        const f = parentFixture();
+        f.ports.publication = { ...f.ports.publication, [name]: undefined } as unknown as SessionOwnershipPorts["publication"];
+        const launch = vi.fn(f.ports.launch);
+        f.ports.launch = launch;
+        await expect(f.arm()).rejects.toThrow(TypeError);
+        expect(launch).not.toHaveBeenCalled();
+        expect(f.sent).toEqual([]);
+        expect(f.cleanups).toEqual([]);
+    });
+
+    it("publishes guardian registration before init and readiness before exposing an armed handle", async () => {
+        const f = parentFixture();
+        const pending = f.arm();
+        expect(f.publicationEvents).toEqual(["registered", "send:init"]);
+        f.message({ type: "ready" });
+        const handle = await pending;
+        expect(handle.pid).toBe(70);
+        expect(f.publicationEvents).toEqual(["registered", "send:init", "ready-published"]);
+        expect(f.state().unreferenced).toBe(1);
+    });
+
+    it.each(["registerGuardian", "ready"] as const)("a failed %s publication rolls back startup instead of exposing the guardian", async phase => {
+        const f = parentFixture();
+        const failure = new Error(`durable ${phase} failed`);
+        f.ports.publication[phase] = () => { throw failure; };
+        const pending = f.arm();
+        const rejected = expect(pending).rejects.toBe(failure);
+        if (phase === "ready") f.message({ type: "ready" });
+        await rejected;
+        expect(f.cleanups).toEqual([[binding, receipt]]);
+        expect(f.state().unreferenced).toBe(0);
+        expect(f.state().listeners).toBe(0);
+        expect(f.timers.size).toBe(0);
+        if (phase === "registerGuardian") expect(f.sent).toEqual([]);
+    });
+
+    it("never sends an update whose durable pending publication failed", async () => {
+        const f = parentFixture();
+        const pending = f.arm();
+        f.message({ type: "ready" });
+        const handle = await pending;
+        const failure = new Error("pending file could not be qualified");
+        f.ports.publication.stageUpdate = () => { throw failure; };
+        await expect(handle.updateContainerInHeldLifecycleLock(containerId, true)).rejects.toBe(failure);
+        expect(f.sent).toEqual([{ type: "init", binding, receipt, runtimeInvocation }]);
+        expect(f.timers.size).toBe(0);
+        expect(f.cleanups).toEqual([]);
+    });
+
+    it("uses the caller's held guard for pending and ACK publication without reacquiring it", async () => {
+        const f = parentFixture();
+        const lock = vi.fn();
+        f.ports.publication.withLifecycleLock = async () => {
+            lock();
+            throw new Error("Held publication must not re-enter the lifecycle guard.");
+        };
+        const pending = f.arm();
+        f.message({ type: "ready" });
+        const handle = await pending;
+        const update = handle.updateContainerInHeldLifecycleLock(containerId, true);
+        expect(f.publicationEvents.slice(-2)).toEqual([`staged:1:${containerId}:true`, "send:update"]);
+        f.message({ type: "ack", sequence: 1 });
+        await expect(update).resolves.toBe(true);
+        expect(f.publicationEvents.at(-1)).toBe("ack-published:1");
+        expect(lock).not.toHaveBeenCalled();
+        expect(f.isHeld()).toBe(true);
+    });
+
+    it("standalone updates publish pending and acknowledged authority in separate guarded phases", async () => {
+        const f = parentFixture();
+        const pending = f.arm();
+        f.message({ type: "ready" });
+        const handle = await pending;
+        const sent = deferred();
+        const send = f.channel.send;
+        f.channel.send = async message => { await send(message); if (message.type === "update") sent.resolve(); };
+        f.setHeld(false);
+        const update = handle.updateContainer(containerId, true);
+        await sent.promise;
+        expect(f.isHeld()).toBe(false);
+        expect(f.publicationEvents.slice(-4)).toEqual(["lock", `staged:1:${containerId}:true`, "unlock", "send:update"]);
+        f.message({ type: "ack", sequence: 1 });
+        await expect(update).resolves.toBe(true);
+        expect(f.publicationEvents.slice(-3)).toEqual(["lock", "ack-published:1", "unlock"]);
+        expect(f.isHeld()).toBe(false);
+    });
+
+    it("a wire ACK does not resolve standalone confirmation before qualified durable publication settles", async () => {
+        const f = parentFixture();
+        const pending = f.arm();
+        f.message({ type: "ready" });
+        const handle = await pending;
+        const sendEntered = deferred();
+        const send = f.channel.send;
+        f.channel.send = async message => { await send(message); if (message.type === "update") sendEntered.resolve(); };
+        const publicationEntered = deferred();
+        const publicationAllowed = deferred();
+        const lock = f.ports.publication.withLifecycleLock;
+        let acquisitions = 0;
+        f.ports.publication.withLifecycleLock = async operation => {
+            if (++acquisitions === 2) { publicationEntered.resolve(); await publicationAllowed.promise; }
+            return lock(operation);
+        };
+        f.setHeld(false);
+        let settled = false;
+        const update = handle.updateContainer(containerId, true).then(result => { settled = true; return result; });
+        await sendEntered.promise;
+        f.message({ type: "ack", sequence: 1 });
+        await publicationEntered.promise;
+        expect(settled).toBe(false);
+        expect(f.publicationEvents).not.toContain("ack-published:1");
+        publicationAllowed.resolve();
+        await expect(update).resolves.toBe(true);
+        expect(f.publicationEvents).toContain("ack-published:1");
+    });
+
+    it("a failed ACK publication rejects confirmation and reports guardian loss exactly once", async () => {
+        const f = parentFixture();
+        const pending = f.arm();
+        f.message({ type: "ready" });
+        const handle = await pending;
+        const failure = new Error("acknowledged authority replacement detected");
+        f.ports.publication.acknowledgeUpdate = () => { throw failure; };
+        const update = handle.updateContainerInHeldLifecycleLock(containerId, true);
+        const rejected = expect(update).rejects.toBe(failure);
+        f.message({ type: "ack", sequence: 1 });
+        await rejected;
+        f.loss(new Error("later disconnect"));
+        expect(f.failures).toEqual([failure]);
+        expect(f.cleanups).toEqual([]);
+        expect(f.state().listeners).toBe(0);
+    });
+
+    it("returns false for a superseded ACK and cannot resurrect an earlier cleanup grant after revoke", async () => {
+        const f = parentFixture();
+        const pending = f.arm();
+        f.message({ type: "ready" });
+        const handle = await pending;
+        const grant = handle.updateContainerInHeldLifecycleLock(containerId, true);
+        const revoke = handle.updateContainerInHeldLifecycleLock(containerId, false);
+        f.message({ type: "ack", sequence: 2 });
+        await expect(revoke).resolves.toBe(true);
+        f.message({ type: "ack", sequence: 1 });
+        await expect(grant).resolves.toBe(false);
+        expect(f.failures).toEqual([]);
+        expect(f.sent.slice(-2)).toEqual([
+            { type: "update", sequence: 1, containerId, cleanupEnabled: true },
+            { type: "update", sequence: 2, containerId, cleanupEnabled: false },
+        ]);
+    });
+
+    it("prepares startup updates synchronously under the held guard and delays IPC until transport is requested", async () => {
+        const f = parentFixture();
+        const pending = f.arm();
+        f.message({ type: "ready" });
+        const handle = await pending;
+        expect(handle.beginStartupInHeldLifecycleLock()).toBeUndefined();
+        expect(handle.recordOwnStartInHeldLifecycleLock(containerId)).toBeUndefined();
+        const transmit = handle.prepareContainerUpdateInHeldLifecycleLock(containerId, true);
+        expect(typeof transmit).toBe("function");
+        expect(f.publicationEvents.slice(-3)).toEqual(["startup-published", `own-start-published:${containerId}`, `staged:1:${containerId}:true`]);
+        expect(f.sent).toHaveLength(1);
+        f.setHeld(false);
+        const update = transmit();
+        expect(f.sent.at(-1)).toEqual({ type: "update", sequence: 1, containerId, cleanupEnabled: true });
+        f.message({ type: "ack", sequence: 1 });
+        await expect(update).resolves.toBe(true);
+        expect(f.publicationEvents.slice(-3)).toEqual(["lock", "ack-published:1", "unlock"]);
+    });
+
+    it("a prepared second startup update rejects after earlier transport loss without losing positive own-start publication", async () => {
+        const f = parentFixture();
+        const arming = f.arm();
+        f.message({type: "ready"});
+        const handle = await arming;
+        const directory = mkdtempSync(join(tmpdir(), "ccc-prepared-start-publication-"));
+        const ownStart = join(directory, "positive-start");
+        const recordOwnStart = f.ports.publication.recordOwnStart;
+        f.ports.publication.recordOwnStart = id => {
+            recordOwnStart(id);
+            writeFileSync(ownStart, id, {mode: 0o600});
+        };
+        try {
+            handle.beginStartupInHeldLifecycleLock();
+            handle.recordOwnStartInHeldLifecycleLock(containerId);
+            const first = handle.prepareContainerUpdateInHeldLifecycleLock(containerId, true);
+            handle.recordOwnStartInHeldLifecycleLock(containerId);
+            const second = handle.prepareContainerUpdateInHeldLifecycleLock(containerId, true);
+            const transportFailure = new Error("Owned first startup update send failed");
+            const attempted: SessionOwnershipMessage[] = [];
+            f.channel.send = async message => { attempted.push(message); throw transportFailure; };
+            await expect(first()).rejects.toBe(transportFailure);
+            expect(f.state().closed).toBe(1);
+            expect(f.failures).toEqual([transportFailure]);
+            let secondOutcome: {kind: "pending" | "resolved"} | {kind: "rejected"; error: unknown} = {kind: "pending"};
+            void second().then(() => { secondOutcome = {kind: "resolved"}; }, error => { secondOutcome = {kind: "rejected", error}; });
+            // Drain one actual event-loop turn, without sleeping or awaiting a
+            // possibly stranded request. Closed transport must reject now.
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // Even a manually delivered deadline must not strand a request in
+            // phase=closed, where the loss handler is already terminal.
+            f.expire();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(secondOutcome).toMatchObject({kind: "rejected", error: expect.any(Error)});
+            expect(attempted).toEqual([{type: "update", sequence: 1, containerId, cleanupEnabled: true}]);
+            expect(f.timers.size).toBe(0);
+            expect(f.state().listeners).toBe(0);
+            expect(f.failures).toEqual([transportFailure]);
+            expect(readFileSync(ownStart, "utf8")).toBe(containerId);
+            expect(f.publicationEvents.some(event => event.startsWith("ack-published:"))).toBe(false);
+        } finally { rmSync(directory, {recursive: true, force: true}); }
+    });
+
+    it("positive own-start publication is synchronous even after an earlier IPC request was rejected", async () => {
+        const f = parentFixture();
+        const pending = f.arm();
+        f.message({ type: "ready" });
+        const handle = await pending;
+        handle.beginStartupInHeldLifecycleLock();
+        const failedUpdate = handle.updateContainerInHeldLifecycleLock(containerId, false);
+        const rejected = expect(failedUpdate).rejects.toThrow(/timed out/i);
+        f.expire();
+        await rejected;
+        expect(handle.recordOwnStartInHeldLifecycleLock(containerId)).toBeUndefined();
+        expect(f.publicationEvents.at(-1)).toBe(`own-start-published:${containerId}`);
+        expect(f.failures).toHaveLength(1);
     });
 });
 
@@ -348,14 +631,19 @@ describe("native ownership receipt and binding", () => {
     beforeEach(() => {
         nativeEnvironment.home = mkdtempSync(join(tmpdir(), "ccc-ownership-unit-"));
         lockDirectory = join(nativeEnvironment.home, ".ccc", "run", "locks");
-        mkdirSync(lockDirectory, { recursive: true });
+        mkdirSync(lockDirectory, { recursive: true, mode: 0o700 });
         const projectPath = join(nativeEnvironment.home, "project");
         ownedBinding = {
             lockFile: join(lockDirectory, `${getProjectId(projectPath)}--p--work--owner.lock`),
             projectPath, profile: "work", toolName: "claude",
         };
-        writeFileSync(ownedBinding.lockFile, ` {"version":2,"pid":${process.pid},"startToken":"fixture-start"}\n`, { flag: "wx", mode: 0o600 });
+        writeFileSync(ownedBinding.lockFile, ` ${encodeSessionClaim(process.pid, "fixture-start", "monitored")}\n`, { flag: "wx", mode: 0o600 });
         ownedReceipt = captureNativeSessionOwnership(ownedBinding.lockFile);
+        const store = createNativeSessionClaimObservationStore();
+        const snapshot = store.begin({ receipt: ownedReceipt,
+            binding: { ...ownedBinding, prefix: sessionClaimPrefix(getProjectId(projectPath), ownedBinding.profile) },
+            runtimeInvocation, guardian: { pid: process.pid, startToken: "fixture-guardian-start" }, generation: "0" });
+        store.update(snapshot, { ...snapshot.observation, registration: "ready" });
     });
     afterEach(() => {
         setRuntimeOverride(null);
@@ -389,6 +677,18 @@ describe("native ownership receipt and binding", () => {
         expect(existsSync(ownedBinding.lockFile)).toBe(false);
         expect(readFileSync(predecessor, "utf8")).toBe("99999999");
         expect(existsSync(join(nativeEnvironment.home, ".ccc", "devices"))).toBe(false);
+        expect(existsSync(`${ownedBinding.lockFile}.guardian.json`)).toBe(false);
+        expect(existsSync(`${ownedBinding.lockFile}.runtime.json`)).toBe(false);
+    });
+
+    it("an unmarked legacy claim cannot masquerade as a guardian with no cleanup obligation", async () => {
+        const legacy = encodeSessionClaim(process.pid, "fixture-start");
+        writeFileSync(ownedBinding.lockFile, legacy);
+        const captured = captureNativeSessionOwnership(ownedBinding.lockFile);
+        await expect(rollbackCapturedNativeSessionOwnership(ownedBinding, captured)).rejects.toThrow();
+        expect(readFileSync(ownedBinding.lockFile, "utf8")).toBe(legacy);
+        expect(existsSync(`${ownedBinding.lockFile}.guardian.json`)).toBe(true);
+        expect(existsSync(`${ownedBinding.lockFile}.runtime.json`)).toBe(true);
     });
 
     it("changing record bytes in the same file denies removal and all composition cleanup effects", async () => {
@@ -397,7 +697,7 @@ describe("native ownership receipt and binding", () => {
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => assertNativeSessionOwnership(ownedReceipt)).toThrow();
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation);
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow(/responsibility-incomplete/);
         expect(readFileSync(ownedBinding.lockFile, "utf8")).toBe(replacement);
     });
 
@@ -410,8 +710,8 @@ describe("native ownership receipt and binding", () => {
         expect(successor.inode).not.toBe(ownedReceipt.inode);
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt);
-        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation);
+        await expect(rollbackCapturedNativeSessionOwnership(ownedBinding, ownedReceipt)).rejects.toThrow(/responsibility-incomplete/);
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow(/responsibility-incomplete/);
         expect(captureNativeSessionOwnership(ownedBinding.lockFile)).toEqual(successor);
     });
 
@@ -421,7 +721,7 @@ describe("native ownership receipt and binding", () => {
         expect(() => captureNativeSessionOwnership(ownedBinding.lockFile)).toThrow();
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation);
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow(/responsibility-incomplete/);
         expect(existsSync(ownedBinding.lockFile)).toBe(true);
     });
 
@@ -432,7 +732,7 @@ describe("native ownership receipt and binding", () => {
         expect(() => captureNativeSessionOwnership(ownedBinding.lockFile)).toThrow();
         expect(nativeSessionOwnershipMatches(ownedReceipt)).toBe(false);
         expect(() => removeCapturedNativeSessionOwnership(ownedReceipt)).toThrow();
-        await cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation);
+        await expect(cleanupCapturedNativeSessionOwnership(ownedBinding, ownedReceipt, "must-never-stop", runtimeInvocation)).rejects.toThrow(/responsibility-incomplete/);
         expect(readFileSync(target)).toEqual(Buffer.from(ownedReceipt.bytes, "base64"));
         expect(existsSync(ownedBinding.lockFile)).toBe(true);
     });

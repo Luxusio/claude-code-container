@@ -16,7 +16,9 @@ import {
 } from "../docker.js";
 import {
     acquireHostSessionOwnership, withProjectFamilyLifecycleLockAsync, withContainerLifecycleLockAsync,
-    withContainerSetupLockAsync, getActiveSessionsForContainer, setSessionContainerId,
+    withContainerSetupLockAsync, getActiveSessionsForContainer,
+    beginSessionStartupInHeldLifecycleLock, recordSessionOwnStartInHeldLifecycleLock,
+    publishSessionReadyInHeldLifecycleLock,
     setSessionCleanupEnabled, confirmSessionOwnership, cleanupSession,
 } from "../session.js";
 import { withCodexConfigLock } from "../codex-config-lock.js";
@@ -173,7 +175,9 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         startContainer: startProjectContainer,
         prepareContainer: prepareProjectContainerStartup,
         stateLock: withProjectContainerStateLockAsync,
-        setSessionContainer: setSessionContainerId,
+        beginSessionStartupInHeldLifecycleLock,
+        recordSessionOwnStartInHeldLifecycleLock,
+        publishSessionReadyInHeldLifecycleLock,
         setCleanupEnabled: setSessionCleanupEnabled,
         confirmOwnership: confirmSessionOwnership,
         configLock: withCodexConfigLock,
@@ -276,7 +280,9 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         startContainer: (...args) => inRuntime(() => ports.startContainer(...args)),
         prepareContainer: () => inRuntime(ports.prepareContainer),
         stateLock: operation => inRuntime(() => ports.stateLock(operation)),
-        setSessionContainer: (...args) => inRuntime(() => ports.setSessionContainer(...args)),
+        beginSessionStartupInHeldLifecycleLock: () => inRuntime(ports.beginSessionStartupInHeldLifecycleLock),
+        recordSessionOwnStartInHeldLifecycleLock: id => inRuntime(() => ports.recordSessionOwnStartInHeldLifecycleLock(id)),
+        publishSessionReadyInHeldLifecycleLock: (id, handoff) => inRuntime(() => ports.publishSessionReadyInHeldLifecycleLock(id, handoff)),
         setCleanupEnabled: enabled => inRuntime(() => ports.setCleanupEnabled(enabled)),
         confirmOwnership: () => inRuntime(ports.confirmOwnership),
         configLock: (operation, profile) => inRuntime(() => ports.configLock(operation, profile)),

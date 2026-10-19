@@ -1,20 +1,22 @@
 import { basename, dirname, join, resolve } from "path";
 import { withSharedMutationLock, withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
 import { getProjectId } from "@ccc/device-lab/project-identity.js";
-import { nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership } from "../adapters/session-ownership.js";
+import { nativeSessionOwnershipMatches } from "../adapters/session-ownership.js";
 import { sessionClaimPrefix, sessionLockClaimsForContainer } from "../domain/session-claims.js";
 import { sessionLockOwner } from "../domain/session-lock.js";
 import { locksDir } from "../home-layout.js";
-import { ensureNativeSessionClaimsDirectory } from "./session-claims.js";
+import { createSessionClaimsStore } from "../adapters/session-claims-store.js";
 import type { SessionOwnershipBinding, SessionOwnershipReceipt } from "../ports/session-ownership.js";
 
+const claimsStore = createSessionClaimsStore({ directory: () => locksDir(), platform: () => process.platform });
+
 export function withLifecycleLock<T>(prefix: string, operation: () => T): T {
-    ensureNativeSessionClaimsDirectory();
+    claimsStore.ensureDirectory();
     return withSharedMutationLock(join(locksDir(), `${prefix}.container-lifecycle.guard`), operation, { waitMs: 180_000 });
 }
 
 export async function withLifecycleLockAsync<T>(prefix: string, operation: () => T | Promise<T>): Promise<T> {
-    ensureNativeSessionClaimsDirectory();
+    claimsStore.ensureDirectory();
     return withSharedMutationLockAsync(join(locksDir(), `${prefix}.container-lifecycle.guard`), operation, { waitMs: 180_000 });
 }
 
@@ -45,9 +47,10 @@ export function assertNativeSessionOwnership(receipt: SessionOwnershipReceipt): 
 export async function rollbackCapturedNativeSessionOwnership(
     binding: SessionOwnershipBinding, receipt: SessionOwnershipReceipt,
 ): Promise<void> {
+    const { createNativeSessionClaims } = await import("./session-claims.js");
     const prefix = sessionClaimPrefix(getProjectId(binding.projectPath), binding.profile);
     await withLifecycleLockAsync(prefix, () => {
-        if (nativeSessionOwnershipMatches(receipt)) removeCapturedNativeSessionOwnership(receipt);
+        createNativeSessionClaims(withLifecycleLock).settleCapturedResponsibilityInHeldLifecycleLock(binding, receipt);
     });
 }
 

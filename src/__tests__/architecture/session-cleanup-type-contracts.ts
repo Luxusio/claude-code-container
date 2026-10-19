@@ -1,10 +1,17 @@
 import { createSessionCleanup } from "../../application/session-cleanup.js";
-import type { SessionCleanupPorts } from "../../ports/session-cleanup.js";
+import type { SessionCleanupPeerVetoes, SessionCleanupPorts, SessionCleanupSettlement } from "../../ports/session-cleanup.js";
+
+const noPeers: SessionCleanupPeerVetoes = {
+    sharedDeviceCleanupBlocked: false, exactContainerStopBlocked: false, responsibilityTransferred: false,
+};
+const completed: SessionCleanupSettlement = {
+    containerId: "a".repeat(64), cleanupEnabled: true, containerStopped: true, responsibilityTransferred: false,
+};
 
 const ports: SessionCleanupPorts = {
     projectId: () => "project-id",
     withLifecycleLock: <T>(_prefix: string, operation: () => T): T => operation(),
-    hasOtherClaims: () => false,
+    peerVetoes: (_prefix, _ownPath, pinnedId) => { const id: string | null = pinnedId; void id; return noPeers; },
     removeClaim: () => undefined,
     cleanupDevices: () => undefined,
     reportDeviceCleanupFailure: () => undefined,
@@ -24,17 +31,17 @@ const cleanup: void = app.cleanupSession();
 const heldCleanup: void = app.cleanupSessionInHeldLifecycleLock();
 const clear: void = app.clearSession();
 const projectId: string = ports.projectId("/project");
-const foreign: boolean = ports.hasOtherClaims("project-id", "own.lock");
-const removed: undefined = ports.removeClaim("own.lock");
+const vetoes: SessionCleanupPeerVetoes = ports.peerVetoes("project-id", "own.lock", "a".repeat(64));
+const removed: undefined = ports.removeClaim("own.lock", completed);
 const devices: undefined = ports.cleanupDevices("/project", 5000, "work");
 const reported: undefined = ports.reportDeviceCleanupFailure({ reason: "devices" });
 const stopped: undefined = ports.stopContainer(() => null);
 const lockedNumber: number = ports.withLifecycleLock("project-id", () => 42);
 // The synchronous generic implementation preserves T, including a callback that returns a promise.
 const lockedPromise: Promise<number> = ports.withLifecycleLock("project-id", async () => 42);
-void [snapshot, cleanup, heldCleanup, clear, projectId, foreign, removed, devices, reported, stopped, lockedNumber, lockedPromise];
+void [snapshot, cleanup, heldCleanup, clear, projectId, vetoes, removed, devices, reported, stopped, lockedNumber, lockedPromise];
 
-type RequiredNames = "projectId" | "withLifecycleLock" | "hasOtherClaims" | "removeClaim"
+type RequiredNames = "projectId" | "withLifecycleLock" | "peerVetoes" | "removeClaim"
     | "cleanupDevices" | "reportDeviceCleanupFailure" | "stopContainer";
 type Assert<T extends true> = T;
 type AllRequired = Assert<{
@@ -53,8 +60,8 @@ createSessionCleanup(ports, "ended-owner");
 createSessionCleanup({ ...ports, projectId: "project-id" });
 // @ts-expect-error Lifecycle lock must be callable.
 createSessionCleanup({ ...ports, withLifecycleLock: false });
-// @ts-expect-error Raw query must be callable.
-createSessionCleanup({ ...ports, hasOtherClaims: false });
+// @ts-expect-error Peer veto observation must be callable.
+createSessionCleanup({ ...ports, peerVetoes: false });
 // @ts-expect-error Removal must be callable.
 createSessionCleanup({ ...ports, removeClaim: undefined });
 // @ts-expect-error Device cleanup must be callable.
@@ -68,8 +75,14 @@ createSessionCleanup({ ...ports, stopContainer: "stop" });
 createSessionCleanup({ ...ports, projectId: async () => "project-id" });
 // @ts-expect-error Generic lifecycle implementation must return T, not Promise<T>.
 createSessionCleanup({ ...ports, withLifecycleLock: async <T>(_prefix: string, operation: () => T) => operation() });
-// @ts-expect-error Raw authority must return a synchronous boolean.
-createSessionCleanup({ ...ports, hasOtherClaims: async () => false });
+// @ts-expect-error Peer authority must return synchronous independent vetoes.
+createSessionCleanup({ ...ports, peerVetoes: async () => noPeers });
+// @ts-expect-error A coupled boolean cannot represent independent cleanup vetoes.
+createSessionCleanup({ ...ports, peerVetoes: () => false });
+// @ts-expect-error A transfer decision is required alongside both vetoes.
+createSessionCleanup({ ...ports, peerVetoes: () => ({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: true }) });
+// @ts-expect-error Peer inspection receives the pinned exact ID, not an eager nonnullable guess.
+createSessionCleanup({ ...ports, peerVetoes: (_prefix: string, _own: string, _id: number) => noPeers });
 // @ts-expect-error Explicit undefined effect return rejects asynchronous removal.
 createSessionCleanup({ ...ports, removeClaim: async () => undefined });
 // @ts-expect-error Explicit undefined effect return rejects asynchronous devices.
@@ -92,6 +105,14 @@ createSessionCleanup({ ...ports, stopContainer: voidEffect });
 createSessionCleanup({ ...ports, stopContainer: (_id: string | null) => undefined });
 // @ts-expect-error The reader cannot return an asynchronous ID.
 ports.stopContainer(async () => "id");
+// @ts-expect-error Retirement requires explicit completed or transferred responsibility evidence.
+ports.removeClaim("own.lock");
+// @ts-expect-error A stop flag alone is not a qualified settlement.
+ports.removeClaim("own.lock", { containerStopped: true });
+// @ts-expect-error Retirement cannot substitute string truthiness for a cleanup grant.
+ports.removeClaim("own.lock", { ...completed, cleanupEnabled: "true" });
+// @ts-expect-error Transfer is an explicit boolean, never a callback result promise.
+ports.removeClaim("own.lock", { ...completed, responsibilityTransferred: Promise.resolve(true) });
 // @ts-expect-error The container ID is intentionally absent from the public snapshot.
 const exposedId = app.getCurrentSession().containerId;
 // @ts-expect-error Cleanup is synchronous.

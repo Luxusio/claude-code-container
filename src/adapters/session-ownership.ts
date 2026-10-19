@@ -1,19 +1,23 @@
 import { spawn } from "child_process";
-import { closeSync, fstatSync, openSync, readFileSync, unlinkSync, lstatSync } from "fs";
+import { closeSync, fstatSync, openSync, readSync, unlinkSync, lstatSync } from "fs";
 import { fileURLToPath } from "url";
 import { sessionLockOwner } from "../domain/session-lock.js";
 import type { SessionOwnershipChannel, SessionOwnershipReceipt } from "../ports/session-ownership.js";
+import type { NativeSessionFileReceipt } from "../ports/session-claim-observation.js";
 
 export { validateNativeRuntimeInvocation as decodeNativeSessionRuntimeInvocation } from "./container-runtime-invocation.js";
 
-export function captureNativeSessionOwnership(path: string): SessionOwnershipReceipt {
+export function captureNativeSessionFile(path: string, maximumBytes: number): NativeSessionFileReceipt {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0 || maximumBytes > 65536) {
+        throw new TypeError("Invalid session file byte limit.");
+    }
     const named = lstatSync(path, { bigint: true });
     if (!named.isFile()) throw new Error("Invalid session ownership receipt.");
     const fd = openSync(path, "r");
     try {
         const stat = fstatSync(fd, { bigint: true });
         const windowsUnnamedDevice = process.platform === "win32" && named.dev === 0n;
-        if (!stat.isFile() || stat.size > 4096n || stat.ino !== named.ino || stat.birthtimeNs !== named.birthtimeNs
+        if (!stat.isFile() || stat.size > BigInt(maximumBytes) || stat.ino !== named.ino || stat.birthtimeNs !== named.birthtimeNs
             || (!windowsUnnamedDevice && stat.dev !== named.dev)) throw new Error("Invalid session ownership receipt.");
         if (windowsUnnamedDevice) {
             // Some Windows libuv versions omit the volume from path stats. Two
@@ -22,7 +26,7 @@ export function captureNativeSessionOwnership(path: string): SessionOwnershipRec
             const secondFd = openSync(path, "r");
             try {
                 const second = fstatSync(secondFd, { bigint: true });
-                if (!second.isFile() || second.size > 4096n || second.size !== stat.size
+                if (!second.isFile() || second.size > BigInt(maximumBytes) || second.size !== stat.size
                     || second.dev !== stat.dev || second.ino !== stat.ino
                     || second.birthtimeNs !== stat.birthtimeNs) throw new Error("Invalid session ownership receipt.");
                 const currentNamed = lstatSync(path, { bigint: true });
@@ -32,16 +36,36 @@ export function captureNativeSessionOwnership(path: string): SessionOwnershipRec
                 closeSync(secondFd);
             }
         }
-        const bytes = readFileSync(fd);
-        const owner = sessionLockOwner(bytes.toString("utf8"));
-        if (!owner) throw new Error("Invalid session ownership record.");
-        return {
-            path, bytes: bytes.toString("base64"), device: String(stat.dev), inode: String(stat.ino),
-            birthtime: String(stat.birthtimeNs), ownerPid: owner.pid,
-        };
+        const buffer = Buffer.alloc(maximumBytes + 1);
+        let length = 0;
+        while (length < buffer.length) {
+            const count = readSync(fd, buffer, length, buffer.length - length, length);
+            if (count === 0) break;
+            length += count;
+        }
+        const after = fstatSync(fd, { bigint: true });
+        const current = lstatSync(path, { bigint: true });
+        if (length > maximumBytes || BigInt(length) !== stat.size || after.size !== stat.size || after.ino !== stat.ino
+            || after.dev !== stat.dev || after.birthtimeNs !== stat.birthtimeNs || after.mtimeNs !== stat.mtimeNs
+            || after.ctimeNs !== stat.ctimeNs || !current.isFile() || current.ino !== stat.ino
+            || current.birthtimeNs !== stat.birthtimeNs || (!windowsUnnamedDevice && current.dev !== stat.dev)
+            || (windowsUnnamedDevice && current.dev !== 0n && current.dev !== stat.dev)) {
+            throw new Error("Session file changed while being captured.");
+        }
+        return Object.freeze({
+            path, bytes: buffer.subarray(0, length).toString("base64"), device: String(stat.dev), inode: String(stat.ino),
+            birthtime: String(stat.birthtimeNs),
+        });
     } finally {
         closeSync(fd);
     }
+}
+
+export function captureNativeSessionOwnership(path: string): SessionOwnershipReceipt {
+    const file = captureNativeSessionFile(path, 4096);
+    const owner = sessionLockOwner(Buffer.from(file.bytes, "base64").toString("utf8"));
+    if (!owner) throw new Error("Invalid session ownership record.");
+    return { ...file, ownerPid: owner.pid };
 }
 
 export function nativeSessionOwnershipMatches(receipt: SessionOwnershipReceipt): boolean {
