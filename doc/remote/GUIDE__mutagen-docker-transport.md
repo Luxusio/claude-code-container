@@ -49,7 +49,7 @@ Missing local Docker prevents execution. Unavailable or unsupported receiving
 runtime resolution fails before claims or reservation. Read-only check reports
 unknown/unavailable authority; explicit termination fails while preserving
 sessions. Neither condition means that another existing session is absent.
-The [sync wait budget](REQ__sync-wait-budget.md) still applies independently.
+The [sync wait budget](REQ__sync-authority.md) still applies independently.
 
 Portable behavior tests exercise all receiving command paths, preparation
 failures, captured selectors, complete inventory and exact-identifier controls.
