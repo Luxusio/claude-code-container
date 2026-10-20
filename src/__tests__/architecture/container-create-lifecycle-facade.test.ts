@@ -31,7 +31,7 @@ vi.mock("../../adapters/runtime-bind-authority.js", async original => {
     return {
         ...actual,
         withRuntimeBindGuard: <T>(root: string | import("../../ports/runtime-bind-authority.js").RuntimeBindHomePreparation, operation: (guard: import("../../ports/runtime-bind-authority.js").RuntimeBindGuard) => T) => {
-            expect(typeof root === "string" ? root : root.root).toBe(native.bindGuard.root);
+            expect(resolve(typeof root === "string" ? root : root.root)).toBe(resolve(native.bindGuard.root));
             expect(native.authorityHeld).toBe(false);
             native.authorityHeld = true;
             try { return operation(native.bindGuard); } finally { native.authorityHeld = false; }
