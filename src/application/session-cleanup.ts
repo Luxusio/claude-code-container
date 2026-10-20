@@ -1,5 +1,5 @@
 import { sessionClaimPrefix } from "../domain/session-claims.js";
-import type { SessionCleanupPorts } from "../ports/session-cleanup.js";
+import type { SessionCleanupOutcome, SessionCleanupPorts, SessionDeviceCleanupFailure } from "../ports/session-cleanup.js";
 
 export function createSessionCleanup(ports: SessionCleanupPorts) {
     for (const name of [
@@ -101,20 +101,36 @@ export function createSessionCleanup(ports: SessionCleanupPorts) {
         return sessionClaimPrefix(projectId, context.profile);
     }
 
-    function cleanupSessionBody(containerPrefix: string, context: CleanupContext): void {
+    function cleanupSessionBody(containerPrefix: string, context: CleanupContext): SessionCleanupOutcome {
         assertCleanupContext(context);
         const vetoes = ports.peerVetoes(containerPrefix, context.lockFile, context.containerId);
         assertCleanupContext(context);
-        if (!vetoes.sharedDeviceCleanupBlocked && context.cleanupEnabled) {
+        let devices: Extract<SessionCleanupOutcome, { kind: "settled" }>["devices"];
+        if (!context.cleanupEnabled) {
+            devices = { kind: "skipped", reason: "cleanup-disabled" };
+        } else if (vetoes.sharedDeviceCleanupBlocked) {
+            devices = { kind: "skipped", reason: "peer-veto" };
+        } else {
+            let failure: SessionDeviceCleanupFailure | undefined;
             try {
-                ports.cleanupDevices(context.projectPath, 5000, context.profile);
+                const counts = ports.cleanupDevices(context.projectPath, 5000, context.profile);
+                devices = { kind: "observed", stopped: counts.stopped, skipped: counts.skipped, failed: counts.failed };
             } catch (error) {
                 assertCleanupContext(context, error);
-                ports.reportDeviceCleanupFailure(error);
+                devices = { kind: "indeterminate", reason: "device-cleanup-threw" };
+                failure = { kind: "exception", error };
             }
             assertCleanupContext(context);
+            if (devices.kind === "observed" && devices.failed > 0) {
+                failure = { kind: "reported-failures", failedDevices: devices.failed };
+            }
+            if (failure) {
+                assertCleanupContext(context);
+                ports.reportDeviceCleanupFailure(failure);
+                assertCleanupContext(context);
+            }
         }
-        let containerStopped = false;
+        let container: Extract<SessionCleanupOutcome, { kind: "settled" }>["container"] = { kind: "not-required" };
         if (context.cleanupEnabled && context.containerId) {
             if (!vetoes.exactContainerStopBlocked) {
                 // Native runtime selection happens before this guarded ID read.
@@ -123,20 +139,23 @@ export function createSessionCleanup(ports: SessionCleanupPorts) {
                     return context.containerId;
                 });
                 assertCleanupContext(context);
-                containerStopped = true;
+                container = { kind: "stopped" };
             } else if (!vetoes.responsibilityTransferred) {
                 throw new Error("session-cleanup-responsibility-incomplete: Exact container shutdown is blocked and no qualified successor owns its cleanup responsibility.");
+            } else {
+                container = { kind: "transferred" };
             }
         }
         // Keep the receipt through a failed stop so owned cleanup can retry.
         ports.removeClaim(context.lockFile, {
             containerId: context.containerId,
             cleanupEnabled: context.cleanupEnabled,
-            containerStopped,
+            containerStopped: container.kind === "stopped",
             responsibilityTransferred: vetoes.responsibilityTransferred,
         });
         // Successful retirement settles this session before the guard returns.
         finalizeSessionCleanup(context);
+        return { kind: "settled", claim: "retired", devices, container };
     }
 
     function finalizeSessionCleanup(context: CleanupContext): void {
@@ -148,18 +167,18 @@ export function createSessionCleanup(ports: SessionCleanupPorts) {
         currentProfile = undefined;
     }
 
-    function cleanupSessionInHeldLifecycleLock(): void {
+    function cleanupSessionInHeldLifecycleLock(): SessionCleanupOutcome {
         const context = captureCleanupContext();
-        if (!context) return;
+        if (!context) return { kind: "no-active-session" };
         const containerPrefix = cleanupContainerPrefix(context);
-        cleanupSessionBody(containerPrefix, context);
+        return cleanupSessionBody(containerPrefix, context);
     }
 
-    function cleanupSession(): void {
+    function cleanupSession(): SessionCleanupOutcome {
         const context = captureCleanupContext();
-        if (!context) return;
+        if (!context) return { kind: "no-active-session" };
         const containerPrefix = cleanupContainerPrefix(context);
-        ports.withLifecycleLock(containerPrefix, () => cleanupSessionBody(containerPrefix, context));
+        return ports.withLifecycleLock(containerPrefix, () => cleanupSessionBody(containerPrefix, context));
     }
 
     return {

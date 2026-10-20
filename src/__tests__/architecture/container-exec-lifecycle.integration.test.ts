@@ -148,9 +148,9 @@ const cleanup = createSessionCleanup({
  },
  cleanupDevices(path, timeout, profile) {
    if (path !== '/project/library-repo' || timeout !== 5000 || profile !== undefined) throw new Error('wrong device cleanup context');
-   events.push('devices'); return undefined;
+   events.push('devices'); return {stopped: 1, skipped: 0, failed: 0};
  },
- reportDeviceCleanupFailure(error) { throw error; },
+ reportDeviceCleanupFailure(report) { throw report.kind === 'exception' ? report.error : new Error('unexpected failed device rows'); },
  stopContainer(readTarget) {
    const id = readTarget(); targets.push(id); stopAttempts++; events.push('stop');
    if (id !== target) throw new Error('stopped a different container');
@@ -209,7 +209,7 @@ const ports = {
  disposeCommand() { disposalCalls++; }, reportConversationFiles: unexpected,
  setupFailure(cause) { if (cause !== startupFailure) throw new Error('lost startup cause'); return wrapped; },
  setupToolFailure: unexpected, handoffFailure: unexpected, invalidRuntimeFailure: unexpected,
- cleanupSession: () => cleanup.cleanupSession(), report: noop
+ cleanupSession: () => { void cleanup.cleanupSession(); }, report: noop
 };
 let error, rejected = false;
 try { await createContainerExec(ports).exec('/repo', ['printf']); }

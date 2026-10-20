@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { sessionLockOwner } from "../../domain/session-lock.js";
 import type { SessionClaimObservationSnapshot, SessionClaimObservationStore } from "../../ports/session-claim-observation.js";
 import type { SessionOwnershipHandle, SessionOwnershipReceipt } from "../../ports/session-ownership.js";
+import { cleanupNativeSessionDevices } from "../../adapters/session-cleanup.js";
 
 const effects = vi.hoisted(() => ({
     mkdir: vi.fn(), stat: vi.fn(), chmod: vi.fn(), list: vi.fn(), read: vi.fn(), write: vi.fn(),
@@ -97,6 +98,15 @@ const armed = new Set<string>();
 let identitySequence = 1;
 const exactId = (label: string) => createHash("sha256").update(label).digest("hex");
 const capturedId = exactId("captured-id");
+const privateDeviceMarkers = ["PRIVATE_OWNER", "PRIVATE_DEVICE", "PRIVATE_PREVIOUS_STATUS", "PRIVATE_REASON", "PRIVATE_COMMAND", "PRIVATE_STDOUT", "PRIVATE_STDERR"];
+const mixedDeviceReport = {
+    ownerId: privateDeviceMarkers[0],
+    results: (["stopped", "skipped", "failed", "failed"] as const).map((status, index) => ({
+        id: `${privateDeviceMarkers[1]}_${index}`, backend: "android-emulator", previousStatus: privateDeviceMarkers[2], status,
+        reason: privateDeviceMarkers[3],
+        commands: [{ command: privateDeviceMarkers[4], status: 9, stdout: privateDeviceMarkers[5], stderr: privateDeviceMarkers[6] }],
+    })),
+};
 function persistClaim(path: string, content: string): void {
     const owner = sessionLockOwner(content);
     if (!owner) throw new Error("invalid claim write");
@@ -209,6 +219,7 @@ function resetNativeFixtures(): void {
     effects.identity.mockReturnValue("project"); effects.list.mockReturnValue([]);
     effects.exists.mockReturnValue(true); effects.runtime.mockReturnValue("docker"); effects.invocation.mockReturnValue(invocation);
     effects.lock.mockImplementation((_path, operation) => operation()); effects.spawn.mockReturnValue({ status: 0 });
+    effects.devices.mockReturnValue({ ownerId: "fixture-owner", results: [] });
     effects.token.mockReturnValue(null); effects.observe.mockReturnValue(new Map()); effects.classify.mockReturnValue("active");
     effects.capture.mockImplementation(path => {
         if (retiredPaths.has(path)) throw new Error("retired fixture claim");
@@ -282,6 +293,54 @@ describe("native session cleanup through the public facade", () => {
         expect(effects.fork).not.toHaveBeenCalled();
         expect(effects.spawnAsync).not.toHaveBeenCalled();
         expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs(capturedId), stopOptions);
+    });
+
+    it("regression: automatic session cleanup reports failed device rows", () => {
+        const warning = vi.spyOn(console, "error").mockImplementation(() => {});
+        effects.devices.mockReturnValue(mixedDeviceReport);
+        start();
+        const capturedReceipt = records.get(own)!.receipt;
+        const unrelatedPath = join(fixtureLocks, "unrelated--retained.lock");
+        const unrelatedReceipt = receiptFor(unrelatedPath);
+        effects.invocation.mockClear();
+        effects.invocation.mockImplementation(() => { throw new Error("ambient runtime changed"); });
+
+        expect(session.cleanupSession()).toBeUndefined();
+
+        expect(warning).toHaveBeenCalledExactlyOnceWith("[ccc] device cleanup failed during session cleanup: one or more devices failed to clean up");
+        for (const marker of privateDeviceMarkers) expect(JSON.stringify(warning.mock.calls)).not.toContain(marker);
+        expect(effects.devices).toHaveBeenCalledExactlyOnceWith(project, 5000, undefined);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs(capturedId), stopOptions);
+        expect(effects.rollback).toHaveBeenCalledExactlyOnceWith(capturedReceipt);
+        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(own);
+        expect(warning.mock.invocationCallOrder[0]).toBeLessThan(effects.spawn.mock.invocationCallOrder[0]);
+        expect(effects.spawn.mock.invocationCallOrder[0]).toBeLessThan(effects.unlink.mock.invocationCallOrder[0]);
+        expect(records.has(own)).toBe(false);
+        expect(records.get(unrelatedPath)!.receipt).toBe(unrelatedReceipt);
+        expect(effects.invocation).not.toHaveBeenCalled();
+        expect(session.getCurrentSession().lockFile).toBeNull();
+
+        expect(session.cleanupSession()).toBeUndefined();
+        expect(warning).toHaveBeenCalledTimes(1);
+        expect(effects.devices).toHaveBeenCalledTimes(1);
+        expect(effects.spawn).toHaveBeenCalledTimes(1);
+        expect(effects.rollback).toHaveBeenCalledTimes(1);
+        expect(effects.unlink).toHaveBeenCalledTimes(1);
+        expect(records.get(unrelatedPath)!.receipt).toBe(unrelatedReceipt);
+    });
+
+    it.each([
+        { report: mixedDeviceReport, counts: { stopped: 1, skipped: 1, failed: 2 } },
+        { report: { ownerId: "PRIVATE_OWNER", results: [] }, counts: { stopped: 0, skipped: 0, failed: 0 } },
+        { report: { ...mixedDeviceReport, results: mixedDeviceReport.results.filter(row => row.status !== "failed") }, counts: { stopped: 1, skipped: 1, failed: 0 } },
+    ])("native device cleanup projects only finite canonical counts: $counts", ({ report, counts }) => {
+        effects.devices.mockReturnValue(report);
+        const projection = cleanupNativeSessionDevices(project, 5000, "work");
+        expect(projection).toEqual(counts);
+        expect(Object.keys(projection).sort()).toEqual(["failed", "skipped", "stopped"]);
+        expect(Object.values(projection).every(value => Number.isFinite(value) && Number.isInteger(value) && value >= 0)).toBe(true);
+        for (const marker of privateDeviceMarkers) expect(JSON.stringify(projection)).not.toContain(marker);
+        expect(effects.devices).toHaveBeenCalledExactlyOnceWith(project, 5000, "work");
     });
 
     it.each(["mismatched target", "absent grant", "acknowledged false", "pending update", "pending startup"] as const)(

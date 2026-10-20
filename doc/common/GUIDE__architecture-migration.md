@@ -520,10 +520,10 @@ packet.
 `src/application/session-cleanup.ts` owns mutable session context and synchronous
 automatic cleanup through seven required `SessionCleanupPorts` in
 `src/ports/session-cleanup.ts`: project identity, lifecycle critical section,
-raw foreign-claim query, own-claim removal, device cleanup, device-failure report
+independent peer vetoes, own-claim retirement, device cleanup, device-failure report
 and captured-ID stop. Construction validates callable ports without effects;
 calls resolve current port methods with their receiver. The TypeScript contract
-uses `undefined` returns for effect ports to reject asynchronous implementations;
+uses synchronous counts for device cleanup and `undefined` for other effect ports to reject asynchronous implementations;
 runtime construction checks callability only. The generic lifecycle port
 preserves its callback result and does not universally forbid promise-returning
 callbacks; this application supplies synchronous operations. The core imports
@@ -532,7 +532,7 @@ effects.
 
 `src/composition/session-cleanup.ts` creates the facade's single application
 instance using lazy native bindings and facade callbacks for the existing
-lifecycle guard and raw claim query. It does not import the facade.
+lifecycle guard and peer observations. It does not import the facade.
 `src/session.ts` delegates its existing context and cleanup exports to that
 instance. Snapshots are fresh and expose lock file, project path, profile and
 tool name, never the captured container ID. Setting a session defaults a nullish
@@ -548,58 +548,68 @@ only after the guardian ACK. A captured-ID change first revokes the old grant.
 Unauthorized guardian cleanup uses receipt-fenced rollback without device stop.
 Legacy unowned `setSession` retains its cleanup-enabled default.
 
-Cleanup preserves the legacy reads across callbacks rather than freezing a
-snapshot. It checks the initial lock/path and completion flag, resolves project
-identity from the current path, then reads the current profile for the prefix.
-Inside the existing lifecycle guard the composed query reconciles proven stale
-foreign owners and uses remaining raw claims as the shutdown veto. Device cleanup
-reads the current path/profile with a 5000 ms timeout only when foreign claims
-are absent and cleanup is enabled. `retryable-owner` removes its own claim after
-successful cleanup so a failed stop retains the receipt for retry; `ended-owner`
-removes its claim before the query.
-Malformed, unreadable or unproven stale-looking foreign raw claims veto devices and stop
-while allowing own-claim removal and finalization; a liveness probe alone does not authorize
-shutdown. Device exceptions are reported and cleanup continues. The current ID's
-truthiness is checked after devices/reporting; the stop port receives a lazy ID
-reader. The native adapter evaluates `runtimeCli()` before invoking that reader
-to construct `["stop", id]`, preserving runtime-callback mutations without a
-second truthiness filter or container-name rediscovery.
+Cleanup captures the session identity, generation, path, profile, cleanup grant
+and exact container ID before callbacks. It checks that authority after project
+identity, peer observation, devices and reporting, and inside the lazy ID reader
+passed to native stop. Runtime selection is captured by the native composition;
+cleanup does not rediscover a target by name. A callback cannot retarget an old
+cleanup operation to its successor.
 
-`src/adapters/session-cleanup.ts` retains the best-effort exists/unlink remover
-for public legacy `removeSessionLock`. Composed owned cleanup instead uses an
-unlink remover that ignores only ENOENT and propagates other filesystem failures;
-the ownership composition provides receipt fencing. Device cleanup uses the existing administration service
-until its M06 migration; reporting retains the existing error message. Native
-stop uses `spawnSync` with ignored stdio. Project/guard/query/runtime/spawn/report
-and lock-return exceptions escape and prevent finalization; retry can repeat
-effects already performed. The M10d compatibility cutover originally ignored
-native result status and errors. The subsequent session-exit fix described in
-[REQ__session-exit-cleanup.md](REQ__session-exit-cleanup.md) bounds the local stop
-wait to 30 seconds and throws on errors, signals or nonzero/absent statuses.
-The application consequently remains retryable on failed stop; native stop
-success and uncertain daemon-side outcomes still require their own evidence.
+Peer observations distinguish shared-device veto, exact-container stop veto and
+qualified responsibility transfer. Uncertain foreign claims do not grant stop
+authority or discharge a captured shutdown obligation. Cleanup calls devices with
+the captured path/profile and a 5000 ms timeout only when enabled and not vetoed.
+The native adapter projects canonical rows into stopped/skipped/failed counts.
+Positive failed counts produce one fixed warning before authorized stop and
+retirement; row IDs, private reasons and output do not cross this port. A thrown
+device call produces an indeterminate observation and retains its existing
+exception diagnostic. Reporting is outside the device catch: a reporter failure
+escapes and prevents subsequent stop and retirement.
 
-Signal registration is outside the application and facade implementation: the
-facade delegates through composition to the native adapter, which registers
-`process.once` for SIGINT, SIGTERM and SIGHUP on every setup call. Each callback
-invokes public cleanup before `process.exit(process.exitCode ?? 0)`; a cleanup exception prevents
-exit. No listener deduplication or new reentrancy policy is introduced.
+The application returns either `no-active-session` or a `settled` result naming
+claim retirement, device observations and container stopped/transferred/not-required
+facts. Settlement does not mean every device was cleaned up. Disabled cleanup
+takes precedence over a peer veto in the skip reason. Device failures remain
+best effort; stop, guard and retirement failures still throw. A failed stop
+retains the receipt for retry. Successful retirement finalizes the captured
+session inside the guard; a guard-return failure does not rearm completed
+effects. There is no authorization assertion after irreversible retirement,
+and a successor installed during retirement remains current.
+
+`src/adapters/session-cleanup.ts` keeps direct legacy claim removal restricted to
+the same process's marked claim. Owned cleanup uses captured receipts and the
+ownership composition's compare-and-release rules. Native stop uses `spawnSync`
+with ignored stdio, waits at most 30 seconds and rejects errors, signals and
+nonzero/absent statuses. See
+[REQ__session-exit-cleanup.md](REQ__session-exit-cleanup.md) for the settlement
+and retry requirements.
+
+The public `src/session.ts` facade remains void. It consumes either application
+result and then checks the CURRENT session lock before releasing guardian
+ownership. A no-active retry can therefore release ownership retained after a
+previous guard-return failure without repeating cleanup. Held recovery consumes
+the same facts without acquiring the guard again; receipt reinspection remains
+its release authority. Partial device cleanup alone does not restart a retired
+session's cleanup.
+
+Signal registration remains outside the application. The native dispatcher owns
+listener disposal, synchronous/asynchronous completion and failure exit status;
+its cleanup callback remains `void | Promise<void>`. The new outcome never leaks
+into that callback. This conversion does not change signal policy.
 
 Verification anchors are architecture `session-cleanup.test.ts`,
-`session-cleanup-type-contracts.ts` and `session-cleanup-facade.test.ts`, plus
-existing session, batch, claims, container and remote regressions. Tests cover
-ordered effects, callback mutations, failure/retry boundaries and intercepted
-signals. The shared distribution smoke imports the built application, type-only
-ports module and public facade through plain Node in both extracted packages
-and materialized installs and checks their declarations. It exercises fake-port
-cleanup ordering, raw foreign veto, snapshot/reset and public set/get/clear
-behavior without native cleanup, providers or live containers.
+`session-cleanup-type-contracts.ts`, `session-cleanup-facade.test.ts` and emitted
+`container-exec-lifecycle.integration.test.ts`, plus existing session,
+administration and authorization regressions. They cover finite observations,
+ordinary-row warnings, reporter faults, captured targets, generation changes,
+receipt retirement and retry boundaries. Distribution smoke separately checks
+packaged exports, layout and CLI/MCP loading.
 
-Known ceiling: callbacks retain mutable context. Own-claim removal is bound to
-the native ownership receipt in owned sessions; legacy unowned callers retain
-their compatibility remover. The session-exit adapter now checks stop results, but timeout leaves the
-daemon-side outcome unknown — upgrade during approved receipt/compare-and-release
-and native outcome reconciliation work.
+Known ceiling: existing hard exceptions retain their native identity/handling;
+the legacy unexpected device-exception warning can still include its message.
+These are not universally normalized by the finite observation contract.
+An exact stop timeout leaves the daemon-side outcome unknown and requires
+later receipt/identity reconciliation.
 
 Known ceiling: portable mocks and package imports do not certify Windows/macOS
 signals, filesystem sharing/process identity, Docker/Podman stop, rootless

@@ -52,7 +52,7 @@ export function createNativeSessionClaims(withLifecycleLock: SessionClaimsPorts[
                 cleanup.setSession(binding.lockFile, binding.projectPath, binding.profile, binding.toolName);
                 cleanup.setSessionContainerId(authority.containerId);
                 cleanup.setSessionCleanupEnabled(true);
-                cleanup.cleanupSessionInHeldLifecycleLock();
+                void cleanup.cleanupSessionInHeldLifecycleLock();
             },
         },
     });

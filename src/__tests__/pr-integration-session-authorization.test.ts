@@ -25,9 +25,9 @@ function cleanupFixture() {
     const ports: SessionCleanupPorts = {
         projectId: () => "fixture-project",
         withLifecycleLock: (_prefix, run) => run(),
-        hasOtherClaims: () => other,
+        peerVetoes: () => ({ sharedDeviceCleanupBlocked: other, exactContainerStopBlocked: other, responsibilityTransferred: false }),
         removeClaim: path => { trace.push(["remove", path]); return undefined; },
-        cleanupDevices: path => { trace.push(["devices", path]); return undefined; },
+        cleanupDevices: path => { trace.push(["devices", path]); return { stopped: 1, skipped: 0, failed: 0 }; },
         reportDeviceCleanupFailure: error => { trace.push(["failure", error]); return undefined; },
         stopContainer: read => { trace.push(["stop", read()]); return undefined; },
     };
@@ -76,12 +76,13 @@ describe("PR integration separates captured identity from shutdown authorization
         expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", binding.lockFile]]);
     });
 
-    it("other live claims still veto shared cleanup even after explicit authorization", () => {
+    it("unqualified foreign claims veto cleanup without discharging its captured obligation", () => {
         const f = cleanupFixture();
         f.app.setSessionCleanupEnabled(true);
         f.foreign();
-        f.app.cleanupSession();
-        expect(f.trace).toEqual([["remove", binding.lockFile]]);
+        expect(() => f.app.cleanupSession()).toThrow("session-cleanup-responsibility-incomplete");
+        expect(f.trace).toEqual([]);
+        expect(f.app.getCurrentSession().lockFile).toBe(binding.lockFile);
     });
 
     it("guardian EOF after a failed join rolls back only its owned claim despite an acknowledged ID", async () => {

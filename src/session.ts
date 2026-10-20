@@ -514,9 +514,9 @@ export function cleanupSession(): void {
     if (acquiringOwnership) throw new Error("Cannot clean up host session ownership during acquisition.");
     if (armingOwnership) throw new Error("Cannot clean up host session ownership while its guardian is arming.");
     if (capturedRuntimeInvocation) {
-        runWithNativeRuntimeInvocation(capturedRuntimeInvocation, () => sessionCleanup.cleanupSession());
+        void runWithNativeRuntimeInvocation(capturedRuntimeInvocation, () => sessionCleanup.cleanupSession());
     } else {
-        sessionCleanup.cleanupSession();
+        void sessionCleanup.cleanupSession();
     }
     if (!sessionCleanup.getCurrentSession().lockFile) {
         const previous = ownership;

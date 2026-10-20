@@ -104,6 +104,33 @@ followed by cleanup failure, preserve both in that order with the primary as
 cause. Reservation rollback already running inside the acquisition guard keeps
 its held-guard callback rather than reacquiring the same guard.
 
+## Device observations and claim settlement
+
+Automatic cleanup must expose finite stopped, skipped and failed device counts
+to its application caller, separately from whether the captured session claim was
+retired. Ordinary failed rows emit one bounded native diagnostic before the
+existing exact container stop and claim retirement. They retain the established
+best-effort policy. Return no native row IDs, reasons, commands or output.
+
+A thrown device cleanup has unknown progress; it must not invent zero counts.
+Its existing exception diagnostic remains separate from the ordinary-row report.
+Reporting failure or changed authorization prevents later stop and retirement.
+Reporter exceptions must not be caught as device-operation failures.
+
+The reusable synchronous result distinguishes no active session from a settled
+captured claim, including device observations and stopped, transferred or
+not-required container facts. Settlement does not imply every device was cleaned.
+Device failure must not trigger destructive replay after the claim was retired.
+Public CLI cleanup remains void. Its current-session check still controls guardian
+release, including a no-active retry after a post-retirement guard-return failure.
+Return facts for the captured operation without clearing a callback's successor.
+
+The held recovery path returns the same facts without acquiring its guard again.
+Existing project, guard, peer, report, stop and retirement errors retain their
+handling; this contract does not normalize every native exception. Verify ordinary
+failed rows, unknown progress, report failure, successor callbacks and post-retirement
+retry through the core, actual native composition and emitted code.
+
 ## Known ceiling
 
 Three attempts bound repetitions, not total wall time: each lifecycle guard and

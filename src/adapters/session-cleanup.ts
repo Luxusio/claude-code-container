@@ -3,6 +3,7 @@ import { captureNativeSessionOwnership, removeCapturedNativeSessionOwnership } f
 import { sessionLockOwner } from "../domain/session-lock.js";
 import type { NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
 import type { SessionOwnershipReceipt } from "../ports/session-ownership.js";
+import type { SessionDeviceCleanupCounts, SessionDeviceCleanupFailure } from "../ports/session-cleanup.js";
 import { cleanupOwnerDevices } from "../device-lab-cleanup.js";
 import { processStartToken } from "../session-lock-liveness.js";
 
@@ -10,8 +11,12 @@ export function removeNativeSessionClaim(lockFile: string): undefined {
     return removeNativeOwnedSessionClaim(lockFile);
 }
 
-export function cleanupNativeSessionDevices(projectPath: string, timeoutMs: number, profile?: string): undefined {
-    cleanupOwnerDevices(projectPath, timeoutMs, profile);
+export function cleanupNativeSessionDevices(projectPath: string, timeoutMs: number, profile?: string): SessionDeviceCleanupCounts {
+    const counts = { stopped: 0, skipped: 0, failed: 0 };
+    for (const result of cleanupOwnerDevices(projectPath, timeoutMs, profile).results) {
+        counts[result.status]++;
+    }
+    return counts;
 }
 
 export function removeNativeOwnedSessionClaim(lockFile: string): undefined {
@@ -31,7 +36,12 @@ export function removeNativeOwnedSessionClaim(lockFile: string): undefined {
     return undefined;
 }
 
-export function reportNativeSessionDeviceCleanupFailure(error: unknown): undefined {
+export function reportNativeSessionDeviceCleanupFailure(failure: SessionDeviceCleanupFailure): undefined {
+    if (failure.kind === "reported-failures") {
+        console.error("[ccc] device cleanup failed during session cleanup: one or more devices failed to clean up");
+        return undefined;
+    }
+    const { error } = failure;
     console.error(`[ccc] device cleanup failed during session cleanup: ${error instanceof Error ? error.message : String(error)}`);
 }
 

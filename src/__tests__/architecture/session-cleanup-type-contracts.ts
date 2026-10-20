@@ -1,5 +1,5 @@
 import { createSessionCleanup } from "../../application/session-cleanup.js";
-import type { SessionCleanupPeerVetoes, SessionCleanupPorts, SessionCleanupSettlement } from "../../ports/session-cleanup.js";
+import type { SessionCleanupOutcome, SessionCleanupPeerVetoes, SessionCleanupPorts, SessionCleanupSettlement } from "../../ports/session-cleanup.js";
 
 const noPeers: SessionCleanupPeerVetoes = {
     sharedDeviceCleanupBlocked: false, exactContainerStopBlocked: false, responsibilityTransferred: false,
@@ -13,7 +13,7 @@ const ports: SessionCleanupPorts = {
     withLifecycleLock: <T>(_prefix: string, operation: () => T): T => operation(),
     peerVetoes: (_prefix, _ownPath, pinnedId) => { const id: string | null = pinnedId; void id; return noPeers; },
     removeClaim: () => undefined,
-    cleanupDevices: () => undefined,
+    cleanupDevices: () => ({ stopped: 2, skipped: 1, failed: 0 }),
     reportDeviceCleanupFailure: () => undefined,
     stopContainer: readContainerId => { const id: string | null = readContainerId(); void id; return undefined; },
 };
@@ -27,14 +27,15 @@ app.setSessionCleanupEnabled(true);
 // @ts-expect-error shutdown authorization requires an explicit boolean
 app.setSessionCleanupEnabled("true");
 const snapshot: { lockFile: string | null; projectPath: string | null; profile?: string; toolName: string | null } = app.getCurrentSession();
-const cleanup: void = app.cleanupSession();
-const heldCleanup: void = app.cleanupSessionInHeldLifecycleLock();
+const cleanup: SessionCleanupOutcome = app.cleanupSession();
+const heldCleanup: SessionCleanupOutcome = app.cleanupSessionInHeldLifecycleLock();
 const clear: void = app.clearSession();
 const projectId: string = ports.projectId("/project");
 const vetoes: SessionCleanupPeerVetoes = ports.peerVetoes("project-id", "own.lock", "a".repeat(64));
 const removed: undefined = ports.removeClaim("own.lock", completed);
-const devices: undefined = ports.cleanupDevices("/project", 5000, "work");
-const reported: undefined = ports.reportDeviceCleanupFailure({ reason: "devices" });
+const devices: { stopped: number; skipped: number; failed: number } = ports.cleanupDevices("/project", 5000, "work");
+const reported: undefined = ports.reportDeviceCleanupFailure({ kind: "reported-failures", failedDevices: 1 });
+ports.reportDeviceCleanupFailure({ kind: "exception", error: new Error("native failure") });
 const stopped: undefined = ports.stopContainer(() => null);
 const lockedNumber: number = ports.withLifecycleLock("project-id", () => 42);
 // The synchronous generic implementation preserves T, including a callback that returns a promise.
@@ -85,8 +86,10 @@ createSessionCleanup({ ...ports, peerVetoes: () => ({ sharedDeviceCleanupBlocked
 createSessionCleanup({ ...ports, peerVetoes: (_prefix: string, _own: string, _id: number) => noPeers });
 // @ts-expect-error Explicit undefined effect return rejects asynchronous removal.
 createSessionCleanup({ ...ports, removeClaim: async () => undefined });
-// @ts-expect-error Explicit undefined effect return rejects asynchronous devices.
-createSessionCleanup({ ...ports, cleanupDevices: async () => undefined });
+// @ts-expect-error Device facts must be synchronous.
+createSessionCleanup({ ...ports, cleanupDevices: async () => ({ stopped: 0, skipped: 0, failed: 0 }) });
+// @ts-expect-error Discarded device reports cannot establish observed counts.
+createSessionCleanup({ ...ports, cleanupDevices: () => undefined });
 // @ts-expect-error Explicit undefined effect return rejects asynchronous reporting.
 createSessionCleanup({ ...ports, reportDeviceCleanupFailure: async () => undefined });
 // @ts-expect-error Explicit undefined effect return rejects asynchronous stop.
@@ -95,7 +98,7 @@ createSessionCleanup({ ...ports, stopContainer: async () => undefined });
 const voidEffect = (): void => {};
 // @ts-expect-error Undefined removal results do not accept permissive void effects.
 createSessionCleanup({ ...ports, removeClaim: voidEffect });
-// @ts-expect-error Undefined device cleanup results do not accept permissive void effects.
+// @ts-expect-error Device facts do not accept permissive void effects.
 createSessionCleanup({ ...ports, cleanupDevices: voidEffect });
 // @ts-expect-error Undefined reporter results do not accept permissive void effects.
 createSessionCleanup({ ...ports, reportDeviceCleanupFailure: voidEffect });
@@ -119,4 +122,23 @@ const exposedId = app.getCurrentSession().containerId;
 const asynchronousCleanup: Promise<void> = app.cleanupSession();
 // @ts-expect-error Held cleanup is synchronous under the caller's guard.
 const asynchronousHeldCleanup: Promise<void> = app.cleanupSessionInHeldLifecycleLock();
-void [exposedId, asynchronousCleanup, asynchronousHeldCleanup];
+// @ts-expect-error Application cleanup returns finite facts rather than an undefined result.
+const discardedCleanup: undefined = app.cleanupSession();
+// @ts-expect-error Held application cleanup also returns finite facts.
+const discardedHeldCleanup: void = app.cleanupSessionInHeldLifecycleLock();
+// @ts-expect-error Device cleanup must include all three counts.
+createSessionCleanup({ ...ports, cleanupDevices: () => ({ failed: 1 }) });
+// @ts-expect-error Ordinary reports contain a bounded failure count rather than an arbitrary reason.
+ports.reportDeviceCleanupFailure({ kind: "reported-failures", reason: "private native reason" });
+// @ts-expect-error Reporter reasons form a closed tagged union.
+ports.reportDeviceCleanupFailure({ kind: "unknown", error: new Error("native failure") });
+// @ts-expect-error Unknown progress must not pretend to have observed counts.
+const inventedCounts: SessionCleanupOutcome = { kind: "settled", claim: "retired", devices: { kind: "indeterminate", reason: "device-cleanup-threw", failed: 0 }, container: { kind: "stopped" } };
+// @ts-expect-error Arbitrary device reasons cannot enter the outcome.
+const arbitraryReason: SessionCleanupOutcome = { kind: "settled", claim: "retired", devices: { kind: "skipped", reason: "native private reason" }, container: { kind: "not-required" } };
+const observed: SessionCleanupOutcome = { kind: "settled", claim: "retired", devices: { kind: "observed", stopped: 2, skipped: 1, failed: 1 }, container: { kind: "stopped" } };
+const transferred: SessionCleanupOutcome = { kind: "settled", claim: "retired", devices: { kind: "skipped", reason: "peer-veto" }, container: { kind: "transferred" } };
+const disabled: SessionCleanupOutcome = { kind: "settled", claim: "retired", devices: { kind: "skipped", reason: "cleanup-disabled" }, container: { kind: "not-required" } };
+const indeterminate: SessionCleanupOutcome = { kind: "settled", claim: "retired", devices: { kind: "indeterminate", reason: "device-cleanup-threw" }, container: { kind: "stopped" } };
+const inactive: SessionCleanupOutcome = { kind: "no-active-session" };
+void [exposedId, asynchronousCleanup, asynchronousHeldCleanup, discardedCleanup, discardedHeldCleanup, inventedCounts, arbitraryReason, observed, transferred, disabled, indeterminate, inactive];

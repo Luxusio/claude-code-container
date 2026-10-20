@@ -267,7 +267,7 @@ describe("session.ts", () => {
         mockGetProjectId.mockReset();
         mockIsContainerRunning.mockReset();
         mockGetContainerName.mockReset();
-        mockCleanupOwnerDevices.mockReset();
+        mockCleanupOwnerDevices.mockReset().mockReturnValue({ ownerId: "fixture-owner", results: [] });
         mockWithSharedMutationLock.mockReset()
             .mockImplementation((_file: string, operation: () => unknown) => operation());
         mockWithSharedMutationLockAsync.mockReset()
@@ -2275,6 +2275,7 @@ describe("session.ts", () => {
             });
             mockCleanupOwnerDevices.mockImplementation(() => {
                 callOrder.push("cleanupDevices");
+                return { ownerId: "fixture-owner", results: [] };
             });
 
             setSession(lockFile, projectPath);

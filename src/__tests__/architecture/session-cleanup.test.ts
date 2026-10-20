@@ -45,7 +45,7 @@ function fixture() {
             settlements.push({ ...settlement });
             return undefined;
         },
-        cleanupDevices(path, timeoutMs, profile) { expect(held).toBe(true); trace.push(["devices", path, timeoutMs, profile]); return undefined; },
+        cleanupDevices(path, timeoutMs, profile) { expect(held).toBe(true); trace.push(["devices", path, timeoutMs, profile]); return { stopped: 2, skipped: 1, failed: 0 }; },
         reportDeviceCleanupFailure(error) { expect(held).toBe(true); trace.push(["report", error]); return undefined; },
         stopContainer(readContainerId) {
             expect(held).toBe(true);
@@ -118,8 +118,9 @@ describe("cleanup in an already-held lifecycle guard", () => {
             expect(() => ordinary.app.cleanupSession()).toThrow("session-cleanup-responsibility-incomplete");
             expect(() => held.runHeld()).toThrow("session-cleanup-responsibility-incomplete");
         } else {
-            ordinary.app.cleanupSession();
-            expect(held.runHeld()).toBeUndefined();
+            const outcome = ordinary.app.cleanupSession();
+            expect(held.runHeld()).toEqual(outcome);
+            expect(outcome).toEqual({ kind: "settled", claim: "retired", devices: { kind: "observed", stopped: 2, skipped: 1, failed: 0 }, container: { kind: "stopped" } });
         }
         expect(held.trace).toEqual(ordinary.trace.filter(row => row[0] !== "lock" && row[0] !== "unlock"));
         expect(held.app.getCurrentSession()).toEqual(ordinary.app.getCurrentSession());
@@ -129,7 +130,7 @@ describe("cleanup in an already-held lifecycle guard", () => {
             expect(() => held.runHeld()).toThrow("session-cleanup-responsibility-incomplete");
             expect(held.trace.map(row => row[0])).toEqual(["project", "raw"]);
         } else {
-            held.runHeld();
+            expect(held.runHeld()).toEqual({ kind: "no-active-session" });
             expect(held.trace).toEqual([]);
         }
     });
@@ -253,7 +254,7 @@ describe("session context", () => {
 describe("cleanup gates and raw ownership veto", () => {
     it("empty initial state has no effects", () => {
         const f = fixture();
-        f.app.cleanupSession();
+        expect(f.app.cleanupSession()).toEqual({ kind: "no-active-session" });
         expect(f.trace).toEqual([]);
         expect(f.app.getCurrentSession()).toEqual(initial);
     });
@@ -261,7 +262,7 @@ describe("cleanup gates and raw ownership veto", () => {
         const f = fixture();
         f.app.setSession(lock, path, "work", "custom");
         const before = f.app.getCurrentSession();
-        f.app.cleanupSession();
+        expect(f.app.cleanupSession()).toEqual({ kind: "no-active-session" });
         expect(f.trace).toEqual([]);
         expect(f.app.getCurrentSession()).toEqual(before);
         f.setActive();
@@ -287,7 +288,7 @@ describe("cleanup gates and raw ownership veto", () => {
         const f = fixture();
         f.setActive();
         f.app.setSessionContainerId(id);
-        f.app.cleanupSession();
+        expect(f.app.cleanupSession()).toEqual({ kind: "settled", claim: "retired", devices: { kind: "observed", stopped: 2, skipped: 1, failed: 0 }, container: { kind: "not-required" } });
         expect(f.trace.map(row => row[0])).toEqual(["project", "lock", "raw", "devices", "remove", "unlock"]);
     });
     it("a foreign claim without a responsibility recipient retains own claim and permits a later exact-stop retry", () => {
@@ -442,6 +443,98 @@ describe("independent shared-device and exact-container cleanup decisions", () =
     }
 });
 
+describe("finite session cleanup outcomes", () => {
+    for (const entry of ["ordinary", "held"] as const) {
+        const run = (f: ReturnType<typeof fixture>) => entry === "held" ? f.runHeld() : f.app.cleanupSession();
+
+        it(`${entry} reports observed failures once before exact stop and retirement`, () => {
+            const f = fixture();
+            f.setActive();
+            f.ports.cleanupDevices = () => { f.trace.push(["devices"]); return { stopped: 3, skipped: 2, failed: 4 }; };
+            expect(run(f)).toEqual({ kind: "settled", claim: "retired", devices: { kind: "observed", stopped: 3, skipped: 2, failed: 4 }, container: { kind: "stopped" } });
+            expect(f.trace.filter(row => ["devices", "report", "stop", "remove"].includes(String(row[0])))).toEqual([
+                ["devices"], ["report", { kind: "reported-failures", failedDevices: 4 }],
+                ["stop", "captured-container-id"], ["remove", active.lockFile],
+            ]);
+            const completedTrace = [...f.trace];
+            expect(run(f)).toEqual({ kind: "no-active-session" });
+            expect(f.trace).toEqual(completedTrace);
+        });
+
+        it.each([
+            { enabled: false, peers: true, reason: "cleanup-disabled", container: "not-required" },
+            { enabled: false, peers: false, reason: "cleanup-disabled", container: "not-required" },
+            { enabled: true, peers: true, reason: "peer-veto", container: "transferred" },
+        ] as const)(`${entry} exposes skipped device facts with disabled precedence: %j`, scenario => {
+            const f = fixture();
+            f.setActive();
+            f.app.setSessionCleanupEnabled(scenario.enabled);
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: scenario.peers, exactContainerStopBlocked: scenario.peers, responsibilityTransferred: scenario.peers });
+            expect(run(f)).toEqual({ kind: "settled", claim: "retired", devices: { kind: "skipped", reason: scenario.reason }, container: { kind: scenario.container } });
+            expect(f.trace.some(row => row[0] === "devices" || row[0] === "report" || row[0] === "stop")).toBe(false);
+            expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
+        });
+
+        it(`${entry} distinguishes shared-device veto from its exact container stop`, () => {
+            const f = fixture();
+            f.setActive();
+            f.setPeerVetoes({ sharedDeviceCleanupBlocked: true, exactContainerStopBlocked: false, responsibilityTransferred: false });
+            expect(run(f)).toEqual({ kind: "settled", claim: "retired", devices: { kind: "skipped", reason: "peer-veto" }, container: { kind: "stopped" } });
+            expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", "captured-container-id"]]);
+            expect(f.trace.some(row => row[0] === "devices")).toBe(false);
+        });
+
+        it.each(["throws", "retargets"] as const)(`${entry} ordinary failure reporter %s without reclassification`, behavior => {
+            const f = fixture();
+            f.setActive();
+            f.ports.cleanupDevices = () => { f.trace.push(["devices"]); return { stopped: 0, skipped: 0, failed: 1 }; };
+            const failure = { reporter: "failed" };
+            const reports: unknown[] = [];
+            const report = f.ports.reportDeviceCleanupFailure;
+            f.ports.reportDeviceCleanupFailure = value => {
+                reports.push(value);
+                if (behavior === "throws") throw failure;
+                f.app.setSessionContainerId("replacement-container-id");
+                return undefined;
+            };
+            let caught: unknown;
+            try { run(f); } catch (error) { caught = error; }
+            if (behavior === "throws") expect(caught).toBe(failure);
+            else expect(caught).toBeInstanceOf(Error);
+            if (behavior === "retargets") expect(String(caught)).toMatch(/cleanup.*authorization.*changed/i);
+            expect(reports).toEqual([{ kind: "reported-failures", failedDevices: 1 }]);
+            expect(f.trace.some(row => row[0] === "stop" || row[0] === "remove")).toBe(false);
+            expect(f.app.getCurrentSession()).toEqual(active);
+            f.ports.reportDeviceCleanupFailure = report;
+            expect(run(f).kind).toBe("settled");
+            expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", behavior === "retargets" ? "replacement-container-id" : "captured-container-id"]]);
+        });
+    }
+
+    it("settles within the guard and returns the captured facts while a guard-return callback creates a successor", () => {
+        const f = fixture();
+        f.setActive();
+        const guard = f.ports.withLifecycleLock;
+        f.ports.withLifecycleLock = <T>(prefix: string, operation: () => T): T => {
+            const result = guard(prefix, () => {
+                const outcome = operation();
+                expect(f.isHeld()).toBe(true);
+                expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: active.toolName });
+                expect(f.trace.at(-1)).toEqual(["remove", active.lockFile]);
+                return outcome;
+            });
+            f.app.clearSession();
+            f.app.setSession("successor.lock", "/successor", undefined, "successor");
+            f.app.setSessionContainerId("successor-id");
+            return result;
+        };
+        expect(f.app.cleanupSession()).toEqual({ kind: "settled", claim: "retired", devices: { kind: "observed", stopped: 2, skipped: 1, failed: 0 }, container: { kind: "stopped" } });
+        expect(f.app.getCurrentSession()).toEqual({ lockFile: "successor.lock", projectPath: "/successor", profile: undefined, toolName: "successor" });
+        expect(f.trace.filter(row => row[0] === "stop")).toEqual([["stop", "captured-container-id"]]);
+        expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", active.lockFile]]);
+    });
+});
+
 describe("cleanup failures and retries", () => {
     it("retains its ownership receipt until the exact-ID stop succeeds on retry", () => {
         const f = fixture();
@@ -460,9 +553,9 @@ describe("cleanup failures and retries", () => {
         const f = fixture();
         f.setActive();
         f.ports.cleanupDevices = () => { f.trace.push(["device-throw"]); throw failure; };
-        f.app.cleanupSession();
+        expect(f.app.cleanupSession()).toEqual({ kind: "settled", claim: "retired", devices: { kind: "indeterminate", reason: "device-cleanup-threw" }, container: { kind: "stopped" } });
         expect(f.trace.slice(-5)).toEqual([
-            ["device-throw"], ["report", failure], ["stop", "captured-container-id"], ["remove", active.lockFile], ["unlock", "project-id--p--work"],
+            ["device-throw"], ["report", { kind: "exception", error: failure }], ["stop", "captured-container-id"], ["remove", active.lockFile], ["unlock", "project-id--p--work"],
         ]);
         expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
     });
@@ -500,7 +593,7 @@ describe("cleanup failures and retries", () => {
         const reportFailure = { failure: "reporter" };
         f.ports.cleanupDevices = () => { f.trace.push(["device-throw"]); throw deviceFailure; };
         const original = f.ports.reportDeviceCleanupFailure;
-        f.ports.reportDeviceCleanupFailure = error => { expect(error).toBe(deviceFailure); throw reportFailure; };
+        f.ports.reportDeviceCleanupFailure = report => { expect(report).toEqual({ kind: "exception", error: deviceFailure }); throw reportFailure; };
         let caught: unknown;
         try { f.app.cleanupSession(); } catch (error) { caught = error; }
         expect(caught).toBe(reportFailure);
@@ -527,7 +620,7 @@ describe("cleanup failures and retries", () => {
         expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
         expect(f.trace.filter(row => row[0] === "stop")).toHaveLength(1);
         f.ports.withLifecycleLock = original;
-        f.app.cleanupSession();
+        expect(f.app.cleanupSession()).toEqual({ kind: "no-active-session" });
         for (const effect of ["remove", "devices", "stop"]) expect(f.trace.filter(row => row[0] === effect)).toHaveLength(1);
         expect(f.app.getCurrentSession()).toEqual({ ...initial, toolName: "custom" });
     });
@@ -594,10 +687,10 @@ describe("cleanup pins its target and authorization across callbacks", () => {
             }
             if (phase === "device cleanup" || phase === "diagnostic reporting") {
                 f.ports.cleanupDevices = (path, timeout, profile) => {
-                    devices(path, timeout, profile);
+                    const result = devices(path, timeout, profile);
                     if (phase === "diagnostic reporting") throw "device failure";
                     replaceSession();
-                    return undefined;
+                    return result;
                 };
             }
             if (phase === "diagnostic reporting") f.ports.reportDeviceCleanupFailure = error => {
@@ -614,7 +707,7 @@ describe("cleanup pins its target and authorization across callbacks", () => {
 
             const effectsCompletedBeforeMutation = phase === "claim removal" || phase === "guard return";
             const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
-            if (effectsCompletedBeforeMutation) expect(run).not.toThrow();
+            if (effectsCompletedBeforeMutation) expect(run()).toEqual({ kind: "settled", claim: "retired", devices: { kind: "observed", stopped: 2, skipped: 1, failed: 0 }, container: { kind: "stopped" } });
             else expect(run).toThrow(authorizationChanged);
             expect(f.app.getCurrentSession()).toEqual(replacement);
             expect(claims.has(replacement.lockFile)).toBe(true);
@@ -636,9 +729,9 @@ describe("cleanup pins its target and authorization across callbacks", () => {
             f.app.setSessionContainerId(before);
             const devices = f.ports.cleanupDevices;
             f.ports.cleanupDevices = (path, timeout, profile) => {
-                devices(path, timeout, profile);
+                const result = devices(path, timeout, profile);
                 f.app.setSessionContainerId(after);
-                return undefined;
+                return result;
             };
             const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
             expect(run).toThrow(authorizationChanged);
@@ -659,7 +752,7 @@ describe("cleanup pins its target and authorization across callbacks", () => {
             f.setActive();
             const devices = f.ports.cleanupDevices;
             f.ports.cleanupDevices = (path, timeout, profile) => {
-                devices(path, timeout, profile);
+                const result = devices(path, timeout, profile);
                 if (mutation === "target away and back") {
                     f.app.setSessionContainerId("temporary-id");
                     f.app.setSessionContainerId("captured-container-id");
@@ -667,7 +760,7 @@ describe("cleanup pins its target and authorization across callbacks", () => {
                     f.app.setSessionCleanupEnabled(false);
                     f.app.setSessionCleanupEnabled(true);
                 }
-                return undefined;
+                return result;
             };
             const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
             expect(run).toThrow(authorizationChanged);
@@ -725,11 +818,11 @@ describe("cleanup pins its target and authorization across callbacks", () => {
             f.setActive();
             const devices = f.ports.cleanupDevices;
             f.ports.cleanupDevices = (path, timeout, profile) => {
-                devices(path, timeout, profile);
+                const result = devices(path, timeout, profile);
                 f.app.setSession(replacement.lockFile, replacement.projectPath, replacement.profile, replacement.toolName);
                 f.app.setSessionContainerId("replacement-container-id");
                 f.app.setSessionCleanupEnabled(false);
-                return undefined;
+                return result;
             };
             const run = () => entry === "held" ? f.runHeld() : f.app.cleanupSession();
             expect(run).toThrow(authorizationChanged);
