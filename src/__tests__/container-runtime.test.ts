@@ -681,7 +681,7 @@ describe("container-runtime", () => {
                 const info = getRuntimeInfo();
                 expect(info.rootless).toBe(true);
                 expect(info.flavor).toBe("podman-rootless");
-                expect(info.socketPath).toBe(join("/run/user/1002", "podman", "podman.sock"));
+                expect(info.socketPath).toBe("/run/user/1002/podman/podman.sock");
             } finally {
                 if (descriptor) Object.defineProperty(process, "getuid", descriptor); else Reflect.deleteProperty(process, "getuid");
             }

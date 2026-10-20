@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { join } from "node:path";
 import type { RuntimeName } from "../../domain/container-runtime.js";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), exists: vi.fn<(...args: unknown[]) => boolean>(() => false), access: vi.fn(), stat: vi.fn(), contextHost: "unix:///selected.sock", trace: [] as unknown[][] }));
@@ -128,7 +127,7 @@ describe("runtime capability native facade", () => {
         Object.defineProperty(process, "getuid", {configurable: true, value: uid});
         expect(() => runtime.getRuntimeInfo()).toThrow(fault); expect(() => runtime.getRuntimeInfo()).toThrow(fault);
         expect(native.spawn.mock.calls.filter(call => call[1].includes("--version"))).toHaveLength(2);
-        uid.mockReturnValue(1001); expect(runtime.getRuntimeInfo()).toMatchObject({ rootless: true, socketPath: join("/run/user/1001", "podman", "podman.sock") });
+        uid.mockReturnValue(1001); expect(runtime.getRuntimeInfo()).toMatchObject({ rootless: true, socketPath: "/run/user/1001/podman/podman.sock" });
         const complete = runtime.getRuntimeInfo(); uid.mockImplementation(() => { throw fault; }); expect(runtime.getRuntimeInfo()).toBe(complete);
     });
     it("runs capability probes through the captured executable/transport after ambient selection changes", () => {
