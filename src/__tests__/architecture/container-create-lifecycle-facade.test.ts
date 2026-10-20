@@ -3,6 +3,7 @@ import type { SpawnSyncReturns } from "child_process";
 import { createNativeContainerCreateLifecycle } from "../../composition/container-create-lifecycle.js";
 import { createNativeContainerCreatePorts } from "../../adapters/container-create-lifecycle.js";
 import type { NativeContainerCreateLifecycleContext } from "../../composition/container-create-lifecycle.js";
+import type { ContainerCreateLifecyclePorts } from "../../ports/container-create-lifecycle.js";
 import {isAbsolute, resolve} from "node:path";
 
 const native = vi.hoisted(() => ({
@@ -276,6 +277,85 @@ describe("actual creation application through native composition", () => {
         // Supply the methods before composition, just as the public caller does.
         const lifecycle = createNativeContainerCreateLifecycle(f.ports, f.context);
         expect(lifecycle.run(request)).toBe("public-name");
+    });
+
+    it.each(["error", "undefined"] as const)("regression: preserves a %s verifier failure after an earlier proof replaces the receiver method", value => {
+        const primary = value === "error" ? new Error("replacement verifier failed") : undefined;
+        const replacement = vi.fn((_target: string) => { throw primary; });
+        let projectProofs = 0;
+        const f = fixture({ assertProjectSources() {
+            projectProofs++;
+            this.verifyCreated = replacement;
+            return undefined;
+        } });
+        const absent = result(1, "", "No such container");
+        native.spawn.mockReturnValueOnce(result(0, id)).mockReturnValueOnce(result()).mockReturnValueOnce(absent);
+        expect(thrown(() => f.lifecycle.run(request))).toBe(primary);
+        expect(projectProofs).toBe(2);
+        expect(replacement).toHaveBeenCalledExactlyOnceWith(id);
+        expect(f.ports.verifyCreated).not.toHaveBeenCalled();
+        expect(native.spawn.mock.calls).toEqual([
+            ["captured-runtime", f.args, createOptions],
+            ["captured-runtime", ["rm", "-f", id], cleanupOptions],
+            ["captured-runtime", ["inspect", "-f", "{{.Id}}", id], { ...cleanupOptions, timeout: 5000 }],
+        ]);
+        expect(f.context.explicitlyNotFound).toHaveBeenCalledExactlyOnceWith(absent);
+        expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+
+    it.each(["error", "undefined"] as const)("regression: preserves a %s source failure after an earlier proof replaces a later receiver assertion", value => {
+        const primary = value === "error" ? new Error("replacement device source failed") : undefined;
+        const replacement = vi.fn(() => { throw primary; });
+        const originalDeviceProof = vi.fn(() => undefined);
+        let projectProofs = 0;
+        const f = fixture({ assertDeviceSources: originalDeviceProof, assertProjectSources() {
+            if (++projectProofs === 2) this.assertDeviceSources = replacement;
+            return undefined;
+        } });
+        const absent = result(1, "", "No such container");
+        native.spawn.mockReturnValueOnce(result(0, id)).mockReturnValueOnce(result()).mockReturnValueOnce(absent);
+        expect(thrown(() => f.lifecycle.run(request))).toBe(primary);
+        expect(projectProofs).toBe(2);
+        expect(originalDeviceProof).toHaveBeenCalledTimes(1);
+        expect(replacement).toHaveBeenCalledTimes(1);
+        expect(f.ports.verifyCreated).not.toHaveBeenCalled();
+        expect(native.spawn.mock.calls).toEqual([
+            ["captured-runtime", f.args, createOptions],
+            ["captured-runtime", ["rm", "-f", id], cleanupOptions],
+            ["captured-runtime", ["inspect", "-f", "{{.Id}}", id], { ...cleanupOptions, timeout: 5000 }],
+        ]);
+        expect(f.context.explicitlyNotFound).toHaveBeenCalledExactlyOnceWith(absent);
+        expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+
+    it.each(["errors", "undefined-primary", "undefined-cleanup"] as const)("regression: retains ordered %s failures when an earlier proof replaces receiver cleanup methods", values => {
+        const primary = values === "undefined-primary" ? undefined : new Error("verification failed before replacement cleanup");
+        const removal = values === "undefined-cleanup" ? undefined : new Error("replacement removal failed");
+        const absence = values === "undefined-cleanup" ? undefined : new Error("replacement absence failed");
+        const effects: string[] = [];
+        const remove = vi.fn((target: string): undefined => { effects.push("remove:" + target); throw removal; });
+        const inspect = vi.fn((target: string): boolean => { effects.push("absent:" + target); throw absence; });
+        const f = fixture({
+            assertProjectSources(this: Pick<ContainerCreateLifecyclePorts<unknown>, "removeRejected" | "explicitlyAbsent">) {
+                this.removeRejected = remove;
+                this.explicitlyAbsent = inspect;
+                return undefined;
+            },
+            verifyCreated: target => { effects.push("verify:" + target); throw primary; },
+        });
+        native.spawn.mockImplementation((_cli, args: string[]) => { effects.push(args[0]); return result(0, id); });
+        const caught = thrown(() => f.lifecycle.run(request)) as AggregateError;
+        expect(caught).toBeInstanceOf(AggregateError);
+        expect(caught.cause).toBe(primary);
+        expect(caught.errors).toHaveLength(3);
+        expect(caught.errors[0]).toBe(primary);
+        expect(caught.errors[1]).toBe(removal);
+        expect(caught.errors[2]).toBe(absence);
+        expect(remove).toHaveBeenCalledExactlyOnceWith(id);
+        expect(inspect).toHaveBeenCalledExactlyOnceWith(id);
+        expect(effects).toEqual(["run", "verify:" + id, "remove:" + id, "absent:" + id]);
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", f.args, createOptions);
+        expect(f.ports.finish).not.toHaveBeenCalled();
     });
 
     it.each([undefined, false, true])("preserves streams/order/debug=%s and exact pinned handoff", debug => {

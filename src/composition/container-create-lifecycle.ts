@@ -89,7 +89,7 @@ export function createNativeContainerCreateLifecycle(
             throw primary;
         }
 
-        const lifecycle = createContainerCreateLifecycle({
+        const lifecyclePorts: ContainerCreateLifecyclePorts<{ cli: string; args: string[] }> = {
             ...ports,
             ...native,
             withFamilyLock(prefix, operation): ContainerCreateLifecycleOutcome {
@@ -106,30 +106,37 @@ export function createNativeContainerCreateLifecycle(
                 return native.create(prepared, cause => { createCause = { value: cause }; });
             },
             assertProjectSources() {
-                try { return ports.assertProjectSources.call(this); }
-                catch (error) { primaryCause = { value: error }; throw error; }
+                return ports.assertProjectSources.call(this);
             },
             assertDeviceSources() {
-                try { return ports.assertDeviceSources.call(this); }
-                catch (error) { primaryCause = { value: error }; throw error; }
+                return ports.assertDeviceSources.call(this);
             },
             assertFilesystemSources() {
-                try { return ports.assertFilesystemSources.call(this); }
-                catch (error) { primaryCause = { value: error }; throw error; }
+                return ports.assertFilesystemSources.call(this);
             },
             verifyCreated(id) {
-                try { return ports.verifyCreated.call(this, id); }
-                catch (error) { primaryCause = { value: error }; throw error; }
+                return ports.verifyCreated.call(this, id);
             },
-            removeRejected(id) {
-                try { return native.removeRejected.call(this, id); }
-                catch (error) { removalCause = { value: error }; throw error; }
+        };
+        const lifecycle = createContainerCreateLifecycle(new Proxy(lifecyclePorts, {
+            get(target, name, receiver) {
+                const method: unknown = Reflect.get(target, name, receiver);
+                if (typeof method !== "function" || (
+                    name !== "assertProjectSources" && name !== "assertDeviceSources"
+                    && name !== "assertFilesystemSources" && name !== "verifyCreated"
+                    && name !== "removeRejected" && name !== "explicitlyAbsent"
+                )) return method;
+                return function (this: unknown, ...args: unknown[]) {
+                    try { return Reflect.apply(method, this, args); }
+                    catch (error) {
+                        if (name === "removeRejected") removalCause = { value: error };
+                        else if (name === "explicitlyAbsent") absenceCause = { value: error };
+                        else primaryCause = { value: error };
+                        throw error;
+                    }
+                };
             },
-            explicitlyAbsent(id) {
-                try { return native.explicitlyAbsent.call(this, id); }
-                catch (error) { absenceCause = { value: error }; throw error; }
-            },
-        });
+        }));
 
         try {
             // The native lock bridge always returns completed after projecting its callbacks.
