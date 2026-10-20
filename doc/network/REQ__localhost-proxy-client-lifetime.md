@@ -1,5 +1,14 @@
 # Retained TypeScript proxy client lifetime
 
+This is a **derived technical repair and compatibility requirement**, based on
+the existing [architecture ADR](../common/ADR__ccc-target-architecture.md) and
+[application/port contracts](../common/SPEC__ccc-architecture-contracts.md).
+The retained public helper needs explicit lifetime policy because its native
+operations can terminate a client before deferred close delivery. Preserving
+accepted stream facets applies the existing public compatibility constraint.
+These are technical consequences of the architecture conversion, not additional
+user acceptance criteria or a new product feature.
+
 The public TypeScript `proxyConnection` helper must stop forwarding when its
 client closes, errors or is already destroyed, including while a connection
 attempt is pending. This requirement concerns the retained TypeScript API;

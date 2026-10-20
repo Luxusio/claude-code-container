@@ -28,10 +28,18 @@ export function createLocalhostProxy<Chunk, Stream extends ForwardingStream<Chun
         client.on("error", onClientTerminated);
         client.on("close", onClientTerminated);
         if (terminated || client.destroyed) { onClientTerminated(); return; }
-        try { upstream = await ports.connect(localAddr, originalPort); }
+        try {
+            const connect = ports.connect;
+            if (terminated || client.destroyed) { onClientTerminated(); return; }
+            upstream = await connect.call(ports, localAddr, originalPort);
+        }
         catch {
             if (terminated || client.destroyed) { onClientTerminated(); return; }
-            try { upstream = await ports.connect(hostAddr, fallbackPort); }
+            try {
+                const connect = ports.connect;
+                if (terminated || client.destroyed) { onClientTerminated(); return; }
+                upstream = await connect.call(ports, hostAddr, fallbackPort);
+            }
             catch {
                 releasePending();
                 if (!terminated && !client.destroyed) client.destroy();
@@ -42,9 +50,16 @@ export function createLocalhostProxy<Chunk, Stream extends ForwardingStream<Chun
         upstream.on("error", () => client.destroy());
         upstream.on("close", () => client.destroy());
         client.removeListener("data", onData);
-        try { for (const chunk of pendingData) upstream.write(chunk); }
+        try {
+            for (const chunk of pendingData) {
+                if (terminated || client.destroyed) { onClientTerminated(); return; }
+                upstream.write(chunk);
+            }
+        }
         finally { pendingData.length = 0; }
+        if (terminated || client.destroyed) { onClientTerminated(); return; }
         client.pipe(upstream);
+        if (terminated || client.destroyed) { onClientTerminated(); return; }
         upstream.pipe(client);
     }
     return {proxyConnection};

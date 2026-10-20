@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { Duplex } from "node:stream";
 import { createLocalhostProxy } from "../../application/localhost-proxy.js";
 import { createLocalhostProxyVerifier } from "../../application/localhost-proxy-setup.js";
 
@@ -140,6 +141,80 @@ it("a raw late-upstream destroy failure is not mistaken for a dial failure", asy
     await expect(completion).rejects.toBe(raw);
     expect(dials).toBe(1); expectNoForwarding(client, upstream);
 });
+it("a native write that destroys the client normally stops pending writes and retires the upstream before returning", async () => {
+    const written: Buffer[] = []; const pipeEvents: string[] = []; const dial = deferred<Duplex>();
+    const client = new Duplex({read() {}, write(_chunk, _encoding, callback) { callback(); }});
+    const upstream = new Duplex({read() {}, write(chunk, _encoding, callback) {
+        written.push(chunk); client.destroy(); callback();
+    }});
+    const clientClosed = new Promise<void>(resolve => client.once("close", () => resolve()));
+    const upstreamClosed = new Promise<void>(resolve => upstream.once("close", () => resolve()));
+    client.on("pipe", () => pipeEvents.push("upstream-to-client"));
+    upstream.on("pipe", () => pipeEvents.push("client-to-upstream"));
+    const first = Buffer.from("first"); const second = Buffer.from("second");
+    let bufferedChunks = 0; const buffered = deferred<void>();
+    client.on("data", () => { if (++bufferedChunks === 2) buffered.resolve(); });
+    const completion = createLocalhostProxy<Buffer, Duplex>({connect: () => dial.promise}).proxyConnection(client, 80);
+    try {
+        client.push(first); client.push(second); await buffered.promise;
+        dial.resolve(upstream); await completion;
+        expect(written).toHaveLength(1); expect(written[0]).toBe(first);
+        expect(pipeEvents).toEqual([]);
+        expect(client.destroyed).toBe(true); expect(upstream.destroyed).toBe(true);
+    } finally {
+        dial.resolve(upstream); client.destroy(); upstream.destroy();
+        await Promise.allSettled([completion, clientClosed, upstreamClosed]);
+    }
+});
+it.each(["write", "client-pipe"])("a structural client close from %s returning normally stops later forwarding", async operation => {
+    const events: unknown[] = []; const client = new Stream("client", events); const upstream = new Stream("upstream", events);
+    const first = {}; const second = {}; const dial = deferred<Stream>();
+    if (operation === "write") upstream.write = function(chunk) {
+        const accepted = Stream.prototype.write.call(this, chunk); client.emit("close"); return accepted;
+    };
+    else client.pipe = function(peer) {
+        const result = Stream.prototype.pipe.call(this, peer); client.emit("close"); return result;
+    };
+    const completion = createLocalhostProxy<object, Stream>({connect: () => dial.promise}).proxyConnection(client, 80);
+    client.emit("data", first); client.emit("data", second); dial.resolve(upstream); await completion;
+    expect(upstream.writes).toHaveLength(operation === "write" ? 1 : 2);
+    expect(upstream.writes[0]).toBe(first);
+    expect(client.pipes).toEqual(operation === "write" ? [] : [upstream]);
+    expect(upstream.pipes).toEqual([]); expect(upstream.destroyed).toBe(true);
+});
+it.each(["initial", "fallback"])("a terminating %s connect getter cannot dispatch its returned connector", async selected => {
+    const events: unknown[] = []; const client = new Stream("client", events); const upstream = new Stream("upstream", events);
+    const dispatched: unknown[] = []; let selectedDispatches = 0; let lookups = 0;
+    const ports = {get connect() {
+        const terminates = selected === "initial" || ++lookups === 2;
+        if (terminates) client.emit("close");
+        return async (host: string, port: number) => {
+            dispatched.push([host, port]);
+            if (terminates) { selectedDispatches++; return upstream; }
+            throw {code: "local dial rejected"};
+        };
+    }};
+    await createLocalhostProxy<object, Stream>(ports).proxyConnection(client, 80, "local", "host", 81);
+    expect(selectedDispatches).toBe(0);
+    expect(dispatched).toEqual(selected === "initial" ? [] : [["local", 80]]);
+    expectNoForwarding(client, upstream);
+});
+it("a live fallback connector retains its owning ports receiver", async () => {
+    const events: unknown[] = []; const client = new Stream("client", events); const upstream = new Stream("upstream", events);
+    const ports = {
+        upstream, calls: [] as unknown[],
+        get connect() {
+            return async function(this: {upstream: Stream; calls: unknown[]}, host: string, port: number) {
+                this.calls.push([host, port]);
+                if (this.calls.length === 1) throw {code: "local dial rejected"};
+                return this.upstream;
+            };
+        },
+    };
+    await createLocalhostProxy<object, Stream>(ports).proxyConnection(client, 80, "local", "host", 81);
+    expect(ports.calls).toEqual([["local", 80], ["host", 81]]);
+    expect(client.pipes).toEqual([upstream]); expect(upstream.pipes).toEqual([client]);
+});
 
 function verifierFixture() {
     const events: unknown[] = [];
@@ -211,7 +286,12 @@ it.each(["reach", "listener"])("a raw %s failure propagates before any notificat
 it("routing constructor leaves getter-backed dial capability lazy until after buffering", async () => {
     const events: unknown[] = []; const client = new Stream("client",events); const upstream = new Stream("upstream",events);
     const pending = {};
-    const ports = { get connect() { events.push("get:connect"); client.emit("data", pending); return async (host: string,port: number) => {events.push(["connect",host,port]);return upstream;}; } };
+    const ports = { upstream, get connect() {
+        events.push("get:connect"); client.emit("data", pending);
+        return async function(this: {upstream: Stream}, host: string, port: number) {
+            events.push(["connect",host,port]); return this.upstream;
+        };
+    } };
     const app = createLocalhostProxy<object,Stream>(ports); expect(events).toEqual([]);
     await app.proxyConnection(client,80);
     expect(upstream.writes).toEqual([pending]); expect(upstream.writes[0]).toBe(pending);

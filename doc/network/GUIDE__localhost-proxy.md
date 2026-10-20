@@ -77,9 +77,9 @@ and preserve its console receiver. Constructor checks do not invoke these getter
 The proc probe makes no recursive TCP connection to the transparent proxy.
 
 Entrypoint iptables, daemon startup, network namespaces, runtime selection and
-host-reach implementation remain unchanged. Entry-point/build-file/module bytes
-and retained native function bodies require hash proof. This refactor adds no
-network feature, retry, cleanup repair, port hardening or resource limit.
+host-reach implementation remain unchanged. The client lifetime repair affects
+the retained TypeScript application only; it adds no network feature, retry,
+port hardening or resource limit.
 
 ## Verification and delivery gate
 
