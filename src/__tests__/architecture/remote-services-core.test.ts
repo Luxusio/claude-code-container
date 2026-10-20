@@ -26,6 +26,7 @@ function fixture() {
         newReservationToken: () => token,
         observeTool: tool => { trace.push(["tool", tool]); return { installed: true, version: "1.0" }; },
         isHostReachable: host => { trace.push(["ping", host]); return true; },
+        prepareRemoteRuntime: remote => { trace.push(["runtime", remote]); return { ok: true }; },
         remoteImagePresent: remote => { trace.push(["image", remote]); return true; },
         reserveContainer: request => { trace.push(["reserve", request]); return { kind: "reserved", container: { name: "returned-name", id } }; },
         refreshReservation: request => { trace.push(["refresh", request]); return false; },
@@ -105,9 +106,10 @@ describe("whole remote semantic workflows", () => {
     it("observes setup tools in order and returns early with installation notices", async () => {
         const { ports, services, trace } = fixture(); ports.observeTool = tool => { trace.push(["tool", tool]); return { installed: false }; };
         await services().remoteSetup();
-        expect(trace.filter(row => row[0] === "tool")).toEqual([["tool", "tailscale"], ["tool", "mutagen"]]);
+        expect(trace.filter(row => row[0] === "tool")).toEqual([["tool", "tailscale"], ["tool", "mutagen"], ["tool", "docker"]]);
         expect(events(trace)).toContainEqual({ kind: "tool-install-guide", tool: "tailscale" });
         expect(events(trace)).toContainEqual({ kind: "tool-install-guide", tool: "mutagen" });
+        expect(events(trace)).toContainEqual({ kind: "tool-install-guide", tool: "docker" });
         expect(events(trace)).toContainEqual({ kind: "setup-tools-missing" });
         expect(events(trace).some(event => event.kind === "setup-usage")).toBe(false);
         trace.length = 0; ports.observeTool = tool => { trace.push(["tool", tool]); return { installed: true, version: "1.0" }; };
@@ -199,6 +201,44 @@ describe("whole remote semantic workflows", () => {
         }
     });
 
+    it("requires the local Docker client before runtime resolution or ownership", async () => {
+        const f = fixture();
+        f.ports.observeTool = tool => { f.trace.push(["tool", tool]); return { installed: tool !== "docker" }; };
+        await expect(f.services().remoteExec("relative")).resolves.toEqual({ kind: "refused", reason: "docker-required", cleanupFailures: [] });
+        expect(f.trace).toContainEqual(["tool", "docker"]); expectNoClaim(f.trace);
+        expect(f.trace.some(row => row[0] === "runtime" || row[0] === "observe-sync")).toBe(false);
+    });
+
+    it("runtime preparation failure and faults precede claims, reservations and sync controls", async () => {
+        const refused = fixture(); refused.ports.prepareRemoteRuntime = remote => { refused.trace.push(["runtime", remote]); return { ok: false, evidence }; };
+        await expect(refused.services().remoteExec("relative")).resolves.toEqual({ kind: "failed", reason: "runtime-unavailable", evidence, cleanupFailures: [] });
+        expect(refused.trace).toContainEqual(["runtime", config]); expectNoClaim(refused.trace);
+        expect(refused.trace.some(row => ["image", "observe-sync", "create-sync", "resume", "pause", "terminate"].includes(String(row[0])))).toBe(false);
+        const failed = fixture(); const fault = { native: "receiving endpoint observation" };
+        failed.ports.prepareRemoteRuntime = () => { throw fault; };
+        await expect(failed.services().remoteExec("relative")).resolves.toEqual({ kind: "fault", error: fault, cleanupFailures: [] });
+        expectNoClaim(failed.trace);
+    });
+
+    it("runtime preparation cancellation never acquires a claim or starts a sync", async () => {
+        const f = fixture();
+        f.ports.prepareRemoteRuntime = remote => { f.trace.push(["runtime", remote]); f.handlers.get("SIGINT")!(); return { ok: true }; };
+        await expect(f.services().remoteExec("relative")).resolves.toEqual({ kind: "cancelled", signal: "SIGINT", cleanupFailures: [] });
+        expectNoClaim(f.trace);
+        expect(f.trace.some(row => ["image", "observe-sync", "create-sync", "resume", "pause", "terminate"].includes(String(row[0])))).toBe(false);
+    });
+
+    it("unavailable runtime leaves check unknown and prevents explicit termination", async () => {
+        const f = fixture(); f.ports.prepareRemoteRuntime = remote => { f.trace.push(["runtime", remote]); return { ok: false, evidence }; };
+        await f.services().remoteCheck("relative");
+        expect(events(f.trace)).toContainEqual({ kind: "status-sync-unknown" });
+        expect(events(f.trace).some(event => event.kind === "status-sync-active" || event.kind === "status-sync-missing")).toBe(false);
+        expect(f.trace.some(row => row[0] === "observe-sync")).toBe(false);
+        f.trace.length = 0;
+        await expect(f.services().remoteTerminate("relative")).resolves.toEqual({ kind: "failed", reason: "runtime-unavailable", evidence });
+        expect(f.trace.some(row => ["observe-sync", "terminate", "pause", "resume", "create-sync"].includes(String(row[0])))).toBe(false); expectNoClaim(f.trace);
+    });
+
     it("invalid explicit host/user and unreachable host refuse execution before save or claim", async () => {
         const invalidHost = fixture();
         await expect(invalidHost.services().remoteExec("relative", "bad;host")).resolves.toEqual({ kind: "refused", reason: "host-invalid", cleanupFailures: [] });
@@ -219,6 +259,7 @@ describe("whole remote semantic workflows", () => {
             const remote = { host: "new-host", user: answer || "localuser", remotePath: "" };
             expect(f.trace).toContainEqual(["prompt", { kind: "user", defaultUser: "localuser" }]);
             expect(f.trace).toContainEqual(["save", "hash", remote]); expect(index(f.trace, "save")).toBeLessThan(index(f.trace, "claim"));
+            expect(f.trace).toContainEqual(["runtime", remote]); expect(index(f.trace, "runtime")).toBeLessThan(index(f.trace, "claim"));
             expect(f.trace).toContainEqual(["ssh", { config: remote, containerId: f.id, projectId: "project-id", arguments: ["a'b", "日本語", "$(literal)"], environment: [["SECOND", "v2"], ["FIRST", "v1"]] }]);
         }
     });

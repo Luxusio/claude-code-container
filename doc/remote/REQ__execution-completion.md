@@ -86,9 +86,10 @@ Existing guard acquisitions retain their current timeout, and several existing
 native commands have no timeout. Cancelling a reader/timer does not promise
 immediate cancellation of those operations or prove child termination. This
 change does not certify live SSH, native engines or actual Mac behavior; those
-acceptance requirements remain separate. The existing `user@host:docker://...`
-endpoint is parsed by stock Mutagen as an SSH host path, not nested container
-transport. Correct Docker transport and observed container file convergence
-remain required follow-up work. See the upstream
-[URL dispatcher](https://github.com/mutagen-io/mutagen/blob/v0.17.0/pkg/url/parse.go#L22-L33)
-and [SSH path parser](https://github.com/mutagen-io/mutagen/blob/v0.17.0/pkg/url/parse_ssh.go#L157-L183).
+acceptance requirements remain separate. Correct Docker endpoint creation,
+captured daemon-address authority and actual container convergence follow
+[sync authority](REQ__sync-authority.md) and the
+[Docker transport guide](GUIDE__mutagen-docker-transport.md). Completion or a
+`watching` observation alone proves neither transferred bytes nor real SSH
+authentication. Legacy SSH filesystem records remain unqualified and are not
+automatically migrated or removed.

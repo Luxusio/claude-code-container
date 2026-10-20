@@ -14,15 +14,16 @@ const running: Running[] = [];
 const nativeId = (character: string) => "sync_" + character.repeat(43);
 interface Session {
     identifier: string; name: string; alpha: { protocol: string; path: string };
-    beta: { protocol: string; user: string; host: string; path: string }; paused: boolean; status: string;
+    beta: { protocol: string; user?: string; host: string; path: string; environment?: Record<string, string> }; paused: boolean; status: string;
 }
 interface State {
     sessions: Session[]; created: number; containerId: string;
     listMode: "known" | "failure" | "malformed" | "invalid-row";
     afterCreateUnknown: boolean; holdInventory: boolean; replaceOnInteractive: boolean; invalidEndpointOnInteractive: boolean;
     busy: boolean; terminateFailure: boolean; pauseFailure: boolean; releaseFailure: boolean; holdInteractive: boolean; interactiveExitCode: number;
+    dockerAvailable: boolean; daemonSocket: string; metadataFailure: boolean;
 }
-interface Call { program: string; args: string[]; role: string; targets?: string[]; cwd: string; marker: string | null; event?: string; }
+interface Call { program: string; args: string[]; role: string; targets?: string[]; cwd: string; marker: string | null; event?: string; dockerEnvironment: Record<string, string>; }
 
 const native = String.raw`
 import { appendFileSync, existsSync, openSync, closeSync, readFileSync, writeFileSync } from 'node:fs';
@@ -32,6 +33,7 @@ const stateFile = join(root, 'state.json'), state = JSON.parse(readFileSync(stat
 const log = extra => appendFileSync(join(root, 'trace.jsonl'), JSON.stringify({
   program, args, role: process.env.CCC_REMOTE_ROLE ?? '', cwd: process.cwd(),
   marker: process.env.CCC_REMOTE_MARKER ?? null, ...extra,
+  dockerEnvironment: Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(?:MUTAGEN_BETA_)?DOCKER_(HOST|TLS|TLS_VERIFY|CERT_PATH|CONTEXT|CONFIG|API_VERSION)$/.test(key))),
 }) + '\n');
 const save = () => writeFileSync(stateFile, JSON.stringify(state));
 const out = text => process.stdout.write(text);
@@ -70,13 +72,14 @@ if (program === 'mutagen') {
         '\nStatus: ' + (row.paused ? 'Paused' : 'Watching for changes') + '\n');
     }
   } else if (args[1] === 'create') {
-    const target = /^([^@]+)@([^:]+):(.*)$/.exec(args[3]);
+    const target = /^docker:\/\/([a-f0-9]{64})(\/.*)$/.exec(args[3]);
     if (!target) fail('invalid fixture target');
+    if (!process.env.MUTAGEN_BETA_DOCKER_HOST) fail('missing captured Docker authority');
     state.created++;
     const identifier = 'sync_' + String(state.created).padStart(43, 'A');
     state.sessions.push({ identifier, name: args[args.indexOf('--name') + 1],
       alpha: { protocol: 'local', path: args[2] },
-      beta: { protocol: 'ssh', user: target[1], host: target[2], path: target[3] }, paused: false, status: 'watching' });
+      beta: { protocol: 'docker', host: target[1], path: target[2], environment: { DOCKER_HOST: process.env.MUTAGEN_BETA_DOCKER_HOST } }, paused: false, status: 'watching' });
     if (state.afterCreateUnknown) state.listMode = 'failure';
     log({ targets: [identifier] }); save();
   } else if (['resume', 'pause', 'terminate'].includes(args[1])) {
@@ -116,7 +119,11 @@ if (program === 'mutagen') {
   } else {
     const command = args.at(-1) ?? '';
     log({});
-    if (command.includes('docker images -q')) {
+    if (command === "docker context inspect --format '{{json .Endpoints.docker.Host}}'") {
+      if (state.metadataFailure) fail('receiving daemon metadata unavailable');
+      out(JSON.stringify(state.daemonSocket));
+    }
+    else if (command.includes('docker images -q')) {
       writeFileSync(join(root, 'image-preflight-' + (process.env.CCC_REMOTE_ROLE ?? 'single')), 'ready');
       out('sha256:fixture\n');
     }
@@ -124,6 +131,11 @@ if (program === 'mutagen') {
     else if (command.includes('docker stop') && state.busy) { out('ccc-remote-sessions-active\n'); process.exit(42); }
     else if (!command.includes('docker stop') && /rm -f.*\$_ccc_sessions\/[a-f0-9]{32}/.test(command) && state.releaseFailure) fail('fixture reservation release denied');
   }
+} else if (program === 'docker') {
+  log({});
+  if (args.length !== 1 || args[0] !== '--version') fail('fixture refuses local engine contact');
+  if (!state.dockerAvailable) fail('local Docker CLI unavailable');
+  out('Docker version 29.0.0\n');
 } else if (program === 'ping') log({});
 else fail('unexpected fixture executable');
 `;
@@ -176,11 +188,12 @@ function fixture() {
     const root = mkdtempSync(join(tmpdir(), "ccc-sync-authority-")); roots.push(root); chmodSync(root, 0o700);
     const bin = join(root, "bin"); mkdirSync(bin, { mode: 0o700 }); mkdirSync(join(root, "project"), { mode: 0o700 });
     const consumerPath = join(root, "consumer.mjs"); writeFileSync(consumerPath, consumer, { mode: 0o600 });
-    for (const program of ["mutagen", "ssh", "ping"]) writeFileSync(join(bin, program), "#!" + process.execPath + "\n" + native, { mode: 0o700 });
+    for (const program of ["mutagen", "ssh", "ping", "docker"]) writeFileSync(join(bin, program), "#!" + process.execPath + "\n" + native, { mode: 0o700 });
     const statePath = join(root, "state.json"), tracePath = join(root, "trace.jsonl");
     const initial: State = { sessions: [], created: 0, containerId: "a".repeat(64), listMode: "known",
         afterCreateUnknown: false, holdInventory: false, replaceOnInteractive: false, invalidEndpointOnInteractive: false,
-        busy: false, terminateFailure: false, pauseFailure: false, releaseFailure: false, holdInteractive: false, interactiveExitCode: 0 };
+        busy: false, terminateFailure: false, pauseFailure: false, releaseFailure: false, holdInteractive: false, interactiveExitCode: 0,
+        dockerAvailable: true, daemonSocket: "unix:///var/run/docker.sock", metadataFailure: false };
     writeFileSync(statePath, JSON.stringify(initial)); writeFileSync(tracePath, "");
     const env = { ...process.env, HOME: root, PATH: bin + ":" + (process.env.PATH ?? ""),
         CCC_REMOTE_FIXTURE: root, CCC_REMOTE_DIST: dist, CCC_REMOTE_MARKER: "captured-fixture", CCC_REMOTE_HOST: "host-a" };
@@ -208,7 +221,7 @@ function fixture() {
     const run = (action = "exec", answer: string | null = "n", overrides: NodeJS.ProcessEnv = {}) => start(action, answer, overrides).done;
     const record = (name = info.legacy): Session => ({ identifier: nativeId("x"), name,
         alpha: { protocol: "local", path: join(root, "project") },
-        beta: { protocol: "ssh", user: "user", host: "host-a", path: "docker://" + initial.containerId + "/project/" + info.projectId },
+        beta: { protocol: "docker", host: initial.containerId, path: "/project/" + info.projectId, environment: { DOCKER_HOST: "ssh://user@host-a/var/run/docker.sock" } },
         paused: false, status: "watching" });
     return { root, env, consumerPath, info, state, set, calls, clear, start, run, record };
 }
@@ -290,6 +303,58 @@ const promptPty = [
 ].join("\n");
 
 describe.runIf(process.platform !== "win32")("emitted remote sync authority with native ports", () => {
+    it("creates the official Docker endpoint with only its captured beta authority and pins receiving programs", async () => {
+        const f = fixture(); const selectors = ["HOST", "TLS", "TLS_VERIFY", "CERT_PATH", "CONTEXT", "CONFIG", "API_VERSION"];
+        const conflicting = Object.fromEntries(selectors.flatMap(key => [["DOCKER_" + key, "foreign-fixture"], ["MUTAGEN_BETA_DOCKER_" + key, "foreign-fixture"]]));
+        const result = await f.run("exec", "n", conflicting);
+        expect(result.code, result.stderr).toBe(0);
+        expect(f.state().sessions).toHaveLength(1);
+        expect(f.state().sessions[0].beta).toEqual({protocol: "docker", host: "a".repeat(64), path: "/project/" + f.info.projectId,
+            environment: {DOCKER_HOST: "ssh://user@host-a/var/run/docker.sock"}});
+        const create = mutations(f.calls()).find(call => call.args[1] === "create")!;
+        expect(create.args[3]).toBe("docker://" + "a".repeat(64) + "/project/" + f.info.projectId);
+        expect(create.dockerEnvironment).toEqual({MUTAGEN_BETA_DOCKER_HOST: "ssh://user@host-a/var/run/docker.sock"});
+        const receiving = f.calls().filter(call => call.program === "ssh" && !call.args.at(-1)?.includes("docker context inspect"));
+        expect(receiving.length).toBeGreaterThan(2);
+        const prefix = "unset DOCKER_HOST DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_CONTEXT DOCKER_CONFIG DOCKER_API_VERSION; docker() { command docker --host 'unix:///var/run/docker.sock' \"$@\"; }; ";
+        for (const call of receiving) expect(call.args.at(-1)?.startsWith(prefix)).toBe(true);
+    }, 20000);
+
+    it("refuses a missing local Docker CLI before SSH or writer ownership", async () => {
+        const f = fixture(); f.set({dockerAvailable: false});
+        const result = await f.run("embed");
+        expect(result.code, result.stderr).toBe(0);
+        expect(JSON.parse(readFileSync(join(f.root, "outcome.json"), "utf8"))).toEqual({kind: "refused", reason: "docker-required", cleanupFailures: []});
+        expect(f.state().created).toBe(0); expect(f.state().sessions).toEqual([]);
+        expect(f.calls().filter(call => call.program === "docker").map(call => call.args)).toEqual([["--version"]]);
+        expect(f.calls().some(call => call.program === "ssh")).toBe(false); expect(mutations(f.calls())).toEqual([]);
+    }, 20000);
+
+    it.each(["exec", "terminate", "check"] as const)("preserves an existing writer when receiving metadata fails before %s", async action => {
+        const f = fixture(); expect((await f.run()).code).toBe(0);
+        const before = f.state().sessions; f.set({metadataFailure: true}); f.clear();
+        const result = await f.run(action);
+        expect(result.code, result.stderr).toBe(action === "check" ? 0 : 1);
+        expect(f.state().sessions).toEqual(before); expect(mutations(f.calls())).toEqual([]);
+        expect(f.calls().filter(call => call.program === "ssh").map(call => call.args.at(-1))).toEqual(["docker context inspect --format '{{json .Endpoints.docker.Host}}'"]);
+        expect(f.calls().some(call => call.program === "mutagen" && call.args[1] === "list")).toBe(false);
+        if (action === "check") {
+            expect(result.stdout).toContain("Sync state could not be established");
+            expect(result.stdout).not.toContain("No active sync session");
+        }
+    }, 20000);
+
+    it.each(["legacy-ssh", "different-socket", "extra-selector"] as const)("preserves a scoped %s record as an unqualified conflict", async incompatible => {
+        const f = fixture(); expect((await f.run()).code).toBe(0);
+        const before = f.state().sessions[0]; const record = {...before, beta: {...before.beta}};
+        if (incompatible === "legacy-ssh") record.beta = {protocol: "ssh", user: "user", host: "host-a", path: "docker://" + before.beta.host + before.beta.path};
+        else record.beta.environment = {DOCKER_HOST: incompatible === "different-socket" ? "ssh://user@host-a/another/docker.sock" : "ssh://user@host-a/var/run/docker.sock",
+            ...(incompatible === "extra-selector" ? {DOCKER_CONTEXT: "different"} : {})};
+        f.set({sessions: [record]}); f.clear();
+        const result = await f.run("exec", "y");
+        expect(result.code).toBe(1); expect(f.state().sessions).toEqual([record]); expect(mutations(f.calls())).toEqual([]);
+    }, 20000);
+
     it.each(["user", "cleanup"] as const)("terminal Ctrl-C cancels the real %s reader before later remote effects", kind => {
         const f = fixture(), configPath = join(f.root, ".ccc", "config.json"), saved = readFileSync(configPath, "utf8");
         const result = spawnSync("python3", ["-c", promptPty, process.execPath, f.consumerPath, kind === "user" ? "embed-user" : "embed", kind === "user" ? "Remote user [" : "Stop container and pause sync?"], {
@@ -381,7 +446,8 @@ describe.runIf(process.platform !== "win32")("emitted remote sync authority with
         const f = fixture(); expect((await f.run()).code).toBe(0);
         const before = f.state().sessions[0];
         const foreign = { ...before, alpha: { ...before.alpha }, beta: { ...before.beta } };
-        if (field === "root") foreign.alpha.path = join(f.root, "other-project"); else foreign.beta[field] = "foreign";
+        if (field === "root") foreign.alpha.path = join(f.root, "other-project");
+        else foreign.beta.environment = {DOCKER_HOST: field === "user" ? "ssh://foreign@host-a/var/run/docker.sock" : "ssh://user@foreign/var/run/docker.sock"};
         f.set({ sessions: [foreign] }); f.clear(); const result = await f.run("exec", "y");
         expect(mutations(f.calls())).toEqual([]); expect(f.state().sessions).toEqual([foreign]); expect(result.code).toBe(1);
     }, 20000);
@@ -408,7 +474,7 @@ describe.runIf(process.platform !== "win32")("emitted remote sync authority with
         expect(result.code, result.stderr).toBe(0);
         expect(mutations(f.calls()).map(call => call.args[1])).toEqual(["terminate", "create"]);
         expect(mutations(f.calls())[0]).toMatchObject({ args: ["sync", "terminate", before.identifier], targets: [before.identifier] });
-        expect(f.state().sessions[0].beta.path).toContain("docker://" + "b".repeat(64) + "/project/");
+        expect(f.state().sessions[0].beta).toMatchObject({protocol: "docker", host: "b".repeat(64), path: "/project/" + f.info.projectId});
     }, 20000);
 
     it("requires exact post-create proof and never guesses destructive compensation or retries", async () => {

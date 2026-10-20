@@ -12,6 +12,7 @@ export interface RemoteServicesPorts<Evidence = unknown> {
     newReservationToken(): string;
     observeTool(tool: RemoteTool): RemoteToolObservation;
     isHostReachable(host: string): boolean;
+    prepareRemoteRuntime(config: RemoteConfig): RemoteOperationResult<Evidence>;
     remoteImagePresent(config: RemoteConfig): boolean;
     reserveContainer(request: { config: RemoteConfig; projectPath: string; profile?: string; token: string; leaseSeconds: number }): RemoteReservationResult<Evidence>;
     refreshReservation(request: { config: RemoteConfig; name: string; containerId: string; token: string; leaseSeconds: number }): boolean;

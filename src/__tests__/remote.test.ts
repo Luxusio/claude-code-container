@@ -562,7 +562,7 @@ describe('remoteSetup', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows tool check results when both tools are missing', async () => {
+  it('shows tool check results when all required tools are missing', async () => {
     mockSpawnSync.mockReturnValue({
       status: 1, stdout: '', stderr: 'not found', pid: 0, output: [], signal: null
     })
@@ -576,6 +576,7 @@ describe('remoteSetup', () => {
     expect(logs.some(l => l.includes('[--]') && l.includes('Mutagen'))).toBe(true)
     expect(logs.some(l => l.includes('Tailscale not found'))).toBe(true)
     expect(logs.some(l => l.includes('Mutagen not found'))).toBe(true)
+    expect(logs.some(l => l.includes('Docker CLI not found'))).toBe(true)
     expect(logs.some(l => l.includes('Please install missing tools'))).toBe(true)
 
     vi.restoreAllMocks()
@@ -588,6 +589,9 @@ describe('remoteSetup', () => {
       })
       .mockReturnValueOnce({
         status: 0, stdout: 'mutagen version 0.17.0\n', stderr: '', pid: 0, output: [], signal: null
+      })
+      .mockReturnValueOnce({
+        status: 0, stdout: 'Docker version 29.0.0\n', stderr: '', pid: 0, output: [], signal: null
       })
 
     const logs: string[] = []
@@ -602,13 +606,16 @@ describe('remoteSetup', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows full usage guide when both tools are installed', async () => {
+  it('shows full usage guide when all required tools are installed', async () => {
     mockSpawnSync
       .mockReturnValueOnce({
         status: 0, stdout: 'tailscale version 1.50.0\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({
         status: 0, stdout: 'mutagen version 0.17.0\n', stderr: '', pid: 0, output: [], signal: null
+      })
+      .mockReturnValueOnce({
+        status: 0, stdout: 'Docker version 29.0.0\n', stderr: '', pid: 0, output: [], signal: null
       })
 
     const logs: string[] = []
@@ -618,6 +625,7 @@ describe('remoteSetup', () => {
 
     expect(logs.some(l => l.includes('[OK]') && l.includes('Tailscale'))).toBe(true)
     expect(logs.some(l => l.includes('[OK]') && l.includes('Mutagen'))).toBe(true)
+    expect(logs.some(l => l.includes('[OK]') && l.includes('Docker'))).toBe(true)
     expect(logs.some(l => l.includes('Usage'))).toBe(true)
     expect(logs.some(l => l.includes('Architecture'))).toBe(true)
     expect(logs.some(l => l.includes('Requirements'))).toBe(true)
@@ -636,6 +644,9 @@ describe('remoteSetup', () => {
       .mockReturnValueOnce({
         status: 1, stdout: '', stderr: 'not found', pid: 0, output: [], signal: null
       })
+      .mockReturnValueOnce({
+        status: 0, stdout: 'Docker version 29.0.0\n', stderr: '', pid: 0, output: [], signal: null
+      })
 
     const logs: string[] = []
     vi.spyOn(console, 'log').mockImplementation((...args) => { logs.push(args.join(' ')) })
@@ -653,14 +664,14 @@ describe('remoteSetup', () => {
 
 const firstSyncId = 'sync_' + 'a'.repeat(43)
 const secondSyncId = 'sync_' + 'b'.repeat(43)
-const remoteContainerId = 'abcdef1234567890'
+const remoteContainerId = 'abcdef1234567890'.repeat(4)
 function nativeResult(status: number | null, stdout = '', error?: Error, stderr = '') {
   return { status, stdout, stderr, error, pid: 0, output: [], signal: null }
 }
 function syncRecord(projectPath: string, user = 'myuser', host = 'myhost', overrides: Record<string, unknown> = {}) {
   return { identifier: firstSyncId, name: getMutagenSessionName(projectPath) + '-' + hashPath(user + '@' + host),
     alpha: { protocol: 'local', path: resolve(projectPath) },
-    beta: { protocol: 'ssh', user, host, path: 'docker://' + remoteContainerId + '/project/' + utils.getProjectId(projectPath) },
+    beta: { protocol: 'docker', host: remoteContainerId, path: '/project/' + utils.getProjectId(projectPath), environment: { DOCKER_HOST: 'ssh://' + user + '@' + host + '/var/run/docker.sock' } },
     paused: false, status: 'watching', ...overrides }
 }
 function savedRemote(user = 'myuser', host = 'myhost') {
@@ -669,9 +680,9 @@ function savedRemote(user = 'myuser', host = 'myhost') {
 }
 function nativeRemoteFixture() {
   const state = { sessions: [] as ReturnType<typeof syncRecord>[], lists: 0, onList: null as null | (() => void),
-    listFailure: false, image: true, reserve: true, prepare: true, busy: false, tool: true,
+    listFailure: false, image: true, reserve: true, prepare: true, busy: false, tool: true, docker: true, runtime: 'unix:///var/run/docker.sock', runtimeFailure: false,
     terminateFailure: false, pauseFailure: false, createFailure: false }
-  vi.mocked(childProcess.spawnSync).mockReset().mockImplementation((command: any, raw: any) => {
+  vi.mocked(childProcess.spawnSync).mockReset().mockImplementation((command: any, raw: any, options: any) => {
     const args = raw as string[]
     if (command === 'mutagen') {
       if (args[0] === 'version') return nativeResult(state.tool ? 0 : 1, 'mutagen version 0.17.0\n')
@@ -682,10 +693,11 @@ function nativeRemoteFixture() {
       }
       if (args[1] === 'create') {
         if (state.createFailure) return nativeResult(0, '', Error('create returned error'))
-        const destination = /^([^@]+)@([^:]+):(.*)$/.exec(args[3])!
-        state.sessions.push(syncRecord(args[2], destination[1], destination[2], {
+        const destination = /^docker:\/\/([a-f0-9]{64})(\/.*)$/.exec(args[3])!
+        const authority = new URL(options.env.MUTAGEN_BETA_DOCKER_HOST)
+        state.sessions.push(syncRecord(args[2], authority.username, authority.hostname, {
           name: args[args.indexOf('--name') + 1],
-          beta: { protocol: 'ssh', user: destination[1], host: destination[2], path: destination[3] },
+          beta: { protocol: 'docker', host: destination[1], path: destination[2], environment: { DOCKER_HOST: options.env.MUTAGEN_BETA_DOCKER_HOST } },
         }))
         return nativeResult(0)
       }
@@ -697,9 +709,11 @@ function nativeRemoteFixture() {
       return nativeResult(0)
     }
     if (command === 'tailscale') return nativeResult(0, 'tailscale version 1.50.0\n')
+    if (command === 'docker' && args[0] === '--version') return nativeResult(state.docker ? 0 : 1, 'Docker version 29.0.0\n')
     if (command === 'ping') return nativeResult(0)
     if (command === 'ssh') {
       const body = args.at(-1) ?? ''
+      if (body === "docker context inspect --format '{{json .Endpoints.docker.Host}}'") return nativeResult(state.runtimeFailure ? 1 : 0, JSON.stringify(state.runtime))
       if (body.includes('docker images -q')) return nativeResult(0, state.image ? 'sha256abc\n' : '')
       if (body.includes('docker run -d')) return state.reserve ? nativeResult(0, 'ccc-container-id=' + remoteContainerId + '\n') : nativeResult(1, '', undefined, 'docker error')
       if (body.includes('mkdir -p /project/')) return nativeResult(state.prepare ? 0 : 1, '', undefined, state.prepare ? '' : 'container disappeared')
@@ -757,6 +771,12 @@ describe('remoteCheck', () => {
     await remoteCheck('/home/user/project'); expect(state.lists).toBe(0)
     expect(vi.mocked(console.log).mock.calls.some(row => row.join(' ').includes('mutagen not installed'))).toBe(true)
   })
+  it('keeps unavailable receiving authority unknown rather than reporting a missing sync', async () => {
+    const state = nativeRemoteFixture(); state.runtimeFailure = true
+    await remoteCheck('/home/user/project'); expect(state.lists).toBe(0)
+    expect(console.log).toHaveBeenCalledWith('  Sync state could not be established.')
+    expect(vi.mocked(console.log).mock.calls.some(row => row.join(' ').includes('No active sync session'))).toBe(false)
+  })
 })
 
 describe('remoteTerminate', () => {
@@ -797,6 +817,13 @@ describe('remoteTerminate', () => {
     vi.mocked(fs.existsSync).mockReturnValue(false)
     await expect(remoteTerminate('/home/user/project')).rejects.toThrow(/configuration/i)
   })
+  it('preserves an existing session when receiving runtime resolution fails', async () => {
+    const state = nativeRemoteFixture(); const existing = syncRecord('/home/user/project')
+    state.sessions = [existing]; state.runtimeFailure = true
+    await expect(remoteTerminate('/home/user/project')).rejects.toThrow(/runtime|endpoint|established/i)
+    expect(state.sessions).toEqual([existing]); expect(state.lists).toBe(0)
+    expect(vi.mocked(childProcess.spawnSync).mock.calls.some(call => call[0] === 'mutagen' && ['terminate', 'pause', 'resume', 'create'].includes((call[1] as string[])[1]))).toBe(false)
+  })
 })
 
 describe('remoteExec', () => {
@@ -830,11 +857,22 @@ describe('remoteExec', () => {
     savedRemote('myuser', 'bad;host')
     await expect(remoteExec(path)).rejects.toThrow('exit:1'); expect(exited).toHaveBeenCalledWith(1)
   })
+  it.each(['docker', 'runtime'] as const)('refuses unavailable %s before claiming or reserving the environment', async unavailable => {
+    const state = nativeRemoteFixture()
+    if (unavailable === 'docker') state.docker = false; else state.runtimeFailure = true
+    exit(1); await expect(remoteExec(path)).rejects.toThrow('exit:1')
+    expect(remoteSessionMocks.createSessionLock).not.toHaveBeenCalled()
+    expect(remoteSessionMocks.removeSessionLock).not.toHaveBeenCalled()
+    expect(mockSpawn).not.toHaveBeenCalled(); expect(state.lists).toBe(0)
+    expect(mockSpawnSync.mock.calls.some(call => call[0] === 'ssh' && (call[1] as string[]).some(value => value.includes('docker run -d')))).toBe(false)
+    if (unavailable === 'docker') expect(mockSpawnSync.mock.calls.some(call => call[0] === 'ssh')).toBe(false)
+  })
   it('uses saved host/user and exact remote container for preparation, creation and SSH', async () => {
     savedRemote('saveduser', 'saved-host'); const exited = exit()
     await expect(remoteExec(path)).rejects.toThrow('exit:0')
     const create = mockSpawnSync.mock.calls.find(call => call[0] === 'mutagen' && (call[1] as string[])[1] === 'create')
-    expect(create?.[1]).toEqual(expect.arrayContaining(['saveduser@saved-host:docker://' + remoteContainerId + '/project/' + utils.getProjectId(path)]))
+    expect(create?.[1]).toEqual(expect.arrayContaining(['docker://' + remoteContainerId + '/project/' + utils.getProjectId(path)]))
+    expect(create?.[2]).toMatchObject({env: {MUTAGEN_BETA_DOCKER_HOST: 'ssh://saveduser@saved-host/var/run/docker.sock'}})
     const prepare = mockSpawnSync.mock.calls.find(call => call[0] === 'ssh' && (call[1] as string[]).some(value => value.includes('mkdir -p /project/')))
     expect((prepare?.[1] as string[])[1]).toContain('docker exec ' + remoteContainerId)
     expect((mockSpawn.mock.calls[0][1] as string[])[2]).toContain(remoteContainerId); expect(exited).toHaveBeenCalledWith(0)
@@ -866,7 +904,7 @@ describe('remoteExec', () => {
   })
   it('refuses invalid or unreachable explicit host before saving or claiming', async () => {
     exit(1); await expect(remoteExec(path, 'bad host;inject')).rejects.toThrow('exit:1')
-    mockSpawnSync.mockImplementation((command: any) => nativeResult(command === 'mutagen' ? 0 : 1, 'version'))
+    mockSpawnSync.mockImplementation((command: any) => nativeResult(command === 'mutagen' || command === 'docker' ? 0 : 1, 'version'))
     await expect(remoteExec(path, 'offline')).rejects.toThrow('exit:1'); expect(remoteSessionMocks.createSessionLock).not.toHaveBeenCalled()
   })
   it.each(['image', 'reserve', 'prepare'] as const)('fails %s before sync or interactive SSH and retires local claim', async stage => {
@@ -888,7 +926,7 @@ describe('remoteExec', () => {
   })
   it('replaces only a changed container ID through checked old identifier termination', async () => {
     const state = nativeRemoteFixture(); state.sessions = [syncRecord(path, 'myuser', 'myhost', {
-      identifier: secondSyncId, beta: { protocol: 'ssh', user: 'myuser', host: 'myhost', path: 'docker://' + '1'.repeat(16) + '/project/' + utils.getProjectId(path) },
+      identifier: secondSyncId, beta: { protocol: 'docker', host: '1'.repeat(64), path: '/project/' + utils.getProjectId(path), environment: {DOCKER_HOST: 'ssh://myuser@myhost/var/run/docker.sock'} },
     })]; exit()
     await expect(remoteExec(path)).rejects.toThrow('exit:0')
     expect(mockSpawnSync).toHaveBeenCalledWith('mutagen', ['sync', 'terminate', secondSyncId], expect.objectContaining({ stdio: 'inherit' }))

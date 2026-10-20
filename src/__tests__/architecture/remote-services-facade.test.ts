@@ -25,6 +25,11 @@ const config = { host: "host", user: "user", remotePath: "" };
 const containerId = "a".repeat(64);
 const syncId = "sync_" + "a".repeat(43);
 const token = "b".repeat(32);
+const daemonSocket = "unix:///var/run/docker.sock";
+const dockerAuthority = "ssh://user@host/var/run/docker.sock";
+const dockerSelectors = ["DOCKER_HOST", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_API_VERSION"] as const;
+const metadataCommand = "docker context inspect --format '{{json .Endpoints.docker.Host}}'";
+const pinnedDocker = (socket = daemonSocket) => `unset ${dockerSelectors.join(" ")}; docker() { command docker --host ${shellEscapeArg(socket)} "$@"; }; `;
 const reservation = { config, projectPath: "/work/project", profile: "named", token, leaseSeconds: 300 };
 const retained = { config, name: "ccc-returned", containerId, token };
 const syncRequest = { config, name: "ccc-sync", localPath: resolve("/work/雪 project"), containerId, projectId: "project-id" };
@@ -61,8 +66,15 @@ function execution(status: number | null, stdout = "", error?: Error, stderr = "
 }
 function nativeSession(overrides: Record<string, unknown> = {}) {
     return { identifier: syncId, name: "ccc-sync", alpha: { protocol: "local", path: syncRequest.localPath },
-        beta: { protocol: "ssh", user: "user", host: "host", path: `docker://${containerId}/project/project-id` },
+        beta: { protocol: "docker", host: containerId, path: "/project/project-id", environment: { DOCKER_HOST: dockerAuthority } },
         paused: false, status: "watching", ...overrides };
+}
+function preparedPorts(target = config, socket = daemonSocket) {
+    const ports = createNativeRemoteServicesPorts();
+    native.sync.mockReturnValueOnce(execution(0, JSON.stringify(socket)));
+    expect(ports.prepareRemoteRuntime(target)).toEqual({ ok: true });
+    native.sync.mockClear();
+    return ports;
 }
 const queryArgs = ["sync", "list", "--template", "{{json .}}"];
 const capturedOptions = (extra: Record<string, unknown> = {}) => expect.objectContaining({ env: expect.any(Object), cwd: process.cwd(), ...extra });
@@ -89,8 +101,184 @@ afterEach(() => {
 });
 
 describe("remote native observations and effects", () => {
-    it("projects tool, ping and image facts with their distinct error/status rules", () => {
+    it.each([
+        "", "not JSON", "null", "[]", "{}", JSON.stringify("tcp://host:2375"), JSON.stringify("ssh://user@host"),
+        JSON.stringify("unix://host/run/docker.sock"), JSON.stringify("unix:///"), JSON.stringify("unix:///run//docker.sock"),
+        JSON.stringify("unix:///run/./docker.sock"), JSON.stringify("unix:///run/../docker.sock"), JSON.stringify("unix:///run/docker.sock/"),
+        JSON.stringify("unix:///run/docker sock"), JSON.stringify("unix:///run/docker.sock?context=x"), JSON.stringify("unix:///run/docker.sock#x"),
+        JSON.stringify("unix:///run/%64ocker.sock"), JSON.stringify("unix:///run/docker.sock;touch"), JSON.stringify("unix:///run/docker's.sock"),
+        JSON.stringify("unix:///run/docker\nsock"),
+    ])("refuses unsafe or incompatible receiving metadata and retries a later valid observation: %s", stdout => {
         const ports = createNativeRemoteServicesPorts();
+        native.sync.mockReturnValueOnce(execution(0, stdout)).mockReturnValueOnce(execution(0, JSON.stringify(daemonSocket)));
+        expect(ports.prepareRemoteRuntime(config).ok).toBe(false);
+        expect(ports.prepareRemoteRuntime(config)).toEqual({ ok: true });
+        expect(native.sync).toHaveBeenCalledTimes(2);
+        for (const call of native.sync.mock.calls) {
+            expect(call[0]).toBe("ssh"); expect(call[1]).toEqual(["user@host", metadataCommand]);
+            expect(call[2]).toMatchObject({encoding: "utf-8", timeout: 10000, maxBuffer: 16384, cwd: process.cwd(), env: expect.any(Object)});
+        }
+    });
+
+    it("rejects metadata larger than its bounded native output carrier", async () => {
+        const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+        const joined: Array<import("node:child_process").SpawnSyncReturns<string>> = [];
+        native.sync.mockImplementationOnce((command: string, args: string[], options: import("node:child_process").SpawnSyncOptionsWithStringEncoding) => {
+            expect(command).toBe("ssh"); expect(args).toEqual(["user@host", metadataCommand]);
+            const result = actual.spawnSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify('unix:///' + 'a'.repeat(20000)))"], options);
+            joined.push(result); return result;
+        });
+        const ports = createNativeRemoteServicesPorts();
+        expect(ports.prepareRemoteRuntime(config).ok).toBe(false);
+        expect(native.sync).toHaveBeenCalledWith("ssh", ["user@host", metadataCommand], capturedOptions({timeout: 10000, maxBuffer: 16384, killSignal: "SIGKILL"}));
+        expect(joined).toHaveLength(1); expect(joined[0].error).toMatchObject({code: "ENOBUFS"});
+        native.sync.mockReturnValueOnce(execution(0, JSON.stringify(daemonSocket)));
+        expect(ports.prepareRemoteRuntime(config)).toEqual({ok: true});
+        expect(native.sync).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([execution(1, JSON.stringify(daemonSocket)), execution(null), execution(0, JSON.stringify(daemonSocket), Error("truncated"))])("refuses unsuccessful bounded metadata without caching it: %o", result => {
+        const ports = createNativeRemoteServicesPorts();
+        native.sync.mockReturnValueOnce(result).mockReturnValueOnce(execution(0, JSON.stringify(daemonSocket)));
+        expect(ports.prepareRemoteRuntime(config).ok).toBe(false);
+        expect(ports.prepareRemoteRuntime(config)).toEqual({ ok: true });
+        expect(native.sync).toHaveBeenCalledTimes(2);
+    });
+
+    it("preserves an unexpected metadata-dispatch fault and permits a later preparation attempt", () => {
+        const ports = createNativeRemoteServicesPorts(); const fault = {native: "receiving metadata dispatch"};
+        native.sync.mockImplementationOnce(() => { throw fault; });
+        let observed: unknown; try { ports.prepareRemoteRuntime(config); } catch (error) { observed = error; }
+        expect(observed).toBe(fault);
+        native.sync.mockReturnValue(execution(0, JSON.stringify(daemonSocket)));
+        expect(ports.prepareRemoteRuntime(config)).toEqual({ok: true});
+        expect(native.sync).toHaveBeenCalledTimes(2);
+    });
+
+    it("captures successful daemon addresses independently for each receiving account and keeps them after context changes", () => {
+        const ports = createNativeRemoteServicesPorts(); const other = {...config, user: "other"};
+        native.sync.mockReturnValueOnce(execution(0, JSON.stringify(daemonSocket)))
+            .mockReturnValueOnce(execution(0, JSON.stringify("unix:///run/user/1000/docker.sock")));
+        expect(ports.prepareRemoteRuntime(config)).toEqual({ok: true});
+        expect(ports.prepareRemoteRuntime(other)).toEqual({ok: true});
+        native.sync.mockReturnValue(execution(0, JSON.stringify("unix:///changed/docker.sock")));
+        expect(ports.prepareRemoteRuntime(config)).toEqual({ok: true});
+        expect(ports.prepareRemoteRuntime(other)).toEqual({ok: true});
+        expect(native.sync).toHaveBeenCalledTimes(2);
+        ports.remoteImagePresent(config); ports.remoteImagePresent(other);
+        expect(native.sync.mock.calls.at(-2)?.[1]).toEqual(["user@host", expect.stringContaining(pinnedDocker())]);
+        expect(native.sync.mock.calls.at(-1)?.[1]).toEqual(["other@host", expect.stringContaining(pinnedDocker("unix:///run/user/1000/docker.sock"))]);
+    });
+
+    it.runIf(process.platform !== "win32")("uses the captured address when a private Docker context file changes before the receiving command", async () => {
+        const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+        const actualProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+        const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
+        const directory = actualFs.mkdtempSync(join(actualOs.tmpdir(), "ccc-private-docker-context-"));
+        const context = join(directory, "context.txt"), trace = join(directory, "invocation.json");
+        const program = join(directory, "docker-fixture.cjs"), executable = join(directory, "docker");
+        try {
+            actualFs.writeFileSync(context, daemonSocket, {mode: 0o600});
+            actualFs.writeFileSync(program, [
+                'const fs = require("node:fs"); const args = process.argv.slice(2);',
+                'if (args[0] === "context") process.stdout.write(JSON.stringify(fs.readFileSync(process.env.CCC_PRIVATE_DOCKER_CONTEXT, "utf8")));',
+                'else if (args.includes("images")) {',
+                ' fs.writeFileSync(process.env.CCC_PRIVATE_DOCKER_TRACE, JSON.stringify({args, environment: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("DOCKER_")))}));',
+                ' process.stdout.write("sha256:private-fixture\\n");',
+                '} else throw Error("unexpected private fixture operation");',
+            ].join("\n"), {mode: 0o600});
+            actualFs.writeFileSync(executable, `#!/bin/sh\nexec ${shellEscapeArg(process.execPath)} ${shellEscapeArg(program)} "$@"\n`, {mode: 0o700});
+            native.sync.mockImplementation((command: string, args: string[], options: import("node:child_process").SpawnSyncOptionsWithStringEncoding) => {
+                expect(command).toBe("ssh");
+                return actualProcess.spawnSync("/bin/sh", ["-c", args.at(-1)!], {...options, env: {...options.env,
+                    PATH: directory + ":" + (options.env?.PATH ?? ""), CCC_PRIVATE_DOCKER_CONTEXT: context, CCC_PRIVATE_DOCKER_TRACE: trace}});
+            });
+            const ports = createNativeRemoteServicesPorts();
+            expect(ports.prepareRemoteRuntime(config)).toEqual({ok: true});
+            actualFs.writeFileSync(context, "unix:///private-changed/docker.sock");
+            expect(ports.remoteImagePresent(config)).toBe(true);
+            const observed = JSON.parse(actualFs.readFileSync(trace, "utf8")) as {args: string[]; environment: Record<string, string>};
+            expect(observed.args.slice(0, 2)).toEqual(["--host", daemonSocket]);
+            expect(observed.args).toContain("images");
+            for (const key of dockerSelectors) expect(observed.environment[key]).toBeUndefined();
+            expect(native.sync).toHaveBeenCalledTimes(2);
+        } finally { actualFs.rmSync(directory, {recursive: true, force: true}); }
+    });
+
+    it("refuses unprepared Docker effects before native dispatch while preserving raw read-only inventory", () => {
+        const ports = createNativeRemoteServicesPorts();
+        expect(ports.remoteImagePresent(config)).toBe(false);
+        expect(ports.reserveContainer(reservation)).toMatchObject({kind: "failed"});
+        expect(ports.refreshReservation({...retained, leaseSeconds: 300})).toBe(false);
+        expect(ports.releaseReservation(retained).ok).toBe(false);
+        expect(ports.stopReservedContainer(retained)).toMatchObject({kind: "failed"});
+        expect(ports.prepareRemoteProject({config, containerId, projectId: "project-id"}).ok).toBe(false);
+        expect(ports.createSync(syncRequest).ok).toBe(false);
+        expect(() => ports.startInteractiveSession(interactiveRequest)).toThrow();
+        expect(native.sync).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
+        native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession()])));
+        expect(ports.observeSyncInventory()).toMatchObject({kind: "known", sessions: [{binding: null}]});
+        expect(getMutagenSyncStatus("ccc-sync")).toBe("Watching for changes");
+    });
+
+    it("pins every receiving Docker command to its prepared address", () => {
+        const ports = preparedPorts(); const child = Object.assign(new EventEmitter(), {kill: vi.fn(() => true)});
+        native.spawn.mockReturnValue(child);
+        native.sync.mockImplementation((_command: string, args: string[]) => execution(0,
+            args.at(-1)?.includes("docker run -d") ? `ccc-container-id=${containerId}\n` : "sha256:fixture\n"));
+        ports.remoteImagePresent(config); ports.reserveContainer(reservation);
+        ports.refreshReservation({...retained, leaseSeconds: 300}); ports.releaseReservation(retained);
+        ports.stopReservedContainer(retained); ports.prepareRemoteProject({config, containerId, projectId: "project-id"});
+        ports.startInteractiveSession(interactiveRequest); child.emit("close", 0, null);
+        expect(native.sync).toHaveBeenCalledTimes(6); expect(native.spawn).toHaveBeenCalledOnce();
+        for (const call of [...native.sync.mock.calls, ...native.spawn.mock.calls]) {
+            expect(call[0]).toBe("ssh");
+            expect((call[1] as string[]).at(-1)?.startsWith(pinnedDocker())).toBe(true);
+            expect(call[2]).toMatchObject({env: expect.any(Object), cwd: process.cwd()});
+        }
+    });
+
+    it("sanitizes captured generic and beta Docker selectors only for creation and sets the prepared SSH socket", () => {
+        const keys = [...dockerSelectors, ...dockerSelectors.map(key => "MUTAGEN_BETA_" + key), "CCC_REMOTE_CAPTURE"];
+        const previous = keys.map(key => [key, process.env[key]] as const);
+        try {
+            for (const key of keys) process.env[key] = "captured-foreign";
+            const ports = preparedPorts();
+            for (const key of keys) process.env[key] = "changed-foreign";
+            native.sync.mockReturnValue(execution(0));
+            ports.remoteImagePresent(config);
+            expect(native.sync.mock.calls.at(-1)?.[2]).toMatchObject({env: {CCC_REMOTE_CAPTURE: "captured-foreign", DOCKER_CONTEXT: "captured-foreign"}});
+            expect(ports.createSync(syncRequest)).toEqual({ok: true});
+            const call = native.sync.mock.calls.at(-1)!;
+            expect(call[1]).toEqual(expect.arrayContaining([`docker://${containerId}/project/project-id`]));
+            const environment = call[2].env as NodeJS.ProcessEnv;
+            for (const key of dockerSelectors) expect(environment[key]).toBeUndefined();
+            for (const key of dockerSelectors) {
+                expect(environment["MUTAGEN_BETA_" + key]).toBe(key === "DOCKER_HOST" ? dockerAuthority : undefined);
+            }
+            expect(environment.CCC_REMOTE_CAPTURE).toBe("captured-foreign");
+        } finally {
+            for (const [key, value] of previous) {
+                if (value === undefined) delete process.env[key]; else process.env[key] = value;
+            }
+        }
+    });
+
+    it.each([
+        {protocol: "ssh", user: "user", host: "host", path: `docker://${containerId}/project/project-id`},
+        {protocol: "docker", host: containerId, path: "/project/project-id"},
+        {protocol: "docker", host: containerId, path: "/project/project-id", environment: {DOCKER_HOST: "ssh://user@host/another/docker.sock"}},
+        {protocol: "docker", host: containerId, path: "/project/project-id", environment: {DOCKER_HOST: dockerAuthority, DOCKER_CONTEXT: "other"}},
+        {protocol: "docker", user: "root", host: containerId, path: "/project/project-id", environment: {DOCKER_HOST: dockerAuthority}},
+        {protocol: "docker", host: containerId, path: "/project/project-id", environment: {DOCKER_HOST: dockerAuthority}, parameters: {context: "other"}},
+        {protocol: "docker", host: containerId.slice(0, 16), path: "/project/project-id", environment: {DOCKER_HOST: dockerAuthority}},
+    ])("keeps a valid incompatible endpoint visible without qualifying it: %o", beta => {
+        const ports = preparedPorts(); native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({beta})])));
+        expect(ports.observeSyncInventory()).toMatchObject({kind: "known", sessions: [{binding: null}]});
+    });
+
+    it("projects tool, ping and image facts with their distinct error/status rules", () => {
+        const ports = preparedPorts();
         for (const result of [execution(0, " version 1\nsecond line"), execution(0, "version 1", Error("returned")), execution(1, "version 1"), execution(null, "version 1")]) {
             native.sync.mockReturnValue(result);
             const installed = result.status === 0 && !result.error;
@@ -100,23 +288,25 @@ describe("remote native observations and effects", () => {
             expect(checkTailscale()).toEqual(observation);
             expect(checkMutagen()).toEqual(observation);
             expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["version"], capturedOptions({ encoding: "utf-8" }));
+            expect(ports.observeTool("docker")).toEqual(observation);
+            expect(native.sync).toHaveBeenLastCalledWith("docker", ["--version"], capturedOptions({ encoding: "utf-8" }));
             expect(ports.isHostReachable("host")).toBe(result.status === 0);
             expect(isHostReachable("host")).toBe(result.status === 0);
             expect(native.sync).toHaveBeenLastCalledWith("ping", ["-c", "1", "-W", "1", "host"], { encoding: "utf-8" });
             expect(ports.remoteImagePresent(config)).toBe(true);
-            expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.stringContaining("docker images -q")], { encoding: "utf-8", timeout: 10000 });
+            expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.stringContaining(pinnedDocker())], capturedOptions({ encoding: "utf-8", timeout: 10000 }));
         }
         native.sync.mockReturnValue(execution(0, " \n\t"));
         expect(ports.remoteImagePresent(config)).toBe(false);
     });
 
     it("requires an exact stable-ID marker and returns the reservation's name and ID", () => {
-        const ports = createNativeRemoteServicesPorts();
+        const ports = preparedPorts();
         native.containerName.mockReturnValueOnce("ccc-returned").mockReturnValueOnce("ccc-start-command");
         native.sync.mockReturnValue(execution(0, `other output\nccc-container-id=${containerId}\n`, Error("ignored returned error")));
         expect(ports.reserveContainer(reservation)).toEqual({ kind: "reserved", container: { name: "ccc-returned", id: containerId } });
         expect(native.containerName.mock.calls).toEqual([["/work/project", "named"], ["/work/project", "named"]]);
-        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.stringContaining("ccc-start-command")], { encoding: "utf-8", timeout: 60000 });
+        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.stringContaining("ccc-start-command")], capturedOptions({ encoding: "utf-8", timeout: 60000 }));
         for (const stdout of ["", "ccc-container-id=abc\n", `ccc-container-id=${"g".repeat(64)}\n`, `ccc-container-id=${"a".repeat(65)}\n`, `prefix ccc-container-id=${containerId}\n`, `ccc-container-id=${containerId} trailing\n`]) {
             native.sync.mockReturnValue(execution(0, stdout));
             const result = ports.reserveContainer(reservation);
@@ -134,12 +324,12 @@ describe("remote native observations and effects", () => {
     });
 
     it("refreshes by status and gives busy stop markers precedence over failure", () => {
-        const ports = createNativeRemoteServicesPorts();
+        const ports = preparedPorts();
         native.sync.mockReturnValue(execution(0, "", Error("returned")));
         expect(ports.refreshReservation({ ...retained, leaseSeconds: 300 })).toBe(true);
-        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.stringContaining(containerId)], { encoding: "utf-8", timeout: 10000 });
+        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.stringContaining(containerId)], capturedOptions({ encoding: "utf-8", timeout: 10000 }));
         expect(ports.stopReservedContainer(retained)).toEqual({ kind: "stopped" });
-        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.stringContaining(containerId)], { encoding: "utf-8", timeout: 60000 });
+        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.stringContaining(containerId)], capturedOptions({ encoding: "utf-8", timeout: 60000 }));
         for (const result of [execution(42), execution(1, "ccc-remote-sessions-active\n", Error("returned")), execution(0, "ccc-remote-sessions-active")]) {
             native.sync.mockReturnValue(result);
             expect(ports.stopReservedContainer(retained)).toEqual({ kind: "busy" });
@@ -152,15 +342,15 @@ describe("remote native observations and effects", () => {
         expect(() => projectRemoteTerminateOutcome({ kind: "failed", reason: "stop-failed", evidence: failure.evidence })).toThrow("Failed to stop remote container: stop denied");
         native.sync.mockReturnValue(execution(0));
         expect(ports.releaseReservation(retained)).toEqual({ ok: true });
-        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.any(String)], { encoding: "utf-8", timeout: 10000 });
+        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.any(String)], capturedOptions({ encoding: "utf-8", timeout: 10000 }));
     });
 
     it("rejects project preparation errors and retains diagnostic precedence", () => {
-        const ports = createNativeRemoteServicesPorts();
+        const ports = preparedPorts();
         const request = { config, containerId, projectId: "project-id" };
         native.sync.mockReturnValue(execution(0));
         expect(ports.prepareRemoteProject(request)).toEqual({ ok: true });
-        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", `docker exec ${containerId} mkdir -p /project/project-id`], { encoding: "utf-8" });
+        expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", pinnedDocker() + `docker exec ${containerId} mkdir -p /project/project-id`], capturedOptions({ encoding: "utf-8" }));
         for (const [result, diagnostic] of [
             [execution(0, "", Error("returned"), "stderr wins"), "stderr wins"],
             [execution(0, "", Error("returned")), "returned"],
@@ -175,7 +365,7 @@ describe("remote native observations and effects", () => {
     });
 
     it("projects official complete JSON inventory into exact semantic binding and independent flags", () => {
-        const ports = createNativeRemoteServicesPorts();
+        const ports = preparedPorts();
         native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ paused: true, lastError: "permission denied" })])));
         const inventory = ports.observeSyncInventory();
         expect(inventory.kind).toBe("known"); if (inventory.kind !== "known") throw Error("unknown inventory");
@@ -282,9 +472,10 @@ describe("remote native observations and effects", () => {
     });
 
     it("never borrows an ID from alpha or diagnostics to qualify the remote endpoint", () => {
+        const ports = preparedPorts({ user: "foreign", host: "other-host", remotePath: "" });
         native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ alpha: { protocol: "local", path: `${process.platform === "win32" ? "C:" : ""}/local/docker://${containerId}/` },
-            beta: { protocol: "ssh", user: "foreign", host: "other-host", path: `docker://${"b".repeat(64)}/project/project-id` }, lastError: `docker://${containerId}/` })])));
-        expect(createNativeRemoteServicesPorts().observeSyncInventory()).toMatchObject({ kind: "known", sessions: [{ binding: { user: "foreign", host: "other-host", containerId: "b".repeat(64) } }] });
+            beta: { protocol: "docker", host: "b".repeat(64), path: "/project/project-id", environment: { DOCKER_HOST: "ssh://foreign@other-host/var/run/docker.sock" } }, lastError: `docker://${containerId}/` })])));
+        expect(ports.observeSyncInventory()).toMatchObject({ kind: "known", sessions: [{ binding: { user: "foreign", host: "other-host", containerId: "b".repeat(64) } }] });
     });
 
     it.each([0, -1, 0.999])("does not dispatch Mutagen when the remaining %s ms cannot fund a process", remainingMs => {
@@ -365,17 +556,23 @@ describe("remote native observations and effects", () => {
     });
 
     it("checks create and every identifier effect, including returned errors with status zero", () => {
-        const ports = createNativeRemoteServicesPorts();
+        const ports = preparedPorts();
         for (const result of [execution(0), execution(0, "", Error("returned")), execution(1), execution(null)]) {
             native.sync.mockReturnValue(result);
             expect(ports.createSync(syncRequest).ok).toBe(result.status === 0 && !result.error);
             expect(native.sync).toHaveBeenLastCalledWith("mutagen", expect.arrayContaining(["--ignore-vcs"]), capturedOptions({ stdio: "inherit" }));
-            expect(native.sync.mock.calls.at(-1)?.[1].slice(0, 7)).toEqual(["sync", "create", syncRequest.localPath, `user@host:docker://${containerId}/project/project-id`, "--name", "ccc-sync", "--ignore-vcs"]);
+            expect(native.sync.mock.calls.at(-1)?.[1].slice(0, 7)).toEqual(["sync", "create", syncRequest.localPath, `docker://${containerId}/project/project-id`, "--name", "ccc-sync", "--ignore-vcs"]);
             for (const [action, effect] of [["resume", ports.resumeSync], ["terminate", ports.terminateSync], ["pause", ports.pauseSync]] as const) {
                 expect(effect(syncId).ok).toBe(result.status === 0 && !result.error);
                 expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", action, syncId], capturedOptions({ stdio: "inherit" }));
             }
         }
+    });
+
+    it("refuses an abbreviated Docker container ID before creating a sync", () => {
+        const ports = preparedPorts();
+        expect(ports.createSync({...syncRequest, containerId: containerId.slice(0, 16)}).ok).toBe(false);
+        expect(native.sync).not.toHaveBeenCalled();
     });
 
     it("rejects name selectors and malformed identifiers without dispatch", () => {
@@ -401,7 +598,7 @@ describe("remote native observations and effects", () => {
     });
 
     it("checks release status and returned errors while retaining void daemon startup and exact thrown faults", () => {
-        const ports = createNativeRemoteServicesPorts();
+        const ports = preparedPorts();
         native.sync.mockReturnValue(execution(1, "", Error("returned")));
         expect(ports.startSyncDaemon()).toBeUndefined();
         expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["daemon", "start"], capturedOptions({ stdio: "ignore" }));
@@ -510,7 +707,7 @@ describe("remote native observations and effects", () => {
     });
 
     it("encodes literal UTF-8 arguments and ordered environment with the container marker first", () => {
-        const ports = createNativeRemoteServicesPorts();
+        const ports = preparedPorts();
         const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
         native.spawn.mockReturnValue(child);
         const arguments_ = ["--continue", "", "雪 café ' $(touch /tmp/ccc-never-run) `whoami`", "line\nbreak"];
@@ -519,7 +716,7 @@ describe("remote native observations and effects", () => {
         const program = `cd '/project/project-id' && mise trust . 2>/dev/null; mise install -y || true; exec claude ${arguments_.map(shellEscapeArg).join(" ")}`;
         const encoded = Buffer.from(program, "utf8").toString("base64");
         const command = `docker exec -e 'container=docker' -e ${shellEscapeArg("FIRST=雪 ' $(never)")} -e ${shellEscapeArg("SECOND=line\nvalue")} -it ${containerId} sh -c ${shellEscapeArg(`printf %s '${encoded}' | base64 -d | sh`)}`;
-        expect(native.spawn).toHaveBeenLastCalledWith("ssh", ["-t", "user@host", command], { stdio: "inherit" });
+        expect(native.spawn).toHaveBeenLastCalledWith("ssh", ["-t", "user@host", pinnedDocker() + command], capturedOptions({ stdio: "inherit" }));
         expect(command).not.toContain("touch /tmp/ccc-never-run");
         const close = vi.fn(); const error = vi.fn();
         expect(channel.onClose(close)).toBeUndefined();
@@ -534,7 +731,7 @@ describe("remote native observations and effects", () => {
         ports.startInteractiveSession({ config, containerId, projectId: "project-id", arguments: [], environment: [] });
         const defaultProgram = "cd '/project/project-id' && mise trust . 2>/dev/null; mise install -y || true; exec claude --dangerously-skip-permissions";
         const defaultDecoder = `printf %s '${Buffer.from(defaultProgram, "utf8").toString("base64")}' | base64 -d | sh`;
-        expect(native.spawn).toHaveBeenLastCalledWith("ssh", ["-t", "user@host", `docker exec -e 'container=docker' -it ${containerId} sh -c ${shellEscapeArg(defaultDecoder)}`], { stdio: "inherit" });
+        expect(native.spawn).toHaveBeenLastCalledWith("ssh", ["-t", "user@host", pinnedDocker() + `docker exec -e 'container=docker' -it ${containerId} sh -c ${shellEscapeArg(defaultDecoder)}`], capturedOptions({ stdio: "inherit" }));
     });
 });
 
@@ -543,7 +740,7 @@ describe("remote inherited terminal lifetime", () => {
         const terminal = terminalFixture();
         const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
         native.spawn.mockReturnValue(child);
-        const channel = createNativeRemoteServicesPorts().startInteractiveSession(interactiveRequest);
+        const channel = preparedPorts().startInteractiveSession(interactiveRequest);
         const callback = vi.fn(() => {
             expectTerminalRestored(terminal.output());
             for (const lifecycle of lifecycleEvents) expect(lifecycleListeners(lifecycle)).toEqual(baseline.get(lifecycle));
@@ -567,7 +764,7 @@ describe("remote inherited terminal lifetime", () => {
         const fault = { native: "ssh launch" };
         native.spawn.mockImplementation(() => { throw fault; });
         let observed: unknown;
-        try { createNativeRemoteServicesPorts().startInteractiveSession(interactiveRequest); }
+        try { preparedPorts().startInteractiveSession(interactiveRequest); }
         catch (error) { observed = error; }
         expect(observed).toBe(fault);
         expectTerminalRestored(terminal.output());
@@ -582,7 +779,7 @@ describe("remote inherited terminal lifetime", () => {
             return result;
         }) });
         native.spawn.mockReturnValue(child);
-        const channel = createNativeRemoteServicesPorts().startInteractiveSession(interactiveRequest);
+        const channel = preparedPorts().startInteractiveSession(interactiveRequest);
         if (result === "throw") expect(() => channel.kill("SIGINT")).toThrow(fault);
         else expect(channel.kill("SIGINT")).toBe(result);
         expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGINT");
@@ -594,7 +791,7 @@ describe("remote inherited terminal lifetime", () => {
         const terminal = terminalFixture(input, output);
         const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
         native.spawn.mockReturnValue(child);
-        const channel = createNativeRemoteServicesPorts().startInteractiveSession(interactiveRequest);
+        const channel = preparedPorts().startInteractiveSession(interactiveRequest);
         const callback = vi.fn();
         channel.onClose(callback);
         child.emit("close", 31, null);

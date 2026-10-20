@@ -6,6 +6,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
     const { ensureSync, inspectSync, observeCapturedSync, waitForSync, syncLifecyclePrefix } = createRemoteSync(ports);
     const checkTailscale = () => ports.observeTool("tailscale");
     const checkMutagen = () => ports.observeTool("mutagen");
+    const checkDocker = () => ports.observeTool("docker");
     const isHostReachable = (host: string): boolean => ports.isHostReachable(host);
     const validConfig = (config: RemoteConfig): boolean => typeof config.host === "string" && typeof config.user === "string" &&
         isValidHostOrUser(config.host) && isValidHostOrUser(config.user);
@@ -110,6 +111,11 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                 return interruption() ?? { kind: "refused", reason: "mutagen-required" };
             }
             if ((interrupted = interruption())) return interrupted;
+            if (!checkDocker().installed) {
+                ports.report({ kind: "docker-required" });
+                return interruption() ?? { kind: "refused", reason: "docker-required" };
+            }
+            if ((interrupted = interruption())) return interrupted;
             let config = loadRemoteConfig(fullPath);
             if ((interrupted = interruption())) return interrupted;
             if (config && !host) {
@@ -148,6 +154,9 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
             }
             if ((interrupted = interruption())) return interrupted;
             if (!config) return { kind: "failed", reason: "config-unresolved" };
+            const runtime = ports.prepareRemoteRuntime(config);
+            if (!runtime.ok) return { kind: "failed", reason: "runtime-unavailable", evidence: runtime.evidence };
+            if ((interrupted = interruption())) return interrupted;
             const resolvedConfig = config;
             const syncAuthority = { localPath: fullPath, user: config.user, host: config.host, projectId };
             const remoteContainerPrefix = `remote--${ports.hashRemoteIdentity(`${config.user}@${config.host}`)}--${projectId}`;
@@ -319,11 +328,14 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
         ports.report({ kind: "setup-start" });
         const tailscale = checkTailscale();
         const mutagen = checkMutagen();
+        const docker = checkDocker();
         ports.report({ kind: "tool-status", tool: "tailscale", observation: tailscale });
         ports.report({ kind: "tool-status", tool: "mutagen", observation: mutagen });
+        ports.report({ kind: "tool-status", tool: "docker", observation: docker });
         if (!tailscale.installed) ports.report({ kind: "tool-install-guide", tool: "tailscale" });
         if (!mutagen.installed) ports.report({ kind: "tool-install-guide", tool: "mutagen" });
-        if (!tailscale.installed || !mutagen.installed) {
+        if (!docker.installed) ports.report({ kind: "tool-install-guide", tool: "docker" });
+        if (!tailscale.installed || !mutagen.installed || !docker.installed) {
             ports.report({ kind: "setup-tools-missing" });
             return;
         }
@@ -338,8 +350,10 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
         ports.report({ kind: "status-tools" });
         const tailscale = checkTailscale();
         const mutagen = checkMutagen();
+        const docker = checkDocker();
         ports.report({ kind: "tool-status", tool: "tailscale", observation: tailscale });
         ports.report({ kind: "tool-status", tool: "mutagen", observation: mutagen });
+        ports.report({ kind: "tool-status", tool: "docker", observation: docker });
 
         ports.report({ kind: "status-config" });
         const config = loadRemoteConfig(fullPath);
@@ -354,7 +368,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
 
         ports.report({ kind: "status-sync" });
         if (mutagen.installed) {
-            if (config && validConfig(config)) {
+            if (config && validConfig(config) && docker.installed && ports.prepareRemoteRuntime(config).ok) {
                 const authority = { localPath: fullPath, user: config.user, host: config.host, projectId: ports.getProjectId(fullPath) };
                 const sessionName = ports.getScopedMutagenSessionName(authority);
                 const observation = inspectSync(authority);
@@ -386,6 +400,8 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                 ports.report({ kind: "config-invalid" });
                 return { kind: "failed", reason: "config-invalid" };
             }
+            const runtime = ports.prepareRemoteRuntime(config);
+            if (!runtime.ok) return { kind: "failed", reason: "runtime-unavailable", evidence: runtime.evidence };
             const authority = { localPath: fullPath, user: config.user, host: config.host, projectId: ports.getProjectId(fullPath) };
             return finish(await settleRemoteLifecycleLock(ports, syncLifecyclePrefix(authority), async (): Promise<RemoteTerminateOutcome<Evidence>> => {
                 const observation = inspectSync(authority);

@@ -8,7 +8,7 @@ import { getContainerName } from "../docker.js";
 import { legacyRemoteConfigDir, readCccConfig, updateCccConfig } from "../home-layout.js";
 import { createSessionLock, removeSessionLock, removeSessionLockInHeldLifecycleLock, withContainerLifecycleLock, withContainerLifecycleLockAsync } from "../session.js";
 import { remoteContainerStartScript, remoteSessionReservationShell, remoteRefreshSessionShell, remoteReleaseSessionShell, remoteStopShell, shellEscapeArg } from "./remote-shell.js";
-import type { RemoteCleanupFailure, RemoteConfig, RemoteEvent, RemoteExecutionOutcome, RemoteFailureKind, RemoteObservedSync, RemotePrompt, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncInventory, RemoteTerminateOutcome } from "../domain/remote-services.js";
+import { isValidHostOrUser, type RemoteCleanupFailure, type RemoteConfig, type RemoteEvent, type RemoteExecutionOutcome, type RemoteFailureKind, type RemoteObservedSync, type RemotePrompt, type RemoteSyncAuthority, type RemoteSyncBinding, type RemoteSyncInventory, type RemoteTerminateOutcome } from "../domain/remote-services.js";
 import type { RemoteServicesPorts } from "../ports/remote-services.js";
 import { captureInteractiveTerminal } from "./interactive-terminal.js";
 
@@ -40,6 +40,19 @@ interface NativeSyncEndpoint {
     parameters?: Record<string, string>;
 }
 
+interface NativeRemoteRuntime {
+    user: string;
+    host: string;
+    endpoint: string;
+    dockerHost: string;
+}
+
+const dockerEnvironmentVariables = ["DOCKER_HOST", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_API_VERSION"];
+
+function pinnedDockerProgram(runtime: NativeRemoteRuntime, program: string): string {
+    return `unset ${dockerEnvironmentVariables.join(" ")}; docker() { command docker --host ${shellEscapeArg(runtime.endpoint)} "$@"; }; ${program}`;
+}
+
 function record(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -63,14 +76,21 @@ function nativeSyncEndpoint(value: unknown): NativeSyncEndpoint | null {
     return endpoint;
 }
 
-function qualifiedSyncBinding(alpha: NativeSyncEndpoint, beta: NativeSyncEndpoint): RemoteSyncBinding | null {
-    if (alpha.protocol !== "local" || beta.protocol !== "ssh" || !beta.user || !beta.host || beta.port || Object.keys(beta.parameters ?? {}).length > 0) return null;
-    const target = /^docker:\/\/([a-fA-F0-9]{12,64})\/project\/([^/]+)$/.exec(beta.path);
+function qualifiedSyncBinding(alpha: NativeSyncEndpoint, beta: NativeSyncEndpoint, runtimes: ReadonlyMap<string, NativeRemoteRuntime>): RemoteSyncBinding | null {
+    if (alpha.protocol !== "local" || beta.protocol !== "docker" || beta.user || beta.port ||
+        !beta.host?.match(/^[a-fA-F0-9]{64}$/) || Object.keys(beta.parameters ?? {}).length > 0 ||
+        Object.keys(beta.environment ?? {}).length !== 1) return null;
+    const target = /^\/project\/([^/]+)$/.exec(beta.path);
     if (!target) return null;
-    return { localPath: alpha.path, user: beta.user, host: beta.host, containerId: target[1], projectId: target[2] };
+    for (const runtime of runtimes.values()) {
+        if (beta.environment?.DOCKER_HOST === runtime.dockerHost) return {
+            localPath: alpha.path, user: runtime.user, host: runtime.host, containerId: beta.host, projectId: target[1],
+        };
+    }
+    return null;
 }
 
-function parseSyncInventory(output: string, evidence: NativeEvidence): RemoteSyncInventory<NativeEvidence> {
+function parseSyncInventory(output: string, evidence: NativeEvidence, runtimes: ReadonlyMap<string, NativeRemoteRuntime>): RemoteSyncInventory<NativeEvidence> {
     let data: unknown;
     try { data = JSON.parse(output); } catch { return { kind: "unknown", evidence }; }
     if (!Array.isArray(data)) return { kind: "unknown", evidence };
@@ -104,7 +124,7 @@ function parseSyncInventory(output: string, evidence: NativeEvidence): RemoteSyn
         if (!alpha || !beta) return { kind: "unknown", evidence };
         identifiers.add(value.identifier);
         const syncStatus = value.paused ? "Paused" : statusDescriptions.get(value.status);
-        sessions.push({ kind: "observed", identifier: value.identifier, name: value.name ?? "", binding: qualifiedSyncBinding(alpha, beta),
+        sessions.push({ kind: "observed", identifier: value.identifier, name: value.name ?? "", binding: qualifiedSyncBinding(alpha, beta, runtimes),
             paused: value.paused, watching: value.status === "watching", failed: value.status.startsWith("halted-") || Boolean(value.lastError), evidence: { ...evidence, syncStatus } });
     }
     return { kind: "known", sessions, evidence };
@@ -129,18 +149,22 @@ function report(event: RemoteEvent<NativeEvidence>): void {
             console.log("\n=== CCC Remote Setup Guide ===\n");
             console.log("Checking required tools:\n");
             return;
-        case "tool-status": printStatus(event.tool === "tailscale" ? "Tailscale" : "Mutagen", event.observation.installed, event.observation.version); return;
+        case "tool-status": printStatus(event.tool === "tailscale" ? "Tailscale" : event.tool === "mutagen" ? "Mutagen" : "Docker CLI", event.observation.installed, event.observation.version); return;
         case "tool-install-guide":
             if (event.tool === "tailscale") console.log(`
   Tailscale not found. Install it:
     macOS:   brew install tailscale
     Linux:   curl -fsSL https://tailscale.com/install.sh | sh
     Manual:  https://tailscale.com/download`);
-            else console.log(`
+            else if (event.tool === "mutagen") console.log(`
   Mutagen not found. Install it:
     macOS:   brew install mutagen-io/mutagen/mutagen
     Linux:   Download from https://github.com/mutagen-io/mutagen/releases
     Manual:  https://mutagen.io/documentation/introduction/installation`);
+            else console.log(`
+  Docker CLI not found. Install it:
+    Manual:  https://docs.docker.com/engine/install/
+    A local Docker engine is not required for remote synchronization.`);
             return;
         case "setup-tools-missing": console.log("\nPlease install missing tools and run 'ccc remote setup' again."); return;
         case "setup-usage":
@@ -180,7 +204,8 @@ This avoids intermediate filesystem copies on the remote host.`);
             console.log(`1. SSH access to remote host (key-based auth recommended)
 2. ccc installed on remote host (run 'ccc' once to build the image)
 3. Docker running on remote host
-4. Network connectivity (Tailscale recommended for remote access)
+4. Mutagen and Docker CLI installed locally (a local Docker engine is not required)
+5. Network connectivity (Tailscale recommended for remote access)
 
 Config is stored per-project in ~/.ccc/config.json under "remote"`);
             return;
@@ -208,6 +233,7 @@ Config is stored per-project in ~/.ccc/config.json under "remote"`);
         case "status-sync-conflict": console.log("  Conflicting or unqualified sync sessions require manual inspection."); return;
         case "status-end": console.log(""); return;
         case "mutagen-required": console.error("Mutagen is not installed. Run 'ccc remote setup' for installation guide."); return;
+        case "docker-required": console.error("Docker CLI is not installed. Run 'ccc remote setup' for installation guide."); return;
         case "config-invalid": console.error("Saved remote config contains invalid host or user. Please reconfigure with 'ccc remote <host>'."); return;
         case "saved-config": console.log(`Using saved config: ${event.config.user}@${event.config.host}`); return;
         case "host-invalid": console.error(`Invalid hostname: ${event.host}. Only alphanumeric, dots, hyphens, and underscores allowed.`); return;
@@ -255,6 +281,7 @@ function failureError(kind: RemoteFailureKind, evidence?: NativeEvidence): Error
         case "image-missing": return new Error("ccc image not found on remote. Run 'ccc' on the remote host first to build the image.");
         case "config-unresolved": return new Error("Remote configuration could not be resolved");
         case "config-invalid": return new Error("Saved remote configuration contains an invalid host or user");
+        case "runtime-unavailable": return new Error(`Remote Docker runtime could not be established: ${result?.stderr || result?.error?.message || evidence?.syncStatus || "unsupported or unavailable endpoint"}`);
         case "start-failed": return new Error(`Failed to start remote container: ${result?.stderr}`);
         case "missing-container-id": return new Error("Failed to start remote container: stable container ID was not returned");
         case "project-prepare-failed": return new Error(`Failed to prepare remote container project directory: ${result?.stderr || result?.error?.message || "unknown error"}`);
@@ -357,6 +384,9 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
     const mutagenEnvironment = { ...process.env };
     const mutagenCwd = process.cwd();
     const mutagenOptions = { env: mutagenEnvironment, cwd: mutagenCwd };
+    const runtimes = new Map<string, NativeRemoteRuntime>();
+    const runtimeFor = (config: RemoteConfig) => runtimes.get(`${config.user}@${config.host}`);
+    const unprepared = () => ({ syncStatus: "Remote Docker runtime is not prepared" });
     const controlSync = (operation: "resume" | "terminate" | "pause", identifier: string) => {
         if (!validSyncIdentifier(identifier)) return { ok: false as const, evidence: { syncStatus: "Invalid sync identifier" } };
         const result = spawnSync("mutagen", ["sync", operation, identifier], { ...mutagenOptions, stdio: "inherit" });
@@ -368,42 +398,72 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
         getScopedMutagenSessionName: (authority: RemoteSyncAuthority) => `ccc-${authority.projectId}-${hashPath(`${authority.user}@${authority.host}`)}`,
         hashRemoteIdentity: value => hashPath(value), newReservationToken: () => randomBytes(16).toString("hex"),
         observeTool: tool => {
-            const result = spawnSync(tool, ["version"], { encoding: "utf-8", ...(tool === "mutagen" ? mutagenOptions : {}) });
+            const result = spawnSync(tool, [tool === "docker" ? "--version" : "version"], { encoding: "utf-8", ...(tool === "mutagen" || tool === "docker" ? mutagenOptions : {}) });
             return result.error || result.status !== 0 ? { installed: false } : { installed: true, version: (result.stdout ?? "").split("\n")[0].trim() };
         },
         isHostReachable: host => spawnSync("ping", ["-c", "1", "-W", "1", host], { encoding: "utf-8" }).status === 0,
+        prepareRemoteRuntime: config => {
+            const { user, host } = config;
+            if (typeof user !== "string" || typeof host !== "string" || !isValidHostOrUser(user) || !isValidHostOrUser(host)) return { ok: false, evidence: { syncStatus: "Invalid remote configuration" } };
+            const key = `${user}@${host}`;
+            if (runtimes.has(key)) return { ok: true };
+            const result = spawnSync("ssh", [key, "docker context inspect --format '{{json .Endpoints.docker.Host}}'"], {
+                ...mutagenOptions, encoding: "utf-8", timeout: 10000, maxBuffer: 16384, killSignal: "SIGKILL",
+            });
+            const evidence = { execution: result };
+            if (result.error || result.status !== 0) return { ok: false, evidence };
+            let endpoint: unknown;
+            try { endpoint = JSON.parse(result.stdout ?? ""); } catch { return { ok: false, evidence }; }
+            if (typeof endpoint !== "string" || !/^unix:\/\/\/[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)*$/.test(endpoint)) return { ok: false, evidence };
+            const path = endpoint.slice("unix://".length);
+            if (path.split("/").some(segment => segment === "." || segment === "..")) return { ok: false, evidence };
+            runtimes.set(key, { user, host, endpoint, dockerHost: `ssh://${user}@${host}${path}` });
+            return { ok: true };
+        },
         remoteImagePresent: config => {
-            const result = spawnSync("ssh", [`${config.user}@${config.host}`, `docker images -q ${IMAGE_NAME}`], { encoding: "utf-8", timeout: 10000 });
+            const runtime = runtimeFor(config);
+            if (!runtime) return false;
+            const result = spawnSync("ssh", [`${runtime.user}@${runtime.host}`, pinnedDockerProgram(runtime, `docker images -q ${IMAGE_NAME}`)], { ...mutagenOptions, encoding: "utf-8", timeout: 10000 });
             return Boolean(result.stdout?.trim());
         },
         reserveContainer: request => {
+            const runtime = runtimeFor(request.config);
+            if (!runtime) return { kind: "failed", reason: "start-failed", evidence: unprepared() };
             const name = getContainerName(request.projectPath, request.profile);
             const command = remoteContainerStartScript(request.projectPath, request.profile, true);
             const body = remoteSessionReservationShell(name, request.token, request.leaseSeconds, command, true);
-            const result = spawnSync("ssh", [`${request.config.user}@${request.config.host}`, body], { encoding: "utf-8", timeout: 60000 });
+            const result = spawnSync("ssh", [`${runtime.user}@${runtime.host}`, pinnedDockerProgram(runtime, body)], { ...mutagenOptions, encoding: "utf-8", timeout: 60000 });
             if (result.status !== 0) return { kind: "failed", reason: "start-failed", evidence: { execution: result } };
             const match = (result.stdout ?? "").match(/^ccc-container-id=([a-fA-F0-9]{12,64})$/m);
             if (!match) return { kind: "failed", reason: "missing-container-id", evidence: { execution: result } };
             return { kind: "reserved", container: { name, id: match[1] } };
         },
         refreshReservation: request => {
+            const runtime = runtimeFor(request.config);
+            if (!runtime) return false;
             const body = remoteRefreshSessionShell(request.name, request.token, request.leaseSeconds, true, request.containerId);
-            return spawnSync("ssh", [`${request.config.user}@${request.config.host}`, body], { encoding: "utf-8", timeout: 10000 }).status === 0;
+            return spawnSync("ssh", [`${runtime.user}@${runtime.host}`, pinnedDockerProgram(runtime, body)], { ...mutagenOptions, encoding: "utf-8", timeout: 10000 }).status === 0;
         },
         releaseReservation: request => {
+            const runtime = runtimeFor(request.config);
+            if (!runtime) return { ok: false, evidence: unprepared() };
             const body = remoteReleaseSessionShell(request.name, request.token);
-            const result = spawnSync("ssh", [`${request.config.user}@${request.config.host}`, body], { encoding: "utf-8", timeout: 10000 });
+            const result = spawnSync("ssh", [`${runtime.user}@${runtime.host}`, pinnedDockerProgram(runtime, body)], { ...mutagenOptions, encoding: "utf-8", timeout: 10000 });
             return result.error || result.status !== 0 ? { ok: false, evidence: { execution: result } } : { ok: true };
         },
         stopReservedContainer: request => {
+            const runtime = runtimeFor(request.config);
+            if (!runtime) return { kind: "failed", evidence: unprepared() };
             const body = remoteStopShell(request.name, request.token, request.containerId);
-            const result = spawnSync("ssh", [`${request.config.user}@${request.config.host}`, body], { encoding: "utf-8", timeout: 60000 });
+            const result = spawnSync("ssh", [`${runtime.user}@${runtime.host}`, pinnedDockerProgram(runtime, body)], { ...mutagenOptions, encoding: "utf-8", timeout: 60000 });
             if (result.status === 42 || result.stdout?.includes("ccc-remote-sessions-active")) return { kind: "busy" };
             return result.status === 0 ? { kind: "stopped" } : { kind: "failed", evidence: { execution: result } };
         },
         prepareRemoteProject: request => {
+            const runtime = runtimeFor(request.config);
+            if (!runtime) return { ok: false, evidence: unprepared() };
             const command = `docker exec ${request.containerId} mkdir -p /project/${request.projectId}`;
-            const result = spawnSync("ssh", [`${request.config.user}@${request.config.host}`, command], { encoding: "utf-8" });
+            const result = spawnSync("ssh", [`${runtime.user}@${runtime.host}`, pinnedDockerProgram(runtime, command)], { ...mutagenOptions, encoding: "utf-8" });
             return result.error || result.status !== 0 ? { ok: false, evidence: { execution: result } } : { ok: true };
         },
         observeSyncInventory: remainingMs => {
@@ -412,14 +472,23 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
             const result = spawnSync("mutagen", ["sync", "list", "--template", "{{json .}}"], { ...mutagenOptions, encoding: "utf-8", timeout, killSignal: "SIGKILL" });
             const evidence = { execution: result };
             if (result.error || result.status !== 0) return { kind: "unknown", evidence };
-            return parseSyncInventory(result.stdout ?? "", evidence);
+            return parseSyncInventory(result.stdout ?? "", evidence, runtimes);
         },
         startSyncDaemon: () => { spawnSync("mutagen", ["daemon", "start"], { ...mutagenOptions, stdio: "ignore" }); },
         terminateSync: identifier => controlSync("terminate", identifier),
         resumeSync: identifier => controlSync("resume", identifier),
         createSync: request => {
-            const args = ["sync", "create", request.localPath, `${request.config.user}@${request.config.host}:docker://${request.containerId}/project/${request.projectId}`, "--name", request.name, "--ignore-vcs", ...COMMON_IGNORE_DIRS.map(dir => `--ignore=${dir}`)];
-            const result = spawnSync("mutagen", args, { ...mutagenOptions, stdio: "inherit" });
+            const runtime = runtimeFor(request.config);
+            if (!runtime) return { ok: false, evidence: unprepared() };
+            if (!/^[a-fA-F0-9]{64}$/.test(request.containerId)) return { ok: false, evidence: { syncStatus: "Invalid full container identifier" } };
+            const args = ["sync", "create", request.localPath, `docker://${request.containerId}/project/${request.projectId}`, "--name", request.name, "--ignore-vcs", ...COMMON_IGNORE_DIRS.map(dir => `--ignore=${dir}`)];
+            const environment = { ...mutagenEnvironment };
+            for (const key of Object.keys(environment)) {
+                const variable = process.platform === "win32" ? key.toUpperCase() : key;
+                if (dockerEnvironmentVariables.some(name => variable === name || variable === `MUTAGEN_BETA_${name}`)) delete environment[key];
+            }
+            environment.MUTAGEN_BETA_DOCKER_HOST = runtime.dockerHost;
+            const result = spawnSync("mutagen", args, { ...mutagenOptions, env: environment, stdio: "inherit" });
             return result.error || result.status !== 0 ? { ok: false, evidence: { execution: result } } : { ok: true };
         },
         pauseSync: identifier => controlSync("pause", identifier),
@@ -454,6 +523,8 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
         removeSignalListener: (signal, callback) => { process.removeListener(signal, callback); return undefined; },
         collectCurrentForwardedEnv: () => collectForwardedEnv(process.env),
         startInteractiveSession: request => {
+            const runtime = runtimeFor(request.config);
+            if (!runtime) throw new Error("Remote Docker runtime is not prepared");
             const claudeArgs = request.arguments.length > 0 ? request.arguments.map(shellEscapeArg).join(" ") : "--dangerously-skip-permissions";
             const envFlags = [`-e ${shellEscapeArg(`${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}`)}`, ...request.environment.map(([key, value]) => "-e " + shellEscapeArg(key + "=" + value))];
             const program = `cd ${shellEscapeArg(`/project/${request.projectId}`)} && mise trust . 2>/dev/null; mise install -y || true; exec claude ${claudeArgs}`;
@@ -462,7 +533,7 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
             const command = `docker exec ${envFlags.join(" ")} -it ${request.containerId} sh -c ${shellEscapeArg(decoder)}`;
             const restoreTerminal = captureInteractiveTerminal();
             let child: ReturnType<typeof spawn>;
-            try { child = spawn("ssh", ["-t", `${request.config.user}@${request.config.host}`, command], { stdio: "inherit" }); }
+            try { child = spawn("ssh", ["-t", `${runtime.user}@${runtime.host}`, pinnedDockerProgram(runtime, command)], { ...mutagenOptions, stdio: "inherit" }); }
             catch (error) { restoreTerminal(); throw error; }
             return {
                 onClose: callback => { child.on("close", (code: number | null) => { restoreTerminal(); callback(code); }); return undefined; },

@@ -1,5 +1,5 @@
 import type { RemoteServicesPorts } from "../../ports/remote-services.js";
-import type { RemoteHeartbeat, RemoteSshChannel, RemoteSyncBinding, RemoteSyncInventory, RemoteExecutionOutcome, RemoteSyncEnsureOutcome, RemoteSyncWaitOutcome, RemoteTerminateOutcome, RemotePrompt, RemoteSleep } from "../../domain/remote-services.js";
+import type { RemoteHeartbeat, RemoteSshChannel, RemoteSyncBinding, RemoteSyncInventory, RemoteExecutionOutcome, RemoteSyncEnsureOutcome, RemoteSyncWaitOutcome, RemoteTerminateOutcome, RemotePrompt, RemoteSleep, RemoteOperationResult } from "../../domain/remote-services.js";
 import { createRemoteServices } from "../../application/remote-services.js";
 import { createRemoteSync } from "../../application/remote-sync.js";
 import { remoteExec, remoteSetup, remoteCheck, remoteTerminate, remoteRefreshSessionShell } from "../../remote.js";
@@ -11,6 +11,13 @@ export function remoteServiceContracts(ports: RemoteServicesPorts<symbol>): void
     const terminate: (path: string) => Promise<void> = remoteTerminate;
     const channel: RemoteSshChannel = ports.startInteractiveSession({ config: { host: "host", user: "user", remotePath: "" }, containerId: "a".repeat(64), projectId: "project", arguments: ["literal"], environment: [["SAFE", "value"]] });
     const heartbeat: RemoteHeartbeat = ports.startHeartbeat(() => {}, 30_000);
+    const runtime: RemoteOperationResult<symbol> = ports.prepareRemoteRuntime({ host: "host", user: "user", remotePath: "" });
+    const docker = ports.observeTool("docker");
+    // @ts-expect-error preparation must finish before ownership or sync controls can begin
+    const asyncPreparation: RemoteServicesPorts<symbol>["prepareRemoteRuntime"] = async () => ({ ok: true });
+    const { prepareRemoteRuntime, ...unprepared } = ports;
+    // @ts-expect-error a remote service composition must resolve its receiving daemon authority
+    const missingRuntime: RemoteServicesPorts<symbol> = unprepared;
     const body: string = remoteRefreshSessionShell("name", "token", 300, true, "a".repeat(64));
     // @ts-expect-error local claim removal must finish before cleanup returns
     const asyncRemoval: RemoteServicesPorts["removeSessionLock"] = async () => undefined;
@@ -62,5 +69,5 @@ export function remoteServiceContracts(ports: RemoteServicesPorts<symbol>): void
         const nativeStatus: number = terminateResult.evidence.status;
         void nativeStatus;
     }
-    void [exec, setup, check, terminate, channel, heartbeat, body, asyncRemoval, pid, releaseReservation, incomplete, boundedObservation, asyncObservation, captured];
+    void [exec, setup, check, terminate, channel, heartbeat, runtime, docker, asyncPreparation, prepareRemoteRuntime, missingRuntime, body, asyncRemoval, pid, releaseReservation, incomplete, boundedObservation, asyncObservation, captured];
 }

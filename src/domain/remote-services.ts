@@ -23,7 +23,7 @@ export interface RemoteForwardedEnvPlan {
     totalBytes: number;
 }
 
-export type RemoteTool = "tailscale" | "mutagen";
+export type RemoteTool = "tailscale" | "mutagen" | "docker";
 export interface RemoteToolObservation {
     installed: boolean;
     version?: string;
@@ -75,13 +75,13 @@ export type RemoteSyncObservation<Evidence = unknown> =
     | RemoteObservedSync<Evidence>;
 
 export type RemoteFailureKind =
-    | "image-missing" | "config-unresolved" | "config-invalid" | "start-failed" | "missing-container-id"
+    | "image-missing" | "config-unresolved" | "config-invalid" | "runtime-unavailable" | "start-failed" | "missing-container-id"
     | "project-prepare-failed" | "sync-terminate-failed" | "sync-resume-failed"
     | "sync-create-failed" | "sync-missing" | "sync-unknown" | "sync-conflict" | "sync-pause-failed"
     | "sync-failed" | "sync-timeout" | "stop-failed";
 
 export type RemotePrerequisiteRefusal =
-    | "mutagen-required" | "config-invalid" | "host-invalid" | "host-unreachable" | "user-invalid" | "config-required";
+    | "mutagen-required" | "docker-required" | "config-invalid" | "host-invalid" | "host-unreachable" | "user-invalid" | "config-required";
 export interface RemoteFailure<Evidence = unknown> { kind: "failed"; reason: RemoteFailureKind; evidence?: Evidence; }
 export interface RemoteCancellation { kind: "cancelled"; signal: RemoteSignal; }
 export interface RemoteFault { kind: "fault"; error: unknown; }
@@ -113,7 +113,7 @@ export type RemoteEvent<Evidence = unknown> =
         | "setup-start" | "setup-tools-missing" | "setup-usage" | "setup-architecture" | "setup-requirements"
         | "status-start" | "status-tools" | "status-config" | "status-config-missing" | "status-sync"
         | "status-sync-unavailable" | "status-sync-unknown" | "status-sync-conflict" | "status-end"
-        | "mutagen-required" | "config-invalid" | "config-saved" | "config-required" | "image-missing"
+        | "mutagen-required" | "docker-required" | "config-invalid" | "config-saved" | "config-required" | "image-missing"
         | "starting" | "refresh-failed" | "stopping" | "peer-active" | "pausing"
         | "sync-replacing" | "sync-resuming" | "sync-waiting" | "sync-completed" | "sync-poll"
         | "sync-timeout" | "sync-inactive" | "sync-terminated" }
