@@ -151,6 +151,7 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
 
 beforeEach(() => {
     vi.resetAllMocks();
+    native.bindGuard = Object.freeze({ root: resolve(native.bindGuard.root) }) as import("../../ports/runtime-bind-authority.js").RuntimeBindGuard;
     native.authorityEvents = []; native.authorityHeld = false;
     native.spawn.mockReturnValue(result(0, id));
     native.runtime.mockReturnValue("current-runtime");
