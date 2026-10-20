@@ -447,54 +447,57 @@ export function createBrokerSupervision(ports) {
             }
         }
 
-        const startedAt = ports.timestamp();
-        let logPath = ports.pendingLogPath(owner);
-        /** @type {number|null} */
-        let logFd = null;
-        /** @type {import("../domain/broker-supervision.mjs").BrokerChild|null} */
-        let launchedChild = null;
         /** @type {import("../domain/broker-supervision.mjs").BrokerRuntime|null} */
         let launchedRuntime = null;
-        try {
-            if (!ports.executableExists(launch.command)) {
-                return {
+        /** @type {import("../domain/broker-supervision.mjs").BrokerLaunchDiagnostics|null} */
+        let launchDiagnostics = null;
+        /** @type {import("../domain/broker-supervision.mjs").BrokerTermination|null} */
+        let launchCleanup = null;
+        let cleanupAttempted = false;
+        /** @param {number} timeoutMs */
+        async function cleanupLaunch(timeoutMs) {
+            if (cleanupAttempted || !launchedRuntime) return launchCleanup;
+            cleanupAttempted = true;
+            try {
+                launchCleanup = await ports.cleanupLaunchedBrokerRuntime(launchedRuntime, timeoutMs);
+            } catch (error) {
+                launchCleanup = {
                     ok: false,
-                    ownerId: owner,
-                    error: "broker-launch-failed",
-                    detail: "executable-not-found",
-                    command: launch.command,
-                    args: launch.args,
-                    logPath,
-                    attempts: [...before.attempts, ...stale],
+                    pid: launchedRuntime.pid,
+                    reason: "broker-launch-cleanup-failed",
+                    detail: supervisionErrorDetail(error),
                 };
             }
-            const log = ports.createBrokerLogFile(owner);
-            logPath = log.path;
-            logFd = log.descriptor;
-            const { child, processStartToken } = await ports.launchOwnedChild(launch, logFd);
-            launchedChild = child;
-            const runtime = {
-                name: ports.brokerName,
+            return launchCleanup;
+        }
+        /** @param {unknown} detail @returns {Promise<import("../domain/broker-supervision.mjs").BrokerSetupFailure>} */
+        async function failedLaunch(detail) {
+            const cleanup = await cleanupLaunch(1500);
+            return {
+                ok: false,
                 ownerId: owner,
-                pid: child.pid || null,
-                host: launch.host,
-                port: launch.port,
-                command: launch.command,
-                args: launch.args,
-                logPath,
-                startedAt,
-                processStartToken,
-                managedBy: "device-lab-mcp",
+                error: "broker-launch-failed",
+                detail,
+                ...launchDiagnostics,
+                ...(launchedRuntime ? { runtime: launchedRuntime } : {}),
+                ...(cleanup ? { launchCleanup: cleanup } : {}),
+                attempts: [...before.attempts, ...stale],
             };
-            launchedRuntime = runtime;
-            if (!ports.writeBrokerRuntime(runtime, expectedLaunchRuntime)) throw new Error("broker-runtime-generation-changed");
+        }
+        try {
+            const launched = await ports.launchOwnedBroker(owner, launch);
+            launchedRuntime = launched.runtime;
+            launchDiagnostics = launched.diagnostics;
+            if (launched.kind === "failed") return failedLaunch(launched.detail);
+            const { runtime, diagnostics } = launched;
+            if (!ports.writeBrokerRuntime(runtime, expectedLaunchRuntime)) return failedLaunch("broker-runtime-generation-changed");
             const ready = await ports.waitForBrokerHealth({ host: launch.host, port: launch.port, timeoutMs: launch.launchTimeoutMs });
             if (ready.available) {
                 const ownerResolve = await ports.waitForBrokerOwnerResolve(launch.host, launch.port, launch.launchTimeoutMs);
                 if (ownerResolve.ok) {
                     const compatibility = await ports.probeCccHostBrokerProtocol(launch.host, launch.port, launch.timeoutMs);
                     if (!compatibility.ok) {
-                        const launchCleanup = await ports.cleanupLaunchedBrokerRuntime(runtime, child, 3000);
+                        const launchCleanup = await cleanupLaunch(3000);
                         return {
                             ok: false,
                             ownerId: owner,
@@ -522,7 +525,7 @@ export function createBrokerSupervision(ports) {
                     );
                     const processVerification = launchProcessVerification.verification;
                     if (!processVerification.ok) {
-                        const launchCleanup = await ports.cleanupLaunchedBrokerRuntime(runtime, child, 3000);
+                        const launchCleanup = await cleanupLaunch(3000);
                         return {
                             ok: false,
                             ownerId: owner,
@@ -543,7 +546,7 @@ export function createBrokerSupervision(ports) {
                     }
                     const expectedPublishedRuntime = { ...runtime };
                     Object.assign(runtime, launchProcessVerification.runtime);
-                    if (!ports.writeBrokerRuntime(runtime, expectedPublishedRuntime)) throw new Error("broker-runtime-generation-changed");
+                    if (!ports.writeBrokerRuntime(runtime, expectedPublishedRuntime)) return failedLaunch("broker-runtime-generation-changed");
                     return ports.withSetupEvidence({
                         ok: true,
                         ownerId: ownerResolve.ownerId,
@@ -561,53 +564,34 @@ export function createBrokerSupervision(ports) {
                         ],
                     }, ready, ownerResolve);
                 }
-                const launchCleanup = await ports.cleanupLaunchedBrokerRuntime(runtime, child, 3000);
+                const launchCleanup = await cleanupLaunch(3000);
+                const detail = ownerResolve.selected
+                    ? `${ownerResolve.error}: ${JSON.stringify(ownerResolve.selected)}`
+                    : ports.brokerLogTail(diagnostics.logPath) || `broker owner resolution did not become ready within ${launch.launchTimeoutMs}ms`;
                 return {
                     ok: false,
                     ownerId: owner,
                     error: "broker-launch-owner-resolve-timeout",
-                    detail: ownerResolve.selected
-                        ? `${ownerResolve.error}: ${JSON.stringify(ownerResolve.selected)}`
-                        : ports.brokerLogTail(logPath) || `broker owner resolution did not become ready within ${launch.launchTimeoutMs}ms`,
+                    detail,
                     runtime,
                     launchCleanup,
                     ownerResolve,
                     attempts: [...before.attempts, ...stale, ...ready.attempts, { reason: "broker-owner-resolve-readiness-timeout", ownerResolve }],
                 };
             }
-            const launchCleanup = await ports.cleanupLaunchedBrokerRuntime(runtime, child, 1500);
+            const launchCleanup = await cleanupLaunch(1500);
+            const detail = ports.brokerLogTail(diagnostics.logPath) || `broker did not become healthy within ${launch.launchTimeoutMs}ms`;
             return {
                 ok: false,
                 ownerId: owner,
                 error: "broker-launch-health-timeout",
-                detail: ports.brokerLogTail(logPath) || `broker did not become healthy within ${launch.launchTimeoutMs}ms`,
+                detail,
                 runtime,
                 launchCleanup,
                 attempts: [...before.attempts, ...stale, ...ready.attempts],
             };
         } catch (error) {
-            const launchCleanup = launchedRuntime && launchedChild
-                ? await ports.cleanupLaunchedBrokerRuntime(launchedRuntime, launchedChild, 1500)
-                : (ports.removeBrokerRuntime(launchedRuntime), null);
-            return {
-                ok: false,
-                ownerId: owner,
-                error: "broker-launch-failed",
-                detail: supervisionErrorDetail(error),
-                command: launch.command,
-                args: launch.args,
-                logPath,
-                ...(launchCleanup ? { launchCleanup } : {}),
-                attempts: [...before.attempts, ...stale],
-            };
-        } finally {
-            if (logFd !== null) {
-                try {
-                    ports.closeLog(logFd);
-                } catch {
-                    // Ignore log close failures.
-                }
-            }
+            return failedLaunch(supervisionErrorDetail(error));
         }
     }
 

@@ -12,6 +12,8 @@
 /** @typedef {({ok: true, ownerId: string}|{ok: false, ownerId?: string}) & {error?: string, selected?: object|null, attempts?: BrokerAttempt[], [key: string]: unknown}} BrokerOwnerResolution */
 /** @typedef {{ok: boolean, result?: {failed?: number}, [key: string]: unknown}} BrokerOwnerCleanup */
 /** @typedef {{host: string, hostCandidates: string[], port: number, timeoutMs: number, launchTimeoutMs: number, command: string, args: string[]}} BrokerLaunch */
+/** @typedef {{command: string, args: string[], logPath: string}} BrokerLaunchDiagnostics */
+/** @typedef {{kind: 'started', runtime: BrokerRuntime, diagnostics: BrokerLaunchDiagnostics}|{kind: 'failed', runtime: BrokerRuntime|null, detail: unknown, diagnostics: BrokerLaunchDiagnostics}} BrokerLaunchResult */
 /** @typedef {(port: number) => VerifiedBrokerProcess|null} BrokerPortProcessResolver */
 /** @typedef {{timeoutMs?: number, cleanupTimeoutMs?: number, force?: boolean, stopDevices?: boolean, detachPhysical?: boolean, portProcessResolver?: BrokerPortProcessResolver, [key: string]: unknown}} BrokerSupervisionOptions */
 /** @typedef {{ok: true, ownerId: string, launched: boolean, reused: boolean, runtime: BrokerRuntime|null, host: string, port: number, attempts: BrokerAttempt[]}} BrokerSetupSuccess */

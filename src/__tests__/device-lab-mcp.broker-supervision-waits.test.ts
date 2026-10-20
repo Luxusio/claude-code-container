@@ -1,8 +1,22 @@
 import { performance } from "node:perf_hooks";
+import * as childProcess from "child_process";
+import { EventEmitter } from "node:events";
+import * as fs from "fs";
+import * as os from "os";
+import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrokerSupervisionPorts } from "../../device-lab-mcp/src/ports/broker-supervision.mjs";
 
 const captured = vi.hoisted(() => ({ ports: undefined as BrokerSupervisionPorts | undefined }));
+vi.mock("child_process", async importOriginal => ({
+    ...await importOriginal<typeof import("child_process")>(),
+}));
+vi.mock("fs", async importOriginal => ({
+    ...await importOriginal<typeof import("fs")>(),
+}));
+vi.mock("os", async importOriginal => ({
+    ...await importOriginal<typeof import("os")>(),
+}));
 vi.mock("../../device-lab-mcp/src/application/broker-supervision.mjs", async importOriginal => {
     const actual = await importOriginal<typeof import("../../device-lab-mcp/src/application/broker-supervision.mjs")>();
     return {
@@ -333,5 +347,263 @@ describe("native broker process-exit phase", () => {
         const kill = pidProbe(() => false);
         expect(await finish(native().waitForProcessExit(syntheticPid, 0))).toBe(false);
         expect(kill).not.toHaveBeenCalled();
+    });
+});
+
+describe("native owned broker launch", () => {
+    function child(pid: number | undefined = syntheticPid) {
+        const identity: { pid: number | undefined } = { pid };
+        return Object.assign(new EventEmitter(), identity, { kill: vi.fn(() => true) });
+    }
+
+    async function fixture(options: { token?: boolean; realChild?: boolean } = {}) {
+        vi.resetModules();
+        const root = fs.mkdtempSync(join(os.tmpdir(), "ccc-broker-native-launch-"));
+        const listeners = {
+            exit: new Set(process.listeners("exit")),
+            SIGINT: new Set(process.listeners("SIGINT")),
+            SIGTERM: new Set(process.listeners("SIGTERM")),
+        };
+        vi.spyOn(os, "homedir").mockReturnValue(root);
+        await import("../../device-lab-mcp/src/broker.mjs");
+        const ports = native();
+        const first = child();
+        const actualSpawn = childProcess.spawn;
+        const spawn = vi.spyOn(childProcess, "spawn");
+        if (!options.realChild) {
+            spawn.mockReturnValue(first as unknown as childProcess.ChildProcess);
+            const read = fs.readFileSync;
+            vi.spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+                if (String(args[0]) === `/proc/${syntheticPid}/stat`) {
+                    if (options.token === false) throw Object.assign(new Error("process identity unavailable"), { code: "ENOENT" });
+                    return `${syntheticPid} (owned fake) ${Array.from({ length: 20 }, (_, index) => index === 19 ? "424242" : "0").join(" ")}`;
+                }
+                return read(...args);
+            }) as typeof fs.readFileSync);
+            vi.spyOn(childProcess, "spawnSync").mockImplementation((() => ({
+                pid: syntheticPid, output: [], stdout: options.token === false ? "" : "native-start",
+                stderr: "", status: options.token === false ? 1 : 0, signal: null,
+            })) as unknown as typeof childProcess.spawnSync);
+        }
+        const actualClose = fs.closeSync;
+        const releasedDescriptors = new Set<number>();
+        const close = vi.spyOn(fs, "closeSync").mockImplementation(fd => {
+            actualClose(fd);
+            releasedDescriptors.add(fd);
+        });
+        const launch = ports.normalizeLaunchOptions({ host, port, launchTimeoutMs: 1000 });
+        function descriptor() {
+            const spawnOptions = spawn.mock.calls[0]?.[2] as { stdio?: unknown[] } | undefined;
+            const value = spawnOptions?.stdio?.[1];
+            if (typeof value !== "number") throw new Error("owned launch did not acquire an output descriptor");
+            return value;
+        }
+        function dispose() {
+            ports.deleteOwnedChild(syntheticPid);
+            for (const listener of process.listeners("exit")) {
+                if (!listeners.exit.has(listener)) process.removeListener("exit", listener);
+            }
+            for (const signal of ["SIGINT", "SIGTERM"] as const) {
+                for (const listener of process.listeners(signal)) {
+                    if (!listeners[signal].has(listener)) process.removeListener(signal, listener);
+                }
+            }
+            for (const call of spawn.mock.calls) {
+                const fd = (call[2] as { stdio?: unknown[] } | undefined)?.stdio?.[1];
+                if (typeof fd === "number" && !releasedDescriptors.has(fd)) {
+                    try { actualClose(fd); } catch { /* already closed by the launch */ }
+                }
+            }
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+        return { root, ports, first, spawn, actualSpawn, close, launch, descriptor, dispose };
+    }
+
+    it("refuses an absent executable before log creation or process dispatch", async () => {
+        const f = await fixture();
+        try {
+            const launch = { ...f.launch, command: join(f.root, "missing-node") };
+            const result = await f.ports.launchOwnedBroker(ownerId, launch);
+            expect(result).toEqual(expect.objectContaining({
+                kind: "failed", runtime: null, detail: "executable-not-found",
+                diagnostics: expect.objectContaining({ command: launch.command, args: launch.args }),
+            }));
+            expect(f.spawn).not.toHaveBeenCalled();
+            expect(fs.existsSync(join(f.root, ".ccc", "devices", "broker", "logs"))).toBe(false);
+        } finally { f.dispose(); }
+    });
+
+    it("does not dispatch a child when the private log directory cannot be created", async () => {
+        const f = await fixture();
+        try {
+            fs.mkdirSync(join(f.root, ".ccc"));
+            fs.writeFileSync(join(f.root, ".ccc", "devices"), "ordinary file");
+            const result = await f.ports.launchOwnedBroker(ownerId, f.launch);
+            expect(result).toEqual(expect.objectContaining({ kind: "failed", runtime: null, detail: expect.stringMatching(/^broker-log-/) }));
+            expect(f.spawn).not.toHaveBeenCalled();
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([]);
+        } finally { f.dispose(); }
+    });
+
+    it("closes its acquired log when spawn throws without inventing a process identity", async () => {
+        const f = await fixture();
+        try {
+            f.spawn.mockImplementation(() => { throw new Error("dispatch refused"); });
+            const result = await f.ports.launchOwnedBroker(ownerId, f.launch);
+            expect(result).toEqual(expect.objectContaining({
+                kind: "failed", runtime: null, detail: "dispatch refused",
+                diagnostics: expect.objectContaining({ command: f.launch.command, args: f.launch.args }),
+            }));
+            expect(f.close).toHaveBeenCalledWith(f.descriptor());
+            expect(() => fs.fstatSync(f.descriptor())).toThrow(expect.objectContaining({ code: "EBADF" }));
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([]);
+        } finally { f.dispose(); }
+    });
+
+    it("retains the provisional runtime and owned child before listener setup can fail", async () => {
+        const f = await fixture();
+        try {
+            vi.spyOn(f.first, "once").mockImplementation(() => {
+                expect([...f.ports.ownedChildrenEntries()]).toEqual([[syntheticPid, expect.objectContaining({ child: f.first })]]);
+                throw new Error("listener installation failed");
+            });
+            const result = await f.ports.launchOwnedBroker(ownerId, f.launch);
+            expect(result).toEqual(expect.objectContaining({
+                kind: "failed", detail: "listener installation failed",
+                runtime: expect.objectContaining({ ownerId, pid: syntheticPid, processStartToken: null,
+                    command: f.launch.command, args: f.launch.args, host, port, managedBy: "device-lab-mcp" }),
+            }));
+            if (result.kind !== "failed" || !result.runtime) throw new Error("partial dispatch identity was lost");
+            expect(result.runtime.logPath).toBe(result.diagnostics.logPath);
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([[syntheticPid, expect.objectContaining({ child: f.first, processStartToken: null })]]);
+            expect(f.first.kill).not.toHaveBeenCalled();
+            expect(() => fs.fstatSync(f.descriptor())).toThrow(expect.objectContaining({ code: "EBADF" }));
+        } finally { f.dispose(); }
+    });
+
+    it("retains the dispatched generation when token-poll scheduling fails and refuses to signal it without a token", async () => {
+        const f = await fixture({ token: false });
+        try {
+            vi.spyOn(globalThis, "setTimeout").mockImplementation(() => { throw new Error("token timer failed"); });
+            const result = await f.ports.launchOwnedBroker(ownerId, f.launch);
+            expect(result).toEqual(expect.objectContaining({
+                kind: "failed", detail: "token timer failed", runtime: expect.objectContaining({ pid: syntheticPid, processStartToken: null }),
+            }));
+            if (result.kind !== "failed" || !result.runtime) throw new Error("token failure lost its child");
+            const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+            expect(await f.ports.cleanupLaunchedBrokerRuntime(result.runtime, 1500)).toEqual({
+                ok: false, pid: syntheticPid, reason: "process-start-token-unavailable",
+            });
+            expect(kill).toHaveBeenCalledExactlyOnceWith(syntheticPid, 0);
+            expect(f.first.kill).not.toHaveBeenCalled();
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([[syntheticPid, expect.objectContaining({ child: f.first })]]);
+            expect(() => fs.fstatSync(f.descriptor())).toThrow(expect.objectContaining({ code: "EBADF" }));
+        } finally { f.dispose(); }
+    });
+
+    it("preserves the observed generation if registering process cleanup fails after spawn", async () => {
+        const f = await fixture();
+        try {
+            const token = f.ports.readBrokerProcessStartToken(syntheticPid);
+            expect(token).toBeTruthy();
+            vi.spyOn(process, "once").mockImplementation(() => { throw new Error("cleanup registration failed"); });
+            const result = await f.ports.launchOwnedBroker(ownerId, f.launch);
+            expect(result).toEqual(expect.objectContaining({
+                kind: "failed", detail: "cleanup registration failed", runtime: expect.objectContaining({ pid: syntheticPid, processStartToken: token }),
+            }));
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([[syntheticPid, expect.objectContaining({ child: f.first, processStartToken: token })]]);
+            expect(() => fs.fstatSync(f.descriptor())).toThrow(expect.objectContaining({ code: "EBADF" }));
+        } finally { f.dispose(); }
+    });
+
+    it("keeps a missing token bounded without treating a nonthrowing spawn as readiness", async () => {
+        const f = await fixture({ token: false });
+        try {
+            const timer = vi.spyOn(globalThis, "setTimeout");
+            const result = await finish(f.ports.launchOwnedBroker(ownerId, f.launch));
+            expect(result).toEqual(expect.objectContaining({ kind: "started", runtime: expect.objectContaining({ pid: syntheticPid, processStartToken: null }) }));
+            expect(timer.mock.calls.map(call => call[1])).toEqual(Array(20).fill(25));
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([[syntheticPid, expect.objectContaining({ child: f.first, processStartToken: null })]]);
+        } finally { f.dispose(); }
+    });
+
+    it("keeps the existing no-PID/asynchronous-error path as a started attempt and closes the parent descriptor", async () => {
+        const f = await fixture();
+        try {
+            f.first.pid = undefined;
+            const result = await f.ports.launchOwnedBroker(ownerId, f.launch);
+            expect(result).toEqual(expect.objectContaining({ kind: "started", runtime: expect.objectContaining({ pid: null, processStartToken: null }) }));
+            expect(() => f.first.emit("error", new Error("asynchronous spawn rejection"))).not.toThrow();
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([]);
+            expect(() => fs.fstatSync(f.descriptor())).toThrow(expect.objectContaining({ code: "EBADF" }));
+        } finally { f.dispose(); }
+    });
+
+    it("does not restore an exited child's ownership after its pending token poll settles", async () => {
+        const f = await fixture({ token: false });
+        try {
+            const pending = f.ports.launchOwnedBroker(ownerId, f.launch);
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([[syntheticPid, expect.objectContaining({ child: f.first })]]);
+            f.first.emit("exit", 1);
+            expect((await finish(pending)).kind).toBe("started");
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([]);
+        } finally { f.dispose(); }
+    });
+
+    it.each(["exit", "error"] as const)("does not erase a successor when a former child later emits %s", async event => {
+        const f = await fixture();
+        try {
+            const second = child();
+            f.spawn.mockReturnValueOnce(f.first as unknown as childProcess.ChildProcess).mockReturnValueOnce(second as unknown as childProcess.ChildProcess);
+            expect((await f.ports.launchOwnedBroker(ownerId, f.launch)).kind).toBe("started");
+            expect((await f.ports.launchOwnedBroker(ownerId, f.launch)).kind).toBe("started");
+            f.first.emit(event, event === "error" ? new Error("old child failed") : 0);
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([[syntheticPid, expect.objectContaining({ child: second })]]);
+            second.emit(event, event === "error" ? new Error("current child failed") : 0);
+            expect([...f.ports.ownedChildrenEntries()]).toEqual([]);
+        } finally { f.dispose(); }
+    });
+
+    it("does not turn a successful dispatch into failure when closing the parent descriptor fails", async () => {
+        const f = await fixture();
+        try {
+            f.close.mockImplementationOnce(() => { throw new Error("parent close failed"); });
+            expect(await f.ports.launchOwnedBroker(ownerId, f.launch)).toEqual(expect.objectContaining({ kind: "started", runtime: expect.objectContaining({ pid: syntheticPid }) }));
+            expect(f.first.kill).not.toHaveBeenCalled();
+        } finally { f.dispose(); }
+    });
+
+    it("allows the actual owned child to write after the parent has released its output descriptor", { timeout: 20000 }, async () => {
+        vi.useRealTimers();
+        const f = await fixture({ realChild: true });
+        let owned: childProcess.ChildProcess | undefined;
+        let closed: Promise<void> | undefined;
+        try {
+            f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => {
+                owned = f.actualSpawn(...args);
+                closed = new Promise<void>((resolve, reject) => {
+                    owned!.once("close", () => resolve());
+                    owned!.once("error", reject);
+                });
+                return owned;
+            });
+            const marker = join(f.root, "parent-descriptor-closed");
+            const program = `const fs = require('node:fs'); const marker = process.argv[1]; const poll = setInterval(() => { if (!fs.existsSync(marker)) return; clearInterval(poll); process.stdout.write('child-output-after-parent-close\\n'); }, 10);`;
+            const launch = { ...f.launch, args: ["-e", program, marker] };
+            const result = await f.ports.launchOwnedBroker(ownerId, launch);
+            expect(result.kind).toBe("started");
+            expect(f.spawn).toHaveBeenCalledWith(launch.command, launch.args, expect.objectContaining({
+                detached: false, windowsHide: true, stdio: ["ignore", f.descriptor(), f.descriptor()],
+            }));
+            expect(() => fs.fstatSync(f.descriptor())).toThrow(expect.objectContaining({ code: "EBADF" }));
+            fs.writeFileSync(marker, "the parent has closed its descriptor");
+            await closed;
+            expect(fs.readFileSync(result.diagnostics.logPath, "utf8")).toContain("child-output-after-parent-close");
+        } finally {
+            if (owned && owned.exitCode === null && owned.signalCode === null) owned.kill("SIGKILL");
+            if (closed) await closed.catch(() => undefined);
+            if (owned?.pid) f.ports.deleteOwnedChild(owned.pid);
+            f.dispose();
+        }
     });
 });

@@ -1,5 +1,6 @@
 import { readBrokerOwnerSecret } from "@ccc/device-lab/providers/state/broker-owner-secret.mjs";
 import { createBrokerSupervision } from "./application/broker-supervision.mjs";
+import { supervisionErrorDetail } from "./domain/broker-supervision.mjs";
 import { fileURLToPath } from "url";
 import { createWaitBudget } from "@ccc/device-lab/providers/wait-budget.mjs";
 import { AsyncLocalStorage } from "async_hooks";
@@ -75,11 +76,11 @@ let cleanupRegistered = false;
 let exitingFromSignal = false;
 
 const brokerSupervision = createBrokerSupervision({
-    brokerName: BROKER_NAME, protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
+    protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
     ownerId, normalizeLaunchOptions, probeBrokerHealth, readBrokerRuntime, probeCccHostBrokerProtocol,
     resolveBrokerOwner, reusableBrokerProcessVerification, persistVerifiedBrokerRuntime, withSetupEvidence,
     pidAlive, terminateVerifiedBrokerRuntime, removeBrokerRuntime, waitForBrokerHealth,
-    waitForBrokerOwnerResolve, executableExists, createBrokerLogFile, readBrokerProcessStartToken,
+    waitForBrokerOwnerResolve, launchOwnedBroker, readBrokerProcessStartToken,
     terminateBrokerProcess, waitForProcessExit, writeBrokerRuntime, launchedBrokerProcessVerification,
     cleanupLaunchedBrokerRuntime, brokerLogTail, verifiedBrokerProcess, invalidateBrokerSetup,
     verifiedOwnedLegacyBrokerProcess: (runtime, port, status, resolver) => verifiedOwnedLegacyBrokerProcess(runtime, port, status, resolver || discoverBrokerPortProcess),
@@ -88,22 +89,6 @@ const brokerSupervision = createBrokerSupervision({
     ownedChildrenEntries: () => ownedBrokerChildren.entries(),
     deleteOwnedChild: pid => { ownedBrokerChildren.delete(pid); },
     signalChild: (child, signal) => { child.kill?.(signal); },
-    timestamp: () => new Date().toISOString(),
-    pendingLogPath: owner => join(brokerLogsRoot(), `broker-${owner}-pending.log`),
-    closeLog: descriptor => { closeSync(descriptor); },
-    launchOwnedChild: async (launch, descriptor) => {
-        const child = spawn(launch.command, launch.args, { stdio: ["ignore", descriptor, descriptor], detached: false, windowsHide: true });
-        child.once("exit", () => { ownedBrokerChildren.delete(child.pid); });
-        child.once("error", () => { ownedBrokerChildren.delete(child.pid); });
-        let processStartToken = child.pid ? readBrokerProcessStartToken(child.pid) : null;
-        for (let attempt = 0; child.pid && !processStartToken && attempt < 20; attempt += 1) {
-            await new Promise(resolve => setTimeout(resolve, 25));
-            processStartToken = readBrokerProcessStartToken(child.pid);
-        }
-        if (child.pid) ownedBrokerChildren.set(child.pid, { child, processStartToken });
-        registerBrokerCleanup();
-        return { child, processStartToken };
-    },
     cleanupOwner: (runtime, params, timeoutMs, statusBroker, verified) => brokerRpcRequest({
         method: "broker.cleanup.owner", params,
         hostCandidates: [runtime.host || "127.0.0.1"], port: runtime.port || 17373, timeoutMs,
@@ -195,6 +180,68 @@ function createBrokerLogFile(owner) {
         }
     }
     throw new Error("broker-log-file-create-failed");
+}
+
+/** @param {string} owner @param {import('./domain/broker-supervision.mjs').BrokerLaunch} launch
+ * @returns {Promise<import('./domain/broker-supervision.mjs').BrokerLaunchResult>}
+ */
+async function launchOwnedBroker(owner, launch) {
+    const startedAt = new Date().toISOString();
+    const diagnostics = {
+        command: launch.command,
+        args: launch.args,
+        logPath: join(brokerLogsRoot(), `broker-${owner}-pending.log`),
+    };
+    /** @type {number|null} */
+    let descriptor = null;
+    /** @type {import('./domain/broker-supervision.mjs').BrokerRuntime|null} */
+    let runtime = null;
+    try {
+        if (!executableExists(launch.command)) {
+            return { kind: "failed", runtime, detail: "executable-not-found", diagnostics };
+        }
+        const log = createBrokerLogFile(owner);
+        descriptor = log.descriptor;
+        diagnostics.logPath = log.path;
+        const child = spawn(launch.command, launch.args, { stdio: ["ignore", descriptor, descriptor], detached: false, windowsHide: true });
+        runtime = {
+            name: BROKER_NAME,
+            ownerId: owner,
+            pid: child.pid || null,
+            host: launch.host,
+            port: launch.port,
+            command: launch.command,
+            args: launch.args,
+            logPath: log.path,
+            startedAt,
+            processStartToken: null,
+            managedBy: "device-lab-mcp",
+        };
+        const owned = { child, processStartToken: /** @type {string|null} */ (null) };
+        const pid = runtime.pid;
+        if (pid) ownedBrokerChildren.set(pid, owned);
+        const retireChild = () => {
+            if (ownedBrokerChildren.get(pid) === owned) ownedBrokerChildren.delete(pid);
+        };
+        child.once("exit", retireChild);
+        child.once("error", retireChild);
+        runtime.processStartToken = pid && ownedBrokerChildren.get(pid) === owned ? readBrokerProcessStartToken(pid) : null;
+        owned.processStartToken = runtime.processStartToken;
+        for (let attempt = 0; pid && !runtime.processStartToken && attempt < 20; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+            if (ownedBrokerChildren.get(pid) !== owned) break;
+            runtime.processStartToken = readBrokerProcessStartToken(pid);
+            owned.processStartToken = runtime.processStartToken;
+        }
+        registerBrokerCleanup();
+        return { kind: "started", runtime, diagnostics };
+    } catch (error) {
+        return { kind: "failed", runtime, detail: supervisionErrorDetail(error), diagnostics };
+    } finally {
+        if (descriptor !== null) {
+            try { closeSync(descriptor); } catch { /* parent descriptor release is best effort */ }
+        }
+    }
 }
 
 function brokerContainerContract() {
@@ -1025,6 +1072,7 @@ function readBrokerProcessStartToken(pid, platform = process.platform) {
     return value ? `ps:${value}` : null;
 }
 
+/** @param {import('./domain/broker-supervision.mjs').BrokerStatus|null} [statusBroker] */
 function verifiedBrokerProcess(
     runtime,
     port = Number(runtime?.port),
@@ -1393,28 +1441,29 @@ async function terminateVerifiedBrokerRuntime(runtime, timeoutMs = 3000, options
 
 export const terminateVerifiedBrokerRuntimeForTest = terminateVerifiedBrokerRuntime;
 
-async function cleanupLaunchedBrokerRuntime(runtime, child, timeoutMs) {
-    if (!child?.pid) {
+async function cleanupLaunchedBrokerRuntime(runtime, timeoutMs) {
+    if (!runtime.pid) {
         removeBrokerRuntime(runtime);
         return { ok: true, stale: true, pid: null };
     }
     let termination;
     try {
         termination = await terminateBrokerProcess(
-            child.pid,
+            runtime.pid,
             timeoutMs,
             runtime?.processStartToken || null,
         );
     } catch (error) {
         termination = {
             ok: false,
-            pid: child.pid,
+            pid: runtime.pid,
             reason: "broker-launch-cleanup-failed",
             detail: error?.message || String(error),
         };
     }
     if (termination.ok) {
-        ownedBrokerChildren.delete(child.pid);
+        const owned = ownedBrokerChildren.get(runtime.pid);
+        if (runtime.processStartToken && owned?.processStartToken === runtime.processStartToken) ownedBrokerChildren.delete(runtime.pid);
         removeBrokerRuntime(runtime);
     }
     return termination;

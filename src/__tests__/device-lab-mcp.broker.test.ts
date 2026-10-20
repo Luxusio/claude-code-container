@@ -3127,7 +3127,7 @@ describe("owned broker child supervision", () => {
         const runtime = { host: "127.0.0.1", ownerId: "owner", managedBy: "device-lab-mcp", pid: 41, port: 17373, processStartToken: "birth-41" };
         const unexpected = () => { throw new Error("unexpected supervision operation"); };
         const ports: BrokerSupervisionPorts = {
-            brokerName: "ccc-host-broker", protocolVersion: 1,
+            protocolVersion: 1,
             ownerId: () => "owner", ownedChildrenEntries: () => children.entries(),
             deleteOwnedChild: pid => { children.delete(Number(pid)); },
             readBrokerProcessStartToken: vi.fn(() => "birth-41"),
@@ -3140,13 +3140,11 @@ describe("owned broker child supervision", () => {
             reusableBrokerProcessVerification: unexpected, persistVerifiedBrokerRuntime: unexpected,
             withSetupEvidence: unexpected, terminateVerifiedBrokerRuntime: unexpected,
             waitForBrokerHealth: unexpected, waitForBrokerOwnerResolve: unexpected,
-            executableExists: unexpected, createBrokerLogFile: unexpected,
             writeBrokerRuntime: unexpected, launchedBrokerProcessVerification: unexpected,
             cleanupLaunchedBrokerRuntime: unexpected, brokerLogTail: unexpected,
             verifiedBrokerProcess: unexpected, invalidateBrokerSetup: unexpected,
             verifiedOwnedLegacyBrokerProcess: unexpected, currentOperation: unexpected,
-            setupCacheKey: unexpected, timestamp: unexpected, pendingLogPath: unexpected,
-            closeLog: unexpected, launchOwnedChild: unexpected, cleanupOwner: unexpected,
+            setupCacheKey: unexpected, launchOwnedBroker: unexpected, cleanupOwner: unexpected,
         };
         return { ports, children, child, runtime, supervision: createBrokerSupervision(ports) };
     }
@@ -3238,14 +3236,12 @@ describe("owned broker child supervision", () => {
             });
             f.ports.probeBrokerHealth = async () => ({ available: false, selected: null, attempts: [] });
             f.ports.readBrokerRuntime = () => existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
-            f.ports.executableExists = () => true;
-            f.ports.pendingLogPath = () => "private-launch.log";
-            f.ports.createBrokerLogFile = () => ({ path: "private-launch.log", descriptor: 7 });
-            f.ports.closeLog = vi.fn(() => undefined);
-            f.ports.timestamp = () => "parent-start";
-            f.ports.launchOwnedChild = async () => {
+            f.ports.launchOwnedBroker = async (owner, launch) => {
                 if (stage === "initial") expect(writeBrokerRuntimeForTest(successor, null)).toBe(true);
-                return { child: f.child, processStartToken: "birth-41" };
+                return {
+                    kind: "started", runtime: { ...f.runtime, ownerId: owner, startedAt: "parent-start" },
+                    diagnostics: { command: launch.command, args: launch.args, logPath: "private-launch.log" },
+                };
             };
             f.ports.writeBrokerRuntime = vi.fn(writeBrokerRuntimeForTest);
             f.ports.waitForBrokerHealth = vi.fn(async () => {
@@ -3258,8 +3254,7 @@ describe("owned broker child supervision", () => {
             f.ports.probeCccHostBrokerProtocol = async () => ({ ok: true });
             f.ports.launchedBrokerProcessVerification = runtime => ({ verification: { ok: true }, runtime: { ...runtime, startedAt: "verified-start" } });
             f.ports.withSetupEvidence = value => value;
-            f.ports.cleanupLaunchedBrokerRuntime = vi.fn(async (runtime, child, timeoutMs) => {
-                expect(child).toBe(f.child);
+            f.ports.cleanupLaunchedBrokerRuntime = vi.fn(async (runtime, timeoutMs) => {
                 expect(timeoutMs).toBe(1500);
                 expect(runtime).toEqual(expect.objectContaining({ managedBy: "device-lab-mcp", pid: 41, processStartToken: "birth-41" }));
                 expect(removeBrokerRuntimeForTest(runtime)).toBe(false);
@@ -3274,8 +3269,138 @@ describe("owned broker child supervision", () => {
             expect(f.ports.writeBrokerRuntime).toHaveBeenCalledTimes(stage === "initial" ? 1 : 2);
             expect(f.ports.waitForBrokerHealth).toHaveBeenCalledTimes(stage === "initial" ? 0 : 1);
             expect(f.ports.cleanupLaunchedBrokerRuntime).toHaveBeenCalledOnce();
-            expect(f.ports.closeLog).toHaveBeenCalledExactlyOnceWith(7);
         });
+    });
+
+    function launchFixture() {
+        const f = fixture();
+        const launch = {
+            command: process.execPath, args: ["broker-entry.js", "devices", "broker", "serve", "--runtime-managed-by-parent"],
+            host: "127.0.0.1", hostCandidates: ["127.0.0.1"], port: 17373, timeoutMs: 1000, launchTimeoutMs: 3000,
+        };
+        const runtime: NonNullable<ReturnType<BrokerSupervisionPorts["readBrokerRuntime"]>> = {
+            ...f.runtime, command: launch.command, args: launch.args, logPath: "private-launch.log", startedAt: "parent-start",
+        };
+        const diagnostics = { command: launch.command, args: launch.args, logPath: "private-launch.log" };
+        f.ports.currentOperation = () => undefined;
+        f.ports.setupCacheKey = () => "owned-launch";
+        f.ports.normalizeLaunchOptions = () => launch;
+        f.ports.invalidateBrokerSetup = () => undefined;
+        f.ports.probeBrokerHealth = async () => ({ available: false, selected: null, attempts: [{ reason: "before-dispatch" }] });
+        f.ports.readBrokerRuntime = () => null;
+        f.ports.launchOwnedBroker = vi.fn<BrokerSupervisionPorts["launchOwnedBroker"]>(async () => ({ kind: "started", runtime, diagnostics }));
+        f.ports.writeBrokerRuntime = vi.fn(() => true);
+        f.ports.waitForBrokerHealth = vi.fn<BrokerSupervisionPorts["waitForBrokerHealth"]>(async () => ({ available: true, selected: { host: launch.host, port: launch.port }, attempts: [{ reason: "after-dispatch" }] }));
+        f.ports.waitForBrokerOwnerResolve = vi.fn(async () => ({ ok: true, ownerId: "resolved-owner" }));
+        f.ports.probeCccHostBrokerProtocol = vi.fn(async () => ({ ok: true }));
+        f.ports.launchedBrokerProcessVerification = vi.fn(runtime => ({ verification: { ok: true }, runtime: { ...runtime, startedAt: "verified-start" } }));
+        f.ports.withSetupEvidence = vi.fn(value => value);
+        f.ports.cleanupLaunchedBrokerRuntime = vi.fn(async runtime => ({ ok: true, pid: runtime?.pid }));
+        f.ports.brokerLogTail = vi.fn(() => "captured broker output");
+        return { ...f, launch, launchedRuntime: runtime, diagnostics };
+    }
+
+    it("verifies a started launch before publishing readiness and uses the native invocation snapshot unchanged", async () => {
+        const f = launchFixture();
+        expect(await f.supervision.ensure()).toEqual(expect.objectContaining({
+            ok: true, ownerId: "resolved-owner", launched: true, reused: false,
+            runtime: expect.objectContaining({ pid: 41, processStartToken: "birth-41", startedAt: "verified-start" }),
+        }));
+        expect(f.ports.launchOwnedBroker).toHaveBeenCalledExactlyOnceWith("owner", f.launch);
+        expect(f.ports.waitForBrokerHealth).toHaveBeenCalledExactlyOnceWith({ host: "127.0.0.1", port: 17373, timeoutMs: 3000 });
+        expect(f.ports.waitForBrokerOwnerResolve).toHaveBeenCalledExactlyOnceWith("127.0.0.1", 17373, 3000);
+        expect(f.ports.probeCccHostBrokerProtocol).toHaveBeenCalledExactlyOnceWith("127.0.0.1", 17373, 1000);
+        expect(f.ports.launchedBrokerProcessVerification).toHaveBeenCalledOnce();
+        expect(f.ports.writeBrokerRuntime).toHaveBeenCalledTimes(2);
+        expect(f.ports.cleanupLaunchedBrokerRuntime).not.toHaveBeenCalled();
+    });
+
+    it("reports a pre-dispatch native failure without manufacturing a child or retiring unrelated runtime", async () => {
+        const f = launchFixture();
+        f.ports.launchOwnedBroker = vi.fn<BrokerSupervisionPorts["launchOwnedBroker"]>(async () => ({ kind: "failed", runtime: null, detail: "executable-not-found", diagnostics: f.diagnostics }));
+        expect(await f.supervision.ensure()).toEqual(expect.objectContaining({
+            ok: false, error: "broker-launch-failed", detail: "executable-not-found", ...f.diagnostics,
+        }));
+        expect(f.ports.cleanupLaunchedBrokerRuntime).not.toHaveBeenCalled();
+        expect(f.ports.removeBrokerRuntime).not.toHaveBeenCalled();
+        expect(f.ports.writeBrokerRuntime).not.toHaveBeenCalled();
+        expect(f.ports.waitForBrokerHealth).not.toHaveBeenCalled();
+    });
+
+    it.each(["refuses", "throws"] as const)("retains the exact partial dispatch and its primary failure when compensation %s", async cleanup => {
+        const f = launchFixture();
+        const detail = { nativeDiagnostic: "cleanup registration failed" };
+        f.ports.launchOwnedBroker = vi.fn<BrokerSupervisionPorts["launchOwnedBroker"]>(async () => ({ kind: "failed", runtime: f.launchedRuntime, detail, diagnostics: f.diagnostics }));
+        const refusal = { ok: false, pid: 41, reason: "process-start-token-unavailable" };
+        f.ports.cleanupLaunchedBrokerRuntime = vi.fn(async runtime => {
+            expect(runtime).toBe(f.launchedRuntime);
+            if (cleanup === "throws") throw new Error("cleanup observation failed");
+            return refusal;
+        });
+        const result = await f.supervision.ensure();
+        expect(result).toEqual(expect.objectContaining({
+            ok: false, error: "broker-launch-failed", detail, ...f.diagnostics,
+            launchCleanup: cleanup === "refuses" ? refusal : {
+                ok: false, pid: 41, reason: "broker-launch-cleanup-failed", detail: "cleanup observation failed",
+            },
+        }));
+        if (result.ok) throw new Error("partial dispatch unexpectedly succeeded");
+        expect(result.detail).toBe(detail);
+        expect(f.ports.cleanupLaunchedBrokerRuntime).toHaveBeenCalledExactlyOnceWith(f.launchedRuntime, 1500);
+        expect(f.ports.writeBrokerRuntime).not.toHaveBeenCalled();
+        expect(f.ports.waitForBrokerHealth).not.toHaveBeenCalled();
+    });
+
+    it.each(["health", "owner", "protocol", "process"] as const)("preserves %s readiness failure when its sole compensation throws", async phase => {
+        const f = launchFixture();
+        const expected = {
+            health: "broker-launch-health-timeout", owner: "broker-launch-owner-resolve-timeout",
+            protocol: "host-broker-incompatible", process: "broker-runtime-process-unverified",
+        }[phase];
+        if (phase === "health") f.ports.waitForBrokerHealth = async () => ({ available: false, selected: null, attempts: [] });
+        if (phase === "owner") f.ports.waitForBrokerOwnerResolve = async () => ({ ok: false, error: "owner-not-ready", selected: null });
+        if (phase === "protocol") f.ports.probeCccHostBrokerProtocol = async () => ({ ok: false, error: "wrong-protocol" });
+        if (phase === "process") f.ports.launchedBrokerProcessVerification = runtime => ({ verification: { ok: false, reason: "foreign-process" }, runtime });
+        f.ports.cleanupLaunchedBrokerRuntime = vi.fn(async () => { throw new Error("cleanup transport failed"); });
+        const result = await f.supervision.ensure();
+        expect(result).toEqual(expect.objectContaining({
+            ok: false, error: expected, runtime: f.launchedRuntime,
+            launchCleanup: { ok: false, pid: 41, reason: "broker-launch-cleanup-failed", detail: "cleanup transport failed" },
+        }));
+        if (result.ok) throw new Error("failed readiness unexpectedly succeeded");
+        expect(f.ports.cleanupLaunchedBrokerRuntime).toHaveBeenCalledExactlyOnceWith(f.launchedRuntime, phase === "health" ? 1500 : 3000);
+        if (phase === "health" || phase === "owner") expect(result.detail).toBe("captured broker output");
+        if (phase === "protocol") expect(result.compatibility).toEqual({ ok: false, error: "wrong-protocol" });
+        if (phase === "process") expect(result.attempts).toContainEqual({
+            reason: "broker-launch-process-unverified", processVerification: { ok: false, reason: "foreign-process" },
+        });
+    });
+
+    it("retains health timeout and runtime evidence when cleanup refuses an unverified generation", async () => {
+        const f = launchFixture();
+        f.launchedRuntime.processStartToken = null;
+        f.ports.waitForBrokerHealth = async () => ({ available: false, selected: null, attempts: [] });
+        const refusal = { ok: false, pid: 41, reason: "process-start-token-unavailable" };
+        f.ports.cleanupLaunchedBrokerRuntime = vi.fn(async () => refusal);
+        expect(await f.supervision.ensure()).toEqual(expect.objectContaining({
+            ok: false, error: "broker-launch-health-timeout", detail: "captured broker output",
+            runtime: f.launchedRuntime, launchCleanup: refusal,
+        }));
+        expect(f.ports.cleanupLaunchedBrokerRuntime).toHaveBeenCalledExactlyOnceWith(f.launchedRuntime, 1500);
+        expect(f.ports.removeBrokerRuntime).not.toHaveBeenCalled();
+    });
+
+    it("does not equate a nonthrowing spawn without a PID with readiness", async () => {
+        const f = launchFixture();
+        const runtime = { ...f.launchedRuntime, pid: null, processStartToken: null };
+        f.ports.launchOwnedBroker = async () => ({ kind: "started", runtime, diagnostics: f.diagnostics });
+        f.ports.waitForBrokerHealth = vi.fn<BrokerSupervisionPorts["waitForBrokerHealth"]>(async () => ({ available: false, selected: null, attempts: [] }));
+        expect(await f.supervision.ensure()).toEqual(expect.objectContaining({
+            ok: false, error: "broker-launch-health-timeout", runtime,
+        }));
+        expect(f.ports.waitForBrokerHealth).toHaveBeenCalledOnce();
+        expect(f.ports.cleanupLaunchedBrokerRuntime).toHaveBeenCalledExactlyOnceWith(runtime, 1500);
+        expect(f.ports.waitForBrokerOwnerResolve).not.toHaveBeenCalled();
     });
 
     it("refuses stale removal and late publication but removes the exact captured record", async () => {
