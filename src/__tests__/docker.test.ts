@@ -7229,6 +7229,7 @@ describe("docker.ts module exports", () => {
 
     describe("stopProjectContainer", () => {
         const projectPath = "/home/user/my-project";
+        beforeEach(() => { mockCleanupOwnerDevices.mockReturnValue({ ownerId: "fixture-owner", results: [] }); });
         const managedIdentity = (containerId: string, running: boolean, labels: Record<string, string> = {
             "ccc.managed": "true",
             "ccc.project.path": projectPath,
@@ -7412,6 +7413,7 @@ describe("docker.ts module exports", () => {
 
     describe("removeProjectContainer", () => {
         const projectPath = "/home/user/my-project";
+        beforeEach(() => { mockCleanupOwnerDevices.mockReturnValue({ ownerId: "fixture-owner", results: [] }); });
         const managedIdentity = (containerId: string, running: boolean, labels: Record<string, string> = {
             "ccc.managed": "true",
             "ccc.project.path": projectPath,

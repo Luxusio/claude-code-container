@@ -1,28 +1,13 @@
 # Explicit container stop/remove extraction
 
-Explicit container stop/remove authorization, cleanup and dispatch ordering now
-run through an application service with required synchronous ports. Native
-composition retains current runtime selection, exact messages/errors, inherited
-stdio and plain removal by proven ID. Raw claims stay inside the existing
-lifecycle lock; force bypasses only the claim veto and never managed identity
-verification. Public arguments, default options, void results and legacy partial
-failure behavior remain unchanged.
+The original M10f extraction moved explicit stop/remove authorization, cleanup and ordered dispatch into an application service, with native composition retaining exact-ID commands, inherited stdio and plain removal. Raw claims remain inside the existing lifecycle lock; force bypasses only the claim veto, never managed identity verification. Public arguments, default options and void results remain unchanged.
 
-Portable core/type/facade regressions cover the extracted boundary. Distribution
-smoke exercises the actual compiled application in extracted npm packages and
-materialized installs, including ordered stop/remove, claim refusal, forced
-null-identity refusal and cleanup-failure continuation. Composition/public facade
-imports and construction are checked with native subprocess probes fenced.
-Independent review and final QA determine acceptance. The full M00–M14 migration,
-remaining container cutovers and M02c attestation are still outstanding.
+The [2026-10-20 follow-up](2026-10-20-container-destructive-outcomes.md) supersedes the original internal void ports, repeated path observations and discarded cleanup reports. The application now returns specialized semantic outcomes, snapshots one project path and initial target, and distinguishes incomplete cleanup from unconfirmed native commands. Its synchronous lock returns the application result. Native composition captures runtime authority for the operation and projects the result to the existing public facade. Unknown, foreign and failed managed identity proofs refuse the operation; only confirmed absence reports not found.
+
+Current verification lives in the existing core/type/facade, Docker and two direct emitted-consumer owners. Package smoke covers current CLI/public exports/assets/MCP packaging; the earlier description of a packaged destructive-operation assertion catalog is historical and does not describe the current package smoke. A fenced emitted composition invocation now provides the bounded built-code lifecycle witness.
 
 ## Known ceiling
 
-Known ceiling: plain removal and synchronous native command results preserve
-legacy failure semantics without an operation receipt or unknown-outcome
-reconciliation — upgrade during the approved native outcome/CAS work.
+Known ceiling: command acknowledgement does not establish fresh native state, rollback or automatic reconciliation. Unexpected lock, presentation and dispatch errors retain propagation, and cleanup-only incompleteness retains a warning with CLI exit zero.
 
-Known ceiling: portable fixtures and package smoke do not certify native
-Windows/macOS, PowerShell parsing, Docker/Podman, rootless UID/SELinux or remote
-runtime behavior — upgrade when disposable native runtime lanes provide actual
-operation and handoff receipts.
+Known ceiling: portable fixtures and package smoke do not certify native Windows/macOS, Docker/Podman, rootless UID/SELinux or remote runtime behavior. Full architecture and native acceptance remain separate from this extraction.

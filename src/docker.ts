@@ -2245,7 +2245,7 @@ function projectContainerDestructiveLifecycle() {
         resolvePath: resolve,
         projectId: getProjectId,
         containerName: getContainerName,
-        withLifecycleLock: (prefix, operation) => { withContainerLifecycleLock(prefix, operation); },
+        withLifecycleLock: (prefix, operation) => withContainerLifecycleLock(prefix, operation),
         sessionClaims: getSessionLockClaimsForContainer,
         ensureRuntime: () => { ensureDockerRunning(); },
         managedIdentity: (name, path) => {
@@ -2263,7 +2263,12 @@ function projectContainerDestructiveLifecycle() {
             }
             return inspected.identity;
         },
-        cleanupDevices: (fullPath, timeoutMs, profile) => { cleanupOwnerDevices(fullPath, timeoutMs, profile); },
+        cleanupDevices: (fullPath, timeoutMs, profile) => {
+            const report = cleanupOwnerDevices(fullPath, timeoutMs, profile);
+            const cleanup = { kind: "observed" as const, stopped: 0, skipped: 0, failed: 0 };
+            for (const result of report.results) cleanup[result.status] += 1;
+            return cleanup;
+        },
     });
 }
 

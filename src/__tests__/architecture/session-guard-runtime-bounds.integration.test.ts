@@ -77,7 +77,8 @@ const lifecycle = createNativeContainerDestructiveLifecycle({
     return callback();
   }),
   sessionClaims: () => [], ensureRuntime: process.env.FIXTURE_HANG === 'info' ? ensureDockerRunning : () => {},
-  managedIdentity: () => ({containerId:'a'.repeat(64),running:true}), cleanupDevices: () => {},
+  managedIdentity: () => ({containerId:'a'.repeat(64),running:true}),
+  cleanupDevices: () => ({kind:'observed',stopped:0,skipped:0,failed:0}),
 });
 try {
   lifecycle.remove('private');

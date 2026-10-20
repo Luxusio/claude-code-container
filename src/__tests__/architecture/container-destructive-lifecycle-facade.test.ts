@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createNativeContainerDestructiveLifecycle } from "../../composition/container-destructive-lifecycle.js";
 import {
     bindMountSourceIdentityDigest, captureBindMountSourceIdentity,
@@ -71,7 +73,8 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
         projectId: path => { order.push(`project:${path}`); return "project-id"; },
         containerName: (path, profile) => { order.push(`name:${path}:${String(profile)}`); return "fixture-container"; },
         withLifecycleLock: (prefix, callback) => {
-            order.push(`lock:${prefix}`); callback(); order.push("unlock"); return undefined;
+            order.push(`lock:${prefix}`);
+            try { return callback(); } finally { order.push("unlock"); }
         },
         sessionClaims: prefix => { order.push(`claims:${prefix}`); return []; },
         ensureRuntime: () => { order.push("runtime-ready"); },
@@ -80,6 +83,7 @@ function fixture(overrides: Partial<SuppliedPorts> = {}) {
         },
         cleanupDevices: (path, timeout, profile) => {
             order.push(`cleanup:${path}:${timeout}:${String(profile)}`);
+            return { kind: "observed", stopped: 0, skipped: 0, failed: 0 };
         },
         ...overrides,
     };
@@ -91,10 +95,11 @@ beforeEach(() => {
     native.runtime.mockReturnValue("docker");
     native.spawn.mockReturnValue({ status: 0, stdout: "", stderr: "" });
     native.claims.mockReturnValue([]);
-    native.lock.mockImplementation((prefix: string, callback: () => undefined) => {
-        native.order.push(`lock:${prefix}`); callback(); native.order.push("unlock"); return "incidental";
+    native.lock.mockImplementation((prefix: string, callback: () => unknown) => {
+        native.order.push(`lock:${prefix}`);
+        try { return callback(); } finally { native.order.push("unlock"); }
     });
-    native.cleanup.mockImplementation(() => { native.order.push("cleanup"); return { cleaned: true }; });
+    native.cleanup.mockImplementation(() => { native.order.push("cleanup"); return { ownerId: "fixture-owner", results: [] }; });
     vi.spyOn(console, "log").mockImplementation(message => { native.order.push(`log:${message}`); });
     vi.spyOn(console, "error").mockImplementation(message => { native.order.push(`error:${message}`); });
 });
@@ -118,8 +123,8 @@ describe("native destructive lifecycle composition", () => {
         expect(native.order).toEqual([fixtureStopping, "log:Container stopped", fixtureRemoving, "log:Container removed"]);
         expect(f.order).toEqual([
             "resolve:input", "project:/full/project", "lock:project-id", "claims:project-id", "runtime-ready",
-            "resolve:input", "name:/full/project:undefined", "resolve:input", "identity:fixture-container:/full/project",
-            "resolve:input", "cleanup:/full/project:5000:undefined", "unlock",
+            "name:/full/project:undefined", "identity:fixture-container:/full/project",
+            "cleanup:/full/project:5000:undefined", "unlock",
         ]);
     });
 
@@ -151,31 +156,32 @@ describe("native destructive lifecycle composition", () => {
         try { f.lifecycle[operation]("input"); } catch (error) { failure = error; }
         expect(failure).toBeInstanceOf(Error);
         expect((failure as Error).message).toBe('Container for workspace "/full/project" has 2 session ownership claim(s); close its other CCC sessions and retry.');
-        expect(f.order).toEqual(["resolve:input", "project:/full/project", "lock:project-id"]);
+        expect(f.order).toEqual(["resolve:input", "project:/full/project", "lock:project-id", "unlock"]);
         expect(native.order).toEqual([]); expect(native.runtime).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
     });
 
-    it.each(["stop", "remove"] as const)("%s formats Error and non-Error device cleanup warnings then continues", operation => {
+    it.each(["stop", "remove"] as const)("%s bounds thrown cleanup warnings and continues without exposing helper errors", operation => {
         for (const failure of [new Error("device-cleanup"), "device-cleanup", null, undefined]) {
             native.order.length = 0;
             const f = fixture({ cleanupDevices: () => { throw failure; } });
             f.lifecycle[operation]("input");
-            const detail = failure instanceof Error ? failure.message : String(failure);
-            expect(native.order[0]).toBe(`error:[ccc] device cleanup failed before container stop: ${detail}`);
+            expect(native.order[0]).toBe("error:[ccc] device cleanup unavailable before container stop");
             expect(native.order.at(-1)).toBe(operation === "stop" ? "log:Container stopped" : "log:Container removed");
         }
     });
 
-    it.each(["stop", "remove"] as const)("%s preserves a cleanup warning conversion failure before dispatch", operation => {
-        const failure = new Error("string-conversion");
-        const f = fixture({ cleanupDevices: () => { throw { toString: () => { throw failure; } }; } });
-        expect(() => f.lifecycle[operation]("input")).toThrow(failure);
-        expect(native.spawn).not.toHaveBeenCalled(); expect(console.log).not.toHaveBeenCalled();
+    it.each(["stop", "remove"] as const)("%s never stringifies a thrown cleanup object", operation => {
+        const stringify = vi.fn(() => { throw new Error("must not stringify"); });
+        const f = fixture({ cleanupDevices: () => { throw { toString: stringify }; } });
+        expect(f.lifecycle[operation]("input")).toBeUndefined();
+        expect(stringify).not.toHaveBeenCalled();
+        expect(console.error).toHaveBeenCalledExactlyOnceWith("[ccc] device cleanup unavailable before container stop");
     });
 
-    const failedResults = [{ status: 1 }, { status: null }, { status: 0, error: new Error("native-error") }];
+    const failedResults = [undefined, null, 0, {}, [], { status: "0" }, { status: 1 }, { status: null },
+        { status: 0, error: new Error("native-error") }, { status: 0, error: false }, { status: 0, signal: "SIGTERM" }];
     for (const operation of ["stop", "rm"] as const) {
-        it.each(failedResults)(`retains ${operation} result failure and suppresses later dispatch/success: %j`, result => {
+        it.each(failedResults.map(result => ({ result })))(`retains ${operation} result failure and suppresses later dispatch/success: %j`, ({ result }) => {
             native.spawn.mockImplementation((_cli, args) => args[0] === operation ? result : { status: 0 });
             const f = fixture();
             expect(() => f.lifecycle.remove("input")).toThrow(operation === "stop" ? "Failed to stop container." : "Failed to remove container.");
@@ -220,7 +226,8 @@ describe("public Docker destructive facade through actual application and compos
     function provider(running = true, managed = true) {
         native.spawn.mockImplementation((_cli, args) => {
             native.order.push(`native:${args[0]}`);
-            return { status: 0, stdout: args[0] === "inspect" ? identity(running, managed) : "", stderr: "" };
+            if (args[0] === "inspect") expect(args).toEqual(["inspect", "-f", "{{json .}}", id]);
+            return { status: 0, stdout: args[0] === "ps" ? id : args[0] === "inspect" ? identity(running, managed) : "", stderr: "" };
         });
         native.claims.mockImplementation(prefix => { native.order.push(`claims:${prefix}`); return []; });
     }
@@ -232,7 +239,7 @@ describe("public Docker destructive facade through actual application and compos
         const prefix = getProjectId(root);
         const selectedName = getContainerName(resolve(root));
         expect(native.order).toEqual([
-            `lock:${prefix}`, `claims:${prefix}`, "native:info", "native:inspect", "cleanup",
+            `lock:${prefix}`, `claims:${prefix}`, "native:info", "native:ps", "native:inspect", "cleanup",
             `log:Stopping container ${JSON.stringify(selectedName)} for workspace ${JSON.stringify(resolve(root))}...`, "native:stop", "log:Container stopped",
             ...(operation === "remove" ? [`log:Removing container ${JSON.stringify(selectedName)} for workspace ${JSON.stringify(resolve(root))}...`, "native:rm", "log:Container removed"] : []), "unlock",
         ]);
@@ -256,17 +263,118 @@ describe("public Docker destructive facade through actual application and compos
     it.each(["stop", "remove"] as const)("%s refuses foreign managed proof even under force", operation => {
         provider(true, false);
         const execute = operation === "stop" ? stopProjectContainer : removeProjectContainer;
-        expect(execute(root, undefined, { force: true })).toBeUndefined();
+        expect(() => execute(root, undefined, { force: true })).toThrow("ownership could not be verified");
         expect(native.cleanup).not.toHaveBeenCalled();
-        expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(["info", "inspect"]);
-        expect(console.log).toHaveBeenCalledExactlyOnceWith("Container not found");
+        expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(["info", "ps", "inspect"]);
+        expect(console.log).not.toHaveBeenCalledWith("Container not found");
     });
 
-    it("discards cleanup report, preserves warning and stopped remove behavior", () => {
+    it.each(["stop", "remove"] as const)("regression: %s warns for returned failed cleanup rows and still dispatches the authorized action", operation => {
+        provider();
+        let outcome: unknown;
+        native.lock.mockImplementation((_prefix: string, callback: () => unknown) => {
+            const result = callback(); outcome = result; return result;
+        });
+        native.cleanup.mockReturnValue({ ownerId: "fixture-owner", results: [
+            { id: "one", backend: "fixture", previousStatus: "running", status: "stopped", commands: [] },
+            { id: "two", backend: "fixture", previousStatus: "attached", status: "skipped", commands: [] },
+            { id: "three", backend: "fixture", previousStatus: "running", status: "failed", reason: "/private/helper-secret",
+                commands: [{ command: "secret command", status: 1, stdout: "private stdout", stderr: "private stderr" }] },
+        ] });
+        const execute = operation === "stop" ? stopProjectContainer : removeProjectContainer;
+        expect(execute(root)).toBeUndefined();
+        // The public facade and raw report inputs predate the new outcome ABI.
+        expect(console.error).toHaveBeenCalledExactlyOnceWith("[ccc] device cleanup incomplete before container stop: 1 failed");
+        const effects = native.spawn.mock.calls.map(call => call[1]).filter(args => ["stop", "rm"].includes(args[0]));
+        expect(effects).toEqual(operation === "stop" ? [["stop", id]] : [["stop", id], ["rm", id]]);
+        expect(native.order.indexOf("error:[ccc] device cleanup incomplete before container stop: 1 failed"))
+            .toBeLessThan(native.order.indexOf("native:stop"));
+        expect(native.order.join("\n")).not.toMatch(/helper-secret|secret command|private stdout|private stderr/);
+        expect(outcome).toEqual({ kind: "failed", reason: "device-cleanup-incomplete", evidence: {
+            target: { containerId: id, running: true }, cleanup: { kind: "observed", stopped: 1, skipped: 1, failed: 1 },
+            stop: "completed", removal: operation === "remove" ? "completed" : "not-run",
+        } });
+    });
+
+    it("preserves bounded unavailable cleanup warning and already stopped remove behavior", () => {
         provider(false); native.cleanup.mockImplementation(() => { throw new Error("cleanup-failed"); });
         expect(removeProjectContainer(root)).toBeUndefined();
-        expect(console.error).toHaveBeenCalledExactlyOnceWith("[ccc] device cleanup failed before container stop: cleanup-failed");
+        expect(console.error).toHaveBeenCalledExactlyOnceWith("[ccc] device cleanup unavailable before container stop");
         expect(console.log).not.toHaveBeenCalledWith("Container stopped");
         expect(native.spawn.mock.calls.filter(call => ["stop", "rm"].includes(call[1][0]))).toEqual([["docker", ["rm", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" }]]);
+    });
+});
+
+describe("emitted native destructive composition", () => {
+    it("accepts incomplete cleanup with a bounded warning and refuses uncertain native commands", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-destructive-emitted-"));
+        const repository = fileURLToPath(new URL("../../../", import.meta.url));
+        try {
+            const program = `
+import assert from 'node:assert/strict';
+import cp from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+const calls = [], messages = [], outcomes = [];
+const id = 'a'.repeat(64), executable = '/fixture/destructive-runtime';
+let refusal = null;
+// Fence every process leaf before the emitted graph imports child_process.
+for (const leaf of ['spawn','spawnSync','exec','execSync','execFile','execFileSync']) {
+  cp[leaf] = () => { throw new Error('unexpected process leaf: ' + leaf); };
+}
+cp.spawnSync = (command, argv, options) => {
+  assert.equal(command, executable);
+  const prefix = ['--config','/fixture/config','--host','unix:///fixture/engine.sock','--tls=false','--tlscacert=','--tlscert=','--tlskey='];
+  assert.deepEqual(argv.slice(0,prefix.length), prefix);
+  const args = argv.slice(prefix.length);
+  assert.ok(args[0] === 'stop' || args[0] === 'rm');
+  assert.deepEqual(args, [args[0],id]);
+  assert.equal(options.shell,false); assert.equal(options.stdio,'inherit');
+  assert.equal(options.timeout,30000); assert.equal(options.killSignal,'SIGKILL');
+  calls.push(args);
+  return args[0] === refusal ? {status:0,signal:'SIGTERM'} : {status:0,signal:null,error:undefined};
+};
+syncBuiltinESMExports();
+console.log = message => messages.push(['log',message]);
+console.error = message => messages.push(['error',message]);
+const { _setRuntimeInvocationForTest } = await import(${JSON.stringify(resolve(repository, "dist/container-runtime.js"))});
+const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import(${JSON.stringify(resolve(repository, "dist/ports/container-runtime-invocation.js"))});
+_setRuntimeInvocationForTest({version:1,runtime:'docker',executable,
+  transport:{kind:'docker',host:'unix:///fixture/engine.sock',configDirectory:'/fixture/config',
+    tls:{enabled:false,verify:false,caFile:null,certFile:null,keyFile:null}},
+  selectors:Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key,null]))});
+const {createNativeContainerDestructiveLifecycle} = await import(${JSON.stringify(resolve(repository, "dist/composition/container-destructive-lifecycle.js"))});
+const cleanup = {kind:'observed',stopped:1,skipped:2,failed:1};
+const lifecycle = createNativeContainerDestructiveLifecycle({
+  resolvePath: () => '/fixture/project', projectId: () => 'fixture-project', containerName: () => 'fixture-container',
+  withLifecycleLock: (_prefix, callback) => {const result = callback(); outcomes.push(result); return result;},
+  sessionClaims: () => [], ensureRuntime: () => undefined,
+  managedIdentity: () => ({containerId:id,running:true}), cleanupDevices: () => cleanup,
+});
+assert.equal(lifecycle.remove('input'),undefined);
+assert.deepEqual(calls,[['stop',id],['rm',id]]);
+assert.deepEqual(outcomes.pop(),{kind:'failed',reason:'device-cleanup-incomplete',evidence:{
+  target:{containerId:id,running:true},cleanup,stop:'completed',removal:'completed'}});
+assert.deepEqual(messages.filter(row => row[0] === 'error'),[['error','[ccc] device cleanup incomplete before container stop: 1 failed']]);
+assert.equal(messages.at(-1)[1],'Container removed');
+for (const command of ['stop','rm']) {
+  calls.length = 0; messages.length = 0; refusal = command;
+  assert.throws(() => lifecycle.remove('input'), error => {
+    assert.equal(error.message,command === 'stop' ? 'Failed to stop container.' : 'Failed to remove container.');
+    assert.equal(error.cause,undefined); return true;
+  });
+  assert.deepEqual(calls,command === 'stop' ? [['stop',id]] : [['stop',id],['rm',id]]);
+  assert.deepEqual(outcomes.pop(),{kind:'indeterminate',reason:command === 'stop' ? 'container-stop-unconfirmed' : 'container-remove-unconfirmed',evidence:{
+    target:{containerId:id,running:true},cleanup,stop:command === 'stop' ? 'unconfirmed' : 'completed',removal:command === 'stop' ? 'not-run' : 'unconfirmed'}});
+  assert.ok(!messages.some(row => row[1] === 'Container removed'));
+  assert.equal(messages.some(row => row[1] === 'Container stopped'),command === 'rm');
+}
+process.stdout.write('emitted destructive outcomes verified');
+`;
+            expect(execFileSync(process.execPath, ["--input-type=module", "--eval", program], {
+                cwd: root, encoding: "utf8", timeout: 10_000,
+                env: { ...process.env, HOME: root, USERPROFILE: root, TMPDIR: root, TMP: root, TEMP: root,
+                    CCC_HOME: undefined, CCC_PROFILE: undefined },
+            })).toBe("emitted destructive outcomes verified");
+        } finally { rmSync(root, { recursive: true, force: true }); }
     });
 });

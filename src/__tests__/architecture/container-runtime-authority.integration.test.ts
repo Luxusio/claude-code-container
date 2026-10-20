@@ -254,7 +254,8 @@ state = readA(); state.exists = true; state.running = true; writeA(state);
 const destructive = createNativeContainerDestructiveLifecycle({
   resolvePath: value => value, projectId: () => 'fixture-project', containerName: () => 'same-name',
   withLifecycleLock: (_key, operation) => operation(), sessionClaims: () => [], ensureRuntime: noop,
-  managedIdentity: () => {late('destructive-stop-and-remove'); return {containerId: id, running: true};}, cleanupDevices: noop,
+  managedIdentity: () => {late('destructive-stop-and-remove'); return {containerId: id, running: true};},
+  cleanupDevices: () => ({kind:'observed',stopped:0,skipped:0,failed:0}),
 });
 withCaptured(() => destructive.remove(project));
 const rejected = withCaptured(() => createNativeContainerCreateLifecycle({

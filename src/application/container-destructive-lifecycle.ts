@@ -1,6 +1,9 @@
 import { sessionClaimPrefix } from "../domain/session-claims.js";
 import type {
+    ContainerDeviceCleanupObservation,
+    ContainerDestructiveLifecycleEvidence,
     ContainerDestructiveLifecycleOptions,
+    ContainerDestructiveLifecycleOutcome,
     ContainerDestructiveLifecyclePorts,
 } from "../ports/container-destructive-lifecycle.js";
 
@@ -20,49 +23,68 @@ export function createContainerDestructiveLifecycle(ports: ContainerDestructiveL
         projectPath: string,
         profile: string | undefined,
         options: ContainerDestructiveLifecycleOptions,
-        operation: () => undefined,
-    ): void {
-        const guardPath = ports.resolvePath(projectPath);
-        const projectId = ports.projectId(guardPath);
+        operation: (fullPath: string) => ContainerDestructiveLifecycleOutcome,
+    ): ContainerDestructiveLifecycleOutcome {
+        const fullPath = ports.resolvePath(projectPath);
+        const projectId = ports.projectId(fullPath);
         const prefix = sessionClaimPrefix(projectId, profile);
-        ports.withLifecycleLock(prefix, () => {
+        return ports.withLifecycleLock(prefix, () => {
             const claims = ports.sessionClaims(prefix);
             if (claims.length > 0 && options.force !== true) {
-                ports.throwSessionClaims(claims.length, guardPath);
+                ports.throwSessionClaims(claims.length, fullPath);
             }
-            return operation();
+            return operation(fullPath);
         });
     }
 
-    function cleanupDevices(fullPath: string, profile: string | undefined): void {
+    function cleanupDevices(fullPath: string, profile: string | undefined): ContainerDeviceCleanupObservation {
+        let cleanup: ContainerDeviceCleanupObservation;
         try {
-            ports.cleanupDevices(fullPath, 5000, profile);
-        } catch (error) {
-            ports.reportDeviceCleanupFailure(error);
+            cleanup = ports.cleanupDevices(fullPath, 5000, profile);
+        } catch {
+            cleanup = { kind: "unavailable" };
         }
+        if (cleanup.kind === "unavailable" || cleanup.failed > 0) {
+            ports.reportDeviceCleanupFailure(cleanup);
+        }
+        return cleanup;
+    }
+
+    function completed(evidence: ContainerDestructiveLifecycleEvidence): ContainerDestructiveLifecycleOutcome {
+        const cleanup = evidence.cleanup;
+        if (cleanup.kind === "unavailable" || (cleanup.kind === "observed" && cleanup.failed > 0)) {
+            return { kind: "failed", reason: "device-cleanup-incomplete", evidence };
+        }
+        return { kind: "completed", value: evidence };
     }
 
     function stop(
         projectPath: string,
         profile?: string,
         options: ContainerDestructiveLifecycleOptions = {},
-    ): void {
-        withGuard(projectPath, profile, options, () => {
+    ): ContainerDestructiveLifecycleOutcome {
+        return withGuard(projectPath, profile, options, (fullPath) => {
             ports.ensureRuntime();
-            const fullPath = ports.resolvePath(projectPath);
             const containerName = ports.containerName(fullPath, profile);
             const identity = ports.managedIdentity(containerName, fullPath);
             if (!identity) {
                 ports.reportNotFound();
-                return;
+                return { kind: "completed", value: { target: null, cleanup: { kind: "not-run" }, stop: "not-run", removal: "not-run" } };
             }
 
-            cleanupDevices(fullPath, profile);
-            if (identity.running) {
+            const target = { containerId: identity.containerId, running: identity.running };
+            const evidence: ContainerDestructiveLifecycleEvidence = {
+                target, cleanup: cleanupDevices(fullPath, profile), stop: "not-run", removal: "not-run",
+            };
+            if (target.running) {
                 ports.reportStopping(containerName, fullPath);
-                ports.stop(identity.containerId);
+                evidence.stop = ports.stop(target.containerId).kind;
+                if (evidence.stop === "unconfirmed") {
+                    return { kind: "indeterminate", reason: "container-stop-unconfirmed", evidence };
+                }
             }
             ports.reportStopped();
+            return completed(evidence);
         });
     }
 
@@ -70,26 +92,35 @@ export function createContainerDestructiveLifecycle(ports: ContainerDestructiveL
         projectPath: string,
         profile?: string,
         options: ContainerDestructiveLifecycleOptions = {},
-    ): void {
-        withGuard(projectPath, profile, options, () => {
+    ): ContainerDestructiveLifecycleOutcome {
+        return withGuard(projectPath, profile, options, (fullPath) => {
             ports.ensureRuntime();
-            const containerName = ports.containerName(ports.resolvePath(projectPath), profile);
-            const fullPath = ports.resolvePath(projectPath);
+            const containerName = ports.containerName(fullPath, profile);
             const identity = ports.managedIdentity(containerName, fullPath);
             if (!identity) {
                 ports.reportNotFound();
-                return;
+                return { kind: "completed", value: { target: null, cleanup: { kind: "not-run" }, stop: "not-run", removal: "not-run" } };
             }
 
-            cleanupDevices(ports.resolvePath(projectPath), profile);
-            if (identity.running) {
+            const target = { containerId: identity.containerId, running: identity.running };
+            const evidence: ContainerDestructiveLifecycleEvidence = {
+                target, cleanup: cleanupDevices(fullPath, profile), stop: "not-run", removal: "not-run",
+            };
+            if (target.running) {
                 ports.reportStopping(containerName, fullPath);
-                ports.stop(identity.containerId);
+                evidence.stop = ports.stop(target.containerId).kind;
+                if (evidence.stop === "unconfirmed") {
+                    return { kind: "indeterminate", reason: "container-stop-unconfirmed", evidence };
+                }
                 ports.reportStopped();
             }
             ports.reportRemoving(containerName, fullPath);
-            ports.remove(identity.containerId);
+            evidence.removal = ports.remove(target.containerId).kind;
+            if (evidence.removal === "unconfirmed") {
+                return { kind: "indeterminate", reason: "container-remove-unconfirmed", evidence };
+            }
             ports.reportRemoved();
+            return completed(evidence);
         });
     }
 

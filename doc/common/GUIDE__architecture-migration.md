@@ -708,78 +708,72 @@ blocked M02c attestation is not resolved by this packet.
 ## Explicit container stop/remove (M10f)
 
 `src/application/container-destructive-lifecycle.ts` owns explicit stop/remove
-authorization and ordered cleanup/dispatch policy through the required
-synchronous `ContainerDestructiveLifecyclePorts` in
-`src/ports/container-destructive-lifecycle.ts`. Its factory validates callable
-ports without invoking them. Effects return `undefined`, rejection returns
-`never`, and the lifecycle lock accepts a synchronous `() => undefined`
-callback. Public `stopProjectContainer` and `removeProjectContainer` retain
-their arguments, default options and void return.
+through required synchronous ports in `src/ports/container-destructive-lifecycle.ts`.
+Construction checks callable ports without invoking them. The application returns
+a specialized closed outcome and its lifecycle lock returns that callback result
+synchronously. Native composition consumes it while public `stopProjectContainer`
+and `removeProjectContainer` retain arguments, default options and void returns.
 
-The application resolves the project identity and profile claim prefix before
-entering the existing lifecycle critical section. Inside that section it reads
-raw session claims before checking `options.force`. Empty claims do not read
-the force property; nonempty claims require exactly `true`. The options object
-remains referenced through the callback, preserving deferred/repeated callback
-and getter timing. The existing native claim reader and lock implementation
-remain authoritative; the CLI's worktree family lock stays outside this lock
-where the existing caller acquires it.
+One absolute lexical project path is captured before the existing lifecycle lock
+and reused for claim prefix, name, identity proof, cleanup and presentation. Raw
+claims remain inside the lock; nonempty claims require exactly `force:true`.
+Force overrides only the claim veto. Unknown, foreign and failed managed identity
+proofs retain their refusal behavior; only confirmed absence reports not found
+and runs neither cleanup nor destruction. After successful proof, the application
+copies the container ID and initial running flag before any cleanup/report
+callback. Commands use those captured scalars. The native claim reader and lock
+remain authoritative, including any existing outer CLI family lock.
 
-Force overrides only the claim veto. After runtime readiness, a successful
-managed identity proof is still required. The Docker facade supplies its
-unchanged labels/project-path/mount-identity verifier; unknown, foreign or
-unavailable identity reports not found without device cleanup or native
-destruction. Successful dispatch uses the proven container ID. Stop resolves
-one path after runtime readiness and reuses it for name, identity and cleanup;
-remove retains separate path observations for name, identity and cleanup.
+Device cleanup retains its 5000ms budget and best-effort continuation. Its raw
+report is projected to stopped/skipped/failed counts. A thrown cleanup becomes
+unavailable without invented partial counts. Failed or unavailable cleanup emits
+a bounded warning and still permits the authorized container action; warning
+rendering exceptions continue to escape before dispatch. The result records
+initial target facts, normalized cleanup and separate stop/removal facts. Already
+stopped containers are still cleaned without inventing a stop command. Only clean
+native exit zero without error or signal acknowledges a command; other returned
+receipts are unconfirmed. Unconfirmed stop prevents removal and stopped/removed
+messages; unconfirmed removal retains acknowledged stop and cleanup facts.
+Native uncertainty takes precedence over cleanup-only failure.
 
-Device cleanup keeps its 5000ms budget and best-effort Error/non-Error warning.
-If warning rendering fails, that failure escapes before native dispatch.
-Already stopped containers are still cleaned: stop reports stopped, while
-remove reports removing/removed without a stopped message. Running removal
-reports stopping, dispatches stop, reports stopped, then dispatches removal.
-Failed stop suppresses removal; failed removal preserves the partial stopped
-outcome and suppresses the removed message.
+`src/composition/container-destructive-lifecycle.ts` binds execution and
+presentation without importing the Docker facade. Runtime authority is captured
+for the operation, with inherited stdio, existing native errors, 30s timeout and
+plain `rm` by proven ID. The Docker binding projects the existing cleanup report
+without exposing command/output/helper error data in application results. An
+accepted container action plus incomplete cleanup retains CLI exit zero and its
+warning; native uncertainty retains the bounded error/nonzero exit. Unexpected
+identity, readiness, lock, presentation and dispatch exceptions still propagate.
+M10g below extracts fresh creation while retaining existing identity proofs.
 
-`src/composition/container-destructive-lifecycle.ts` binds native execution and
-presentation without importing the Docker facade. It selects the current
-runtime separately at each dispatch, uses inherited stdio, retains exact
-native errors and uses plain `rm` without force. `src/docker.ts` supplies lazy
-native observation/cleanup bindings and delegates public operations to the
-application. Its obsolete duplicate cleanup/guard/unlocked policy is removed.
-M10f retained container preparation, creation and managed identity proof; M10g
-below subsequently extracts creation orchestration while retaining those proofs.
-
-Verification anchors are architecture `container-destructive-lifecycle.test.ts`,
-`container-destructive-lifecycle-type-contracts.ts` and
-`container-destructive-lifecycle-facade.test.ts`, plus the existing eight stop
-and seven remove Docker tests and the prescribed Docker/session/remote/index
-regressions. Package smoke runs the actual built application from both extracted
-npm packages and materialized installs. It asserts ordered stop/remove, raw
-claim refusal, forced null-identity refusal, cleanup-failure continuation and
-exact effect IDs. It checks emitted synchronous declarations and imports the
-native composition/public facade and constructs composition with subprocess
-methods fenced to reject native probes. Existing CLI help/version and prior
-package smokes remain; no live container is stopped or removed by these checks.
+Verification anchors are the architecture core, type and facade owners, existing
+Docker tests, and direct emitted runtime-authority/session-guard consumers. Their
+inventory fixtures exercise actual selected-ID inspection, including foreign
+refusal. Old-source controls identify swallowed cleanup reports and mutable
+target selection through public entry points. A fenced fresh-process invocation
+of emitted native composition exercises incomplete cleanup and unconfirmed
+commands without operating an engine. Current package smoke checks CLI/public
+exports/assets/MCP packaging, not the historical destructive-operation catalog.
+See [the requirements](../container/REQ__explicit-lifecycle-outcomes.md) and
+[the follow-up](../changes/2026-10-20-container-destructive-outcomes.md).
 
 ### Known ceiling
 
-Known ceiling: plain removal and synchronous native command results preserve
-legacy failure semantics without an operation receipt or unknown-outcome
-reconciliation — upgrade during the approved native outcome/CAS work.
+Known ceiling: command acknowledgement is not a fresh native state inspection.
+No automatic replay, compensation, persistent receipt or universal post-effect
+recovery ledger is introduced; cleanup-only incompleteness retains exit zero.
 
 Known ceiling: portable fixtures and package smoke do not certify native
 Windows/macOS, PowerShell parsing, Docker/Podman, rootless UID/SELinux or remote
-runtime behavior — upgrade when disposable native runtime lanes provide actual
-operation and handoff receipts.
+runtime behavior. Disposable native runtime lanes must provide actual operation
+and handoff evidence separately.
 
 ### Remaining migration
 
-M10f migrates explicit stop/remove authorization and ordered orchestration;
-M10g below adds fresh creation policy. Preparation, setup/credentials, reliable
-native outcomes and remaining M10 operations still require their own cutovers. Full M00–M14
-acceptance and native lanes remain required; the independently blocked M02c
-attestation remains unresolved.
+M10f covers explicit stop/remove orchestration and these specialized outcomes;
+M10g below adds fresh creation policy. This bounded follow-up does not establish
+whole M00–M14 acceptance, native lifecycle reliability or the independently
+blocked M02c attestation.
 
 ## Fresh container creation (M10g candidate)
 
