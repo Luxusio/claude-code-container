@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
 import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), exists: vi.fn(() => false), access: vi.fn(), stat: vi.fn() }));
@@ -78,9 +79,9 @@ describe("native Docker endpoint composition", () => {
             pidsLimit: "-1", imageName: "ccc-fixture", hostSshDir: null, sshAgentSocket: null,
         });
         expect(args).toContain("/daemon/docker.sock:/var/run/docker.sock");
-        expect(args).not.toContain("/srv/daemon/docker.sock:/var/run/docker.sock");
-        expect(args).toContain("/srv/daemon/project:/project/fixture");
-        expect(runtime.bindMountArgs("/daemon/project", "/target")).toEqual(["-v", "/srv/daemon/project:/target"]);
+        expect(args).not.toContain(`${join("/srv/daemon", "docker.sock")}:/var/run/docker.sock`);
+        expect(args).toContain(`${join("/srv/daemon", "project")}:/project/fixture`);
+        expect(runtime.bindMountArgs("/daemon/project", "/target")).toEqual(["-v", `${join("/srv/daemon", "project")}:/target`]);
         expect(runtime.bindMountArgs("/daemon/docker.sock", "/target", { sourceNamespace: "daemon" })).toEqual(["-v", "/daemon/docker.sock:/target"]);
         expect(native.spawn.mock.calls.map(call => normalizeNativeRuntimeCall(call))).toEqual([
             ["docker", ["inspect", "ccc-parent", "--format", "{{json .Mounts}}"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, killSignal: "SIGKILL" }],

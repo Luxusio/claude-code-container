@@ -30,8 +30,8 @@ copying, freezing or snapshots. Thrown values and partial observation order
 propagate unchanged.
 
 Daemon socket sources bypass caller-container translation. Ordinary absolute
-caller paths translate only in nested Docker outside Vitest, using the first
-longest destination match with its path boundary. Windows Desktop source
+caller paths translate only in nested Docker, regardless of test-runner markers,
+using the first longest destination match with its path boundary. Windows Desktop source
 normalization precedes native path joining. Readonly suffix precedes SELinux Z;
 named volumes do not relabel. Relabel off/force short circuits remain distinct
 from auto Podman observation. Runtime extra arguments observe facts before the

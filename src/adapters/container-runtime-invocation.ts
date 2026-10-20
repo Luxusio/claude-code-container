@@ -6,7 +6,7 @@ import {
 } from "child_process";
 import { accessSync, chmodSync, constants, mkdtempSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { delimiter, isAbsolute, join, resolve, win32 } from "path";
+import { isAbsolute, join, posix, resolve, win32 } from "path";
 import type { RuntimeName } from "../domain/container-runtime.js";
 import {
     NATIVE_RUNTIME_SELECTOR_KEYS,
@@ -273,12 +273,12 @@ function executableOnPath(runtime: RuntimeName, env: NodeJS.ProcessEnv, cwd: str
             }
             start = end + 1;
         }
-    } else directories = path.split(delimiter);
+    } else directories = path.split(posix.delimiter);
     // Native Windows dispatch ignores PATHEXT and tries only .com, then .exe.
     const extensions = platform === "win32" ? [".com", ".exe"] : [""];
     for (const directory of directories) {
         for (const extension of extensions) {
-            const candidate = platform === "win32" ? win32.resolve(cwd, directory, `${runtime}${extension}`) : resolve(cwd, directory, `${runtime}${extension}`);
+            const candidate = platform === "win32" ? win32.resolve(cwd, directory, `${runtime}${extension}`) : posix.resolve(cwd, directory, `${runtime}${extension}`);
             try {
                 accessSync(candidate, platform === "win32" ? constants.F_OK : constants.X_OK);
                 if (statSync(candidate).isFile()) return candidate;
@@ -301,7 +301,7 @@ function metadataObject(value: unknown): Record<string, unknown> {
 }
 
 function atCapturePath(value: string, cwd: string, platform: NodeJS.Platform): string {
-    return platform === "win32" ? win32.resolve(cwd, value) : resolve(cwd, value);
+    return platform === "win32" ? win32.resolve(cwd, value) : posix.resolve(cwd, value);
 }
 
 function storageOptions(value: unknown): readonly string[] {
@@ -331,6 +331,7 @@ export function captureNativeRuntimeInvocation(runtime: RuntimeName, options: Na
         if (runtime !== "docker" && runtime !== "podman") return captureFailed();
         const env = { ...(options.env ?? process.env) };
         const platform = options.platform ?? process.platform;
+        const joinPath = platform === "win32" ? win32.join : posix.join;
         const cwd = atCapturePath(string(options.cwd ?? process.cwd()), process.cwd(), platform);
         const selectors = capturedSelectors(env, platform);
         const executable = executableOnPath(runtime, env, cwd, platform);
@@ -339,7 +340,7 @@ export function captureNativeRuntimeInvocation(runtime: RuntimeName, options: Na
         let transport: NativeRuntimeTransport;
         if (runtime === "docker") {
             const home = platform === "win32" ? read("USERPROFILE") ?? "" : read("HOME") || homedir();
-            const configDirectory = path(read("DOCKER_CONFIG") || join(home, ".docker"));
+            const configDirectory = path(read("DOCKER_CONFIG") || joinPath(home, ".docker"));
             const context = read("DOCKER_CONTEXT");
             const inspection = metadataObject(metadata(executable,
                 ["--config", configDirectory, "context", "inspect", "--format", "{{json .}}", ...(context ? ["--", context] : [])], env, cwd));
@@ -350,7 +351,7 @@ export function captureNativeRuntimeInvocation(runtime: RuntimeName, options: Na
                 const enabled = verify || !!read("DOCKER_TLS");
                 const certDirectory = path(read("DOCKER_CERT_PATH") || configDirectory);
                 const cert = (name: string): string | null => {
-                    const file = path(join(certDirectory, name));
+                    const file = path(joinPath(certDirectory, name));
                     if (!enabled) return null;
                     // The CLI retains its CA default and clears only missing client cert/key defaults.
                     if (name !== "ca.pem") {
@@ -369,7 +370,7 @@ export function captureNativeRuntimeInvocation(runtime: RuntimeName, options: Na
                 if (typeof docker.SkipTLSVerify !== "boolean") return captureFailed();
                 const enabled = materials.length > 0 || docker.SkipTLSVerify;
                 const tlsPath = materials.length > 0 ? absolute(metadataObject(inspection.Storage).TLSPath) : "";
-                const file = (name: string): string | null => materials.includes(name) ? path(join(tlsPath, "docker", name)) : null;
+                const file = (name: string): string | null => materials.includes(name) ? path(joinPath(tlsPath, "docker", name)) : null;
                 const hasClientPair = materials.includes("cert.pem") && materials.includes("key.pem");
                 transport = { kind: "docker", host: endpoint(docker.Host), configDirectory, tls: {
                     enabled, verify: enabled && !docker.SkipTLSVerify, caFile: file("ca.pem"),

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
 import { runWithNativeRuntimeInvocation } from "../adapters/container-runtime-invocation.js";
@@ -268,7 +269,7 @@ describe("container-runtime", () => {
 
             expect(bindMountArgs("/home/ccc/.codex/config.toml", "/tmp/config.toml")).toEqual([
                 "-v",
-                "/run/desktop/mnt/host/c/Users/me/.ccc/codex/config.toml:/tmp/config.toml",
+                `${join("/run/desktop/mnt/host/c/Users/me/.ccc/codex", "config.toml")}:/tmp/config.toml`,
             ]);
         });
 
@@ -284,7 +285,7 @@ describe("container-runtime", () => {
 
             expect(bindMountArgs("/home/ccc/.codex/auth.json", "/auth.json")).toEqual([
                 "-v",
-                "/outer/codex/auth.json:/auth.json",
+                `${join("/outer/codex", "auth.json")}:/auth.json`,
             ]);
         });
 
@@ -297,7 +298,7 @@ describe("container-runtime", () => {
                 { Source: "/first", Destination: "/project" },
                 { Source: "/second", Destination: "/project" },
             ])));
-            expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", "/first/file:/target"]);
+            expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", `${join("/first", "file")}:/target`]);
             expect(bindMountArgs("/project-other/file", "/target")).toEqual(["-v", "/project-other/file:/target"]);
         });
 
@@ -323,7 +324,7 @@ describe("container-runtime", () => {
 
             expect(bindMountArgs("/home/ccc/.codex/config.toml", "/tmp/config.toml")).toEqual([
                 "-v",
-                "/run/desktop/mnt/host/c/Users/TestUser/.ccc/codex/config.toml:/tmp/config.toml",
+                `${join("/run/desktop/mnt/host/c/Users/TestUser/.ccc/codex", "config.toml")}:/tmp/config.toml`,
             ]);
             expect(spawnSyncMock).toHaveBeenCalledWith("/fixture/bin/docker",
                 ["--config", "/fixture/docker-config", "--host", "unix:///fixture/docker.sock", "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey=", "inspect", "ccc-parent", "--format", "{{json .Mounts}}"],
@@ -345,13 +346,13 @@ describe("container-runtime", () => {
             let releaseA!: () => void;
             const bObserved = new Promise<void>(resolve => { releaseA = resolve; });
             const first = runWithNativeRuntimeInvocation(nestedDockerInvocation("unix:///fixture/engine-a.sock"), async () => {
-                expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", "/outer/a/file:/target"]);
+                expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", `${join("/outer/a", "file")}:/target`]);
                 await bObserved;
-                expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", "/outer/a/file:/target"]);
+                expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", `${join("/outer/a", "file")}:/target`]);
             });
             const second = runWithNativeRuntimeInvocation(nestedDockerInvocation("unix:///fixture/engine-b.sock"), async () => {
                 await Promise.resolve();
-                expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", "/outer/b/file:/target"]);
+                expect(bindMountArgs("/project/file", "/target")).toEqual(["-v", `${join("/outer/b", "file")}:/target`]);
                 releaseA();
             });
             await Promise.all([first, second]);
@@ -392,7 +393,7 @@ describe("container-runtime", () => {
 
             expect(bindMountArgs("/home/ccc/.codex/config.toml", "/config.toml")).toEqual([
                 "-v",
-                "/outer/codex/config.toml:/config.toml",
+                `${join("/outer/codex", "config.toml")}:/config.toml`,
             ]);
             expect(spawnSyncMock).toHaveBeenCalledWith("/fixture/bin/docker", expect.arrayContaining(["inspect", "ccc-parent", "--format", "{{json .Mounts}}"]),
                 expect.objectContaining({timeout: 5000, killSignal: "SIGKILL", shell: false}));
@@ -455,6 +456,8 @@ describe("container-runtime", () => {
 
     describe("isContainerHostRemote", () => {
         it("lets an explicit remote context override a local Desktop host endpoint", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            vi.spyOn(process, "cwd").mockReturnValue("/fixture/work");
             process.env.CCC_RUNTIME = "docker";
             process.env.DOCKER_CONTEXT = "selected-remote";
             process.env.DOCKER_HOST = "unix:///desktop.sock";
@@ -544,6 +547,7 @@ describe("container-runtime", () => {
         });
 
         it("WSL2 NAT mode (no loopback0) is treated as remote", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
             process.env.CCC_RUNTIME = "docker";
             process.env.WSL_DISTRO_NAME = "Ubuntu";
             // mockExistsSync default returns false → loopback0 absent
@@ -559,6 +563,7 @@ describe("container-runtime", () => {
         });
 
         it("WSL2 mirrored mode (loopback0 present) is treated as local", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
             process.env.CCC_RUNTIME = "docker";
             process.env.WSL_DISTRO_NAME = "Ubuntu";
             mockExistsSync.mockImplementation((p: unknown) => p === "/sys/class/net/loopback0");
@@ -635,6 +640,7 @@ describe("container-runtime", () => {
 
     describe("getRuntimeInfo caching", () => {
         it("detects linux rootless docker", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
             process.env.CCC_RUNTIME = "docker";
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "Docker version 27.1.1, build abc\n"))
@@ -648,6 +654,7 @@ describe("container-runtime", () => {
         });
 
         it("detects linux rootless podman and derives the user socket path", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
             process.env.CCC_RUNTIME = "podman";
             process.env.XDG_RUNTIME_DIR = "/run/user/1001";
             spawnSyncMock
@@ -658,22 +665,26 @@ describe("container-runtime", () => {
             expect(info.runtime).toBe("podman");
             expect(info.rootless).toBe(true);
             expect(info.flavor).toBe("podman-rootless");
-            expect(info.socketPath).toBe("/run/user/1001/podman/podman.sock");
+            expect(info.socketPath).toBe(join("/run/user/1001", "podman", "podman.sock"));
         });
 
         it("falls back to effective uid for older podman rootless detection", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
             process.env.CCC_RUNTIME = "podman";
             delete process.env.XDG_RUNTIME_DIR;
-            const getuidSpy = vi.spyOn(process, "getuid").mockReturnValue(1002);
-            spawnSyncMock
-                .mockReturnValueOnce(result(0, "podman version 4.9.3\n"))
-                .mockReturnValueOnce(result(1, ""));
-
-            const info = getRuntimeInfo();
-            expect(info.rootless).toBe(true);
-            expect(info.flavor).toBe("podman-rootless");
-            expect(info.socketPath).toBe("/run/user/1002/podman/podman.sock");
-            getuidSpy.mockRestore();
+            const descriptor = Object.getOwnPropertyDescriptor(process, "getuid");
+            Object.defineProperty(process, "getuid", {configurable: true, value: () => 1002});
+            try {
+                spawnSyncMock
+                    .mockReturnValueOnce(result(0, "podman version 4.9.3\n"))
+                    .mockReturnValueOnce(result(1, ""));
+                const info = getRuntimeInfo();
+                expect(info.rootless).toBe(true);
+                expect(info.flavor).toBe("podman-rootless");
+                expect(info.socketPath).toBe(join("/run/user/1002", "podman", "podman.sock"));
+            } finally {
+                if (descriptor) Object.defineProperty(process, "getuid", descriptor); else Reflect.deleteProperty(process, "getuid");
+            }
         });
 
         it("caches after first resolve; subsequent calls do not spawn", () => {

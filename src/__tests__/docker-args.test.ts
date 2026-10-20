@@ -507,7 +507,7 @@ describe("buildDockerRunArgs — volume mounts", () => {
         expect(mounts).toContain(
             "/home/user/.ccc/devices:/home/ccc/.ccc/devices:ro",
         );
-        expect(mounts).toContain("/home/user/.ccc/devices/owners/0123456789abcdef:/home/ccc/.ccc/devices/owners/0123456789abcdef");
+        expect(mounts).toContain(`${join("/home/user/.ccc/devices", "owners", "0123456789abcdef")}:/home/ccc/.ccc/devices/owners/0123456789abcdef`);
         expect(mounts).toContain("/home/user/.ccc/devices/broker/auth/0123456789abcdef.json:/run/ccc-device-broker-auth/owner.json:ro");
         expect(args).toContain("/home/ccc/.ccc/devices/owners:rw,noexec,nosuid,nodev,mode=0711");
         expect(args).toContain("/home/ccc/.ccc/devices/broker/auth:rw,noexec,nosuid,nodev,mode=0711");
@@ -688,9 +688,7 @@ describe("buildDockerRunArgs — clipboard port file", () => {
             const args = buildDockerRunArgs(makeOpts({ clipboardPortFile: portFile }));
             const mounts = extractVolumeMounts(args);
             const clipMount = mounts.find((m) => m.includes("clipboard.port"));
-            // mount format: hostPath:/run/ccc/clipboard.port:ro
-            const parts = clipMount!.split(":");
-            expect(parts[1]).toBe("/run/ccc/clipboard.port");
+            expect(clipMount).toBe(`${portFile}:/run/ccc/clipboard.port:ro`);
         } finally { teardown(); }
     });
 

@@ -76,7 +76,7 @@ const { _setRuntimeInfoForTest } = await import("../container-runtime.js");
 
 const native: RuntimeInfo = {
     runtime: "docker", flavor: "docker-native", version: "27.0.0",
-    socketPath: "/var/run/docker.sock", rootless: false, remote: false,
+    socketPath: "/var/run/docker.sock", rootless: false, remote: false, dockerDesktop: false,
 };
 
 function result(status = 0, stdout = "", stderr = ""): SpawnSyncReturns<string> {
@@ -114,11 +114,16 @@ describe("container identity policy", () => {
     );
 
     it("reads effective IDs rather than real IDs by default", () => {
-        vi.spyOn(process, "geteuid").mockReturnValue(2002);
-        vi.spyOn(process, "getegid").mockReturnValue(3003);
-        vi.spyOn(process, "getuid").mockReturnValue(1000);
-        vi.spyOn(process, "getgid").mockReturnValue(1000);
-        expect(resolveContainerIdentity(native, "linux")).toMatchObject({ uid: 2002, gid: 3003 });
+        const ids = {geteuid: 2002, getegid: 3003, getuid: 1000, getgid: 1000};
+        const descriptors = Object.fromEntries(Object.keys(ids).map(name => [name, Object.getOwnPropertyDescriptor(process, name)]));
+        try {
+            for (const [name, value] of Object.entries(ids)) Object.defineProperty(process, name, {configurable: true, value: () => value});
+            expect(resolveContainerIdentity(native, "linux")).toMatchObject({ uid: 2002, gid: 3003 });
+        } finally {
+            for (const [name, descriptor] of Object.entries(descriptors)) {
+                if (descriptor) Object.defineProperty(process, name, descriptor); else Reflect.deleteProperty(process, name);
+            }
+        }
     });
 
     it.each([0, -1, 1.5, NaN, Infinity, 4294967295])("rejects invalid/root native UID %s", (uid) => {

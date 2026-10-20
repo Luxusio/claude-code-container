@@ -233,7 +233,7 @@ if (args[0] === 'info') {
 }
 process.exit(91);
 `;
-                for (const suffix of process.platform === "win32" ? ["", ".EXE"] : [""]) {
+                for (const suffix of process.platform === "win32" ? ["", ".exe"] : [""]) {
                     const fixturePath = join(binDir, name + suffix);
                     writeFileSync(fixturePath, fixtureSource);
                     chmodSync(fixturePath, 0o700);
@@ -293,7 +293,7 @@ try {
                 expect(outcome.info?.version).toBe(versionStatus === 0 ? selected === "docker" ? "27.1.1" : "5.2.3" : null);
                 expect(outcome.cached).toBe(true);
                 expect(outcome.cli).toBe(selected);
-                expect(outcome.executable).toBe(join(binDir, selected + (process.platform === "win32" ? ".EXE" : "")));
+                expect(outcome.executable).toBe(join(binDir, selected + (process.platform === "win32" ? ".exe" : "")));
             } else {
                 expect(outcome).toEqual({ error: scenario.error });
             }
