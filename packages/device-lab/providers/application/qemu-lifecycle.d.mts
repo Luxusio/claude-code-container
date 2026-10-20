@@ -3,6 +3,7 @@ export function createQemuLifecycleApplication(ports:QemuLifecyclePorts): {
     create(args?:QemuLifecycleArguments, admittedLabId?:string):QemuLifecycleResult;
     start(args?:QemuLifecycleArguments):QemuLifecycleResult;
     stop(args?:QemuLifecycleArguments):QemuLifecycleResult;
+    reboot(args?:QemuLifecycleArguments):QemuLifecycleResult;
     delete(args?:QemuLifecycleArguments):QemuLifecycleResult;
     provisionGuestAgent(args?:QemuLifecycleArguments):QemuLifecycleResult;
     validateGuestSsh(scope:QemuScope,args?:QemuLifecycleArguments):{ok:true;ssh:QemuSsh|null}|QemuFailure;
