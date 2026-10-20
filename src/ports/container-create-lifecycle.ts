@@ -1,3 +1,5 @@
+import type { MountVerification } from "../domain/container/mount-verification.js";
+
 export interface ContainerCreateLifecycleRequest {
     containerName: string;
     projectMountIdentity: string;
@@ -7,26 +9,32 @@ export interface ContainerCreateLifecycleRequest {
 
 export type ContainerCreateResult =
     | { kind: "created"; containerId: string | null }
-    | { kind: "failed"; cause?: unknown };
+    | { kind: "failed" };
 
 export type ContainerCreateFailure =
     | { kind: "namespace-appeared"; containerName: string }
     | { kind: "collision"; containerName: string; profile: string }
     | { kind: "create-failed" }
-    | { kind: "verification-failed"; reason: string }
-    | { kind: "missing-id-verification" }
-    | { kind: "rejected-removal-failed"; containerId: string; error: unknown }
     | { kind: "unpinned-session" };
 
-export type CreatedContainerMountVerification =
-    | { kind: "verified"; via: "shape" | "source" | "identity" | "daemon" }
-    | { kind: "deferred"; reason: string; containerPath: string }
-    | { kind: "retryable"; reason: string; containerPath?: string }
-    | { kind: "mismatch"; reason: string; containerPath?: string };
+export type CreatedContainerRejection =
+    | { kind: "verification-failed"; reason: string }
+    | { kind: "missing-id-verification" }
+    | { kind: "post-create-check-failed" };
+
+export type RejectedContainerCleanup =
+    | { kind: "not-authorized" }
+    | { kind: "attempted"; containerId: string; removal: "completed" | "failed"; absence: "proved" | "unproved" | "failed" };
+
+export type ContainerCreateLifecycleOutcome =
+    | { kind: "completed"; value: string }
+    | { kind: "refused"; failure: ContainerCreateFailure }
+    | { kind: "rejected"; rejection: CreatedContainerRejection; cleanup: RejectedContainerCleanup };
+
+export type CreatedContainerMountVerification = MountVerification;
 
 export interface ContainerCreateLifecyclePorts<PreparedCreate> {
-    failCreate(failure: ContainerCreateFailure): never;
-    withFamilyLock(prefix: string, operation: () => string): string;
+    withFamilyLock(prefix: string, operation: () => ContainerCreateLifecycleOutcome): ContainerCreateLifecycleOutcome;
     namespaceExists(name: string): boolean;
     findCollision(): { containerName: string } | null;
     reportCreating(name: string, debug: boolean | undefined): undefined;

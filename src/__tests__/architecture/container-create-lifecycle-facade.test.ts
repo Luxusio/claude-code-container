@@ -114,6 +114,7 @@ const request = { containerName: name, projectMountIdentity: "physical" };
 const createOptions = { encoding: "utf-8", stdio: ["inherit", "pipe", "inherit"], timeout: 30000, killSignal: "SIGKILL" };
 const cleanupOptions = { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" };
 type SuppliedPorts = Parameters<typeof createNativeContainerCreateLifecycle>[0];
+const thrownValues = [["string", "native failure"], ["number", 7], ["boolean", false], ["null", null], ["undefined", undefined]] as const;
 
 function result(status: number | null = 0, stdout = "", stderr = ""): SpawnSyncReturns<string> {
     return { status, stdout, stderr, pid: 1, output: [], signal: null };
@@ -173,6 +174,110 @@ describe("actual creation application through native composition", () => {
         expect(console.warn).not.toHaveBeenCalled();
     });
 
+    it.each([
+        "withFamilyLock", "namespaceExists", "findCollision", "assertProjectSources", "assertDeviceSources",
+        "assertFilesystemSources", "verifyCreated", "syncMcp", "fixSsh", "syncGit", "finish",
+    ] as const)("rejects missing supplied %s at construction before effects", port => {
+        const f = fixture();
+        const invalid = { ...f.ports, [port]: undefined } as unknown as SuppliedPorts;
+        expect(() => createNativeContainerCreateLifecycle(invalid, f.context)).toThrow(TypeError);
+        expect(f.order).toEqual([]);
+        expect(native.spawn).not.toHaveBeenCalled();
+        expect(f.context.prepareRunArgs).not.toHaveBeenCalled();
+        expect(console.log).not.toHaveBeenCalled();
+    });
+
+    it("lets a native family guard skip its callback and return its own string", () => {
+        const f = fixture({ withFamilyLock: () => "guard skipped" });
+        expect(f.lifecycle.run(request)).toBe("guard skipped");
+        expect(f.order).toEqual([]);
+        expect(f.context.prepareRunArgs).not.toHaveBeenCalled();
+        expect(f.context.labWarning).not.toHaveBeenCalled();
+        expect(f.ports.namespaceExists).not.toHaveBeenCalled();
+        expect(native.spawn).not.toHaveBeenCalled();
+    });
+
+    it("projects a successful callback to a string before the native guard returns its own string", () => {
+        const callbackResults: unknown[] = [];
+        const f = fixture({ withFamilyLock: (_prefix, operation) => { callbackResults.push(operation()); return "guard selected value"; } });
+        expect(f.lifecycle.run(request)).toBe("guard selected value");
+        expect(callbackResults).toEqual(["public-name"]);
+        expect(f.ports.finish).toHaveBeenCalledExactlyOnceWith(id);
+    });
+
+    it("projects refusal inside the callback so a native guard can catch and recover", () => {
+        const caught: unknown[] = [];
+        const f = fixture({ namespaceExists: () => true, withFamilyLock: (_prefix, operation) => {
+            try { operation(); } catch (error) { caught.push(error); }
+            return "guard recovered";
+        } });
+        expect(f.lifecycle.run(request)).toBe("guard recovered");
+        expect(caught).toHaveLength(1);
+        expect(caught[0]).toMatchObject({ message: `Container namespace ${name} appeared during creation preflight; refusing replacement.` });
+        expect(native.spawn).not.toHaveBeenCalled();
+        expect(f.context.prepareRunArgs).not.toHaveBeenCalled();
+    });
+
+    it("projects every repeated native callback before the guard chooses its return", () => {
+        const callbackResults: unknown[] = [];
+        const f = fixture({ withFamilyLock: (_prefix, operation) => {
+            callbackResults.push(operation(), operation());
+            return "guard repeated";
+        } });
+        expect(f.lifecycle.run(request)).toBe("guard repeated");
+        expect(callbackResults).toEqual(["public-name", "public-name"]);
+        expect(native.spawn).toHaveBeenCalledTimes(2);
+        expect(f.ports.finish).toHaveBeenNthCalledWith(1, id);
+        expect(f.ports.finish).toHaveBeenNthCalledWith(2, id);
+    });
+
+    it("preserves a native guard throw after a projected callback without compensation", () => {
+        const failure = { guard: "failed after callback" }; const callbackResults: unknown[] = [];
+        const f = fixture({ withFamilyLock: (_prefix, operation) => {
+            callbackResults.push(operation()); throw failure;
+        } });
+        expect(thrown(() => f.lifecycle.run(request))).toBe(failure);
+        expect(callbackResults).toEqual(["public-name"]);
+        expect(native.spawn).toHaveBeenCalledTimes(1);
+        expect(f.context.explicitlyNotFound).not.toHaveBeenCalled();
+    });
+
+    it("resets primary and cleanup causes when a native guard catches an attempt and repeats", () => {
+        const primary = new Error("first proof threw"), removal = new Error("first removal threw"), absence = new Error("first inspection threw");
+        let attempt = 0; const caught: unknown[] = [];
+        const verification = vi.fn<SuppliedPorts["verifyCreated"]>()
+            .mockImplementationOnce(() => { throw primary; }).mockReturnValueOnce({ kind: "mismatch", reason: "second proof refused" });
+        const f = fixture({ verifyCreated: verification, withFamilyLock: (_prefix, operation) => {
+            for (let index = 0; index < 2; index++) { try { operation(); } catch (error) { caught.push(error); } }
+            return "guard exhausted";
+        } });
+        // The second removal succeeds, independently of its absence result.
+        native.spawn.mockImplementation((_cli, args: string[]) => {
+            if (args[0] === "run") { attempt++; return result(0, id); }
+            if (attempt === 1) throw args[0] === "rm" ? removal : absence;
+            return args[0] === "rm" ? result() : result(1, "", "No such container");
+        });
+        expect(f.lifecycle.run(request)).toBe("guard exhausted");
+        expect(caught).toHaveLength(2);
+        expect(caught[0]).toMatchObject({ cause: primary, errors: [primary, removal, absence] });
+        expect(caught[1]).toBeInstanceOf(Error);
+        expect(caught[1]).not.toBeInstanceOf(AggregateError);
+        expect((caught[1] as Error).message).toBe("created container bind mount identity verification failed (second proof refused)");
+        expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(["run", "rm", "inspect", "run", "rm", "inspect"]);
+    });
+
+    it("preserves context and supplied method receivers through native wrappers", () => {
+        const f = fixture();
+        f.context.prepareRunArgs = function () { expect(this).toBe(f.context); return f.args; };
+        f.ports.verifyCreated = function (target) {
+            expect(this.finish).toBe(f.ports.finish); expect(target).toBe(id);
+            return { kind: "verified", via: "identity" };
+        };
+        // Supply the methods before composition, just as the public caller does.
+        const lifecycle = createNativeContainerCreateLifecycle(f.ports, f.context);
+        expect(lifecycle.run(request)).toBe("public-name");
+    });
+
     it.each([undefined, false, true])("preserves streams/order/debug=%s and exact pinned handoff", debug => {
         const f = fixture(); const output: string[] = [];
         vi.mocked(console.error).mockImplementation(message => { output.push(`error:${message}`); });
@@ -229,7 +334,7 @@ describe("actual creation application through native composition", () => {
         expect(f.ports.syncMcp).not.toHaveBeenCalled();
     });
 
-    it("isolates create failure causes across interleaved native port instances", () => {
+    it("keeps native create causes out of semantic results across interleaved adapter instances", () => {
         const context: NativeContainerCreateLifecycleContext = {
             createCli: "captured-runtime", createFailureHint: "original-init-hint",
             prepareRunArgs: () => ["run", "--detach", "fixture-image"],
@@ -239,16 +344,29 @@ describe("actual creation application through native composition", () => {
         const second = createNativeContainerCreatePorts(context);
         const firstCause = new Error("first create timed out");
         const secondCause = new Error("second create timed out");
+        const firstCauses: unknown[] = [], secondCauses: unknown[] = [];
         native.spawn.mockReturnValueOnce({ ...result(null), error: firstCause })
             .mockReturnValueOnce({ ...result(null), error: secondCause });
-        expect(first.create(first.prepareCreate())).toEqual({ kind: "failed", cause: firstCause });
-        expect(second.create(second.prepareCreate())).toEqual({ kind: "failed", cause: secondCause });
-        const secondFailure = thrown(() => second.failCreate({ kind: "create-failed" })) as Error;
-        const firstFailure = thrown(() => first.failCreate({ kind: "create-failed" })) as Error;
-        expect(secondFailure.message).toBe("Failed to create container");
-        expect(secondFailure.cause).toBe(secondCause);
-        expect(firstFailure.message).toBe("Failed to create container");
+        expect(first.create(first.prepareCreate(), cause => { firstCauses.push(cause); })).toEqual({ kind: "failed" });
+        expect(second.create(second.prepareCreate(), cause => { secondCauses.push(cause); })).toEqual({ kind: "failed" });
+        expect(firstCauses).toEqual([firstCause]);
+        expect(secondCauses).toEqual([secondCause]);
+    });
+
+    it("isolates native failure causes between facade instances and repeated runs", () => {
+        const first = fixture(), second = fixture();
+        const firstCause = new Error("first invocation timed out"), secondCause = new Error("second invocation timed out");
+        native.spawn.mockReturnValueOnce({ ...result(null), error: firstCause })
+            .mockReturnValueOnce({ ...result(null), error: secondCause }).mockReturnValueOnce(result(1));
+        const firstFailure = thrown(() => first.lifecycle.run(request)) as Error;
+        const secondFailure = thrown(() => second.lifecycle.run(request)) as Error;
+        const nextFailure = thrown(() => first.lifecycle.run(request)) as Error;
         expect(firstFailure.cause).toBe(firstCause);
+        expect(secondFailure.cause).toBe(secondCause);
+        expect(nextFailure.message).toBe("Failed to create container");
+        expect(nextFailure.cause).toMatchObject({ message: "Runtime exited with status 1" });
+        expect(nextFailure.cause).not.toBe(firstCause);
+        expect(native.spawn).toHaveBeenCalledTimes(3);
     });
 
     it.each([
@@ -315,6 +433,44 @@ describe("actual creation application through native composition", () => {
         expect(f.context.explicitlyNotFound).toHaveBeenCalledExactlyOnceWith(absent);
         expect(native.spawn.mock.calls.slice(1).map(call => call[1])).toEqual([["rm", "-f", id], ["inspect", "-f", "{{.Id}}", id]]);
         expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+    it.each(thrownValues)("rethrows a %s primary unchanged after proved absence", (_label, primary) => {
+        const f = fixture({ verifyCreated: () => { throw primary; } });
+        native.spawn.mockReturnValueOnce(result(0, id)).mockReturnValueOnce(result()).mockReturnValueOnce(result(1, "", "No such container"));
+        expect(thrown(() => f.lifecycle.run(request))).toBe(primary);
+        expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(["run", "rm", "inspect"]);
+        expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+    it.each(thrownValues)("preserves the legacy message formatter for an unproved %s primary", (_label, primary) => {
+        const f = fixture({ verifyCreated: () => { throw primary; } });
+        f.context.explicitlyNotFound = () => false;
+        const caught = thrown(() => f.lifecycle.run(request));
+        if (primary === null || primary === undefined) {
+            expect(caught).toBeInstanceOf(TypeError);
+        } else {
+            expect(caught).toMatchObject({ message: `undefined; failed to remove rejected container ${id}`, cause: primary });
+        }
+        expect(native.spawn.mock.calls.map(call => call[1][0])).toEqual(["run", "rm", "inspect"]);
+    });
+    it.each(thrownValues)("retains a %s thrown cleanup value at each native compensation stage", (_label, cleanupFailure) => {
+        for (const stage of ["remove", "inspect", "classifier"] as const) {
+            const primary = new Error("verification rejected before " + stage);
+            const f = fixture({ verifyCreated: () => { throw primary; } });
+            const before = native.spawn.mock.calls.length;
+            native.spawn.mockImplementation((_cli, args: string[]) => {
+                if (args[0] === "run") return result(0, id);
+                if (args[0] === "rm" && stage === "remove" || args[0] === "inspect" && stage === "inspect") throw cleanupFailure;
+                return args[0] === "rm" ? result() : result(1, "", "No such container");
+            });
+            if (stage === "classifier") f.context.explicitlyNotFound = () => { throw cleanupFailure; };
+            const caught = thrown(() => f.lifecycle.run(request)) as AggregateError;
+            expect(caught).toBeInstanceOf(AggregateError);
+            expect(caught.cause).toBe(primary);
+            expect(caught.errors).toEqual([primary, cleanupFailure]);
+            expect(caught.errors[1]).toBe(cleanupFailure);
+            expect(native.spawn.mock.calls.slice(before).map(call => call[1][0])).toEqual(["run", "rm", "inspect"]);
+            expect(f.ports.finish).not.toHaveBeenCalled();
+        }
     });
     it("retains verification, removal and independent absence failures in occurrence order", () => {
         const original = new Error("verification rejected"), removal = new Error("removal threw"), inspection = new Error("inspection threw");
@@ -666,6 +822,8 @@ if (false) {
 function declareContextContracts() {
     const ports = {} as SuppliedPorts;
     const context = {} as NativeContainerCreateLifecycleContext;
+    const result: string = createNativeContainerCreateLifecycle(ports, context).run(request);
+    const locked: string = ports.withFamilyLock("family", () => "native callback value");
     // @ts-expect-error Native context cannot be omitted.
     createNativeContainerCreateLifecycle(ports);
     // @ts-expect-error Warning facts remain synchronous.
@@ -674,5 +832,11 @@ function declareContextContracts() {
     createNativeContainerCreateLifecycle(ports, { ...context, explicitlyNotFound: async () => true });
     // @ts-expect-error The original hint is required, avoiding a Docker import cycle.
     const incomplete: NativeContainerCreateLifecycleContext = { createCli: "cli", labWarning: () => null, explicitlyNotFound: () => true };
-    void incomplete;
+    // @ts-expect-error The supplied native lock stays synchronous and returns a string.
+    createNativeContainerCreateLifecycle({ ...ports, withFamilyLock: async (_prefix, operation) => operation() }, context);
+    // @ts-expect-error The supplied native callback stays synchronous.
+    ports.withFamilyLock("family", async () => "native callback value");
+    // @ts-expect-error Core outcomes cannot replace the supplied native lock's string ABI.
+    createNativeContainerCreateLifecycle({ ...ports, withFamilyLock: (_prefix, _operation) => ({ kind: "completed", value: "native" }) }, context);
+    void [incomplete, result, locked];
 }

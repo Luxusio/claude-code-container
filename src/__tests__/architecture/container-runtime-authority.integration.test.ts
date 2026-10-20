@@ -139,6 +139,8 @@ const api = await load('container-runtime.js');
 const { createNativeContainerExecPorts } = await load('composition/container-exec.js');
 const { createNativeContainerExistingLifecycle } = await load('composition/container-existing-lifecycle.js');
 const { createNativeContainerCreateLifecycle } = await load('composition/container-create-lifecycle.js');
+const { createContainerCreateLifecycle } = await load('application/container-create-lifecycle.js');
+const { createNativeContainerCreatePorts } = await load('adapters/container-create-lifecycle.js');
 const { createNativeContainerDestructiveLifecycle } = await load('composition/container-destructive-lifecycle.js');
 const { prepareWindowsCredentialAccess, repairWindowsCodexPrivateState } = await load('adapters/windows-credential-access.js');
 const { prepareCodexDaemonPackage } = await load('adapters/codex-daemon-package.js');
@@ -268,6 +270,43 @@ const rejected = withCaptured(() => createNativeContainerCreateLifecycle({
 late('create-after-preparation');
 assert.throws(() => rejected.run({containerName: 'same-name', projectMountIdentity: 'fixture-identity'}), /fixture mount identity mismatch/);
 assert.equal(readA().exists, false);
+// Exercise the emitted reusable core through its actual captured native leaves,
+// including finite results that never carry native process objects or causes.
+let coreNamespace = false, coreVerified = true;
+const nativeCreate = withCaptured(() => createNativeContainerCreatePorts({
+  createCli: runtime, prepareRunArgs: () => ['run', '--name', 'same-name', 'fixture-image'],
+  createFailureHint: 'fixture core create failed', labWarning: () => null,
+  explicitlyNotFound: result => result.status === 1 && /No such object/.test(result.stderr),
+}));
+const coreCreate = createContainerCreateLifecycle({
+  ...nativeCreate, withFamilyLock: (_key, operation) => operation(),
+  namespaceExists: () => coreNamespace, findCollision: () => null,
+  assertProjectSources: noop, assertDeviceSources: noop, assertFilesystemSources: noop,
+  verifyCreated: target => {
+    assert.equal(target, id);
+    if (coreVerified) return {kind: 'verified', via: 'identity'};
+    late('core-rejected-compensation');
+    return {kind: 'mismatch', reason: 'emitted core mount mismatch'};
+  },
+  syncMcp: target => assert.equal(target, id), fixSsh: noop, syncGit: noop,
+  finish: target => { assert.equal(target, id); return 'core-public-name'; },
+});
+late('core-created-outcome');
+assert.deepEqual(coreCreate.run({containerName: 'same-name', projectMountIdentity: 'fixture-identity'}), {kind: 'completed', value: 'core-public-name'});
+assert.equal(readA().exists, true);
+coreNamespace = true;
+const beforeCoreRefusal = readA();
+assert.deepEqual(coreCreate.run({containerName: 'same-name', projectMountIdentity: 'fixture-identity'}), {
+  kind: 'refused', failure: {kind: 'namespace-appeared', containerName: 'same-name'},
+});
+assert.deepEqual(readA(), beforeCoreRefusal);
+coreNamespace = false; coreVerified = false;
+late('core-rejected-outcome');
+assert.deepEqual(coreCreate.run({containerName: 'same-name', projectMountIdentity: 'fixture-identity'}), {
+  kind: 'rejected', rejection: {kind: 'verification-failed', reason: 'emitted core mount mismatch'},
+  cleanup: {kind: 'attempted', containerId: id, removal: 'completed', absence: 'proved'},
+});
+assert.equal(readA().exists, false);
 // Use the real exported defaults and real managed inspector. Both owned engines
 // contain the same full ID, so a late bare executable or alias must be observable.
 const workspaceName = getContainerName(project);
@@ -320,7 +359,7 @@ assert.deepEqual(readA(), beforeStopRefusal, 'failed stop removed or changed the
 assert.equal(readFileSync(bFile, 'utf8'), bOriginal, 'identical B ID was touched');
 assert.equal(readFileSync(join(root, 'original-connections.json'), 'utf8'), originalConnections);
 const trace = readFileSync(join(root, 'trace.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-const phases = ['inspection', 'setup', 'final-sync', 'passed-native-runners', 'daemon-preparation', 'interactive-exec', 'direct-command', 'restart', 'remove-stopped', 'destructive-stop-and-remove', 'create-after-preparation', 'rejected-create-compensation'];
+const phases = ['inspection', 'setup', 'final-sync', 'passed-native-runners', 'daemon-preparation', 'interactive-exec', 'direct-command', 'restart', 'remove-stopped', 'destructive-stop-and-remove', 'create-after-preparation', 'rejected-create-compensation', 'core-created-outcome', 'core-rejected-outcome', 'core-rejected-compensation'];
 phases.push('workspace-default-inventory', 'workspace-default-running', 'workspace-default-stopped', 'workspace-default-managed',
   'workspace-default-prepare', 'workspace-default-prepared-remove', 'workspace-retained-adapter', 'workspace-inventory-refused', 'workspace-stop-refused');
 if (mode === 'docker') phases.push('prepared-start-outside-scope', 'prepared-initialize-outside-scope');
@@ -351,6 +390,10 @@ assert.equal(trace.filter(row => row.args[0] === 'info' && row.args.at(-1) === '
 assert.equal(trace.filter(row => row.args[0] === 'system').length, mode === 'podman-remote' ? 1 : 0);
 assert(trace.some(row => row.phase === 'interactive-exec' && row.args.at(-1) === '$(never shell)'));
 assert.deepEqual(trace.filter(row => row.phase === 'rejected-create-compensation').map(row => row.args[0]), ['rm', 'inspect']);
+assert.deepEqual(trace.filter(row => row.phase === 'core-created-outcome').map(row => row.args[0]), ['run']);
+assert.deepEqual(trace.filter(row => row.phase === 'core-rejected-outcome').map(row => row.args[0]), ['run']);
+assert.deepEqual(trace.filter(row => row.phase === 'core-rejected-compensation').map(row => row.args[0]), ['rm', 'inspect']);
+for (const row of trace.filter(row => row.phase === 'core-rejected-compensation')) assert.equal(row.args.at(-1), id);
 assert.deepEqual(trace.filter(row => row.phase === 'destructive-stop-and-remove').map(row => row.args[0]), ['stop', 'rm']);
 for (const [phase, commands] of [
   ['workspace-default-inventory', ['ps']],

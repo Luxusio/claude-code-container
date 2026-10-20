@@ -1,11 +1,14 @@
 import type {
     ContainerCreateLifecyclePorts,
     ContainerCreateLifecycleRequest,
+    ContainerCreateLifecycleOutcome,
+    CreatedContainerRejection,
+    RejectedContainerCleanup,
 } from "../ports/container-create-lifecycle.js";
 
 export function createContainerCreateLifecycle<PreparedCreate>(ports: ContainerCreateLifecyclePorts<PreparedCreate>) {
     for (const name of [
-        "failCreate", "withFamilyLock", "namespaceExists", "findCollision", "reportCreating",
+        "withFamilyLock", "namespaceExists", "findCollision", "reportCreating",
         "reportLabWarning", "reportCreateFailure", "prepareCreate",
         "assertProjectSources", "assertDeviceSources", "assertFilesystemSources",
         "create", "verifyCreated", "removeRejected", "explicitlyAbsent",
@@ -16,15 +19,15 @@ export function createContainerCreateLifecycle<PreparedCreate>(ports: ContainerC
         }
     }
 
-    function run(request: ContainerCreateLifecycleRequest): string {
+    function run(request: ContainerCreateLifecycleRequest): ContainerCreateLifecycleOutcome {
         const { containerName, projectMountIdentity, profile, debug } = request;
         return ports.withFamilyLock(`mount-${projectMountIdentity}`, () => {
             if (ports.namespaceExists(containerName)) {
-                ports.failCreate({ kind: "namespace-appeared", containerName });
+                return { kind: "refused", failure: { kind: "namespace-appeared", containerName } };
             }
             const collision = ports.findCollision();
             if (collision) {
-                ports.failCreate({ kind: "collision", containerName: collision.containerName, profile: profile ?? "default" });
+                return { kind: "refused", failure: { kind: "collision", containerName: collision.containerName, profile: profile ?? "default" } };
             }
             ports.reportCreating(containerName, debug);
             ports.reportLabWarning();
@@ -35,45 +38,47 @@ export function createContainerCreateLifecycle<PreparedCreate>(ports: ContainerC
             const result = ports.create(prepared);
             if (result.kind === "failed") {
                 ports.reportCreateFailure();
-                ports.failCreate({ kind: "create-failed" });
+                return { kind: "refused", failure: { kind: "create-failed" } };
             }
             const createdContainerId = result.containerId;
 
+            let rejection: CreatedContainerRejection | undefined;
             try {
                 ports.assertProjectSources();
                 ports.assertDeviceSources();
                 ports.assertFilesystemSources();
-                if (!createdContainerId) ports.failCreate({ kind: "missing-id-verification" });
-                const verification = ports.verifyCreated(createdContainerId);
-                if (verification.kind !== "verified") {
-                    ports.failCreate({ kind: "verification-failed", reason: verification.reason });
+                if (!createdContainerId) {
+                    rejection = { kind: "missing-id-verification" };
+                } else {
+                    const verification = ports.verifyCreated(createdContainerId);
+                    if (verification.kind !== "verified") {
+                        rejection = { kind: "verification-failed", reason: verification.reason };
+                    }
                 }
-            } catch (error) {
+            } catch {
+                rejection = { kind: "post-create-check-failed" };
+            }
+            if (rejection) {
+                let cleanup: RejectedContainerCleanup = { kind: "not-authorized" };
                 if (createdContainerId) {
-                    const compensationFailures: unknown[] = [];
+                    let removal: "completed" | "failed" = "completed";
                     try { ports.removeRejected(createdContainerId); }
-                    catch (removalError) { compensationFailures.push(removalError); }
-                    let absent = false;
-                    try { absent = ports.explicitlyAbsent(createdContainerId); }
-                    catch (absenceError) { compensationFailures.push(absenceError); }
-                    if (compensationFailures.length > 0) {
-                        throw new AggregateError([error, ...compensationFailures],
-                            "Created container verification and rejected-container cleanup failed", { cause: error });
-                    }
-                    if (!absent) {
-                        ports.failCreate({ kind: "rejected-removal-failed", containerId: createdContainerId, error });
-                    }
+                    catch { removal = "failed"; }
+                    let absence: "proved" | "unproved" | "failed";
+                    try { absence = ports.explicitlyAbsent(createdContainerId) ? "proved" : "unproved"; }
+                    catch { absence = "failed"; }
+                    cleanup = { kind: "attempted", containerId: createdContainerId, removal, absence };
                 }
-                throw error;
+                return { kind: "rejected", rejection, cleanup };
             }
 
             if (!createdContainerId) {
-                ports.failCreate({ kind: "unpinned-session" });
+                return { kind: "refused", failure: { kind: "unpinned-session" } };
             }
             ports.syncMcp(createdContainerId);
             ports.fixSsh(createdContainerId);
             ports.syncGit(createdContainerId);
-            return ports.finish(createdContainerId);
+            return { kind: "completed", value: ports.finish(createdContainerId) };
         });
     }
 

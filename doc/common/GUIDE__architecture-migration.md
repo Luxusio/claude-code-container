@@ -788,48 +788,64 @@ blocked M02c attestation.
 
 ## Fresh container creation (M10g candidate)
 
-`src/application/container-create-lifecycle.ts` owns fresh creation through 18
+`src/application/container-create-lifecycle.ts` owns fresh creation through
 required synchronous `ContainerCreateLifecyclePorts` in
 `src/ports/container-create-lifecycle.ts`. Construction checks callability
-without invoking capabilities. Effect ports return `undefined`; the family
-lock takes a synchronous callback returning `string`, and `run` returns the
-lock's result. Current port methods retain their receiver and are looked up at
-each call. The application imports only its type-only ports. Its structural
-verification facts preserve verified, deferred, retryable and mismatch results,
-including proof route, reason and container path as appropriate.
+without invoking capabilities. Effect ports return `undefined`; the core family
+lock takes and returns a specialized `ContainerCreateLifecycleOutcome`.
+`run` exposes completed values, expected refusals or rejected creation with
+separate removal and absence observations. Native exceptions and failure
+presentation stay outside these result types. Current port methods retain
+their receiver and are looked up at each call. The application imports only
+type-only ports. Mount verification reuses the existing domain
+`MountVerification` rather than a second structural union.
 
 The public Docker facade delegates only after the existing application returns
 `continue-to-create`. The unchanged family guard receives the physical mount
 identity prefix, enclosing namespace and physical-project collision refusal,
 reports, lazy argument preparation, native creation, source proof and handoff.
 Unknown namespace observations remain conservative refusals. The supplied guard
-may skip or repeat the callback, return its own string or throw; the application
-preserves these behaviors and acquires no additional lock. The caller's outer
+may skip or repeat the callback, catch its failure, return its own string or
+throw. Native composition projects each application outcome inside the actual
+callback, preserving those behaviors and the supplied string callback/result
+contract. It acquires no additional lock. The caller's outer
 lifecycle/session guard and nesting stay unchanged.
 
 Creating/debug output precedes the lazy lab-warning fact, argument preparation
 and separate project/device/filesystem assertions. Docker retains the original
 argument-building object, profile short circuit and both remote-host evaluation
 sites, including proxy environment reads. Native composition reads creation
-status before stdout; only nonzero/null status emits the existing initialization
-hint and fails. Status zero remains successful even with a native error field.
+status before stdout; an error or nonzero/null status emits the existing
+initialization hint and fails, including an error accompanying zero status.
 Output parsing selects the first complete 64-hex whitespace token and preserves
-its case. A shortened ID or namespace never authorizes proof, removal or join.
+its case. A shortened ID or namespace never authorizes native proof, removal or
+join. The core trusts this semantic create-port postcondition; its missing-ID
+branch follows the repeated source assertions and does not duplicate parsing.
 
 Only post-create source assertions and bind verification are inside the
 compensation catch. Sources are checked again in their original order before
-the missing-ID refusal or unchanged bounded verifier. Every nonverified result
-rejects without an application-level retry. With an exact ID, rejection removes
-that ID and then separately asks whether inspection proves absence. Removal
-results are ignored; a successful remove status alone is not absence proof.
-Explicit absence rethrows the original value. Unknown/present inspection adds
-the existing cleanup suffix and retains the primary cause. Native removal or
-inspection throws escape without a new wrapper. The final missing-ID handoff
+the missing-ID rejection or unchanged bounded verifier. Every nonverified result
+rejects without an application-level retry. Rejection facts distinguish missing
+identity, nonverified mounts and thrown post-create checks. With a captured ID,
+cleanup records removal completed/failed and separately asks whether inspection
+proves absence, even after removal failure. A successful remove status alone is
+not absence proof. Without an ID, cleanup remains not authorized.
+
+Native projection rethrows the original primary value when removal completes
+and absence is proved. Cleanup failures produce `AggregateError` containing
+primary, optional removal failure and optional inspection failure in occurrence
+order, with primary cause; a removal error still aggregates when absence is
+proved. Unproved absence without these failures retains the existing cleanup
+suffix and formatter. Four native-private cause slots distinguish captured
+undefined from no cause, reset for actual attempts and release references on
+exit. They do not become inward result fields or a generic registry.
+The final missing-ID handoff
 guard remains, and MCP, SSH, Git and shared finish follow verification outside
 compensation; late failures never delete the verified container.
 
-`src/composition/container-create-lifecycle.ts` owns subprocesses and exact
-presentation. Create, forced rejected-ID removal and absence inspection use the
+`src/composition/container-create-lifecycle.ts` joins the semantic application
+to the existing native string/exception contract and owns private cause capture
+and presentation. The adapter owns subprocesses. Create, forced rejected-ID removal and absence inspection use the
 CLI captured before the existing flow, with unchanged argv/stdio. Existing
 proof and synchronization collaborators still select their current runtime at
 the original points. The required native context supplies a nullable lazy lab
@@ -848,24 +864,23 @@ status/stdout accessors, lazy output/environment ordering, captured/current
 runtime changes and the unchanged absence-classifier matrix. Architecture
 TypeScript checks synchronous contracts in addition to runtime assertions.
 
-`scripts/test-workspace-packages.mjs` adds actual compiled creation-policy
-traces to both extracted npm packages and materialized installs while retaining
-prior checks. It checks emitted application/ports/composition declarations,
-ordered success with exact case-preserved ID, namespace/collision refusal,
-missing-ID preservation, nonverified compensation, unknown-absence cause and
-late synchronization failure. All six child-process functions are fenced and
-ESM builtin bindings synchronized before importing application, composition and
-Docker; imports and construction must make zero probes or lazy fact calls.
-Coordinator execution of these distribution checks passed in both forms.
-Independent review and fresh QA remain required for candidate acceptance.
+`container-runtime-authority.integration.test.ts` exercises the actual emitted
+consumer and captured runtime through creation, rejected-ID removal and absence
+inspection. The core/facade owners cover finite results, lock callback behavior,
+cause identity/order, repeated-attempt isolation and public handoff. Distribution
+smoke in `scripts/test-workspace-packages.mjs` separately checks packaged layout,
+exports and CLI/MCP loading; it does not supply fresh-creation policy traces.
+See [the derived creation contract](../runtime/REQ__container-create-outcomes.md)
+for the complete compatibility and verification requirements.
 
 ### Known ceiling
 
 Known ceiling: creation with an unknown outcome or no exact returned ID cannot
 authorize cleanup — upgrade when a separate reconciliation policy is approved.
 
-Known ceiling: native removal/inspection throws may obscure the primary
-verification error — upgrade when compensation semantics changes are approved.
+Known ceiling: legacy unexpected-error formatting remains, including `.message`
+access on primitive/null/undefined primaries when absence is unproved. This
+conversion does not universally normalize or sanitize native exceptions.
 
 Known ceiling: portable tests and package smoke cannot establish native
 Windows/macOS, PowerShell execution, Docker/Podman, rootless UID/SELinux or remote
