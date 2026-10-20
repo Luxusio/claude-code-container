@@ -31,12 +31,21 @@ existing `COPY scripts/localhost-proxy/ .` and `go build .` closure.
 
 ## Exact variant behavior
 
-TS buffers before attempting local connection. Any rejection falls back to the
-host, not only connection refusal. Its optional host port uses nullish fallback.
-Success removes the original buffering listener, flushes chunks in order, pipes
-client to upstream and upstream to client, then installs the four error/close
-counterpart-destroy callbacks. Both failures destroy the client with the existing
-buffer-listener behavior. TS original-destination port zero is not newly refused.
+TS observes client error/close before dialing and buffers while the client is
+live. A local rejection falls back to the host only while the client remains
+live; the optional host port uses nullish fallback. Termination removes the
+buffering listener and releases pending chunks. A late successful upstream is
+destroyed without forwarding. The optional native `destroyed` observation also
+covers destruction before the close event; structural streams need not supply it.
+An error observer remains while deferred native error/close events settle.
+
+Healthy success installs counterpart cleanup before flushing original chunks in
+FIFO order and piping both directions. Buffered references are released after
+flush. Both live dial failures release pending input and destroy the client.
+Write, pipe and destroy failures retain their raw behavior; cleanup errors do not
+cause a fallback dial. The pending native dial still settles within its existing
+budget. TS original-destination port zero is not newly refused. See the
+[client lifetime requirement](REQ__localhost-proxy-client-lifetime.md).
 
 Go rejects metadata errors and port zero. It defers client close before metadata,
 tries local then host on any error, defers upstream close after successful dialing
@@ -86,12 +95,11 @@ reject asynchronous or incompatible method carriers. Actual fresh/reuse CLI
 fixtures must exercise the verifier rather than only count a mocked outer call.
 Independent code/security review and fresh QA follow authoring.
 
-Current npm packaging omits the Go source folder and entrypoint script. Root owns
-a separately declared repair that includes only required assets after inspecting
-the actual copy closure. Neither build file nor user Containerfile bytes are
-changed by this lane. Whole acceptance waits for source closure and actual Go
-build/proof from both npm-extracted and installer-materialized payloads, plus
-their actual TS exports and current declarations. Checkout fallback is forbidden.
+The current npm file list includes the Go source folder and entrypoint script.
+Asset inclusion alone does not establish that extracted or installed payloads
+build and execute correctly. Whole acceptance still needs the relevant Go
+build/proof from npm-extracted and installer-materialized payloads, plus their
+actual TS exports and current declarations. Checkout fallback is forbidden.
 
 Known ceiling: source authoring and portable mock/TCP proof do not establish real
 Docker Desktop, Podman-machine, iptables/SO_ORIGINAL_DST routing or native

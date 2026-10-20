@@ -7,7 +7,19 @@ import { createLocalhostProxyVerifier } from '../../application/localhost-proxy-
 import type { ForwardingStream } from '../../ports/localhost-proxy.js';
 import type { LocalhostProxyVerifierPorts } from '../../ports/localhost-proxy-setup.js';
 
-function contracts(socket: net.Socket, server: net.Server, original: ForwardingStream<Buffer, net.Socket>) {
+// A previously accepted structural caller: no native destroyed observation and
+// no lifecycle-listener removal capability. Its overloads deliberately stay narrow.
+class LegacyNarrowStream {
+    on(event: 'data', listener: (chunk: Buffer) => void): this;
+    on(event: 'error' | 'close', listener: () => void): this;
+    on(_event: 'data' | 'error' | 'close', _listener: ((chunk: Buffer) => void) | (() => void)): this { return this; }
+    removeListener(_event: 'data', _listener: (chunk: Buffer) => void): this { return this; }
+    write(_chunk: Buffer): boolean { return false; }
+    pipe(peer: LegacyNarrowStream): LegacyNarrowStream { return peer; }
+    destroy(): this { return this; }
+}
+
+function contracts(socket: net.Socket, server: net.Server, original: ForwardingStream<Buffer, net.Socket>, legacy: LegacyNarrowStream) {
      
     const literalPort: 19999 = PROXY_PORT;
     const facet: ForwardingStream<Buffer, net.Socket> = socket;
@@ -20,6 +32,9 @@ function contracts(socket: net.Socket, server: net.Server, original: ForwardingS
     void configured;
     const app = createLocalhostProxy<Buffer, net.Socket>({connect: tryConnect});
     const application: Promise<void> = app.proxyConnection(socket, 123);
+    const legacyFacet: ForwardingStream<Buffer, LegacyNarrowStream> = legacy;
+    const legacyApp = createLocalhostProxy<Buffer, LegacyNarrowStream>({connect: async () => legacy});
+    const legacyForward: Promise<void> = legacyApp.proxyConnection(legacy, 123);
     // @ts-expect-error native chunks must remain Buffer compatible
     socket.write({fake: true});
     // @ts-expect-error routing port is asynchronous
@@ -62,6 +77,6 @@ function contracts(socket: net.Socket, server: net.Server, original: ForwardingS
     // @ts-expect-error verifier remains synchronous
     const asyncVerified: Promise<void> = verifier.setup('owned');
 
-    void [literalPort, facet, dial, forward, defaults, listener, stopped, app, application, synchronous, wrongDial, asyncStop, wrote, piped, destroyed, asyncWrite, asyncPipe, asyncDestroy, asyncPresence, nativeObservation, asyncUnavailable, asyncReachable, stringLatency, wrongReach, verifier, verified, asyncVerified];
+    void [literalPort, facet, dial, forward, defaults, listener, stopped, app, application, legacyFacet, legacyApp, legacyForward, synchronous, wrongDial, asyncStop, wrote, piped, destroyed, asyncWrite, asyncPipe, asyncDestroy, asyncPresence, nativeObservation, asyncUnavailable, asyncReachable, stringLatency, wrongReach, verifier, verified, asyncVerified];
 }
 void contracts;

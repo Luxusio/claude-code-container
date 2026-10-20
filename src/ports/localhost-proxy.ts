@@ -1,5 +1,6 @@
 /** Caller-owned stream facet; methods keep their original native receivers. */
 export interface ForwardingStream<Chunk, Stream> {
+    readonly destroyed?: boolean;
     on(event: "data", listener: (chunk: Chunk) => void): Stream;
     on(event: "error" | "close", listener: () => void): Stream;
     removeListener(event: "data", listener: (chunk: Chunk) => void): Stream;

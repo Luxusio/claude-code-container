@@ -13,21 +13,39 @@ export function createLocalhostProxy<Chunk, Stream extends ForwardingStream<Chun
         const fallbackPort = hostPort ?? originalPort;
         const pendingData: Chunk[] = [];
         const onData = (chunk: Chunk) => pendingData.push(chunk);
+        let upstream: Stream | undefined;
+        let terminated = false;
+        const releasePending = () => {
+            client.removeListener("data", onData);
+            pendingData.length = 0;
+        };
+        const onClientTerminated = () => {
+            terminated = true;
+            releasePending();
+            upstream?.destroy();
+        };
         client.on("data", onData);
-        let upstream: Stream;
+        client.on("error", onClientTerminated);
+        client.on("close", onClientTerminated);
+        if (terminated || client.destroyed) { onClientTerminated(); return; }
         try { upstream = await ports.connect(localAddr, originalPort); }
         catch {
+            if (terminated || client.destroyed) { onClientTerminated(); return; }
             try { upstream = await ports.connect(hostAddr, fallbackPort); }
-            catch { client.destroy(); return; }
+            catch {
+                releasePending();
+                if (!terminated && !client.destroyed) client.destroy();
+                return;
+            }
         }
+        if (terminated || client.destroyed) { onClientTerminated(); return; }
+        upstream.on("error", () => client.destroy());
+        upstream.on("close", () => client.destroy());
         client.removeListener("data", onData);
-        for (const chunk of pendingData) upstream.write(chunk);
+        try { for (const chunk of pendingData) upstream.write(chunk); }
+        finally { pendingData.length = 0; }
         client.pipe(upstream);
         upstream.pipe(client);
-        client.on("error", () => upstream.destroy());
-        upstream.on("error", () => client.destroy());
-        client.on("close", () => upstream.destroy());
-        upstream.on("close", () => client.destroy());
     }
     return {proxyConnection};
 }

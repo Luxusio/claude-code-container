@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as runtimeFacade from "../../container-runtime.js";
 import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 import type { RuntimeName } from "../../domain/container-runtime.js";
+import { createLocalhostProxy } from "../../application/localhost-proxy.js";
 import { proxyConnection, startProxy, stopProxy, tryConnect, PROXY_PORT } from "../../localhost-proxy.js";
 import { setupLocalhostProxy } from "../../localhost-proxy-setup.js";
 
@@ -131,6 +132,67 @@ it.each([false, true])("actual native Socket forwarding is bidirectional with fa
     expect((await response)[0].toString()).toBe("reply:raw"); expect(Buffer.concat(received).toString()).toBe("raw");
     const unsolicited = once(client, "data"); remote.write(Buffer.from("from-upstream"));
     expect((await unsolicited)[0].toString()).toBe("from-upstream");
+}, 5000);
+
+it.each(["close-delivered", "destroyed-before-close"] as const)("a native client terminated with %s sends no buffered bytes to a late connected upstream", async termination => {
+    const owned = new Set<net.Socket>(); const observedClosures: Promise<void>[] = [];
+    const received: Buffer[] = []; let releaseDial!: () => void;
+    const dialBarrier = new Promise<void>(resolve => { releaseDial = resolve; });
+    let resolveDial!: (socket: net.Socket) => void;
+    const connectedDial = new Promise<net.Socket>(resolve => { resolveDial = resolve; });
+    let resolveRemote!: (socket: net.Socket) => void;
+    const acceptedRemote = new Promise<net.Socket>(resolve => { resolveRemote = resolve; });
+    let resolveClient!: (socket: net.Socket) => void;
+    const acceptedClient = new Promise<net.Socket>(resolve => { resolveClient = resolve; });
+    let resolveInput!: () => void;
+    const bufferedInput = new Promise<void>(resolve => { resolveInput = resolve; });
+    let forwarding: Promise<void> | undefined;
+    const own = (socket: net.Socket) => { owned.add(socket); return socket; };
+    const closed = (socket: net.Socket) => {
+        const result = new Promise<void>(resolve => socket.once("close", () => resolve()));
+        observedClosures.push(result); return result;
+    };
+    try {
+        const upstream = await listen(socket => {
+            own(socket); socket.on("data", chunk => received.push(chunk)); resolveRemote(socket);
+        });
+        const application = createLocalhostProxy<Buffer, net.Socket>({connect: async (host, port) => {
+            const socket = own(track(net.createConnection({host, port})));
+            await once(socket, "connect"); resolveDial(socket);
+            await dialBarrier; return socket;
+        }});
+        const proxy = await listen(socket => {
+            own(socket); socket.once("data", () => resolveInput());
+            forwarding = application.proxyConnection(socket, upstream.port, fixtureHost);
+            resolveClient(socket);
+        });
+        const frontend = own(track(net.createConnection({host: fixtureHost, port: proxy.port})));
+        await once(frontend, "connect"); frontend.write(Buffer.from("must-stay-private"));
+        const [client, dial, remote] = await Promise.all([acceptedClient, connectedDial, acceptedRemote]);
+        await bufferedInput;
+        let closeDelivered = false;
+        client.once("close", () => { closeDelivered = true; });
+        const clientClosed = closed(client); const dialClosed = closed(dial);
+        const remoteClosed = closed(remote); const frontendClosed = closed(frontend);
+        if (termination === "close-delivered") {
+            client.destroy(); await clientClosed;
+        } else {
+            client.destroy(new Error("native pending client failure"));
+            expect(client.destroyed).toBe(true);
+            expect(closeDelivered).toBe(false);
+            expect(client.readableEnded).toBe(false);
+        }
+        releaseDial();
+        if (!forwarding) throw new Error("Missing owned forwarding operation");
+        await forwarding;
+        await Promise.all([clientClosed, dialClosed, remoteClosed, frontendClosed]);
+        expect(dial.destroyed).toBe(true);
+        expect(Buffer.concat(received)).toHaveLength(0);
+    } finally {
+        releaseDial();
+        for (const socket of owned) socket.destroy();
+        await Promise.allSettled([...(forwarding ? [forwarding] : []), ...observedClosures]);
+    }
 }, 5000);
 
 it.each(["docker","podman"])("actual setup selects %s and exact 5000ms proc inspection without any TCP probe", runtime => {
