@@ -17,8 +17,32 @@ export function consumeRecordingConstructors(native: DirectRecordingNative, port
     };
     const semanticCopy: AndroidRecordingPorts = { ...android,
         copyRecording: () => ({ ok: true, detail: '', output: { stdout: 'copied', stderr: '', status: 0 } }),
-        fallbackStop: () => ({ opaque: 'ignored native receipt' }),
+        fallbackStop: () => ({ ok: false }),
+        observeGuest: () => ({ status: 'unavailable' }),
         removeRecording: () => undefined,
+    };
+    const capturedTarget = { kind: 'adb' as const, executable: '/selected/adb', prefix: ['-s', 'selected-device'] };
+    const revalidatedTarget = android.target({}, 'device_record_video_stop', { capturedTarget, waitBudget: { remaining: () => 1000 } });
+    // @ts-expect-error Revalidation carries the parent's live allowance, never a fresh scalar timeout.
+    android.target({}, 'device_record_video_stop', { capturedTarget, waitBudget: 3000 });
+    const rawFallback: AndroidRecordingPorts = { ...android,
+        // @ts-expect-error Android fallback acknowledgement is a finite native fact.
+        fallbackStop: () => ({ status: 0, stdout: '', stderr: '' }),
+    };
+    const rawGuestObservation: AndroidRecordingPorts = { ...android,
+        // @ts-expect-error Native pidof output is classified before entering the application.
+        observeGuest: () => ({ status: 1, stdout: '', stderr: '' }),
+    };
+    const incompleteAndroid: AndroidRecordingPorts = { ...android,
+        // @ts-expect-error Unavailability is explicit; null cannot be interpreted as guest absence.
+        observeGuest: () => null,
+    };
+    const consumeSettlement = (fallback: ReturnType<AndroidRecordingPorts['fallbackStop']>, guest: ReturnType<AndroidRecordingPorts['observeGuest']>) => {
+        // @ts-expect-error Native exit status is not an inward fallback fact.
+        const nativeStatus: number | null = fallback.status;
+        // @ts-expect-error Native guest output is not an inward observation fact.
+        const nativeOutput: string = guest.stdout;
+        return { ok: fallback.ok, status: guest.status, nativeStatus, nativeOutput };
     };
     const rawCopy: AndroidRecordingPorts = { ...android,
         // @ts-expect-error Native status/stdout/stderr is normalized before entering the application.
@@ -41,5 +65,5 @@ export function consumeRecordingConstructors(native: DirectRecordingNative, port
         const outputStatus: number = copy.output.status;
         return { ok: copy.ok, detail: copy.detail, output: copy.output, status, stderr, outputStatus };
     };
-    return { application, semantic, missing, deferredRead, deferredPublication, semanticCopy, rawCopy, missingCopyDetail, missingCopyOutput, consumeCopy };
+    return { application, semantic, missing, deferredRead, deferredPublication, semanticCopy, revalidatedTarget, rawFallback, rawGuestObservation, incompleteAndroid, consumeSettlement, rawCopy, missingCopyDetail, missingCopyOutput, consumeCopy };
 }

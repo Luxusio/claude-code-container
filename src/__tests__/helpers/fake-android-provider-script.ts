@@ -1,4 +1,8 @@
 import { canonicalWindowsPowerShellPath } from "@ccc/device-lab/providers/state/windows-system-powershell.mjs";
+import { join } from "node:path";
+
+export const fakeAndroidGuestWriterPath = (home: string, serial: string) => join(home, `fake-adb-guest-screenrecord-${encodeURIComponent(serial)}`);
+export const fakeAndroidRecordingArtifactPath = (home: string, serial: string, remote: string) => join(home, `fake-adb-recording-${encodeURIComponent(serial)}-${encodeURIComponent(remote)}`);
 
 /** Node provider program; prepended with a fixture tool name by the MCP fixture. */
 export const fakeAndroidProviderScript = String.raw`
@@ -6,6 +10,8 @@ const fs = require('node:fs'), path = require('node:path');
 const home = process.env.HOME, allArgs = process.argv.slice(2);
 const marker = (name) => path.join(home, name);
 const active = (serial) => marker('fake-adb-active-' + encodeURIComponent(serial));
+const guestWriter = (serial) => marker('fake-adb-guest-screenrecord-' + encodeURIComponent(serial));
+const recordingArtifact = (serial, remote) => marker('fake-adb-recording-' + encodeURIComponent(serial) + '-' + encodeURIComponent(remote));
 const has = (name) => fs.existsSync(marker(name));
 const read = (name) => fs.readFileSync(marker(name), 'utf8');
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -78,6 +84,10 @@ async function main() {
     }
     if (args[0] === 'shell' && args[1] === 'screenrecord') {
         if (args[4]?.includes('fail-immediate')) process.exit(9);
+        // ADB is a foreground transport client. Its exit does not stop the selected
+        // guest writer; only a guest stop or a natural recording completion does.
+        fs.writeFileSync(guestWriter(serial), args[4]);
+        fs.writeFileSync(recordingArtifact(serial, args[4]), 'downloaded');
         if (args[4]?.includes('natural-exit')) {
             // The test releases only after start has captured and committed identity.
             const deadline = Date.now() + 30000;
@@ -86,18 +96,47 @@ async function main() {
                 if (Date.now() >= deadline) throw new Error('natural recording fixture release timed out');
                 await sleep(20);
             }
+            fs.rmSync(guestWriter(serial), { force: true });
             return;
         }
-        await sleep(20000); return;
+        await sleep(20000);
+        fs.rmSync(guestWriter(serial), { force: true });
+        return;
     }
     if (args[0] === 'shell' && args[1] === 'pkill') {
         replaceState('fake-android-real-state-conflict', 93);
+        if (has('fake-adb-pkill-fail')) { console.error('screenrecord pkill denied'); process.exit(17); }
         if (has('fake-adb-pkill-no-match')) process.exit(1);
+        if (!has('fake-adb-guest-retain-after-pkill')) fs.rmSync(guestWriter(serial), { force: true });
+        return;
+    }
+    if (args[0] === 'shell' && args[1] === 'pidof' && args[2] === 'screenrecord') {
+        replaceState('fake-android-recording-observation-conflict', 94);
+        if (has('fake-recording-arm-guard-discovery')) fs.writeFileSync(marker('fake-recording-guard-discovery-armed'), '1');
+        if (has('fake-recording-guest-probe-gate')) {
+            fs.writeFileSync(marker('fake-recording-guest-probe-ready'), '1');
+            const deadline = Date.now() + 10000;
+            while (!has('fake-recording-guest-probe-release')) {
+                if (!fs.existsSync(home)) return;
+                if (Date.now() >= deadline) throw new Error('recording guest observation fixture release timed out');
+                await sleep(10);
+            }
+        }
+        if (has('fake-adb-guest-unavailable')) { console.error('selected guest unavailable'); process.exit(17); }
+        if (has('fake-adb-guest-malformed')) { console.log('not-a-pid'); return; }
+        if (has('fake-adb-guest-empty-success')) return;
+        if (fs.existsSync(guestWriter(serial))) { console.log('2718'); return; }
+        process.exit(1);
+    }
+    if (args[0] === 'shell' && args[1] === 'rm' && args[2] === '-f') {
+        fs.rmSync(recordingArtifact(serial, args[3]), { force: true });
+        return;
     }
     if (args[0] === 'pull') {
         if (args[1]?.includes('fail-pull')) process.exit(8);
         if (args[1]?.includes('fail-once-pull') && !has('fake-adb-pull-retried')) { fs.writeFileSync(marker('fake-adb-pull-retried'), ''); process.exit(8); }
-        fs.writeFileSync(args[2], 'downloaded'); return;
+        const recorded = recordingArtifact(serial, args[1]);
+        fs.writeFileSync(args[2], fs.existsSync(recorded) ? fs.readFileSync(recorded) : 'downloaded'); return;
     }
     if (args[0] === 'push' && args[2]?.includes('fail-push')) process.exit(8);
     if (args[0] === 'shell') console.log('ok');
@@ -127,6 +166,12 @@ fs.lstatSync = function(file, ...args) {
     return androidLstatSync(file, ...args);
 };
 cp.spawnSync = function(command, args = [], options = {}) {
+    const lookup = command === 'where' ? args[0]
+        : command === '/bin/sh' && args[0] === '-c' && args[1]?.startsWith('command -v ') ? args[1].slice(11) : undefined;
+    if (['adb', 'emulator', 'avdmanager'].includes(lookup)
+        && fs.existsSync(path.join(process.env.HOME, 'fake-recording-guard-discovery-armed'))) {
+        fs.appendFileSync(process.env.FAKE_ANDROID_LOG, 'recording-guard-discovery ' + lookup + '\n');
+    }
     // This SDK fixture owns no native emulator.exe/qemu processes. Model only
     // the exact AVD liveness probe; process identity probes remain native.
     const avdProbe = "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { if ([string]::IsNullOrWhiteSpace([string]$_.CommandLine)) { throw 'android-emulator-process-command-unavailable' }; [string]$_.CommandLine }";

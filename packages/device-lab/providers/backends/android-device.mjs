@@ -210,14 +210,16 @@ function abortAndroidRealLifecycle(deviceId, lifecycle, original) {
     return physicalStop.abortLifecycle(deviceId, lifecycle, original);
 }
 
-/** @returns {{ok:true,lease:object}|{ok:false,error:string}} */
-function refreshAndroidRealDeviceLease(device) {
+/** @param {{remaining():number}} [waitBudget]
+ * @returns {{ok:true,lease:object}|{ok:false,error:string}} */
+function refreshAndroidRealDeviceLease(device, waitBudget) {
     if (!device?.id || !device?.serial || !device?.leaseClaimId || !device?.leaseClaimNonce) {
         return { ok: false, error: "Android physical device lease metadata is incomplete; clear stale owner metadata and attach the device again" };
     }
     const refreshed = heartbeatPhysicalLease("android-device", device.serial, device.id, {
         claimId: device.leaseClaimId,
         claimNonce: device.leaseClaimNonce,
+        ...(waitBudget ? { waitBudget } : {}),
     });
     if (!refreshed.ok) {
         return { ok: false, error: `Android physical device lease is not owned by this attachment: ${refreshed.error || "lease-conflict"}` };
@@ -329,7 +331,24 @@ const androidRealRecordingNative = {
     localPath: device => androidRealRecordingLocalPath(device),
     validateLocalOutputPath: (path, options) => validateLocalOutputPath(path, options),
     recordingDirectory: device => androidRealRecordingDir(device),
-    resolveTarget(device) {
+    resolveTarget(device, _operation, validation) {
+        if (validation) {
+            const current = findAndroidRealDevice(device.id);
+            if (!current) return { kind: "missing" };
+            if (["serial", "leaseClaimId", "leaseClaimNonce"].some(field => current[field] !== device[field])) {
+                return { kind: "failure", message: "Android physical recording target or attachment changed; recording state and remote artifact were preserved." };
+            }
+            let lease;
+            try { lease = refreshAndroidRealDeviceLease(current, validation.waitBudget); }
+            catch (error) {
+                if (error && typeof error === "object" && "code" in error && error.code === "shared-mutation-lock-timeout") {
+                    return { kind: "failure", message: "Android physical recording target validation timed out; recording state and remote artifact were preserved." };
+                }
+                throw error;
+            }
+            if (!lease.ok) return { kind: "failure", message: lease.error };
+            return { kind: "ready", device: current, target: { kind: "adb", executable: validation.capturedTarget.executable, prefix: adbArgsForDevice(current, []) } };
+        }
         const selected = ensureAdbDevice(device.id);
         if (selected.unknown) return { kind: "missing" };
         if (selected.error) return { kind: "failure", message: selected.error };

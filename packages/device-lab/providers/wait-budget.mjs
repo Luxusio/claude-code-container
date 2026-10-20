@@ -1,9 +1,11 @@
+/** @param {unknown} value @param {number} fallback @param {number} maximum */
 function boundedNumber(value, fallback, maximum) {
     return typeof value === "number" && Number.isFinite(value)
         ? Math.min(maximum, Math.max(1, Math.trunc(value)))
         : fallback;
 }
 
+/** @param {unknown} timeoutMs @param {unknown} intervalMs */
 export function createWaitBudget(timeoutMs, intervalMs) {
     const timeout = boundedNumber(timeoutMs, 10000, 600000);
     const interval = boundedNumber(intervalMs, 500, 60000);
@@ -17,6 +19,7 @@ export function createWaitBudget(timeoutMs, intervalMs) {
         },
         async pause() {
             const wakeAt = Math.min(deadline, performance.now() + interval);
+            /** @type {number} */
             let delay;
             // Timer callbacks can arrive early. Recheck the same monotonic
             // target without restarting the interval or overall allowance.

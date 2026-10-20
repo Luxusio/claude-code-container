@@ -38,10 +38,10 @@ import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } f
 const recordingNative = {
     kind: 'android-emulator', findDevice: findAndroidDevice, updateDevice: updateAndroidDevice,
     localPath: androidRecordingLocalPath, validateLocalOutputPath, recordingDirectory: androidRecordingDir,
-    resolveTarget(device) {
-        const discovery = androidDiscovery();
-        if (!discovery.adb) return { kind: 'failure', message: 'Android backend missing prerequisites: adb' };
-        return { kind: 'ready', device, target: { kind: 'adb', executable: discovery.adb, prefix: adbArgsForDevice(device, []) } };
+    resolveTarget(device, _operation, validation) {
+        const adb = validation ? validation.capturedTarget.executable : androidDiscovery().adb;
+        if (!adb) return { kind: 'failure', message: 'Android backend missing prerequisites: adb' };
+        return { kind: 'ready', device, target: { kind: 'adb', executable: adb, prefix: adbArgsForDevice(device, []) } };
     },
     runCommand: command => command.timeoutMs === undefined
         ? run(command.executable, command.args)

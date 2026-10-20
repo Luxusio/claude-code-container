@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, linkSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { hostname, tmpdir } from "os";
+import { createHash } from "crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "path";
@@ -200,7 +201,119 @@ describe("device-lab shared mutation lock", () => {
         return { acquire: api.withSharedMutationLockAsync, identitySync, observe };
     }
 
+    async function darwinNativeBudgetedFacade(implementation: "host" | "provider", clock: { value: number }, probe: (field: string, timeout: number) => string) {
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+        const monotonic = vi.spyOn(performance, "now").mockImplementation(() => clock.value);
+        vi.resetModules();
+        vi.doMock("child_process", async importOriginal => {
+            const actual = await importOriginal<typeof import("child_process")>();
+            return { ...actual, spawnSync(executable: string, args: string[], options: { timeout: number }) {
+                expect(executable).toBe("/bin/ps");
+                expect(args.slice(0, 3)).toEqual(["-p", String(process.pid), "-o"]);
+                expect(["lstart=", "command="]).toContain(args[3]);
+                const stdout = probe(args[3], options.timeout);
+                return { status: 0, signal: null, pid: process.pid, stdout, stderr: "", output: [null, stdout, ""] };
+            } };
+        });
+        vi.doMock("@ccc/device-lab/providers/application/shared-mutation-lock.mjs", async importOriginal => {
+            const actual = await importOriginal<typeof import("@ccc/device-lab/providers/application/shared-mutation-lock.mjs")>();
+            return { ...actual, createSharedMutationLock(ports: Parameters<typeof actual.createSharedMutationLock>[0]) {
+                return actual.createSharedMutationLock({ ...ports,
+                    pauseSync(milliseconds) { clock.value += milliseconds; return undefined; },
+                });
+            } };
+        });
+        const restore = () => {
+            vi.doUnmock("child_process");
+            vi.doUnmock("@ccc/device-lab/providers/application/shared-mutation-lock.mjs");
+            vi.resetModules();
+            monotonic.mockRestore();
+            Object.defineProperty(process, "platform", platform);
+        };
+        try {
+            const api = implementation === "host"
+                ? await import("@ccc/device-lab/device-lab-shared-state.js?darwin-native-lock-budget")
+                : await import("@ccc/device-lab/providers/state/shared-mutation-lock.mjs?darwin-native-lock-budget");
+            return { acquire: api.withSharedMutationLock, restore };
+        } catch (error) { restore(); throw error; }
+    }
+
     for (const implementation of ["host", "provider"] as const) {
+        it(`${implementation} native Darwin lock regression: cold identity cannot outlive its allowance or poison fresh publication`, async () => {
+            const file = lockPath(), protectedPath = join(dirname(file), "protected-state.json");
+            writeFileSync(protectedPath, "previous protected bytes");
+            const clock = { value: 0 }, probes: Array<{ phase: string; field: string; timeout: number }> = [];
+            let phase = "late", deadline = 40;
+            const facade = await darwinNativeBudgetedFacade(implementation, clock, (field, timeout) => {
+                probes.push({ phase, field, timeout });
+                if (phase === "late") clock.value += 50;
+                return field === "lstart=" ? `${phase}-own-start` : `${phase}-owned-command`;
+            });
+            try {
+                const callback = vi.fn(() => writeFileSync(protectedPath, "late publication"));
+                expect(() => facade.acquire(file, callback, { waitBudget: { remaining: () => deadline - clock.value } }))
+                    .toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+                expect(callback).not.toHaveBeenCalled(); expect(existsSync(file)).toBe(false);
+                expect(readFileSync(protectedPath, "utf8")).toBe("previous protected bytes");
+
+                phase = "fresh"; deadline = clock.value + 40;
+                let published: Record<string, unknown> | undefined;
+                expect(facade.acquire(file, () => {
+                    published = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+                    writeFileSync(protectedPath, "fresh publication");
+                    return "committed";
+                }, { waitBudget: { remaining: () => deadline - clock.value } })).toBe("committed");
+                expect(published).toMatchObject({ processIdentityStatus: "recorded", processIdentity: {
+                    pid: process.pid, startToken: "ps:fresh-own-start", commandHash: createHash("sha256").update("fresh-owned-command").digest("hex"),
+                } });
+                expect(readFileSync(protectedPath, "utf8")).toBe("fresh publication"); expect(existsSync(file)).toBe(false);
+                const late = probes.filter(observed => observed.phase === "late"), fresh = probes.filter(observed => observed.phase === "fresh");
+                expect(late).toHaveLength(1); expect(late[0].timeout).toBe(40);
+                expect(fresh).toHaveLength(2); expect(fresh.every(observed => observed.timeout > 0 && observed.timeout <= 40)).toBe(true);
+                expect(readdirSync(dirname(file))).toEqual(["protected-state.json"]);
+            } finally { facade.restore(); }
+        });
+
+        it(`${implementation} native Darwin lock regression: late contender observation cannot authorize a fresh retry to reclaim live bytes`, async () => {
+            const file = lockPath(), protectedPath = join(dirname(file), "protected-state.json");
+            writeFileSync(protectedPath, "previous protected bytes");
+            const command = "owned-lock-fixture-command", start = "owned-lock-fixture-start";
+            const owner = { token: testToken(), pid: process.pid, host: hostname(), processIdentity: {
+                pid: process.pid, startToken: `ps:${start}`, commandHash: createHash("sha256").update(command).digest("hex"),
+            } };
+            const bytes = JSON.stringify(owner), clock = { value: 0 };
+            const probes: Array<{ phase: string; field: string; timeout: number }> = [];
+            let phase = "warm", deadline = 40;
+            const facade = await darwinNativeBudgetedFacade(implementation, clock, (field, timeout) => {
+                probes.push({ phase, field, timeout });
+                if (phase === "late") clock.value += 50;
+                return field === "lstart=" ? phase === "late" ? "reused-pid-start" : start : command;
+            });
+            try {
+                expect(facade.acquire(file, () => "warm identity", { waitBudget: { remaining: () => deadline - clock.value } })).toBe("warm identity");
+                writeFileSync(file, bytes);
+                phase = "late"; deadline = clock.value + 40;
+                const callback = vi.fn(() => { writeFileSync(protectedPath, "stolen publication"); return "stolen"; });
+                expect(() => facade.acquire(file, callback, { staleMs: 1, waitBudget: { remaining: () => deadline - clock.value } }))
+                    .toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+                expect(callback).not.toHaveBeenCalled(); expect(readFileSync(file, "utf8")).toBe(bytes);
+                expect(readFileSync(protectedPath, "utf8")).toBe("previous protected bytes");
+
+                phase = "fresh"; deadline = clock.value + 40;
+                let failure: unknown;
+                try { facade.acquire(file, callback, { staleMs: 1, waitBudget: { remaining: () => deadline - clock.value } }); }
+                catch (error) { failure = error; }
+                expect(callback).not.toHaveBeenCalled(); expect(readFileSync(file, "utf8")).toBe(bytes);
+                expect(readFileSync(protectedPath, "utf8")).toBe("previous protected bytes");
+                expect(failure).toMatchObject({ code: "shared-mutation-lock-timeout" });
+                const late = probes.filter(observed => observed.phase === "late"), fresh = probes.filter(observed => observed.phase === "fresh");
+                expect(late).toHaveLength(1); expect(late[0].timeout).toBe(40);
+                expect(fresh).toHaveLength(2); expect(fresh.every(observed => observed.timeout > 0 && observed.timeout <= 40)).toBe(true);
+                expect(readdirSync(dirname(file)).sort()).toEqual(["protected-state.json", "state.mutation.lock"]);
+            } finally { facade.restore(); }
+        });
+
         it.each([
             ["sync", -60_000], ["sync", 60_000], ["async", -60_000], ["async", 60_000],
         ] as const)(`${implementation} filesystem facade bounds ordinary %s acquisition through a %s wall jump during contention`, async (mode, jump) => {

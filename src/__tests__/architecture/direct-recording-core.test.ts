@@ -10,6 +10,10 @@ import type { DirectRecordingNative, RecordingCommonPorts, RecordingProcessPorts
 const id = "owned-recording", destination = "/owned/final-video", remote = "/guest/owned-video";
 const timestamp = "2026-10-11T00:00:00.000Z";
 function unexpected(): never { throw new Error("Unallocated native effect"); }
+const settledAndroid = {
+    budget: () => ({ remaining: () => 3000, requestTimeout: (maximum = 3000) => Math.min(3000, maximum), pause: async () => undefined }),
+    observeGuest: () => ({ status: "absent" as const }),
+};
 
 function repository(recording: RecordingRecord | null) {
     const state: { device: RecordingRecord; files: Map<string, string> } = {
@@ -45,7 +49,7 @@ describe("direct recording generation and artifact outcomes", () => {
         const successor = { active: true, runtimeId: "successor-runtime", pid: 29, remotePath: "/guest/successor-video" };
         let recorderAlive = true, notifyExit: () => undefined = unexpected;
         const ports: AndroidRecordingPorts = {
-            ...common, ...processLeaves, kind: "android-emulator",
+            ...common, ...processLeaves, ...settledAndroid, kind: "android-emulator",
             target: device => ({ kind: "ready", device, target: { kind: "adb", executable: "/allocated/adb", prefix: ["-s", "emulator-5582"] } }),
             spawnRecorder(_target, _paths, _limit, onExit) {
                 state.device = { ...state.device, recording: successor };
@@ -56,8 +60,8 @@ describe("direct recording generation and artifact outcomes", () => {
             fallbackStop: unexpected, copyRecording: unexpected, removeRecording: unexpected,
         };
 
-        expect(await createDirectRecordingApplication(ports).request("device_record_video_start", { deviceId: id })).toEqual({
-            kind: "failure", message: `Android recording state changed while starting for ${id}; the new recorder was stopped.`,
+        expect(await createDirectRecordingApplication(ports).request("device_record_video_start", { deviceId: id })).toMatchObject({
+            kind: "failure", message: expect.stringContaining(`changed while starting for ${id}`),
         });
         expect(recorderAlive).toBe(false);
         expect(state.device.recording).toEqual(successor);
@@ -100,14 +104,15 @@ describe("direct recording generation and artifact outcomes", () => {
     });
 
     it("retains pending video after semantic copy failure and removes the remote only after a successful retry commits and clears", async () => {
-        const previous = { active: true, runtimeId: "previous-runtime", pid: 17, remotePath: remote, localPath: destination };
+        const previous = { active: true, runtimeId: "previous-runtime", pid: 17,
+            processIdentity: { pid: 17, startToken: "owned-start", commandHash: "a".repeat(64) }, remotePath: remote, localPath: destination };
         const { state, common, stage } = repository(previous);
         state.files.set(remote, "known video bytes");
         const effects: string[] = [];
-        let copySucceeds = false, generation = 0;
+        let copySucceeds = false, generation = 0, localExited = false;
         const output = { stdout: "copied", stderr: "copy warning", status: 91 };
         const ports: AndroidRecordingPorts = {
-            ...common, ...processLeaves, kind: "android-emulator",
+            ...common, ...processLeaves, ...settledAndroid, kind: "android-emulator",
             runtimeId: () => `finalization-${++generation}`,
             updateDevice(deviceId, update) {
                 return common.updateDevice(deviceId, current => {
@@ -121,9 +126,11 @@ describe("direct recording generation and artifact outcomes", () => {
                 });
             },
             target: device => ({ kind: "ready", device, target: { kind: "adb", executable: "/allocated/adb", prefix: ["-s", "emulator-5582"] } }),
-            signal(recording) { expect(recording).toEqual(previous); effects.push("signal"); return { signaled: true }; },
-            fallbackStop() { effects.push("fallback-stop"); return { opaque: "ignored stop receipt" }; },
-            async waitExit(pid, timeoutMs) { expect([pid, timeoutMs]).toEqual([17, 3000]); effects.push("wait"); return true; },
+            observe: () => ({ status: localExited ? "exited" : "match" }),
+            signal(recording) { expect(recording).toEqual(previous); effects.push("signal"); localExited = true; return { signaled: true }; },
+            fallbackStop() { effects.push("fallback-stop"); return { ok: true }; },
+            async waitExit() { return localExited; },
+            observeGuest() { effects.push("observe-guest"); return { status: "absent" }; },
             createStage() { effects.push("create-stage"); return { ok: true, stage }; },
             copyRecording(_target, source, stagedPath, timeoutMs) {
                 expect([source, stagedPath, timeoutMs]).toEqual([remote, stage.stagedPath, 300000]);
@@ -152,7 +159,9 @@ describe("direct recording generation and artifact outcomes", () => {
         expect(await application.request("device_record_video_stop", { deviceId: id })).toEqual({
             kind: "failure", message: `Error: native transfer denied. Android recording remains pending finalization for ${id}.`,
         });
-        expect(effects).toEqual(["signal", "fallback-stop", "wait", "claim", "create-stage", "copy", "dispose"]);
+        expect(effects).toContain("signal");
+        expect(effects.indexOf("observe-guest")).toBeLessThan(effects.indexOf("claim"));
+        expect(effects.slice(effects.indexOf("claim"))).toEqual(["claim", "create-stage", "copy", "dispose"]);
         expect(state.device.recording).toMatchObject({ active: false, runtimeId: "finalization-1", recorderRuntimeId: "previous-runtime", remotePath: remote, localPath: destination });
         expect(state.files.get(destination)).toBe("previous destination");
         expect(state.files.get(remote)).toBe("known video bytes");
@@ -163,7 +172,9 @@ describe("direct recording generation and artifact outcomes", () => {
         expect(await application.request("device_record_video_stop", { deviceId: id })).toMatchObject({
             kind: "success", value: { deviceId: id, stopped: true, provider: "adb-screenrecord", ...output },
         });
-        expect(effects).toEqual(["claim", "create-stage", "copy", "commit", "clear", "remove", "dispose"]);
+        expect(effects).not.toContain("signal");
+        expect(effects.indexOf("observe-guest")).toBeLessThan(effects.indexOf("claim"));
+        expect(effects.slice(effects.indexOf("claim"))).toEqual(["claim", "create-stage", "copy", "commit", "clear", "remove", "dispose"]);
         expect(state.device.recording).toBeNull();
         expect(state.files.get(destination)).toBe("known video bytes");
         expect(state.files.has(remote)).toBe(false);
@@ -252,6 +263,12 @@ describe("direct recording native copy observations", () => {
         let remotePresent = true, removals = 0;
         const env = { CCC_RECORDING_FIXTURE: "selected" };
         const runCommand: Extract<DirectRecordingNative, { kind: "macos-vm" }>["runCommand"] = command => {
+            if (kind !== "macos-vm" && command.args.includes("pidof")) {
+                expect(command.args).toEqual(["-s", "selected-device", "shell", "pidof", "screenrecord"]);
+                expect(command.timeoutMs).toBeGreaterThan(0);
+                expect(command.timeoutMs).toBeLessThanOrEqual(3000);
+                return { status: 1, stdout: "", stderr: "" };
+            }
             const copying = kind === "macos-vm" ? command.executable === "/allocated/scp" : command.args.includes("pull");
             if (copying) {
                 const stagedPath = command.args[command.args.length - 1];

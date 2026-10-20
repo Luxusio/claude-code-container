@@ -2,6 +2,9 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanupFakeAndroidMcpContext, createFakeAndroidMcpContext, TIMEOUT, type FakeAndroidMcpContext } from "./helpers/fake-android-mcp-fixture.js";
+import { repoRoot } from "./helpers/device-lab-mcp-fixture.js";
+import { fakeAndroidGuestWriterPath, fakeAndroidRecordingArtifactPath } from "./helpers/fake-android-provider-script.js";
+import { withSharedMutationLockAsync } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
 
 function parseToolJson(result: { content?: unknown }) {
     return JSON.parse((((result.content as Array<{ text?: string }> | undefined) ?? [])[0]?.text ?? "{}")) as Record<string, unknown>;
@@ -15,7 +18,7 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
     let logPath: string;
 
     beforeEach(async () => {
-        context = await createFakeAndroidMcpContext();
+        context = await createFakeAndroidMcpContext({ entrypoint: join(repoRoot, "dist/device-lab-mcp/server.mjs") });
         client = context.client;
         homeDir = context.homeDir;
         binDir = context.binDir;
@@ -25,6 +28,130 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
     afterEach(async () => {
         await cleanupFakeAndroidMcpContext(context);
     }, TIMEOUT);
+
+    async function startSettlementRecording(remotePath: string) {
+        const deviceId = "android-real-emitted-settlement", serial = "R5CREAL123";
+        const attached = await client.callTool({ name: "attach", arguments: { backend: "android-device", deviceId, name: "Emitted Recording Settlement", serial } });
+        expect(attached.isError, JSON.stringify(attached.content)).not.toBe(true);
+        const device = parseToolJson(attached).device as Record<string, unknown>;
+        const statePath = join(homeDir, ".ccc", "devices", "owners", String(device.ownerId), "android-device", "devices.json");
+        const leasePath = join(homeDir, ".ccc", "devices", "physical-leases", "android-device", "locks", `${encodeURIComponent(serial)}.json`);
+        const localPath = join(homeDir, "settlement-video.mp4"); writeFileSync(localPath, "previous destination");
+        const started = await client.callTool({ name: "record_video", arguments: { action: "start", deviceId, remotePath, localPath, timeLimitSec: 5 } });
+        expect(started.isError, JSON.stringify(started.content)).not.toBe(true);
+        const recording = parseToolJson(started).recording as Record<string, unknown>;
+        const artifact = fakeAndroidRecordingArtifactPath(homeDir, serial, remotePath), writer = fakeAndroidGuestWriterPath(homeDir, serial);
+        await expect.poll(() => existsSync(writer)).toBe(true); expect(readFileSync(artifact, "utf8")).toBe("downloaded");
+        const readState = () => JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, unknown>> };
+        const readRecording = () => readState().devices.find(current => current.id === deviceId)?.recording;
+        const replaceRecording = (next: Record<string, unknown>) => writeFileSync(statePath, JSON.stringify({
+            devices: readState().devices.map(current => current.id === deviceId ? { ...current, recording: next } : current),
+        }));
+        const stop = () => client.callTool({ name: "record_video", arguments: { action: "stop", deviceId } });
+        const assertLease = () => expect(JSON.parse(readFileSync(leasePath, "utf8"))).toMatchObject({ deviceId, hardwareId: serial });
+        return { deviceId, recording, artifact, writer, localPath, readRecording, replaceRecording, stop, assertLease };
+    }
+
+    it("emitted physical recording stop retains unavailable identity, lease and failed fallback recovery bytes", { timeout: TIMEOUT }, async () => {
+        const f = await startSettlementRecording("/sdcard/emitted-unavailable-real-recording.mp4");
+        const unavailable = { ...f.recording }; delete unavailable.processIdentity;
+        f.replaceRecording(unavailable); writeFileSync(join(homeDir, "fake-adb-pkill-fail"), "1");
+        const failed = await f.stop();
+        expect(failed.isError, JSON.stringify(failed.content)).toBe(true); expect(f.readRecording()).toEqual(unavailable); f.assertLease();
+        expect(readFileSync(f.localPath, "utf8")).toBe("previous destination"); expect(readFileSync(f.artifact, "utf8")).toBe("downloaded"); expect(existsSync(f.writer)).toBe(true);
+        f.replaceRecording(f.recording); rmSync(join(homeDir, "fake-adb-pkill-fail"));
+        const recovered = await f.stop();
+        expect(recovered.isError, JSON.stringify(recovered.content)).not.toBe(true); expect(parseToolJson(recovered)).toMatchObject({ stopped: true, provider: "adb-screenrecord" });
+        expect(f.readRecording()).toBeNull(); f.assertLease(); expect(readFileSync(f.localPath, "utf8")).toBe("downloaded");
+        expect(existsSync(f.artifact)).toBe(false); expect(existsSync(f.writer)).toBe(false);
+    });
+
+    it("emitted physical pending recording retry checks the selected guest and retains its lease", { timeout: TIMEOUT }, async () => {
+        const f = await startSettlementRecording("/sdcard/fail-once-pull-emitted-real-recording.mp4");
+        expect((await f.stop()).isError).toBe(true);
+        const pending = f.readRecording(); expect(pending).toMatchObject({ active: false }); f.assertLease();
+        expect(readFileSync(f.localPath, "utf8")).toBe("previous destination"); expect(readFileSync(f.artifact, "utf8")).toBe("downloaded");
+        writeFileSync(f.writer, "unverified selected guest writer"); writeFileSync(join(homeDir, "fake-adb-guest-unavailable"), "1");
+        const uncertainRetry = await f.stop();
+        expect(uncertainRetry.isError, JSON.stringify(uncertainRetry.content)).toBe(true); expect(f.readRecording()).toEqual(pending); f.assertLease();
+        expect(readFileSync(f.localPath, "utf8")).toBe("previous destination"); expect(readFileSync(f.artifact, "utf8")).toBe("downloaded"); expect(existsSync(f.writer)).toBe(true);
+        rmSync(f.writer); rmSync(join(homeDir, "fake-adb-guest-unavailable"));
+        const recovered = await f.stop();
+        expect(recovered.isError, JSON.stringify(recovered.content)).not.toBe(true); expect(f.readRecording()).toBeNull(); f.assertLease();
+        expect(readFileSync(f.localPath, "utf8")).toBe("downloaded"); expect(existsSync(f.artifact)).toBe(false);
+    });
+
+    it("emitted physical status cannot convert a mismatched recorder into permission to finalize a running guest", { timeout: TIMEOUT }, async () => {
+        const f = await startSettlementRecording("/sdcard/emitted-mismatch-real-recording.mp4");
+        const mismatched = { ...f.recording, processIdentity: { ...(f.recording.processIdentity as Record<string, unknown>), startToken: "successor-start" } };
+        f.replaceRecording(mismatched);
+        const status = await client.callTool({ name: "record_video", arguments: { action: "status", deviceId: f.deviceId } });
+        expect(status.isError, JSON.stringify(status.content)).not.toBe(true); expect(parseToolJson(status).recording).toEqual(mismatched);
+        const failed = await f.stop();
+        expect(failed.isError, JSON.stringify(failed.content)).toBe(true); expect(f.readRecording()).toEqual(mismatched); f.assertLease();
+        expect(readFileSync(f.localPath, "utf8")).toBe("previous destination"); expect(readFileSync(f.artifact, "utf8")).toBe("downloaded"); expect(existsSync(f.writer)).toBe(true);
+        expect(readFileSync(logPath, "utf8")).not.toContain("shell pkill -2 screenrecord");
+        f.replaceRecording(f.recording);
+        const recovered = await f.stop();
+        expect(recovered.isError, JSON.stringify(recovered.content)).not.toBe(true); expect(f.readRecording()).toBeNull(); f.assertLease();
+        expect(readFileSync(f.localPath, "utf8")).toBe("downloaded"); expect(existsSync(f.artifact)).toBe(false);
+    });
+
+    it("emitted physical recording settlement revalidates its captured target without restarting SDK discovery", { timeout: TIMEOUT }, async () => {
+        const f = await startSettlementRecording("/sdcard/emitted-captured-target-real-recording.mp4");
+        writeFileSync(join(homeDir, "fake-recording-arm-guard-discovery"), "1");
+        const stopped = await f.stop();
+        expect(stopped.isError, JSON.stringify(stopped.content)).not.toBe(true);
+        expect(parseToolJson(stopped)).toMatchObject({ stopped: true, provider: "adb-screenrecord" });
+        expect(f.readRecording()).toBeNull(); f.assertLease(); expect(readFileSync(f.localPath, "utf8")).toBe("downloaded");
+        expect(existsSync(f.artifact)).toBe(false); expect(existsSync(f.writer)).toBe(false);
+        expect(existsSync(join(homeDir, "fake-recording-guard-discovery-armed"))).toBe(true);
+        expect(readFileSync(logPath, "utf8")).not.toContain("recording-guard-discovery ");
+    });
+
+    it.each(["hardware", "aggregate"] as const)("emitted physical recording settlement bounds its contended %s lease lock by the remaining allowance", { timeout: TIMEOUT }, async scope => {
+        const f = await startSettlementRecording("/sdcard/natural-exit-contended-lease-recording.mp4");
+        writeFileSync(join(homeDir, "fake-adb-release-natural-recording"), "release");
+        await expect.poll(f.readRecording, { timeout: 10000 }).toMatchObject({ active: false });
+        const pending = f.readRecording();
+        const root = join(homeDir, ".ccc", "devices", "physical-leases");
+        const lockPath = scope === "hardware" ? join(root, "android-device", "locks", "R5CREAL123.mutation.lock") : join(root, "android-device.mutation.lock");
+        const marker = (name: string) => join(homeDir, `fake-recording-guest-probe-${name}`);
+        writeFileSync(marker("gate"), "1");
+        let releaseLock: (() => void) | undefined, holder: Promise<unknown> | undefined;
+        const stopRequest = f.stop();
+        try {
+            await expect.poll(() => existsSync(marker("ready")), { timeout: 5000 }).toBe(true);
+            let entered!: () => void;
+            const acquired = new Promise<void>(resolve => { entered = resolve; });
+            const gate = new Promise<void>(resolve => { releaseLock = resolve; });
+            holder = withSharedMutationLockAsync(lockPath, async () => { entered(); await gate; });
+            await Promise.race([acquired, holder]);
+            const ownedLock = readFileSync(lockPath, "utf8");
+            writeFileSync(join(homeDir, "fake-stop-clock-offset"), "2000");
+            const releasedAt = performance.now();
+            writeFileSync(marker("release"), "release");
+            const refused = await stopRequest;
+            const elapsed = performance.now() - releasedAt;
+            expect(refused.isError, JSON.stringify(refused.content)).toBe(true);
+            expect(f.readRecording()).toEqual(pending); f.assertLease();
+            expect(readFileSync(f.localPath, "utf8")).toBe("previous destination"); expect(readFileSync(f.artifact, "utf8")).toBe("downloaded");
+            expect(readFileSync(lockPath, "utf8")).toBe(ownedLock);
+            expect(readFileSync(logPath, "utf8")).not.toContain(" pull /sdcard/natural-exit-contended-lease-recording.mp4 ");
+            expect(elapsed).toBeLessThan(2000);
+        } finally {
+            writeFileSync(marker("release"), "release");
+            releaseLock?.();
+            if (holder) await holder;
+            await stopRequest;
+            for (const name of ["gate", "ready", "release"]) rmSync(marker(name), { force: true });
+            rmSync(join(homeDir, "fake-stop-clock-offset"), { force: true });
+        }
+        expect(existsSync(lockPath)).toBe(false);
+        const recovered = await f.stop();
+        expect(recovered.isError, JSON.stringify(recovered.content)).not.toBe(true);
+        expect(f.readRecording()).toBeNull(); f.assertLease(); expect(readFileSync(f.localPath, "utf8")).toBe("downloaded"); expect(existsSync(f.artifact)).toBe(false);
+    });
 
     it("reports missing explicit Android physical mobile targets instead of unknown tools", { timeout: TIMEOUT }, async () => {
         const result = await client.callTool({

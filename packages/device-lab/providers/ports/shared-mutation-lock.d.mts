@@ -18,9 +18,9 @@ export interface SharedMutationLockPorts<Fence extends readonly PublicationDirec
     openClaim(file:string):number;writeClaim(descriptor:number,text:string):undefined;closeClaim(descriptor:number):undefined;
     readRaw(file:string):LockReadObservation;
     mtime(file:string):number|null;alive(pid:number):boolean;
-    identitySync(pid:number):LockProcessIdentity|null;
+    identitySync(pid:number,remainingMs?:()=>number):LockProcessIdentity|null;
     identityAsync(pid:number):Promise<LockProcessIdentity|null>;
-    observe(identity:LockProcessIdentity,pid:number):LockObservationStatus;
+    observe(identity:LockProcessIdentity,pid:number,remainingMs?:()=>number):LockObservationStatus;
     matches(expected:LockProcessIdentity,current:LockProcessIdentity):boolean;
     moveQualified(file:string,token:string,suffix:'stale'|'release',fence:Fence):boolean;
     moveMalformed(file:string,token:string,fence:Fence):boolean;

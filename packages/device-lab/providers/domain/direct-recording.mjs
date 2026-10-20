@@ -15,7 +15,8 @@
  * @typedef {{ok:true,stage:RecordingStage}|{ok:false,message:string}} RecordingStageResult
  * @typedef {{ok:true}|{ok:false,message:string}} RecordingFileResult
  * @typedef {{pid:number,startToken:string,commandHash:string}} RecordingIdentity
- * @typedef {{signaled:boolean,reason?:string}} RecordingSignal
+ * @typedef {{signaled:boolean,exited?:boolean,reason?:string}} RecordingSignal
+ * @typedef {{status:'running'|'absent'|'unavailable'}} RecordingGuestObservation
  * @typedef {{active?:boolean,frameDir?:string,archivePath?:string,hostArchivePath?:string,[field:string]:unknown}} HelperRecording
  * @typedef {{error:string,response?:undefined,helper?:unknown}|{error?:undefined,response:{ok:boolean,error?:string,recording?:HelperRecording},helper:unknown}} RecordingHelperResult
  * @typedef {RecordingRecord & {deviceId:string,recording:RecordingRecord|null,provider?:string,stopped?:boolean,device?:RecordingRecord|null,helper?:unknown}} RecordingValue
@@ -36,6 +37,20 @@ export function recordingProvider(kind) {
 }
 /** @param {RecordingRecord} record @param {string} field @returns {string|null} */
 export function recordingString(record, field) { const value = record[field]; return typeof value === 'string' && value ? value : null; }
+
+/** Invalid expected identity is unavailable, never evidence of a different recorder.
+ * @param {unknown} identity @param {unknown} pid @returns {identity is RecordingIdentity} */
+export function recordingIdentityAvailable(identity, pid) {
+    return recordingObject(identity) && typeof pid === 'number' && Number.isInteger(pid) && pid > 0
+        && identity.pid === pid && typeof identity.startToken === 'string' && identity.startToken.trim().length > 0
+        && typeof identity.commandHash === 'string' && identity.commandHash.length === 64 && /^[a-f0-9]{64}$/i.test(identity.commandHash);
+}
+
+/** @param {AdbRecordingTarget} previous @param {AdbRecordingTarget} current */
+export function recordingAdbTargetMatches(previous, current) {
+    return previous.executable === current.executable && previous.prefix.length === current.prefix.length
+        && previous.prefix.every((value, index) => value === current.prefix[index]);
+}
 
 /** Public provider guard can call this pure admission before its native operation lock.
  * @param {RecordingVariant} kind @param {unknown} timeLimitSec @returns {string|null} */

@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { androidWindowsHiddenLauncherScript } from "@ccc/device-lab/providers/backends/android.mjs";
 import { withSharedMutationLockAsync } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
 import { cleanupFakeAndroidMcpContext, createFakeAndroidMcpContext, TIMEOUT, type FakeAndroidMcpContext } from "./helpers/fake-android-mcp-fixture.js";
+import { repoRoot } from "./helpers/device-lab-mcp-fixture.js";
+import { fakeAndroidGuestWriterPath, fakeAndroidRecordingArtifactPath } from "./helpers/fake-android-provider-script.js";
 
 function parseToolJson(result: unknown): Record<string, unknown> {
     if (!result || typeof result !== "object" || !("content" in result) || !Array.isArray(result.content)) {
@@ -28,7 +30,7 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
     let logPath: string;
 
     beforeEach(async () => {
-        context = await createFakeAndroidMcpContext();
+        context = await createFakeAndroidMcpContext({ entrypoint: join(repoRoot, "dist/device-lab-mcp/server.mjs") });
         client = context.client;
         homeDir = context.homeDir;
         binDir = context.binDir;
@@ -38,6 +40,79 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
     afterEach(async () => {
         await cleanupFakeAndroidMcpContext(context);
     }, TIMEOUT);
+
+    async function startSettlementRecording(remotePath: string) {
+        const deviceId = "android-emitted-settlement", serial = "emulator-5680";
+        const created = await client.callTool({ name: "create_android_emulator", arguments: {
+            deviceId, name: "Emitted Recording Settlement", port: 5680, systemImage: "system-images;android-35;google_apis;x86_64",
+        } });
+        expect(created.isError, JSON.stringify(created.content)).not.toBe(true);
+        const started = await client.callTool({ name: "start", arguments: { deviceId, bootTimeoutMs: 1000 } });
+        expect(started.isError, JSON.stringify(started.content)).not.toBe(true);
+        const localPath = join(homeDir, "settlement-video.mp4");
+        writeFileSync(localPath, "previous destination");
+        const recordingStart = await client.callTool({ name: "record_video", arguments: { action: "start", deviceId, remotePath, localPath, timeLimitSec: 5 } });
+        expect(recordingStart.isError, JSON.stringify(recordingStart.content)).not.toBe(true);
+        const recording = parseToolJson(recordingStart).recording as Record<string, unknown>;
+        const [ownerId] = readdirSync(join(homeDir, ".ccc", "devices", "owners"));
+        const statePath = join(homeDir, ".ccc", "devices", "owners", ownerId, "android", "devices.json");
+        const artifact = fakeAndroidRecordingArtifactPath(homeDir, serial, remotePath), writer = fakeAndroidGuestWriterPath(homeDir, serial);
+        await expect.poll(() => existsSync(writer)).toBe(true);
+        expect(readFileSync(artifact, "utf8")).toBe("downloaded");
+        const readState = () => JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, unknown>> };
+        const readRecording = () => readState().devices.find(device => device.id === deviceId)?.recording;
+        const replaceRecording = (next: Record<string, unknown>) => writeFileSync(statePath, JSON.stringify({
+            devices: readState().devices.map(device => device.id === deviceId ? { ...device, recording: next } : device),
+        }));
+        const stop = () => client.callTool({ name: "record_video", arguments: { action: "stop", deviceId } });
+        return { deviceId, recording, localPath, artifact, writer, readRecording, replaceRecording, stop };
+    }
+
+    it("emitted emulator recording stop retains unavailable identity and failed fallback recovery bytes", { timeout: TIMEOUT }, async () => {
+        const f = await startSettlementRecording("/sdcard/emitted-unavailable-recording.mp4");
+        const unavailable = { ...f.recording }; delete unavailable.processIdentity;
+        f.replaceRecording(unavailable);
+        writeFileSync(join(homeDir, "fake-adb-pkill-fail"), "1");
+        const failed = await f.stop();
+        expect(failed.isError, JSON.stringify(failed.content)).toBe(true);
+        expect(f.readRecording()).toEqual(unavailable);
+        expect(readFileSync(f.localPath, "utf8")).toBe("previous destination");
+        expect(readFileSync(f.artifact, "utf8")).toBe("downloaded"); expect(existsSync(f.writer)).toBe(true);
+        f.replaceRecording(f.recording); rmSync(join(homeDir, "fake-adb-pkill-fail"));
+        const recovered = await f.stop();
+        expect(recovered.isError, JSON.stringify(recovered.content)).not.toBe(true);
+        expect(parseToolJson(recovered)).toMatchObject({ stopped: true, provider: "adb-screenrecord" });
+        expect(f.readRecording()).toBeNull(); expect(readFileSync(f.localPath, "utf8")).toBe("downloaded");
+        expect(existsSync(f.artifact)).toBe(false); expect(existsSync(f.writer)).toBe(false);
+    });
+
+    it("emitted emulator pending recording retry checks the selected guest before publishing retained bytes", { timeout: TIMEOUT }, async () => {
+        const f = await startSettlementRecording("/sdcard/fail-once-pull-emitted-recording.mp4");
+        expect((await f.stop()).isError).toBe(true);
+        const pending = f.readRecording(); expect(pending).toMatchObject({ active: false });
+        expect(readFileSync(f.localPath, "utf8")).toBe("previous destination"); expect(readFileSync(f.artifact, "utf8")).toBe("downloaded");
+        writeFileSync(f.writer, "unverified selected guest writer"); writeFileSync(join(homeDir, "fake-adb-guest-unavailable"), "1");
+        const uncertainRetry = await f.stop();
+        expect(uncertainRetry.isError, JSON.stringify(uncertainRetry.content)).toBe(true);
+        expect(f.readRecording()).toEqual(pending); expect(readFileSync(f.localPath, "utf8")).toBe("previous destination");
+        expect(readFileSync(f.artifact, "utf8")).toBe("downloaded"); expect(existsSync(f.writer)).toBe(true);
+        rmSync(f.writer); rmSync(join(homeDir, "fake-adb-guest-unavailable"));
+        const recovered = await f.stop();
+        expect(recovered.isError, JSON.stringify(recovered.content)).not.toBe(true);
+        expect(f.readRecording()).toBeNull(); expect(readFileSync(f.localPath, "utf8")).toBe("downloaded"); expect(existsSync(f.artifact)).toBe(false);
+    });
+
+    it("emitted emulator recording settlement revalidates its captured target without restarting SDK discovery", { timeout: TIMEOUT }, async () => {
+        const f = await startSettlementRecording("/sdcard/emitted-captured-target-recording.mp4");
+        writeFileSync(join(homeDir, "fake-recording-arm-guard-discovery"), "1");
+        const stopped = await f.stop();
+        expect(stopped.isError, JSON.stringify(stopped.content)).not.toBe(true);
+        expect(parseToolJson(stopped)).toMatchObject({ stopped: true, provider: "adb-screenrecord" });
+        expect(f.readRecording()).toBeNull(); expect(readFileSync(f.localPath, "utf8")).toBe("downloaded");
+        expect(existsSync(f.artifact)).toBe(false); expect(existsSync(f.writer)).toBe(false);
+        expect(existsSync(join(homeDir, "fake-recording-guard-discovery-armed"))).toBe(true);
+        expect(readFileSync(logPath, "utf8")).not.toContain("recording-guard-discovery ");
+    });
 
     it("builds a hidden Windows launcher for emulator starts without a console log window", () => {
         const script = androidWindowsHiddenLauncherScript("C:\\Users\\TestUser\\Android Sdk\\emulator\\emulator.exe", [

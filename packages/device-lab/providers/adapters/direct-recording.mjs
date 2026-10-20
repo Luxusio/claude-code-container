@@ -5,6 +5,8 @@ import { randomUUID } from 'crypto';
 import { readProcessIdentity, inspectProcessIdentity, signalOwnedRuntimeProcess } from '../state/process-identity.mjs';
 import { createLocalOutputStage, restoreLocalOutputStage, populateLocalOutputStage, commitLocalOutputStage } from '../transfer-file.mjs';
 import { createDirectRecordingApplication } from '../application/direct-recording.mjs';
+import { recordingIdentityAvailable } from '../domain/direct-recording.mjs';
+import { createWaitBudget } from '../wait-budget.mjs';
 /** @typedef {import('../ports/direct-recording.mjs').DirectRecordingNative} Native
  * @typedef {import('../ports/direct-recording.mjs').RecordingNativeProcess} ProcessNative */
 /** Native POSIX command encoding, never an application decision. @param {string} value */
@@ -88,9 +90,9 @@ function processBindings(native) {
             };
         },
         readIdentity: pid => readProcessIdentity(pid),
-        observe: (identity, pid) => ({ status: inspectProcessIdentity(identity, pid).status }),
+        observe: (identity, pid, remainingMs) => ({ status: inspectProcessIdentity(identity, pid, { remainingMs }).status }),
         alive,
-        signal: recording => { const result = signalOwnedRuntimeProcess(recording, 'SIGINT'); return { signaled: result.signaled, ...(result.reason ? { reason: result.reason } : {}) }; },
+        signal: (recording, remainingMs) => { const result = signalOwnedRuntimeProcess(recording, 'SIGINT', { remainingMs }); return { signaled: result.signaled, ...(result.exited !== undefined ? { exited: result.exited } : {}), ...(result.reason ? { reason: result.reason } : {}) }; },
         waitExit,
         createStage: (device, path, persistent) => {
             const result = createLocalOutputStage(path, { label: 'recording-local-path', ...(persistent ? { stageParent: native.recordingDirectory(device), stagePrefix: '.recording-stage-' } : {}) });
@@ -144,8 +146,31 @@ export function createDirectRecording(native) {
     }
     /** @type {import('../ports/direct-recording.mjs').AndroidRecordingPorts} */
     const ports = { ...base, ...processPorts, kind: native.kind,
-        target: (device, operation) => native.resolveTarget(device, operation),
+        target: (device, operation, validation) => native.resolveTarget(device, operation, validation),
         ...remoteEffects(command => native.runCommand(command)),
+        budget: (timeoutMs, intervalMs) => createWaitBudget(timeoutMs, intervalMs),
+        observe: (identity, pid, remainingMs) => recordingIdentityAvailable(identity, pid)
+            ? processPorts.observe(identity, pid, remainingMs) : { status: 'unavailable' },
+        signal: (recording, remainingMs) => recordingIdentityAvailable(recording.processIdentity, recording.pid)
+            ? processPorts.signal(recording, remainingMs) : { signaled: false, reason: 'runtime-process-identity-unavailable' },
+        fallbackStop(target, _remote, timeoutMs) {
+            if (!(timeoutMs >= 1)) return { ok: false };
+            try {
+                const result = native.runCommand({ executable: target.executable, args: [...target.prefix, 'shell', 'pkill', '-2', 'screenrecord'], timeoutMs });
+                return { ok: result.status === 0 && !result.error && !result.signal };
+            } catch { return { ok: false }; }
+        },
+        observeGuest(target, timeoutMs) {
+            if (!(timeoutMs >= 1)) return { status: 'unavailable' };
+            try {
+                const result = native.runCommand({ executable: target.executable, args: [...target.prefix, 'shell', 'pidof', 'screenrecord'], timeoutMs });
+                if (result.error || result.signal || result.stderr) return { status: 'unavailable' };
+                if (result.status === 1 && result.stdout === '') return { status: 'absent' };
+                const pids = result.stdout.trim();
+                return result.status === 0 && /^[1-9][0-9]*(?:\s+[1-9][0-9]*)*$/.test(pids)
+                    ? { status: 'running' } : { status: 'unavailable' };
+            } catch { return { status: 'unavailable' }; }
+        },
         prepareOutput: (device, path) => { mkdirSync(native.recordingDirectory(device), { recursive: true }); mkdirSync(dirname(path), { recursive: true }); return undefined; },
     };
     return createDirectRecordingApplication(ports);

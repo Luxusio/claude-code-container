@@ -25,12 +25,15 @@ export function createSharedMutationLock(ports) {
         try { return await operation(); }
         finally { const next = waiters.shift(); if (next) next(); else active--; }
     }
-    /** @param {boolean} allowWindowsProbe */
-    function currentIdentity(allowWindowsProbe) {
+    /** @param {boolean} allowWindowsProbe @param {ReturnType<typeof waitFor>|null} [wait] */
+    function currentIdentity(allowWindowsProbe,wait = null) {
+        wait?.check();
         if (ownIdentity) return ownIdentity;
         if (ports.platform() === 'win32' && !allowWindowsProbe) return null;
         if (ownIdentity === undefined || ownIdentity === null && ports.monotonic() >= ownRetryAt) {
-            ownIdentity = ports.identitySync(ports.pid());
+            const identity = wait?.timed ? ports.identitySync(ports.pid(),wait.remaining) : ports.identitySync(ports.pid());
+            wait?.check();
+            ownIdentity = identity;
             ownRetryAt = ownIdentity ? 0 : ports.monotonic()+60000;
         }
         return ownIdentity;
@@ -80,12 +83,14 @@ export function createSharedMutationLock(ports) {
         cache.delete(key); cache.set(key,{checkedAt:ports.monotonic(),status});
         while (cache.size > 128) { const oldest = cache.keys().next().value; if (oldest === undefined) break; cache.delete(oldest); }
     }
-    /** @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord & {processIdentity:import('../ports/shared-mutation-lock.mjs').LockProcessIdentity}} lock */
-    function observation(lock) {
+    /** @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord & {processIdentity:import('../ports/shared-mutation-lock.mjs').LockProcessIdentity}} lock @param {ReturnType<typeof waitFor>|null} [wait] */
+    function observation(lock,wait = null) {
+        wait?.check();
         const key = JSON.stringify([lock.pid,lock.processIdentity]);
         const cached = cache.get(key);
         if (cached && ports.monotonic()-cached.checkedAt < 1000) return cached.status;
-        const status = ports.observe(lock.processIdentity,lock.pid);
+        const status = wait?.timed ? ports.observe(lock.processIdentity,lock.pid,wait.remaining) : ports.observe(lock.processIdentity,lock.pid);
+        wait?.check();
         cacheStatus(key,status); return status;
     }
     /** @param {import('../ports/shared-mutation-lock.mjs').MutationLockRecord & {processIdentity:import('../ports/shared-mutation-lock.mjs').LockProcessIdentity}} lock @param {ReturnType<typeof waitFor>|null} [wait] */
@@ -129,7 +134,7 @@ export function createSharedMutationLock(ports) {
         const facts = staleFacts(file,lock,staleMs,false);
         wait?.check();
         if (!facts.probe) return facts.stale;
-        const status = observation(facts.probe);
+        const status = observation(facts.probe,wait);
         wait?.check();
         return status === 'mismatch' || status === 'exited';
     }
@@ -280,7 +285,9 @@ export function createSharedMutationLock(ports) {
         let result;
         try {
             wait.check();
-            const value = record(token,currentIdentity(!options.waitBudget));
+            const identity = currentIdentity(!options.waitBudget,options.waitBudget ? wait : null);
+            wait.check();
+            const value = record(token,identity);
             while (true) {
                 wait.check();
                 if (!claimed) try {
@@ -343,8 +350,10 @@ export function createSharedMutationLock(ports) {
         }
         const check = () => ports.check(fence);
         wait.check();
-        const value = record(token,options.waitBudget ? currentIdentity(false)
-            : wait.timed ? await waitForObservation(wait,() => currentIdentityAsync(wait)) : await currentIdentityAsync());
+        const identity = options.waitBudget ? currentIdentity(false,wait)
+            : wait.timed ? await waitForObservation(wait,() => currentIdentityAsync(wait)) : await currentIdentityAsync();
+        wait.check();
+        const value = record(token,identity);
         let claimed = false;
         /** @type {unknown[]} */
         const failures = [];

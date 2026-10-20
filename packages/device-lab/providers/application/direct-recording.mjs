@@ -1,6 +1,6 @@
 import { createRuntimeGenerationTransitions } from './runtime-generation.mjs';
 import { recordingGenerationMatches } from '../domain/runtime-generation.mjs';
-import { recordingOf, recordingString, recordingLabel, recordingProvider, recordingInputError } from '../domain/direct-recording.mjs';
+import { recordingOf, recordingString, recordingLabel, recordingProvider, recordingInputError, recordingIdentityAvailable, recordingAdbTargetMatches } from '../domain/direct-recording.mjs';
 /** @typedef {import('../domain/direct-recording.mjs').RecordingRecord} Record
  * @typedef {import('../domain/direct-recording.mjs').RecordingArguments} Args
  * @typedef {import('../domain/direct-recording.mjs').RecordingOutcome} Outcome
@@ -20,10 +20,95 @@ export function createDirectRecordingApplication(ports) {
     function reconcileProcess(effects, device) {
         const current = recordingOf(device);
         if (!current?.active || !current.pid) return device;
+        const android = ports.kind === 'android-emulator' || ports.kind === 'android-device';
+        if (android && !recordingIdentityAvailable(current.processIdentity, current.pid)) return device;
         const observed = current.processIdentity ? effects.observe(current.processIdentity, current.pid) : null;
+        if (android && observed?.status !== 'exited') return device;
         if (observed ? observed.status === 'match' || observed.status === 'unavailable' : effects.alive(current.pid)) return device;
         const pending = { ...current, active: false, endedAt: ports.timestamp() };
         return ports.updateDevice(device.id, item => recordingGenerationMatches(current, item.recording) ? { ...item, recording: pending, updatedAt: ports.timestamp() } : item) || device;
+    }
+    /** Re-resolve through native authority while retaining the captured selection and attachment.
+     * @param {import('../ports/direct-recording.mjs').AndroidRecordingPorts} effects @param {string} id
+     * @param {Record} captured @param {Record|null} expected @param {import('../domain/direct-recording.mjs').AdbRecordingTarget} target
+     * @param {string} [operation]
+     * @param {{remaining():number}} [waitBudget]
+     * @returns {import('../domain/direct-recording.mjs').RecordingRefusal|null} */
+    function currentAndroid(effects, id, captured, expected, target, operation = 'device_record_video_stop', waitBudget) {
+        const fields = effects.kind === 'android-device' ? ['serial', 'leaseClaimId', 'leaseClaimNonce'] : ['serial', 'port'];
+        /** @param {Record|null|undefined} device */
+        const matches = device => Boolean(device && recordingGenerationMatches(expected, device.recording)
+            && fields.every(field => device[field] === captured[field]));
+        const changed = () => failure(`${label} recording state or target changed while ${operation === 'device_record_video_start' ? 'starting' : 'stopping'} for ${id}; successor state and remote artifact were preserved.`);
+        const expired = () => failure(`${label} recording settlement could not be confirmed within 3000ms for ${id}; recording state and remote artifact were preserved for retry.`);
+        if (waitBudget && !(waitBudget.remaining() >= 1)) return expired();
+        const device = effects.findDevice(id);
+        if (!device || !matches(device)) return changed();
+        if (waitBudget && !(waitBudget.remaining() >= 1)) return expired();
+        const admission = effects.target(device, operation, { capturedTarget: target, waitBudget });
+        if (admission.kind !== 'ready') return admission;
+        if (waitBudget && !(waitBudget.remaining() >= 1)) return expired();
+        if (!matches(admission.device) || !recordingAdbTargetMatches(target, admission.target) || !matches(effects.findDevice(id))) return changed();
+        return null;
+    }
+    /** @param {import('../ports/direct-recording.mjs').AndroidRecordingPorts} effects @param {string} id
+     * @param {Record} previous @param {import('../domain/direct-recording.mjs').AdbRecordingTarget} target
+     * @param {()=>import('../domain/direct-recording.mjs').RecordingRefusal|null} current
+     * @param {import('../ports/direct-recording.mjs').RecordingSettlementBudget} budget
+     * @returns {Promise<import('../domain/direct-recording.mjs').RecordingRefusal|null>} */
+    async function settleAndroid(effects, id, previous, target, current, budget) {
+        const remainingMs = () => budget.remaining();
+        const unconfirmed = () => failure(`${label} recording settlement could not be confirmed within 3000ms for ${id}; recording state and remote artifact were preserved for retry.`);
+        const admitted = () => !(remainingMs() >= 1) ? unconfirmed() : current() || (remainingMs() >= 1 ? null : unconfirmed());
+        const allowance = () => Math.floor(Math.min(budget.requestTimeout(), remainingMs()));
+        let refused = admitted();
+        if (refused) return refused;
+        let hostSettled = !previous.active, stopGuest = false;
+        if (previous.active) {
+            if (!recordingIdentityAvailable(previous.processIdentity, previous.pid)) return unconfirmed();
+            const observed = effects.observe(previous.processIdentity, previous.pid, remainingMs);
+            refused = admitted();
+            if (refused) return refused;
+            if (observed.status === 'unavailable') return unconfirmed();
+            hostSettled = observed.status === 'exited' || observed.status === 'mismatch';
+            stopGuest = observed.status !== 'mismatch';
+            if (observed.status === 'match') {
+                const signal = effects.signal(previous, remainingMs);
+                refused = admitted();
+                if (refused) return refused;
+                if (signal.reason === 'runtime-process-identity-missing' || signal.reason === 'runtime-process-identity-unavailable') return unconfirmed();
+                if (signal.reason === 'runtime-process-identity-mismatch') { hostSettled = true; stopGuest = false; }
+                else hostSettled = signal.exited === true;
+            }
+        }
+        if (stopGuest) {
+            refused = admitted();
+            if (refused) return refused;
+            const timeout = allowance();
+            if (!(timeout >= 1)) return unconfirmed();
+            effects.fallbackStop(target, String(previous.remotePath), timeout);
+            refused = admitted();
+            if (refused) return refused;
+        }
+        for (;;) {
+            refused = admitted();
+            if (refused) return refused;
+            if (!hostSettled) {
+                const observed = effects.observe(previous.processIdentity, previous.pid, remainingMs);
+                refused = admitted();
+                if (refused) return refused;
+                if (observed.status === 'unavailable') return unconfirmed();
+                hostSettled = observed.status === 'exited' || observed.status === 'mismatch';
+            }
+            const timeout = allowance();
+            if (!(timeout >= 1)) return unconfirmed();
+            const guest = effects.observeGuest(target, timeout);
+            refused = admitted();
+            if (refused) return refused;
+            if (guest.status === 'unavailable') return unconfirmed();
+            if (hostSettled && guest.status === 'absent') return null;
+            await budget.pause();
+        }
     }
     /** @param {import('../ports/direct-recording.mjs').SandboxRecordingPorts} effects @param {Record} device @param {number} timeout */
     async function reconcileHelper(effects, device, timeout) {
@@ -86,10 +171,19 @@ export function createDirectRecordingApplication(ports) {
             if (admission.kind !== 'ready') return admission;
             target = admission.target;
         }
+        /** @type {(()=>import('../domain/direct-recording.mjs').RecordingRefusal|null)|undefined} */
+        let startGuard;
+        if ((ports.kind === 'android-emulator' || ports.kind === 'android-device') && target.kind === 'adb') {
+            const effects = ports, captured = { ...device }, selected = { ...target, prefix: [...target.prefix] };
+            target = selected;
+            startGuard = () => currentAndroid(effects, args.deviceId, captured, previous, selected, 'device_record_video_start');
+        }
         if (ports.kind === 'macos-vm') ports.prepareWorkspace(device);
         const local = args.localPath || ports.localPath(device);
         const policy = ports.validatePath(local);
         if (!policy.ok) return failure(policy.message);
+        const beforeOutput = startGuard ? startGuard() : null;
+        if (beforeOutput) return beforeOutput;
         ports.prepareOutput(device, policy.path);
         /** @type {import('../domain/direct-recording.mjs').RecordingStage|null} */
         let stage = null;
@@ -102,6 +196,8 @@ export function createDirectRecordingApplication(ports) {
         const timeLimitSec = ports.kind === 'android-emulator' || ports.kind === 'android-device' ? args.timeLimitSec ?? 180 : args.timeLimitSec || null;
         /** @type {Record|null} */ let recording = null;
         let didExit = false;
+        const beforeSpawn = startGuard ? startGuard() : null;
+        if (beforeSpawn) return beforeSpawn;
         const child = ports.spawnRecorder(target, { remotePath: remote, outputPath: stage?.stagedPath || policy.path }, timeLimitSec, () => { didExit = true; if (recording) exited(args.deviceId, recording); return undefined; });
         const runtimeId = ports.runtimeId();
         const ready = await child.startup(150);
@@ -110,11 +206,21 @@ export function createDirectRecordingApplication(ports) {
             if (stage) ports.disposeStage(stage);
             return failure(ready.kind === 'error' ? `${processLabel} recorder failed to start: ${ready.message}` : `${processLabel} recorder exited before it was ready: ${ready.signal || `exit ${ready.code}`}`);
         }
+        const afterStartup = startGuard ? startGuard() : null;
+        if (afterStartup) {
+            try { child.signal('SIGINT'); } catch { /* allocated recorder already exited */ }
+            return afterStartup;
+        }
         const identity = ports.readIdentity(child.pid);
         if (!identity) {
             try { child.signal('SIGINT'); } catch { /* allocated recorder already exited */ }
             if (stage) ports.disposeStage(stage);
             return failure(`${label} recorder process identity could not be established for ${args.deviceId}.`);
+        }
+        const afterIdentity = startGuard ? startGuard() : null;
+        if (afterIdentity) {
+            try { child.signal('SIGINT'); } catch { /* allocated recorder already exited */ }
+            return afterIdentity;
         }
         recording = { active: true, provider, runtimeId, pid: child.pid, processIdentity: identity, localPath: policy.path,
             ...(ports.kind === 'ios-simulator' ? { stagingPath: stage?.stagedPath } : { remotePath: remote, timeLimitSec }), startedAt: ports.timestamp() };
@@ -179,9 +285,11 @@ export function createDirectRecordingApplication(ports) {
             const admission = ports.target(device, 'device_record_video_stop');
             if (admission.kind !== 'ready') return admission;
             target = admission.target;
-            device = reconcileProcess(ports, admission.device);
+            device = admission.device;
         }
-        const previous = recordingOf(device);
+        const saved = recordingOf(device);
+        const previous = saved && (ports.kind === 'android-emulator' || ports.kind === 'android-device')
+            ? { ...saved, ...(recordingIdentityAvailable(saved.processIdentity, saved.pid) ? { processIdentity: { ...saved.processIdentity } } : {}) } : saved;
         if (!previous) return failure(`No ${label} recording active for ${args.deviceId}`);
         if (ports.kind !== 'ios-simulator' && !target) {
             const admission = ports.target(device, 'device_record_video_stop');
@@ -190,32 +298,58 @@ export function createDirectRecordingApplication(ports) {
         }
         const policy = ports.validatePath(args.localPath || recordingString(previous, 'localPath') || ports.localPath(device));
         if (!policy.ok) return failure(policy.message);
-        if (previous.active) {
+        /** @type {((expected:Record|null,waitBudget?:{remaining():number})=>import('../domain/direct-recording.mjs').RecordingRefusal|null)|undefined} */
+        let guard;
+        if (ports.kind === 'android-emulator' || ports.kind === 'android-device') {
+            if (!target || target.kind !== 'adb') return failure(`${label} recording target unavailable`);
+            const effects = ports, captured = { ...device }, selected = { ...target, prefix: [...target.prefix] };
+            target = selected;
+            guard = (expected, waitBudget) => currentAndroid(effects, args.deviceId, captured, expected, selected, 'device_record_video_stop', waitBudget);
+            const budget = effects.budget(3000, 50);
+            const settled = await settleAndroid(effects, args.deviceId, previous, selected, () => currentAndroid(effects, args.deviceId, captured, previous, selected, 'device_record_video_stop', budget), budget);
+            if (settled) return settled;
+            const refused = guard(previous, budget);
+            if (refused) return refused;
+            if (!(budget.remaining() >= 1)) return failure(`${label} recording settlement could not be confirmed within 3000ms for ${args.deviceId}; recording state and remote artifact were preserved for retry.`);
+        } else if (previous.active) {
             const signal = ports.signal(previous);
             if (ports.kind === 'ios-simulator' && !signal.signaled && signal.reason !== 'runtime-process-exited') return failure(`${label} recording process could not be safely stopped for ${args.deviceId} (${signal.reason || 'unknown'}); state remains active.`);
-            if (ports.kind !== 'ios-simulator' && target && target.kind !== 'simulator') {
-                ports.fallbackStop(target, String(previous.remotePath), ports.kind === 'macos-vm' ? args.helperTimeoutMs : undefined);
+            if (ports.kind === 'macos-vm' && target && target.kind !== 'simulator') {
+                ports.fallbackStop(target, String(previous.remotePath), args.helperTimeoutMs);
             }
             if (signal.signaled && !await ports.waitExit(previous.pid, 3000)) return failure(`${label} recording did not exit within 3000ms for ${args.deviceId}; state remains active.`);
         }
         const claimed = generation.claimRecordingFinalization(args.deviceId, previous, { localPath: policy.path }, ports.timestamp());
-        const pending = claimed.device ? recordingOf(claimed.device) : null;
+        const savedPending = claimed.device ? recordingOf(claimed.device) : null;
+        const pending = guard && savedPending ? { ...savedPending } : savedPending;
         if (!claimed.committed || !pending) return failure(`${label} recording state changed while stopping for ${args.deviceId}; successor state was preserved.`);
         if (ports.kind === 'ios-simulator') return finalizeSimulator(ports, device, previous, pending, policy.path, args);
+        let refused = guard ? guard(pending) : null;
+        if (refused) return refused;
         ports.prepareOutput(device, policy.path);
+        refused = guard ? guard(pending) : null;
+        if (refused) return refused;
         const created = ports.createStage(device, policy.path, false);
         if (!created.ok) return failure(created.message);
         const stage = created.stage;
         try {
+            refused = guard ? guard(pending) : null;
+            if (refused) return refused;
             const remote = String(pending.remotePath);
             if (!target || target.kind === 'simulator') return failure(`${label} recording target unavailable`);
             const transferTimeout = ports.kind === 'macos-vm' ? args.helperTimeoutMs : 300000;
             const copied = ports.copyRecording(target, remote, stage.stagedPath, transferTimeout);
+            refused = guard ? guard(pending) : null;
+            if (refused) return refused;
             if (!copied.ok) return failure(`Error: ${copied.detail}. ${label} recording remains pending finalization for ${args.deviceId}.`);
             const committed = ports.commitStage(stage);
+            refused = guard ? guard(pending) : null;
+            if (refused) return refused;
             if (!committed.ok) return failure(`${committed.message}. ${label} recording remains pending finalization for ${args.deviceId}.`);
             const cleared = generation.transitionRecordingGeneration(args.deviceId, pending, null, ports.timestamp());
             if (!cleared.committed) return failure(`${label} recording state changed while stopping for ${args.deviceId}; successor state and remote artifact were preserved.`);
+            refused = guard ? guard(null) : null;
+            if (refused) return refused;
             ports.removeRecording(target, remote, transferTimeout);
             return { kind: 'success', value: { deviceId: args.deviceId, stopped: true, provider, recording: { ...pending, active: false, localPath: policy.path, stoppedAt: ports.timestamp() }, ...(ports.kind === 'android-device' ? {} : { device: cleared.device }), ...copied.output } };
         } finally { ports.disposeStage(stage); }
