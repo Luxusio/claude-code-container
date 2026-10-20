@@ -106,6 +106,16 @@ its held-guard callback rather than reacquiring the same guard.
 
 ## Device observations and claim settlement
 
+Derived implementation rules: this section specializes the
+[common outcome contract](SPEC__ccc-architecture-contracts.md#common-outcomes)
+and [M10 lifecycle plan](PLAN__ccc-architecture-migration.md#m10--ccc-sessions-and-containers)
+while preserving the cleanup authority above and the
+[guardian responsibility contract](REQ__session-mutation-lock-lifetime.md#guardian-responsibility-and-orphan-recovery).
+The finite counts, settlement vocabulary and ordinary-row diagnostic are the
+reviewed automatic-session-cleanup operation's technical choices in
+`TASK__native-10adcc4a4fee302320bf`; they are not an independently user-prescribed
+API or a new all-success cleanup policy.
+
 Automatic cleanup must expose finite stopped, skipped and failed device counts
 to its application caller, separately from whether the captured session claim was
 retired. Ordinary failed rows emit one bounded native diagnostic before the
