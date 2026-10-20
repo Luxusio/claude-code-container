@@ -1,4 +1,4 @@
-import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteForwardedEnvPlan, RemoteHeartbeat, RemoteOperationResult, RemoteReservationResult, RemoteSignal, RemoteSshChannel, RemoteStopResult, RemoteSyncObservation, RemoteTool, RemoteToolObservation } from "../domain/remote-services.js";
+import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteForwardedEnvPlan, RemoteHeartbeat, RemoteOperationResult, RemoteReservationResult, RemoteSignal, RemoteSshChannel, RemoteStopResult, RemoteSyncAuthority, RemoteSyncInventory, RemoteTool, RemoteToolObservation } from "../domain/remote-services.js";
 
 /** Semantic effects; native syntax, result interpretation and presentation stay outward. */
 export interface RemoteServicesPorts<Evidence = unknown> {
@@ -6,6 +6,7 @@ export interface RemoteServicesPorts<Evidence = unknown> {
     getProjectId(path: string): string;
     getProjectHash(path: string): string;
     getMutagenSessionName(path: string): string;
+    getScopedMutagenSessionName(authority: RemoteSyncAuthority): string;
     getContainerName(path: string, profile?: string): string;
     hashRemoteIdentity(value: string): string;
     newReservationToken(): string;
@@ -17,12 +18,11 @@ export interface RemoteServicesPorts<Evidence = unknown> {
     releaseReservation(request: { config: RemoteConfig; name: string; token: string }): void;
     stopReservedContainer(request: { config: RemoteConfig; name: string; containerId: string; token: string }): RemoteStopResult<Evidence>;
     prepareRemoteProject(request: { config: RemoteConfig; containerId: string; projectId: string }): RemoteOperationResult<Evidence>;
-    observeSync(name: string, expectedContainerId?: string, remainingMs?: number): RemoteSyncObservation<Evidence>;
+    observeSyncInventory(remainingMs?: number): RemoteSyncInventory<Evidence>;
     createSync(request: { name: string; localPath: string; config: RemoteConfig; containerId: string; projectId: string }): RemoteOperationResult<Evidence>;
-    resumeSync(name: string): RemoteOperationResult<Evidence>;
-    terminateStaleSync(name: string): RemoteOperationResult<Evidence>;
-    terminateSync(name: string): void;
-    pauseSync(name: string): void;
+    resumeSync(identifier: string): RemoteOperationResult<Evidence>;
+    terminateSync(identifier: string): RemoteOperationResult<Evidence>;
+    pauseSync(identifier: string): RemoteOperationResult<Evidence>;
     startSyncDaemon(): void;
     readRemoteConfigs(): Record<string, unknown> | null;
     prepareLegacyConfigReader(hash: string): { exists(): boolean; readConfig(): RemoteConfig };
@@ -48,7 +48,7 @@ export interface RemoteServicesPorts<Evidence = unknown> {
 }
 
 export type RemoteSyncPorts<Evidence = unknown> = Pick<RemoteServicesPorts<Evidence>,
-    | "resolveProjectPath" | "getProjectId" | "getMutagenSessionName"
-    | "startSyncDaemon" | "observeSync" | "terminateStaleSync" | "resumeSync" | "createSync"
-    | "report" | "fail" | "now" | "sleep"
+    | "getProjectHash" | "getMutagenSessionName" | "getScopedMutagenSessionName"
+    | "startSyncDaemon" | "observeSyncInventory" | "terminateSync" | "resumeSync" | "createSync"
+    | "withLifecycleLockAsync" | "report" | "fail" | "now" | "sleep"
 >;

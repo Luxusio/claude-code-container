@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createRemoteServices } from "../../application/remote-services.js";
 import type { RemoteServicesPorts } from "../../ports/remote-services.js";
-import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteSignal } from "../../domain/remote-services.js";
+import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteSignal, RemoteSyncInventory } from "../../domain/remote-services.js";
 
 const config: RemoteConfig = { host: "host", user: "user", remotePath: "" };
 const evidence = Symbol("opaque native diagnostic");
@@ -9,19 +9,22 @@ class FixtureFailure extends Error {
     constructor(readonly kind: RemoteFailureKind, readonly evidence?: symbol) { super(kind); }
 }
 function fixture() {
-    let lifecycleHeld = false;
+    const held = new Set<string>();
     const trace: unknown[][] = []; const id = "a".repeat(64); const token = "b".repeat(32);
+    const syncId = "sync_" + "s".repeat(43);
+    let savedConfig = config;
     const state = {
         stop: false, busy: false, userAnswer: "newuser",
         closeCode: 0 as number | null, childError: null as unknown, closeFirst: false,
         signal: null as RemoteSignal | null, launchHook: null as (() => void) | null,
         heartbeat: null as (() => void) | null, releaseFault: null as Error | null,
         cancelFault: null as Error | null, removalFault: null as Error | null,
+        inventory: null as RemoteSyncInventory<symbol> | null,
     };
     const handlers = new Map<RemoteSignal, () => void>();
     const ports: RemoteServicesPorts<symbol> = {
         resolveProjectPath: path => { trace.push(["resolve", path]); return "/resolved/project"; },
-        getProjectId: () => "project-id", getProjectHash: () => "hash", getMutagenSessionName: () => "sync",
+        getProjectId: () => "project-id", getProjectHash: () => "hash", getMutagenSessionName: () => "legacy-sync", getScopedMutagenSessionName: () => "sync",
         getContainerName: () => "expected-name", hashRemoteIdentity: value => { trace.push(["identity", value]); return "owner"; },
         newReservationToken: () => token,
         observeTool: tool => { trace.push(["tool", tool]); return { installed: true, version: "1.0" }; },
@@ -32,28 +35,33 @@ function fixture() {
         releaseReservation: request => { trace.push(["release", request]); if (state.releaseFault) throw state.releaseFault; },
         stopReservedContainer: request => { trace.push(["stop", request]); return { kind: state.busy ? "busy" : "stopped" }; },
         prepareRemoteProject: request => { trace.push(["prepare", request]); return { ok: true }; },
-        observeSync: (name, expectedId) => { trace.push(["observe-sync", name, expectedId]); return { kind: "observed", endpointMatches: true, paused: false, watching: true, failed: false, evidence }; },
+        observeSyncInventory: remaining => {
+            trace.push(["observe-sync", remaining]);
+            return state.inventory ?? { kind: "known", evidence, sessions: [{ kind: "observed", identifier: syncId, name: "sync", binding: { localPath: "/resolved/project", user: savedConfig.user, host: savedConfig.host, projectId: "project-id", containerId: id }, paused: false, watching: true, failed: false, evidence }] };
+        },
         createSync: request => { trace.push(["create-sync", request]); return { ok: true }; },
         resumeSync: name => { trace.push(["resume", name]); return { ok: true }; },
-        terminateStaleSync: name => { trace.push(["terminate-stale", name]); return { ok: true }; },
-        terminateSync: name => { trace.push(["terminate", name]); },
-        pauseSync: name => { trace.push(["pause", name]); },
+        terminateSync: identifier => { trace.push(["terminate", identifier]); return { ok: true }; },
+        pauseSync: identifier => { trace.push(["pause", identifier]); return { ok: true }; },
         startSyncDaemon: () => { trace.push(["daemon"]); },
         readRemoteConfigs: () => { trace.push(["read-config"]); return { hash: config }; },
         prepareLegacyConfigReader: hash => { trace.push(["legacy", hash]); return { exists: () => { trace.push(["legacy-exists"]); return false; }, readConfig: () => { trace.push(["legacy-read"]); return config; } }; },
-        saveRemoteConfig: (hash, remote) => { trace.push(["save", hash, remote]); }, readUser: () => "localuser",
+        saveRemoteConfig: (hash, remote) => { trace.push(["save", hash, remote]); savedConfig = remote; }, readUser: () => "localuser",
         prompt: async request => { trace.push(["prompt", request]); return request.kind === "user" ? state.userAnswer : state.stop ? "yes" : "n"; },
         report: event => { trace.push(["report", event]); },
         fail: (kind, original) => { trace.push(["fail", kind, original]); throw new FixtureFailure(kind, original); },
         createSessionLock: prefix => { trace.push(["claim", prefix]); return "claim"; },
-        removeSessionLock: file => { expect(lifecycleHeld).toBe(false); trace.push(["remove", file]); if (state.removalFault) throw state.removalFault; return undefined; },
-        removeSessionLockInHeldLifecycleLock: file => { expect(lifecycleHeld).toBe(true); trace.push(["remove", file]); if (state.removalFault) throw state.removalFault; return undefined; },
+        removeSessionLock: file => { expect([...held].some(key => key.startsWith("remote--"))).toBe(false); trace.push(["remove", file]); if (state.removalFault) throw state.removalFault; return undefined; },
+        removeSessionLockInHeldLifecycleLock: file => { expect([...held].some(key => key.startsWith("remote--"))).toBe(true); trace.push(["remove", file]); if (state.removalFault) throw state.removalFault; return undefined; },
         withLifecycleLock: (prefix, operation) => {
-            expect(lifecycleHeld).toBe(false);
-            trace.push(["sync-lock", prefix]); lifecycleHeld = true;
-            try { return operation(); } finally { lifecycleHeld = false; }
+            expect(held.has(prefix)).toBe(false);
+            trace.push(["sync-lock", prefix]); held.add(prefix);
+            try { return operation(); } finally { held.delete(prefix); trace.push(["unlock", prefix]); }
         },
-        withLifecycleLockAsync: <Value>(prefix: string, operation: () => Promise<Value>): Promise<Value> => { trace.push(["async-lock", prefix]); return operation(); },
+        withLifecycleLockAsync: async <Value>(prefix: string, operation: () => Promise<Value>): Promise<Value> => {
+            expect(held.has(prefix)).toBe(false); trace.push(["async-lock", prefix]); held.add(prefix);
+            try { return await operation(); } finally { held.delete(prefix); trace.push(["unlock", prefix]); }
+        },
         startHeartbeat: (callback, milliseconds) => {
             state.heartbeat = callback; trace.push(["heartbeat", milliseconds]);
             return {
@@ -81,7 +89,7 @@ function fixture() {
         },
         now: () => 1, sleep: async () => {},
     };
-    return { trace, state, ports, handlers, id, token, services: () => createRemoteServices(ports) };
+    return { trace, state, ports, handlers, id, token, syncId, services: () => createRemoteServices(ports) };
 }
 function events(trace: unknown[][]): RemoteEvent<symbol>[] {
     return trace.filter(row => row[0] === "report").map(row => row[1] as RemoteEvent<symbol>);
@@ -107,25 +115,46 @@ describe("whole remote semantic workflows", () => {
         expect(events(trace).filter(event => ["setup-usage", "setup-architecture", "setup-requirements"].includes(event.kind)).map(event => event.kind)).toEqual(["setup-usage", "setup-architecture", "setup-requirements"]);
     });
 
-    it("check uses saved config without validation and reports finite available/missing sync facts", async () => {
-        const { ports, services, trace } = fixture(); const raw = { ...config, host: "host;raw", user: "user;raw" };
-        ports.readRemoteConfigs = () => ({ hash: raw });
-        await services().remoteCheck("relative"); expect(trace).toContainEqual(["ping", "host;raw"]);
-        expect(events(trace)).toContainEqual({ kind: "status-config-saved", config: raw, containerName: "expected-name" });
+    it("check qualifies saved configuration and distinguishes active, missing, unknown and conflicting sync", async () => {
+        const { state, services, trace } = fixture();
+        await services().remoteCheck("relative"); expect(trace).toContainEqual(["ping", "host"]);
+        expect(events(trace)).toContainEqual({ kind: "status-config-saved", config, containerName: "expected-name" });
         expect(events(trace).some(event => event.kind === "status-sync-active")).toBe(true); expectNoClaim(trace);
-        trace.length = 0; ports.observeSync = () => ({ kind: "unavailable" });
+        trace.length = 0; state.inventory = { kind: "known", sessions: [], evidence };
         await services().remoteCheck("relative"); expect(events(trace)).toContainEqual({ kind: "status-sync-missing", sessionName: "sync" });
+        trace.length = 0; state.inventory = { kind: "unknown", evidence };
+        await services().remoteCheck("relative"); expect(events(trace)).toContainEqual({ kind: "status-sync-unknown" });
+        trace.length = 0; state.inventory = { kind: "known", evidence, sessions: [{ kind: "observed", identifier: "sync_" + "x".repeat(43), name: "sync", binding: null, paused: false, watching: true, failed: false, evidence }] };
+        await services().remoteCheck("relative"); expect(events(trace)).toContainEqual({ kind: "status-sync-conflict" });
     });
 
-    it("public terminate has absent/present branches and consumes a void effect", async () => {
-        const { ports, services, trace } = fixture(); ports.observeSync = () => ({ kind: "unavailable" });
+    it("public terminate requires qualified inventory and checked identifier completion", async () => {
+        const { ports, state, syncId, services, trace } = fixture(); state.inventory = { kind: "known", sessions: [], evidence };
         await services().remoteTerminate("relative"); expect(events(trace)).toContainEqual({ kind: "sync-inactive" });
         expect(trace.some(row => row[0] === "terminate")).toBe(false);
-        trace.length = 0; ports.observeSync = () => ({ kind: "observed", endpointMatches: false, paused: true, watching: false, failed: true, evidence });
-        await services().remoteTerminate("relative"); expect(trace).toContainEqual(["terminate", "sync"]);
+        trace.length = 0; state.inventory = null;
+        await services().remoteTerminate("relative"); expect(trace).toContainEqual(["terminate", syncId]);
         expect(events(trace)).toContainEqual({ kind: "sync-terminated" }); expectNoClaim(trace);
+        trace.length = 0; ports.terminateSync = () => ({ ok: false, evidence });
+        await expect(services().remoteTerminate("relative")).rejects.toThrow("sync-terminate-failed");
+        expect(events(trace)).not.toContainEqual({ kind: "sync-terminated" });
         const fault = Error("terminate"); ports.terminateSync = () => { throw fault; };
         await expect(services().remoteTerminate("relative")).rejects.toBe(fault);
+    });
+
+    it("public termination rejects missing/invalid config, unknown and conflicting authority with no effects", async () => {
+        for (const saved of [null, { ...config, host: "bad;host" }]) {
+            const f = fixture(); f.ports.readRemoteConfigs = () => saved ? { hash: saved } : null;
+            await expect(f.services().remoteTerminate("relative")).rejects.toThrow(saved ? "config-invalid" : "config-unresolved");
+            expect(f.trace.some(row => ["terminate", "observe-sync", "pause", "create-sync"].includes(String(row[0])))).toBe(false);
+        }
+        for (const inventory of [{ kind: "unknown", evidence }, { kind: "known", evidence, sessions: [{ kind: "observed", identifier: "sync_" + "x".repeat(43), name: "legacy-sync", binding: null, paused: false, watching: true, failed: false, evidence }] }] as RemoteSyncInventory<symbol>[]) {
+            const f = fixture(); f.state.inventory = inventory;
+            await expect(f.services().remoteTerminate("relative")).rejects.toThrow(inventory.kind === "unknown" ? "sync-unknown" : "sync-conflict");
+            expect(f.trace.some(row => ["terminate", "pause", "create-sync"].includes(String(row[0])))).toBe(false);
+        }
+        const f = fixture(); f.ports.readRemoteConfigs = () => ({ hash: { ...config, host: "bad;host" } });
+        await f.services().remoteCheck("relative"); expect(events(f.trace)).toContainEqual({ kind: "status-sync-unknown" }); expect(f.trace.some(row => row[0] === "ping")).toBe(false);
     });
 
     it("canonical configuration wins without consulting legacy; missing canonical uses decoded legacy", async () => {
@@ -205,7 +234,7 @@ describe("whole remote semantic workflows", () => {
         }
         expect(index(trace, "async-lock")).toBeLessThan(index(trace, "reserve"));
         expect(trace).toContainEqual(["prepare", { config, containerId: id, projectId: "project-id" }]);
-        expect(trace).toContainEqual(["observe-sync", "sync", id]);
+        expect(trace.some(row => row[0] === "observe-sync")).toBe(true);
         expect(trace).toContainEqual(["ssh", { config, containerId: id, projectId: "project-id", arguments: [], environment: [["SECOND", "v2"], ["FIRST", "v1"]] }]);
     });
 
@@ -263,11 +292,11 @@ describe("whole remote semantic workflows", () => {
     });
 
     it("successful unsignalled yes stops the exact returned container under lock before pausing", async () => {
-        const { state, services, trace, id, token } = fixture(); state.stop = true;
+        const { state, services, trace, id, token, syncId } = fixture(); state.stop = true;
         await expect(services().remoteExec("relative")).rejects.toThrow("exit:0");
         expect(trace).toContainEqual(["stop", { config, name: "returned-name", containerId: id, token }]);
         expect(index(trace, "sync-lock")).toBeLessThan(index(trace, "stop")); expect(index(trace, "stop")).toBeLessThan(index(trace, "pause"));
-        expect(trace).toContainEqual(["pause", "sync"]); expect(trace.filter(row => row[0] === "remove")).toHaveLength(1);
+        expect(trace).toContainEqual(["pause", syncId]); expect(trace.filter(row => row[0] === "remove")).toHaveLength(1);
         expect(trace.some(row => row[0] === "release")).toBe(false);
     });
 
@@ -277,6 +306,42 @@ describe("whole remote semantic workflows", () => {
         expect(events(trace)).toContainEqual({ kind: "peer-active" }); expect(trace).toContainEqual(["cancel"]);
         expect(trace.filter(row => row[0] === "remove")).toHaveLength(1);
         expect(trace.some(row => row[0] === "pause" || row[0] === "release")).toBe(false);
+    });
+
+    it("holds project sync before container guards across reservation and stop/pause", async () => {
+        const f = fixture(); f.state.stop = true;
+        await expect(f.services().remoteExec("relative")).rejects.toThrow("exit:0");
+        const admission = f.trace.filter(row => row[0] === "async-lock");
+        expect(admission.slice(0, 2)).toEqual([["async-lock", "remote-sync--hash"], ["async-lock", "remote--owner--project-id"]]);
+        const cleanup = f.trace.filter(row => row[0] === "sync-lock");
+        expect(cleanup).toEqual([["sync-lock", "remote--owner--project-id"]]);
+        const stopAt = index(f.trace, "stop"), pauseAt = index(f.trace, "pause");
+        expect(f.trace.slice(0, stopAt).filter(row => row[0] === "async-lock").at(-1)).toEqual(["async-lock", "remote-sync--hash"]);
+        expect(f.trace.slice(stopAt + 1, pauseAt).some(row => row[0] === "observe-sync")).toBe(true);
+        expect(f.trace.slice(stopAt + 1, pauseAt).some(row => row[0] === "unlock")).toBe(false);
+        expect(f.trace.filter(row => row[0] === "resolve")).toEqual([["resolve", "relative"]]);
+        expect(f.trace.filter(row => row[0] === "read-config")).toHaveLength(1);
+    });
+
+    it.each(["missing", "successor", "unknown", "conflict"] as const)("cleanup stops its container but preserves %s sync authority", async mode => {
+        const f = fixture(); f.state.stop = true;
+        f.state.launchHook = () => {
+            const inventory = f.ports.observeSyncInventory();
+            if (inventory.kind !== "known") throw Error("fixture initial inventory");
+            f.state.inventory = mode === "unknown" ? { kind: "unknown", evidence } : { kind: "known", evidence,
+                sessions: mode === "missing" ? [] : inventory.sessions.map(row => mode === "successor" ? { ...row, identifier: "sync_" + "z".repeat(43) } : { ...row, binding: null }) };
+        };
+        await expect(f.services().remoteExec("relative")).rejects.toThrow("exit:" + (mode === "unknown" || mode === "conflict" ? 1 : 0));
+        expect(f.trace.filter(row => row[0] === "stop")).toHaveLength(1);
+        expect(f.trace.some(row => row[0] === "pause" || row[0] === "terminate")).toBe(false);
+        if (mode === "unknown" || mode === "conflict") expect(f.trace).toContainEqual(["fail", "sync-" + mode, evidence]);
+    });
+
+    it("checked pause failure cannot become a successful cleanup", async () => {
+        const f = fixture(); f.state.stop = true; f.ports.pauseSync = identifier => { f.trace.push(["pause", identifier]); return { ok: false, evidence }; };
+        await expect(f.services().remoteExec("relative")).rejects.toThrow("exit:1");
+        expect(f.trace).toContainEqual(["pause", f.syncId]); expect(f.trace).toContainEqual(["fail", "sync-pause-failed", evidence]);
+        expect(index(f.trace, "stop")).toBeLessThan(index(f.trace, "pause"));
     });
 
     it("failed stop and thrown pause preserve failure exit without reopening a retired local claim", async () => {

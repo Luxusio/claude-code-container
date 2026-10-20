@@ -3,10 +3,12 @@ import type { RemoteServicesPorts } from "../ports/remote-services.js";
 import { createRemoteSync } from "./remote-sync.js";
 
 export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Evidence>) {
-    const { ensureSync, waitForSync } = createRemoteSync(ports);
+    const { ensureSync, inspectSync, observeCapturedSync, waitForSync, syncLifecyclePrefix } = createRemoteSync(ports);
     const checkTailscale = () => ports.observeTool("tailscale");
     const checkMutagen = () => ports.observeTool("mutagen");
     const isHostReachable = (host: string): boolean => ports.isHostReachable(host);
+    const validConfig = (config: RemoteConfig): boolean => typeof config.host === "string" && typeof config.user === "string" &&
+        isValidHostOrUser(config.host) && isValidHostOrUser(config.user);
 
     async function ensureRemoteImage(config: RemoteConfig): Promise<void> {
         if (!ports.remoteImagePresent(config)) {
@@ -59,7 +61,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
         let config = loadRemoteConfig(fullPath);
 
         if (config && !host) {
-            if (!isValidHostOrUser(config.host) || !isValidHostOrUser(config.user)) {
+            if (!validConfig(config)) {
                 ports.report({ kind: "config-invalid" });
                 ports.exit(1);
             }
@@ -94,6 +96,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
 
         if (!config) ports.fail("config-unresolved");
         const resolvedConfig = config;
+        const syncAuthority = { localPath: fullPath, user: resolvedConfig.user, host: resolvedConfig.host, projectId };
         const remoteContainerPrefix = `remote--${ports.hashRemoteIdentity(`${resolvedConfig.user}@${resolvedConfig.host}`)}--${projectId}`;
         const expectedContainerName = ports.getContainerName(fullPath);
         const remoteReservationToken = ports.newReservationToken();
@@ -139,8 +142,9 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
             ports.report({ kind: "starting" });
             remoteReservationActive = true;
             const remoteContainer = await ports.withLifecycleLockAsync(
-                remoteContainerPrefix,
-                () => startRemoteContainer(resolvedConfig, fullPath, remoteReservationToken, remoteReservationLeaseSeconds),
+                syncLifecyclePrefix(syncAuthority),
+                () => ports.withLifecycleLockAsync(remoteContainerPrefix,
+                    () => startRemoteContainer(resolvedConfig, fullPath, remoteReservationToken, remoteReservationLeaseSeconds)),
             );
             remoteReservationHeartbeat = ports.startHeartbeat(() => {
                 if (!remoteReservationActive) return;
@@ -150,8 +154,8 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
             remoteReservationHeartbeat.unref();
 
             await createContainerProjectDir(resolvedConfig, remoteContainer.id, projectId);
-            const sessionName = await ensureSync(fullPath, resolvedConfig, remoteContainer.id, remoteContainer.name);
-            await waitForSync(sessionName);
+            const syncHandle = await ensureSync({ ...syncAuthority, containerId: remoteContainer.id }, remoteContainer.name);
+            await waitForSync(syncHandle);
 
             ports.report({ kind: "connecting", host: resolvedConfig.host });
             const forwardedEnvPlan = ports.collectCurrentForwardedEnv();
@@ -175,7 +179,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
             if (exitCode === 0 && !requestedSignal) {
                 const answer = await ports.prompt({ kind: "cleanup" });
                 if (answer === "y" || answer === "yes") {
-                    ports.withLifecycleLock(remoteContainerPrefix, () => {
+                    await ports.withLifecycleLockAsync(syncLifecyclePrefix(syncAuthority), async () => ports.withLifecycleLock(remoteContainerPrefix, () => {
                         ports.removeSessionLockInHeldLifecycleLock(remoteSessionLock);
                         remoteSessionLock = "";
                         ports.report({ kind: "stopping" });
@@ -191,10 +195,15 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                         remoteReservationActive = false;
                         if (remoteReservationHeartbeat) remoteReservationHeartbeat.cancel();
                         remoteReservationHeartbeat = null;
+                        const observation = observeCapturedSync(syncHandle);
+                        if (observation.kind === "missing") return undefined;
+                        if (observation.kind === "unknown") ports.fail("sync-unknown", observation.evidence);
+                        if (observation.kind === "conflict") ports.fail("sync-conflict", observation.evidence);
                         ports.report({ kind: "pausing" });
-                        ports.pauseSync(sessionName);
+                        const paused = ports.pauseSync(syncHandle.identifier);
+                        if (!paused.ok) ports.fail("sync-pause-failed", paused.evidence);
                         return undefined;
-                    });
+                    }));
                 }
             }
 
@@ -229,6 +238,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
     }
 
     async function remoteCheck(projectPath: string): Promise<void> {
+        const fullPath = ports.resolveProjectPath(projectPath);
         ports.report({ kind: "status-start" });
         ports.report({ kind: "status-tools" });
         const tailscale = checkTailscale();
@@ -237,22 +247,28 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
         ports.report({ kind: "tool-status", tool: "mutagen", observation: mutagen });
 
         ports.report({ kind: "status-config" });
-        const config = loadRemoteConfig(projectPath);
-        if (config) {
-            ports.report({ kind: "status-config-saved", config, containerName: ports.getContainerName(projectPath) });
+        const config = loadRemoteConfig(fullPath);
+        if (config && validConfig(config)) {
+            ports.report({ kind: "status-config-saved", config, containerName: ports.getContainerName(fullPath) });
             ports.report({ kind: "host-status", reachable: isHostReachable(config.host) });
+        } else if (config) {
+            ports.report({ kind: "config-invalid" });
         } else {
             ports.report({ kind: "status-config-missing" });
         }
 
         ports.report({ kind: "status-sync" });
         if (mutagen.installed) {
-            const sessionName = ports.getMutagenSessionName(projectPath);
-            const observation = ports.observeSync(sessionName);
-            if (observation.kind === "observed") {
-                ports.report({ kind: "status-sync-active", sessionName, observation });
+            if (config && validConfig(config)) {
+                const authority = { localPath: fullPath, user: config.user, host: config.host, projectId: ports.getProjectId(fullPath) };
+                const sessionName = ports.getScopedMutagenSessionName(authority);
+                const observation = inspectSync(authority);
+                if (observation.kind === "observed") ports.report({ kind: "status-sync-active", sessionName, observation });
+                else if (observation.kind === "missing") ports.report({ kind: "status-sync-missing", sessionName });
+                else if (observation.kind === "unknown") ports.report({ kind: "status-sync-unknown" });
+                else ports.report({ kind: "status-sync-conflict" });
             } else {
-                ports.report({ kind: "status-sync-missing", sessionName });
+                ports.report({ kind: "status-sync-unknown" });
             }
         } else {
             ports.report({ kind: "status-sync-unavailable" });
@@ -261,15 +277,30 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
     }
 
     async function remoteTerminate(projectPath: string): Promise<void> {
-        const sessionName = ports.getMutagenSessionName(projectPath);
-        const observation = ports.observeSync(sessionName);
-        if (observation.kind === "unavailable") {
-            ports.report({ kind: "sync-inactive" });
-            return;
+        const fullPath = ports.resolveProjectPath(projectPath);
+        const config = loadRemoteConfig(fullPath);
+        if (!config) {
+            ports.report({ kind: "config-required" });
+            ports.fail("config-unresolved");
         }
-        ports.report({ kind: "sync-terminating", sessionName });
-        ports.terminateSync(sessionName);
-        ports.report({ kind: "sync-terminated" });
+        if (!validConfig(config)) {
+            ports.report({ kind: "config-invalid" });
+            ports.fail("config-invalid");
+        }
+        const authority = { localPath: fullPath, user: config.user, host: config.host, projectId: ports.getProjectId(fullPath) };
+        await ports.withLifecycleLockAsync(syncLifecyclePrefix(authority), async () => {
+            const observation = inspectSync(authority);
+            if (observation.kind === "missing") {
+                ports.report({ kind: "sync-inactive" });
+                return;
+            }
+            if (observation.kind === "unknown") ports.fail("sync-unknown", observation.evidence);
+            if (observation.kind === "conflict") ports.fail("sync-conflict", observation.evidence);
+            ports.report({ kind: "sync-terminating", sessionName: observation.name });
+            const terminated = ports.terminateSync(observation.identifier);
+            if (!terminated.ok) ports.fail("sync-terminate-failed", terminated.evidence);
+            ports.report({ kind: "sync-terminated" });
+        });
     }
 
     return { checkTailscale, checkMutagen, isHostReachable, remoteExec, remoteSetup, remoteCheck, remoteTerminate };

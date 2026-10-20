@@ -1,13 +1,13 @@
 import { spawn, spawnSync } from "child_process";
 import { randomBytes } from "crypto";
 import { existsSync, readFileSync } from "fs";
-import { join, resolve } from "path";
+import { isAbsolute, join, resolve } from "path";
 import { hashPath, getProjectId, prompt, IMAGE_NAME, COMMON_IGNORE_DIRS, collectForwardedEnv, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE } from "../utils.js";
 import { getContainerName } from "../docker.js";
 import { legacyRemoteConfigDir, readCccConfig, updateCccConfig } from "../home-layout.js";
 import { createSessionLock, removeSessionLock, removeSessionLockInHeldLifecycleLock, withContainerLifecycleLock, withContainerLifecycleLockAsync } from "../session.js";
 import { remoteContainerStartScript, remoteSessionReservationShell, remoteRefreshSessionShell, remoteReleaseSessionShell, remoteStopShell, shellEscapeArg } from "./remote-shell.js";
-import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteSyncObservation } from "../domain/remote-services.js";
+import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteObservedSync, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncInventory } from "../domain/remote-services.js";
 import type { RemoteServicesPorts } from "../ports/remote-services.js";
 import { captureInteractiveTerminal } from "./interactive-terminal.js";
 
@@ -20,13 +20,90 @@ export interface NativeEvidence {
 export function getProjectHash(projectPath: string): string { return hashPath(resolve(projectPath)); }
 export function getMutagenSessionName(projectPath: string): string { return `ccc-${getProjectId(projectPath)}`; }
 
-function parseMutagenSyncStatus(output: string): string {
-    const statusMatch = output.match(/Status:\s*(.+)/);
-    return statusMatch ? statusMatch[1].trim() : "Unknown";
+function validSyncIdentifier(identifier: string): boolean {
+    return /^[a-z]{4}_[0-9a-zA-Z]{43}$/.test(identifier) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(identifier);
 }
 
-export function renderMutagenSyncStatus(observation: RemoteSyncObservation<NativeEvidence>): string | null {
-    return observation.kind === "unavailable" ? null : observation.evidence.syncStatus ?? "Unknown";
+interface NativeSyncEndpoint {
+    protocol: string;
+    user?: string;
+    host?: string;
+    port?: number;
+    path: string;
+    environment?: Record<string, string>;
+    parameters?: Record<string, string>;
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nativeSyncEndpoint(value: unknown): NativeSyncEndpoint | null {
+    if (!record(value) || !["local", "ssh", "docker", "unknown"].includes(value.protocol as string) || typeof value.path !== "string" || !value.path) return null;
+    if (value.user !== undefined && typeof value.user !== "string" || value.host !== undefined && typeof value.host !== "string") return null;
+    if (value.port !== undefined && (typeof value.port !== "number" || !Number.isInteger(value.port) || value.port < 0 || value.port > 65535)) return null;
+    for (const field of ["environment", "parameters"]) {
+        const map = value[field];
+        if (map !== undefined && (!record(map) || Object.values(map).some(entry => typeof entry !== "string"))) return null;
+    }
+    return value as unknown as NativeSyncEndpoint;
+}
+
+function qualifiedSyncBinding(alpha: NativeSyncEndpoint, beta: NativeSyncEndpoint): RemoteSyncBinding | null {
+    const unqualified = (endpoint: NativeSyncEndpoint) => (endpoint.port ?? 0) !== 0 ||
+        Object.keys(endpoint.environment ?? {}).length > 0 || Object.keys(endpoint.parameters ?? {}).length > 0;
+    if (alpha.protocol !== "local" || !isAbsolute(alpha.path) || alpha.user || alpha.host || unqualified(alpha) ||
+        beta.protocol !== "ssh" || !beta.user || !beta.host || unqualified(beta)) return null;
+    const target = /^docker:\/\/([a-fA-F0-9]{12,64})\/project\/([^/]+)$/.exec(beta.path);
+    if (!target) return null;
+    return { localPath: alpha.path, user: beta.user, host: beta.host, containerId: target[1], projectId: target[2] };
+}
+
+function parseSyncInventory(output: string, evidence: NativeEvidence): RemoteSyncInventory<NativeEvidence> {
+    let data: unknown;
+    try { data = JSON.parse(output); } catch { return { kind: "unknown", evidence }; }
+    if (!Array.isArray(data)) return { kind: "unknown", evidence };
+    const sessions: RemoteObservedSync<NativeEvidence>[] = [];
+    const identifiers = new Set<string>();
+    const statusDescriptions = new Map([
+        ["disconnected", "Disconnected"],
+        ["halted-on-root-emptied", "Halted due to one-sided root emptying"],
+        ["halted-on-root-deletion", "Halted due to root deletion"],
+        ["halted-on-root-type-change", "Halted due to root type change"],
+        ["connecting-alpha", "Connecting to alpha"],
+        ["connecting-beta", "Connecting to beta"],
+        ["watching", "Watching for changes"],
+        ["scanning", "Scanning files"],
+        ["waiting-for-rescan", "Waiting 5 seconds for rescan"],
+        ["reconciling", "Reconciling changes"],
+        ["staging-alpha", "Staging files on alpha"],
+        ["staging-beta", "Staging files on beta"],
+        ["transitioning", "Applying changes"],
+        ["saving", "Saving archive"],
+        ["unknown", "Unknown"],
+    ]);
+    for (const value of data) {
+        if (!record(value) || typeof value.identifier !== "string" || !validSyncIdentifier(value.identifier) || identifiers.has(value.identifier) ||
+            value.name !== undefined && typeof value.name !== "string" || typeof value.paused !== "boolean" ||
+            typeof value.status !== "string" || !statusDescriptions.has(value.status) || value.lastError !== undefined && typeof value.lastError !== "string") {
+            return { kind: "unknown", evidence };
+        }
+        const alpha = nativeSyncEndpoint(value.alpha);
+        const beta = nativeSyncEndpoint(value.beta);
+        if (!alpha || !beta) return { kind: "unknown", evidence };
+        identifiers.add(value.identifier);
+        const syncStatus = value.paused ? "Paused" : statusDescriptions.get(value.status);
+        sessions.push({ kind: "observed", identifier: value.identifier, name: value.name ?? "", binding: qualifiedSyncBinding(alpha, beta),
+            paused: value.paused, watching: value.status === "watching", failed: value.status.startsWith("halted-") || Boolean(value.lastError), evidence: { ...evidence, syncStatus } });
+    }
+    return { kind: "known", sessions, evidence };
+}
+
+/** Legacy display helper has no mutation authority. */
+export function renderMutagenSyncStatus(inventory: RemoteSyncInventory<NativeEvidence>, name: string): string | null {
+    if (inventory.kind === "unknown") return null;
+    const matches = inventory.sessions.filter(session => session.name === name);
+    return matches.length === 1 ? matches[0].evidence.syncStatus ?? "Unknown" : null;
 }
 
 function printStatus(label: string, ok: boolean, detail?: string): void {
@@ -116,6 +193,8 @@ Config is stored per-project in ~/.ccc/config.json under "remote"`);
             console.log(`  Session name would be: ${event.sessionName}`);
             return;
         case "status-sync-unavailable": console.log("  (mutagen not installed)"); return;
+        case "status-sync-unknown": console.log("  Sync state could not be established."); return;
+        case "status-sync-conflict": console.log("  Conflicting or unqualified sync sessions require manual inspection."); return;
         case "status-end": console.log(""); return;
         case "mutagen-required": console.error("Mutagen is not installed. Run 'ccc remote setup' for installation guide."); return;
         case "config-invalid": console.error("Saved remote config contains invalid host or user. Please reconfigure with 'ccc remote <host>'."); return;
@@ -164,13 +243,17 @@ function fail(kind: RemoteFailureKind, evidence?: NativeEvidence): never {
     switch (kind) {
         case "image-missing": throw new Error("ccc image not found on remote. Run 'ccc' on the remote host first to build the image.");
         case "config-unresolved": throw new Error("Remote configuration could not be resolved");
+        case "config-invalid": throw new Error("Saved remote configuration contains an invalid host or user");
         case "start-failed": throw new Error(`Failed to start remote container: ${result?.stderr}`);
         case "missing-container-id": throw new Error("Failed to start remote container: stable container ID was not returned");
         case "project-prepare-failed": throw new Error(`Failed to prepare remote container project directory: ${result?.stderr || result?.error?.message || "unknown error"}`);
-        case "sync-terminate-failed": throw new Error("Failed to terminate stale sync session");
+        case "sync-terminate-failed": throw new Error("Failed to terminate sync session");
         case "sync-resume-failed": throw new Error("Failed to resume sync session");
         case "sync-create-failed": throw new Error("Failed to create sync session");
         case "sync-missing": throw new Error("Sync session not found");
+        case "sync-unknown": throw new Error("Sync state could not be established");
+        case "sync-conflict": throw new Error("Conflicting or unqualified sync sessions require manual inspection");
+        case "sync-pause-failed": throw new Error("Failed to pause sync session");
         case "sync-failed": throw new Error(`Sync failed: ${evidence?.syncStatus}`);
         case "sync-timeout": throw new Error("Sync timeout - initial sync did not complete");
         case "stop-failed": throw new Error(`Failed to stop remote container: ${result?.stderr || result?.status}`);
@@ -178,12 +261,21 @@ function fail(kind: RemoteFailureKind, evidence?: NativeEvidence): never {
 }
 
 export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvidence> {
+    const mutagenEnvironment = { ...process.env };
+    const mutagenCwd = process.cwd();
+    const mutagenOptions = { env: mutagenEnvironment, cwd: mutagenCwd };
+    const controlSync = (operation: "resume" | "terminate" | "pause", identifier: string) => {
+        if (!validSyncIdentifier(identifier)) return { ok: false as const, evidence: { syncStatus: "Invalid sync identifier" } };
+        const result = spawnSync("mutagen", ["sync", operation, identifier], { ...mutagenOptions, stdio: "inherit" });
+        return result.error || result.status !== 0 ? { ok: false as const, evidence: { execution: result } } : { ok: true as const };
+    };
     return {
-        resolveProjectPath: path => resolve(path), getProjectId: path => getProjectId(path),
+        resolveProjectPath: path => resolve(mutagenCwd, path), getProjectId: path => getProjectId(path),
         getProjectHash, getMutagenSessionName, getContainerName: (path, profile) => getContainerName(path, profile),
+        getScopedMutagenSessionName: (authority: RemoteSyncAuthority) => `ccc-${authority.projectId}-${hashPath(`${authority.user}@${authority.host}`)}`,
         hashRemoteIdentity: value => hashPath(value), newReservationToken: () => randomBytes(16).toString("hex"),
         observeTool: tool => {
-            const result = spawnSync(tool, ["version"], { encoding: "utf-8" });
+            const result = spawnSync(tool, ["version"], { encoding: "utf-8", ...(tool === "mutagen" ? mutagenOptions : {}) });
             return result.error || result.status !== 0 ? { installed: false } : { installed: true, version: (result.stdout ?? "").split("\n")[0].trim() };
         },
         isHostReachable: host => spawnSync("ping", ["-c", "1", "-W", "1", host], { encoding: "utf-8" }).status === 0,
@@ -220,36 +312,23 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
             const result = spawnSync("ssh", [`${request.config.user}@${request.config.host}`, command], { encoding: "utf-8" });
             return result.error || result.status !== 0 ? { ok: false, evidence: { execution: result } } : { ok: true };
         },
-        observeSync: (name, expectedContainerId, remainingMs) => {
-            const timeout = remainingMs === undefined ? undefined : Math.floor(remainingMs);
-            if (timeout !== undefined && !(timeout > 0)) return { kind: "unavailable" };
-            const result = spawnSync("mutagen", ["sync", "list", name], { encoding: "utf-8", ...(timeout === undefined ? {} : { timeout, killSignal: "SIGKILL" }) });
-            if (result.error || result.status !== 0) return { kind: "unavailable" };
-            const output = result.stdout ?? "";
-            const syncStatus = parseMutagenSyncStatus(output);
-            const lowerStatus = syncStatus.toLowerCase();
-            return {
-                kind: "observed", endpointMatches: expectedContainerId !== undefined && output.includes(`docker://${expectedContainerId}/`),
-                paused: lowerStatus.includes("paused"), watching: lowerStatus.includes("watching"),
-                failed: lowerStatus.includes("error") || lowerStatus.includes("halted"), evidence: { syncStatus },
-            };
+        observeSyncInventory: remainingMs => {
+            const timeout = remainingMs === undefined ? 30000 : Math.min(30000, Math.floor(remainingMs));
+            if (!(timeout > 0)) return { kind: "unknown", evidence: {} };
+            const result = spawnSync("mutagen", ["sync", "list", "--template", "{{json .}}"], { ...mutagenOptions, encoding: "utf-8", timeout, killSignal: "SIGKILL" });
+            const evidence = { execution: result };
+            if (result.error || result.status !== 0) return { kind: "unknown", evidence };
+            return parseSyncInventory(result.stdout ?? "", evidence);
         },
-        startSyncDaemon: () => { spawnSync("mutagen", ["daemon", "start"], { stdio: "ignore" }); },
-        terminateSync: name => { spawnSync("mutagen", ["sync", "terminate", name], { stdio: "inherit" }); },
-        terminateStaleSync: name => {
-            const result = spawnSync("mutagen", ["sync", "terminate", name], { stdio: "inherit" });
-            return result.error || result.status !== 0 ? { ok: false, evidence: { execution: result } } : { ok: true };
-        },
-        resumeSync: name => {
-            const result = spawnSync("mutagen", ["sync", "resume", name], { stdio: "inherit" });
-            return result.error || result.status !== 0 ? { ok: false, evidence: { execution: result } } : { ok: true };
-        },
+        startSyncDaemon: () => { spawnSync("mutagen", ["daemon", "start"], { ...mutagenOptions, stdio: "ignore" }); },
+        terminateSync: identifier => controlSync("terminate", identifier),
+        resumeSync: identifier => controlSync("resume", identifier),
         createSync: request => {
             const args = ["sync", "create", request.localPath, `${request.config.user}@${request.config.host}:docker://${request.containerId}/project/${request.projectId}`, "--name", request.name, "--ignore-vcs", ...COMMON_IGNORE_DIRS.map(dir => `--ignore=${dir}`)];
-            const result = spawnSync("mutagen", args, { stdio: "inherit" });
-            return result.status === 0 ? { ok: true } : { ok: false, evidence: { execution: result } };
+            const result = spawnSync("mutagen", args, { ...mutagenOptions, stdio: "inherit" });
+            return result.error || result.status !== 0 ? { ok: false, evidence: { execution: result } } : { ok: true };
         },
-        pauseSync: name => { spawnSync("mutagen", ["sync", "pause", name], { stdio: "inherit" }); },
+        pauseSync: identifier => controlSync("pause", identifier),
         readRemoteConfigs: () => {
             const remote = readCccConfig().remote;
             return remote && typeof remote === "object" && !Array.isArray(remote) ? remote as Record<string, unknown> : null;

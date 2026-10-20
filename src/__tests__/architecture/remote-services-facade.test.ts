@@ -22,6 +22,7 @@ import { checkTailscale, checkMutagen, getMutagenSyncStatus, isHostReachable, sh
 
 const config = { host: "host", user: "user", remotePath: "" };
 const containerId = "a".repeat(64);
+const syncId = "sync_" + "a".repeat(43);
 const token = "b".repeat(32);
 const reservation = { config, projectPath: "/work/project", profile: "named", token, leaseSeconds: 300 };
 const retained = { config, name: "ccc-returned", containerId, token };
@@ -57,6 +58,13 @@ function expectTerminalRestored(output: string): void {
 function execution(status: number | null, stdout = "", error?: Error, stderr = "") {
     return { status, stdout, stderr, error, pid: 123, output: [], signal: null };
 }
+function nativeSession(overrides: Record<string, unknown> = {}) {
+    return { identifier: syncId, name: "ccc-sync", alpha: { protocol: "local", path: syncRequest.localPath },
+        beta: { protocol: "ssh", user: "user", host: "host", path: `docker://${containerId}/project/project-id` },
+        paused: false, status: "watching", ...overrides };
+}
+const queryArgs = ["sync", "list", "--template", "{{json .}}"];
+const capturedOptions = (extra: Record<string, unknown> = {}) => expect.objectContaining({ env: expect.any(Object), cwd: process.cwd(), ...extra });
 
 beforeEach(() => {
     vi.resetAllMocks();
@@ -90,7 +98,7 @@ describe("remote native observations and effects", () => {
             expect(native.sync).toHaveBeenLastCalledWith("tailscale", ["version"], { encoding: "utf-8" });
             expect(checkTailscale()).toEqual(observation);
             expect(checkMutagen()).toEqual(observation);
-            expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["version"], { encoding: "utf-8" });
+            expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["version"], capturedOptions({ encoding: "utf-8" }));
             expect(ports.isHostReachable("host")).toBe(result.status === 0);
             expect(isHostReachable("host")).toBe(result.status === 0);
             expect(native.sync).toHaveBeenLastCalledWith("ping", ["-c", "1", "-W", "1", "host"], { encoding: "utf-8" });
@@ -164,59 +172,81 @@ describe("remote native observations and effects", () => {
         }
     });
 
-    it("projects independent sync flags for the exact endpoint and preserves public display status", () => {
+    it("projects official complete JSON inventory into exact semantic binding and independent flags", () => {
         const ports = createNativeRemoteServicesPorts();
-        native.sync.mockReturnValue(execution(0, `Beta:\n  URL: user@host:docker://${containerId}/project/id\nStatus: Paused Watching ERROR halted\n`));
-        const mixed = ports.observeSync("ccc-sync", containerId);
-        expect(mixed.kind).toBe("observed");
-        if (mixed.kind !== "observed") throw Error("sync unexpectedly unavailable");
-        expect([mixed.endpointMatches, mixed.paused, mixed.watching, mixed.failed]).toEqual([true, true, true, true]);
-        expect(getMutagenSyncStatus("ccc-sync")).toBe("Paused Watching ERROR halted");
-        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8" });
-        for (const output of [`URL: docker://${containerId}f/project/id\nStatus: Saving custom state\n`, "Name: ccc-sync\n", ""]) {
-            native.sync.mockReturnValue(execution(0, output));
-            const observation = ports.observeSync("ccc-sync", containerId);
-            expect(observation.kind).toBe("observed");
-            if (observation.kind !== "observed") throw Error("sync unexpectedly unavailable");
-            expect([observation.endpointMatches, observation.paused, observation.watching, observation.failed]).toEqual([false, false, false, false]);
-            expect(getMutagenSyncStatus("ccc-sync")).toBe(output.includes("Status:") ? "Saving custom state" : "Unknown");
+        native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ paused: true, lastError: "permission denied" })])));
+        const inventory = ports.observeSyncInventory();
+        expect(inventory.kind).toBe("known"); if (inventory.kind !== "known") throw Error("unknown inventory");
+        expect(inventory.sessions).toHaveLength(1);
+        expect(inventory.sessions[0]).toMatchObject({ kind: "observed", identifier: syncId, name: "ccc-sync", paused: true, watching: true, failed: true,
+            binding: { localPath: syncRequest.localPath, user: "user", host: "host", projectId: "project-id", containerId } });
+        expect(getMutagenSyncStatus("ccc-sync")).toBe("Paused");
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", queryArgs, capturedOptions({ encoding: "utf-8", timeout: 30000, killSignal: "SIGKILL" }));
+        native.sync.mockReturnValue(execution(0, "[]")); expect(ports.observeSyncInventory()).toMatchObject({ kind: "known", sessions: [] });
+        expect(getMutagenSyncStatus("ccc-sync")).toBeNull();
+    });
+
+    it.each([
+        "", "not json", "{}", "null", "[null]", JSON.stringify([nativeSession(), {}]),
+        JSON.stringify([nativeSession({ identifier: "name-is-not-id" })]), JSON.stringify([nativeSession({ paused: "false" })]),
+        JSON.stringify([nativeSession({ name: 7 })]), JSON.stringify([nativeSession({ status: null })]),
+        JSON.stringify([nativeSession({ alpha: { protocol: "local" } })]),
+        JSON.stringify([nativeSession(), nativeSession({ name: "unrelated" })]),
+    ])("treats every malformed or incompatible inventory as unknown: %s", output => {
+        native.sync.mockReturnValue(execution(0, output));
+        expect(createNativeRemoteServicesPorts().observeSyncInventory()).toMatchObject({ kind: "unknown" });
+        expect(getMutagenSyncStatus("ccc-sync")).toBeNull();
+    });
+
+    it("accounts for anonymous sessions and retains unsupported endpoints as unqualified records", () => {
+        const ports = createNativeRemoteServicesPorts();
+        const anonymous = nativeSession(); Reflect.deleteProperty(anonymous, "name");
+        native.sync.mockReturnValue(execution(0, JSON.stringify([anonymous])));
+        expect(ports.observeSyncInventory()).toMatchObject({ kind: "known", sessions: [{ name: "", identifier: syncId }] });
+        for (const beta of [
+            { protocol: "docker", host: containerId, path: "/project/project-id" },
+            { protocol: "ssh", user: "user", host: "host", path: `docker://${containerId}/project/project-id`, port: 2200 },
+            { protocol: "ssh", user: "user", host: "host", path: `/unqualified/${containerId}` },
+            { protocol: "ssh", user: "user", host: "host", path: `docker://${containerId}f/project/project-id/trailing` },
+        ]) {
+            native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ beta })])));
+            expect(ports.observeSyncInventory()).toMatchObject({ kind: "known", sessions: [{ binding: null }] });
         }
-        for (const result of [execution(0, "Status: Watching\n", Error("returned")), execution(1, "Status: Watching\n"), execution(null)]) {
-            native.sync.mockReturnValue(result);
-            expect(ports.observeSync("ccc-sync", containerId)).toEqual({ kind: "unavailable" });
-            expect(getMutagenSyncStatus("ccc-sync")).toBeNull();
-        }
+    });
+
+    it("never borrows an ID from alpha or diagnostics to qualify the remote endpoint", () => {
+        native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ alpha: { protocol: "local", path: `/local/docker://${containerId}/` },
+            beta: { protocol: "ssh", user: "foreign", host: "other-host", path: `docker://${"b".repeat(64)}/project/project-id` }, lastError: `docker://${containerId}/` })])));
+        expect(createNativeRemoteServicesPorts().observeSyncInventory()).toMatchObject({ kind: "known", sessions: [{ binding: { user: "foreign", host: "other-host", containerId: "b".repeat(64) } }] });
     });
 
     it.each([0, -1, 0.999])("does not dispatch Mutagen when the remaining %s ms cannot fund a process", remainingMs => {
         const ports = createNativeRemoteServicesPorts();
-        native.sync.mockReturnValue(execution(0, "Status: Watching\n"));
-        expect(ports.observeSync("ccc-sync", containerId, remainingMs)).toEqual({ kind: "unavailable" });
+        expect(ports.observeSyncInventory(remainingMs)).toMatchObject({ kind: "unknown" });
         expect(native.sync).not.toHaveBeenCalled();
     });
 
     it("bounds the native query to usable whole milliseconds without changing its endpoint facts", () => {
         const ports = createNativeRemoteServicesPorts();
-        native.sync.mockReturnValue(execution(0, `URL: docker://${containerId}/project/id\nStatus: Watching for changes\n`));
-        const observation = ports.observeSync("ccc-sync", containerId, 4321.9);
-        expect(observation).toMatchObject({ kind: "observed", endpointMatches: true, watching: true, failed: false });
-        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 4321, killSignal: "SIGKILL" });
-        expect(ports.observeSync("ccc-sync", undefined, 1)).toMatchObject({ kind: "observed", endpointMatches: false, watching: true });
-        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 1, killSignal: "SIGKILL" });
-        ports.observeSync("ccc-sync", containerId);
-        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8" });
+        native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession()])));
+        expect(ports.observeSyncInventory(4321.9)).toMatchObject({ kind: "known", sessions: [{ watching: true, failed: false }] });
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", queryArgs, capturedOptions({ encoding: "utf-8", timeout: 4321, killSignal: "SIGKILL" }));
+        ports.observeSyncInventory(1);
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", queryArgs, capturedOptions({ timeout: 1, killSignal: "SIGKILL" }));
+        ports.observeSyncInventory(60000);
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", queryArgs, capturedOptions({ timeout: 30000, killSignal: "SIGKILL" }));
     });
 
     it("retains unavailable and raw-fault outcomes from a bounded native query", () => {
         const ports = createNativeRemoteServicesPorts();
         for (const result of [execution(0, "Status: Watching\n", Error("timed out")), execution(7, "Status: Watching\n"), execution(null)]) {
             native.sync.mockReturnValue(result);
-            expect(ports.observeSync("ccc-sync", containerId, 321)).toEqual({ kind: "unavailable" });
-            expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "list", "ccc-sync"], { encoding: "utf-8", timeout: 321, killSignal: "SIGKILL" });
+            expect(ports.observeSyncInventory(321)).toMatchObject({ kind: "unknown" });
+            expect(native.sync).toHaveBeenLastCalledWith("mutagen", queryArgs, capturedOptions({ encoding: "utf-8", timeout: 321, killSignal: "SIGKILL" }));
         }
         const fault = Error("native query threw");
         native.sync.mockImplementation(() => { throw fault; });
-        expect(() => ports.observeSync("ccc-sync", containerId, 321)).toThrow(fault);
+        expect(() => ports.observeSyncInventory(321)).toThrow(fault);
     });
 
     it("forcibly terminates a SIGTERM-handling native query within its remaining budget", async () => {
@@ -232,7 +262,7 @@ describe("remote native observations and effects", () => {
         const joined: Array<import("node:child_process").SpawnSyncReturns<string>> = [];
         native.sync.mockImplementation((command: string, args: string[], options: import("node:child_process").SpawnSyncOptionsWithStringEncoding) => {
             expect(command).toBe("mutagen");
-            expect(args).toEqual(["sync", "list", "ccc-sync"]);
+            expect(args).toEqual(queryArgs);
             // Redirect only the query executable and argv. The adapter's timeout
             // and termination options reach the actual joined native process.
             const result = spawnSync(process.execPath, ["-e", queryLeaf], options);
@@ -241,10 +271,10 @@ describe("remote native observations and effects", () => {
         });
         const ports = createNativeRemoteServicesPorts();
         const started = performance.now();
-        const observation = ports.observeSync("ccc-sync", containerId, budgetMs);
+        const observation = ports.observeSyncInventory(budgetMs);
         const elapsedMs = performance.now() - started;
 
-        expect(observation).toEqual({ kind: "unavailable" });
+        expect(observation).toMatchObject({ kind: "unknown" });
         expect(native.sync).toHaveBeenCalledOnce();
         expect(joined).toHaveLength(1);
         expect(joined[0]?.pid).toBeGreaterThan(0);
@@ -267,34 +297,52 @@ describe("remote native observations and effects", () => {
         expect(native.sync).not.toHaveBeenCalled();
     });
 
-    it("creates the exact-ID sync by status while checking resume and stale termination errors", () => {
+    it("checks create and every identifier effect, including returned errors with status zero", () => {
         const ports = createNativeRemoteServicesPorts();
         for (const result of [execution(0), execution(0, "", Error("returned")), execution(1), execution(null)]) {
             native.sync.mockReturnValue(result);
-            expect(ports.createSync(syncRequest).ok).toBe(result.status === 0);
-            expect(native.sync).toHaveBeenLastCalledWith("mutagen", expect.arrayContaining(["--ignore-vcs"]), { stdio: "inherit" });
+            expect(ports.createSync(syncRequest).ok).toBe(result.status === 0 && !result.error);
+            expect(native.sync).toHaveBeenLastCalledWith("mutagen", expect.arrayContaining(["--ignore-vcs"]), capturedOptions({ stdio: "inherit" }));
             expect(native.sync.mock.calls.at(-1)?.[1].slice(0, 7)).toEqual(["sync", "create", syncRequest.localPath, `user@host:docker://${containerId}/project/project-id`, "--name", "ccc-sync", "--ignore-vcs"]);
-            expect(ports.resumeSync("ccc-sync").ok).toBe(result.status === 0 && !result.error);
-            expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "resume", "ccc-sync"], { stdio: "inherit" });
-            expect(ports.terminateStaleSync("ccc-sync").ok).toBe(result.status === 0 && !result.error);
-            expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "terminate", "ccc-sync"], { stdio: "inherit" });
+            for (const [action, effect] of [["resume", ports.resumeSync], ["terminate", ports.terminateSync], ["pause", ports.pauseSync]] as const) {
+                expect(effect(syncId).ok).toBe(result.status === 0 && !result.error);
+                expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", action, syncId], capturedOptions({ stdio: "inherit" }));
+            }
         }
     });
 
-    it("ignores returned failures from daemon, pause, public termination and release but propagates throws", () => {
+    it("rejects name selectors and malformed identifiers without dispatch", () => {
+        const ports = createNativeRemoteServicesPorts();
+        for (const selector of ["ccc-sync", "", "sync_short", "sync_" + "a".repeat(42), "sync_" + "a".repeat(44), "SYNC_" + "a".repeat(43)]) {
+            expect(ports.resumeSync(selector).ok).toBe(false); expect(ports.pauseSync(selector).ok).toBe(false); expect(ports.terminateSync(selector).ok).toBe(false);
+        }
+        expect(native.sync).not.toHaveBeenCalled();
+        native.sync.mockReturnValue(execution(0));
+        expect(ports.terminateSync("12345678-1234-4234-9234-1234567890ab").ok).toBe(true);
+    });
+
+    it("captures Mutagen environment when ports are created", () => {
+        const previous = process.env.CCC_SYNC_CAPTURE_TEST;
+        try {
+            process.env.CCC_SYNC_CAPTURE_TEST = "captured"; const ports = createNativeRemoteServicesPorts();
+            process.env.CCC_SYNC_CAPTURE_TEST = "changed"; native.sync.mockReturnValue(execution(0, "[]"));
+            ports.observeSyncInventory(); ports.resumeSync(syncId);
+            for (const call of native.sync.mock.calls) expect(call[2]).toMatchObject({ cwd: process.cwd(), env: { CCC_SYNC_CAPTURE_TEST: "captured" } });
+        } finally {
+            if (previous === undefined) delete process.env.CCC_SYNC_CAPTURE_TEST; else process.env.CCC_SYNC_CAPTURE_TEST = previous;
+        }
+    });
+
+    it("retains void daemon and release results while propagating thrown native faults", () => {
         const ports = createNativeRemoteServicesPorts();
         native.sync.mockReturnValue(execution(1, "", Error("returned")));
         expect(ports.startSyncDaemon()).toBeUndefined();
-        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["daemon", "start"], { stdio: "ignore" });
-        expect(ports.pauseSync("ccc-sync")).toBeUndefined();
-        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "pause", "ccc-sync"], { stdio: "inherit" });
-        expect(ports.terminateSync("ccc-sync")).toBeUndefined();
-        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["sync", "terminate", "ccc-sync"], { stdio: "inherit" });
+        expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["daemon", "start"], capturedOptions({ stdio: "ignore" }));
         expect(ports.releaseReservation(retained)).toBeUndefined();
         native.sync.mockImplementation(() => { throw Error("native throw"); });
         expect(() => ports.startSyncDaemon()).toThrow("native throw");
-        expect(() => ports.pauseSync("ccc-sync")).toThrow("native throw");
-        expect(() => ports.terminateSync("ccc-sync")).toThrow("native throw");
+        expect(() => ports.pauseSync(syncId)).toThrow("native throw");
+        expect(() => ports.terminateSync(syncId)).toThrow("native throw");
         expect(() => ports.releaseReservation(retained)).toThrow("native throw");
     });
 

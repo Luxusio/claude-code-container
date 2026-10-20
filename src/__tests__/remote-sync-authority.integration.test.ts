@@ -1,0 +1,303 @@
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
+
+// Every consumer imports the coordinator's genuine emitted graph. The native
+// executables are stateful fixtures; no engine, SSH host or Mutagen daemon runs.
+const dist = fileURLToPath(new URL("../../dist/", import.meta.url));
+const roots: string[] = [];
+type Running = { child: ChildProcess; finished: boolean; done: Promise<{ code: number | null; stdout: string; stderr: string }> };
+const running: Running[] = [];
+const nativeId = (character: string) => "sync_" + character.repeat(43);
+interface Session {
+    identifier: string; name: string; alpha: { protocol: string; path: string };
+    beta: { protocol: string; user: string; host: string; path: string }; paused: boolean; status: string;
+}
+interface State {
+    sessions: Session[]; created: number; containerId: string;
+    listMode: "known" | "failure" | "malformed" | "invalid-row";
+    afterCreateUnknown: boolean; holdInventory: boolean; replaceOnInteractive: boolean;
+    busy: boolean; terminateFailure: boolean; pauseFailure: boolean;
+}
+interface Call { program: string; args: string[]; role: string; targets?: string[]; cwd: string; marker: string | null; }
+
+const native = String.raw`
+import { appendFileSync, existsSync, openSync, closeSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+const root = process.env.CCC_REMOTE_FIXTURE, args = process.argv.slice(2), program = basename(process.argv[1]);
+const stateFile = join(root, 'state.json'), state = JSON.parse(readFileSync(stateFile, 'utf8'));
+const log = extra => appendFileSync(join(root, 'trace.jsonl'), JSON.stringify({
+  program, args, role: process.env.CCC_REMOTE_ROLE ?? '', cwd: process.cwd(),
+  marker: process.env.CCC_REMOTE_MARKER ?? null, ...extra,
+}) + '\n');
+const save = () => writeFileSync(stateFile, JSON.stringify(state));
+const out = text => process.stdout.write(text);
+const fail = text => { process.stderr.write(text); process.exit(1); };
+const waitFor = path => {
+  const deadline = performance.now() + 12000;
+  while (!existsSync(path)) {
+    if (performance.now() >= deadline) fail('fixture barrier timed out');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+};
+if (program === 'mutagen') {
+  if (args[0] === 'version') { log({}); out('mutagen version 0.17.0\n'); }
+  else if (args[0] === 'daemon') log({});
+  else if (args[1] === 'list') {
+    log({});
+    // Snapshot before the barrier: without the real project guard a competing
+    // process can admit from the same proved-empty view and create a second writer.
+    const snapshot = JSON.stringify(state.sessions);
+    if (state.holdInventory) {
+      try {
+        const fd = openSync(join(root, 'inventory-held'), 'wx'); closeSync(fd);
+        waitFor(join(root, 'release-inventory'));
+      } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    }
+    if (state.listMode === 'failure') fail('inventory query failed');
+    if (state.listMode === 'malformed') { out('not JSON'); process.exit(0); }
+    if (args.includes('--template')) {
+      out(state.listMode === 'invalid-row' ? JSON.stringify([...JSON.parse(snapshot), { name: 'incomplete unrelated row' }]) : snapshot);
+    } else {
+      // Stock name selectors may match several sessions; absence exits nonzero.
+      const matches = JSON.parse(snapshot).filter(row => row.name === args[2] || row.identifier === args[2]);
+      if (!matches.length) fail('unable to locate requested sessions');
+      for (const row of matches) out('Name: ' + row.name + '\nIdentifier: ' + row.identifier +
+        '\nAlpha:\n URL: ' + row.alpha.path + '\nBeta:\n URL: ' + row.beta.user + '@' + row.beta.host + ':' + row.beta.path +
+        '\nStatus: ' + (row.paused ? 'Paused' : 'Watching for changes') + '\n');
+    }
+  } else if (args[1] === 'create') {
+    const target = /^([^@]+)@([^:]+):(.*)$/.exec(args[3]);
+    if (!target) fail('invalid fixture target');
+    state.created++;
+    const identifier = 'sync_' + String(state.created).padStart(43, 'A');
+    state.sessions.push({ identifier, name: args[args.indexOf('--name') + 1],
+      alpha: { protocol: 'local', path: args[2] },
+      beta: { protocol: 'ssh', user: target[1], host: target[2], path: target[3] }, paused: false, status: 'watching' });
+    if (state.afterCreateUnknown) state.listMode = 'failure';
+    log({ targets: [identifier] }); save();
+  } else if (['resume', 'pause', 'terminate'].includes(args[1])) {
+    const selected = state.sessions.filter(row => row.identifier === args[2] || row.name === args[2]);
+    log({ targets: selected.map(row => row.identifier) });
+    if (args[1] === 'terminate' && state.terminateFailure || args[1] === 'pause' && state.pauseFailure) fail('native effect refused');
+    if (!selected.length) fail('unable to locate requested sessions');
+    if (args[1] === 'terminate') state.sessions = state.sessions.filter(row => !selected.includes(row));
+    else for (const row of selected) row.paused = args[1] === 'pause';
+    save();
+  } else fail('unexpected Mutagen operation');
+} else if (program === 'ssh') {
+  if (args[0] === '-t') {
+    log({});
+    if (state.replaceOnInteractive) {
+      state.replaceOnInteractive = false;
+      for (const row of state.sessions) row.identifier = 'sync_' + 'Z'.repeat(43);
+      save();
+    }
+  } else {
+    const command = args.at(-1) ?? '';
+    log({});
+    if (command.includes('docker images -q')) {
+      writeFileSync(join(root, 'image-preflight-' + (process.env.CCC_REMOTE_ROLE ?? 'single')), 'ready');
+      out('sha256:fixture\n');
+    }
+    else if (command.includes('docker run -d')) out('ccc-container-id=' + state.containerId + '\n');
+    else if (command.includes('docker stop') && state.busy) { out('ccc-remote-sessions-active\n'); process.exit(42); }
+  }
+} else fail('unexpected fixture executable');
+`;
+
+const consumer = String.raw`
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const root = process.env.CCC_REMOTE_FIXTURE, project = join(root, 'project');
+const load = file => import(pathToFileURL(join(process.env.CCC_REMOTE_DIST, file)).href);
+const api = await load('remote.js'), utils = await load('utils.js');
+const config = { host: process.env.CCC_REMOTE_HOST ?? 'host-a', user: 'user', remotePath: '' };
+mkdirSync(join(root, '.ccc'), { recursive: true, mode: 0o700 });
+writeFileSync(join(root, '.ccc', 'config.json'), JSON.stringify({ remote: { [api.getProjectHash(project)]: config } }), { mode: 0o600 });
+if (process.argv[2] === 'seed') {
+  writeFileSync(join(root, 'info.json'), JSON.stringify({ projectId: utils.getProjectId(project), legacy: api.getMutagenSessionName(project) }));
+} else {
+  writeFileSync(join(root, 'started-' + (process.env.CCC_REMOTE_ROLE ?? 'single')), 'ready');
+  try {
+    if (process.argv[2] === 'exec') await api.remoteExec(project);
+    else if (process.argv[2] === 'terminate') await api.remoteTerminate(project);
+    else if (process.argv[2] === 'check') await api.remoteCheck(project);
+    else throw Error('unexpected fixture action');
+  } catch (error) { console.error(error.message); process.exitCode = 1; }
+}
+`;
+
+afterEach(async () => {
+    for (const owned of running.splice(0)) {
+        if (!owned.finished && owned.child.pid) {
+            // This fixture created the detached group; it contains only its
+            // consumer and instrumented native children.
+            try { process.kill(-owned.child.pid, "SIGKILL"); } catch { /* already joined */ }
+        }
+        await owned.done;
+    }
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function fixture() {
+    const root = mkdtempSync(join(tmpdir(), "ccc-sync-authority-")); roots.push(root); chmodSync(root, 0o700);
+    const bin = join(root, "bin"); mkdirSync(bin, { mode: 0o700 }); mkdirSync(join(root, "project"), { mode: 0o700 });
+    const consumerPath = join(root, "consumer.mjs"); writeFileSync(consumerPath, consumer, { mode: 0o600 });
+    for (const program of ["mutagen", "ssh"]) writeFileSync(join(bin, program), "#!" + process.execPath + "\n" + native, { mode: 0o700 });
+    const statePath = join(root, "state.json"), tracePath = join(root, "trace.jsonl");
+    const initial: State = { sessions: [], created: 0, containerId: "a".repeat(64), listMode: "known",
+        afterCreateUnknown: false, holdInventory: false, replaceOnInteractive: false, busy: false, terminateFailure: false, pauseFailure: false };
+    writeFileSync(statePath, JSON.stringify(initial)); writeFileSync(tracePath, "");
+    const env = { ...process.env, HOME: root, PATH: bin + ":" + (process.env.PATH ?? ""),
+        CCC_REMOTE_FIXTURE: root, CCC_REMOTE_DIST: dist, CCC_REMOTE_MARKER: "captured-fixture", CCC_REMOTE_HOST: "host-a" };
+    const seed = spawnSync(process.execPath, [consumerPath, "seed"], { env, cwd: join(root, "project"), encoding: "utf8", timeout: 15000, killSignal: "SIGKILL" });
+    expect(seed.status, seed.stderr).toBe(0);
+    const info = JSON.parse(readFileSync(join(root, "info.json"), "utf8")) as { projectId: string; legacy: string };
+    const state = () => JSON.parse(readFileSync(statePath, "utf8")) as State;
+    const set = (changes: Partial<State>) => writeFileSync(statePath, JSON.stringify({ ...state(), ...changes }));
+    const calls = () => readFileSync(tracePath, "utf8").split("\n").filter(Boolean).map(row => JSON.parse(row) as Call);
+    const clear = () => writeFileSync(tracePath, "");
+    const start = (action = "exec", answer = "n", overrides: NodeJS.ProcessEnv = {}) => {
+        const child = spawn(process.execPath, [consumerPath, action], { env: { ...env, ...overrides }, cwd: join(root, "project"), detached: true, stdio: ["pipe", "pipe", "pipe"] });
+        let stdout = "", stderr = "", answered = false;
+        const owned: Running = { child, finished: false, done: new Promise((resolve, reject) => {
+            child.stdout!.on("data", data => {
+                stdout += String(data);
+                if (!answered && stdout.includes("Stop container and pause sync?")) { answered = true; child.stdin!.end(answer + "\n"); }
+            });
+            child.stderr!.on("data", data => { stderr += String(data); });
+            child.once("error", reject);
+            child.once("close", code => { owned.finished = true; resolve({ code, stdout, stderr }); });
+        }) };
+        running.push(owned); return owned;
+    };
+    const run = (action = "exec", answer = "n", overrides: NodeJS.ProcessEnv = {}) => start(action, answer, overrides).done;
+    const record = (name = info.legacy): Session => ({ identifier: nativeId("x"), name,
+        alpha: { protocol: "local", path: join(root, "project") },
+        beta: { protocol: "ssh", user: "user", host: "host-a", path: "docker://" + initial.containerId + "/project/" + info.projectId },
+        paused: false, status: "watching" });
+    return { root, env, info, state, set, calls, clear, start, run, record };
+}
+function mutations(calls: Call[]) { return calls.filter(call => call.program === "mutagen" && ["create", "resume", "pause", "terminate"].includes(call.args[1])); }
+async function waitFile(file: string) {
+    const deadline = performance.now() + 10000;
+    while (!existsSync(file)) {
+        if (performance.now() >= deadline) throw Error("fixture did not publish " + file);
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+}
+
+describe.runIf(process.platform !== "win32")("emitted remote sync authority with native ports", () => {
+    it("serializes two independent public callers with the real existing project guard and creates one writer", async () => {
+        const f = fixture(); f.set({ holdInventory: true });
+        const first = f.start("exec", "n", { CCC_REMOTE_ROLE: "first" }); await waitFile(join(f.root, "inventory-held"));
+        const second = f.start("exec", "n", { CCC_REMOTE_ROLE: "second" }); await waitFile(join(f.root, "image-preflight-second"));
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        expect(f.calls().filter(call => call.program === "mutagen" && call.args[1] === "list")).toHaveLength(1);
+        writeFileSync(join(f.root, "release-inventory"), "continue");
+        const results = await Promise.all([first.done, second.done]);
+        expect(results.map(result => result.code), results.map(result => result.stderr).join("\n")).toEqual([0, 0]);
+        expect(f.state().created).toBe(1); expect(f.state().sessions).toHaveLength(1);
+        expect(mutations(f.calls()).map(call => call.args[1])).toEqual(["create"]);
+        for (const call of f.calls().filter(call => call.program === "mutagen")) expect(call).toMatchObject({ cwd: join(f.root, "project"), marker: "captured-fixture" });
+    }, 30000);
+
+    it.each(["failure", "malformed", "invalid-row"] as const)("refuses %s inventory with zero Mutagen effects", async listMode => {
+        const f = fixture(); f.set({ listMode });
+        const result = await f.run();
+        expect(mutations(f.calls())).toEqual([]); expect(f.state().created).toBe(0); expect(result.code).toBe(1);
+    }, 20000);
+
+    it("protects legacy unscoped sessions without resuming, terminating, creating or pausing", async () => {
+        const f = fixture(), legacy = f.record(); legacy.paused = true; f.set({ sessions: [legacy] });
+        const result = await f.run("exec", "y");
+        expect(mutations(f.calls())).toEqual([]); expect(f.state().sessions).toEqual([legacy]); expect(result.code).toBe(1);
+    }, 20000);
+
+    it("refuses duplicate nonunique scoped names rather than choosing or controlling both", async () => {
+        const f = fixture(); expect((await f.run()).code).toBe(0);
+        const first = f.state().sessions[0], second = { ...first, identifier: nativeId("d"), paused: true };
+        f.set({ sessions: [first, second] }); f.clear();
+        const result = await f.run("exec", "y");
+        expect(mutations(f.calls())).toEqual([]); expect(f.state().sessions).toEqual([first, second]); expect(result.code).toBe(1);
+    }, 20000);
+
+    it("isolates different configured hosts for the same local project", async () => {
+        const f = fixture(); expect((await f.run()).code).toBe(0);
+        const hostA = f.state().sessions[0]; f.clear();
+        const result = await f.run("exec", "n", { CCC_REMOTE_HOST: "host-b" });
+        expect(result.code, result.stderr).toBe(0); expect(f.state().sessions).toHaveLength(2);
+        expect(f.state().sessions.find(row => row.identifier === hostA.identifier)).toEqual(hostA);
+        expect(new Set(f.state().sessions.map(row => row.name)).size).toBe(2);
+        expect(mutations(f.calls()).map(call => call.args[1])).toEqual(["create"]);
+    }, 20000);
+
+    it.each(["user", "host", "root"] as const)("refuses a scoped record with foreign %s binding without effects", async field => {
+        const f = fixture(); expect((await f.run()).code).toBe(0);
+        const before = f.state().sessions[0];
+        const foreign = { ...before, alpha: { ...before.alpha }, beta: { ...before.beta } };
+        if (field === "root") foreign.alpha.path = join(f.root, "other-project"); else foreign.beta[field] = "foreign";
+        f.set({ sessions: [foreign] }); f.clear(); const result = await f.run("exec", "y");
+        expect(mutations(f.calls())).toEqual([]); expect(f.state().sessions).toEqual([foreign]); expect(result.code).toBe(1);
+    }, 20000);
+
+    it("resumes and pauses only the captured unique identifier after the exact container stops", async () => {
+        const f = fixture(); expect((await f.run()).code).toBe(0);
+        const before = f.state().sessions[0]; f.set({ sessions: [{ ...before, paused: true }] }); f.clear();
+        const result = await f.run("exec", "y"); expect(result.code, result.stderr).toBe(0);
+        expect(mutations(f.calls())).toEqual([
+            expect.objectContaining({ args: ["sync", "resume", before.identifier], targets: [before.identifier] }),
+            expect.objectContaining({ args: ["sync", "pause", before.identifier], targets: [before.identifier] }),
+        ]);
+        const calls = f.calls();
+        const stopAt = calls.findIndex(call => call.program === "ssh" && call.args.some(arg => arg.includes("docker stop")));
+        const pauseAt = calls.findIndex(call => call.program === "mutagen" && call.args[1] === "pause");
+        expect(stopAt).toBeGreaterThanOrEqual(0); expect(stopAt).toBeLessThan(pauseAt);
+        expect(calls.slice(stopAt + 1, pauseAt).some(call => call.program === "mutagen" && call.args[1] === "list")).toBe(true);
+    }, 20000);
+
+    it("replaces only same-authority container changes using the old unique identifier", async () => {
+        const f = fixture(); expect((await f.run()).code).toBe(0); const before = f.state().sessions[0];
+        f.set({ containerId: "b".repeat(64) }); f.clear();
+        const result = await f.run();
+        expect(result.code, result.stderr).toBe(0);
+        expect(mutations(f.calls()).map(call => call.args[1])).toEqual(["terminate", "create"]);
+        expect(mutations(f.calls())[0]).toMatchObject({ args: ["sync", "terminate", before.identifier], targets: [before.identifier] });
+        expect(f.state().sessions[0].beta.path).toContain("docker://" + "b".repeat(64) + "/project/");
+    }, 20000);
+
+    it("requires exact post-create proof and never guesses destructive compensation or retries", async () => {
+        const f = fixture(); f.set({ afterCreateUnknown: true }); const result = await f.run();
+        expect(mutations(f.calls()).map(call => call.args[1])).toEqual(["create"]);
+        expect(f.state().created).toBe(1); expect(f.state().sessions).toHaveLength(1); expect(result.code).toBe(1);
+    }, 20000);
+
+    it("preserves a same-name successor installed during SSH instead of pausing it at cleanup", async () => {
+        const f = fixture(); expect((await f.run()).code).toBe(0); f.set({ replaceOnInteractive: true }); f.clear();
+        const result = await f.run("exec", "y");
+        expect(f.calls().some(call => call.program === "ssh" && call.args.some(arg => arg.includes("docker stop")))).toBe(true);
+        expect(mutations(f.calls())).toEqual([]);
+        expect(f.state().sessions[0]).toMatchObject({ identifier: nativeId("Z"), paused: false }); expect(result.code, result.stderr).toBe(0);
+    }, 20000);
+
+    it("preserves sync when exact container stop reports a busy peer", async () => {
+        const f = fixture(); expect((await f.run()).code).toBe(0); const before = f.state().sessions;
+        f.set({ busy: true }); f.clear(); const result = await f.run("exec", "y");
+        expect(mutations(f.calls())).toEqual([]); expect(f.state().sessions).toEqual(before); expect(result.code, result.stderr).toBe(0);
+    }, 20000);
+
+    it("public termination selects the observed identifier and does not announce failed completion", async () => {
+        const f = fixture(); expect((await f.run()).code).toBe(0); const before = f.state().sessions[0];
+        f.set({ terminateFailure: true }); f.clear(); const refused = await f.run("terminate");
+        expect(mutations(f.calls())).toEqual([expect.objectContaining({ args: ["sync", "terminate", before.identifier], targets: [before.identifier] })]);
+        expect(refused.code).toBe(1); expect(refused.stdout).not.toContain("Sync terminated."); expect(f.state().sessions).toEqual([before]);
+        f.set({ terminateFailure: false }); f.clear(); const completed = await f.run("terminate");
+        expect(completed.code, completed.stderr).toBe(0); expect(completed.stdout).toContain("Sync terminated."); expect(f.state().sessions).toEqual([]);
+    }, 20000);
+});
+

@@ -1,5 +1,6 @@
 import type { RemoteServicesPorts } from "../../ports/remote-services.js";
-import type { RemoteHeartbeat, RemoteSshChannel, RemoteSyncObservation } from "../../domain/remote-services.js";
+import type { RemoteHeartbeat, RemoteSshChannel, RemoteSyncBinding, RemoteSyncHandle, RemoteSyncInventory } from "../../domain/remote-services.js";
+import { createRemoteSync } from "../../application/remote-sync.js";
 import { remoteExec, remoteSetup, remoteCheck, remoteTerminate, remoteRefreshSessionShell } from "../../remote.js";
 
 export function remoteServiceContracts(ports: RemoteServicesPorts<symbol>): void {
@@ -19,18 +20,31 @@ export function remoteServiceContracts(ports: RemoteServicesPorts<symbol>): void
     const { releaseReservation, ...missingRelease } = ports;
     // @ts-expect-error reservation lifetime requires its release capability
     const incomplete: RemoteServicesPorts<symbol> = missingRelease;
-    const observation = ports.observeSync("session");
-    const boundedObservation: RemoteSyncObservation<symbol> = ports.observeSync("session", "a".repeat(64), 4321.9);
-    const observationWithoutEndpoint: RemoteSyncObservation<symbol> = ports.observeSync("session", undefined, 1);
+    const observation = ports.observeSyncInventory();
+    const boundedObservation: RemoteSyncInventory<symbol> = ports.observeSyncInventory(4321.9);
     // @ts-expect-error a remaining timeout is numeric, not native options owned by composition
-    ports.observeSync("session", undefined, { timeout: 1000 });
+    ports.observeSyncInventory({ timeout: 1000 });
     // @ts-expect-error observation remains synchronous so a deferred query cannot escape the wait budget
-    const asyncObservation: RemoteServicesPorts<symbol>["observeSync"] = async () => ({ kind: "unavailable" });
-    if (observation.kind === "observed") {
+    const asyncObservation: RemoteServicesPorts<symbol>["observeSyncInventory"] = async () => ({ kind: "unknown", evidence: Symbol() });
+    if (observation.kind === "known" && observation.sessions[0]) {
+        const observed = observation.sessions[0];
         // @ts-expect-error application can forward opaque evidence but cannot read native result fields
-        const status: number = observation.evidence.status;
-        ports.report({ kind: "sync-existing", observation });
+        const status: number = observed.evidence.status;
+        ports.report({ kind: "sync-existing", observation: observed });
         void status;
     }
-    void [exec, setup, check, terminate, channel, heartbeat, body, asyncRemoval, pid, releaseReservation, incomplete, boundedObservation, observationWithoutEndpoint, asyncObservation];
+    const binding: RemoteSyncBinding = { localPath: "/project", user: "user", host: "host", projectId: "project", containerId: "a".repeat(64) };
+    const sync = createRemoteSync(ports);
+    const captured: Promise<RemoteSyncHandle> = sync.ensureSync(binding);
+    // @ts-expect-error waiting must retain the captured identifier and binding rather than a mutable name
+    sync.waitForSync("session");
+    // @ts-expect-error exact authority includes the remote container ID
+    sync.ensureSync({ localPath: "/project", user: "user", host: "host", projectId: "project" });
+    const terminateResult = ports.terminateSync("sync_" + "a".repeat(43));
+    if (!terminateResult.ok) {
+        // @ts-expect-error checked effects retain opaque native evidence
+        const nativeStatus: number = terminateResult.evidence.status;
+        void nativeStatus;
+    }
+    void [exec, setup, check, terminate, channel, heartbeat, body, asyncRemoval, pid, releaseReservation, incomplete, boundedObservation, asyncObservation, captured];
 }

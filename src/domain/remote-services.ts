@@ -39,29 +39,51 @@ export type RemoteOperationResult<Evidence = unknown> =
 export type RemoteStopResult<Evidence = unknown> =
     | { kind: "stopped" | "busy" }
     | { kind: "failed"; evidence: Evidence };
+export interface RemoteSyncAuthority {
+    localPath: string;
+    user: string;
+    host: string;
+    projectId: string;
+}
+export interface RemoteSyncBinding extends RemoteSyncAuthority {
+    containerId: string;
+}
+export interface RemoteSyncHandle {
+    identifier: string;
+    name: string;
+    binding: RemoteSyncBinding;
+}
 export interface RemoteObservedSync<Evidence = unknown> {
     kind: "observed";
-    endpointMatches: boolean;
+    identifier: string;
+    name: string;
+    binding: RemoteSyncBinding | null;
     paused: boolean;
     watching: boolean;
     failed: boolean;
     evidence: Evidence;
 }
+export type RemoteSyncInventory<Evidence = unknown> =
+    | { kind: "known"; sessions: RemoteObservedSync<Evidence>[]; evidence: Evidence }
+    | { kind: "unknown"; evidence: Evidence };
 export type RemoteSyncObservation<Evidence = unknown> =
-    | { kind: "unavailable" }
+    | { kind: "missing" }
+    | { kind: "unknown"; evidence: Evidence }
+    | { kind: "conflict"; evidence: Evidence }
     | RemoteObservedSync<Evidence>;
 
 export type RemoteFailureKind =
-    | "image-missing" | "config-unresolved" | "start-failed" | "missing-container-id"
+    | "image-missing" | "config-unresolved" | "config-invalid" | "start-failed" | "missing-container-id"
     | "project-prepare-failed" | "sync-terminate-failed" | "sync-resume-failed"
-    | "sync-create-failed" | "sync-missing" | "sync-failed" | "sync-timeout" | "stop-failed";
+    | "sync-create-failed" | "sync-missing" | "sync-unknown" | "sync-conflict" | "sync-pause-failed"
+    | "sync-failed" | "sync-timeout" | "stop-failed";
 
 /** Native presentation consumes finite notices and facts; evidence stays opaque inward. */
 export type RemoteEvent<Evidence = unknown> =
     | { kind:
         | "setup-start" | "setup-tools-missing" | "setup-usage" | "setup-architecture" | "setup-requirements"
         | "status-start" | "status-tools" | "status-config" | "status-config-missing" | "status-sync"
-        | "status-sync-unavailable" | "status-end"
+        | "status-sync-unavailable" | "status-sync-unknown" | "status-sync-conflict" | "status-end"
         | "mutagen-required" | "config-invalid" | "config-saved" | "config-required" | "image-missing"
         | "starting" | "refresh-failed" | "stopping" | "peer-active" | "pausing"
         | "sync-replacing" | "sync-resuming" | "sync-waiting" | "sync-completed" | "sync-poll"

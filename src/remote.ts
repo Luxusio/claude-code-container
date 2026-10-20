@@ -8,13 +8,15 @@ export { isValidEnvKey } from "./utils.js";
 export { getProjectHash, getMutagenSessionName } from "./adapters/remote-services.js";
 export { remoteLifecycleShell, remoteSessionReservationShell, remoteRefreshSessionShell, remoteReleaseSessionShell, remoteStopShell, remoteClaudeDirScript, remoteContainerStartScript } from "./adapters/remote-shell.js";
 
-const ports = createNativeRemoteServicesPorts();
-const services = createRemoteServices(ports);
-export const checkTailscale = () => services.checkTailscale();
-export const checkMutagen = () => services.checkMutagen();
-export function isHostReachable(host: string): boolean { return services.isHostReachable(host); }
-export function getMutagenSyncStatus(sessionName: string): string | null { return renderMutagenSyncStatus(ports.observeSync(sessionName)); }
-export const remoteExec = services.remoteExec;
-export const remoteSetup = services.remoteSetup;
-export const remoteCheck = services.remoteCheck;
-export const remoteTerminate = services.remoteTerminate;
+const nativeServices = () => createRemoteServices(createNativeRemoteServicesPorts());
+export const checkTailscale = () => nativeServices().checkTailscale();
+export const checkMutagen = () => nativeServices().checkMutagen();
+export function isHostReachable(host: string): boolean { return nativeServices().isHostReachable(host); }
+export function getMutagenSyncStatus(sessionName: string): string | null {
+    const ports = createNativeRemoteServicesPorts();
+    return renderMutagenSyncStatus(ports.observeSyncInventory(), sessionName);
+}
+export function remoteExec(projectPath: string, host?: string, args: string[] = []): Promise<void> { return nativeServices().remoteExec(projectPath, host, args); }
+export function remoteSetup(): Promise<void> { return nativeServices().remoteSetup(); }
+export function remoteCheck(projectPath: string): Promise<void> { return nativeServices().remoteCheck(projectPath); }
+export function remoteTerminate(projectPath: string): Promise<void> { return nativeServices().remoteTerminate(projectPath); }
