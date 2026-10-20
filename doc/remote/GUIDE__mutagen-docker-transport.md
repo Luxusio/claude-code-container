@@ -12,6 +12,9 @@ needs SSH access, Docker CLI access to a running Linux container daemon and the
 existing CCC image. Local Docker presence is checked with `docker --version`;
 no local running engine is required for this remote workflow. The existing
 setup and check commands report tool availability.
+For Docker Engine 28 or newer, use Mutagen 0.18.1 or newer: its
+[upstream compatibility fix](https://github.com/mutagen-io/mutagen/releases/tag/v0.18.1)
+recognizes Docker's changed missing-agent exit code and enables agent setup.
 
 The native composition captures its invocation environment and working
 directory. Before ownership or mutation, it reads the receiving account's
@@ -19,9 +22,12 @@ Docker context endpoint with a bounded SSH metadata command. It accepts one
 canonical safe absolute Unix socket address, such as
 `unix:///run/user/1000/docker.sock`. It caches successful resolution separately
 for each configured user/host; failures remain failures and may be retried.
-Every later receiving Docker program explicitly selects that address and
-clears conflicting context, host, TLS and API selectors. Editing a context file
-or ambient selectors after capture therefore does not choose another socket.
+Every later CCC-owned receiving shell program explicitly selects that address
+and clears conflicting context, host, TLS and API selectors. Mutagen's upstream
+Docker SSH helper also explicitly selects the captured socket. Editing a context
+file or ambient selectors after capture therefore does not choose another
+socket. The upstream helper does not run CCC's selector-clearing prelude;
+receiving login configuration can still cause ordinary initialization failure.
 
 Mutagen receives `docker://<full-container-id>/project/<project-id>` as beta.
 For the example above, `MUTAGEN_BETA_DOCKER_HOST` is

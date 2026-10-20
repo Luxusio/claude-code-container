@@ -8,6 +8,8 @@ old SSH filesystem representations remain visible conflicts. Missing local
 Docker or unavailable runtime preparation fails without affecting other
 sessions. See [sync authority](../remote/REQ__sync-authority.md) and the
 [transport guide](../remote/GUIDE__mutagen-docker-transport.md).
+Docker Engine 28 and newer need Mutagen 0.18.1 or newer for upstream agent
+bootstrap compatibility; this change adds no CCC workaround for older Mutagen.
 
 ## Known ceiling
 
