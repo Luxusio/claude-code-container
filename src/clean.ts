@@ -1,12 +1,11 @@
 // Native authority and public composition for the complete clean operation.
-import { spawnSync } from "child_process";
 import { ensureDockerRunning } from "./docker.js";
-import { runtimeCli } from "./container-runtime.js";
+import { bindNativeRuntimeInvocation, getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
 import { prompt, DOCKER_REGISTRY_IMAGE } from "./utils.js";
 import { getSessionLockClaimsForContainer, withContainerLifecycleLock } from "./session.js";
 import { createClean } from "./application/clean.js";
-import type { CleanMutationPorts, CleanPorts } from "./ports/clean.js";
-import type { CleanFailure, CleanInventoryResult, CleanProgress, ContainerInfo, ImageInfo } from "./domain/clean.js";
+import type { CleanPorts, CleanRuntimePorts } from "./ports/clean.js";
+import type { CleanFailure, CleanInventoryResult, CleanOptions, CleanProgress, ContainerInfo, ImageInfo } from "./domain/clean.js";
 
 export type { CleanOptions } from "./domain/clean.js";
 
@@ -43,105 +42,84 @@ function formatCleanFailure(failure: CleanFailure): string {
 }
 
 const nativePorts: CleanPorts = {
-    get ensureRuntimeReady() {
-        const ready = ensureDockerRunning;
-        return () => { ready(); return undefined; };
-    },
-    get observeContainers() {
-        const observe = spawnSync;
-        return (): CleanInventoryResult<ContainerInfo> => {
-            const result = observe(runtimeCli(),
-                ["ps", "-a", "--no-trunc", "--filter", "name=^ccc-", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}"],
-                { encoding: "utf-8" });
-            if (result.error || result.status !== 0) return { kind: "unavailable" };
-            const out = (result.stdout ?? "").trim();
-            return {
-                kind: "observed",
-                items: out ? out.split("\n").map((line) => {
-                    const [id, name, ...rest] = line.split("\t");
-                    const status = rest.join("\t").trim();
-                    return {
-                        id: (id ?? "").trim(),
-                        name: (name ?? "").trim(),
-                        status,
-                        running: status.toLowerCase().startsWith("up"),
-                    };
-                }) : [],
-            };
-        };
-    },
-    get observeImages() {
-        const observe = spawnSync;
-        return (repository: string): CleanInventoryResult<ImageInfo> => {
-            const result = observe(runtimeCli(),
-                ["images", "--format", "{{.Repository}}\t{{.ID}}\t{{.Size}}", repository],
-                { encoding: "utf-8" });
-            if (result.error || result.status !== 0) return { kind: "unavailable" };
-            const out = (result.stdout ?? "").trim();
-            return {
-                kind: "observed",
-                items: out ? out.split("\n").map((line) => {
-                    const parts = line.split("\t");
-                    return {
-                        repository: (parts[0] ?? "").trim(),
-                        id: (parts[1] ?? "").trim(),
-                        size: (parts[2] ?? "").trim(),
-                    };
-                }) : [],
-            };
+    captureRuntime: (): CleanRuntimePorts => {
+        const invocation = getRuntimeInvocation();
+        const runner = bindNativeRuntimeInvocation(invocation);
+        const env = { ...process.env };
+        const cwd = process.cwd();
+        return {
+            ensureRuntimeReady: () => {
+                runWithNativeRuntimeInvocation(invocation, ensureDockerRunning);
+                return undefined;
+            },
+            observeContainers: (): CleanInventoryResult<ContainerInfo> => {
+                const result = runner.spawnSync(
+                    ["ps", "-a", "--no-trunc", "--filter", "name=^ccc-", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}"],
+                    { encoding: "utf-8", env, cwd });
+                if (result.error || result.status !== 0) return { kind: "unavailable" };
+                const out = (result.stdout ?? "").trim();
+                return {
+                    kind: "observed",
+                    items: out ? out.split("\n").map((line) => {
+                        const [id, name, ...rest] = line.split("\t");
+                        const status = rest.join("\t").trim();
+                        return {
+                            id: (id ?? "").trim(),
+                            name: (name ?? "").trim(),
+                            status,
+                            running: status.toLowerCase().startsWith("up"),
+                        };
+                    }) : [],
+                };
+            },
+            observeImages: (repository: string): CleanInventoryResult<ImageInfo> => {
+                const result = runner.spawnSync(
+                    ["images", "--format", "{{.Repository}}\t{{.ID}}\t{{.Size}}", repository],
+                    { encoding: "utf-8", env, cwd });
+                if (result.error || result.status !== 0) return { kind: "unavailable" };
+                const out = (result.stdout ?? "").trim();
+                return {
+                    kind: "observed",
+                    items: out ? out.split("\n").map((line) => {
+                        const parts = line.split("\t");
+                        return {
+                            repository: (parts[0] ?? "").trim(),
+                            id: (parts[1] ?? "").trim(),
+                            size: (parts[2] ?? "").trim(),
+                        };
+                    }) : [],
+                };
+            },
+            observeVolumes: (): CleanInventoryResult<string> => {
+                const result = runner.spawnSync(
+                    ["volume", "ls", "--filter", "name=^ccc-", "--format", "{{.Name}}"],
+                    { encoding: "utf-8", env, cwd });
+                if (result.error || result.status !== 0) return { kind: "unavailable" };
+                const out = (result.stdout ?? "").trim();
+                return { kind: "observed", items: out ? out.split("\n").map((v) => v.trim()).filter(Boolean) : [] };
+            },
+            stopContainer: (containerId: string) => {
+                const result = runner.spawnSync(["stop", containerId], { stdio: "inherit", env, cwd });
+                return { ok: !result.error && result.status === 0 };
+            },
+            removeContainer: (containerId: string) => {
+                const result = runner.spawnSync(["rm", containerId], { stdio: "inherit", env, cwd });
+                return { ok: !result.error && result.status === 0 };
+            },
+            removeImage: (imageId: string) => {
+                const result = runner.spawnSync(["rmi", imageId], { stdio: "inherit", env, cwd });
+                return { ok: !result.error && result.status === 0 };
+            },
+            removeVolume: (volumeName: string) => {
+                const result = runner.spawnSync(["volume", "rm", volumeName], { stdio: "inherit", env, cwd });
+                return { ok: !result.error && result.status === 0 };
+            },
         };
     },
     get registryImage() { return DOCKER_REGISTRY_IMAGE; },
-    get observeVolumes() {
-        const observe = spawnSync;
-        return (): CleanInventoryResult<string> => {
-            const result = observe(runtimeCli(),
-                ["volume", "ls", "--filter", "name=^ccc-", "--format", "{{.Name}}"],
-                { encoding: "utf-8" });
-            if (result.error || result.status !== 0) return { kind: "unavailable" };
-            const out = (result.stdout ?? "").trim();
-            return { kind: "observed", items: out ? out.split("\n").map((v) => v.trim()).filter(Boolean) : [] };
-        };
-    },
     get confirm() {
         const request = prompt;
         return () => request("\nProceed? [y/N] ", true);
-    },
-    get captureMutationRuntime() {
-        const selectedRuntime = runtimeCli;
-        return (): CleanMutationPorts => {
-            const cli = selectedRuntime();
-            return {
-                get stopContainer() {
-                    const mutate = spawnSync;
-                    return (containerId: string) => {
-                        const result = mutate(cli, ["stop", containerId], { stdio: "inherit" });
-                        return { ok: !result.error && result.status === 0 };
-                    };
-                },
-                get removeContainer() {
-                    const mutate = spawnSync;
-                    return (containerId: string) => {
-                        const result = mutate(cli, ["rm", containerId], { stdio: "inherit" });
-                        return { ok: !result.error && result.status === 0 };
-                    };
-                },
-                get removeImage() {
-                    const mutate = spawnSync;
-                    return (imageId: string) => {
-                        const result = mutate(cli, ["rmi", imageId], { stdio: "inherit" });
-                        return { ok: !result.error && result.status === 0 };
-                    };
-                },
-                get removeVolume() {
-                    const mutate = spawnSync;
-                    return (volumeName: string) => {
-                        const result = mutate(cli, ["volume", "rm", volumeName], { stdio: "inherit" });
-                        return { ok: !result.error && result.status === 0 };
-                    };
-                },
-            };
-        };
     },
     get withLifecycleLock() {
         const guard = withContainerLifecycleLock;
@@ -160,17 +138,13 @@ const nativePorts: CleanPorts = {
             return undefined;
         };
     },
-    get failureError() {
-        const Failure = Error;
-        return (failure: CleanFailure) => new Failure(formatCleanFailure(failure));
-    },
-    get exitSuccess() {
-        const receiver = process;
-        const exit = receiver.exit;
-        return (): never => Reflect.apply(exit, receiver, [0]) as never;
-    },
 };
 
-// Export the named async application directly; an async forwarding wrapper
-// would add a Promise assimilation boundary to the existing public behavior.
-export const cleanContainers = createClean(nativePorts);
+const clean = createClean(nativePorts);
+
+/** Public CLI projection; reusable cleanup policy never exits its caller. */
+export async function cleanContainers(options: CleanOptions): Promise<void> {
+    const outcome = await clean(options);
+    if (outcome.kind === "failed") throw new Error(formatCleanFailure(outcome.failure));
+    if (outcome.kind === "completed") process.exit(0);
+}

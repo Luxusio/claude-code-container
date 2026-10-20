@@ -46,3 +46,9 @@ export type CleanFailure =
     | { kind: "unmanaged-container" | "stop-container-failed" | "remove-container-failed"; name: string }
     | { kind: "remove-image-failed"; repository: string }
     | { kind: "remove-volume-failed"; name: string };
+
+/** Expected cleanup completion, independent of the caller's process lifetime. */
+export type CleanOutcome =
+    | { kind: "nothing-to-clean" | "dry-run" | "aborted" }
+    | { kind: "completed"; removed: number }
+    | { kind: "failed"; failure: CleanFailure; removed: number };

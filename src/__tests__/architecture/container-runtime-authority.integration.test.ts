@@ -31,7 +31,7 @@ if (start < 0) throw Error('fixture received an unknown native command');
 const args = raw.slice(start), command = args[0];
 appendFileSync(join(root, 'trace.jsonl'), JSON.stringify({ executable, program: process.argv[1], engine, raw, args, host, graphRoot, destination,
   capsulePath: capsule ? process.env.PODMAN_CONNECTIONS_CONF : null,
-  phase: process.env.CCC_NATIVE_FIXTURE_PHASE,
+  phase: process.env.CCC_NATIVE_FIXTURE_PHASE, cwd: process.cwd(), cleanMarker: process.env.CCC_CLEAN_MARKER ?? null,
   selectors: { PATH: process.env.PATH, DOCKER_CONTEXT: process.env.DOCKER_CONTEXT ?? null,
     DOCKER_HOST: process.env.DOCKER_HOST ?? null, DOCKER_API_VERSION: process.env.DOCKER_API_VERSION ?? null,
     DOCKER_SSH_COMMAND: process.env.DOCKER_SSH_COMMAND ?? null, CONTAINER_HOST: process.env.CONTAINER_HOST ?? null,
@@ -77,7 +77,7 @@ else if (command === 'info') {
   else if (args.includes('{{.Host.Security.Rootless}}')) out('false');
   else if (args.includes('{{.ID}}')) out('fixture-daemon-a\n');
 }
-else if (command === 'images') out(image);
+else if (command === 'images') out(args.includes('{{.Repository}}\t{{.ID}}\t{{.Size}}') ? '' : image);
 else if (command === 'image') out([{ Id: derived, Config: { User: 'ccc', Labels: identity } }]);
 else if (command === 'inspect') {
   const format = args.includes('--format') ? args[args.indexOf('--format') + 1] : args.includes('-f') ? args[args.indexOf('-f') + 1] : null;
@@ -94,7 +94,8 @@ else if (command === 'inspect') {
   }
 }
 else if (command === 'ps') {
-  if (args.includes('{{.Names}}')) {
+  if (args.includes('{{.ID}}\t{{.Names}}\t{{.Status}}')) out(state.exists ? state.id + '\t' + state.name + '\t' + (state.running ? 'Up 1 minute' : 'Exited') : '');
+  else if (args.includes('{{.Names}}')) {
     if (state.inventoryUnavailable) process.exit(1);
     out(state.exists ? state.name : '');
   } else out(state.exists && (args.includes('-aq') || state.running) ? state.id : '');
@@ -356,12 +357,43 @@ const beforeStopRefusal = readA();
 late('workspace-stop-refused');
 assert.throws(() => withCaptured(() => workspace.removeWorkspaceContainerByIdentity(workspaceName)), /Failed to stop workspace container/);
 assert.deepEqual(readA(), beforeStopRefusal, 'failed stop removed or changed the container');
+// Real Clean facade: its actual readline confirmation changes every ambient
+// selector after inventory. Native command traces must still use A's capture.
+resetWorkspaceContainer(true);
+for (const [key, value] of Object.entries(captured.selectors)) {
+  if (value === null) delete process.env[key]; else process.env[key] = value;
+}
+api._setRuntimeInfoForTest({runtime});
+api._setRuntimeInvocationForTest(captured);
+process.env.CCC_NATIVE_FIXTURE_PHASE = 'clean-operation';
+process.env.CCC_CLEAN_MARKER = 'captured-a';
+const { cleanContainers } = await load('clean.js');
+const originalWrite = process.stdout.write, originalExit = process.exit, originalCwd = process.cwd();
+const cleanExit = new Error('owned clean exit');
+let confirmed = false;
+process.stdout.write = function(value, ...args) {
+  if (String(value).includes('Proceed?') && !confirmed) {
+    confirmed = true;
+    late('clean-after-confirmation');
+    process.env.CCC_CLEAN_MARKER = 'later-b';
+    process.chdir(join(root, 'b'));
+  }
+  return Reflect.apply(originalWrite, this, [value, ...args]);
+};
+process.exit = code => { assert.equal(code, 0); throw cleanExit; };
+try {
+  await assert.rejects(cleanContainers({all: true}), error => error === cleanExit);
+} finally {
+  process.stdout.write = originalWrite; process.exit = originalExit; process.chdir(originalCwd);
+}
+assert(confirmed, 'Clean did not await the real confirmation prompt');
+assert.equal(readA().exists, false, 'Clean did not remove the captured A container');
 assert.equal(readFileSync(bFile, 'utf8'), bOriginal, 'identical B ID was touched');
 assert.equal(readFileSync(join(root, 'original-connections.json'), 'utf8'), originalConnections);
 const trace = readFileSync(join(root, 'trace.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
 const phases = ['inspection', 'setup', 'final-sync', 'passed-native-runners', 'daemon-preparation', 'interactive-exec', 'direct-command', 'restart', 'remove-stopped', 'destructive-stop-and-remove', 'create-after-preparation', 'rejected-create-compensation', 'core-created-outcome', 'core-rejected-outcome', 'core-rejected-compensation'];
 phases.push('workspace-default-inventory', 'workspace-default-running', 'workspace-default-stopped', 'workspace-default-managed',
-  'workspace-default-prepare', 'workspace-default-prepared-remove', 'workspace-retained-adapter', 'workspace-inventory-refused', 'workspace-stop-refused');
+  'workspace-default-prepare', 'workspace-default-prepared-remove', 'workspace-retained-adapter', 'workspace-inventory-refused', 'workspace-stop-refused', 'clean-operation');
 if (mode === 'docker') phases.push('prepared-start-outside-scope', 'prepared-initialize-outside-scope');
 for (const phase of phases) assert(trace.some(row => row.phase === phase), 'missing actual native phase: ' + phase);
 for (const row of trace) {
@@ -409,6 +441,14 @@ for (const [phase, commands] of [
 for (const row of trace.filter(row => row.phase.startsWith('workspace-') && ['stop', 'rm'].includes(row.args[0]))) {
   assert.deepEqual(row.args, [row.args[0], id], 'workspace effects must use the captured full ID');
 }
+const cleanRows = trace.filter(row => row.phase === 'clean-operation');
+assert.deepEqual(cleanRows.filter(row => ['ps', 'images', 'volume', 'stop', 'rm'].includes(row.args[0])).map(row => row.args[0]),
+  ['ps', 'images', 'images', 'volume', 'stop', 'rm']);
+for (const row of cleanRows.filter(row => ['stop', 'rm'].includes(row.args[0]))) {
+  assert.deepEqual(row.args, [row.args[0], id]);
+  assert.equal(row.cwd, originalCwd, 'confirmation changed Clean cwd');
+  assert.equal(row.cleanMarker, 'captured-a', 'confirmation changed Clean environment');
+}
 console.log('CCC_NATIVE_RUNTIME_RESULT=' + JSON.stringify({mode, phases, nativeCommands: trace.length, bUntouched: true}));
 } finally {
   // Preserve genuine native effects as the old-compatible regression witness,
@@ -441,6 +481,7 @@ describe.skipIf(process.platform === "win32")("emitted ordinary native invocatio
             writeFileSync(join(root, "trace.jsonl"), "");
             const result = spawnSync(process.execPath, ["--input-type=module", "-e", consumer], {
                 cwd: root, encoding: "utf8", timeout: 45_000, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024,
+                input: "yes\n",
                 env: {PATH: join(root, "a"), HOME: join(root, "home"), USERPROFILE: join(root, "home"),
                     TMPDIR: join(root, "tmp"), LANG: "C.UTF-8", TZ: "UTC", container: undefined,
                     CCC_HOME: undefined, CCC_PROFILE: undefined, CCC_RUNTIME: undefined, VITEST: undefined,

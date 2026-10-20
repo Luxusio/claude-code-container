@@ -1,6 +1,6 @@
-import type { CleanFailure, CleanInventoryResult, CleanMutationResult, CleanProgress, ContainerInfo, ImageInfo } from "../domain/clean.js";
+import type { CleanInventoryResult, CleanMutationResult, CleanProgress, ContainerInfo, ImageInfo } from "../domain/clean.js";
 
-/** Private captured runtime authority; getters select each native callee lazily. */
+/** Mutation effects supplied by the captured cleanup runtime. */
 export interface CleanMutationPorts {
     readonly stopContainer: (containerId: string) => CleanMutationResult;
     readonly removeContainer: (containerId: string) => CleanMutationResult;
@@ -8,18 +8,20 @@ export interface CleanMutationPorts {
     readonly removeVolume: (volumeName: string) => CleanMutationResult;
 }
 
-/** Required semantic observations/effects, with no ambient native defaults. */
-export interface CleanPorts {
+/** Readiness, inventory and mutations share one operation's runtime authority. */
+export interface CleanRuntimePorts extends CleanMutationPorts {
     readonly ensureRuntimeReady: () => undefined;
     readonly observeContainers: () => CleanInventoryResult<ContainerInfo>;
     readonly observeImages: (repository: string) => CleanInventoryResult<ImageInfo>;
-    readonly registryImage: string;
     readonly observeVolumes: () => CleanInventoryResult<string>;
+}
+
+/** Required semantic observations/effects, with no ambient native defaults. */
+export interface CleanPorts {
+    readonly captureRuntime: () => CleanRuntimePorts;
+    readonly registryImage: string;
     readonly confirm: () => Promise<string>;
-    readonly captureMutationRuntime: () => CleanMutationPorts;
     readonly withLifecycleLock: (prefix: string, operation: () => undefined) => undefined;
     readonly sessionClaims: (prefix: string) => string[];
     readonly capturePublication: () => (progress: CleanProgress) => undefined;
-    readonly failureError: (failure: CleanFailure) => Error;
-    readonly exitSuccess: () => never;
 }

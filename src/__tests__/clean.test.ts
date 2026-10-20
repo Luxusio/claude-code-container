@@ -1,14 +1,27 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncOptions, SpawnSyncReturns } from "child_process";
+import { basename, resolve } from "node:path";
 import { createClean } from "../application/clean.js";
-import type { CleanPorts, CleanMutationPorts } from "../ports/clean.js";
-import type { CleanFailure, CleanProgress, ContainerInfo, ImageInfo } from "../domain/clean.js";
+import type { CleanPorts, CleanRuntimePorts } from "../ports/clean.js";
+import type { CleanOutcome, CleanProgress, ContainerInfo } from "../domain/clean.js";
+import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
 
 // Mock child_process before importing
 const spawnSyncMock = vi.fn<(command: string, args: string[], options: SpawnSyncOptions) => SpawnSyncReturns<string>>();
+const nativeSpawnSyncMock = vi.fn<(command: string, args: string[], options: SpawnSyncOptions) => void>();
 vi.mock("child_process", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
-    return { ...actual, spawnSync: spawnSyncMock };
+    return { ...actual, spawnSync: (command: string, args: string[], options: SpawnSyncOptions) => {
+        // Exercise the actual invocation compiler while keeping existing CLI
+        // behavior cases readable in terms of their semantic runtime commands.
+        nativeSpawnSyncMock(command, args, options);
+        const start = args.findIndex(arg => ["ps", "images", "volume", "stop", "rm", "rmi"].includes(arg));
+        const semanticOptions = { ...options };
+        delete semanticOptions.env;
+        delete semanticOptions.shell;
+        delete semanticOptions.cwd;
+        return spawnSyncMock(basename(command), start < 0 ? args : args.slice(start), semanticOptions);
+    } };
 });
 
 // Mock prompt from utils
@@ -36,6 +49,26 @@ vi.mock("../session.js", () => ({
 const { cleanContainers } = await import("../clean.js");
 const runtime = await import("../container-runtime.js");
 
+function invocation(selected: "docker" | "podman" = "docker", engine = "a"): NativeRuntimeInvocation {
+    const directory = resolve("/fixture", engine);
+    return runtime.validateNativeRuntimeInvocation({
+        version: 1, runtime: selected, executable: resolve(directory, selected),
+        transport: selected === "docker"
+            ? { kind: "docker", host: `unix:///fixture/engine-${engine}.sock`, configDirectory: resolve(directory, "config"),
+                tls: { enabled: false, verify: false, caFile: null, certFile: null, keyFile: null } }
+            : { kind: "podman-local", graphRoot: resolve(directory, "store"), runRoot: resolve(directory, "run"),
+                storageDriver: "overlay", storageOptions: [], transientStore: false },
+        selectors: Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key, key === "PATH" ? directory : null])),
+    });
+}
+
+function selectInvocation(selected: "docker" | "podman" = "docker", engine = "a"): NativeRuntimeInvocation {
+    runtime._setRuntimeInfoForTest({ runtime: selected });
+    const captured = invocation(selected, engine);
+    runtime._setRuntimeInvocationForTest(captured);
+    return captured;
+}
+
 function makeResult(
     status: number | null,
     stdout = "",
@@ -46,6 +79,9 @@ function makeResult(
 describe("cleanContainers", () => {
     beforeEach(() => {
         spawnSyncMock.mockReset();
+        nativeSpawnSyncMock.mockReset();
+        runtime._resetRuntimeCacheForTest();
+        selectInvocation();
         promptMock.mockReset();
         ensureDockerRunningMock.mockReset();
         getSessionLockClaimsForContainerMock.mockReset();
@@ -59,6 +95,7 @@ describe("cleanContainers", () => {
     });
 
     afterEach(() => {
+        runtime._resetRuntimeCacheForTest();
         vi.restoreAllMocks();
     });
 
@@ -380,20 +417,19 @@ describe("cleanContainers", () => {
         expect(spawnSyncMock.mock.calls.some((call) => ["stop", "rm"].includes((call[1] as string[])[0]))).toBe(false);
     });
 
-    it("preserves exact progress and uses the runtime selected after confirmation for every pinned mutation", async () => {
-        runtime._setRuntimeInfoForTest({ runtime: "docker" });
+    it("keeps the observed runtime authority through confirmation and captures a new selection only on a later call", async () => {
+        const initial = selectInvocation();
         spawnSyncMock.mockImplementation((_command, args) => {
             if (args[0] === "ps") return makeResult(0,
                 "111111111111\tccc-running-aabb1122ccdd\tUp 10 minutes\n222222222222\tccc-claimed-eeff33445566\tExited (0) 1 day ago");
             if (args[0] === "images") return makeResult(0, "ccc\tsha256image\t500MB");
             if (args[0] === "volume" && args[1] === "ls") return makeResult(0, "ccc-cache");
-            if (args[0] === "stop") runtime._setRuntimeInfoForTest({ runtime: "docker" });
             return makeResult(0);
         });
         getSessionLockClaimsForContainerMock.mockImplementation(prefix => prefix === "claimed-eeff33445566" ? ["claim"] : []);
         promptMock.mockImplementation(async () => {
             expect(spawnSyncMock.mock.calls.every(([, args]) => ["ps", "images", "volume"].includes(args[0]))).toBe(true);
-            runtime._setRuntimeInfoForTest({ runtime: "podman" });
+            selectInvocation("podman", "b");
             return "yes";
         });
         try {
@@ -404,8 +440,8 @@ describe("cleanContainers", () => {
             const mutations = spawnSyncMock.mock.calls.filter(([, args]) =>
                 ["stop", "rm", "rmi"].includes(args[0]) || args[0] === "volume" && args[1] === "rm");
             expect(mutations.map(([command, args]) => [command, args])).toEqual([
-                ["podman", ["stop", "111111111111"]], ["podman", ["rm", "111111111111"]],
-                ["podman", ["rmi", "sha256image"]], ["podman", ["volume", "rm", "ccc-cache"]],
+                ["docker", ["stop", "111111111111"]], ["docker", ["rm", "111111111111"]],
+                ["docker", ["rmi", "sha256image"]], ["docker", ["volume", "rm", "ccc-cache"]],
             ]);
             expect(vi.mocked(console.log).mock.calls).toEqual([
                 ["\nContainers to stop:"], ["  ccc-running-aabb1122ccdd  (Up 10 minutes)"],
@@ -419,6 +455,20 @@ describe("cleanContainers", () => {
                 ["\nDone. Removed 3 item(s)."],
             ]);
             expect(process.exit).toHaveBeenCalledWith(0);
+            for (const [executable, args, options] of nativeSpawnSyncMock.mock.calls) {
+                expect(executable).toBe(initial.executable);
+                expect(args.slice(0, 4)).toEqual(["--config", resolve("/fixture/a/config"), "--host", "unix:///fixture/engine-a.sock"]);
+                expect(options.env?.PATH).toBe(resolve("/fixture/a"));
+                expect(options.shell).toBe(false);
+            }
+            const firstCallCount = nativeSpawnSyncMock.mock.calls.length;
+            await cleanContainers({ dryRun: true });
+            const laterCalls = nativeSpawnSyncMock.mock.calls.slice(firstCallCount);
+            expect(laterCalls.length).toBeGreaterThan(0);
+            for (const [executable, args] of laterCalls) {
+                expect(executable).toBe(resolve("/fixture/b/podman"));
+                expect(args).toContain(resolve("/fixture/b/store"));
+            }
         } finally { runtime._resetRuntimeCacheForTest(); }
     });
 
@@ -437,67 +487,130 @@ describe("cleanContainers", () => {
         } finally { console.log = initial; }
     });
 
-    it("captures publication before reading container and image presentation facts", async () => {
-        const trace: string[] = [];
+});
+
+describe("reusable clean operation", () => {
+    const stopped: ContainerInfo = { id: "111111111111", name: "ccc-project", status: "Exited", running: false };
+
+    function fixture() {
+        const runtime: CleanRuntimePorts = {
+            ensureRuntimeReady: vi.fn<CleanRuntimePorts["ensureRuntimeReady"]>(() => undefined),
+            observeContainers: vi.fn<CleanRuntimePorts["observeContainers"]>(() => ({ kind: "observed", items: [stopped] })),
+            observeImages: vi.fn<CleanRuntimePorts["observeImages"]>(() => ({ kind: "observed", items: [] })),
+            observeVolumes: vi.fn<CleanRuntimePorts["observeVolumes"]>(() => ({ kind: "observed", items: [] })),
+            stopContainer: vi.fn<CleanRuntimePorts["stopContainer"]>(() => ({ ok: true })),
+            removeContainer: vi.fn<CleanRuntimePorts["removeContainer"]>(() => ({ ok: true })),
+            removeImage: vi.fn<CleanRuntimePorts["removeImage"]>(() => ({ ok: true })),
+            removeVolume: vi.fn<CleanRuntimePorts["removeVolume"]>(() => ({ ok: true })),
+        };
         const facts: CleanProgress[] = [];
-        const container: ContainerInfo = { id: "111111111111", name: "ccc-project", running: false,
-            get status() { trace.push("read-status"); return "Exited"; } };
-        const image: ImageInfo = { id: "sha256image",
-            get repository() { trace.push("read-repository"); return "ccc"; },
-            get size() { trace.push("read-size"); return "500MB"; } };
-        const unexpected = () => { throw new Error("unexpected cleanup effect"); };
         const ports: CleanPorts = {
-            ensureRuntimeReady: () => undefined,
-            observeContainers: () => ({ kind: "observed", items: [container] }),
-            observeImages: () => ({ kind: "observed", items: [image] }),
-            registryImage: "registry/ccc", observeVolumes: () => ({ kind: "observed", items: [] }),
-            confirm: unexpected, captureMutationRuntime: unexpected, withLifecycleLock: unexpected, sessionClaims: unexpected,
-            capturePublication: () => {
-                trace.push("capture");
-                return fact => { facts.push(fact); trace.push(fact.kind); return undefined; };
-            },
-            failureError: unexpected, exitSuccess: unexpected,
+            captureRuntime: vi.fn<CleanPorts["captureRuntime"]>(() => runtime), registryImage: "registry/ccc",
+            confirm: vi.fn<CleanPorts["confirm"]>(async () => "yes"),
+            withLifecycleLock: vi.fn<CleanPorts["withLifecycleLock"]>((_prefix, operation) => operation()),
+            sessionClaims: vi.fn<CleanPorts["sessionClaims"]>(() => []),
+            capturePublication: () => fact => { facts.push(fact); return undefined; },
+        };
+        return { runtime, ports, facts };
+    }
+
+    it("captures once before readiness and inventory, keeps that runtime across confirmation, and recaptures on a later invocation", async () => {
+        const first = fixture(), later = fixture();
+        vi.mocked(later.runtime.observeContainers).mockReturnValue({ kind: "observed", items: [] });
+        let selected = first.runtime;
+        const trace: string[] = [];
+        vi.mocked(first.runtime.ensureRuntimeReady).mockImplementation(() => { trace.push("ready"); return undefined; });
+        vi.mocked(first.runtime.observeContainers).mockImplementation(() => { trace.push("inventory"); return { kind: "observed", items: [stopped] }; });
+        let answer!: (value: string) => void;
+        const ports: CleanPorts = { ...first.ports,
+            captureRuntime: vi.fn<CleanPorts["captureRuntime"]>(() => { trace.push("capture"); return selected; }),
+            confirm: vi.fn<CleanPorts["confirm"]>(() => new Promise(resolve => { trace.push("confirm"); answer = resolve; })),
         };
         const clean = createClean(ports);
-        expect(trace).toEqual([]);
-        await clean({ dryRun: true });
-        expect(trace).toEqual([
-            "capture", "containers-to-remove", "capture", "read-status", "container-selected",
-            "capture", "images-to-remove", "capture", "read-repository", "read-size", "image-selected",
-            "capture", "dry-run",
-        ]);
-        expect(facts).toEqual([
-            { kind: "containers-to-remove" }, { kind: "container-selected", name: "ccc-project", status: "Exited" },
-            { kind: "images-to-remove" }, { kind: "image-selected", repository: "ccc", id: "sha256image", size: "500MB" },
-            { kind: "dry-run" },
-        ]);
+        expect(ports.captureRuntime).not.toHaveBeenCalled();
+        const pending = clean({});
+        expect(trace).toEqual(["capture", "ready", "inventory", "confirm"]);
+        selected = later.runtime;
+        answer("yes");
+        await expect(pending).resolves.toEqual({ kind: "completed", removed: 1 });
+        expect(first.runtime.removeContainer).toHaveBeenCalledWith(stopped.id);
+        expect(later.runtime.removeContainer).not.toHaveBeenCalled();
+        await expect(clean({ yes: true })).resolves.toEqual({ kind: "nothing-to-clean" });
+        expect(ports.captureRuntime).toHaveBeenCalledTimes(2);
+        expect(later.runtime.ensureRuntimeReady).toHaveBeenCalledOnce();
     });
 
-    it("throws the mapped stop failure by identity before capturing a later mutation callee", async () => {
-        const failure = new Error("mapped native stop failure");
-        const failureError = vi.fn<(fact: CleanFailure) => Error>(() => failure);
-        const stop = vi.fn(() => ({ ok: false }));
-        const remove = vi.fn(() => ({ ok: true }));
-        const captured = vi.fn(() => undefined);
-        const mutation: CleanMutationPorts = {
-            stopContainer: stop,
-            get removeContainer() { captured(); return remove; },
-            get removeImage(): CleanMutationPorts["removeImage"] { throw new Error("image callee captured after failure"); },
-            get removeVolume(): CleanMutationPorts["removeVolume"] { throw new Error("volume callee captured after failure"); },
-        };
-        const ports: CleanPorts = {
-            ensureRuntimeReady: () => undefined,
-            observeContainers: () => ({ kind: "observed", items: [{id: "111111111111", name: "ccc-project", status: "Up", running: true}] }),
-            observeImages: () => ({ kind: "observed", items: [] }), registryImage: "registry/ccc",
-            observeVolumes: () => ({ kind: "observed", items: [] }), confirm: async () => "yes",
-            captureMutationRuntime: () => mutation, withLifecycleLock: (_prefix, operation) => operation(), sessionClaims: () => [],
-            capturePublication: () => () => undefined, failureError,
-            exitSuccess: () => { throw new Error("cleanup exited after failure"); },
-        };
-        await expect(createClean(ports)({ all: true, yes: true })).rejects.toBe(failure);
-        expect(failureError.mock.calls).toEqual([[{ kind: "stop-container-failed", name: "ccc-project" }]]);
-        expect(stop.mock.calls).toEqual([["111111111111"]]);
-        expect(captured).not.toHaveBeenCalled();
-        expect(remove).not.toHaveBeenCalled();
+    it.each([
+        { options: { dryRun: true }, answer: "yes", expected: { kind: "dry-run" } },
+        { options: {}, answer: "n", expected: { kind: "aborted" } },
+    ])("returns $expected.kind without mutation or lifecycle claims", async ({ options, answer, expected }) => {
+        const { runtime, ports } = fixture();
+        vi.mocked(ports.confirm).mockResolvedValue(answer);
+        await expect(createClean(ports)(options)).resolves.toEqual(expected);
+        expect(runtime.removeContainer).not.toHaveBeenCalled();
+        expect(ports.withLifecycleLock).not.toHaveBeenCalled();
+        expect(ports.sessionClaims).not.toHaveBeenCalled();
+    });
+
+    it("reports only completed removals and skips claimed containers under their lifecycle lock", async () => {
+        const { runtime, ports, facts } = fixture();
+        vi.mocked(runtime.observeContainers).mockReturnValue({ kind: "observed", items: [stopped,
+            { ...stopped, id: "222222222222", name: "ccc-claimed", running: true }] });
+        vi.mocked(runtime.observeImages).mockReturnValue({ kind: "observed", items: [{ repository: "ccc", id: "image", size: "1MB" }] });
+        vi.mocked(runtime.observeVolumes).mockReturnValue({ kind: "observed", items: ["ccc-cache"] });
+        vi.mocked(ports.sessionClaims).mockImplementation(prefix => prefix === "claimed" ? ["claim"] : []);
+        await expect(createClean(ports)({ all: true, yes: true })).resolves.toEqual({ kind: "completed", removed: 3 });
+        expect(runtime.removeContainer).toHaveBeenCalledExactlyOnceWith(stopped.id);
+        expect(runtime.stopContainer).not.toHaveBeenCalled();
+        expect(runtime.removeImage).toHaveBeenCalledExactlyOnceWith("image");
+        expect(runtime.removeVolume).toHaveBeenCalledExactlyOnceWith("ccc-cache");
+        expect(ports.withLifecycleLock).toHaveBeenCalledWith("claimed", expect.any(Function));
+        expect(facts).toContainEqual({ kind: "container-claimed", name: "ccc-claimed", claimCount: 1 });
+        expect(facts.at(-1)).toEqual({ kind: "completed", removed: 3 });
+    });
+
+    it.each(["containers", "images", "volumes"] as const)("returns a failed %s inventory outcome before confirmation or mutation", async inventory => {
+        const { runtime, ports } = fixture();
+        const observation = inventory === "containers" ? runtime.observeContainers : inventory === "images" ? runtime.observeImages : runtime.observeVolumes;
+        vi.mocked(observation).mockReturnValue({ kind: "unavailable" });
+        await expect(createClean(ports)({ all: true })).resolves.toEqual({ kind: "failed", failure: { kind: "inventory-unavailable", inventory }, removed: 0 });
+        expect(ports.confirm).not.toHaveBeenCalled();
+        expect(ports.withLifecycleLock).not.toHaveBeenCalled();
+        expect(runtime.removeContainer).not.toHaveBeenCalled();
+    });
+
+    it("returns a failed stop outcome before removal or later cleanup effects", async () => {
+        const { runtime, ports } = fixture();
+        vi.mocked(runtime.observeContainers).mockReturnValue({ kind: "observed", items: [{ ...stopped, running: true }] });
+        vi.mocked(runtime.stopContainer).mockReturnValue({ ok: false });
+        await expect(createClean(ports)({ all: true, yes: true })).resolves.toEqual({
+            kind: "failed", failure: { kind: "stop-container-failed", name: stopped.name }, removed: 0,
+        });
+        expect(runtime.stopContainer).toHaveBeenCalledExactlyOnceWith(stopped.id);
+        expect(runtime.removeContainer).not.toHaveBeenCalled();
+        expect(runtime.removeImage).not.toHaveBeenCalled();
+        expect(runtime.removeVolume).not.toHaveBeenCalled();
+    });
+
+    it("returns a later mutation failure with the successful removal count and no later volume effect", async () => {
+        const { runtime, ports, facts } = fixture();
+        vi.mocked(runtime.observeImages).mockReturnValue({ kind: "observed", items: [{ repository: "ccc", id: "image", size: "1MB" }] });
+        vi.mocked(runtime.observeVolumes).mockReturnValue({ kind: "observed", items: ["ccc-cache"] });
+        vi.mocked(runtime.removeImage).mockReturnValue({ ok: false });
+        const expected: CleanOutcome = { kind: "failed", failure: { kind: "remove-image-failed", repository: "ccc" }, removed: 1 };
+        await expect(createClean(ports)({ volumes: true, yes: true })).resolves.toEqual(expected);
+        expect(runtime.removeContainer).toHaveBeenCalledExactlyOnceWith(stopped.id);
+        expect(runtime.removeVolume).not.toHaveBeenCalled();
+        expect(facts.some(fact => fact.kind === "completed")).toBe(false);
+    });
+
+    it("propagates an unexpected native readiness exception without inventing a cleanup outcome", async () => {
+        const { runtime, ports } = fixture();
+        const cause = new Error("unexpected readiness failure");
+        vi.mocked(runtime.ensureRuntimeReady).mockImplementation(() => { throw cause; });
+        await expect(createClean(ports)({ yes: true })).rejects.toBe(cause);
+        expect(runtime.observeContainers).not.toHaveBeenCalled();
+        expect(ports.confirm).not.toHaveBeenCalled();
+        expect(runtime.removeContainer).not.toHaveBeenCalled();
     });
 });
