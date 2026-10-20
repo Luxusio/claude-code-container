@@ -749,8 +749,9 @@ M10g below extracts fresh creation while retaining existing identity proofs.
 Verification anchors are the architecture core, type and facade owners, existing
 Docker tests, and direct emitted runtime-authority/session-guard consumers. Their
 inventory fixtures exercise actual selected-ID inspection, including foreign
-refusal. Old-source controls identify swallowed cleanup reports and mutable
-target selection through public entry points. A fenced fresh-process invocation
+refusal. Old-source controls identify swallowed cleanup reports through the public
+Docker facade and mutable target selection through the core application fixture.
+A fenced fresh-process invocation
 of emitted native composition exercises incomplete cleanup and unconfirmed
 commands without operating an engine. Current package smoke checks CLI/public
 exports/assets/MCP packaging, not the historical destructive-operation catalog.
