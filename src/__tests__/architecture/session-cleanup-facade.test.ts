@@ -475,7 +475,7 @@ describe("native session cleanup through the public facade", () => {
         effects.lock.mockImplementation((_path, operation) => { order.push("enter"); const result = operation(); order.push("return"); return result; });
         effects.list.mockImplementation(() => { order.push("claims"); return []; });
         effects.unlink.mockImplementation(() => { order.push("remove"); });
-        effects.devices.mockImplementation(() => { order.push("devices"); });
+        effects.devices.mockImplementation(() => { order.push("devices"); return { ownerId: "fixture", results: [] }; });
         effects.invocation.mockImplementation(() => invocation);
         effects.spawn.mockImplementation(() => { order.push("stop"); return { status: 0 }; });
         start(profile); session.cleanupSession();
@@ -582,7 +582,7 @@ describe("native session cleanup through the public facade", () => {
         setContainer(before);
         effects.invocation.mockClear();
         effects.invocation.mockReturnValue(podmanInvocation);
-        effects.devices.mockImplementationOnce(() => { setContainer(after); });
+        effects.devices.mockImplementationOnce(() => { setContainer(after); return { ownerId: "fixture", results: [] }; });
         expect(() => session.cleanupSession()).toThrow(/cleanup.*authorization.*changed/i);
         expect(session.getCurrentSession()).toEqual({ lockFile: own, projectPath: project, profile: undefined, toolName: "claude" });
         expect(effects.spawn).not.toHaveBeenCalled();
@@ -605,7 +605,7 @@ describe("native session cleanup through the public facade", () => {
         expect(qualified.observation.lastAcknowledged).toMatchObject({ containerId: null, cleanupEnabled: false });
         expect(qualified.observation.pending).toBeNull();
         expect(qualified.observation.ownStarted).toBeNull();
-        effects.devices.mockImplementationOnce(() => { setContainer(exactId("late-id")); });
+        effects.devices.mockImplementationOnce(() => { setContainer(exactId("late-id")); return { ownerId: "fixture", results: [] }; });
         effects.invocation.mockClear();
 
         expect(() => session.cleanupSession()).not.toThrow();
@@ -815,7 +815,7 @@ describe("native session cleanup through the public facade", () => {
         const once = vi.spyOn(process, "once").mockImplementation(() => process);
         const order: string[] = [];
         const exit = vi.spyOn(process, "exit").mockImplementation((() => { order.push("exit"); }) as () => never);
-        effects.devices.mockImplementation(() => { order.push("cleanup"); });
+        effects.devices.mockImplementation(() => { order.push("cleanup"); return { ownerId: "fixture", results: [] }; });
         start(); session.setupSignalHandlers();
         const callback = once.mock.calls.find(([registered]) => registered === signal)![1];
         callback();
