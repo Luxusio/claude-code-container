@@ -2,7 +2,7 @@ import { ownedCleanupRuntimes, lifecycleActive, lifecycleStopRequired, cleanedDe
 import type { CleanupBackend, CleanupRecord as DeviceRecord, CleanupCommandResult as CommandResult, CleanupDeviceResult, CleanupStopEffect, CleanupAllProjectsResult } from "../domain/device-admin-cleanup.js";
 import type { DeviceAdminCleanupPorts, DeviceAdminAllProjectCleanupPorts } from "../ports/device-admin-cleanup.js";
 export function createDeviceAdminCleanup<Backend extends CleanupBackend>(ports: DeviceAdminCleanupPorts<Backend>) {
-    function stopOwnedDevice(match: { backend: Backend; device: DeviceRecord }, timeoutMs = 5000): { commands: CommandResult[]; ok: boolean; reason?: string } {
+    function stopOwnedDevice(ownerId: string, match: { backend: Backend; device: DeviceRecord }, timeoutMs = 5000): { commands: CommandResult[]; ok: boolean; reason?: string } {
         const results: CommandResult[] = [];
         const runtimes = ownedCleanupRuntimes(match.device);
         for (const runtime of runtimes) {
@@ -19,7 +19,7 @@ export function createDeviceAdminCleanup<Backend extends CleanupBackend>(ports: 
         } else if (match.backend.stateKey === "ios" && active) {
             effects.push({ kind: "ios-simulator-stop", device: match.device });
         } else if (match.backend.stateKey === "windows" && active) {
-            effects.push({ kind: "windows-sandbox-stop", device: match.device });
+            effects.push({ kind: "windows-sandbox-stop", ownerId, device: match.device });
         } else if (match.backend.stateKey === "macos" && active) {
             effects.push({ kind: "macos-instance-stop", device: match.device });
         }
@@ -71,7 +71,7 @@ export function createDeviceAdminCleanup<Backend extends CleanupBackend>(ports: 
             if (ownedRuntimeBlock) {
                 return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "failed", commands: [], reason: ownedRuntimeBlock };
             }
-            const stopped = stopOwnedDevice({ backend, device: current }, timeoutMs);
+            const stopped = stopOwnedDevice(ownerId, { backend, device: current }, timeoutMs);
             const commands = stopped.commands;
             if (stopped.reason) {
                 return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "failed", commands, reason: stopped.reason };

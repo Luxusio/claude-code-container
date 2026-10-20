@@ -3,6 +3,7 @@ import type { DeviceAdminPhysicalTransitionPorts } from "./ports/device-admin-de
 export { physicalLeaseMatchesOwnerDevice } from "./domain/device-admin-delete.js";
 import { createDeviceAdminCleanup } from "./application/device-admin-cleanup.js";
 import type { DeviceAdminCleanupPorts } from "./ports/device-admin-cleanup.js";
+import { windowsSandboxClaimMatchesOwnerDevice } from "./domain/device-admin-cleanup.js";
 import type { OwnedCleanupRuntime, CleanupDeviceResult, CleanupStopEffect, CleanupStopEffectsResult } from "./domain/device-admin-cleanup.js";
 export { shouldCleanupDevice } from "./domain/device-admin-cleanup.js";
 // Cohesive native cleanup authority. Legacy admin imports and reexports shared bindings.
@@ -260,7 +261,13 @@ function executeStopEffects(effects: readonly CleanupStopEffect[], timeoutMs: nu
             const sandboxId = typeof device.sandboxId === "string"
                 && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(device.sandboxId)
                 ? device.sandboxId : null;
-            if (sandboxId) result = runCommand(commandPath("wsb"), ["stop", "--id", sandboxId], timeoutMs);
+            if (sandboxId) {
+                result = withSharedMutationLock(windowsSandboxMutationLockFile(), () => {
+                    const current = readWindowsSandboxLockStateFile(windowsSandboxLockFile());
+                    if (!windowsSandboxClaimMatchesOwnerDevice(effect.ownerId, device, current)) return null;
+                    return runCommand(commandPath("wsb"), ["stop", "--id", sandboxId], timeoutMs);
+                });
+            }
             break;
         }
         case "macos-instance-stop": {
@@ -328,10 +335,7 @@ export function releaseWindowsSandboxLockForOwner(ownerId: string, backend: Back
     withSharedMutationLock(windowsSandboxMutationLockFile(), () => {
         const lock = readWindowsSandboxLockStateFile(windowsSandboxLockFile());
         if (!lock) return;
-        const sameOwner = lock.ownerId === ownerId;
-        const sameDevice = !device.id || !lock.deviceId || lock.deviceId === device.id;
-        const sameSandbox = typeof device.sandboxId !== "string" || !lock.sandboxId || lock.sandboxId === device.sandboxId;
-        if (sameOwner && sameDevice && sameSandbox) unlinkSync(windowsSandboxLockFile());
+        if (windowsSandboxClaimMatchesOwnerDevice(ownerId, device, lock)) unlinkSync(windowsSandboxLockFile());
     });
 }
 

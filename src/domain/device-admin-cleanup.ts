@@ -7,10 +7,26 @@ export type CleanupStopEffect =
     | { kind: "android-recording-stop"; device: CleanupRecord }
     | { kind: "android-emulator-stop"; device: CleanupRecord }
     | { kind: "ios-simulator-stop"; device: CleanupRecord }
-    | { kind: "windows-sandbox-stop"; device: CleanupRecord }
+    | { kind: "windows-sandbox-stop"; ownerId: string; device: CleanupRecord }
     | { kind: "macos-instance-stop"; device: CleanupRecord };
 export type CleanupStopEffectsResult = { ok: boolean; commands: CleanupCommandResult[] };
 export type CleanupAllProjectsResult = { ok: boolean; projects: { ownerId: string; results: CleanupDeviceResult[] }[] };
+
+export function windowsSandboxClaimMatchesOwnerDevice(
+    ownerId: string,
+    device: CleanupRecord,
+    current: Readonly<Record<string, unknown>> | null,
+): boolean {
+    const expectedClaimId = device.singletonClaimId;
+    const legacy = expectedClaimId === null || expectedClaimId === undefined;
+    if (!legacy && (typeof expectedClaimId !== "string" || !expectedClaimId)) return false;
+    if (!current) return legacy;
+    const sameGeneration = legacy ? current.claimId === undefined : current.claimId === expectedClaimId;
+    const sameOwner = current.ownerId === ownerId;
+    const sameDevice = !device.id || !current.deviceId || current.deviceId === device.id;
+    const sameSandbox = typeof device.sandboxId !== "string" || !current.sandboxId || current.sandboxId === device.sandboxId;
+    return sameGeneration && sameOwner && sameDevice && sameSandbox;
+}
 
 export function lifecycleActive(device: CleanupRecord): boolean {
     return ["running", "starting", "booted"].includes(device.status || "");

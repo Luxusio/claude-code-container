@@ -77,7 +77,13 @@ import type { DeviceAdminAllProjectCleanupPorts } from "../../ports/device-admin
 import type { CleanupBackend, CleanupStopEffect, CleanupDeviceResult } from "../../domain/device-admin-cleanup.js";
 
 function consumedCleanupCapabilities<Backend extends CleanupBackend>(ports: DeviceAdminAllProjectCleanupPorts<Backend>): void {
-    const effects: readonly CleanupStopEffect[] = [{ kind: "android-emulator-stop", device: { id: "owned", serial: "emulator-5554" } }];
+    const effects: readonly CleanupStopEffect[] = [
+        { kind: "android-emulator-stop", device: { id: "owned", serial: "emulator-5554" } },
+        { kind: "android-recording-stop", device: { id: "owned", serial: "physical" } },
+        { kind: "ios-simulator-stop", device: { id: "owned", udid: "simulator" } },
+        { kind: "macos-instance-stop", device: { id: "owned", provider: "tart", providerInstance: "instance" } },
+        { kind: "windows-sandbox-stop", ownerId: "trusted-owner", device: { id: "owned", sandboxId: "12345678-1234-4234-9234-1234567890ab" } },
+    ];
     const stopped = ports.executeStopEffects(effects, 5_000);
     const ok: boolean = stopped.ok;
     const commands: CleanupDeviceResult["commands"] = stopped.commands;
@@ -94,6 +100,10 @@ function consumedCleanupCapabilities<Backend extends CleanupBackend>(ports: Devi
     createDeviceAdminCleanup({ ...ports, executeStopEffects: async () => ({ ok: true, commands: [] }) });
     // @ts-expect-error Arbitrary executable recipes are outside the finite cleanup vocabulary.
     ports.executeStopEffects([{ kind: "command", device: { id: "owned" }, command: "adb", args: [] }], 5_000);
+    // @ts-expect-error Windows stop authority requires the trusted caller owner.
+    ports.executeStopEffects([{ kind: "windows-sandbox-stop", device: { id: "owned" } }], 5_000);
+    // @ts-expect-error Record metadata cannot supply a non-string owner authority.
+    ports.executeStopEffects([{ kind: "windows-sandbox-stop", ownerId: 17, device: { id: "owned" } }], 5_000);
     void [ok, commands, executeStopEffects];
 }
 void consumedCleanupCapabilities;

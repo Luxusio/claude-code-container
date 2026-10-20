@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { spawn } from "child_process";
+import * as childProcess from "child_process";
 import { dirname, join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -27,6 +28,7 @@ import type { DeviceAdminCleanupPorts, DeviceAdminAllProjectCleanupPorts } from 
 import type { CleanupBackend, CleanupRecord, CleanupCommandResult } from "../domain/device-admin-cleanup.js";
 import { createDeviceAdminDelete } from "../application/device-admin-delete.js";
 import type { DeviceAdminDeletePorts } from "../ports/device-admin-delete.js";
+import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 
 describe("semantic device deletion authority", () => {
     function deletionTrace(outcome: "success" | "failure" | "no-result" = "success", matched = true) {
@@ -480,7 +482,7 @@ describe("device-admin cleanup current policy traces", () => {
             backends: [{ stateKey, name: stateKey }], ...(stateKey === "android-device" ? { hardwareId: "physical" } : {}),
         });
         expect(f.policy.owner("/chosen", 37).results[0].status).toBe("stopped");
-        expect(f.trace.filter(event => event[0] === "effects")).toEqual([["effects", [{ kind, device: record }], 37]]);
+        expect(f.trace.filter(event => event[0] === "effects")).toEqual([["effects", [{ kind, ...(stateKey === "windows" ? { ownerId: "owner" } : {}), device: record }], 37]]);
         expect(f.rows[`owner/${stateKey}`][0].status).toBe(stateKey === "android-device" ? "detached" : "stopped");
     });
 
@@ -701,6 +703,375 @@ describe("device-lab admin cleanup and stop commands", () => {
         }
         return files;
     }
+
+    function sandboxOnly(cwd: string, recordPatch: Record<string, unknown> = {}, claimPatch: Record<string, unknown> | null = {}) {
+        const files = cleanupOnly(cwd);
+        const record = {
+            id: "windows-owned", status: "running", sandboxId: "12345678-1234-4234-9234-1234567890ab",
+            singletonClaimId: "claim-A", ownerId: "misleading-record-owner", ...recordPatch,
+        };
+        writeFileSync(files.windowsFile, JSON.stringify({ devices: [record] }));
+        const claimFile = join(fixture.homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
+        const mutationFile = join(dirname(claimFile), "windows-sandbox.mutation.lock");
+        mkdirSync(dirname(claimFile), { recursive: true });
+        const claim = {
+            provider: "windows-sandbox", ownerId: files.owner, deviceId: record.id,
+            sandboxId: record.sandboxId, claimId: "claim-A", ...claimPatch,
+        };
+        if (claimPatch !== null) writeFileSync(claimFile, JSON.stringify(claim, null, 3) + "\n");
+        const binDir = join(fixture.homeDir, "bin"), logFile = join(fixture.homeDir, "wsb-stop.json");
+        mkdirSync(binDir, { recursive: true });
+        fixture.writeNodeTool(binDir, "wsb", `writeFileSync(${JSON.stringify(logFile)}, JSON.stringify(args));`);
+        const backend = nativeCleanup.DEVICE_BACKENDS.find(candidate => candidate.stateKey === "windows")!;
+        return { ...files, record, claim, claimFile, mutationFile, binDir, logFile, backend };
+    }
+
+    it.each(["owner", "single", "all-projects"])("admin Sandbox claim regression: %s refuses same-coordinate successor B before native dispatch", action => {
+        const cwd = "/project/admin-sandbox-same-coordinate-successor";
+        const f = sandboxOnly(cwd, {}, { claimId: "claim-B", marker: "successor bytes" });
+        const ownerBefore = readFileSync(f.windowsFile, "utf8"), claimBefore = readFileSync(f.claimFile, "utf8");
+
+        if (action === "owner") {
+            expect(cleanupOwnerDevices(cwd, 5_000).results).toEqual([{
+                id: f.record.id, backend: "windows-sandbox", previousStatus: "running", status: "failed", commands: [], reason: "provider-stop-failed",
+            }]);
+        } else if (action === "single") expect(stopOwnerDevice(f.record.id, cwd).ok).toBe(false);
+        else expect(stopAllProjectDevices(5_000).ok).toBe(false);
+
+        expect(existsSync(f.logFile)).toBe(false);
+        expect(readFileSync(f.windowsFile, "utf8")).toBe(ownerBefore);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(claimBefore);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it.each(["delete", "release"])("admin Sandbox claim regression: inactive %s preserves same-coordinate successor B byte for byte", action => {
+        const cwd = "/project/admin-sandbox-inactive-successor";
+        const f = sandboxOnly(cwd, { status: "stopped" }, { claimId: "claim-B", marker: "keep spacing and newline" });
+        const claimBefore = readFileSync(f.claimFile, "utf8"), ownerBefore = readFileSync(f.windowsFile, "utf8");
+
+        if (action === "delete") {
+            expect(deleteOwnerDevice(f.record.id, cwd).ok).toBe(true);
+            expect(fixture.readDevices(f.windowsFile)).toEqual([]);
+        } else {
+            nativeCleanup.releaseWindowsSandboxLockForOwner(f.owner, f.backend, f.record);
+            expect(readFileSync(f.windowsFile, "utf8")).toBe(ownerBefore);
+        }
+
+        expect(readFileSync(f.claimFile, "utf8")).toBe(claimBefore);
+        expect(existsSync(f.logFile)).toBe(false);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it.each(["owner", "single", "all-projects"])("admin Sandbox claim regression: matching modern %s uses caller owner and preserves release policy", action => {
+        const cwd = "/project/admin-sandbox-matching-generation";
+        const f = sandboxOnly(cwd);
+        const claimBefore = readFileSync(f.claimFile, "utf8");
+        const spawnCalls = vi.mocked(childProcess.spawnSync);
+
+        if (action === "owner") expect(cleanupOwnerDevices(cwd, 2_345).results[0].status).toBe("stopped");
+        else if (action === "single") expect(stopOwnerDevice(f.record.id, cwd).ok).toBe(true);
+        else expect(stopAllProjectDevices(2_345).ok).toBe(true);
+
+        expect(JSON.parse(readFileSync(f.logFile, "utf8"))).toEqual(["stop", "--id", f.record.sandboxId]);
+        const timeouts = spawnCalls.mock.calls.filter(([command]) => command === join(f.binDir, "wsb.mjs")).map(([, , options]) => options?.timeout);
+        expect(timeouts).toEqual([action === "single" ? 5_000 : 2_345]);
+        expect(fixture.readDevices(f.windowsFile)[0]).toEqual({ ...f.record, status: "stopped", pid: null, appium: null, recording: null, updatedAt: expect.any(String) });
+        expect(existsSync(f.claimFile)).toBe(action !== "owner");
+        if (action !== "owner") expect(readFileSync(f.claimFile, "utf8")).toBe(claimBefore);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it.each([
+        { label: "modern expected without host claim", expected: "claim-A", claim: null },
+        { label: "modern expected with legacy host claim", expected: "claim-A", claim: { claimId: undefined } },
+        { label: "absent expected with modern host claim", expected: undefined, claim: {} },
+        { label: "null expected with modern host claim", expected: null, claim: {} },
+        { label: "empty expected marker", expected: "", claim: {} },
+        { label: "numeric expected marker", expected: 17, claim: {} },
+        { label: "object expected marker without host claim", expected: { claim: "A" }, claim: null },
+    ])("admin Sandbox claim regression: refuses $label without adopting authority", ({ expected, claim }) => {
+        const cwd = "/project/admin-sandbox-generation-refusal";
+        const f = sandboxOnly(cwd, { singletonClaimId: expected }, claim);
+        const ownerBefore = readFileSync(f.windowsFile, "utf8");
+        const claimBefore = existsSync(f.claimFile) ? readFileSync(f.claimFile, "utf8") : null;
+
+        expect(cleanupOwnerDevices(cwd, 5_000).results[0]).toEqual(expect.objectContaining({ status: "failed", reason: "provider-stop-failed", commands: [] }));
+        nativeCleanup.releaseWindowsSandboxLockForOwner(f.owner, f.backend, f.record);
+
+        expect(existsSync(f.logFile)).toBe(false);
+        expect(readFileSync(f.windowsFile, "utf8")).toBe(ownerBefore);
+        expect(existsSync(f.claimFile) ? readFileSync(f.claimFile, "utf8") : null).toBe(claimBefore);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it.each([
+        { label: "absent expected and no host singleton", expected: undefined, claim: null },
+        { label: "null expected and no host singleton", expected: null, claim: null },
+        { label: "null expected and matching legacy host", expected: null, claim: { claimId: undefined } },
+        { label: "absent expected and host Sandbox wildcard", expected: undefined, claim: { claimId: undefined, sandboxId: null } },
+    ])("admin Sandbox claim regression: preserves legacy $label stop compatibility", ({ expected, claim }) => {
+        const cwd = "/project/admin-sandbox-legacy-stop";
+        const f = sandboxOnly(cwd, { singletonClaimId: expected }, claim);
+
+        expect(cleanupOwnerDevices(cwd, 5_000).results[0].status).toBe("stopped");
+
+        expect(JSON.parse(readFileSync(f.logFile, "utf8"))).toEqual(["stop", "--id", f.record.sandboxId]);
+        expect(fixture.readDevices(f.windowsFile)[0].status).toBe("stopped");
+        expect(existsSync(f.claimFile)).toBe(false);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it.each([
+        { label: "owner", patch: { ownerId: "foreign-owner" } },
+        { label: "device", patch: { deviceId: "foreign-device" } },
+        { label: "Sandbox", patch: { sandboxId: "87654321-4321-4321-9234-1234567890ab" } },
+    ])("admin Sandbox claim regression: refuses incompatible legacy $label coordinates", ({ patch }) => {
+        const cwd = "/project/admin-sandbox-legacy-coordinate-refusal";
+        const f = sandboxOnly(cwd, { singletonClaimId: null }, { claimId: undefined, ...patch });
+        const claimBefore = readFileSync(f.claimFile, "utf8"), ownerBefore = readFileSync(f.windowsFile, "utf8");
+
+        expect(cleanupOwnerDevices(cwd, 5_000).results[0]).toEqual(expect.objectContaining({ status: "failed", reason: "provider-stop-failed", commands: [] }));
+        nativeCleanup.releaseWindowsSandboxLockForOwner(f.owner, f.backend, f.record);
+
+        expect(existsSync(f.logFile)).toBe(false);
+        expect(readFileSync(f.windowsFile, "utf8")).toBe(ownerBefore);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(claimBefore);
+    });
+
+    it.each([
+        { label: "missing expected device ID", record: { id: undefined }, claim: {}, released: true },
+        { label: "non-string expected Sandbox", record: { sandboxId: null }, claim: { sandboxId: "12345678-1234-4234-9234-1234567890ab" }, released: true },
+        { label: "missing host Sandbox", record: {}, claim: { sandboxId: undefined }, released: true },
+        { label: "different expected device ID", record: { id: "different-device" }, claim: { deviceId: "windows-owned" }, released: false },
+        { label: "different expected Sandbox", record: {}, claim: { sandboxId: "different-sandbox" }, released: false },
+    ])("admin Sandbox claim regression: legacy release retains $label rule", ({ record, claim, released }) => {
+        const f = sandboxOnly("/project/admin-sandbox-release-wildcards", { singletonClaimId: null, ...record }, { deviceId: "windows-owned", claimId: undefined, ...claim });
+        const claimBefore = readFileSync(f.claimFile, "utf8");
+
+        nativeCleanup.releaseWindowsSandboxLockForOwner(f.owner, f.backend, f.record);
+
+        expect(existsSync(f.claimFile)).toBe(!released);
+        if (!released) expect(readFileSync(f.claimFile, "utf8")).toBe(claimBefore);
+        expect(existsSync(f.logFile)).toBe(false);
+    });
+
+    it("admin Sandbox claim regression: stop rereads same-coordinate B after waiting for the real host guard", () => {
+        const cwd = "/project/admin-sandbox-stop-guard-reread";
+        const f = sandboxOnly(cwd);
+        const ownerBefore = readFileSync(f.windowsFile, "utf8");
+        const successor = { ...f.claim, claimId: "claim-B", marker: "installed while waiting" };
+        replaceStateFromLockedChild(f.mutationFile, f.claimFile, successor);
+
+        expect(cleanupOwnerDevices(cwd, 5_000).results[0]).toEqual(expect.objectContaining({ status: "failed", reason: "provider-stop-failed", commands: [] }));
+
+        expect(existsSync(f.logFile)).toBe(false);
+        expect(readFileSync(f.windowsFile, "utf8")).toBe(ownerBefore);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(JSON.stringify(successor));
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it("admin Sandbox claim regression: inactive delete rereads same-coordinate B after waiting for the real host guard", () => {
+        const cwd = "/project/admin-sandbox-delete-guard-reread";
+        const f = sandboxOnly(cwd, { status: "stopped" });
+        const successor = { ...f.claim, claimId: "claim-B", marker: "installed while waiting" };
+        replaceStateFromLockedChild(f.mutationFile, f.claimFile, successor);
+
+        expect(deleteOwnerDevice(f.record.id, cwd).ok).toBe(true);
+
+        expect(fixture.readDevices(f.windowsFile)).toEqual([]);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(JSON.stringify(successor));
+        expect(existsSync(f.logFile)).toBe(false);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it("admin Sandbox claim regression: holds one host guard through real WSB start and end against bounded contention", () => {
+        const cwd = "/project/admin-sandbox-command-guard-lifetime";
+        const f = sandboxOnly(cwd);
+        const contender = `
+            import { hostname } from "node:os";
+            import { unlinkSync, writeFileSync } from "node:fs";
+            const file = process.argv[1], deadline = Date.now() + 150;
+            let attempts = 0, acquired = false;
+            do {
+                attempts++;
+                try {
+                    writeFileSync(file, JSON.stringify({ token: "contender", pid: process.pid, host: hostname(), createdAt: new Date().toISOString() }), { flag: "wx" });
+                    acquired = true; unlinkSync(file); break;
+                } catch (error) { if (error?.code !== "EEXIST") throw error; }
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+            } while (Date.now() < deadline);
+            process.stdout.write(JSON.stringify({ attempts, acquired }));
+        `;
+        fixture.writeNodeTool(f.binDir, "wsb", `
+            import { existsSync, readFileSync } from "node:fs";
+            import { spawnSync } from "node:child_process";
+            const file = ${JSON.stringify(f.mutationFile)};
+            const token = () => existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).token : null;
+            const start = token();
+            const contender = spawnSync(process.execPath, ["--input-type=module", "-e", ${JSON.stringify(contender)}, file], { encoding: "utf8", timeout: 2_000 });
+            writeFileSync(${JSON.stringify(f.logFile)}, JSON.stringify({ args, start, end: token(), status: contender.status, contender: JSON.parse(contender.stdout) }));
+        `);
+
+        expect(cleanupOwnerDevices(cwd, 5_000).results[0].status).toBe("stopped");
+
+        const observed = JSON.parse(readFileSync(f.logFile, "utf8"));
+        expect(observed.args).toEqual(["stop", "--id", f.record.sandboxId]);
+        expect(observed.start).toEqual(expect.any(String));
+        expect(observed.end).toBe(observed.start);
+        expect(observed.status).toBe(0);
+        expect(observed.contender.attempts).toBeGreaterThan(1);
+        expect(observed.contender.acquired).toBe(false);
+        expect(existsSync(f.claimFile)).toBe(false);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it("admin Sandbox claim regression: later release preserves B installed after guarded stop and before owner publication", () => {
+        const cwd = "/project/admin-sandbox-between-stop-and-release";
+        const f = sandboxOnly(cwd);
+        const ownerMutation = join(dirname(f.windowsFile), "devices.mutation.lock");
+        const successorBytes = JSON.stringify({ ...f.claim, claimId: "claim-B", marker: "after native stop" }, null, 4) + "\n";
+        const actualLock = sharedState.withSharedMutationLock;
+        let installed = false, hostEntries = 0;
+        vi.spyOn(sharedState, "withSharedMutationLock").mockImplementation((file, operation, options) => {
+            if (file === f.mutationFile) hostEntries++;
+            if (file === ownerMutation && existsSync(f.logFile) && !installed) {
+                expect(existsSync(f.mutationFile)).toBe(false);
+                installed = true;
+                actualLock(f.mutationFile, () => writeFileSync(f.claimFile, successorBytes));
+            }
+            return actualLock(file, operation, options);
+        });
+
+        expect(cleanupOwnerDevices(cwd, 5_000).results[0].status).toBe("stopped");
+
+        expect(installed).toBe(true);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(successorBytes);
+        expect(hostEntries).toBe(2);
+        expect(JSON.parse(readFileSync(f.logFile, "utf8"))).toEqual(["stop", "--id", f.record.sandboxId]);
+        expect(fixture.readDevices(f.windowsFile)[0].status).toBe("stopped");
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it.each([
+        { label: "invalid JSON", bytes: "{invalid-json" },
+        { label: "null host generation", bytes: null, claimId: null },
+        { label: "empty host generation", bytes: null, claimId: "" },
+    ])("admin Sandbox claim regression: propagates $label without dispatch, unlink or owner publication", ({ bytes, claimId }) => {
+        const cwd = "/project/admin-sandbox-invalid-host-claim";
+        const f = sandboxOnly(cwd);
+        const invalidBytes = bytes ?? JSON.stringify({ ...f.claim, claimId });
+        writeFileSync(f.claimFile, invalidBytes);
+        const ownerBefore = readFileSync(f.windowsFile, "utf8");
+
+        expect(() => cleanupOwnerDevices(cwd, 5_000)).toThrow();
+        expect(() => nativeCleanup.releaseWindowsSandboxLockForOwner(f.owner, f.backend, f.record)).toThrow();
+
+        expect(existsSync(f.logFile)).toBe(false);
+        expect(readFileSync(f.windowsFile, "utf8")).toBe(ownerBefore);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(invalidBytes);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it("admin Sandbox claim regression: linked host claim remains invalid and leaves its target intact", context => {
+        const cwd = "/project/admin-sandbox-linked-host-claim";
+        const f = sandboxOnly(cwd);
+        const target = join(fixture.homeDir, "outside-claim.json"), claimBefore = readFileSync(f.claimFile, "utf8");
+        writeFileSync(target, claimBefore);
+        nativeFs.unlinkSync(f.claimFile);
+        fileSymlinkOrSkip(context, target, f.claimFile);
+        const ownerBefore = readFileSync(f.windowsFile, "utf8");
+
+        expect(() => cleanupOwnerDevices(cwd, 5_000)).toThrow();
+        expect(() => nativeCleanup.releaseWindowsSandboxLockForOwner(f.owner, f.backend, f.record)).toThrow();
+
+        expect(existsSync(f.logFile)).toBe(false);
+        expect(nativeFs.lstatSync(f.claimFile).isSymbolicLink()).toBe(true);
+        expect(readFileSync(target, "utf8")).toBe(claimBefore);
+        expect(readFileSync(f.windowsFile, "utf8")).toBe(ownerBefore);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it("admin Sandbox claim regression: host guard failure propagates unchanged and unwinds the owner operation", () => {
+        const cwd = "/project/admin-sandbox-host-guard-fault";
+        const f = sandboxOnly(cwd), fault = { native: "host mutation guard unavailable" };
+        const ownerBefore = readFileSync(f.windowsFile, "utf8"), claimBefore = readFileSync(f.claimFile, "utf8");
+        const actualLock = sharedState.withSharedMutationLock;
+        vi.spyOn(sharedState, "withSharedMutationLock").mockImplementation((file, operation, options) => {
+            if (file === f.mutationFile) throw fault;
+            return actualLock(file, operation, options);
+        });
+        let stopFault: unknown, releaseFault: unknown;
+        try { cleanupOwnerDevices(cwd, 5_000); } catch (error) { stopFault = error; }
+        try { nativeCleanup.releaseWindowsSandboxLockForOwner(f.owner, f.backend, f.record); } catch (error) { releaseFault = error; }
+
+        expect(stopFault).toBe(fault);
+        expect(releaseFault).toBe(fault);
+        expect(existsSync(f.logFile)).toBe(false);
+        expect(readFileSync(f.windowsFile, "utf8")).toBe(ownerBefore);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(claimBefore);
+        const operation = join(dirname(f.windowsFile), "operations", createHash("sha256").update(f.record.id).digest("hex").slice(0, 32) + ".lock");
+        expect(existsSync(operation)).toBe(false);
+    });
+
+    it("admin Sandbox claim regression: Windows command timeout preserves authority and releases the host guard", () => {
+        const cwd = "/project/admin-sandbox-native-timeout";
+        const f = sandboxOnly(cwd);
+        fixture.writeNodeTool(f.binDir, "wsb", `writeFileSync(${JSON.stringify(f.logFile)}, JSON.stringify(args)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_000);`);
+        const ownerBefore = readFileSync(f.windowsFile, "utf8"), claimBefore = readFileSync(f.claimFile, "utf8");
+        const start = Date.now();
+
+        const result = cleanupOwnerDevices(cwd, 300).results[0];
+
+        expect(Date.now() - start).toBeLessThan(3_000);
+        expect(result).toEqual(expect.objectContaining({ status: "failed", reason: "provider-stop-failed" }));
+        expect(result.commands).toEqual([expect.objectContaining({ status: null })]);
+        expect(readFileSync(f.windowsFile, "utf8")).toBe(ownerBefore);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(claimBefore);
+        expect(existsSync(f.mutationFile)).toBe(false);
+        expect(sharedState.withSharedMutationLock(f.mutationFile, () => "reacquired", { waitMs: 100 })).toBe("reacquired");
+    });
+
+    it("admin Sandbox claim regression: owner CAS conflict after authorized stop preserves the claim and successor record", () => {
+        const cwd = "/project/admin-sandbox-native-cas-conflict";
+        const f = sandboxOnly(cwd), successor = { ...f.record, marker: "new owner record" };
+        const ownerMutation = join(dirname(f.windowsFile), "devices.mutation.lock"), claimBefore = readFileSync(f.claimFile, "utf8");
+        const actualLock = sharedState.withSharedMutationLock;
+        let replaced = false;
+        vi.spyOn(sharedState, "withSharedMutationLock").mockImplementation((file, operation, options) => actualLock(file, () => {
+            if (file === ownerMutation && !replaced) {
+                expect(existsSync(f.logFile)).toBe(true);
+                expect(existsSync(f.mutationFile)).toBe(false);
+                replaced = true;
+                writeFileSync(f.windowsFile, JSON.stringify({ devices: [successor] }));
+            }
+            return operation();
+        }, options));
+
+        expect(cleanupOwnerDevices(cwd, 5_000).results[0]).toEqual(expect.objectContaining({ status: "failed", reason: "owner-device-state-conflict", commands: [expect.objectContaining({ status: 0 })] }));
+
+        expect(replaced).toBe(true);
+        expect(fixture.readDevices(f.windowsFile)).toEqual([successor]);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(claimBefore);
+        expect(existsSync(f.mutationFile)).toBe(false);
+    });
+
+    it("admin Sandbox claim regression: prune remains a metadata-only neighbor without host claim release", () => {
+        const cwd = "/project/admin-sandbox-prune-no-release";
+        const f = sandboxOnly(cwd, { status: "stopped" }, { claimId: "claim-B" });
+        const claimBefore = readFileSync(f.claimFile, "utf8"), actualLock = sharedState.withSharedMutationLock;
+        const hostEntries: string[] = [];
+        vi.spyOn(sharedState, "withSharedMutationLock").mockImplementation((file, operation, options) => {
+            if (file === f.mutationFile) hostEntries.push(file);
+            return actualLock(file, operation, options);
+        });
+
+        expect(pruneOwnerDevices(cwd).ok).toBe(true);
+
+        expect(fixture.readDevices(f.windowsFile)).toEqual([]);
+        expect(readFileSync(f.claimFile, "utf8")).toBe(claimBefore);
+        expect(hostEntries).toEqual([]);
+        expect(existsSync(f.logFile)).toBe(false);
+    });
 
     it.each([
         ["androidFile", { id: "unit", status: "running", port: 5554 }, "adb", ["-s", "emulator-5554", "emu", "kill"]],
