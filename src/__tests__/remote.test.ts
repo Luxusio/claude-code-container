@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { resolve } from 'node:path'
 import { hashPath } from '../utils.js'
 import { getProjectHash, getMutagenSessionName, checkTailscale, checkMutagen, isHostReachable, getMutagenSyncStatus, isValidEnvKey, shellEscapeArg, isValidHostOrUser, remoteSetup, remoteCheck, remoteTerminate, remoteExec, remoteClaudeDirScript } from '../remote.js'
 import * as childProcess from 'child_process'
@@ -644,7 +645,7 @@ function nativeResult(status: number | null, stdout = '', error?: Error, stderr 
 }
 function syncRecord(projectPath: string, user = 'myuser', host = 'myhost', overrides: Record<string, unknown> = {}) {
   return { identifier: firstSyncId, name: getMutagenSessionName(projectPath) + '-' + hashPath(user + '@' + host),
-    alpha: { protocol: 'local', path: projectPath },
+    alpha: { protocol: 'local', path: resolve(projectPath) },
     beta: { protocol: 'ssh', user, host, path: 'docker://' + remoteContainerId + '/project/' + utils.getProjectId(projectPath) },
     paused: false, status: 'watching', ...overrides }
 }

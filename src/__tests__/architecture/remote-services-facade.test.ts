@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -26,7 +26,7 @@ const syncId = "sync_" + "a".repeat(43);
 const token = "b".repeat(32);
 const reservation = { config, projectPath: "/work/project", profile: "named", token, leaseSeconds: 300 };
 const retained = { config, name: "ccc-returned", containerId, token };
-const syncRequest = { config, name: "ccc-sync", localPath: "/work/雪 project", containerId, projectId: "project-id" };
+const syncRequest = { config, name: "ccc-sync", localPath: resolve("/work/雪 project"), containerId, projectId: "project-id" };
 const interactiveRequest = { config, containerId, projectId: "project-id", arguments: [], environment: [] };
 const lifecycleEvents = ["SIGINT", "SIGTERM", "SIGHUP", "exit"] as const;
 type LifecycleListener = NodeJS.ExitListener | NodeJS.SignalsListener;
@@ -198,6 +198,71 @@ describe("remote native observations and effects", () => {
         expect(getMutagenSyncStatus("ccc-sync")).toBeNull();
     });
 
+    it.each([
+        ["unknown protocol", "beta", { protocol: "unknown", host: "other", path: "/project" }],
+        ["relative local path", "alpha", { protocol: "local", path: "relative/project" }],
+        ["local username", "alpha", { protocol: "local", path: "/project", user: "other" }],
+        ["local hostname", "alpha", { protocol: "local", path: "/project", host: "other" }],
+        ["local port", "alpha", { protocol: "local", path: "/project", port: 22 }],
+        ["local environment", "alpha", { protocol: "local", path: "/project", environment: { HOME: "/other" } }],
+        ["local parameters", "alpha", { protocol: "local", path: "/project", parameters: { compression: "true" } }],
+        ["empty SSH hostname", "beta", { protocol: "ssh", host: "", path: "/project" }],
+        ["SSH environment", "beta", { protocol: "ssh", host: "other", path: "/project", environment: { HOME: "/other" } }],
+        ["empty Docker container", "beta", { protocol: "docker", host: "", path: "/project" }],
+        ["Docker port", "beta", { protocol: "docker", host: "container", port: 22, path: "/project" }],
+        ["invalid Docker path prefix", "beta", { protocol: "docker", host: "container", path: "relative/project" }],
+    ] as const)("refuses inventory containing an unrelated endpoint with %s", (_label, field, endpoint) => {
+        const unrelated = nativeSession({ identifier: "sync_" + "b".repeat(43), name: "unrelated", [field]: endpoint });
+        native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession(), unrelated])));
+        expect(createNativeRemoteServicesPorts().observeSyncInventory()).toMatchObject({ kind: "unknown" });
+        expect(getMutagenSyncStatus("ccc-sync")).toBeNull();
+    });
+
+    it.each(["defaults", "1leading-digit", "name_with-underscore", "name with space", "name!", "abcdefab-cdef-abcd-abcd-abcdefabcdef", "ABCDEFAB-CDEF-ABCD-ABCD-ABCDEFABCDEF", syncId])(
+        "rejects an invalid unrelated native name %s before any identifier can become authority", name => {
+            native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession(), nativeSession({ identifier: "sync_" + "b".repeat(43), name })])));
+            expect(createNativeRemoteServicesPorts().observeSyncInventory()).toMatchObject({ kind: "unknown" });
+        });
+
+    it("retains legal Unicode names and valid unrelated SSH and Docker endpoints", () => {
+        const ports = createNativeRemoteServicesPorts();
+        for (const name of ["", "雪-project٢", "𐐀name-²", "Defaults"]) {
+            native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ name })])));
+            expect(ports.observeSyncInventory()).toMatchObject({ kind: "known", sessions: [{ name }] });
+        }
+        for (const beta of [
+            { protocol: "ssh", host: "other", path: "relative/project" },
+            { protocol: "ssh", user: "other", host: "other", port: 2222, path: "/project", parameters: { compression: "true" } },
+            { protocol: "docker", user: "other", host: "container", path: "/project", environment: { DOCKER_HOST: "tcp://other:2376" }, parameters: { extra: "value" } },
+            { protocol: "docker", host: "container", path: "~/project" },
+        ]) {
+            native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ beta })])));
+            expect(ports.observeSyncInventory()).toMatchObject({ kind: "known", sessions: [{ binding: null }] });
+        }
+    });
+
+    it("admits native absolute local paths and preserves the official Docker path forms", () => {
+        const ports = createNativeRemoteServicesPorts();
+        const localPaths = process.platform === "win32" ? ["C:\\project", "\\\\server\\share\\project"] : ["/project", "/work/雪 project"];
+        const relativePaths = process.platform === "win32" ? ["relative/project", "C:relative", "\\project", "/project", "\\\\server"] : ["relative/project", "C:relative", "C:\\project", "\\\\server\\share\\project"];
+        for (const path of localPaths) {
+            native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ alpha: { protocol: "local", path, user: "", host: "", port: 0, environment: {}, parameters: {} } })])));
+            expect(ports.observeSyncInventory()).toMatchObject({ kind: "known" });
+        }
+        for (const path of relativePaths) {
+            native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ alpha: { protocol: "local", path } })])));
+            expect(ports.observeSyncInventory()).toMatchObject({ kind: "unknown" });
+        }
+        for (const path of ["/project", "~/project", "C:\\project", "d:/project"]) {
+            native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ beta: { protocol: "docker", host: "container", path } })])));
+            expect(ports.observeSyncInventory()).toMatchObject({ kind: "known", sessions: [{ binding: null }] });
+        }
+        for (const path of ["relative/project", "C:relative", "1:/project", "\\\\server\\share\\project"]) {
+            native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ beta: { protocol: "docker", host: "container", path } })])));
+            expect(ports.observeSyncInventory()).toMatchObject({ kind: "unknown" });
+        }
+    });
+
     it("accounts for anonymous sessions and retains unsupported endpoints as unqualified records", () => {
         const ports = createNativeRemoteServicesPorts();
         const anonymous = nativeSession(); Reflect.deleteProperty(anonymous, "name");
@@ -215,7 +280,7 @@ describe("remote native observations and effects", () => {
     });
 
     it("never borrows an ID from alpha or diagnostics to qualify the remote endpoint", () => {
-        native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ alpha: { protocol: "local", path: `/local/docker://${containerId}/` },
+        native.sync.mockReturnValue(execution(0, JSON.stringify([nativeSession({ alpha: { protocol: "local", path: `${process.platform === "win32" ? "C:" : ""}/local/docker://${containerId}/` },
             beta: { protocol: "ssh", user: "foreign", host: "other-host", path: `docker://${"b".repeat(64)}/project/project-id` }, lastError: `docker://${containerId}/` })])));
         expect(createNativeRemoteServicesPorts().observeSyncInventory()).toMatchObject({ kind: "known", sessions: [{ binding: { user: "foreign", host: "other-host", containerId: "b".repeat(64) } }] });
     });

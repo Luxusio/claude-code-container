@@ -19,7 +19,7 @@ interface Session {
 interface State {
     sessions: Session[]; created: number; containerId: string;
     listMode: "known" | "failure" | "malformed" | "invalid-row";
-    afterCreateUnknown: boolean; holdInventory: boolean; replaceOnInteractive: boolean;
+    afterCreateUnknown: boolean; holdInventory: boolean; replaceOnInteractive: boolean; invalidEndpointOnInteractive: boolean;
     busy: boolean; terminateFailure: boolean; pauseFailure: boolean;
 }
 interface Call { program: string; args: string[]; role: string; targets?: string[]; cwd: string; marker: string | null; }
@@ -96,6 +96,13 @@ if (program === 'mutagen') {
       for (const row of state.sessions) row.identifier = 'sync_' + 'Z'.repeat(43);
       save();
     }
+    if (state.invalidEndpointOnInteractive) {
+      state.invalidEndpointOnInteractive = false;
+      state.sessions.push({ identifier: 'sync_' + 'E'.repeat(43), name: 'unrelated',
+        alpha: { protocol: 'local', path: '/unrelated' },
+        beta: { protocol: 'local', user: '', host: '', path: 'relative/project' }, paused: false, status: 'watching' });
+      save();
+    }
   } else {
     const command = args.at(-1) ?? '';
     log({});
@@ -151,7 +158,8 @@ function fixture() {
     for (const program of ["mutagen", "ssh"]) writeFileSync(join(bin, program), "#!" + process.execPath + "\n" + native, { mode: 0o700 });
     const statePath = join(root, "state.json"), tracePath = join(root, "trace.jsonl");
     const initial: State = { sessions: [], created: 0, containerId: "a".repeat(64), listMode: "known",
-        afterCreateUnknown: false, holdInventory: false, replaceOnInteractive: false, busy: false, terminateFailure: false, pauseFailure: false };
+        afterCreateUnknown: false, holdInventory: false, replaceOnInteractive: false, invalidEndpointOnInteractive: false,
+        busy: false, terminateFailure: false, pauseFailure: false };
     writeFileSync(statePath, JSON.stringify(initial)); writeFileSync(tracePath, "");
     const env = { ...process.env, HOME: root, PATH: bin + ":" + (process.env.PATH ?? ""),
         CCC_REMOTE_FIXTURE: root, CCC_REMOTE_DIST: dist, CCC_REMOTE_MARKER: "captured-fixture", CCC_REMOTE_HOST: "host-a" };
@@ -211,6 +219,31 @@ describe.runIf(process.platform !== "win32")("emitted remote sync authority with
         const f = fixture(); f.set({ listMode });
         const result = await f.run();
         expect(mutations(f.calls())).toEqual([]); expect(f.state().created).toBe(0); expect(result.code).toBe(1);
+    }, 20000);
+
+    it.each(["create", "resume", "cleanup", "terminate"] as const)("rejects incompatible unrelated endpoint inventory before %s effects", async action => {
+        const f = fixture();
+        if (action !== "create") expect((await f.run()).code).toBe(0);
+        const selected = f.state().sessions.map(row => ({ ...row, paused: action === "resume" }));
+        const unrelated: Session = { ...f.record("unrelated"), identifier: nativeId("E"), alpha: { protocol: "local", path: "/unrelated" },
+            beta: { protocol: "local", user: "", host: "", path: "relative/project" } };
+        f.set(action === "cleanup" ? { sessions: selected, invalidEndpointOnInteractive: true } : { sessions: [...selected, unrelated] });
+        f.clear(); const result = await f.run(action === "terminate" ? "terminate" : "exec", "y");
+        expect(mutations(f.calls())).toEqual([]);
+        expect(f.state().sessions).toEqual([...selected, unrelated]);
+        expect(result.code).toBe(1); expect(result.stdout).not.toContain("Sync terminated.");
+        if (action === "cleanup") expect(f.calls().some(call => call.program === "ssh" && call.args.some(arg => arg.includes("docker stop")))).toBe(true);
+    }, 20000);
+
+    it("rejects a malformed unrelated name that shadows the public termination identifier", async () => {
+        const f = fixture(); expect((await f.run()).code).toBe(0); const selected = f.state().sessions[0];
+        const shadow = { ...f.record(selected.identifier), identifier: nativeId("S"), alpha: { protocol: "local", path: "/unrelated" },
+            beta: { ...selected.beta, host: "foreign-host" } };
+        f.set({ sessions: [selected, shadow] }); f.clear(); const result = await f.run("terminate");
+        // A native name selector can alias an identifier. Neither row may be
+        // controlled when complete inventory contains that impossible name.
+        expect(mutations(f.calls())).toEqual([]); expect(f.state().sessions).toEqual([selected, shadow]);
+        expect(result.code).toBe(1); expect(result.stdout).not.toContain("Sync terminated.");
     }, 20000);
 
     it("protects legacy unscoped sessions without resuming, terminating, creating or pausing", async () => {

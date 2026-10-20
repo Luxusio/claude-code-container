@@ -10,6 +10,8 @@ Sync naming separates these authorities. Successful complete native inventory
 must prove absence before creation. Query failures, timeouts, invalid output
 and incompatible records remain unknown and authorize no mutation. A legacy
 unscoped name or ambiguous/foreign scoped record blocks creating another writer.
+Identity-bearing names and endpoints must satisfy their native invariants;
+valid unrelated transports remain accounted for as unqualified records.
 
 Reuse requires one exact local/remote binding. Only a changed container ID
 within that same binding permits checked replacement of the old sync. Creation

@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "child_process";
 import { randomBytes } from "crypto";
 import { existsSync, readFileSync } from "fs";
-import { isAbsolute, join, resolve } from "path";
+import { isAbsolute, join, resolve, win32 } from "path";
 import { hashPath, getProjectId, prompt, IMAGE_NAME, COMMON_IGNORE_DIRS, collectForwardedEnv, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE } from "../utils.js";
 import { getContainerName } from "../docker.js";
 import { legacyRemoteConfigDir, readCccConfig, updateCccConfig } from "../home-layout.js";
@@ -24,6 +24,11 @@ function validSyncIdentifier(identifier: string): boolean {
     return /^[a-z]{4}_[0-9a-zA-Z]{43}$/.test(identifier) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(identifier);
 }
 
+function validSyncName(name: string): boolean {
+    return name === "" || name !== "defaults" && /^\p{L}[\p{L}\p{N}-]*$/u.test(name) &&
+        !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(name);
+}
+
 interface NativeSyncEndpoint {
     protocol: string;
     user?: string;
@@ -39,21 +44,26 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function nativeSyncEndpoint(value: unknown): NativeSyncEndpoint | null {
-    if (!record(value) || !["local", "ssh", "docker", "unknown"].includes(value.protocol as string) || typeof value.path !== "string" || !value.path) return null;
+    if (!record(value) || !["local", "ssh", "docker"].includes(value.protocol as string) || typeof value.path !== "string" || !value.path) return null;
     if (value.user !== undefined && typeof value.user !== "string" || value.host !== undefined && typeof value.host !== "string") return null;
     if (value.port !== undefined && (typeof value.port !== "number" || !Number.isInteger(value.port) || value.port < 0 || value.port > 65535)) return null;
     for (const field of ["environment", "parameters"]) {
         const map = value[field];
         if (map !== undefined && (!record(map) || Object.values(map).some(entry => typeof entry !== "string"))) return null;
     }
-    return value as unknown as NativeSyncEndpoint;
+    const endpoint = value as unknown as NativeSyncEndpoint;
+    const hasEnvironment = Object.keys(endpoint.environment ?? {}).length > 0;
+    const hasParameters = Object.keys(endpoint.parameters ?? {}).length > 0;
+    if (endpoint.protocol === "local" && (endpoint.user || endpoint.host || endpoint.port || hasEnvironment || hasParameters ||
+        !isAbsolute(endpoint.path) || process.platform === "win32" && win32.parse(endpoint.path).root.length <= 1)) return null;
+    if (endpoint.protocol === "ssh" && (!endpoint.host || hasEnvironment)) return null;
+    if (endpoint.protocol === "docker" && (!endpoint.host || endpoint.port ||
+        !(endpoint.path.startsWith("/") || endpoint.path.startsWith("~") || /^[a-zA-Z]:[\\/]/.test(endpoint.path)))) return null;
+    return endpoint;
 }
 
 function qualifiedSyncBinding(alpha: NativeSyncEndpoint, beta: NativeSyncEndpoint): RemoteSyncBinding | null {
-    const unqualified = (endpoint: NativeSyncEndpoint) => (endpoint.port ?? 0) !== 0 ||
-        Object.keys(endpoint.environment ?? {}).length > 0 || Object.keys(endpoint.parameters ?? {}).length > 0;
-    if (alpha.protocol !== "local" || !isAbsolute(alpha.path) || alpha.user || alpha.host || unqualified(alpha) ||
-        beta.protocol !== "ssh" || !beta.user || !beta.host || unqualified(beta)) return null;
+    if (alpha.protocol !== "local" || beta.protocol !== "ssh" || !beta.user || !beta.host || beta.port || Object.keys(beta.parameters ?? {}).length > 0) return null;
     const target = /^docker:\/\/([a-fA-F0-9]{12,64})\/project\/([^/]+)$/.exec(beta.path);
     if (!target) return null;
     return { localPath: alpha.path, user: beta.user, host: beta.host, containerId: target[1], projectId: target[2] };
@@ -84,7 +94,7 @@ function parseSyncInventory(output: string, evidence: NativeEvidence): RemoteSyn
     ]);
     for (const value of data) {
         if (!record(value) || typeof value.identifier !== "string" || !validSyncIdentifier(value.identifier) || identifiers.has(value.identifier) ||
-            value.name !== undefined && typeof value.name !== "string" || typeof value.paused !== "boolean" ||
+            value.name !== undefined && (typeof value.name !== "string" || !validSyncName(value.name)) || typeof value.paused !== "boolean" ||
             typeof value.status !== "string" || !statusDescriptions.has(value.status) || value.lastError !== undefined && typeof value.lastError !== "string") {
             return { kind: "unknown", evidence };
         }
