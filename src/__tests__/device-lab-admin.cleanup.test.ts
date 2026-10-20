@@ -29,6 +29,10 @@ import type { CleanupBackend, CleanupRecord, CleanupCommandResult } from "../dom
 import { createDeviceAdminDelete } from "../application/device-admin-delete.js";
 import type { DeviceAdminDeletePorts } from "../ports/device-admin-delete.js";
 import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
+import { nativeRuntimeInvocationFixture } from "./helpers/native-runtime-fixture.js";
+import { runWithNativeRuntimeInvocation } from "../container-runtime.js";
+import { captureNativeSessionOwnership } from "../adapters/session-ownership.js";
+import { createNativeSessionClaimObservationStore } from "../adapters/session-claim-observation.js";
 
 describe("semantic device deletion authority", () => {
     function deletionTrace(outcome: "success" | "failure" | "no-result" = "success", matched = true) {
@@ -1256,9 +1260,17 @@ describe("device-lab admin cleanup and stop commands", () => {
         const current = { id: "ios-real", status: "attached", udid: "REAL-IOS-UDID", nested: { raw: "kept" } };
         writeFileSync(iosDeviceFile, JSON.stringify({ devices: [current] }));
         const leaseFile = fixture.physicalLeaseLockPath("ios-device", "REAL-IOS-UDID");
-        const claimFile = join(fixture.homeDir, ".ccc/run/locks", getProjectId(cwd) + "--p--" + profile + "--cleanup-test.lock");
+        const prefix = getProjectId(cwd) + "--p--" + profile;
+        const claimFile = join(fixture.homeDir, ".ccc/run/locks", prefix + "--cleanup-test.lock");
         mkdirSync(dirname(claimFile), { recursive: true, mode: 0o700 });
-        writeFileSync(claimFile, String(process.pid));
+        writeFileSync(claimFile, JSON.stringify({ version: 3, pid: process.pid, startToken: null, ownershipKind: "monitored" }), { mode: 0o600 });
+        const containerId = "a".repeat(64), generation = "device-cleanup-fixture";
+        const binDir = join(fixture.homeDir, "bin"), runtimeLog = join(fixture.homeDir, "session-runtime.jsonl");
+        mkdirSync(binDir, { recursive: true });
+        const runtimeInvocation = { ...nativeRuntimeInvocationFixture(), executable: fixture.writeNodeTool(binDir, "docker", `
+            appendFileSync(${JSON.stringify(runtimeLog)}, JSON.stringify(args) + "\\n");
+            if (args.at(-2) !== "stop" || args.at(-1) !== ${JSON.stringify(containerId)} || args.filter(value => /^[a-f0-9]{64}$/.test(value)).length !== 1) process.exit(17);
+        `) };
         const actualUnlink = nativeFs.unlinkSync, order: string[] = [];
         vi.spyOn(nativeFs, "unlinkSync").mockImplementation(file => {
             if (file === leaseFile) order.push("physical-lease");
@@ -1266,15 +1278,33 @@ describe("device-lab admin cleanup and stop commands", () => {
                 order.push("session-claim");
                 expect(fixture.readDevices(iosDeviceFile)).toEqual([{ ...current, status: "detached", pid: null, appium: null, recording: null, updatedAt: expect.any(String) }]);
                 expect(existsSync(leaseFile)).toBe(false);
+                expect(existsSync(runtimeLog)).toBe(true);
             }
             return actualUnlink(file);
         });
         session.clearSession();
         try {
-            session.setSession(claimFile, cwd, profile);
+            runWithNativeRuntimeInvocation(runtimeInvocation, () => session.setSession(claimFile, cwd, profile));
+            session.withContainerLifecycleLock(prefix, () => {
+                const store = createNativeSessionClaimObservationStore();
+                const snapshot = store.begin({ receipt: captureNativeSessionOwnership(claimFile),
+                    binding: { lockFile: claimFile, projectPath: cwd, profile, prefix, toolName: "claude" }, runtimeInvocation,
+                    guardian: { pid: process.pid, startToken: null }, generation });
+                store.update(snapshot, { ...snapshot.observation, registration: "ready",
+                    lastAcknowledged: { generation, sequence: 1, containerId, cleanupEnabled: true }, ownStarted: { generation, containerId } });
+            });
+            session.setSessionContainerId(containerId);
+            expect(existsSync(`${claimFile}.guardian.json`)).toBe(true);
+            expect(existsSync(`${claimFile}.runtime.json`)).toBe(true);
             expect(session.cleanupSession()).toBeUndefined();
             expect(order).toEqual(["physical-lease", "session-claim"]);
             expect(existsSync(claimFile)).toBe(false);
+            expect(existsSync(`${claimFile}.guardian.json`)).toBe(false);
+            expect(existsSync(`${claimFile}.runtime.json`)).toBe(false);
+            const runtimeCalls = readFileSync(runtimeLog, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+            expect(runtimeCalls).toHaveLength(1);
+            expect(runtimeCalls[0].slice(-2)).toEqual(["stop", containerId]);
+            expect(runtimeCalls[0].filter(value => /^[a-f0-9]{64}$/.test(value))).toEqual([containerId]);
             expect(session.getCurrentSession().lockFile).toBe(null);
         } finally { session.clearSession(); }
     });
@@ -1289,17 +1319,42 @@ describe("device-lab admin cleanup and stop commands", () => {
             if (file === iosFile) throw fault;
             return actualRead(file, limit);
         });
-        const claimFile = join(fixture.homeDir, ".ccc/run/locks", getProjectId(cwd) + "--p--" + profile + "--cleanup-test.lock");
+        const prefix = getProjectId(cwd) + "--p--" + profile;
+        const claimFile = join(fixture.homeDir, ".ccc/run/locks", prefix + "--cleanup-test.lock");
         mkdirSync(dirname(claimFile), { recursive: true, mode: 0o700 });
-        writeFileSync(claimFile, String(process.pid));
+        writeFileSync(claimFile, JSON.stringify({ version: 3, pid: process.pid, startToken: null, ownershipKind: "monitored" }), { mode: 0o600 });
+        const containerId = "b".repeat(64), generation = "device-cleanup-failure-fixture";
+        const binDir = join(fixture.homeDir, "bin"), runtimeLog = join(fixture.homeDir, "session-runtime.jsonl");
+        mkdirSync(binDir, { recursive: true });
+        const runtimeInvocation = { ...nativeRuntimeInvocationFixture(), executable: fixture.writeNodeTool(binDir, "docker", `
+            appendFileSync(${JSON.stringify(runtimeLog)}, JSON.stringify(args) + "\\n");
+            if (args.at(-2) !== "stop" || args.at(-1) !== ${JSON.stringify(containerId)} || args.filter(value => /^[a-f0-9]{64}$/.test(value)).length !== 1) process.exit(17);
+        `) };
         const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
         session.clearSession();
         try {
-            session.setSession(claimFile, cwd, profile);
+            runWithNativeRuntimeInvocation(runtimeInvocation, () => session.setSession(claimFile, cwd, profile));
+            session.withContainerLifecycleLock(prefix, () => {
+                const store = createNativeSessionClaimObservationStore();
+                const snapshot = store.begin({ receipt: captureNativeSessionOwnership(claimFile),
+                    binding: { lockFile: claimFile, projectPath: cwd, profile, prefix, toolName: "claude" }, runtimeInvocation,
+                    guardian: { pid: process.pid, startToken: null }, generation });
+                store.update(snapshot, { ...snapshot.observation, registration: "ready",
+                    lastAcknowledged: { generation, sequence: 1, containerId, cleanupEnabled: true }, ownStarted: { generation, containerId } });
+            });
+            session.setSessionContainerId(containerId);
+            expect(existsSync(`${claimFile}.guardian.json`)).toBe(true);
+            expect(existsSync(`${claimFile}.runtime.json`)).toBe(true);
             expect(session.cleanupSession()).toBeUndefined();
             expect(error).toHaveBeenCalledExactlyOnceWith("[ccc] device cleanup failed during session cleanup: exact later native read fault");
             expect(fixture.readDevices(androidFile)).toEqual([{ ...earlier, pid: null, appium: null, recording: null, updatedAt: expect.any(String) }]);
             expect(existsSync(claimFile)).toBe(false);
+            expect(existsSync(`${claimFile}.guardian.json`)).toBe(false);
+            expect(existsSync(`${claimFile}.runtime.json`)).toBe(false);
+            const runtimeCalls = readFileSync(runtimeLog, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+            expect(runtimeCalls).toHaveLength(1);
+            expect(runtimeCalls[0].slice(-2)).toEqual(["stop", containerId]);
+            expect(runtimeCalls[0].filter(value => /^[a-f0-9]{64}$/.test(value))).toEqual([containerId]);
             expect(fixture.readDevices(iosFile)).toEqual([]);
         } finally { session.clearSession(); }
     });
