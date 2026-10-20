@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({
     spawn: vi.fn(), sync: vi.fn(), exists: vi.fn(), read: vi.fn(), writeSync: vi.fn(),
-    legacy: vi.fn(() => "/legacy"), containerName: vi.fn(),
+    legacy: vi.fn(() => "/legacy"), containerName: vi.fn(), reader: vi.fn(),
 }));
+vi.mock("readline", () => ({ createInterface: native.reader }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: native.spawn, spawnSync: native.sync }));
 vi.mock("fs", async original => {
     const actual = await original<typeof import("node:fs")>();
@@ -17,7 +18,7 @@ vi.mock("fs", async original => {
 vi.mock("../../home-layout.js", async original => ({ ...await original<typeof import("../../home-layout.js")>(), legacyRemoteConfigDir: native.legacy }));
 vi.mock("../../docker.js", async original => ({ ...await original<typeof import("../../docker.js")>(), getContainerName: native.containerName }));
 
-import { createNativeRemoteServicesPorts } from "../../adapters/remote-services.js";
+import { createNativeRemoteServicesPorts, projectRemoteExecutionOutcome, projectRemoteTerminateOutcome } from "../../adapters/remote-services.js";
 import { checkTailscale, checkMutagen, getMutagenSyncStatus, isHostReachable, shellEscapeArg } from "../../remote.js";
 
 const config = { host: "host", user: "user", remotePath: "" };
@@ -122,14 +123,14 @@ describe("remote native observations and effects", () => {
             expect(result.kind).toBe("failed");
             if (result.kind !== "failed") throw Error("reservation unexpectedly succeeded");
             expect(result.reason).toBe("missing-container-id");
-            expect(() => ports.fail(result.reason, result.evidence)).toThrow("stable container ID was not returned");
+            expect(() => projectRemoteTerminateOutcome({ kind: "failed", reason: result.reason, evidence: result.evidence })).toThrow("stable container ID was not returned");
         }
         native.sync.mockReturnValue(execution(1, `ccc-container-id=${containerId}\n`, undefined, "start denied"));
         const failure = ports.reserveContainer(reservation);
         expect(failure.kind).toBe("failed");
         if (failure.kind !== "failed") throw Error("reservation unexpectedly succeeded");
         expect(failure.reason).toBe("start-failed");
-        expect(() => ports.fail(failure.reason, failure.evidence)).toThrow("Failed to start remote container: start denied");
+        expect(() => projectRemoteTerminateOutcome({ kind: "failed", reason: failure.reason, evidence: failure.evidence })).toThrow("Failed to start remote container: start denied");
     });
 
     it("refreshes by status and gives busy stop markers precedence over failure", () => {
@@ -148,8 +149,9 @@ describe("remote native observations and effects", () => {
         const failure = ports.stopReservedContainer(retained);
         expect(failure.kind).toBe("failed");
         if (failure.kind !== "failed") throw Error("stop unexpectedly succeeded");
-        expect(() => ports.fail("stop-failed", failure.evidence)).toThrow("Failed to stop remote container: stop denied");
-        expect(ports.releaseReservation(retained)).toBeUndefined();
+        expect(() => projectRemoteTerminateOutcome({ kind: "failed", reason: "stop-failed", evidence: failure.evidence })).toThrow("Failed to stop remote container: stop denied");
+        native.sync.mockReturnValue(execution(0));
+        expect(ports.releaseReservation(retained)).toEqual({ ok: true });
         expect(native.sync).toHaveBeenLastCalledWith("ssh", ["user@host", expect.any(String)], { encoding: "utf-8", timeout: 10000 });
     });
 
@@ -168,7 +170,7 @@ describe("remote native observations and effects", () => {
             const failure = ports.prepareRemoteProject(request);
             expect(failure.ok).toBe(false);
             if (failure.ok) throw Error("preparation unexpectedly succeeded");
-            expect(() => ports.fail("project-prepare-failed", failure.evidence)).toThrow(`Failed to prepare remote container project directory: ${diagnostic}`);
+            expect(() => projectRemoteTerminateOutcome({ kind: "failed", reason: "project-prepare-failed", evidence: failure.evidence })).toThrow(`Failed to prepare remote container project directory: ${diagnostic}`);
         }
     });
 
@@ -398,12 +400,16 @@ describe("remote native observations and effects", () => {
         }
     });
 
-    it("retains void daemon and release results while propagating thrown native faults", () => {
+    it("checks release status and returned errors while retaining void daemon startup and exact thrown faults", () => {
         const ports = createNativeRemoteServicesPorts();
         native.sync.mockReturnValue(execution(1, "", Error("returned")));
         expect(ports.startSyncDaemon()).toBeUndefined();
         expect(native.sync).toHaveBeenLastCalledWith("mutagen", ["daemon", "start"], capturedOptions({ stdio: "ignore" }));
-        expect(ports.releaseReservation(retained)).toBeUndefined();
+        for (const result of [execution(1, "", Error("returned")), execution(null), execution(0, "", Error("returned with zero status"))]) {
+            native.sync.mockReturnValue(result);
+            expect(ports.releaseReservation(retained)).toEqual({ ok: false, evidence: { execution: result } });
+        }
+        native.sync.mockReturnValue(execution(0)); expect(ports.releaseReservation(retained)).toEqual({ ok: true });
         native.sync.mockImplementation(() => { throw Error("native throw"); });
         expect(() => ports.startSyncDaemon()).toThrow("native throw");
         expect(() => ports.pauseSync(syncId)).toThrow("native throw");
@@ -425,6 +431,52 @@ describe("remote native observations and effects", () => {
         expect(() => reader.readConfig()).toThrow("read denied");
         native.exists.mockImplementation(() => { throw Error("stat denied"); });
         expect(() => reader.exists()).toThrow("stat denied");
+    });
+
+    it.each(["user", "cleanup"] as const)("cancels only its owned %s reader, settles blank and ignores a late answer", async kind => {
+        const readers: Array<EventEmitter & { question: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }> = [];
+        const answers: Array<(answer: string) => void> = [];
+        native.reader.mockImplementation(() => {
+            const events = new EventEmitter();
+            const reader = Object.assign(events, { question: vi.fn((_question: string, answer: (value: string) => void) => answers.push(answer)), close: vi.fn(() => { events.emit("close"); }) });
+            readers.push(reader); return reader;
+        });
+        const ports = createNativeRemoteServicesPorts();
+        const request = kind === "user" ? { kind, defaultUser: "local" } as const : { kind } as const;
+        const first = ports.prompt(request), second = ports.prompt(request);
+        expect(first.cancel()).toBeUndefined(); expect(first.cancel()).toBeUndefined();
+        await expect(first.result).resolves.toBe(""); expect(readers[0].close).toHaveBeenCalledTimes(1); expect(readers[1].close).not.toHaveBeenCalled();
+        answers[0]("late answer"); answers[1](kind === "cleanup" ? "  YeS  " : "  NewUser  ");
+        await expect(second.result).resolves.toBe(kind === "cleanup" ? "yes" : "NewUser"); expect(readers[1].close).toHaveBeenCalledTimes(1);
+    });
+    it.each(["blank", "EOF"] as const)("preserves %s as ordinary empty input rather than cancellation", async input => {
+        let answer!: (value: string) => void;
+        const events = new EventEmitter();
+        const reader = Object.assign(events, { question: vi.fn((_question: string, callback: (value: string) => void) => { answer = callback; }), close: vi.fn(() => { events.emit("close"); }) });
+        native.reader.mockReturnValue(reader); const ports = createNativeRemoteServicesPorts();
+        const prompt = ports.prompt({ kind: "user", defaultUser: "local" });
+        if (input === "blank") answer("   "); else reader.emit("close");
+        await expect(prompt.result).resolves.toBe("");
+    });
+    it("cancels and settles one native sleep without disposing another invocation's timer", async () => {
+        vi.useFakeTimers();
+        try {
+            const ports = createNativeRemoteServicesPorts(), first = ports.sleep(1000), second = ports.sleep(2000);
+            let secondDone = false; void second.completion.then(() => { secondDone = true; });
+            first.cancel(); first.cancel(); await first.completion; expect(secondDone).toBe(false); expect(vi.getTimerCount()).toBe(1);
+            await vi.advanceTimersByTimeAsync(2000); await second.completion; expect(secondDone).toBe(true); expect(vi.getTimerCount()).toBe(0);
+        } finally { vi.useRealTimers(); }
+    });
+    it("projects a latched signal exactly once after cleanup facts are reported", () => {
+        const signal = vi.spyOn(process, "kill").mockImplementation(() => true), exit = vi.spyOn(process, "exit").mockImplementation(() => { throw Error("unexpected exit"); });
+        projectRemoteExecutionOutcome({ kind: "cancelled", signal: "SIGINT", cleanupFailures: [] });
+        expect(signal).toHaveBeenCalledExactlyOnceWith(process.pid, "SIGINT"); expect(exit).not.toHaveBeenCalled();
+    });
+    it("does not report successful process completion when checked reservation release failed", () => {
+        const error = vi.spyOn(console, "error").mockImplementation(() => {}), sentinel = Error("projected");
+        const exit = vi.spyOn(process, "exit").mockImplementation(() => { throw sentinel; });
+        expect(() => projectRemoteExecutionOutcome({ kind: "completed", exitCode: 0, cleanupFailures: [{ kind: "release-failed", evidence: { execution: execution(1, "", undefined, "release denied") } }] })).toThrow(sentinel);
+        expect(exit).toHaveBeenCalledExactlyOnceWith(1); expect(error.mock.calls.flat().join(" ")).toMatch(/release/i);
     });
 
     it("encodes literal UTF-8 arguments and ordered environment with the container marker first", () => {

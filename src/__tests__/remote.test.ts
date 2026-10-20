@@ -6,6 +6,20 @@ import * as childProcess from 'child_process'
 import * as fs from 'fs'
 import * as utils from '../utils.js'
 
+const remotePrompt = vi.hoisted(() => ({ answer: vi.fn() }))
+vi.mock('readline', () => ({
+  createInterface: () => {
+    const listeners = new Map<string, Array<() => void>>(); let closed = false
+    const reader = {
+      on: (event: string, callback: () => void) => { const current = listeners.get(event) ?? []; current.push(callback); listeners.set(event, current); return reader },
+      once: (event: string, callback: () => void) => reader.on(event, callback),
+      question: (question: string, callback: (answer: string) => void) => { void Promise.resolve(remotePrompt.answer(question)).then(answer => { if (!closed) callback(answer) }) },
+      close: () => { if (closed) return; closed = true; for (const callback of listeners.get('close') ?? []) callback() },
+    }
+    return reader
+  },
+}))
+
 const remoteSessionMocks = vi.hoisted(() => ({
   createSessionLock: vi.fn(() => '/locks/remote.lock'),
   removeSessionLock: vi.fn(),
@@ -788,7 +802,7 @@ describe('remoteTerminate', () => {
 describe('remoteExec', () => {
   const path = '/home/user/project'
   const mockSpawnSync = vi.mocked(childProcess.spawnSync), mockSpawn = vi.mocked(childProcess.spawn)
-  const mockPrompt = vi.mocked(utils.prompt)
+  const mockPrompt = remotePrompt.answer
   function child(exitCode = 0) {
     const emitter: any = { kill: vi.fn(() => true), on: vi.fn((event: string, callback: (value: any) => void) => {
       if (event === 'close') queueMicrotask(() => callback(exitCode))
@@ -911,7 +925,12 @@ describe('remoteExec', () => {
     expect(mockSpawnSync.mock.calls.some(call => call[0] === 'ssh' && (call[1] as string[]).some(value => value.includes('docker stop')))).toBe(false)
   })
   it('reports SSH error and removes claim before failure exit', async () => {
-    const emitter: any = { on: vi.fn((event: string, callback: (error: Error) => void) => { if (event === 'error') queueMicrotask(() => callback(Error('SSH refused'))); return emitter }) }
+    let close: ((code: number) => void) | undefined
+    const emitter: any = { on: vi.fn((event: string, callback: (value: any) => void) => {
+      if (event === 'close') close = callback
+      if (event === 'error') queueMicrotask(() => { callback(Error('SSH refused')); queueMicrotask(() => close!(0)) })
+      return emitter
+    }) }
     mockSpawn.mockReturnValue(emitter); const exited = exit(1)
     await expect(remoteExec(path)).rejects.toThrow('exit:1')
     expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(exited.mock.invocationCallOrder[0])
@@ -921,7 +940,7 @@ describe('remoteExec', () => {
     const emitter: any = { kill: vi.fn(() => true), on: vi.fn((event: string, callback: (code: number) => void) => { if (event === 'close') closed = callback; return emitter }) }
     mockSpawn.mockReturnValue(emitter); const killed = vi.spyOn(process, 'kill').mockImplementation(() => true), exited = exit()
     const execution = remoteExec(path)
-    for (let attempt = 0; attempt < 30 && !closed; attempt++) await Promise.resolve()
+    for (let attempt = 0; attempt < 100 && !closed; attempt++) await Promise.resolve()
     expect(closed).toBeTypeOf('function'); process.emit('SIGTERM')
     expect(emitter.kill).toHaveBeenCalledWith('SIGTERM'); expect(remoteSessionMocks.removeSessionLock).not.toHaveBeenCalled()
     closed!(0); await execution

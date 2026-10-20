@@ -10,6 +10,8 @@ export function isValidHostOrUser(value: string): boolean {
 
 export type RemoteSignal = "SIGINT" | "SIGTERM";
 export interface RemoteHeartbeat { unref(): undefined; cancel(): undefined; }
+export interface RemotePrompt { result: Promise<string>; cancel(): undefined; }
+export interface RemoteSleep { completion: Promise<void>; cancel(): undefined; }
 export interface RemoteSshChannel {
     onClose(callback: (code: number | null) => void): undefined;
     onError(callback: (error: unknown) => void): undefined;
@@ -77,6 +79,31 @@ export type RemoteFailureKind =
     | "project-prepare-failed" | "sync-terminate-failed" | "sync-resume-failed"
     | "sync-create-failed" | "sync-missing" | "sync-unknown" | "sync-conflict" | "sync-pause-failed"
     | "sync-failed" | "sync-timeout" | "stop-failed";
+
+export type RemotePrerequisiteRefusal =
+    | "mutagen-required" | "config-invalid" | "host-invalid" | "host-unreachable" | "user-invalid" | "config-required";
+export interface RemoteFailure<Evidence = unknown> { kind: "failed"; reason: RemoteFailureKind; evidence?: Evidence; }
+export interface RemoteCancellation { kind: "cancelled"; signal: RemoteSignal; }
+export interface RemoteFault { kind: "fault"; error: unknown; }
+export type RemoteCleanupPhase =
+    | "cancel-heartbeat" | "release-reservation" | "remove-session-lock" | "dispose-prompt" | "cancel-sleep"
+    | "signal-child" | "remove-SIGINT-listener" | "remove-SIGTERM-listener";
+export type RemoteCleanupFailure<Evidence = unknown> =
+    | { kind: "release-failed"; evidence: Evidence }
+    | { kind: "cleanup-fault"; phase: RemoteCleanupPhase; error: unknown };
+export type RemoteExecutionResult<Evidence = unknown> =
+    | { kind: "completed"; exitCode: number }
+    | { kind: "refused"; reason: RemotePrerequisiteRefusal }
+    | RemoteFailure<Evidence> | RemoteCancellation | RemoteFault;
+export type RemoteExecutionOutcome<Evidence = unknown> = RemoteExecutionResult<Evidence> & {
+    cleanupFailures: RemoteCleanupFailure<Evidence>[];
+};
+export type RemoteSyncEnsureOutcome<Evidence = unknown> =
+    | { kind: "ready"; handle: RemoteSyncHandle } | RemoteFailure<Evidence> | RemoteCancellation | RemoteFault;
+export type RemoteSyncWaitOutcome<Evidence = unknown> =
+    | { kind: "ready" } | RemoteFailure<Evidence> | RemoteCancellation | RemoteFault;
+export type RemoteTerminateOutcome<Evidence = unknown> =
+    | { kind: "completed"; state: "inactive" | "terminated" } | RemoteFailure<Evidence> | RemoteFault;
 
 /** Native presentation consumes finite notices and facts; evidence stays opaque inward. */
 export type RemoteEvent<Evidence = unknown> =

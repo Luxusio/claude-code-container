@@ -2,12 +2,13 @@ import { spawn, spawnSync } from "child_process";
 import { randomBytes } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { isAbsolute, join, resolve, win32 } from "path";
-import { hashPath, getProjectId, prompt, IMAGE_NAME, COMMON_IGNORE_DIRS, collectForwardedEnv, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE } from "../utils.js";
+import { createInterface } from "readline";
+import { hashPath, getProjectId, IMAGE_NAME, COMMON_IGNORE_DIRS, collectForwardedEnv, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE } from "../utils.js";
 import { getContainerName } from "../docker.js";
 import { legacyRemoteConfigDir, readCccConfig, updateCccConfig } from "../home-layout.js";
 import { createSessionLock, removeSessionLock, removeSessionLockInHeldLifecycleLock, withContainerLifecycleLock, withContainerLifecycleLockAsync } from "../session.js";
 import { remoteContainerStartScript, remoteSessionReservationShell, remoteRefreshSessionShell, remoteReleaseSessionShell, remoteStopShell, shellEscapeArg } from "./remote-shell.js";
-import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteObservedSync, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncInventory } from "../domain/remote-services.js";
+import type { RemoteConfig, RemoteEvent, RemoteExecutionOutcome, RemoteFailureKind, RemoteObservedSync, RemotePrompt, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncInventory, RemoteTerminateOutcome } from "../domain/remote-services.js";
 import type { RemoteServicesPorts } from "../ports/remote-services.js";
 import { captureInteractiveTerminal } from "./interactive-terminal.js";
 
@@ -248,26 +249,72 @@ Config is stored per-project in ~/.ccc/config.json under "remote"`);
     event satisfies never;
 }
 
-function fail(kind: RemoteFailureKind, evidence?: NativeEvidence): never {
+function failureError(kind: RemoteFailureKind, evidence?: NativeEvidence): Error {
     const result = evidence?.execution;
     switch (kind) {
-        case "image-missing": throw new Error("ccc image not found on remote. Run 'ccc' on the remote host first to build the image.");
-        case "config-unresolved": throw new Error("Remote configuration could not be resolved");
-        case "config-invalid": throw new Error("Saved remote configuration contains an invalid host or user");
-        case "start-failed": throw new Error(`Failed to start remote container: ${result?.stderr}`);
-        case "missing-container-id": throw new Error("Failed to start remote container: stable container ID was not returned");
-        case "project-prepare-failed": throw new Error(`Failed to prepare remote container project directory: ${result?.stderr || result?.error?.message || "unknown error"}`);
-        case "sync-terminate-failed": throw new Error("Failed to terminate sync session");
-        case "sync-resume-failed": throw new Error("Failed to resume sync session");
-        case "sync-create-failed": throw new Error("Failed to create sync session");
-        case "sync-missing": throw new Error("Sync session not found");
-        case "sync-unknown": throw new Error("Sync state could not be established");
-        case "sync-conflict": throw new Error("Conflicting or unqualified sync sessions require manual inspection");
-        case "sync-pause-failed": throw new Error("Failed to pause sync session");
-        case "sync-failed": throw new Error(`Sync failed: ${evidence?.syncStatus}`);
-        case "sync-timeout": throw new Error("Sync timeout - initial sync did not complete");
-        case "stop-failed": throw new Error(`Failed to stop remote container: ${result?.stderr || result?.status}`);
+        case "image-missing": return new Error("ccc image not found on remote. Run 'ccc' on the remote host first to build the image.");
+        case "config-unresolved": return new Error("Remote configuration could not be resolved");
+        case "config-invalid": return new Error("Saved remote configuration contains an invalid host or user");
+        case "start-failed": return new Error(`Failed to start remote container: ${result?.stderr}`);
+        case "missing-container-id": return new Error("Failed to start remote container: stable container ID was not returned");
+        case "project-prepare-failed": return new Error(`Failed to prepare remote container project directory: ${result?.stderr || result?.error?.message || "unknown error"}`);
+        case "sync-terminate-failed": return new Error("Failed to terminate sync session");
+        case "sync-resume-failed": return new Error("Failed to resume sync session");
+        case "sync-create-failed": return new Error("Failed to create sync session");
+        case "sync-missing": return new Error("Sync session not found");
+        case "sync-unknown": return new Error("Sync state could not be established");
+        case "sync-conflict": return new Error("Conflicting or unqualified sync sessions require manual inspection");
+        case "sync-pause-failed": return new Error("Failed to pause sync session");
+        case "sync-failed": return new Error(`Sync failed: ${evidence?.syncStatus}`);
+        case "sync-timeout": return new Error("Sync timeout - initial sync did not complete");
+        case "stop-failed": return new Error(`Failed to stop remote container: ${result?.stderr || result?.status}`);
     }
+}
+
+/** Process status and native errors are projected only after application settlement. */
+export function projectRemoteExecutionOutcome(outcome: RemoteExecutionOutcome<NativeEvidence>): void {
+    if (outcome.kind === "failed") report({ kind: "unexpected-error", error: failureError(outcome.reason, outcome.evidence) });
+    if (outcome.kind === "fault") report({ kind: "unexpected-error", error: outcome.error });
+    for (const failure of outcome.cleanupFailures) {
+        const error = failure.kind === "cleanup-fault" ? failure.error :
+            new Error(`Failed to release remote session reservation: ${failure.evidence.execution?.stderr || failure.evidence.execution?.error?.message || failure.evidence.execution?.status}`);
+        report({ kind: "unexpected-error", error });
+    }
+    if (outcome.kind === "cancelled") { process.kill(process.pid, outcome.signal); return; }
+    const code = outcome.kind === "completed" ? outcome.exitCode : 1;
+    process.exit(code === 0 && outcome.cleanupFailures.length > 0 ? 1 : code);
+}
+
+export function projectRemoteTerminateOutcome(outcome: RemoteTerminateOutcome<NativeEvidence>): void {
+    if (outcome.kind === "failed") throw failureError(outcome.reason, outcome.evidence);
+    if (outcome.kind === "fault") throw outcome.error;
+}
+
+function nativePrompt(request: Parameters<RemoteServicesPorts["prompt"]>[0]): RemotePrompt {
+    let reader: ReturnType<typeof createInterface> | null = null, settled = false;
+    let finish: (answer: string) => void = () => {};
+    const result = new Promise<string>((resolve, reject) => {
+        reader = createInterface({ input: process.stdin, output: process.stdout });
+        const owned = reader;
+        finish = answer => { if (!settled) { settled = true; resolve(answer); } };
+        owned.on("close", () => finish(""));
+        const question = request.kind === "user" ? `Remote user [${request.defaultUser}]: ` : "\nStop container and pause sync? [y/N]: ";
+        try {
+            owned.question(question, answer => {
+                if (settled) return;
+                const trimmed = answer.trim();
+                finish(request.kind === "cleanup" ? trimmed.toLowerCase() : trimmed);
+                owned.close();
+            });
+        } catch (error) {
+            settled = true;
+            try { owned.close(); } finally { reject(error); }
+        }
+    });
+    return { result, cancel: () => {
+        if (!settled) { finish(""); reader?.close(); }
+        return undefined;
+    } };
 }
 
 export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvidence> {
@@ -309,7 +356,8 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
         },
         releaseReservation: request => {
             const body = remoteReleaseSessionShell(request.name, request.token);
-            spawnSync("ssh", [`${request.config.user}@${request.config.host}`, body], { encoding: "utf-8", timeout: 10000 });
+            const result = spawnSync("ssh", [`${request.config.user}@${request.config.host}`, body], { encoding: "utf-8", timeout: 10000 });
+            return result.error || result.status !== 0 ? { ok: false, evidence: { execution: result } } : { ok: true };
         },
         stopReservedContainer: request => {
             const body = remoteStopShell(request.name, request.token, request.containerId);
@@ -355,8 +403,8 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
             });
         },
         readUser: () => process.env.USER,
-        prompt: request => request.kind === "user" ? prompt(`Remote user [${request.defaultUser}]: `) : prompt("\nStop container and pause sync? [y/N]: ", true),
-        report, fail,
+        prompt: nativePrompt,
+        report,
         createSessionLock: prefix => createSessionLock(prefix),
         removeSessionLock: file => { removeSessionLock(file); return undefined; },
         removeSessionLockInHeldLifecycleLock: file => { removeSessionLockInHeldLifecycleLock(file); return undefined; },
@@ -366,9 +414,8 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
             const timer = setInterval(callback, milliseconds);
             return { unref: () => { timer.unref(); return undefined; }, cancel: () => { clearInterval(timer); return undefined; } };
         },
-        onceSignal: (signal, callback) => { process.once(signal, callback); return undefined; },
+        onSignal: (signal, callback) => { process.on(signal, callback); return undefined; },
         removeSignalListener: (signal, callback) => { process.removeListener(signal, callback); return undefined; },
-        resignalSelf: signal => process.kill(process.pid, signal), exit: code => process.exit(code),
         collectCurrentForwardedEnv: () => collectForwardedEnv(process.env),
         startInteractiveSession: request => {
             const claudeArgs = request.arguments.length > 0 ? request.arguments.map(shellEscapeArg).join(" ") : "--dangerously-skip-permissions";
@@ -387,6 +434,15 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
                 kill: signal => { try { return child.kill(signal); } finally { restoreTerminal(); } },
             };
         },
-        now: () => performance.now(), sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+        now: () => performance.now(), sleep: milliseconds => {
+            let settled = false;
+            let finish: () => void = () => {};
+            const completion = new Promise<void>(resolve => { finish = resolve; });
+            const timer = setTimeout(() => { settled = true; finish(); }, milliseconds);
+            return { completion, cancel: () => {
+                if (!settled) { settled = true; clearTimeout(timer); finish(); }
+                return undefined;
+            } };
+        },
     };
 }

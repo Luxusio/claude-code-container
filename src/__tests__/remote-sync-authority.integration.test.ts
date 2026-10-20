@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 // executables are stateful fixtures; no engine, SSH host or Mutagen daemon runs.
 const dist = fileURLToPath(new URL("../../dist/", import.meta.url));
 const roots: string[] = [];
-type Running = { child: ChildProcess; finished: boolean; done: Promise<{ code: number | null; stdout: string; stderr: string }> };
+type Running = { child: ChildProcess; finished: boolean; done: Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> };
 const running: Running[] = [];
 const nativeId = (character: string) => "sync_" + character.repeat(43);
 interface Session {
@@ -20,9 +20,9 @@ interface State {
     sessions: Session[]; created: number; containerId: string;
     listMode: "known" | "failure" | "malformed" | "invalid-row";
     afterCreateUnknown: boolean; holdInventory: boolean; replaceOnInteractive: boolean; invalidEndpointOnInteractive: boolean;
-    busy: boolean; terminateFailure: boolean; pauseFailure: boolean;
+    busy: boolean; terminateFailure: boolean; pauseFailure: boolean; releaseFailure: boolean; holdInteractive: boolean; interactiveExitCode: number;
 }
-interface Call { program: string; args: string[]; role: string; targets?: string[]; cwd: string; marker: string | null; }
+interface Call { program: string; args: string[]; role: string; targets?: string[]; cwd: string; marker: string | null; event?: string; }
 
 const native = String.raw`
 import { appendFileSync, existsSync, openSync, closeSync, readFileSync, writeFileSync } from 'node:fs';
@@ -91,6 +91,15 @@ if (program === 'mutagen') {
 } else if (program === 'ssh') {
   if (args[0] === '-t') {
     log({});
+    if (state.holdInteractive) {
+      await new Promise(resolve => {
+        const timer = setInterval(() => {}, 1000);
+        for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
+          log({ event: 'child-' + signal }); clearInterval(timer); resolve();
+        });
+        writeFileSync(join(root, 'interactive-held'), 'ready');
+      });
+    }
     if (state.replaceOnInteractive) {
       state.replaceOnInteractive = false;
       for (const row of state.sessions) row.identifier = 'sync_' + 'Z'.repeat(43);
@@ -103,6 +112,7 @@ if (program === 'mutagen') {
         beta: { protocol: 'local', user: '', host: '', path: 'relative/project' }, paused: false, status: 'watching' });
       save();
     }
+    process.exitCode = state.interactiveExitCode;
   } else {
     const command = args.at(-1) ?? '';
     log({});
@@ -112,6 +122,7 @@ if (program === 'mutagen') {
     }
     else if (command.includes('docker run -d')) out('ccc-container-id=' + state.containerId + '\n');
     else if (command.includes('docker stop') && state.busy) { out('ccc-remote-sessions-active\n'); process.exit(42); }
+    else if (!command.includes('docker stop') && /rm -f.*\$_ccc_sessions\/[a-f0-9]{32}/.test(command) && state.releaseFailure) fail('fixture reservation release denied');
   }
 } else fail('unexpected fixture executable');
 `;
@@ -131,7 +142,16 @@ if (process.argv[2] === 'seed') {
 } else {
   writeFileSync(join(root, 'started-' + (process.env.CCC_REMOTE_ROLE ?? 'single')), 'ready');
   try {
-    if (process.argv[2] === 'exec') await api.remoteExec(project);
+    if (process.argv[2] === 'embed') {
+      const application = await load('application/remote-services.js'), adapter = await load('adapters/remote-services.js');
+      const outcome = await application.createRemoteServices(adapter.createNativeRemoteServicesPorts()).remoteExec(project);
+      const recorded = { kind: outcome.kind, exitCode: outcome.exitCode, reason: outcome.reason, signal: outcome.signal,
+        cleanupFailures: outcome.cleanupFailures.map(failure => ({ kind: failure.kind, phase: failure.phase })) };
+      writeFileSync(join(root, 'outcome.json'), JSON.stringify(recorded));
+      await new Promise(resolve => setImmediate(resolve));
+      writeFileSync(join(root, 'embedder-continued'), 'after core completion');
+    }
+    else if (process.argv[2] === 'exec') await api.remoteExec(project);
     else if (process.argv[2] === 'terminate') await api.remoteTerminate(project);
     else if (process.argv[2] === 'check') await api.remoteCheck(project);
     else throw Error('unexpected fixture action');
@@ -159,7 +179,7 @@ function fixture() {
     const statePath = join(root, "state.json"), tracePath = join(root, "trace.jsonl");
     const initial: State = { sessions: [], created: 0, containerId: "a".repeat(64), listMode: "known",
         afterCreateUnknown: false, holdInventory: false, replaceOnInteractive: false, invalidEndpointOnInteractive: false,
-        busy: false, terminateFailure: false, pauseFailure: false };
+        busy: false, terminateFailure: false, pauseFailure: false, releaseFailure: false, holdInteractive: false, interactiveExitCode: 0 };
     writeFileSync(statePath, JSON.stringify(initial)); writeFileSync(tracePath, "");
     const env = { ...process.env, HOME: root, PATH: bin + ":" + (process.env.PATH ?? ""),
         CCC_REMOTE_FIXTURE: root, CCC_REMOTE_DIST: dist, CCC_REMOTE_MARKER: "captured-fixture", CCC_REMOTE_HOST: "host-a" };
@@ -170,21 +190,21 @@ function fixture() {
     const set = (changes: Partial<State>) => writeFileSync(statePath, JSON.stringify({ ...state(), ...changes }));
     const calls = () => readFileSync(tracePath, "utf8").split("\n").filter(Boolean).map(row => JSON.parse(row) as Call);
     const clear = () => writeFileSync(tracePath, "");
-    const start = (action = "exec", answer = "n", overrides: NodeJS.ProcessEnv = {}) => {
+    const start = (action = "exec", answer: string | null = "n", overrides: NodeJS.ProcessEnv = {}) => {
         const child = spawn(process.execPath, [consumerPath, action], { env: { ...env, ...overrides }, cwd: join(root, "project"), detached: true, stdio: ["pipe", "pipe", "pipe"] });
         let stdout = "", stderr = "", answered = false;
         const owned: Running = { child, finished: false, done: new Promise((resolve, reject) => {
             child.stdout!.on("data", data => {
                 stdout += String(data);
-                if (!answered && stdout.includes("Stop container and pause sync?")) { answered = true; child.stdin!.end(answer + "\n"); }
+                if (answer !== null && !answered && stdout.includes("Stop container and pause sync?")) { answered = true; child.stdin!.end(answer + "\n"); }
             });
             child.stderr!.on("data", data => { stderr += String(data); });
             child.once("error", reject);
-            child.once("close", code => { owned.finished = true; resolve({ code, stdout, stderr }); });
+            child.once("close", (code, signal) => { owned.finished = true; resolve({ code, signal, stdout, stderr }); });
         }) };
         running.push(owned); return owned;
     };
-    const run = (action = "exec", answer = "n", overrides: NodeJS.ProcessEnv = {}) => start(action, answer, overrides).done;
+    const run = (action = "exec", answer: string | null = "n", overrides: NodeJS.ProcessEnv = {}) => start(action, answer, overrides).done;
     const record = (name = info.legacy): Session => ({ identifier: nativeId("x"), name,
         alpha: { protocol: "local", path: join(root, "project") },
         beta: { protocol: "ssh", user: "user", host: "host-a", path: "docker://" + initial.containerId + "/project/" + info.projectId },
@@ -332,5 +352,41 @@ describe.runIf(process.platform !== "win32")("emitted remote sync authority with
         f.set({ terminateFailure: false }); f.clear(); const completed = await f.run("terminate");
         expect(completed.code, completed.stderr).toBe(0); expect(completed.stdout).toContain("Sync terminated."); expect(f.state().sessions).toEqual([]);
     }, 20000);
-});
+    it("returns a nonzero session completion to a continuing embedder while the public facade preserves its status", async () => {
+        const embedded = fixture(); embedded.set({ interactiveExitCode: 17 });
+        const returned = await embedded.run("embed");
+        expect(returned.code, returned.stderr).toBe(0); expect(existsSync(join(embedded.root, "embedder-continued"))).toBe(true);
+        expect(JSON.parse(readFileSync(join(embedded.root, "outcome.json"), "utf8"))).toEqual({ kind: "completed", exitCode: 17, cleanupFailures: [] });
+        const cli = fixture(); cli.set({ interactiveExitCode: 17 }); const exited = await cli.run();
+        expect(exited.code, exited.stderr).toBe(17); expect(exited.signal).toBeNull();
+    }, 20000);
 
+    it("returns expected failure and checked release evidence without terminating the embedder", async () => {
+        const f = fixture(); f.set({ listMode: "failure", releaseFailure: true }); const result = await f.run("embed");
+        expect(result.code, result.stderr).toBe(0); expect(existsSync(join(f.root, "embedder-continued"))).toBe(true);
+        expect(JSON.parse(readFileSync(join(f.root, "outcome.json"), "utf8"))).toEqual({ kind: "failed", reason: "sync-unknown", cleanupFailures: [{ kind: "release-failed" }] });
+        expect(f.calls().some(call => call.program === "ssh" && call.args[0] === "-t")).toBe(false);
+    }, 20000);
+
+    it("projects failed required cleanup as CLI failure after a successful session", async () => {
+        const f = fixture(); f.set({ releaseFailure: true }); const result = await f.run();
+        expect(result.code).toBe(1); expect(result.stderr).toContain("fixture reservation release denied");
+    }, 20000);
+
+    it.each(["SIGINT", "SIGTERM"] as const)("joins native SSH and preserves %s once at the public boundary", async signal => {
+        const f = fixture(); f.set({ holdInteractive: true }); const execution = f.start();
+        await waitFile(join(f.root, "interactive-held")); expect(execution.child.kill(signal)).toBe(true);
+        const result = await execution.done; expect(result.code, result.stderr).toBeNull(); expect(result.signal).toBe(signal);
+        expect(f.calls().filter(call => call.event === "child-" + signal)).toHaveLength(1);
+        expect(mutations(f.calls()).some(call => call.args[1] === "pause")).toBe(false);
+    }, 20000);
+
+    it("returns signal cancellation to its continuing native embedder after joining SSH", async () => {
+        const f = fixture(); f.set({ holdInteractive: true }); const execution = f.start("embed");
+        await waitFile(join(f.root, "interactive-held")); expect(execution.child.kill("SIGTERM")).toBe(true);
+        const result = await execution.done; expect(result.code, result.stderr).toBe(0); expect(result.signal).toBeNull();
+        expect(JSON.parse(readFileSync(join(f.root, "outcome.json"), "utf8"))).toEqual({ kind: "cancelled", signal: "SIGTERM", cleanupFailures: [] });
+        expect(existsSync(join(f.root, "embedder-continued"))).toBe(true); expect(f.calls().filter(call => call.event === "child-SIGTERM")).toHaveLength(1);
+    }, 20000);
+
+});

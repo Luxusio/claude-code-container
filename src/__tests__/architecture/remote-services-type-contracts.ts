@@ -1,5 +1,6 @@
 import type { RemoteServicesPorts } from "../../ports/remote-services.js";
-import type { RemoteHeartbeat, RemoteSshChannel, RemoteSyncBinding, RemoteSyncHandle, RemoteSyncInventory } from "../../domain/remote-services.js";
+import type { RemoteHeartbeat, RemoteSshChannel, RemoteSyncBinding, RemoteSyncInventory, RemoteExecutionOutcome, RemoteSyncEnsureOutcome, RemoteSyncWaitOutcome, RemoteTerminateOutcome, RemotePrompt, RemoteSleep } from "../../domain/remote-services.js";
+import { createRemoteServices } from "../../application/remote-services.js";
 import { createRemoteSync } from "../../application/remote-sync.js";
 import { remoteExec, remoteSetup, remoteCheck, remoteTerminate, remoteRefreshSessionShell } from "../../remote.js";
 
@@ -35,7 +36,22 @@ export function remoteServiceContracts(ports: RemoteServicesPorts<symbol>): void
     }
     const binding: RemoteSyncBinding = { localPath: "/project", user: "user", host: "host", projectId: "project", containerId: "a".repeat(64) };
     const sync = createRemoteSync(ports);
-    const captured: Promise<RemoteSyncHandle> = sync.ensureSync(binding);
+    const captured: Promise<RemoteSyncEnsureOutcome<symbol>> = sync.ensureSync(binding);
+    const waited: Promise<RemoteSyncWaitOutcome<symbol>> = sync.waitForSync({ identifier: "sync_" + "a".repeat(43), name: "name", binding });
+    const services = createRemoteServices(ports);
+    const execution: Promise<RemoteExecutionOutcome<symbol>> = services.remoteExec("path");
+    const termination: Promise<RemoteTerminateOutcome<symbol>> = services.remoteTerminate("path");
+    const reader: RemotePrompt = ports.prompt({ kind: "cleanup" });
+    const timer: RemoteSleep = ports.sleep(1000);
+    // @ts-expect-error application policy cannot request process termination
+    ports.exit(1);
+    // @ts-expect-error application policy cannot signal its embedding process
+    ports.resignalSelf("SIGTERM");
+    // @ts-expect-error expected failures are outcomes, not outward Error construction
+    ports.fail("sync-timeout");
+    // @ts-expect-error reusable execution returns a finite result rather than process authority
+    const processEnding: Promise<void> = services.remoteExec("path");
+    void [waited, execution, termination, reader, timer, processEnding];
     // @ts-expect-error waiting must retain the captured identifier and binding rather than a mutable name
     sync.waitForSync("session");
     // @ts-expect-error exact authority includes the remote container ID

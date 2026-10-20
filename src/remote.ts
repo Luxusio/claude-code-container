@@ -1,6 +1,6 @@
 // Public remote facade composes application policy with native services.
 import { createRemoteServices } from "./application/remote-services.js";
-import { createNativeRemoteServicesPorts, renderMutagenSyncStatus } from "./adapters/remote-services.js";
+import { createNativeRemoteServicesPorts, projectRemoteExecutionOutcome, projectRemoteTerminateOutcome, renderMutagenSyncStatus } from "./adapters/remote-services.js";
 
 export { isValidHostOrUser } from "./domain/remote-services.js";
 export { shellEscapeArg } from "./adapters/remote-shell.js";
@@ -16,7 +16,11 @@ export function getMutagenSyncStatus(sessionName: string): string | null {
     const ports = createNativeRemoteServicesPorts();
     return renderMutagenSyncStatus(ports.observeSyncInventory(), sessionName);
 }
-export function remoteExec(projectPath: string, host?: string, args: string[] = []): Promise<void> { return nativeServices().remoteExec(projectPath, host, args); }
+export async function remoteExec(projectPath: string, host?: string, args: string[] = []): Promise<void> {
+    projectRemoteExecutionOutcome(await nativeServices().remoteExec(projectPath, host, args));
+}
 export function remoteSetup(): Promise<void> { return nativeServices().remoteSetup(); }
 export function remoteCheck(projectPath: string): Promise<void> { return nativeServices().remoteCheck(projectPath); }
-export function remoteTerminate(projectPath: string): Promise<void> { return nativeServices().remoteTerminate(projectPath); }
+export async function remoteTerminate(projectPath: string): Promise<void> {
+    projectRemoteTerminateOutcome(await nativeServices().remoteTerminate(projectPath));
+}

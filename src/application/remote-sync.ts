@@ -1,4 +1,4 @@
-import type { RemoteObservedSync, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncHandle, RemoteSyncInventory, RemoteSyncObservation } from "../domain/remote-services.js";
+import type { RemoteCancellation, RemoteFailure, RemoteFault, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncEnsureOutcome, RemoteSyncHandle, RemoteSyncInventory, RemoteSyncObservation, RemoteSyncWaitOutcome } from "../domain/remote-services.js";
 import type { RemoteSyncPorts } from "../ports/remote-services.js";
 
 function sameAuthority(left: RemoteSyncAuthority, right: RemoteSyncAuthority): boolean {
@@ -46,78 +46,113 @@ export function createRemoteSync<Evidence>(ports: RemoteSyncPorts<Evidence>) {
         return observation;
     }
 
-    function requireObserved(observation: RemoteSyncObservation<Evidence>): RemoteObservedSync<Evidence> {
-        if (observation.kind === "missing") ports.fail("sync-missing");
-        if (observation.kind === "unknown") ports.fail("sync-unknown", observation.evidence);
-        if (observation.kind === "conflict") ports.fail("sync-conflict", observation.evidence);
-        return observation;
+    function observationFailure(observation: RemoteSyncObservation<Evidence>): RemoteFailure<Evidence> | null {
+        if (observation.kind === "missing") return { kind: "failed", reason: "sync-missing" };
+        if (observation.kind === "unknown") return { kind: "failed", reason: "sync-unknown", evidence: observation.evidence };
+        if (observation.kind === "conflict") return { kind: "failed", reason: "sync-conflict", evidence: observation.evidence };
+        return null;
     }
 
-    async function ensureSync(binding: RemoteSyncBinding, containerDisplayName = binding.containerId): Promise<RemoteSyncHandle> {
-        return ports.withLifecycleLockAsync(syncLifecyclePrefix(binding), async () => {
-            const name = ports.getScopedMutagenSessionName(binding);
-            ports.startSyncDaemon();
-            let existing = inspectSync(binding);
-            if (existing.kind === "unknown") ports.fail("sync-unknown", existing.evidence);
-            if (existing.kind === "conflict") ports.fail("sync-conflict", existing.evidence);
-            if (existing.kind === "observed") {
-                // Selection already proved the complete authority; only the container may differ.
-                if (existing.binding!.containerId !== binding.containerId) {
-                    ports.report({ kind: "sync-replacing" });
-                    const terminated = ports.terminateSync(existing.identifier);
-                    if (!terminated.ok) ports.fail("sync-terminate-failed", terminated.evidence);
-                    existing = inspectSync(binding);
-                    if (existing.kind === "unknown") ports.fail("sync-unknown", existing.evidence);
-                    if (existing.kind !== "missing") ports.fail("sync-conflict", existing.evidence);
-                } else {
-                    if (existing.paused) {
-                        ports.report({ kind: "sync-resuming" });
-                        const resumed = ports.resumeSync(existing.identifier);
-                        if (!resumed.ok) ports.fail("sync-resume-failed", resumed.evidence);
+    async function ensureSync(binding: RemoteSyncBinding, containerDisplayName = binding.containerId,
+        interruption: () => RemoteCancellation | RemoteFault | null = () => null): Promise<RemoteSyncEnsureOutcome<Evidence>> {
+        try {
+            let interrupted = interruption();
+            if (interrupted) return interrupted;
+            return await ports.withLifecycleLockAsync(syncLifecyclePrefix(binding), async (): Promise<RemoteSyncEnsureOutcome<Evidence>> => {
+                let interrupted = interruption();
+                if (interrupted) return interrupted;
+                const name = ports.getScopedMutagenSessionName(binding);
+                if ((interrupted = interruption())) return interrupted;
+                ports.startSyncDaemon();
+                if ((interrupted = interruption())) return interrupted;
+                let existing = inspectSync(binding);
+                if (existing.kind === "unknown") return { kind: "failed", reason: "sync-unknown", evidence: existing.evidence };
+                if (existing.kind === "conflict") return { kind: "failed", reason: "sync-conflict", evidence: existing.evidence };
+                if ((interrupted = interruption())) return interrupted;
+                if (existing.kind === "observed") {
+                    // Selection already proved the complete authority; only the container may differ.
+                    if (existing.binding!.containerId !== binding.containerId) {
+                        ports.report({ kind: "sync-replacing" });
+                        if ((interrupted = interruption())) return interrupted;
+                        const terminated = ports.terminateSync(existing.identifier);
+                        if (!terminated.ok) return { kind: "failed", reason: "sync-terminate-failed", evidence: terminated.evidence };
+                        if ((interrupted = interruption())) return interrupted;
+                        existing = inspectSync(binding);
+                        if (existing.kind === "unknown") return { kind: "failed", reason: "sync-unknown", evidence: existing.evidence };
+                        if (existing.kind !== "missing") return { kind: "failed", reason: "sync-conflict", evidence: existing.evidence };
+                        if ((interrupted = interruption())) return interrupted;
                     } else {
-                        ports.report({ kind: "sync-existing", observation: existing });
+                        if (existing.paused) {
+                            ports.report({ kind: "sync-resuming" });
+                            if ((interrupted = interruption())) return interrupted;
+                            const resumed = ports.resumeSync(existing.identifier);
+                            if (!resumed.ok) return { kind: "failed", reason: "sync-resume-failed", evidence: resumed.evidence };
+                        } else {
+                            ports.report({ kind: "sync-existing", observation: existing });
+                        }
+                        if ((interrupted = interruption())) return interrupted;
+                        return { kind: "ready", handle: { identifier: existing.identifier, name, binding: { ...binding } } };
                     }
-                    return { identifier: existing.identifier, name, binding: { ...binding } };
                 }
-            }
 
-            ports.report({ kind: "sync-creating", localPath: binding.localPath, containerDisplayName, projectId: binding.projectId, host: binding.host });
-            const config = { user: binding.user, host: binding.host, remotePath: "" };
-            const created = ports.createSync({ name, localPath: binding.localPath, config, containerId: binding.containerId, projectId: binding.projectId });
-            if (!created.ok) ports.fail("sync-create-failed", created.evidence);
-            const observed = requireObserved(inspectSync(binding));
-            if (observed.binding === null || !sameBinding(observed.binding, binding)) ports.fail("sync-conflict", observed.evidence);
-            return { identifier: observed.identifier, name, binding: { ...binding } };
-        });
+                ports.report({ kind: "sync-creating", localPath: binding.localPath, containerDisplayName, projectId: binding.projectId, host: binding.host });
+                if ((interrupted = interruption())) return interrupted;
+                const config = { user: binding.user, host: binding.host, remotePath: "" };
+                const created = ports.createSync({ name, localPath: binding.localPath, config, containerId: binding.containerId, projectId: binding.projectId });
+                if (!created.ok) return { kind: "failed", reason: "sync-create-failed", evidence: created.evidence };
+                if ((interrupted = interruption())) return interrupted;
+                const observed = inspectSync(binding);
+                if (observed.kind !== "observed") return observationFailure(observed)!;
+                if (observed.binding === null || !sameBinding(observed.binding, binding)) return { kind: "failed", reason: "sync-conflict", evidence: observed.evidence };
+                if ((interrupted = interruption())) return interrupted;
+                return { kind: "ready", handle: { identifier: observed.identifier, name, binding: { ...binding } } };
+            });
+        } catch (error) {
+            return { kind: "fault", error };
+        }
     }
 
-    async function waitForSync(handle: RemoteSyncHandle, timeoutMs: number = 120000): Promise<void> {
-        const deadline = ports.now() + timeoutMs;
-        const checkInterval = 1000;
-        ports.report({ kind: "sync-waiting" });
+    async function waitForSync(handle: RemoteSyncHandle, timeoutMs: number = 120000,
+        interruption: () => RemoteCancellation | RemoteFault | null = () => null): Promise<RemoteSyncWaitOutcome<Evidence>> {
+        try {
+            let interrupted = interruption();
+            if (interrupted) return interrupted;
+            const deadline = ports.now() + timeoutMs;
+            const checkInterval = 1000;
+            ports.report({ kind: "sync-waiting" });
 
-        while (true) {
-            const remainingMs = deadline - ports.now();
-            if (!(remainingMs >= 1)) break;
-            const observation = requireObserved(observeCapturedSync(handle, remainingMs));
-            const remainingAfterObservation = deadline - ports.now();
-            if (observation.watching && remainingAfterObservation > 0) {
-                ports.report({ kind: "sync-completed" });
-                return;
+            while (true) {
+                if ((interrupted = interruption())) return interrupted;
+                const remainingMs = deadline - ports.now();
+                if (!(remainingMs >= 1)) break;
+                if ((interrupted = interruption())) return interrupted;
+                const observation = observeCapturedSync(handle, remainingMs);
+                if (observation.kind !== "observed") return observationFailure(observation)!;
+                if ((interrupted = interruption())) return interrupted;
+                const remainingAfterObservation = deadline - ports.now();
+                if (observation.watching && remainingAfterObservation > 0) {
+                    ports.report({ kind: "sync-completed" });
+                    return interruption() ?? { kind: "ready" };
+                }
+                if (observation.failed) {
+                    ports.report({ kind: "sync-failed", observation });
+                    return { kind: "failed", reason: "sync-failed", evidence: observation.evidence };
+                }
+                if (!(remainingAfterObservation > 0)) break;
+                ports.report({ kind: "sync-poll" });
+                if ((interrupted = interruption())) return interrupted;
+                const sleepMs = Math.min(checkInterval, deadline - ports.now());
+                if (!(sleepMs > 0)) break;
+                if ((interrupted = interruption())) return interrupted;
+                await ports.sleep(sleepMs).completion;
             }
-            if (observation.failed) {
-                ports.report({ kind: "sync-failed", observation });
-                ports.fail("sync-failed", observation.evidence);
-            }
-            if (!(remainingAfterObservation > 0)) break;
-            ports.report({ kind: "sync-poll" });
-            const sleepMs = Math.min(checkInterval, deadline - ports.now());
-            if (!(sleepMs > 0)) break;
-            await ports.sleep(sleepMs);
+
+            if ((interrupted = interruption())) return interrupted;
+            ports.report({ kind: "sync-timeout" });
+            return { kind: "failed", reason: "sync-timeout" };
+        } catch (error) {
+            return { kind: "fault", error };
         }
-
-        ports.report({ kind: "sync-timeout" });
-        ports.fail("sync-timeout");
     }
 
     return { ensureSync, inspectSync, observeCapturedSync, waitForSync, syncLifecyclePrefix };

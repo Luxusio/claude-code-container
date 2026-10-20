@@ -1,4 +1,4 @@
-import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteForwardedEnvPlan, RemoteHeartbeat, RemoteOperationResult, RemoteReservationResult, RemoteSignal, RemoteSshChannel, RemoteStopResult, RemoteSyncAuthority, RemoteSyncInventory, RemoteTool, RemoteToolObservation } from "../domain/remote-services.js";
+import type { RemoteConfig, RemoteEvent, RemoteForwardedEnvPlan, RemoteHeartbeat, RemoteOperationResult, RemotePrompt, RemoteReservationResult, RemoteSignal, RemoteSleep, RemoteSshChannel, RemoteStopResult, RemoteSyncAuthority, RemoteSyncInventory, RemoteTool, RemoteToolObservation } from "../domain/remote-services.js";
 
 /** Semantic effects; native syntax, result interpretation and presentation stay outward. */
 export interface RemoteServicesPorts<Evidence = unknown> {
@@ -15,7 +15,7 @@ export interface RemoteServicesPorts<Evidence = unknown> {
     remoteImagePresent(config: RemoteConfig): boolean;
     reserveContainer(request: { config: RemoteConfig; projectPath: string; profile?: string; token: string; leaseSeconds: number }): RemoteReservationResult<Evidence>;
     refreshReservation(request: { config: RemoteConfig; name: string; containerId: string; token: string; leaseSeconds: number }): boolean;
-    releaseReservation(request: { config: RemoteConfig; name: string; token: string }): void;
+    releaseReservation(request: { config: RemoteConfig; name: string; token: string }): RemoteOperationResult<Evidence>;
     stopReservedContainer(request: { config: RemoteConfig; name: string; containerId: string; token: string }): RemoteStopResult<Evidence>;
     prepareRemoteProject(request: { config: RemoteConfig; containerId: string; projectId: string }): RemoteOperationResult<Evidence>;
     observeSyncInventory(remainingMs?: number): RemoteSyncInventory<Evidence>;
@@ -28,27 +28,24 @@ export interface RemoteServicesPorts<Evidence = unknown> {
     prepareLegacyConfigReader(hash: string): { exists(): boolean; readConfig(): RemoteConfig };
     saveRemoteConfig(hash: string, config: RemoteConfig): void;
     readUser(): string | undefined;
-    prompt(request: { kind: "user"; defaultUser: string } | { kind: "cleanup" }): Promise<string>;
+    prompt(request: { kind: "user"; defaultUser: string } | { kind: "cleanup" }): RemotePrompt;
     report(event: RemoteEvent<Evidence>): void;
-    fail(kind: RemoteFailureKind, evidence?: Evidence): never;
     createSessionLock(prefix: string): string;
     removeSessionLock(file: string): undefined;
     removeSessionLockInHeldLifecycleLock(file: string): undefined;
     withLifecycleLock(prefix: string, operation: () => undefined): undefined;
     withLifecycleLockAsync<Value>(prefix: string, operation: () => Promise<Value>): Promise<Value>;
     startHeartbeat(callback: () => void, milliseconds: number): RemoteHeartbeat;
-    onceSignal(signal: RemoteSignal, callback: () => void): undefined;
+    onSignal(signal: RemoteSignal, callback: () => void): undefined;
     removeSignalListener(signal: RemoteSignal, callback: () => void): undefined;
-    resignalSelf(signal: RemoteSignal): boolean;
-    exit(code: number): never;
     collectCurrentForwardedEnv(): RemoteForwardedEnvPlan;
     startInteractiveSession(request: { config: RemoteConfig; containerId: string; projectId: string; arguments: string[]; environment: Array<[string, string]> }): RemoteSshChannel;
     now(): number;
-    sleep(milliseconds: number): Promise<void>;
+    sleep(milliseconds: number): RemoteSleep;
 }
 
 export type RemoteSyncPorts<Evidence = unknown> = Pick<RemoteServicesPorts<Evidence>,
     | "getProjectHash" | "getMutagenSessionName" | "getScopedMutagenSessionName"
     | "startSyncDaemon" | "observeSyncInventory" | "terminateSync" | "resumeSync" | "createSync"
-    | "withLifecycleLockAsync" | "report" | "fail" | "now" | "sleep"
+    | "withLifecycleLockAsync" | "report" | "now" | "sleep"
 >;
