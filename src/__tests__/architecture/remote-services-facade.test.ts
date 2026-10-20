@@ -1,15 +1,16 @@
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({
-    spawn: vi.fn(), sync: vi.fn(), exists: vi.fn(), read: vi.fn(),
+    spawn: vi.fn(), sync: vi.fn(), exists: vi.fn(), read: vi.fn(), writeSync: vi.fn(),
     legacy: vi.fn(() => "/legacy"), containerName: vi.fn(),
 }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: native.spawn, spawnSync: native.sync }));
 vi.mock("fs", async original => {
     const actual = await original<typeof import("node:fs")>();
     return {
-        ...actual, existsSync: native.exists,
+        ...actual, existsSync: native.exists, writeSync: native.writeSync,
         readFileSync: (...args: Parameters<typeof actual.readFileSync>) => String(args[0]).endsWith("package.json") ? actual.readFileSync(...args) : native.read(...args),
     };
 });
@@ -25,16 +26,58 @@ const token = "b".repeat(32);
 const reservation = { config, projectPath: "/work/project", profile: "named", token, leaseSeconds: 300 };
 const retained = { config, name: "ccc-returned", containerId, token };
 const syncRequest = { config, name: "ccc-sync", localPath: "/work/雪 project", containerId, projectId: "project-id" };
+const interactiveRequest = { config, containerId, projectId: "project-id", arguments: [], environment: [] };
+const lifecycleEvents = ["SIGINT", "SIGTERM", "SIGHUP", "exit"] as const;
+type LifecycleListener = NodeJS.ExitListener | NodeJS.SignalsListener;
+let baseline: Map<string, LifecycleListener[]>;
+const ttyDescriptors = [process.stdin, process.stdout].map(stream => Object.getOwnPropertyDescriptor(stream, "isTTY"));
+function lifecycleListeners(event: typeof lifecycleEvents[number]): LifecycleListener[] {
+    return event === "exit" ? process.listeners("exit") : process.listeners(event);
+}
+function setTty(input: boolean, output: boolean): void {
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: input });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: output });
+}
+function terminalFixture(input = true, output = true) {
+    setTty(input, output);
+    native.sync.mockReturnValue(execution(0, "500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0\n"));
+    native.writeSync.mockImplementation((_fd: number, data: string | NodeJS.ArrayBufferView) => typeof data === "string" ? Buffer.byteLength(data) : data.byteLength);
+    return { write: native.writeSync, output: () => native.writeSync.mock.calls.map(call => String(call[1])).join("") };
+}
+function expectTerminalRestored(output: string): void {
+    const modes = new Map<number, boolean>();
+    for (const match of output.matchAll(/\u001b\[\?([\d;]+)([hl])/g)) {
+        for (const mode of match[1].split(";")) modes.set(Number(mode), match[2] === "h");
+    }
+    for (const mode of [1000, 1002, 1003, 1006, 1004, 2004, 1049]) expect(modes.get(mode)).toBe(false);
+    expect(modes.get(25)).toBe(true);
+    expect(output).not.toContain("\u001bc");
+    expect(output).not.toMatch(/\u001b\[[23]J/);
+}
 function execution(status: number | null, stdout = "", error?: Error, stderr = "") {
     return { status, stdout, stderr, error, pid: 123, output: [], signal: null };
 }
 
 beforeEach(() => {
     vi.resetAllMocks();
+    setTty(false, false);
+    baseline = new Map(lifecycleEvents.map(event => [event, lifecycleListeners(event)]));
     native.legacy.mockReturnValue("/legacy");
     native.containerName.mockReturnValue("ccc-returned");
 });
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => {
+    for (const event of lifecycleEvents) {
+        for (const listener of lifecycleListeners(event)) {
+            if (!baseline.get(event)!.includes(listener)) process.removeListener(event, listener);
+        }
+    }
+    vi.restoreAllMocks();
+    [process.stdin, process.stdout].forEach((stream, index) => {
+        const descriptor = ttyDescriptors[index];
+        if (descriptor) Object.defineProperty(stream, "isTTY", descriptor);
+        else Reflect.deleteProperty(stream, "isTTY");
+    });
+});
 
 describe("remote native observations and effects", () => {
     it("projects tool, ping and image facts with their distinct error/status rules", () => {
@@ -273,7 +316,7 @@ describe("remote native observations and effects", () => {
 
     it("encodes literal UTF-8 arguments and ordered environment with the container marker first", () => {
         const ports = createNativeRemoteServicesPorts();
-        const child = { on: vi.fn(), kill: vi.fn(() => true) };
+        const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
         native.spawn.mockReturnValue(child);
         const arguments_ = ["--continue", "", "雪 café ' $(touch /tmp/ccc-never-run) `whoami`", "line\nbreak"];
         const environment: Array<[string, string]> = [["FIRST", "雪 ' $(never)"], ["SECOND", "line\nvalue"]];
@@ -286,12 +329,83 @@ describe("remote native observations and effects", () => {
         const close = vi.fn(); const error = vi.fn();
         expect(channel.onClose(close)).toBeUndefined();
         expect(channel.onError(error)).toBeUndefined();
-        expect(child.on.mock.calls).toEqual([["close", close], ["error", error]]);
+        child.emit("close", 17, null);
+        const fault = Error("ssh failed");
+        child.emit("error", fault);
+        expect(close).toHaveBeenCalledExactlyOnceWith(17);
+        expect(error).toHaveBeenCalledExactlyOnceWith(fault);
         expect(channel.kill("SIGTERM")).toBe(true);
         expect(child.kill).toHaveBeenCalledWith("SIGTERM");
         ports.startInteractiveSession({ config, containerId, projectId: "project-id", arguments: [], environment: [] });
         const defaultProgram = "cd '/project/project-id' && mise trust . 2>/dev/null; mise install -y || true; exec claude --dangerously-skip-permissions";
         const defaultDecoder = `printf %s '${Buffer.from(defaultProgram, "utf8").toString("base64")}' | base64 -d | sh`;
         expect(native.spawn).toHaveBeenLastCalledWith("ssh", ["-t", "user@host", `docker exec -e 'container=docker' -it ${containerId} sh -c ${shellEscapeArg(defaultDecoder)}`], { stdio: "inherit" });
+    });
+});
+
+describe("remote inherited terminal lifetime", () => {
+    it.each(["close", "error"] as const)("restores before the caller's %s callback without adding parent signal policy", event => {
+        const terminal = terminalFixture();
+        const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
+        native.spawn.mockReturnValue(child);
+        const channel = createNativeRemoteServicesPorts().startInteractiveSession(interactiveRequest);
+        const callback = vi.fn(() => {
+            expectTerminalRestored(terminal.output());
+            for (const lifecycle of lifecycleEvents) expect(lifecycleListeners(lifecycle)).toEqual(baseline.get(lifecycle));
+        });
+        const fault = Error("disconnected ssh");
+        if (event === "close") channel.onClose(callback);
+        else channel.onError(callback);
+        for (const signal of lifecycleEvents.filter(value => value !== "exit")) expect(process.listeners(signal)).toEqual(baseline.get(signal));
+        expect(process.listeners("exit").filter(listener => !baseline.get("exit")!.includes(listener))).toHaveLength(1);
+        if (event === "close") child.emit("close", 23, null);
+        else child.emit("error", fault);
+        expect(callback).toHaveBeenCalledExactlyOnceWith(event === "close" ? 23 : fault);
+        const writes = terminal.write.mock.calls.length;
+        channel.kill("SIGTERM");
+        expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+        expect(terminal.write).toHaveBeenCalledTimes(writes);
+    });
+
+    it("restores before propagating the exact synchronous SSH launch failure", () => {
+        const terminal = terminalFixture();
+        const fault = { native: "ssh launch" };
+        native.spawn.mockImplementation(() => { throw fault; });
+        let observed: unknown;
+        try { createNativeRemoteServicesPorts().startInteractiveSession(interactiveRequest); }
+        catch (error) { observed = error; }
+        expect(observed).toBe(fault);
+        expectTerminalRestored(terminal.output());
+        for (const event of lifecycleEvents) expect(lifecycleListeners(event)).toEqual(baseline.get(event));
+    });
+
+    it.each([false, true, "throw"] as const)("preserves the SSH child's kill outcome %s while restoring synchronously", result => {
+        const terminal = terminalFixture();
+        const fault = Error("owned SSH client already exited");
+        const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => {
+            if (result === "throw") throw fault;
+            return result;
+        }) });
+        native.spawn.mockReturnValue(child);
+        const channel = createNativeRemoteServicesPorts().startInteractiveSession(interactiveRequest);
+        if (result === "throw") expect(() => channel.kill("SIGINT")).toThrow(fault);
+        else expect(channel.kill("SIGINT")).toBe(result);
+        expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGINT");
+        expectTerminalRestored(terminal.output());
+        for (const event of lifecycleEvents) expect(lifecycleListeners(event)).toEqual(baseline.get(event));
+    });
+
+    it.each([[false, false], [true, false], [false, true]])("preserves redirected SSH stream bytes %s/%s and original callbacks", (input, output) => {
+        const terminal = terminalFixture(input, output);
+        const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
+        native.spawn.mockReturnValue(child);
+        const channel = createNativeRemoteServicesPorts().startInteractiveSession(interactiveRequest);
+        const callback = vi.fn();
+        channel.onClose(callback);
+        child.emit("close", 31, null);
+        expect(callback).toHaveBeenCalledExactlyOnceWith(31);
+        expect(terminal.write).not.toHaveBeenCalled();
+        expect(native.sync).not.toHaveBeenCalled();
+        for (const event of lifecycleEvents) expect(lifecycleListeners(event)).toEqual(baseline.get(event));
     });
 });

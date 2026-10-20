@@ -9,6 +9,7 @@ import { createSessionLock, removeSessionLock, removeSessionLockInHeldLifecycleL
 import { remoteContainerStartScript, remoteSessionReservationShell, remoteRefreshSessionShell, remoteReleaseSessionShell, remoteStopShell, shellEscapeArg } from "./remote-shell.js";
 import type { RemoteConfig, RemoteEvent, RemoteFailureKind, RemoteSyncObservation } from "../domain/remote-services.js";
 import type { RemoteServicesPorts } from "../ports/remote-services.js";
+import { captureInteractiveTerminal } from "./interactive-terminal.js";
 
 /** Native diagnostics and display text are opaque to application policy. */
 export interface NativeEvidence {
@@ -287,11 +288,14 @@ export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvi
             const encodedProgram = Buffer.from(program, "utf8").toString("base64");
             const decoder = `printf %s ${shellEscapeArg(encodedProgram)} | base64 -d | sh`;
             const command = `docker exec ${envFlags.join(" ")} -it ${request.containerId} sh -c ${shellEscapeArg(decoder)}`;
-            const child = spawn("ssh", ["-t", `${request.config.user}@${request.config.host}`, command], { stdio: "inherit" });
+            const restoreTerminal = captureInteractiveTerminal();
+            let child: ReturnType<typeof spawn>;
+            try { child = spawn("ssh", ["-t", `${request.config.user}@${request.config.host}`, command], { stdio: "inherit" }); }
+            catch (error) { restoreTerminal(); throw error; }
             return {
-                onClose: callback => { child.on("close", callback); return undefined; },
-                onError: callback => { child.on("error", callback); return undefined; },
-                kill: signal => child.kill(signal),
+                onClose: callback => { child.on("close", (code: number | null) => { restoreTerminal(); callback(code); }); return undefined; },
+                onError: callback => { child.on("error", (error: Error) => { restoreTerminal(); callback(error); }); return undefined; },
+                kill: signal => { try { return child.kill(signal); } finally { restoreTerminal(); } },
             };
         },
         now: () => performance.now(), sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),

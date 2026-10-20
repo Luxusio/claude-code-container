@@ -9,6 +9,44 @@ an interactive container command runs. It must await that command asynchronously
 with inherited terminal input and output. Noninteractive commands retain their
 existing execution and exit-status behavior.
 
+## Interactive terminal restoration
+
+User-reported regression (2026-10-20): after an unexpected runtime/container
+exit, moving the mouse in the former CCC terminal inserts text such as
+`35;61;37M35;68;29M`. The requested outcome is a usable host terminal after
+that disconnect. The implementation rules below are derived from that request
+and the inherited-terminal lifetime above; the escape modes and native helpers
+are technical choices, not separately user-prescribed APIs.
+
+Before handing an actual inherited input/output TTY to an interactive local
+runtime client or remote SSH client, capture the host terminal state. Restore
+the terminal synchronously and idempotently before returning an exit status,
+reporting a child error, propagating a synchronous spawn failure, or allowing
+existing synchronous signal cleanup to exit. A temporary process-exit fallback
+must be removed when that command settles. Preserve unrelated listeners and
+the existing ownership and child-signal policies.
+
+Disable child-enabled mouse reporting, including DEC modes 1000, 1002, 1003
+and 1006, along with transient focus/paste, alternate-screen and hidden-cursor
+state. Do not clear the terminal history or invoke a destructive full reset.
+On POSIX, snapshot actual terminal attributes before launch and restore that
+captured state with bounded, shell-free native commands. Node's `stdin.isRaw`
+does not observe mode changes made by the separate runtime client and is not
+sufficient proof of restoration. Cleanup is best effort and must not replace
+the original child status or error. Noninteractive and redirected streams keep
+their bytes and existing behavior; no competing stdin reader is introduced.
+
+Verify the ordinary, failed, signalled and interrupted child paths, once-only
+cleanup, exit fallback, spawn failure and remote callback ordering. An owned
+POSIX PTY fixture must simulate a client enabling raw input and SGR mouse
+reporting before abrupt death, then compare actual input attributes and observe
+the disabling bytes before CCC hands control back. No real engine is needed.
+
+Known ceiling: SIGKILL of CCC itself cannot run JavaScript cleanup. Missing or
+failed native terminal restoration remains best effort. Portable fixtures do
+not establish native Windows/macOS terminal execution or explain an engine
+crash; those are separate evidence requirements.
+
 On a handled termination signal, interrupt only the runtime client created by
 this CCC invocation before the existing session cleanup handler can exit. Never
 kill a daemon, unrelated process, or another project by name or age. Remove the

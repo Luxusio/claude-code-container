@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "child_process";
 import { bindNativeRuntimeInvocation, captureNativeRuntimeInvocation, currentNativeRuntimeInvocation, type BoundNativeRuntimeRunner } from "./container-runtime.js";
+import { captureInteractiveTerminal } from "./adapters/interactive-terminal.js";
 
 export async function runContainerCommand(runtime: string, args: string[], interactive: boolean, runner?: BoundNativeRuntimeRunner): Promise<number> {
     if (!runner && (runtime === "docker" || runtime === "podman")) {
@@ -9,7 +10,10 @@ export async function runContainerCommand(runtime: string, args: string[], inter
     if (!interactive) return (runner ? runner.spawnSync(args, { stdio: "inherit" }) : spawnSync(runtime, args, { stdio: "inherit" })).status ?? 1;
 
     return new Promise<number>((resolve) => {
-        const child = runner ? runner.spawn(args, { stdio: "inherit" }) : spawn(runtime, args, { stdio: "inherit" });
+        const restoreTerminal = captureInteractiveTerminal();
+        let child: ReturnType<typeof spawn>;
+        try { child = runner ? runner.spawn(args, { stdio: "inherit" }) : spawn(runtime, args, { stdio: "inherit" }); }
+        catch (error) { restoreTerminal(); throw error; }
         const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
         let settled = false;
         let interrupted = false;
@@ -19,6 +23,7 @@ export async function runContainerCommand(runtime: string, args: string[], inter
             child.removeListener("close", onClose);
             child.removeListener("error", onError);
             for (const signal of signals) process.removeListener(signal, interrupt);
+            restoreTerminal();
             resolve(status);
         }
         function onClose(code: number | null, signal: NodeJS.Signals | null): void {
