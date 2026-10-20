@@ -4,7 +4,7 @@ import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { HostCredentialRefreshPorts } from "../../ports/credentials/host-refresh.js";
-import { gitSigningKeyRewriteShell, sshCredentialCopyShell } from "./ssh-material.js";
+import { gitSigningKeyRewriteShell, SSH_CREDENTIAL_COPY_FAILURE_STAGES, sshCredentialCopyShell } from "./ssh-material.js";
 
 export function createNativeHostCredentialRefreshPorts(selectRuntime: () => string, runner?: BoundNativeSpawnSync): HostCredentialRefreshPorts {
     let bound = runner;
@@ -38,7 +38,13 @@ export function createNativeHostCredentialRefreshPorts(selectRuntime: () => stri
                 ],
                 { stdio: "ignore" },
             );
-            return { get status() { return copied.status; } };
+            return {
+                get status() { return copied.status; },
+                get failureStage() {
+                    const status = copied.status;
+                    return status === null ? undefined : SSH_CREDENTIAL_COPY_FAILURE_STAGES[status];
+                },
+            };
         },
         hostSshSourceExists() {
             return existsSync(hostSshDir);
@@ -76,8 +82,8 @@ export function createNativeHostCredentialRefreshPorts(selectRuntime: () => stri
             );
             return { get status() { return installed.status; } };
         },
-        reportSshRefreshFailure() {
-            console.error("[ccc] WARNING: failed to refresh copied SSH credentials inside container");
+        reportSshRefreshFailure(stage) {
+            console.error("[ccc] WARNING: failed to refresh copied SSH credentials inside container" + (stage ? ` (stage: ${stage})` : ""));
         },
         reportGitCopyFailure() {
             console.error("[ccc] WARNING: failed to copy host .gitconfig into container");

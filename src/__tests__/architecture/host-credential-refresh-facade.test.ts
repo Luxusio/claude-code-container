@@ -13,6 +13,7 @@ vi.mock("os", async original => ({ ...await original<typeof import("node:os")>()
 const adapter = await import("../../adapters/credentials/host-refresh.js");
 const { createHostCredentialRefresh } = await import("../../application/credentials/host-refresh.js");
 const assets = await import("../../adapters/credentials/ssh-material.js");
+const genericSshWarning = "[ccc] WARNING: failed to refresh copied SSH credentials inside container";
 function fixturePorts(selectRuntime: () => string) {
     let cli: string;
     return adapter.createNativeHostCredentialRefreshPorts(() => { cli = selectRuntime(); return cli; },
@@ -88,6 +89,44 @@ describe("actual native host credential refresh composition", () => {
         createHostCredentialRefresh(fixturePorts(() => { native.events.push("runtime"); return "docker"; })).refreshSsh("id");
         expect(native.events).toEqual(["home", "runtime", "spawn", `exists:${join("/fixture/home", ".ssh")}`]);
         expect(warning).toHaveBeenCalledTimes(exists ? 1 : 0);
+        if (exists) expect(warning).toHaveBeenCalledWith(genericSshWarning);
+    });
+    it.each([
+        [11, "staging"], [12, "archive-create"], [13, "archive-read"], [14, "extract"],
+        [15, "permissions"], [16, "known-hosts"], [17, "completion"], [18, "publication"],
+    ] as const)("maps SSH helper status %s into the finite %s warning without reading native output", (status, stage) => {
+        native.spawn.mockImplementation(() => ({
+            status,
+            get error() { throw Error("unread native error"); },
+            get stdout() { throw Error("unread native stdout"); },
+            get stderr() { throw Error("unread native stderr"); },
+            get failureStage() { throw Error("native output cannot supply its own stage"); },
+        }));
+        const ports = fixturePorts(() => "docker");
+        expect(ports.refreshSsh("id")).toEqual({ status, failureStage: stage });
+        const warning = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        expect(createHostCredentialRefresh(ports).refreshSsh("id")).toBeUndefined();
+        expect(warning).toHaveBeenCalledExactlyOnceWith(`${genericSshWarning} (stage: ${stage})`);
+    });
+    it.each([1, 10, 19, -1, null, NaN])("keeps unknown SSH status %s generic without reading native output", status => {
+        native.spawn.mockReturnValue({
+            status,
+            get error() { throw Error("unread native error"); },
+            get stdout() { throw Error("unread native stdout"); },
+            get stderr() { throw Error("unread native stderr"); },
+            get failureStage() { throw Error("native output cannot supply its own stage"); },
+        });
+        const ports = fixturePorts(() => "docker");
+        expect(ports.refreshSsh("id")).toEqual({ status });
+        const warning = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        createHostCredentialRefresh(ports).refreshSsh("id");
+        expect(warning).toHaveBeenCalledExactlyOnceWith(genericSshWarning);
+    });
+    it("does not expose SSH stage metadata through Git command observations", () => {
+        native.spawn.mockReturnValue({ status: 15, get stderr() { throw Error("unread stderr"); } });
+        const ports = fixturePorts(() => "docker");
+        expect(ports.stageHostGitConfig("id")).toEqual({ status: 15 });
+        expect(ports.installHostGitConfig("id")).toEqual({ status: 15 });
     });
     it.each(["home", "runtime", "exists", "spawn", "status", "report"])("preserves native %s thrown identity", boundary => {
         const sentinel = { boundary };

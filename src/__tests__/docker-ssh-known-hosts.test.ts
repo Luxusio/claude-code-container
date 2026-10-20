@@ -153,7 +153,7 @@ describe.skipIf(process.platform === "win32")("SSH snapshot authoritative and le
         f.refresh();
         mkdirSync(join(f.source, marker));
         const result = f.run();
-        expect(result.status).toBe(1);
+        expect(result.status).toBe(16);
         expect(result.stdout).toBe("");
         expect(result.stderr).toBe("");
         expect(existsSync(f.copied)).toBe(false);

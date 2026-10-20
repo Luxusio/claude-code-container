@@ -12,8 +12,9 @@ export function createHostCredentialRefresh(ports: HostCredentialRefreshPorts) {
     }
 
     function refreshSsh(target: string): undefined {
-        if (ports.refreshSsh(target).status !== 0 && ports.hostSshSourceExists()) {
-            ports.reportSshRefreshFailure();
+        const copied = ports.refreshSsh(target);
+        if (copied.status !== 0 && ports.hostSshSourceExists()) {
+            ports.reportSshRefreshFailure(copied.failureStage);
         }
     }
 

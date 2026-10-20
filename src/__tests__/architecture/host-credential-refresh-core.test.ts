@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHostCredentialRefresh } from "../../application/credentials/host-refresh.js";
-import type { CredentialCommandObservation, HostCredentialRefreshPorts } from "../../ports/credentials/host-refresh.js";
+import type { CredentialCommandObservation, HostCredentialRefreshPorts, SshCredentialCopyFailureStage, SshCredentialCopyObservation } from "../../ports/credentials/host-refresh.js";
 
 function fixture(status?: number | null, exists = true, fault?: string) {
     const rawStatus = arguments.length === 0 ? 0 : status;
@@ -48,6 +48,41 @@ describe("host credential refresh policy", () => {
             expect(createHostCredentialRefresh(f.ports).refreshSsh("verified-id")).toBeUndefined();
             expect(f.trace).toEqual(["ssh:verified-id", "ssh:status", ...(status === 0 ? [] : ["ssh:exists", ...(exists ? ["ssh:report"] : [])])]);
         }
+    });
+    it.each(["staging", "archive-create", "archive-read", "extract", "permissions", "known-hosts", "completion", "publication", undefined] as const)("forwards only the optional SSH failure stage %s after observing the source", stage => {
+        const f = fixture(1);
+        const report = f.ports.reportSshRefreshFailure;
+        const reported: (SshCredentialCopyFailureStage | undefined)[] = [];
+        const observation: SshCredentialCopyObservation = {
+            get status() { f.trace.push("ssh:status"); return 1; },
+            get failureStage() { f.trace.push("ssh:failureStage"); return stage; },
+        };
+        f.ports = {
+            ...f.ports,
+            refreshSsh() { f.trace.push("ssh:verified-id"); return observation; },
+            reportSshRefreshFailure(value) { reported.push(value); return report.call(f.ports, value); },
+        };
+        expect(createHostCredentialRefresh(f.ports).refreshSsh("verified-id")).toBeUndefined();
+        expect(f.trace).toEqual(["ssh:verified-id", "ssh:status", "ssh:exists", "ssh:failureStage", "ssh:report"]);
+        expect(reported).toEqual([stage]);
+    });
+    it.each([{ status: 0, exists: true }, { status: 1, exists: false }])("leaves failureStage unread for SSH status $status and source-exists $exists", ({ status, exists }) => {
+        const f = fixture(status, exists);
+        f.ports = {
+            ...f.ports,
+            refreshSsh() { return { status, get failureStage(): SshCredentialCopyFailureStage { throw Error("failureStage must remain unread"); } }; },
+        };
+        expect(createHostCredentialRefresh(f.ports).refreshSsh("verified-id")).toBeUndefined();
+        expect(f.trace).toEqual(status === 0 ? [] : ["ssh:exists"]);
+    });
+    it("propagates a failureStage getter exception after the existing source gate", () => {
+        const f = fixture(1);
+        f.ports = {
+            ...f.ports,
+            refreshSsh() { return { status: 1, get failureStage(): SshCredentialCopyFailureStage { f.trace.push("ssh:failureStage"); throw f.sentinel; } }; },
+        };
+        expect(caught(() => createHostCredentialRefresh(f.ports).refreshSsh("verified-id"))).toBe(f.sentinel);
+        expect(f.trace).toEqual(["ssh:exists", "ssh:failureStage"]);
     });
     it("missing Git skips both commands", () => {
         const f = fixture(0, false);

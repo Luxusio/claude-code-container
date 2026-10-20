@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
@@ -74,8 +74,18 @@ function runRewrite(options: {
     return { configPath, copiedRoot };
 }
 
+function prepareOwnedFixtureDirectories(path: string): void {
+    const metadata = lstatSync(path);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) return;
+    chmodSync(path, 0o700);
+    for (const name of readdirSync(path)) prepareOwnedFixtureDirectories(join(path, name));
+}
+
 afterEach(() => {
     for (const root of temporaryRoots.splice(0)) {
+        // Expected-red permission failures can leave restrictive extracted directories.
+        // Repair only this test's owned fixture tree, without following links.
+        prepareOwnedFixtureDirectories(root);
         rmSync(root, { recursive: true, force: true });
     }
 });
@@ -200,7 +210,7 @@ describe("container SSH credential copy", () => {
         copiedRoot: string,
         env: NodeJS.ProcessEnv = process.env,
         privilegedRead = false,
-    ): ReturnType<typeof spawnSync> {
+    ) {
         return spawnSync(
             "sh",
             ["-c", sshCredentialCopyShell(privilegedRead), "ccc-ssh-copy", sourceRoot, copiedRoot],
@@ -219,7 +229,7 @@ describe("container SSH credential copy", () => {
         writeFileSync(join(source, "id_ed25519"), "fixture-key-not-a-real-secret", { mode: 0o600 });
         expect(spawnSync("sudo", ["-n", "chown", "-R", "0:0", source]).status).toBe(0);
         try {
-            expect(runCopy(source, copied).status).toBe(1);
+            expect(runCopy(source, copied).status).toBe(14);
             const result = runCopy(source, copied, process.env, true);
             expect(result.status, result.stderr).toBe(0);
             expect(readFileSync(join(copied, "id_ed25519"), "utf8")).toBe("fixture-key-not-a-real-secret");
@@ -242,7 +252,7 @@ describe("container SSH credential copy", () => {
         for (const path of [source, copied, bin]) mkdirSync(path);
         writeFileSync(join(copied, "id_ed25519"), "stale-fixture");
         writeFileSync(join(bin, "sudo"), "#!/bin/sh\nexit 42\n", { mode: 0o755 });
-        expect(runCopy(source, copied, { ...process.env, PATH: `${bin}:${process.env.PATH}` }, true).status).toBe(1);
+        expect(runCopy(source, copied, { ...process.env, PATH: `${bin}:${process.env.PATH}` }, true).status).toBe(13);
         expect(readdirSync(root)).toEqual(expect.not.arrayContaining(["ssh-copy"]));
         expect(readdirSync(root).some(name => name.startsWith(".ccc-ssh-archive.") || name.includes(".next."))).toBe(false);
     });
@@ -260,7 +270,14 @@ describe("container SSH credential copy", () => {
         expect(readFileSync(join(copied, ".ccc-copy-complete"), "utf8")).toBe("complete\n");
     });
 
-    it.each(["chmod", "publish", "extract"])("invalidates stale credentials and staging on %s failure", failure => {
+    it.each([
+        { failure: "staging", status: 11, command: "mkdir", body: 'case "$1" in *.next.*) exit 42;; esac\nexec /bin/mkdir "$@"' },
+        { failure: "archive-create", status: 12, command: "mktemp", body: "exit 42" },
+        { failure: "extract", status: 14, command: "tar", body: 'case "$1" in --no-same-owner) exit 42;; esac\nexec /bin/tar "$@"' },
+        { failure: "permissions", status: 15, command: "chmod", body: 'case "$1" in 600) exit 42;; esac\nexec /bin/chmod "$@"' },
+        { failure: "completion", status: 17, command: "chmod", body: 'for path do case "$path" in */.ccc-copy-complete) exit 42;; esac; done\nexec /bin/chmod "$@"' },
+        { failure: "publication", status: 18, command: "mv", body: 'case "$1" in *.next.*) exit 42;; esac\nexec /bin/mv "$@"' },
+    ])("invalidates stale credentials and staging on $failure failure", ({ status, command, body }) => {
         const root = makeRoot();
         const source = join(root, "source");
         const copied = join(root, "ssh-copy");
@@ -269,15 +286,109 @@ describe("container SSH credential copy", () => {
         writeFileSync(join(source, "id_ed25519"), "new-fixture");
         writeFileSync(join(copied, "id_ed25519"), "stale-fixture");
         writeFileSync(join(copied, ".ccc-copy-complete"), "complete\n");
-        const command = failure === "publish" ? "mv" : failure === "extract" ? "tar" : "chmod";
-        const body = failure === "publish" ? 'case "$1" in *.next.*) exit 42;; esac\nexec /bin/mv "$@"'
-            : failure === "extract" ? 'case "$1" in --no-same-owner) exit 42;; esac\nexec /bin/tar "$@"' : "exit 42";
         writeFileSync(join(bin, command), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
         // This fixture tests extraction failure without requiring privilege.
         writeFileSync(join(bin, "sudo"), '#!/bin/sh\nshift\nexec "$@"\n', { mode: 0o755 });
-        expect(runCopy(source, copied, { ...process.env, PATH: `${bin}:${process.env.PATH}` }, failure === "extract").status).toBe(1);
+        expect(runCopy(source, copied, { ...process.env, PATH: `${bin}:${process.env.PATH}` }, true).status).toBe(status);
         expect(readdirSync(root)).not.toContain("ssh-copy");
         expect(readdirSync(root).filter(name => name.startsWith("."))).toEqual([]);
+    });
+
+    function restrictiveFixture() {
+        const root = makeRoot();
+        const source = join(root, "source");
+        const copied = join(root, "ssh-copy");
+        const nested = join(source, "nested");
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(source, "id_ed25519"), "synthetic-signing-key-sentinel", { mode: 0o400 });
+        writeFileSync(join(source, "id_ed25519.pub"), "synthetic-public-key-sentinel", { mode: 0o400 });
+        writeFileSync(join(source, "known_hosts"), "fixture.example ssh-ed25519 AAAAFixtureOnly\n", { mode: 0o400 });
+        writeFileSync(join(nested, "private-sentinel"), "nested-fixture", { mode: 0o400 });
+        chmodSync(nested, 0o400);
+        chmodSync(source, 0o500);
+        return { root, source, copied, nested };
+    }
+
+    it.skipIf(!canElevate)("SSH copy publication regression: completes restrictive native tar transfer before invoking the required Git signer", () => {
+        const { root, source, copied, nested } = restrictiveFixture();
+        mkdirSync(copied);
+        writeFileSync(join(copied, "id_ed25519"), "stale-fixture");
+        writeFileSync(join(copied, ".ccc-copy-complete"), "complete\n");
+        const result = runCopy(source, copied, process.env, true);
+
+        // Assert the user-visible completion first: this must fail on the old helper,
+        // independently of its private status codes or any new exported symbol.
+        expect(existsSync(join(copied, "id_ed25519"))).toBe(true);
+        expect(existsSync(join(copied, ".ccc-copy-complete"))).toBe(true);
+        expect(result.status, result.stderr).toBe(0);
+        expect(readFileSync(join(copied, "id_ed25519"), "utf8")).toBe("synthetic-signing-key-sentinel");
+        expect(readFileSync(join(copied, "nested", "private-sentinel"), "utf8")).toBe("nested-fixture");
+        expect(readFileSync(join(copied, ".ccc-copy-complete"), "utf8")).toBe("complete\n");
+        for (const [path, mode] of [
+            [copied, 0o700], [join(copied, "nested"), 0o700],
+            [join(copied, "id_ed25519"), 0o600], [join(copied, "nested", "private-sentinel"), 0o600],
+            [join(copied, "id_ed25519.pub"), 0o644], [join(copied, "known_hosts"), 0o644],
+            [join(copied, ".ccc-copy-complete"), 0o600],
+        ] as const) {
+            expect(statSync(path).mode & 0o777).toBe(mode);
+            expect(statSync(path).uid).toBe(process.getuid!());
+        }
+        expect(statSync(source).mode & 0o777).toBe(0o500);
+        expect(statSync(nested).mode & 0o777).toBe(0o400);
+        expect(statSync(source).uid).toBe(process.getuid!());
+        for (const name of ["id_ed25519", "id_ed25519.pub", "known_hosts"]) {
+            expect(statSync(join(source, name)).mode & 0o777).toBe(0o400);
+        }
+        expect(readdirSync(root).filter(name => name.startsWith(".") || name.includes(".next.") || name.includes(".backup."))).toEqual([]);
+
+        const configPath = join(root, "gitconfig");
+        configureSigningKeys(configPath, ["/Users/ecokjkim/.ssh/id_ed25519"]);
+        const signer = join(root, "fixture-signer");
+        const signerArgs = join(root, "signer-argv");
+        writeFileSync(signer, '#!/bin/sh\nprintf "%s\\n" "$@" >> "$CCC_SIGNER_ARGV"\nexit 42\n', { mode: 0o755 });
+        const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: configPath, GIT_CONFIG_NOSYSTEM: "1", CCC_SIGNER_ARGV: signerArgs };
+        const repository = join(root, "repository");
+        mkdirSync(repository);
+        const git = (...args: string[]) => spawnSync("git", args, { cwd: repository, env: gitEnv, encoding: "utf8" });
+        for (const [key, value] of [
+            ["gpg.format", "ssh"], ["commit.gpgsign", "true"], ["gpg.ssh.program", signer],
+            ["user.name", "Fixture"], ["user.email", "fixture@example.test"],
+        ] as const) expect(git("config", "--file", configPath, key, value).status).toBe(0);
+        expect(git("init", "--quiet").status).toBe(0);
+        const rewritten = spawnSync("sh", ["-c", gitSigningKeyRewriteShell(), "rewrite", configPath, "/Users/ecokjkim/.ssh", copied], { encoding: "utf8" });
+        expect(rewritten.status, rewritten.stderr).toBe(0);
+        expect(readSigningKeys(configPath)).toEqual([join(copied, "id_ed25519")]);
+        writeFileSync(join(repository, "fixture.txt"), "fixture\n");
+        expect(git("add", "fixture.txt").status).toBe(0);
+        const commit = git("commit", "--quiet", "-m", "must require signing");
+        expect(commit.status).not.toBe(0);
+        const argv = readFileSync(signerArgs, "utf8").trimEnd().split("\n");
+        expect(argv.filter(arg => arg === "-f")).toHaveLength(1);
+        expect(argv[argv.indexOf("-f") + 1]).toBe(join(copied, "id_ed25519"));
+        expect(git("rev-parse", "--verify", "HEAD").status).not.toBe(0);
+        expect(git("config", "--get", "gpg.format").stdout.trim()).toBe("ssh");
+        expect(git("config", "--get", "commit.gpgsign").stdout.trim()).toBe("true");
+    });
+
+    it.skipIf(!canElevate)("SSH copy publication regression: removes restrictive staging after a provenance write failure", () => {
+        const { root, source, copied } = restrictiveFixture();
+        chmodSync(source, 0o700);
+        mkdirSync(join(source, ".ccc-known-hosts-origin.json"));
+        chmodSync(source, 0o500);
+        mkdirSync(copied);
+        writeFileSync(join(copied, "id_ed25519"), "stale-fixture");
+        writeFileSync(join(copied, ".ccc-copy-complete"), "complete\n");
+
+        const result = runCopy(source, copied, process.env, true);
+
+        expect(readdirSync(root).filter(name => name.startsWith(".") || name.includes(".next.") || name.includes(".backup."))).toEqual([]);
+        expect(existsSync(copied)).toBe(false);
+        expect(result.status).toBe(16);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).not.toContain("synthetic-signing-key-sentinel");
+        expect(result.stderr).not.toContain("nested-fixture");
+        expect(result.stderr).not.toContain("stale-fixture");
+        expect(statSync(source).mode & 0o777).toBe(0o500);
     });
 
     it("replaces an existing copy instead of nesting the source directory", () => {
@@ -390,7 +501,7 @@ describe("container SSH credential copy", () => {
             PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
         });
 
-        expect(result.status).toBe(1);
+        expect(result.status).toBe(14);
         expect(() => readFileSync(join(copiedRoot, "id_ed25519"))).toThrow();
         expect(() => readFileSync(join(copiedRoot, ".ccc-copy-complete"))).toThrow();
         expect(readdirSync(root).some((name) => name.includes(".ssh-copy.next."))).toBe(false);

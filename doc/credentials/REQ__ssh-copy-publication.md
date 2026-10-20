@@ -1,0 +1,17 @@
+# Completed SSH copies and signing
+
+This requirement refines [host SSH credential copy](../common/REQ__host-ssh-credential-copy.md), particularly its generic-warning-only sentence: failures may report a fixed stage token, but never raw command errors or credential contents. It derives from the existing transfer, preservation and required-signing contracts.
+
+The host SSH source remains read-only. Only reading it may require privilege; the container user owns archive extraction, stage normalization, provenance, completion and publication. Extracted directories must become accessible and writable by their owner before the known-host provenance writer runs. Regular files must have their private permissions normalized before they are read. Nested restrictive directories must work without following links or changing source modes, ownership or link targets.
+
+A completed snapshot contains a regular `.ccc-copy-complete` marker and retains the existing permission rules: directories 0700, private files 0600, public keys and regular `known_hosts` 0644. Existing known-host authority and learned-trust rules remain unchanged. A failed read, extraction, permission change, provenance write, completion or publication must not publish a completed partial copy or restore stale credentials. Failure cleanup may prepare only helper-managed destination/stage/backup directories for removal; it must never repair host permissions or follow symbolic links. OS-denied cleanup remains a failure, not proof that removal succeeded.
+
+The private helper identifies eight failure stages: `staging`, `archive-create`, `archive-read`, `extract`, `permissions`, `known-hosts`, `completion`, and `publication`. The native adapter exposes only a closed optional stage fact; application policy retains its existing source-exists warning gate. Known stages add a fixed token to that warning. Unknown native statuses retain the generic warning. Raw stdout, stderr and exception contents must not be read for stage reporting. Startup remains best-effort and public refresh operations remain synchronous with no return value.
+
+Required Git signing stays enabled. A standard host signing-key path is rewritten only when the existing completed, regular copied key checks succeed. A failed signer must leave the commit uncreated; there is no unsigned retry. Fixing authentication command options cannot substitute for selecting a valid SSH signing key.
+
+Regression evidence must exercise the real privileged-read tar branch with synthetic restrictive directories, preserve original source modes, verify completed output and cleanup, and distinguish all eight failure stages. The composed transfer/rewrite/Git test must pass the copied key to a deliberately failing signer and prove no unsigned commit was created. Existing known-host, symlink and UID-boundary tests remain applicable.
+
+## Known ceiling
+
+The reported Mac case proves that the mounted key exists and credential refresh failed; it does not yet identify that failure's stage. Restrictive-mode helper reproduction is not proof of the Mac trigger. Portable tests do not certify native Mac mounts, actual SSH authentication, encrypted or hardware keys, or agent forwarding. Whole-tree archive churn, cooperating startup races and a whole-operation timeout are not solved by this change. Diagnose a further failure using its fixed stage before expanding the implementation.
