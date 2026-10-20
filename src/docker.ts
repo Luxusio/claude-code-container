@@ -37,6 +37,7 @@ import { createNativeContainerExistingLifecycle } from "./composition/container-
 import { createNativeContainerCreateLifecycle } from "./composition/container-create-lifecycle.js";
 import { createNativeContainerDestructiveLifecycle } from "./composition/container-destructive-lifecycle.js";
 import { createNativeContainerImagePreparation } from "./composition/container-image-preparation.js";
+import type { ImageTagOutcome } from "./ports/container-image-preparation.js";
 import type { ContainerDestructiveLifecycleOptions } from "./ports/container-destructive-lifecycle.js";
 import { cccHome, clipboardFilesDir } from "./home-layout.js";
 import { ContainerRestartRequiredError } from "./container-restart-guidance.js";
@@ -1186,8 +1187,18 @@ export function pullImage(imageRef: string): boolean {
     return result.status === 0;
 }
 
-export function tagImage(source: string, target: string): void {
-    runtimeSpawnSync(["tag", source, target], { stdio: "ignore" });
+export function tagImage(source: string, target: string): ImageTagOutcome {
+    const result = runtimeSpawnSync(["tag", source, target], { stdio: "ignore" });
+    if (!result || result.error || result.signal) {
+        return { kind: "indeterminate", reason: "image-tag-unconfirmed" };
+    }
+    const status = result.status;
+    if (typeof status !== "number" || !Number.isInteger(status) || status < 0) {
+        return { kind: "indeterminate", reason: "image-tag-unconfirmed" };
+    }
+    return status === 0
+        ? { kind: "completed" }
+        : { kind: "failed", reason: "image-tag-failed" };
 }
 
 function hasExplicitRegistry(imageRef: string): boolean {

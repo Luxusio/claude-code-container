@@ -1,5 +1,7 @@
 # Container image preparation extraction
 
+Historical extraction record. The [2026-10-20 outcome correction](2026-10-20-image-preparation-outcomes.md) supersedes the ignored-tag behavior below: current preparation returns semantic outcomes and refuses failed or unconfirmed tagging. The package-image assertions described in this historical record are no longer in the current package smoke; current shipped image behavior is exercised by the image facade owner's fenced emitted-module case. Earlier counts describe the extraction candidate, not today's acceptance.
+
 Public `ensureImage(): void` now delegates through a required synchronous
 application and native composition. Image existence/version decisions, ordered
 pull/tag, existing-image fallback and absent-image failure handling moved
@@ -49,9 +51,10 @@ Known ceiling: existence remains stdout-based despite status/error, and failed
 inspection still yields a nullable label — upgrade when an approved image
 evidence policy distinguishes unknown observations.
 
-Known ceiling: failed pull retains the original local fallback, native tag
-results remain ignored and completed image writes have no rollback — upgrade
-when approved publication/reconciliation semantics require stronger evidence.
+Known ceiling: failed pull retains the original local fallback and image writes
+have no rollback. Tag results are now classified as described in the linked
+outcome correction. An indeterminate command may have changed the mutable tag;
+acknowledgement does not establish digest equality or eliminate tag races.
 
 Known ceiling: portable fixtures and package smoke cannot establish native
 Windows/macOS, PowerShell, Docker/Podman, rootless UID/SELinux or remote behavior

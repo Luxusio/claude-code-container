@@ -393,6 +393,7 @@ const {
     syncClipboardShims,
     ensureDockerRunning,
     ensureImage,
+    prepareProjectContainerStartup,
     buildContainerVmRunConfig,
     buildLabRunnerRunConfig,
     getLabRunnerStateVolumeName,
@@ -1978,12 +1979,22 @@ describe("docker.ts module exports", () => {
     });
 
     describe("tagImage", () => {
-        it("runs docker tag", () => {
+        it("runs docker tag and reports confirmed completion", () => {
             spawnSyncMock.mockReturnValue(makeResult(0));
-            tagImage("repo/ccc:1.0.0", "ccc");
+            expect(tagImage("repo/ccc:1.0.0", "ccc")).toEqual({ kind: "completed" });
             expect(spawnSyncMock).toHaveBeenCalledWith(
                 "docker", ["tag", "repo/ccc:1.0.0", "ccc"], { stdio: "ignore" },
             );
+        });
+
+        it.each([
+            { result: makeResult(17), expected: { kind: "failed", reason: "image-tag-failed" } },
+            { result: makeResult(null), expected: { kind: "indeterminate", reason: "image-tag-unconfirmed" } },
+            { result: { ...makeResult(0), error: new Error("private transport failure") }, expected: { kind: "indeterminate", reason: "image-tag-unconfirmed" } },
+        ])("normalizes a failed or uncertain native receipt $result.status", ({ result, expected }) => {
+            spawnSyncMock.mockReturnValue(result);
+            expect(tagImage("repo/ccc:1.0.0", "ccc")).toEqual(expected);
+            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
         });
     });
 
@@ -2127,6 +2138,23 @@ describe("docker.ts module exports", () => {
             expect(() => ensureImage()).toThrow("Failed to pull");
             expect(mockExit).not.toHaveBeenCalled();
             mockExit.mockRestore();
+        });
+
+        it.each([17, null])("refuses startup on tag status %s before resolving an identity image or mutating containers", status => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "stale-local-image"))
+                .mockReturnValueOnce(makeResult(0, "0.9.0"))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(status));
+
+            expect(prepareProjectContainerStartup).toThrow(status === 17
+                ? "Failed to tag CCC image; container startup was aborted."
+                : "CCC image tag could not be confirmed; container startup was aborted.");
+            expect(spawnSyncMock.mock.calls.map(call => (call[1] as string[])[0]))
+                .toEqual(["images", "inspect", "pull", "tag"]);
+            expect(mockEnsureIdentityImage).not.toHaveBeenCalled();
+            expect(mockBeginRuntimeBindCreation).not.toHaveBeenCalled();
+            expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
     });
 
