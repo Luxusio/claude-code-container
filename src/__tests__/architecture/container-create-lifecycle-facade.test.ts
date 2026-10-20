@@ -279,6 +279,103 @@ describe("actual creation application through native composition", () => {
         expect(lifecycle.run(request)).toBe("public-name");
     });
 
+    it("regression: retains a namespace check installed by the native guard across facade runs", () => {
+        const appeared = vi.fn(() => true);
+        const f = fixture({ withFamilyLock(_prefix, operation) {
+            const value = operation();
+            this.namespaceExists = appeared;
+            return value;
+        } });
+        expect(f.lifecycle.run(request)).toBe("public-name");
+        expect(() => f.lifecycle.run(request)).toThrow(`Container namespace ${name} appeared during creation preflight; refusing replacement.`);
+        expect(appeared).toHaveBeenCalledExactlyOnceWith(name);
+        expect(f.ports.namespaceExists).toHaveBeenCalledExactlyOnceWith(name);
+        expect(f.context.prepareRunArgs).toHaveBeenCalledTimes(1);
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("captured-runtime", f.args, createOptions);
+        expect(f.ports.finish).toHaveBeenCalledExactlyOnceWith(id);
+    });
+
+    it("regression: preserves a verifier property lookup failure after an earlier source proof installs it", () => {
+        const primary = new Error("verifier lookup failed");
+        const lookup = vi.fn(() => { throw primary; });
+        const f = fixture({ assertProjectSources() {
+            Object.defineProperty(this, "verifyCreated", { configurable: true, get: lookup });
+            return undefined;
+        } });
+        const absent = result(1, "", "No such container");
+        native.spawn.mockReturnValueOnce(result(0, id)).mockReturnValueOnce(result()).mockReturnValueOnce(absent);
+        expect(thrown(() => f.lifecycle.run(request))).toBe(primary);
+        expect(lookup).toHaveBeenCalledTimes(1);
+        expect(f.ports.verifyCreated).not.toHaveBeenCalled();
+        expect(native.spawn.mock.calls).toEqual([
+            ["captured-runtime", f.args, createOptions],
+            ["captured-runtime", ["rm", "-f", id], cleanupOptions],
+            ["captured-runtime", ["inspect", "-f", "{{.Id}}", id], { ...cleanupOptions, timeout: 5000 }],
+        ]);
+        expect(f.context.explicitlyNotFound).toHaveBeenCalledExactlyOnceWith(absent);
+        expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+
+    it("regression: inspects absence independently after a rejected-removal property lookup throws", () => {
+        const primary = new Error("verification failed before removal lookup");
+        const removal = new Error("removal lookup failed");
+        const lookup = vi.fn(() => { throw removal; });
+        const f = fixture({
+            assertProjectSources(this: Pick<ContainerCreateLifecyclePorts<unknown>, "removeRejected">) {
+                Object.defineProperty(this, "removeRejected", { configurable: true, get: lookup });
+                return undefined;
+            },
+            verifyCreated: () => { throw primary; },
+        });
+        const absent = result(1, "", "No such container");
+        native.spawn.mockReturnValueOnce(result(0, id)).mockReturnValueOnce(absent);
+        const caught = thrown(() => f.lifecycle.run(request)) as AggregateError;
+        expect(caught).toBeInstanceOf(AggregateError);
+        expect(caught.cause).toBe(primary);
+        expect(caught.errors).toHaveLength(2);
+        expect(caught.errors[0]).toBe(primary);
+        expect(caught.errors[1]).toBe(removal);
+        expect(lookup).toHaveBeenCalledTimes(1);
+        expect(native.spawn.mock.calls).toEqual([
+            ["captured-runtime", f.args, createOptions],
+            ["captured-runtime", ["inspect", "-f", "{{.Id}}", id], { ...cleanupOptions, timeout: 5000 }],
+        ]);
+        expect(f.context.explicitlyNotFound).toHaveBeenCalledExactlyOnceWith(absent);
+        expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+
+    it("regression: retains ordered primary, removal and absence property lookup failures", () => {
+        const primary = new Error("verification failed before absence lookup");
+        const removal = new Error("native removal threw");
+        const absence = new Error("absence lookup failed");
+        const lookup = vi.fn(() => { throw absence; });
+        const f = fixture({
+            assertProjectSources(this: Pick<ContainerCreateLifecyclePorts<unknown>, "explicitlyAbsent">) {
+                Object.defineProperty(this, "explicitlyAbsent", { configurable: true, get: lookup });
+                return undefined;
+            },
+            verifyCreated: () => { throw primary; },
+        });
+        native.spawn.mockImplementation((_cli, args: string[]) => {
+            if (args[0] === "run") return result(0, id);
+            throw removal;
+        });
+        const caught = thrown(() => f.lifecycle.run(request)) as AggregateError;
+        expect(caught).toBeInstanceOf(AggregateError);
+        expect(caught.cause).toBe(primary);
+        expect(caught.errors).toHaveLength(3);
+        expect(caught.errors[0]).toBe(primary);
+        expect(caught.errors[1]).toBe(removal);
+        expect(caught.errors[2]).toBe(absence);
+        expect(lookup).toHaveBeenCalledTimes(1);
+        expect(native.spawn.mock.calls).toEqual([
+            ["captured-runtime", f.args, createOptions],
+            ["captured-runtime", ["rm", "-f", id], cleanupOptions],
+        ]);
+        expect(f.context.explicitlyNotFound).not.toHaveBeenCalled();
+        expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+
     it.each(["error", "undefined"] as const)("regression: preserves a %s verifier failure after an earlier proof replaces the receiver method", value => {
         const primary = value === "error" ? new Error("replacement verifier failed") : undefined;
         const replacement = vi.fn((_target: string) => { throw primary; });

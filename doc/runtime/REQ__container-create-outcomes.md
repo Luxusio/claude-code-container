@@ -42,6 +42,11 @@ to the invocation/attempt, distinguish a captured undefined value from no cause,
 reset for repeated callbacks and release references on exit. Do not introduce
 a registry or another lock. Runtime capture stays at construction.
 
+The merged native receiver keeps the facade's lifetime, including method state
+installed by earlier callbacks. Semantic delegates capture both property lookup
+and invocation at the proof and cleanup boundaries; a throwing accessor must
+retain its original cause just as a throwing method does.
+
 Pre-create and late MCP/SSH/Git/finish exceptions keep their existing hard-error
 handling. Late failures must not remove a verified container. Existing source
 assertion order, method receivers, creation-ticket and session handoff behavior
