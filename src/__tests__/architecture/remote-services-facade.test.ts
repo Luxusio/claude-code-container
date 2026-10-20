@@ -443,9 +443,13 @@ describe("remote native observations and effects", () => {
         });
         const ports = createNativeRemoteServicesPorts();
         const request = kind === "user" ? { kind, defaultUser: "local" } as const : { kind } as const;
-        const first = ports.prompt(request), second = ports.prompt(request);
+        const firstInterrupt = vi.fn(), secondInterrupt = vi.fn();
+        const first = ports.prompt(request, firstInterrupt), second = createNativeRemoteServicesPorts().prompt(request, secondInterrupt);
+        expect(readers).toHaveLength(1);
         expect(first.cancel()).toBeUndefined(); expect(first.cancel()).toBeUndefined();
-        await expect(first.result).resolves.toBe(""); expect(readers[0].close).toHaveBeenCalledTimes(1); expect(readers[1].close).not.toHaveBeenCalled();
+        await expect(first.result).resolves.toBe(""); await Promise.resolve();
+        expect(readers).toHaveLength(2); expect(readers[0].close).toHaveBeenCalledTimes(1); expect(readers[1].close).not.toHaveBeenCalled();
+        expect(firstInterrupt).not.toHaveBeenCalled(); expect(secondInterrupt).not.toHaveBeenCalled();
         answers[0]("late answer"); answers[1](kind === "cleanup" ? "  YeS  " : "  NewUser  ");
         await expect(second.result).resolves.toBe(kind === "cleanup" ? "yes" : "NewUser"); expect(readers[1].close).toHaveBeenCalledTimes(1);
     });
@@ -454,9 +458,25 @@ describe("remote native observations and effects", () => {
         const events = new EventEmitter();
         const reader = Object.assign(events, { question: vi.fn((_question: string, callback: (value: string) => void) => { answer = callback; }), close: vi.fn(() => { events.emit("close"); }) });
         native.reader.mockReturnValue(reader); const ports = createNativeRemoteServicesPorts();
-        const prompt = ports.prompt({ kind: "user", defaultUser: "local" });
+        const interrupted = vi.fn();
+        const prompt = ports.prompt({ kind: "user", defaultUser: "local" }, interrupted);
         if (input === "blank") answer("   "); else reader.emit("close");
-        await expect(prompt.result).resolves.toBe("");
+        await expect(prompt.result).resolves.toBe(""); expect(interrupted).not.toHaveBeenCalled();
+    });
+    it("delivers a reader interrupt only to its owning invocation and then admits the queued reader", async () => {
+        const readers: EventEmitter[] = [];
+        native.reader.mockImplementation(() => {
+            const events = new EventEmitter();
+            const reader = Object.assign(events, { question: vi.fn(), close: vi.fn(() => { events.emit("close"); }) });
+            readers.push(reader); return reader;
+        });
+        const firstInterrupt = vi.fn(), secondInterrupt = vi.fn();
+        const first = createNativeRemoteServicesPorts().prompt({ kind: "cleanup" }, firstInterrupt);
+        const second = createNativeRemoteServicesPorts().prompt({ kind: "cleanup" }, secondInterrupt);
+        expect(readers).toHaveLength(1); readers[0].emit("SIGINT");
+        await expect(first.result).resolves.toBe(""); await Promise.resolve();
+        expect(firstInterrupt).toHaveBeenCalledExactlyOnceWith("SIGINT"); expect(secondInterrupt).not.toHaveBeenCalled();
+        expect(readers).toHaveLength(2); second.cancel(); await second.result;
     });
     it("cancels and settles one native sleep without disposing another invocation's timer", async () => {
         vi.useFakeTimers();

@@ -84,7 +84,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
         };
         const handleSigint = () => requestSignal("SIGINT"), handleSigterm = () => requestSignal("SIGTERM");
         const prompt = async (request: Parameters<typeof ports.prompt>[0]): Promise<string> => {
-            const owned = ports.prompt(request); pendingPrompt = owned;
+            const owned = ports.prompt(request, requestSignal); pendingPrompt = owned;
             if (interruption()) disposePrompt();
             try { return await owned.result; }
             finally { if (pendingPrompt === owned) disposePrompt(); }

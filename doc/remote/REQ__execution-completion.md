@@ -32,10 +32,17 @@ race. No cancellation path guesses that the remote operation did not happen.
 
 Each invocation owns its prompt and timer handles. Cancelling one invocation
 cannot dispose another invocation's handles, listeners, claim or reservation.
+Native console questions share one physical input stream, so their readers are
+serialized; cancelling a queued question must not pause the active reader.
+Terminal Ctrl+C reaches the owning invocation's interruption handler before
+settling its prompt, rather than being accepted as a default-user answer.
 Prompt cancellation settles and closes its owned reader; timer cancellation
 clears and settles its owned wait. Blank input and EOF retain existing behavior:
 the user prompt chooses its default, and the cleanup prompt declines. Only the
-latched signal represents cancellation. Heartbeat refresh/report exceptions
+latched signal represents cancellation. A later prompt on positively ended
+input settles as empty without waiting for another end event. Already errored
+or otherwise unavailable input remains a fault, not an inferred default answer.
+Heartbeat refresh/report exceptions
 are contained as an opaque fault rather than escaping a timer callback; a
 negative refresh observation retains its existing advisory behavior.
 

@@ -41,7 +41,7 @@ export function remoteServiceContracts(ports: RemoteServicesPorts<symbol>): void
     const services = createRemoteServices(ports);
     const execution: Promise<RemoteExecutionOutcome<symbol>> = services.remoteExec("path");
     const termination: Promise<RemoteTerminateOutcome<symbol>> = services.remoteTerminate("path");
-    const reader: RemotePrompt = ports.prompt({ kind: "cleanup" });
+    const reader: RemotePrompt = ports.prompt({ kind: "cleanup" }, () => {});
     const timer: RemoteSleep = ports.sleep(1000);
     // @ts-expect-error application policy cannot request process termination
     ports.exit(1);

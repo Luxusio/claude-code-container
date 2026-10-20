@@ -429,6 +429,19 @@ describe("whole remote semantic workflows", () => {
         if (kind === "user") expectNoClaim(f.trace); else expect(f.trace.filter(row => row[0] === "remove")).toHaveLength(1);
     });
 
+    it.each(["user", "cleanup"] as const)("the owning %s prompt interrupt cancels its invocation without accepting blank input", async kind => {
+        const f = fixture(), interrupted = deferred<(signal: RemoteSignal) => void>(), answer = deferred<string>(); let cancellations = 0;
+        f.ports.prompt = (_request, onInterrupt) => {
+            interrupted.resolve(onInterrupt);
+            return { result: answer.promise, cancel: () => { cancellations++; answer.resolve(""); return undefined; } };
+        };
+        const execution = f.services().remoteExec("relative", kind === "user" ? "new-host" : undefined);
+        (await interrupted.promise)("SIGINT");
+        await expect(execution).resolves.toEqual({ kind: "cancelled", signal: "SIGINT", cleanupFailures: [] });
+        expect(cancellations).toBe(1); expect(f.trace.some(row => ["save", "stop", "pause"].includes(String(row[0])))).toBe(false);
+        if (kind === "user") expectNoClaim(f.trace);
+    });
+
     it("cancellation settles the current polling sleep without later observation or SSH", async () => {
         const f = fixture(), sleeping = deferred<void>(), entered = deferred<void>(); let observations = 0, cancelled = 0;
         const ordinary = f.ports.observeSyncInventory; f.ports.observeSyncInventory = budget => { observations++; const inventory = ordinary(budget); return inventory.kind === "known" ? { ...inventory, sessions: inventory.sessions.map(row => ({ ...row, watching: false })) } : inventory; };
@@ -520,7 +533,7 @@ describe("whole remote semantic workflows", () => {
             f.ports.observeSyncInventory = budget => { const inventory = ordinary(budget); return inventory.kind === "known" ? { ...inventory, sessions: inventory.sessions.map(row => ({ ...row, watching: false })) } : inventory; };
             f.ports.sleep = () => { entered.resolve(); return { completion: finished.promise, cancel: () => { attempts++; finished.resolve(); throw fault; } }; };
         }
-        if (heldKind === "prompt") { const ordinary = f.ports.prompt; f.ports.prompt = request => { entered.resolve(); return ordinary(request); }; }
+        if (heldKind === "prompt") { const ordinary = f.ports.prompt; f.ports.prompt = (request, onInterrupt) => { entered.resolve(); return ordinary(request, onInterrupt); }; }
         const execution = f.services().remoteExec("relative"); await entered.promise;
         expect(() => f.handlers.get("SIGINT")!()).not.toThrow();
         await expect(execution).resolves.toEqual({ kind: "cancelled", signal: "SIGINT", cleanupFailures: [{ kind: "cleanup-fault", phase: heldKind === "prompt" ? "dispose-prompt" : "cancel-sleep", error: fault }] });

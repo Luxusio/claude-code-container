@@ -28,7 +28,7 @@ export interface RemoteServicesPorts<Evidence = unknown> {
     prepareLegacyConfigReader(hash: string): { exists(): boolean; readConfig(): RemoteConfig };
     saveRemoteConfig(hash: string, config: RemoteConfig): void;
     readUser(): string | undefined;
-    prompt(request: { kind: "user"; defaultUser: string } | { kind: "cleanup" }): RemotePrompt;
+    prompt(request: { kind: "user"; defaultUser: string } | { kind: "cleanup" }, onInterrupt: (signal: RemoteSignal) => void): RemotePrompt;
     report(event: RemoteEvent<Evidence>): void;
     createSessionLock(prefix: string): string;
     removeSessionLock(file: string): undefined;

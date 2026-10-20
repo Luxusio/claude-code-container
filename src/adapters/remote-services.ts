@@ -290,31 +290,62 @@ export function projectRemoteTerminateOutcome(outcome: RemoteTerminateOutcome<Na
     if (outcome.kind === "fault") throw outcome.error;
 }
 
-function nativePrompt(request: Parameters<RemoteServicesPorts["prompt"]>[0]): RemotePrompt {
+// Readline interfaces share and pause the physical stdin stream, even across factories.
+const nativePromptQueue: Array<() => void> = [];
+let activeNativePrompt: (() => void) | null = null;
+function startNextNativePrompt(): void {
+    if (activeNativePrompt || nativePromptQueue.length === 0) return;
+    activeNativePrompt = nativePromptQueue.shift()!;
+    activeNativePrompt();
+}
+
+function nativePrompt(request: Parameters<RemoteServicesPorts["prompt"]>[0],
+    onInterrupt: Parameters<RemoteServicesPorts["prompt"]>[1]): RemotePrompt {
     let reader: ReturnType<typeof createInterface> | null = null, settled = false;
-    let finish: (answer: string) => void = () => {};
-    const result = new Promise<string>((resolve, reject) => {
-        reader = createInterface({ input: process.stdin, output: process.stdout });
-        const owned = reader;
-        finish = answer => { if (!settled) { settled = true; resolve(answer); } };
-        owned.on("close", () => finish(""));
-        const question = request.kind === "user" ? `Remote user [${request.defaultUser}]: ` : "\nStop container and pause sync? [y/N]: ";
+    let resolveResult: (answer: string) => void = () => {}, rejectResult: (error: unknown) => void = () => {};
+    const result = new Promise<string>((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+    const finish = (outcome: { answer: string } | { error: unknown }, throwCloseFault = false): void => {
+        if (settled) return;
+        settled = true;
+        const queued = nativePromptQueue.indexOf(start);
+        if (queued !== -1) nativePromptQueue.splice(queued, 1);
+        let closeFailed = false, closeFault: unknown;
+        try { reader?.close(); }
+        catch (error) { closeFailed = true; closeFault = error; }
+        if (activeNativePrompt === start) queueMicrotask(() => {
+            if (activeNativePrompt === start) activeNativePrompt = null;
+            startNextNativePrompt();
+        });
+        if (closeFailed && !throwCloseFault && "answer" in outcome) rejectResult(closeFault);
+        else if ("error" in outcome) rejectResult(outcome.error);
+        else resolveResult(outcome.answer);
+        if (closeFailed && throwCloseFault) throw closeFault;
+    };
+    const start = () => {
         try {
+            if (process.stdin.errored) { finish({ error: process.stdin.errored }); return; }
+            if (process.stdin.readableEnded) { finish({ answer: "" }); return; }
+            if (process.stdin.destroyed) { finish({ error: new Error("Remote prompt input is unavailable") }); return; }
+            reader = createInterface({ input: process.stdin, output: process.stdout });
+            const owned = reader;
+            owned.on("SIGINT", () => {
+                try { onInterrupt("SIGINT"); finish({ answer: "" }); }
+                catch (error) { finish({ error }); }
+            });
+            owned.on("error", error => finish({ error }));
+            owned.on("close", () => finish({ answer: "" }));
+            if (settled) return;
+            const question = request.kind === "user" ? `Remote user [${request.defaultUser}]: ` : "\nStop container and pause sync? [y/N]: ";
             owned.question(question, answer => {
                 if (settled) return;
                 const trimmed = answer.trim();
-                finish(request.kind === "cleanup" ? trimmed.toLowerCase() : trimmed);
-                owned.close();
+                finish({ answer: request.kind === "cleanup" ? trimmed.toLowerCase() : trimmed });
             });
-        } catch (error) {
-            settled = true;
-            try { owned.close(); } finally { reject(error); }
-        }
-    });
-    return { result, cancel: () => {
-        if (!settled) { finish(""); reader?.close(); }
-        return undefined;
-    } };
+        } catch (error) { finish({ error }); }
+    };
+    nativePromptQueue.push(start);
+    startNextNativePrompt();
+    return { result, cancel: () => { finish({ answer: "" }, true); return undefined; } };
 }
 
 export function createNativeRemoteServicesPorts(): RemoteServicesPorts<NativeEvidence> {

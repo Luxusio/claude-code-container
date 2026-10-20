@@ -124,7 +124,8 @@ if (program === 'mutagen') {
     else if (command.includes('docker stop') && state.busy) { out('ccc-remote-sessions-active\n'); process.exit(42); }
     else if (!command.includes('docker stop') && /rm -f.*\$_ccc_sessions\/[a-f0-9]{32}/.test(command) && state.releaseFailure) fail('fixture reservation release denied');
   }
-} else fail('unexpected fixture executable');
+} else if (program === 'ping') log({});
+else fail('unexpected fixture executable');
 `;
 
 const consumer = String.raw`
@@ -142,9 +143,9 @@ if (process.argv[2] === 'seed') {
 } else {
   writeFileSync(join(root, 'started-' + (process.env.CCC_REMOTE_ROLE ?? 'single')), 'ready');
   try {
-    if (process.argv[2] === 'embed') {
+    if (process.argv[2] === 'embed' || process.argv[2] === 'embed-user') {
       const application = await load('application/remote-services.js'), adapter = await load('adapters/remote-services.js');
-      const outcome = await application.createRemoteServices(adapter.createNativeRemoteServicesPorts()).remoteExec(project);
+      const outcome = await application.createRemoteServices(adapter.createNativeRemoteServicesPorts()).remoteExec(project, process.argv[2] === 'embed-user' ? 'prompt-host' : undefined);
       const recorded = { kind: outcome.kind, exitCode: outcome.exitCode, reason: outcome.reason, signal: outcome.signal,
         cleanupFailures: outcome.cleanupFailures.map(failure => ({ kind: failure.kind, phase: failure.phase })) };
       writeFileSync(join(root, 'outcome.json'), JSON.stringify(recorded));
@@ -175,7 +176,7 @@ function fixture() {
     const root = mkdtempSync(join(tmpdir(), "ccc-sync-authority-")); roots.push(root); chmodSync(root, 0o700);
     const bin = join(root, "bin"); mkdirSync(bin, { mode: 0o700 }); mkdirSync(join(root, "project"), { mode: 0o700 });
     const consumerPath = join(root, "consumer.mjs"); writeFileSync(consumerPath, consumer, { mode: 0o600 });
-    for (const program of ["mutagen", "ssh"]) writeFileSync(join(bin, program), "#!" + process.execPath + "\n" + native, { mode: 0o700 });
+    for (const program of ["mutagen", "ssh", "ping"]) writeFileSync(join(bin, program), "#!" + process.execPath + "\n" + native, { mode: 0o700 });
     const statePath = join(root, "state.json"), tracePath = join(root, "trace.jsonl");
     const initial: State = { sessions: [], created: 0, containerId: "a".repeat(64), listMode: "known",
         afterCreateUnknown: false, holdInventory: false, replaceOnInteractive: false, invalidEndpointOnInteractive: false,
@@ -209,7 +210,7 @@ function fixture() {
         alpha: { protocol: "local", path: join(root, "project") },
         beta: { protocol: "ssh", user: "user", host: "host-a", path: "docker://" + initial.containerId + "/project/" + info.projectId },
         paused: false, status: "watching" });
-    return { root, env, info, state, set, calls, clear, start, run, record };
+    return { root, env, consumerPath, info, state, set, calls, clear, start, run, record };
 }
 function mutations(calls: Call[]) { return calls.filter(call => call.program === "mutagen" && ["create", "resume", "pause", "terminate"].includes(call.args[1])); }
 async function waitFile(file: string) {
@@ -220,7 +221,93 @@ async function waitFile(file: string) {
     }
 }
 
+const promptStreamConsumer = [
+    "import { join } from 'node:path';",
+    "import { pathToFileURL } from 'node:url';",
+    "const { createNativeRemoteServicesPorts } = await import(pathToFileURL(join(process.env.CCC_PROMPT_DIST, 'adapters/remote-services.js')).href);",
+    "const interrupt = () => { throw Error('unexpected interrupt on a pipe'); };",
+    "const deadline = setTimeout(() => { console.error('native prompt did not settle'); process.exit(71); }, 3000);",
+    "let recorded;",
+    "if (process.argv[2] === 'overlap') {",
+    " const first = createNativeRemoteServicesPorts().prompt({ kind: 'user', defaultUser: 'first' }, interrupt);",
+    " const second = createNativeRemoteServicesPorts().prompt({ kind: 'user', defaultUser: 'second' }, interrupt);",
+    " first.cancel();",
+    " const cancelled = await first.result, answer = await second.result;",
+    " recorded = { cancelled, answer };",
+    "} else {",
+    " const first = createNativeRemoteServicesPorts().prompt({ kind: 'user', defaultUser: 'first' }, interrupt);",
+    " const firstAnswer = await first.result;",
+    " const second = createNativeRemoteServicesPorts().prompt({ kind: 'cleanup' }, interrupt);",
+    " recorded = { first: firstAnswer, second: await second.result, ended: process.stdin.readableEnded };",
+    "}",
+    "clearTimeout(deadline); process.stdin.destroy();",
+    "console.log('STREAM_RESULT=' + JSON.stringify(recorded));",
+].join("\n");
+
+describe("emitted native prompts with a real input pipe", () => {
+    it.each(["overlap", "EOF"] as const)("settles %s readers without losing input or waiting on an ended stream", action => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-prompt-stream-")); roots.push(root);
+        const entry = join(root, "consumer.mjs"); writeFileSync(entry, promptStreamConsumer);
+        const result = spawnSync(process.execPath, [entry, action], {
+            env: { ...process.env, HOME: root, CCC_PROMPT_DIST: dist }, cwd: root,
+            input: action === "overlap" ? "hello\n" : "", encoding: "utf8", timeout: 5000, killSignal: "SIGKILL",
+        });
+        expect(result.status, result.stderr + result.stdout).toBe(0);
+        const recorded = JSON.parse(result.stdout.split("STREAM_RESULT=").at(-1)!.trim());
+        expect(recorded).toEqual(action === "overlap" ? { cancelled: "", answer: "hello" } : { first: "", second: "", ended: true });
+    }, 10000);
+});
+
+const promptPty = [
+    "import errno,json,os,pty,select,signal,sys,time",
+    "node,entry,action,question=sys.argv[1:]",
+    "pid,master=pty.fork()",
+    "if pid==0: os.execve(node,[node,entry,action],dict(os.environ))",
+    "output=b''; sent=False; ended=False; status=None; deadline=time.monotonic()+12",
+    "try:",
+    " while time.monotonic()<deadline:",
+    "  if ended: time.sleep(0.01)",
+    "  if not ended and select.select([master],[],[],0.05)[0]:",
+    "   try: chunk=os.read(master,65536)",
+    "   except OSError as error:",
+    "    if error.errno!=errno.EIO: raise",
+    "    chunk=b''",
+    "   if not chunk: ended=True",
+    "   output+=chunk",
+    "   if question.encode() in output and not sent: os.write(master,b'\\x03'); sent=True",
+    "  observed,value=os.waitpid(pid,os.WNOHANG)",
+    "  if observed: status=value; break",
+    "finally:",
+    " if status is None:",
+    "  observed,value=os.waitpid(pid,os.WNOHANG)",
+    "  if observed: status=value",
+    "  else:",
+    "   try: os.killpg(pid,signal.SIGKILL)",
+    "   except ProcessLookupError: pass",
+    "   _,status=os.waitpid(pid,0)",
+    " os.close(master)",
+    "print(json.dumps({'sent':sent,'exitCode':os.waitstatus_to_exitcode(status),'output':output.decode('utf8','replace')}))",
+].join("\n");
+
 describe.runIf(process.platform !== "win32")("emitted remote sync authority with native ports", () => {
+    it.each(["user", "cleanup"] as const)("terminal Ctrl-C cancels the real %s reader before later remote effects", kind => {
+        const f = fixture(), configPath = join(f.root, ".ccc", "config.json"), saved = readFileSync(configPath, "utf8");
+        const result = spawnSync("python3", ["-c", promptPty, process.execPath, f.consumerPath, kind === "user" ? "embed-user" : "embed", kind === "user" ? "Remote user [" : "Stop container and pause sync?"], {
+            env: { ...f.env, TERM: "xterm-256color" }, cwd: join(f.root, "project"), encoding: "utf8", timeout: 15000, killSignal: "SIGKILL",
+        });
+        expect(result.status, result.stderr).toBe(0);
+        const terminal = JSON.parse(result.stdout) as { sent: boolean; exitCode: number; output: string };
+        expect(terminal.sent, terminal.output).toBe(true); expect(terminal.exitCode, terminal.output).toBe(0);
+        expect(JSON.parse(readFileSync(join(f.root, "outcome.json"), "utf8"))).toEqual({ kind: "cancelled", signal: "SIGINT", cleanupFailures: [] });
+        expect(existsSync(join(f.root, "embedder-continued"))).toBe(true); expect(readFileSync(configPath, "utf8")).toBe(saved);
+        expect(f.calls().some(call => call.program === "ssh" && call.args.some(argument => argument.includes("docker stop")))).toBe(false);
+        expect(mutations(f.calls()).some(call => call.args[1] === "pause")).toBe(false);
+        if (kind === "user") {
+            expect(f.calls().some(call => call.program === "ssh")).toBe(false); expect(f.state().created).toBe(0);
+            expect(terminal.output).not.toContain("Config saved.");
+        }
+    }, 20000);
+
     it("serializes two independent public callers with the real existing project guard and creates one writer", async () => {
         const f = fixture(); f.set({ holdInventory: true });
         const first = f.start("exec", "n", { CCC_REMOTE_ROLE: "first" }); await waitFile(join(f.root, "inventory-held"));
