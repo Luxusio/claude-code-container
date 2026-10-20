@@ -880,24 +880,38 @@ goals or replace the required independent reviews and fresh CLI QA.
 ## Container image preparation (M10h candidate)
 
 `src/application/container-image-preparation.ts` owns the existing image
-preparation decisions through 11 required synchronous capabilities in
+preparation decisions through eight required synchronous capabilities in
 `src/ports/container-image-preparation.ts`. Construction checks callability
-without invoking capabilities or reading request facts. `run` returns
-`undefined`; effects also return `undefined`, including `exitFailure`, so an
-intercepted exit may return in a fixture. Application dependencies are type-only
-ports, with no ambient runtime, subprocess, filesystem or console access.
+without invoking capabilities or reading request facts. `run` returns a
+specialized `ContainerImagePreparationOutcome`. Completion distinguishes
+development, matching, registry and fallback paths; failure and indeterminate
+results carry finite reasons. The tag port returns `ImageTagOutcome`, with no
+raw native receipt. Application dependencies are type-only ports, with no
+ambient runtime, subprocess, filesystem or console access. The
+[image outcome requirements](../container/REQ__image-preparation-outcomes.md)
+and [2026-10-20 correction](../changes/2026-10-20-image-preparation-outcomes.md)
+supersede the extraction's ignored-tag contract.
 
 The operation observes local existence first. A local image with no version
 label or an exact matching version returns immediately. A differing label,
 including the empty string supplied through the core port, reports a mismatch;
 an absent image reports a pull. It qualifies the registry/version reference,
 pulls, then tags a successful pull to the local name. A failed pull with the
-original local image warns and returns. Without that image it reports failure,
-prints the current-runtime build hint and invokes the injected `exitFailure`
-capability. The current native binding throws
-`Failed to pull CCC image; container startup was aborted.` rather than calling
-`process.exit`, allowing owned launch resources to unwind. Thrown Error and
-non-Error values propagate unchanged and stop later effects.
+original local image warns and completes with fallback. Without that image the
+application returns `image-pull-failed`; composition prints the failure and
+current-runtime build hint, then throws
+`Failed to pull CCC image; container startup was aborted.` without calling
+`process.exit`. Failure presentation and exit capabilities are not core ports.
+Thrown Error and non-Error values propagate unchanged and stop later effects.
+
+Native tagging classifies an error or signal as `image-tag-unconfirmed`
+regardless of status. Otherwise clean exit zero acknowledges completion,
+positive integer exit is `image-tag-failed`, and a missing/malformed receipt or
+status is unconfirmed. Classification and tag diagnostics do not read private
+stdout, stderr or native error messages. Either failure result aborts startup
+before image-ID lookup, identity-image building or container effects. There is
+no automatic replay or compensating tag/delete. An uncertain tag may already
+have changed its mutable target; the next explicit invocation reobserves it.
 
 Keep request facts lazy and capabilities live when extracting similar policy.
 The local label call reads the image name; a null label returns before reading
@@ -908,8 +922,8 @@ pulls reuse the captured qualified reference and original existence observation.
 Methods retain their receiver and replacements made by earlier callbacks.
 
 `src/composition/container-image-preparation.ts` supplies native helpers through
-live closures and binds existing log/warn/error messages plus the throwing
-native failure capability described above.
+live closures, binds progress messages, and renders the returned failure or
+indeterminate result as the bounded CLI error described above.
 It obtains image name/version from the existing utils exports. The Docker
 facade supplies a required lazy registry getter that returns its existing
 immutable `DOCKER_REGISTRY_IMAGE` binding; `CCC_REGISTRY` remains a module-load
@@ -917,28 +931,29 @@ snapshot. Construction does not read registry or select a runtime, and there is
 no composition-to-Docker import cycle. Each existing helper still observes
 runtime at its original call site; the build hint selects runtime only after
 the failure diagnostic. Public `ensureImage(): void` delegates at the unchanged
-preparation point in `startProjectContainer`.
+preparation point in `prepareProjectContainerStartup`.
 
 Verification anchors are architecture `container-image-preparation.test.ts`,
 `container-image-preparation-type-contracts.ts` and
-`container-image-preparation-facade.test.ts`, plus the core boundary and
-prescribed Docker, arguments, runtime/setup, session, remote and index suites.
-Tests use actual application/composition with native mocks and cover lazy fact
-and method getters, callback replacement, exact thrown values, diagnostic order,
-Docker/Podman qualification, native result accessors and changing runtimes.
+`container-image-preparation-facade.test.ts`, plus the Docker regression and
+adjacent public container-identity test owners. Strict architecture typechecking
+checks the synchronous semantic declarations.
+Tests use actual application/composition with native mocks and cover semantic
+outcomes, native normalization precedence, retained fallback, retry, representative
+lazy fact/exception boundaries, diagnostic order and Docker/Podman qualification.
 Historical extraction verification covered build, lint, regression tests and
 built CLI exit behavior. Those earlier results do not certify this reconciled
 candidate; its final source/artifact verification is a separate acceptance gate.
 
-`scripts/test-workspace-packages.mjs` adds actual compiled image-policy checks
-to the common smoke used by both extracted npm packages and materialized
-installs. It verifies all branches and reachable callback/fact failure traces,
-required synchronous declarations and the public facade signature. All six
-child-process functions are fenced and ESM builtin exports synchronized before
-imports; actual composition construction and development-image execution must
-make zero native probes or registry reads. Earlier lifecycle and claims checks
-remain. Coordinator package verification passed for both forms. Independent
-reviews and fresh QA remain candidate acceptance gates.
+The current package smoke checks archive/install layout, CLI, public package
+exports/assets and MCP transport; it contains no image-policy assertion catalog.
+The facade owner's emitted-module cases fence subprocess leaves and synchronize
+ESM builtin exports before importing `dist/docker.js`. They exercise confirmed
+`ensureImage` success and failed/unconfirmed `prepareProjectContainerStartup`,
+admit only synthetic read-only capability probes, and reject downstream image-ID,
+build or container effects. Historical extraction package-image descriptions in
+the older change note are historical, not current verification claims.
+Independent review and fresh QA remain candidate acceptance gates.
 
 ### Known ceiling
 
@@ -947,10 +962,11 @@ classification, and inspection failure remains a nullable development-image
 observation — upgrade when separately approved image evidence policy defines
 known versus unknown outcomes.
 
-Known ceiling: pull failure retains the existing local fallback, tag results
-remain ignored, and exceptions after a pull do not roll back image writes —
-upgrade when separately approved publication/reconciliation policy requires
-stronger evidence or compensation.
+Known ceiling: pull failure retains the existing local fallback and boolean
+pull observation. Tag acknowledgement establishes neither digest equality nor
+freedom from concurrent mutable-tag races. Image writes have no rollback, and
+an indeterminate command may already have taken effect. Stronger publication
+or reconciliation guarantees require a separately scoped policy.
 
 Known ceiling: portable tests and package smoke do not certify native
 Windows/macOS, PowerShell execution, Docker/Podman, rootless UID/SELinux or remote
