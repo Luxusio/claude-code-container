@@ -2,9 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dirname } from "path";
 import * as runtimeFacade from "../../container-runtime.js";
 import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
-const mocks = vi.hoisted(() => ({ spawn: vi.fn(), stat: vi.fn(), realpath: vi.fn(), root: vi.fn(), runtime: vi.fn(), cli: vi.fn(), normalize: vi.fn() }));
+const mocks = vi.hoisted(() => ({ spawn: vi.fn(), stat: vi.fn(), realpath: vi.fn(), root: vi.fn(), runtime: vi.fn(), cli: vi.fn(), normalize: vi.fn(),
+    guard: Object.freeze({root: "/private/ccc"}), ticket: Object.freeze({owned: "codex helper"}), acquire: vi.fn(), begin: vi.fn(), settle: vi.fn(),
+}));
 vi.mock("child_process", () => ({ spawnSync: mocks.spawn }));
 vi.mock("fs", () => ({ lstatSync: mocks.stat, realpathSync: mocks.realpath }));
+vi.mock("../../home-layout.js", async original => ({ ...await original<typeof import("../../home-layout.js")>(), cccHome: () => "/private/ccc" }));
+vi.mock("../../adapters/runtime-bind-authority.js", () => ({
+    withRuntimeBindGuard: (root: string, operation: (guard: unknown) => unknown, options: unknown) => {
+        mocks.acquire(root, options);
+        return operation(mocks.guard);
+    },
+    beginRuntimeBindCreation: (...args: unknown[]) => mocks.begin(...args),
+    settleRuntimeBindCreation: (...args: unknown[]) => mocks.settle(...args),
+}));
 vi.mock("../../utils.js", () => ({ getCodexDir: mocks.root }));
 vi.mock("../../container-runtime.js", async original => ({
     ...await original<typeof import("../../container-runtime.js")>(), runtimeCli: mocks.cli, getRuntimeInfo: mocks.runtime,
@@ -19,6 +30,7 @@ const spawnCall = (call: unknown[]) => normalizeNativeRuntimeCall(call, "private
 const spawnCalls = () => mocks.spawn.mock.calls.map(spawnCall);
 beforeEach(() => {
     vi.stubEnv("container", ""); vi.stubGlobal("process", { ...process, platform: "linux", geteuid: () => 1000, getegid: () => 1000 });
+    mocks.acquire.mockReset(); mocks.begin.mockReset().mockReturnValue(mocks.ticket); mocks.settle.mockReset();
     preloadNativeRuntimeFixture(runtimeFacade);
     mocks.root.mockReset().mockImplementation(profile => { trace.push(["root", profile]); return root; });
     mocks.runtime.mockReset().mockReturnValue({ rootless: false, flavor: "docker-native" });
@@ -41,10 +53,13 @@ const withActiveInspection = (payload: string, ids = "active") => mocks.spawn.mo
 describe("actual Codex retained-state native composition", () => {
     it("retains public synchronous names, arities, scripts and exact bounded argv", () => {
         expect(native.prepareCodexStateOwnership.name).toBe("prepareCodexStateOwnership");
-        expect(native.prepareCodexStateOwnership.length).toBe(5);
+        expect(native.prepareCodexStateOwnership.length).toBe(6);
         expect(native.assertCodexStateAccessible.name).toBe("assertCodexStateAccessible");
         expect(native.assertCodexStateAccessible.length).toBe(2);
         expect(invoke()).toBeUndefined();
+        expect(mocks.acquire).toHaveBeenCalledExactlyOnceWith("/private/ccc", {waitMs: 0});
+        expect(mocks.begin).toHaveBeenCalledExactlyOnceWith(mocks.guard, runtimeFacade.getRuntimeInvocation());
+        expect(mocks.settle).toHaveBeenCalledExactlyOnceWith(mocks.guard, mocks.ticket);
         const options = { encoding: "utf-8", input: undefined, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 };
         expect(spawnCalls()).toEqual([
             ["private-runtime", ["run", "--rm", "--network", "none", "--user", "root", "--entrypoint", "/bin/sh", "old-normalized", "-c", 'set -eu; printf "%s:%s" "$(id -u ccc)" "$(id -g ccc)"'], options],
@@ -72,6 +87,8 @@ describe("actual Codex retained-state native composition", () => {
         mocks.spawn.mockImplementation((...rawCall) => { const [, args] = spawnCall(rawCall); return { status: args.includes("--mount") ? 1 : 0, stdout: args[0] === "run" ? "1001:1002" : "", stderr: args.includes("--mount") ? "partial ownership write" : "" }; });
         expect(invoke).toThrow("Codex state ownership check failed: partial ownership write");
         expect(mocks.spawn).toHaveBeenCalledTimes(3);
+        expect(mocks.begin).toHaveBeenCalledOnce();
+        expect(mocks.settle).not.toHaveBeenCalled();
     });
     it("keeps retained access support native and reports the same recovery advice", () => {
         mocks.spawn.mockReturnValue({ status: 1, stderr: "denied" });
