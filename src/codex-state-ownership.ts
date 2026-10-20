@@ -210,12 +210,34 @@ root = '/home/ccc/.codex'
 uid = os.geteuid()
 def fail(message):
     raise RuntimeError(message)
+def descendant(path):
+    return bool(path) and os.path.abspath(path).startswith(root + os.sep)
+def entry_stat(path):
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        if descendant(path):
+            return None
+        raise
+def check_root():
+    try:
+        valid = stat.S_ISDIR(os.lstat(root).st_mode)
+    except FileNotFoundError:
+        valid = False
+    if not valid:
+        fail('Codex state root is missing or symlinked')
 def walk_error(error):
+    if isinstance(error, FileNotFoundError) and descendant(error.filename):
+        return
     raise error
-if not os.path.isdir(root) or os.path.islink(root):
-    fail('Codex state root is missing or symlinked')
+check_root()
 for directory, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
+    info = entry_stat(directory)
+    if info is None:
+        continue
     if not os.access(directory, os.R_OK | os.W_OK | os.X_OK):
+        if entry_stat(directory) is None:
+            continue
         fail('Inaccessible Codex state directory: ' + directory)
     relative = os.path.relpath(directory, root)
     top = relative.split('/')[0]
@@ -223,17 +245,24 @@ for directory, dirs, files in os.walk(root, followlinks=False, onerror=walk_erro
     # Runtime records are updated in place. Plugin and Harness repository files
     # may legitimately be read-only (notably .git objects and packaged assets).
     mutable = relative == '.' or top in ('app-server-daemon', 'app-server-control', 'tmp', 'sessions', 'archived_sessions', 'log', 'logs', 'shell_snapshots', 'sqlite', 'memories')
-    if private and os.lstat(directory).st_uid != uid:
+    if private and info.st_uid != uid:
         fail('Codex private directory belongs to another user: ' + directory)
     for name in files:
         path = os.path.join(directory, name)
-        info = os.lstat(path)
+        info = entry_stat(path)
+        if info is None:
+            continue
         if stat.S_ISREG(info.st_mode) and not os.access(path, os.R_OK):
+            if entry_stat(path) is None:
+                continue
             fail('Unreadable Codex state file: ' + path)
         if mutable and stat.S_ISREG(info.st_mode) and not os.access(path, os.W_OK):
+            if entry_stat(path) is None:
+                continue
             fail('Unwritable Codex runtime state file: ' + path)
         if private and not stat.S_ISLNK(info.st_mode) and info.st_uid != uid:
             fail('Codex private file belongs to another user: ' + path)
+check_root()
 `;
 
 export function assertCodexStateAccessible(containerName: string, profile?: string): void {

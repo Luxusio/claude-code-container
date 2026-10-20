@@ -310,3 +310,220 @@ describe.skipIf(process.platform !== "linux" || realSpawn("python3", ["--version
         expect(result.stderr).toBe("");
     });
 });
+
+describe.skipIf(process.platform !== "linux" || realSpawn("python3", ["--version"]).status !== 0)("live Codex filesystem fixtures", () => {
+    function fixture() {
+        const path = mkdtempSync(join(tmpdir(), "ccc-codex-access-"));
+        fixtures.push(path, `${path}-moved`);
+        mkdirSync(join(path, "app-server-daemon"), { mode: 0o700 });
+        mkdirSync(join(path, "sessions"), { mode: 0o700 });
+        writeFileSync(join(path, "preserved.txt"), "retained state sentinel", { mode: 0o600 });
+        return path;
+    }
+    function snapshot(path: string) {
+        const info = realLstat(path);
+        return { uid: info.uid, gid: info.gid, mode: info.mode, dev: info.dev, ino: info.ino,
+            nlink: info.nlink, size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs,
+            content: readFileSync(path, "utf-8") };
+    }
+    function execute(path: string, hook = "", retainedRoot = path, moved = false) {
+        const before = snapshot(join(retainedRoot, "preserved.txt"));
+        // Only the public script's root changes. All hooks wrap real stdlib operations
+        // over this private fixture; the production script itself runs unmodified.
+        const script = codexStateAccessScript.replace("root = '/home/ccc/.codex'", `root = ${JSON.stringify(path)}`);
+        const result = realSpawn("python3", ["-c", `import os, errno, socket
+_fixture_root = ${JSON.stringify(path)}
+_fixture_lstat, _fixture_access, _fixture_walk, _fixture_scandir = os.lstat, os.access, os.walk, os.scandir
+_fixture_sockets = []
+def _fixture_bind(path):
+    endpoint = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    previous_directory = os.getcwd()
+    try:
+        os.chdir(os.path.dirname(path))
+        endpoint.bind(os.path.basename(path))
+    finally:
+        os.chdir(previous_directory)
+    _fixture_sockets.append(endpoint)
+${hook}
+${script}`], { encoding: "utf-8" });
+        expect(snapshot(join(moved ? `${retainedRoot}-moved` : retainedRoot, "preserved.txt"))).toEqual(before);
+        return result;
+    }
+    function removeListed(relative: string, operation: "unlink" | "rmdir") {
+        return `_fixture_remove_target = os.path.join(_fixture_root, ${JSON.stringify(relative)})
+def _fixture_racing_walk(*args, **kwargs):
+    for directory, dirs, files in _fixture_walk(*args, **kwargs):
+        if directory == os.path.dirname(_fixture_remove_target) and os.path.basename(_fixture_remove_target) in dirs + files:
+            os.${operation}(_fixture_remove_target)
+            print('fixture: enumerated then removed')
+        yield directory, dirs, files
+os.walk = _fixture_racing_walk`;
+    }
+    function overrideAccess(relative: string, mode: string, remove = false, directory = false) {
+        return `_fixture_target = os.path.join(_fixture_root, ${JSON.stringify(relative)})
+def _fixture_checked_access(path, requested, *args, **kwargs):
+    accessible = _fixture_access(path, requested, *args, **kwargs)
+    if os.fspath(path) == _fixture_target and requested & ${mode}:
+        ${remove ? `os.${directory ? "rmdir" : "unlink"}(_fixture_target)` : "assert _fixture_lstat(_fixture_target)"}
+        print('fixture: access returned false')
+        return False
+    return accessible
+os.access = _fixture_checked_access`;
+    }
+    function foreignOwner(relative: string) {
+        return `_fixture_target = os.path.join(_fixture_root, ${JSON.stringify(relative)})
+def _fixture_foreign_lstat(path, *args, **kwargs):
+    info = _fixture_lstat(path, *args, **kwargs)
+    if os.fspath(path) == _fixture_target:
+        values = list(info)
+        values[4] = os.geteuid() + 1
+        print('fixture: observed foreign owner')
+        return os.stat_result(values)
+    return info
+os.lstat = _fixture_foreign_lstat`;
+    }
+
+    it.each([
+        ["reported socket", "app-server-daemon/daemon-updater.sock", "socket"],
+        ["differently named socket", "app-server-daemon/other-endpoint.sock", "socket"],
+        ["regular file", "sessions/record.jsonl", "file"],
+    ])("live Codex access probe: tolerates an enumerated %s removed before metadata", (_label, relative, kind) => {
+        const path = fixture();
+        if (kind === "file") writeFileSync(join(path, relative), "transient");
+        const setup = kind === "socket" ? `_fixture_bind(os.path.join(_fixture_root, ${JSON.stringify(relative)}))\n` : "";
+        const result = execute(path, setup + removeListed(relative, "unlink"));
+        expect(result.stdout).toContain("fixture: enumerated then removed");
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+    });
+    it.each([["read", "os.R_OK"], ["write", "os.W_OK"]])("live Codex access probe: tolerates a file removed during its %s check", (_label, mode) => {
+        const path = fixture();
+        writeFileSync(join(path, "sessions", "record.jsonl"), "transient");
+        const result = execute(path, overrideAccess("sessions/record.jsonl", mode, true));
+        expect(result.stdout).toContain("fixture: access returned false");
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+    });
+    it("live Codex access probe: tolerates a listed child disappearing before real os.walk descent", () => {
+        const path = fixture();
+        const result = execute(path, removeListed("sessions", "rmdir"));
+        expect(result.stdout).toContain("fixture: enumerated then removed");
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+    });
+    it.each(["metadata", "access"])("live Codex access probe: tolerates a yielded directory disappearing before %s", phase => {
+        const path = fixture();
+        const hook = phase === "access" ? overrideAccess("sessions", "os.R_OK | os.W_OK | os.X_OK", true, true) : `
+def _fixture_racing_walk(*args, **kwargs):
+    for directory, dirs, files in _fixture_walk(*args, **kwargs):
+        if directory == os.path.join(_fixture_root, 'sessions'):
+            os.rmdir(directory)
+            print('fixture: yielded directory removed')
+        yield directory, dirs, files
+os.walk = _fixture_racing_walk`;
+        const result = execute(path, hook);
+        expect(result.stdout).toContain(phase === "access" ? "fixture: access returned false" : "fixture: yielded directory removed");
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+    });
+    it.each([
+        ["readable file", "sessions/record.jsonl", "os.R_OK", "Unreadable Codex state file"],
+        ["writable file", "sessions/record.jsonl", "os.W_OK", "Unwritable Codex runtime state file"],
+        ["accessible directory", "sessions", "os.R_OK | os.W_OK | os.X_OK", "Inaccessible Codex state directory"],
+    ])("live Codex access probe: refuses a retained entry failing its %s requirement even as root", (_label, relative, mode, diagnostic) => {
+        const path = fixture();
+        writeFileSync(join(path, "sessions", "record.jsonl"), "retained");
+        const result = execute(path, overrideAccess(relative, mode));
+        expect(result.stdout).toContain("fixture: access returned false");
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(diagnostic);
+    });
+    it.each([
+        ["file", "app-server-daemon/private.lock"],
+        ["socket", "app-server-daemon/private.sock"],
+        ["directory", "app-server-daemon"],
+    ])("live Codex access probe: refuses a retained foreign-owned private %s even as root", (kind, relative) => {
+        const path = fixture();
+        if (kind === "file") writeFileSync(join(path, relative), "retained");
+        const setup = kind === "socket" ? `_fixture_bind(os.path.join(_fixture_root, ${JSON.stringify(relative)}))\n` : "";
+        const result = execute(path, setup + foreignOwner(relative));
+        expect(result.stdout).toContain("fixture: observed foreign owner");
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("belongs to another user");
+    });
+    it("live Codex access probe: a missing first sibling cannot hide a retained inaccessible sibling", () => {
+        const path = fixture();
+        for (const name of ["00-vanished.jsonl", "99-retained.jsonl"]) writeFileSync(join(path, "sessions", name), name);
+        const hook = removeListed("sessions/00-vanished.jsonl", "unlink").replace(
+            "        yield directory, dirs, files", "        files.sort()\n        yield directory, dirs, files",
+        ) + "\n" + overrideAccess("sessions/99-retained.jsonl", "os.R_OK");
+        const result = execute(path, hook);
+        expect(result.stdout).toContain("fixture: enumerated then removed");
+        expect(result.stdout).toContain("fixture: access returned false");
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Unreadable Codex state file");
+        expect(result.stderr).toContain("99-retained.jsonl");
+    });
+    it.each(["metadata", "walk"])("live Codex access probe: propagates %s permission and non-ENOENT filesystem errors", boundary => {
+        const path = fixture();
+        writeFileSync(join(path, "sessions", "record.jsonl"), "retained");
+        for (const [error, diagnostic] of [["PermissionError(errno.EACCES, 'fixture denial', _fixture_target)", "PermissionError"], ["OSError(errno.EIO, 'fixture I/O failure', _fixture_target)", "fixture I/O failure"]] as const) {
+            const relative = boundary === "walk" ? "sessions" : "sessions/record.jsonl";
+            const operation = boundary === "walk" ? "scandir" : "lstat";
+            const result = execute(path, `_fixture_target = os.path.join(_fixture_root, ${JSON.stringify(relative)})
+def _fixture_failed_operation(path, *args, **kwargs):
+    if os.fspath(path) == _fixture_target:
+        _fixture_lstat(path)
+        print('fixture: injected filesystem error')
+        raise ${error}
+    return _fixture_${operation}(path, *args, **kwargs)
+os.${operation} = _fixture_failed_operation`);
+            expect(result.stdout).toContain("fixture: injected filesystem error");
+            expect(result.status).not.toBe(0);
+            expect(result.stderr).toContain(diagnostic);
+        }
+    });
+    it.each([
+        ["unknown filename", "FileNotFoundError(errno.ENOENT, 'fixture missing filename')"],
+        ["outside filename", "FileNotFoundError(errno.ENOENT, 'fixture outside filename', _fixture_root + '-outside')"],
+        ["root filename", "FileNotFoundError(errno.ENOENT, 'fixture root filename', _fixture_root)"],
+    ])("live Codex access probe: refuses os.walk ENOENT with an %s", (_label, error) => {
+        const path = fixture();
+        const result = execute(path, `def _fixture_failed_scandir(path):
+    if os.fspath(path) == os.path.join(_fixture_root, 'sessions'):
+        print('fixture: walk ENOENT')
+        raise ${error}
+    return _fixture_scandir(path)
+os.scandir = _fixture_failed_scandir`);
+        expect(result.stdout).toContain("fixture: walk ENOENT");
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("FileNotFoundError");
+    });
+    it.each(["missing", "symlink"])("live Codex access probe: refuses an initially %s state root", kind => {
+        const path = fixture();
+        const probeRoot = join(path, "probe-root");
+        if (kind === "symlink") symlinkSync(join(path, "sessions"), probeRoot);
+        const result = execute(probeRoot, "", path);
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Codex state root");
+    });
+    it.each(["vanished", "symlinked"])("live Codex access probe: refuses a root %s after real enumeration", kind => {
+        const path = fixture();
+        const result = execute(path, `def _fixture_racing_walk(*args, **kwargs):
+    for directory, dirs, files in _fixture_walk(*args, **kwargs):
+        if directory == _fixture_root:
+            os.rename(_fixture_root, _fixture_root + '-moved')
+            ${kind === "symlinked" ? "os.symlink(_fixture_root + '-moved', _fixture_root)" : "pass"}
+            print('fixture: root changed after enumeration')
+        yield directory, dirs, files
+os.walk = _fixture_racing_walk`, path, true);
+        expect(result.stdout).toContain("fixture: root changed after enumeration");
+        expect(result.status).not.toBe(0);
+        if (kind === "vanished") {
+            expect(result.stderr).toContain("FileNotFoundError");
+            expect(result.stderr).toContain(path);
+        } else {
+            expect(result.stderr).toContain("Codex state root");
+        }
+    });
+});

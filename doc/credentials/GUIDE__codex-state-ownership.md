@@ -25,6 +25,14 @@ start. This extraction acquires no additional lock and changes no caller.
 `assertCodexStateAccessible`, used before Codex startup, remains native readiness
 support and is not an additional migrated operation.
 
+Its read-only access probe observes a live tree. A descendant may disappear after
+enumeration or during an access check; only a proven missing descendant is skipped.
+Present inaccessible entries, private ownership mismatches, other filesystem
+errors and loss of the state root still fail. Both initial and final root checks
+require a directory that is not a symlink. This is no snapshot guarantee and adds
+no ownership writes, socket deletion or retries. The contract and regression
+anchors are in [Codex state access probe](REQ__codex-state-access-probe.md).
+
 Both Python programs and the checked native runner remain in the facade. The old
 image probe has no mounts and uses root with networking disabled. The final helper
 uses the normalized current immutable image, root, networking disabled, and one
