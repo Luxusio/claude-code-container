@@ -382,7 +382,7 @@ describe.skipIf(process.platform === "win32")("real inherited POSIX terminal res
         writeFileSync(clientPath, [
             "import {existsSync} from 'node:fs';",
             "import {spawnSync} from 'node:child_process';",
-            "const changed=spawnSync('/usr/bin/stty',['-icanon','-echo','-isig'],{stdio:['inherit','pipe','pipe'],timeout:1000});",
+            "const changed=spawnSync('stty',['-icanon','-echo','-isig'],{stdio:['inherit','pipe','pipe'],timeout:1000});",
             "if(changed.status!==0)throw Error('owned client could not change its inherited terminal');",
             `process.stdout.write(${JSON.stringify("\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1004h\u001b[?2004h\u001b[?1049h\u001b[?25lCCC_CLIENT_RAW\n")});`,
             `const ready=setInterval(()=>{if(existsSync(${JSON.stringify(releasePath)})){clearInterval(ready);process.kill(process.pid,'SIGKILL')}},10);`,
