@@ -382,17 +382,20 @@ describe("container-runtime", () => {
             expect(metadataMock).not.toHaveBeenCalled();
         });
 
-        it("does not inspect or translate mounts during Vitest runs", () => {
+        it.each([["VITEST", "0"], ["VITEST", "1"], ["VITEST_POOL_ID", "1"]] as const)("observes nested Docker mounts with %s=%s", (marker, value) => {
             _setRuntimeInfoForTest({ runtime: "docker" });
+            pinNestedDockerInvocation();
             process.env.container = "docker";
             process.env.HOSTNAME = "ccc-parent";
-            process.env.VITEST_POOL_ID = "1";
+            process.env[marker] = value;
+            spawnSyncMock.mockReturnValue(result(0, JSON.stringify([{Source: "/outer/codex", Destination: "/home/ccc/.codex"}])));
 
-            expect(bindMountArgs("/home/ccc/.codex", "/home/ccc/.codex")).toEqual([
+            expect(bindMountArgs("/home/ccc/.codex/config.toml", "/config.toml")).toEqual([
                 "-v",
-                "/home/ccc/.codex:/home/ccc/.codex",
+                "/outer/codex/config.toml:/config.toml",
             ]);
-            expect(spawnSyncMock).not.toHaveBeenCalled();
+            expect(spawnSyncMock).toHaveBeenCalledWith("/fixture/bin/docker", expect.arrayContaining(["inspect", "ccc-parent", "--format", "{{json .Mounts}}"]),
+                expect.objectContaining({timeout: 5000, killSignal: "SIGKILL", shell: false}));
         });
     });
 

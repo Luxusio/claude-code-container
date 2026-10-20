@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -9,6 +9,13 @@ import {
 
 import { getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName } from "../container-identity.js";
 import { _resetRuntimeCacheForTest, _setRuntimeInfoForTest } from "../container-runtime.js";
+
+beforeEach(() => {
+    _resetRuntimeCacheForTest();
+    _setRuntimeInfoForTest({runtime: "docker"});
+    vi.stubEnv("container", undefined);
+});
+afterEach(() => { _resetRuntimeCacheForTest(); vi.unstubAllEnvs(); });
 
 // Factory for default options — every test overrides only what it needs
 function makeOpts(

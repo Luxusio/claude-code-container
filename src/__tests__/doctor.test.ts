@@ -10,7 +10,7 @@ vi.mock("child_process", async (importOriginal) => {
 
 // Mock fs
 const mockExistsSync = vi.fn().mockReturnValue(false);
-const mockReaddirSync = vi.fn<() => string[]>().mockReturnValue([]);
+const mockReaddirSync = vi.fn<(...args: unknown[]) => string[]>().mockReturnValue([]);
 const mockUnlinkSync = vi.fn();
 vi.mock("fs", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
@@ -25,7 +25,7 @@ vi.mock("fs", async (importOriginal) => {
 // Mock docker.js
 const mockIsDockerRunning = vi.fn().mockReturnValue(true);
 const mockIsImageExists = vi.fn().mockReturnValue(true);
-const mockGetImageLabel = vi.fn<() => string | null>().mockReturnValue(null);
+const mockGetImageLabel = vi.fn<(...args: unknown[]) => string | null>().mockReturnValue(null);
 const mockIsContainerRunning = vi.fn().mockReturnValue(true);
 const mockIsContainerExists = vi.fn().mockReturnValue(true);
 const mockGetContainerName = vi.fn().mockReturnValue("ccc-myproject-abc123");
@@ -39,8 +39,8 @@ vi.mock("../docker.js", () => ({
 }));
 
 // Mock session.js
-const mockGetActiveSessionsForProject = vi.fn<() => string[]>().mockReturnValue([]);
-const mockObserveActiveSessionsForContainer = vi.fn<() => string[]>().mockReturnValue([]);
+const mockGetActiveSessionsForProject = vi.fn<(...args: unknown[]) => string[]>().mockReturnValue([]);
+const mockObserveActiveSessionsForContainer = vi.fn<(...args: unknown[]) => string[]>().mockReturnValue([]);
 vi.mock("../session.js", () => ({
     getActiveSessionsForProject: (...args: unknown[]) =>
         mockGetActiveSessionsForProject(...args),
@@ -63,6 +63,7 @@ vi.mock("../utils.js", () => ({
 }));
 
 // Import AFTER mocks
+const { _resetRuntimeCacheForTest, _setRuntimeInfoForTest } = await import("../container-runtime.js");
 const { runDoctor } = await import("../doctor.js");
 
 function makeResult(
@@ -74,6 +75,7 @@ function makeResult(
 
 describe("runDoctor", () => {
     beforeEach(() => {
+        _resetRuntimeCacheForTest(); _setRuntimeInfoForTest({runtime: "docker"});
         mockIdentity.uid = 2001; mockIdentity.gid = 3001; mockIdentity.mapping = "host";
         spawnSyncMock.mockReset();
         mockExistsSync.mockReset().mockReturnValue(false);
@@ -92,6 +94,7 @@ describe("runDoctor", () => {
     });
 
     afterEach(() => {
+        _resetRuntimeCacheForTest();
         vi.restoreAllMocks();
     });
 

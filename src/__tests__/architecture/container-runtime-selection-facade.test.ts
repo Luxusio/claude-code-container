@@ -62,6 +62,7 @@ describe("container runtime selection compatibility facade", () => {
         runtime._setRuntimeInfoForTest({ runtime: "podman", version: "cached" });
         const cached = runtime.getRuntimeInfo();
         runtime.setRuntimeOverride(value);
+        process.env.VITEST = "1";
         process.env.CCC_RUNTIME = "invalid";
         expect(runtime.getRuntimeInfo()).toBe(cached);
         expect(runtime.runtimeCli()).toBe("podman");
@@ -117,15 +118,10 @@ describe("container runtime selection compatibility facade", () => {
         expect(runtime.runtimeCli()).toBe("docker");
     });
 
-    it("VITEST bypasses invalid environment and probes, until an explicit override is set", () => {
-        process.env.VITEST = "true";
+    it.each(["0", "1"])("VITEST=%s cannot bypass invalid environment; explicit override retains precedence", flag => {
+        process.env.VITEST = flag;
         process.env.CCC_RUNTIME = "invalid";
-        const stub = runtime.getRuntimeInfo();
-        expect(stub).toEqual({
-            runtime: "docker", flavor: "docker-native", version: "0.0.0",
-            socketPath: "/var/run/docker.sock", rootless: false, remote: false, dockerDesktop: false,
-        });
-        expect(runtime.getRuntimeInfo()).toBe(stub);
+        expect(() => runtime.getRuntimeInfo()).toThrow("Invalid CCC_RUNTIME value: 'invalid'");
         expect(probe).not.toHaveBeenCalled();
         expect(capture).not.toHaveBeenCalled();
         runtime.setRuntimeOverride("podman");
@@ -183,6 +179,7 @@ describe("container runtime selection compatibility facade", () => {
 type NativeCase = {
     name: string; podmanStatus: number; dockerStatus: number;
     environment?: string; explicit?: string; selected?: "docker" | "podman"; error?: string;
+    runner?: NodeJS.ProcessEnv;
 };
 const nativeCases: NativeCase[] = [
     { name: "podman preference", podmanStatus: 0, dockerStatus: 0, selected: "podman" },
@@ -190,9 +187,13 @@ const nativeCases: NativeCase[] = [
     { name: "neither available", podmanStatus: 7, dockerStatus: 9, error: noRuntimeError },
     { name: "environment override", podmanStatus: 0, dockerStatus: 0, environment: "docker", selected: "docker" },
     { name: "environment override keeps unavailable runtime for host detection", podmanStatus: 0, dockerStatus: 7, environment: "docker", selected: "docker" },
-    { name: "explicit override beats invalid environment", podmanStatus: 0, dockerStatus: 0, environment: "invalid", explicit: "podman", selected: "podman" },
+    { name: "explicit override beats invalid environment under VITEST", podmanStatus: 0, dockerStatus: 0, environment: "invalid", explicit: "podman", selected: "podman", runner: {VITEST: "1"} },
     { name: "invalid environment", podmanStatus: 0, dockerStatus: 0, environment: " Docker", error: "Invalid CCC_RUNTIME value: ' Docker'. Allowed: 'docker' or 'podman'." },
     { name: "invalid CLI", podmanStatus: 0, dockerStatus: 0, explicit: "DOCKER", error: "Invalid --runtime value: 'DOCKER'. Allowed: 'docker' or 'podman'." },
+    ...["0", "1"].map(flag => ({name: `invalid environment under VITEST=${flag}`, podmanStatus: 0, dockerStatus: 0,
+        environment: "invalid", runner: {VITEST: flag}, error: "Invalid CCC_RUNTIME value: 'invalid'. Allowed: 'docker' or 'podman'."})),
+    {name: "Podman environment under VITEST", podmanStatus: 0, dockerStatus: 0, environment: "podman", selected: "podman", runner: {VITEST: "1"}},
+    {name: "automatic Podman with only a pool marker", podmanStatus: 0, dockerStatus: 0, selected: "podman", runner: {VITEST_POOL_ID: "1"}},
 ];
 
 describe.each(["source", "built"] as const)("actual Node %s facade with portable executable fixtures", artifact => {
@@ -243,6 +244,7 @@ process.exit(91);
             const loader = createRequire(import.meta.url).resolve("tsx");
             const env: NodeJS.ProcessEnv = {
                 PATH: binDir, PATHEXT: ".EXE", HOME: home, USERPROFILE: home, TMPDIR: home, TEMP: home, TMP: home,
+                ...scenario.runner,
             };
             for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR"]) {
                 if (originalEnv[key]) env[key] = originalEnv[key];

@@ -101,10 +101,14 @@ describe("runtime capability native facade", () => {
         expect(runtime.getRuntimeInfo()).toBe(info); expect(runtime.getRuntimeInfo().version).toBe("mutated"); expect(runtime.runtimeCli()).toBe("docker"); expect(native.spawn).toHaveBeenCalledTimes(count);
         runtime.setRuntimeOverride("podman"); expect(runtime.getRuntimeInfo()).toMatchObject({ runtime: "podman", socketPath: "changed" }); expect(runtime.getRuntimeInfo()).not.toBe(info);
     });
-    it.each(["1", "0"])("retains truthy Vitest=%s stub and explicit override defeats it", flag => {
+    it.each(["1", "0"])("validates selection and observes actual Podman capabilities under VITEST=%s", flag => {
         runtime._resetRuntimeCacheForTest(); vi.stubEnv("VITEST", flag); vi.stubEnv("CCC_RUNTIME", "invalid");
-        expect(runtime.getRuntimeInfo()).toEqual({ runtime: "docker", flavor: "docker-native", version: "0.0.0", socketPath: "/var/run/docker.sock", rootless: false, remote: false, dockerDesktop: false }); expect(native.spawn).not.toHaveBeenCalled();
-        runtime.setRuntimeOverride("podman"); expect(runtime.getRuntimeInfo().runtime).toBe("podman");
+        expect(() => runtime.getRuntimeInfo()).toThrow("Invalid CCC_RUNTIME value: 'invalid'");
+        expect(native.spawn).not.toHaveBeenCalled();
+        vi.stubEnv("CCC_RUNTIME", "podman");
+        expect(runtime.getRuntimeInfo()).toMatchObject({runtime: "podman", version: "5.2.3", rootless: false});
+        expect(native.spawn.mock.calls.some(call => call[1].includes("--version"))).toBe(true);
+        expect(native.spawn.mock.calls.some(call => call[1].includes("info"))).toBe(true);
     });
     it("empty Vitest flag permits native detection", () => {
         vi.stubEnv("VITEST", ""); expect(runtime.getRuntimeInfo().version).toBe("27.1.1"); expect(native.spawn).toHaveBeenCalled();

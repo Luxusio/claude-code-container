@@ -91,7 +91,7 @@ export function _setRuntimeInfoForTest(info: Partial<RuntimeInfo> & { runtime: R
     _cachedInvocation = null;
 }
 
-/** An explicit fixture, separate from capability preloads and the legacy Vitest info shortcut. */
+/** An explicit native invocation fixture, independent of capability preloads. */
 export function _setRuntimeInvocationForTest(value: NativeRuntimeInvocation): void {
     const invocation = validateNativeRuntimeInvocation(value);
     if (_cachedInfo?.runtime !== invocation.runtime) _cachedInfo = null;
@@ -197,13 +197,6 @@ export function getRuntimeInfo(): RuntimeInfo {
         return info;
     }
     if (_cachedInfo) return _cachedInfo;
-    if (process.env.VITEST && !_runtimeOverride) {
-        _cachedInfo = {
-            runtime: "docker", flavor: "docker-native", version: "0.0.0",
-            socketPath: "/var/run/docker.sock", rootless: false, remote: false, dockerDesktop: false,
-        };
-        return _cachedInfo;
-    }
     publishNativeRuntime();
     return _cachedInfo!;
 }
@@ -309,7 +302,7 @@ export function bindMountArgs(
 
 function translateCurrentContainerPath(hostPath: string): string {
     if (!hostPath.startsWith("/")) return hostPath;
-    if (process.env.container !== "docker" || isVitestProcess()) return hostPath;
+    if (process.env.container !== "docker") return hostPath;
     if (runtimeCli() !== "docker") return hostPath;
 
     const mounts = getCurrentContainerMounts();
@@ -360,10 +353,6 @@ export function runtimeExtraRunArgs(): string[] {
         extras.push("--userns=keep-id:uid=1000,gid=1000");
     }
     return extras;
-}
-
-function isVitestProcess(): boolean {
-    return Object.keys(process.env).some((key) => key === "VITEST" || key.startsWith("VITEST_"));
 }
 
 function getCurrentContainerMounts(): Array<{ source: string; destination: string }> {
