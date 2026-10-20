@@ -1,4 +1,4 @@
-import type { RemoteCancellation, RemoteFailure, RemoteFault, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncEnsureOutcome, RemoteSyncHandle, RemoteSyncInventory, RemoteSyncObservation, RemoteSyncWaitOutcome } from "../domain/remote-services.js";
+import type { RemoteCancellation, RemoteCleanupFailure, RemoteFailure, RemoteFault, RemoteSleep, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncEnsureOutcome, RemoteSyncHandle, RemoteSyncInventory, RemoteSyncObservation, RemoteSyncWaitOutcome } from "../domain/remote-services.js";
 import type { RemoteSyncPorts } from "../ports/remote-services.js";
 
 function sameAuthority(left: RemoteSyncAuthority, right: RemoteSyncAuthority): boolean {
@@ -7,6 +7,25 @@ function sameAuthority(left: RemoteSyncAuthority, right: RemoteSyncAuthority): b
 
 function sameBinding(left: RemoteSyncBinding, right: RemoteSyncBinding): boolean {
     return sameAuthority(left, right) && left.containerId === right.containerId;
+}
+
+/** Capture callback completion before the existing native guard attempts release. */
+export async function settleRemoteLifecycleLock<Outcome extends { kind: string }>(
+    ports: Pick<RemoteSyncPorts, "withLifecycleLockAsync">, prefix: string, operation: () => Promise<Outcome>,
+    onReleaseFault: (error: unknown) => void): Promise<Outcome | RemoteFault> {
+    const callback: { outcome?: Outcome | RemoteFault } = {};
+    try {
+        return await ports.withLifecycleLockAsync(prefix, async () => {
+            try { callback.outcome = await operation(); }
+            catch (error) { callback.outcome = { kind: "fault", error }; }
+            return callback.outcome!;
+        });
+    } catch (error) {
+        if (!callback.outcome) return { kind: "fault", error };
+        if (!["failed", "fault", "cancelled"].includes(callback.outcome.kind)) return { kind: "fault", error };
+        onReleaseFault(error);
+        return callback.outcome;
+    }
 }
 
 export function createRemoteSync<Evidence>(ports: RemoteSyncPorts<Evidence>) {
@@ -55,10 +74,13 @@ export function createRemoteSync<Evidence>(ports: RemoteSyncPorts<Evidence>) {
 
     async function ensureSync(binding: RemoteSyncBinding, containerDisplayName = binding.containerId,
         interruption: () => RemoteCancellation | RemoteFault | null = () => null): Promise<RemoteSyncEnsureOutcome<Evidence>> {
+        const cleanupFailures: RemoteCleanupFailure<Evidence>[] = [];
+        const finish = (outcome: RemoteSyncEnsureOutcome<Evidence>): RemoteSyncEnsureOutcome<Evidence> =>
+            cleanupFailures.length > 0 ? { ...outcome, cleanupFailures } : outcome;
         try {
             let interrupted = interruption();
             if (interrupted) return interrupted;
-            return await ports.withLifecycleLockAsync(syncLifecyclePrefix(binding), async (): Promise<RemoteSyncEnsureOutcome<Evidence>> => {
+            return finish(await settleRemoteLifecycleLock(ports, syncLifecyclePrefix(binding), async (): Promise<RemoteSyncEnsureOutcome<Evidence>> => {
                 let interrupted = interruption();
                 if (interrupted) return interrupted;
                 const name = ports.getScopedMutagenSessionName(binding);
@@ -106,14 +128,15 @@ export function createRemoteSync<Evidence>(ports: RemoteSyncPorts<Evidence>) {
                 if (observed.binding === null || !sameBinding(observed.binding, binding)) return { kind: "failed", reason: "sync-conflict", evidence: observed.evidence };
                 if ((interrupted = interruption())) return interrupted;
                 return { kind: "ready", handle: { identifier: observed.identifier, name, binding: { ...binding } } };
-            });
+            }, error => cleanupFailures.push({ kind: "cleanup-fault", phase: "release-sync-guard", error })));
         } catch (error) {
-            return { kind: "fault", error };
+            return finish({ kind: "fault", error });
         }
     }
 
     async function waitForSync(handle: RemoteSyncHandle, timeoutMs: number = 120000,
-        interruption: () => RemoteCancellation | RemoteFault | null = () => null): Promise<RemoteSyncWaitOutcome<Evidence>> {
+        interruption: () => RemoteCancellation | RemoteFault | null = () => null,
+        sleep: (milliseconds: number) => RemoteSleep = milliseconds => ports.sleep(milliseconds)): Promise<RemoteSyncWaitOutcome<Evidence>> {
         try {
             let interrupted = interruption();
             if (interrupted) return interrupted;
@@ -144,7 +167,7 @@ export function createRemoteSync<Evidence>(ports: RemoteSyncPorts<Evidence>) {
                 const sleepMs = Math.min(checkInterval, deadline - ports.now());
                 if (!(sleepMs > 0)) break;
                 if ((interrupted = interruption())) return interrupted;
-                await ports.sleep(sleepMs).completion;
+                await sleep(sleepMs).completion;
             }
 
             if ((interrupted = interruption())) return interrupted;

@@ -492,6 +492,16 @@ describe("remote native observations and effects", () => {
         projectRemoteExecutionOutcome({ kind: "cancelled", signal: "SIGINT", cleanupFailures: [] });
         expect(signal).toHaveBeenCalledExactlyOnceWith(process.pid, "SIGINT"); expect(exit).not.toHaveBeenCalled();
     });
+    it("reports a guard cleanup fault while preserving the primary native termination failure", () => {
+        const secondary = Error("termination guard release denied"), error = vi.spyOn(console, "error").mockImplementation(() => {});
+        expect(() => projectRemoteTerminateOutcome({ kind: "failed", reason: "sync-terminate-failed", evidence: { execution: execution(1) }, cleanupFailures: [{ kind: "cleanup-fault", phase: "release-sync-guard", error: secondary }] })).toThrow("Failed to terminate sync session");
+        expect(error.mock.calls.flat().join(" ")).toContain(secondary.message);
+        const primary = { native: "termination dispatch" }; let observed: unknown;
+        try { projectRemoteTerminateOutcome({ kind: "fault", error: primary, cleanupFailures: [{ kind: "cleanup-fault", phase: "release-sync-guard", error: secondary }] }); }
+        catch (failure) { observed = failure; }
+        expect(observed).toBe(primary);
+    });
+
     it("does not report successful process completion when checked reservation release failed", () => {
         const error = vi.spyOn(console, "error").mockImplementation(() => {}), sentinel = Error("projected");
         const exit = vi.spyOn(process, "exit").mockImplementation(() => { throw sentinel; });

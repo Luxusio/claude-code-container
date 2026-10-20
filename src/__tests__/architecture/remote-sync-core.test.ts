@@ -88,6 +88,14 @@ describe("remote sync authority policy", () => {
         f.trace.length = 0; f.setInventory(known([])); f.ports.createSync = () => ({ ok: false, evidence });
         await expect(f.sync().ensureSync(binding)).resolves.toEqual({ kind: "failed", reason: "sync-create-failed", evidence });
     });
+    it("retains a checked create failure and its exact guard release fault without retrying", async () => {
+        const f = fixture(), secondary = { native: "sync guard release" }; f.setInventory(known([]));
+        f.ports.createSync = request => { f.trace.push(["create", request]); return { ok: false, evidence }; };
+        f.ports.withLifecycleLockAsync = async (_prefix, operation) => { await operation(); throw secondary; };
+        await expect(f.sync().ensureSync(binding)).resolves.toEqual({ kind: "failed", reason: "sync-create-failed", evidence, cleanupFailures: [{ kind: "cleanup-fault", phase: "release-sync-guard", error: secondary }] });
+        expect(effects(f.trace).map(row => row[0])).toEqual(["create"]); expect(f.trace.filter(row => row[0] === "observe")).toHaveLength(1);
+    });
+
     it("preserves the exact daemon fault as an opaque outcome", async () => {
         const f = fixture(), fault = Error("daemon"); f.ports.startSyncDaemon = () => { throw fault; };
         await expect(f.sync().ensureSync(binding)).resolves.toEqual({ kind: "fault", error: fault }); expect(effects(f.trace)).toEqual([]);

@@ -11,9 +11,14 @@ visible without replacing the primary failure; only the native facade projects
 CLI errors, status and signals. Existing target identity, sync selection, busy
 peer guards and terminal restoration remain in effect. The derived behavior is
 specified in [remote execution completion](../remote/REQ__execution-completion.md).
+Callback failures survive later lifecycle-guard release failures, and successful
+callbacks do not authorize further work when their guard failed to release.
+Invocation-owned waits retain the original semantic port implementation.
 
 ## Known ceiling
 
 Existing synchronous commands and guard acquisition deadlines limit cancellation
 responsiveness. No live SSH/Mutagen transport, engine/provider or actual Mac
 qualification is inferred from portable fixtures or a Windows build.
+The existing SSH `docker://` endpoint is not stock Mutagen container transport;
+that functional correction and observed file convergence remain separate work.

@@ -21,6 +21,17 @@ status and execution error. A failed release remains visible, and no successful
 exit is reported when required cleanup failed. A primary failure or unexpected
 fault is preserved when later cancellation or cleanup also fails.
 
+This also applies to lifecycle guards: capture a callback's returned failure or
+exact thrown fault before its guard releases. A later release failure remains a
+separate cleanup fact. Preserve failures from both nested guards without
+repeating the operation. If the callback succeeded but guard release fails,
+return a fault and prevent later work from dispatching. Failure before callback
+admission remains a primary fault. Standalone sync admission and termination
+carry cleanup facts when present; execution incorporates them into its own
+cleanup result, and native termination presentation preserves the primary error.
+When guard release is the first failure, it is the primary fault and is not
+duplicated in cleanup facts; a later outer-guard failure remains separate.
+
 The first requested signal is latched for the invocation. Its handler contains
 its own cancellation/forwarding exceptions and never releases a lease, removes
 a claim or signals the hosting process. Cancellation before a queued dispatch
@@ -32,6 +43,8 @@ race. No cancellation path guesses that the remote operation did not happen.
 
 Each invocation owns its prompt and timer handles. Cancelling one invocation
 cannot dispose another invocation's handles, listeners, claim or reservation.
+Invocation-specific waits use the original semantic port implementation;
+supplying a wait must not discard its prototype-provided capabilities.
 Native console questions share one physical input stream, so their readers are
 serialized; cancelling a queued question must not pause the active reader.
 Terminal Ctrl+C reaches the owning invocation's interruption handler before
@@ -72,5 +85,10 @@ Signal handling cannot run while synchronous native commands block JavaScript.
 Existing guard acquisitions retain their current timeout, and several existing
 native commands have no timeout. Cancelling a reader/timer does not promise
 immediate cancellation of those operations or prove child termination. This
-change does not certify live SSH, the existing SSH `docker://` transport, native
-engines or actual Mac behavior; those acceptance requirements remain separate.
+change does not certify live SSH, native engines or actual Mac behavior; those
+acceptance requirements remain separate. The existing `user@host:docker://...`
+endpoint is parsed by stock Mutagen as an SSH host path, not nested container
+transport. Correct Docker transport and observed container file convergence
+remain required follow-up work. See the upstream
+[URL dispatcher](https://github.com/mutagen-io/mutagen/blob/v0.17.0/pkg/url/parse.go#L22-L33)
+and [SSH path parser](https://github.com/mutagen-io/mutagen/blob/v0.17.0/pkg/url/parse_ssh.go#L157-L183).

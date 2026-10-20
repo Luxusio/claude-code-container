@@ -504,6 +504,112 @@ describe("whole remote semantic workflows", () => {
         expect(f.trace.filter(row => row[0] === "remove")).toHaveLength(1);
     });
 
+    it("retains a failed reservation and both nested guard release faults before retiring its lease", async () => {
+        const f = fixture(), containerFault = { native: "container guard release" }, syncFault = { native: "sync guard release" };
+        f.ports.reserveContainer = request => { f.trace.push(["reserve", request]); return { kind: "failed", reason: "start-failed", evidence }; };
+        const ordinary = f.ports.withLifecycleLockAsync;
+        f.ports.withLifecycleLockAsync = async (prefix, operation) => {
+            await ordinary(prefix, operation); f.trace.push(["guard-release-failed", prefix]);
+            throw prefix.startsWith("remote-sync--") ? syncFault : containerFault;
+        };
+        await expect(f.services().remoteExec("relative")).resolves.toEqual({ kind: "failed", reason: "start-failed", evidence, cleanupFailures: [
+            { kind: "cleanup-fault", phase: "release-container-guard", error: containerFault },
+            { kind: "cleanup-fault", phase: "release-sync-guard", error: syncFault },
+        ] });
+        expect(f.trace.filter(row => row[0] === "reserve")).toHaveLength(1); expect(f.trace.filter(row => row[0] === "release")).toHaveLength(1);
+        expect(f.trace.filter(row => row[0] === "remove")).toEqual([["remove", "claim"]]);
+        expect(f.trace.some(row => ["heartbeat", "prepare", "observe-sync", "ssh"].includes(String(row[0])))).toBe(false);
+    });
+
+    it("retains an exact native reservation fault before a later container guard release fault", async () => {
+        const f = fixture(), primary = { native: "reservation dispatch" }, secondary = { native: "container guard release" };
+        f.ports.reserveContainer = request => { f.trace.push(["reserve", request]); throw primary; };
+        const ordinary = f.ports.withLifecycleLockAsync;
+        f.ports.withLifecycleLockAsync = async (prefix, operation) => {
+            const result = await ordinary(prefix, operation);
+            if (prefix.startsWith("remote--")) throw secondary;
+            return result;
+        };
+        const result = await f.services().remoteExec("relative");
+        expect(result).toEqual({ kind: "fault", error: primary, cleanupFailures: [{ kind: "cleanup-fault", phase: "release-container-guard", error: secondary }] });
+        if (result.kind !== "fault") throw Error("native primary was lost"); expect(result.error).toBe(primary);
+        expect(f.trace.filter(row => row[0] === "release")).toHaveLength(1); expect(f.trace.filter(row => row[0] === "remove")).toHaveLength(1);
+        expect(f.trace.some(row => row[0] === "prepare" || row[0] === "ssh")).toBe(false);
+    });
+
+    it("retains failed accepted cleanup and both release faults without pausing or retrying", async () => {
+        const f = fixture(), containerFault = Error("cleanup container guard"), syncFault = Error("cleanup sync guard"); f.state.stop = true;
+        f.ports.stopReservedContainer = request => { f.trace.push(["stop", request]); return { kind: "failed", evidence }; };
+        const ordinarySync = f.ports.withLifecycleLock, ordinaryAsync = f.ports.withLifecycleLockAsync; let projectGuards = 0;
+        f.ports.withLifecycleLock = (prefix, operation) => { ordinarySync(prefix, operation); throw containerFault; };
+        f.ports.withLifecycleLockAsync = async (prefix, operation) => {
+            const result = await ordinaryAsync(prefix, operation);
+            if (prefix.startsWith("remote-sync--") && ++projectGuards === 3) throw syncFault;
+            return result;
+        };
+        await expect(f.services().remoteExec("relative")).resolves.toEqual({ kind: "failed", reason: "stop-failed", evidence, cleanupFailures: [
+            { kind: "cleanup-fault", phase: "release-container-guard", error: containerFault },
+            { kind: "cleanup-fault", phase: "release-sync-guard", error: syncFault },
+        ] });
+        expect(f.trace.filter(row => row[0] === "stop")).toHaveLength(1); expect(f.trace.filter(row => row[0] === "release")).toHaveLength(1);
+        expect(f.trace.filter(row => row[0] === "remove")).toHaveLength(1); expect(f.trace.some(row => row[0] === "pause" || row[0] === "terminate")).toBe(false);
+    });
+
+    it.each(["reservation", "sync"] as const)("does not admit later work when successful %s callback is followed by guard release failure", async stage => {
+        const f = fixture(), fault = { native: stage + " guard release" }, ordinary = f.ports.withLifecycleLockAsync; let projectGuards = 0;
+        f.ports.withLifecycleLockAsync = async (prefix, operation) => {
+            const result = await ordinary(prefix, operation);
+            if (prefix.startsWith("remote-sync--") && ++projectGuards === (stage === "reservation" ? 1 : 2)) throw fault;
+            return result;
+        };
+        await expect(f.services().remoteExec("relative")).resolves.toEqual({ kind: "fault", error: fault, cleanupFailures: [] });
+        expect(f.trace.filter(row => row[0] === "reserve")).toHaveLength(1); expect(f.trace.filter(row => row[0] === "release")).toHaveLength(1);
+        expect(f.trace.filter(row => row[0] === "remove")).toHaveLength(1); expect(f.trace.some(row => row[0] === "ssh")).toBe(false);
+        expect(events(f.trace).some(event => event.kind === "sync-waiting")).toBe(false);
+        if (stage === "reservation") expect(f.trace.some(row => row[0] === "heartbeat" || row[0] === "prepare")).toBe(false);
+    });
+
+    it("merges a sync admission failure and its guard release fault into execution cleanup", async () => {
+        const f = fixture(), secondary = { native: "ensure guard release" }, ordinary = f.ports.withLifecycleLockAsync; let projectGuards = 0;
+        f.state.inventory = { kind: "unknown", evidence };
+        f.ports.withLifecycleLockAsync = async (prefix, operation) => {
+            const result = await ordinary(prefix, operation);
+            if (prefix.startsWith("remote-sync--") && ++projectGuards === 2) throw secondary;
+            return result;
+        };
+        await expect(f.services().remoteExec("relative")).resolves.toEqual({ kind: "failed", reason: "sync-unknown", evidence, cleanupFailures: [{ kind: "cleanup-fault", phase: "release-sync-guard", error: secondary }] });
+        expect(f.trace.some(row => row[0] === "ssh" || row[0] === "create-sync")).toBe(false);
+        expect(f.trace.filter(row => row[0] === "release")).toHaveLength(1); expect(f.trace.filter(row => row[0] === "remove")).toHaveLength(1);
+    });
+
+    it("preserves checked termination failure when its project guard later fails to release", async () => {
+        const f = fixture(), secondary = { native: "termination guard release" }, ordinary = f.ports.withLifecycleLockAsync;
+        f.ports.terminateSync = identifier => { f.trace.push(["terminate", identifier]); return { ok: false, evidence }; };
+        f.ports.withLifecycleLockAsync = async (prefix, operation) => { await ordinary(prefix, operation); throw secondary; };
+        await expect(f.services().remoteTerminate("relative")).resolves.toEqual({ kind: "failed", reason: "sync-terminate-failed", evidence, cleanupFailures: [{ kind: "cleanup-fault", phase: "release-sync-guard", error: secondary }] });
+        expect(f.trace.filter(row => row[0] === "terminate")).toEqual([["terminate", f.syncId]]); expectNoClaim(f.trace);
+        expect(events(f.trace)).not.toContainEqual({ kind: "sync-terminated" });
+    });
+
+    it("runs through polling and SSH with stateful port methods implemented by a typed class", async () => {
+        const f = fixture();
+        class ProjectObservations {
+            private observations = 0;
+            constructor(private readonly base: RemoteServicesPorts<symbol>) {}
+            getProjectHash(path: string): string { return this.base.getProjectHash(path); }
+            observeSyncInventory(remainingMs?: number): RemoteSyncInventory<symbol> {
+                const inventory = this.base.observeSyncInventory(remainingMs); this.observations++;
+                return inventory.kind === "known" ? { ...inventory, sessions: inventory.sessions.map(row => ({ ...row, watching: this.observations >= 3 })) } : inventory;
+            }
+        }
+        const { getProjectHash, observeSyncInventory, ...effects } = f.ports; void [getProjectHash, observeSyncInventory];
+        const injected: RemoteServicesPorts<symbol> = Object.assign(new ProjectObservations(f.ports), effects);
+        let sleeps = 0; injected.sleep = () => { sleeps++; return { completion: Promise.resolve(), cancel: () => undefined }; };
+        await expect(createRemoteServices(injected).remoteExec("relative")).resolves.toEqual(completed(0));
+        expect(sleeps).toBe(1); expect(f.trace.filter(row => row[0] === "ssh")).toHaveLength(1);
+        expect(f.trace.filter(row => row[0] === "release")).toHaveLength(1); expect(f.trace.filter(row => row[0] === "remove")).toHaveLength(1);
+    });
+
     it("captures faults before claim and releases only a reservation whose dispatch began", async () => {
         const beforeClaim = fixture(), fault = Error("claim"); beforeClaim.ports.createSessionLock = () => { throw fault; };
         await expect(beforeClaim.services().remoteExec("relative")).resolves.toEqual({ kind: "fault", error: fault, cleanupFailures: [] }); expectNoClaim(beforeClaim.trace);

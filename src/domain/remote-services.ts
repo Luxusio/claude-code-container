@@ -87,7 +87,7 @@ export interface RemoteCancellation { kind: "cancelled"; signal: RemoteSignal; }
 export interface RemoteFault { kind: "fault"; error: unknown; }
 export type RemoteCleanupPhase =
     | "cancel-heartbeat" | "release-reservation" | "remove-session-lock" | "dispose-prompt" | "cancel-sleep"
-    | "signal-child" | "remove-SIGINT-listener" | "remove-SIGTERM-listener";
+    | "signal-child" | "remove-SIGINT-listener" | "remove-SIGTERM-listener" | "release-sync-guard" | "release-container-guard";
 export type RemoteCleanupFailure<Evidence = unknown> =
     | { kind: "release-failed"; evidence: Evidence }
     | { kind: "cleanup-fault"; phase: RemoteCleanupPhase; error: unknown };
@@ -98,12 +98,14 @@ export type RemoteExecutionResult<Evidence = unknown> =
 export type RemoteExecutionOutcome<Evidence = unknown> = RemoteExecutionResult<Evidence> & {
     cleanupFailures: RemoteCleanupFailure<Evidence>[];
 };
-export type RemoteSyncEnsureOutcome<Evidence = unknown> =
-    | { kind: "ready"; handle: RemoteSyncHandle } | RemoteFailure<Evidence> | RemoteCancellation | RemoteFault;
+export type RemoteSyncEnsureOutcome<Evidence = unknown> = (
+    | { kind: "ready"; handle: RemoteSyncHandle } | RemoteFailure<Evidence> | RemoteCancellation | RemoteFault
+) & { cleanupFailures?: RemoteCleanupFailure<Evidence>[] };
 export type RemoteSyncWaitOutcome<Evidence = unknown> =
     | { kind: "ready" } | RemoteFailure<Evidence> | RemoteCancellation | RemoteFault;
-export type RemoteTerminateOutcome<Evidence = unknown> =
-    | { kind: "completed"; state: "inactive" | "terminated" } | RemoteFailure<Evidence> | RemoteFault;
+export type RemoteTerminateOutcome<Evidence = unknown> = (
+    | { kind: "completed"; state: "inactive" | "terminated" } | RemoteFailure<Evidence> | RemoteFault
+) & { cleanupFailures?: RemoteCleanupFailure<Evidence>[] };
 
 /** Native presentation consumes finite notices and facts; evidence stays opaque inward. */
 export type RemoteEvent<Evidence = unknown> =

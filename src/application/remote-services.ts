@@ -1,9 +1,9 @@
 import { isValidHostOrUser, type RemoteCancellation, type RemoteCleanupFailure, type RemoteCleanupPhase, type RemoteConfig, type RemoteExecutionOutcome, type RemoteExecutionResult, type RemoteFault, type RemoteHeartbeat, type RemotePrompt, type RemoteReservationResult, type RemoteSignal, type RemoteSleep, type RemoteSshChannel, type RemoteTerminateOutcome } from "../domain/remote-services.js";
 import type { RemoteServicesPorts } from "../ports/remote-services.js";
-import { createRemoteSync } from "./remote-sync.js";
+import { createRemoteSync, settleRemoteLifecycleLock } from "./remote-sync.js";
 
 export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Evidence>) {
-    const { inspectSync, observeCapturedSync, syncLifecyclePrefix } = createRemoteSync(ports);
+    const { ensureSync, inspectSync, observeCapturedSync, waitForSync, syncLifecyclePrefix } = createRemoteSync(ports);
     const checkTailscale = () => ports.observeTool("tailscale");
     const checkMutagen = () => ports.observeTool("mutagen");
     const isHostReachable = (host: string): boolean => ports.isHostReachable(host);
@@ -41,15 +41,15 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
         let reservationNeedsRelease = false;
         const interruption = (): RemoteCancellation | RemoteFault | null => retainedFault ??
             (requestedSignal ? { kind: "cancelled", signal: requestedSignal } : null);
+        const recordCleanupFault = (phase: RemoteCleanupPhase, error: unknown) => {
+            if (!failedCleanupPhases.has(phase)) {
+                failedCleanupPhases.add(phase);
+                cleanupFailures.push({ kind: "cleanup-fault", phase, error });
+            }
+        };
         const cleanup = (phase: RemoteCleanupPhase, operation: () => unknown): boolean => {
             try { operation(); return true; }
-            catch (error) {
-                if (!failedCleanupPhases.has(phase)) {
-                    failedCleanupPhases.add(phase);
-                    cleanupFailures.push({ kind: "cleanup-fault", phase, error });
-                }
-                return false;
-            }
+            catch (error) { recordCleanupFault(phase, error); return false; }
         };
         const disposePrompt = () => {
             const owned = pendingPrompt; pendingPrompt = null;
@@ -89,7 +89,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
             try { return await owned.result; }
             finally { if (pendingPrompt === owned) disposePrompt(); }
         };
-        const sync = createRemoteSync({ ...ports, sleep: milliseconds => {
+        const sleep = (milliseconds: number): RemoteSleep => {
             const owned = ports.sleep(milliseconds); pendingSleep = owned;
             if (interruption()) cancelSleep();
             return { completion: owned.completion.then(() => {
@@ -98,7 +98,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                 if (pendingSleep === owned) pendingSleep = null;
                 throw error;
             }), cancel: () => owned.cancel() };
-        } });
+        };
 
         async function execute(): Promise<RemoteExecutionResult<Evidence>> {
             let interrupted = interruption();
@@ -162,10 +162,10 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
             if ((interrupted = interruption())) return interrupted;
             ports.report({ kind: "starting" });
             if ((interrupted = interruption())) return interrupted;
-            const reserved = await ports.withLifecycleLockAsync(syncLifecyclePrefix(syncAuthority), async () => {
+            const reserved = await settleRemoteLifecycleLock(ports, syncLifecyclePrefix(syncAuthority), async () => {
                 const interrupted = interruption();
                 if (interrupted) return interrupted;
-                return ports.withLifecycleLockAsync(remoteContainerPrefix,
+                return settleRemoteLifecycleLock(ports, remoteContainerPrefix,
                     async (): Promise<RemoteReservationResult<Evidence> | RemoteCancellation | RemoteFault> => {
                         const interrupted = interruption();
                         if (interrupted) return interrupted;
@@ -173,8 +173,8 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                         reservation = { config: resolvedConfig, name: expectedContainerName, token };
                         reservationNeedsRelease = true;
                         return ports.reserveContainer({ config: resolvedConfig, projectPath: fullPath, token, leaseSeconds });
-                    });
-            });
+                    }, error => recordCleanupFault("release-container-guard", error));
+            }, error => recordCleanupFault("release-sync-guard", error));
             if (reserved.kind === "failed") return { kind: "failed", reason: reserved.reason, evidence: reserved.evidence };
             if (reserved.kind !== "reserved") return reserved;
             if ((interrupted = interruption())) return interrupted;
@@ -197,11 +197,15 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
             const prepared = ports.prepareRemoteProject({ config: resolvedConfig, containerId: remoteContainer.id, projectId });
             if (!prepared.ok) return { kind: "failed", reason: "project-prepare-failed", evidence: prepared.evidence };
             if ((interrupted = interruption())) return interrupted;
-            const ensured = await sync.ensureSync({ ...syncAuthority, containerId: remoteContainer.id }, remoteContainer.name, interruption);
+            const ensured = await ensureSync({ ...syncAuthority, containerId: remoteContainer.id }, remoteContainer.name, interruption);
+            for (const failure of ensured.cleanupFailures ?? []) {
+                if (failure.kind === "cleanup-fault") recordCleanupFault(failure.phase, failure.error);
+                else cleanupFailures.push(failure);
+            }
             if (ensured.kind !== "ready") return ensured;
             if ((interrupted = interruption())) return interrupted;
             const syncHandle = ensured.handle;
-            const waited = await sync.waitForSync(syncHandle, 120000, interruption);
+            const waited = await waitForSync(syncHandle, 120000, interruption, sleep);
             if (waited.kind !== "ready") return waited;
             if ((interrupted = interruption())) return interrupted;
             ports.report({ kind: "connecting", host: resolvedConfig.host });
@@ -231,42 +235,53 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                 const answer = await prompt({ kind: "cleanup" });
                 if ((interrupted = interruption())) return interrupted;
                 if (answer === "y" || answer === "yes") {
-                    let stopOutcome: RemoteExecutionResult<Evidence> | null = null;
-                    await ports.withLifecycleLockAsync(syncLifecyclePrefix(syncAuthority), async () => {
-                        if (interruption()) return;
-                        ports.withLifecycleLock(remoteContainerPrefix, () => {
-                            if (interruption()) return undefined;
-                            if (!removeClaim(true) || interruption()) return undefined;
-                            ports.report({ kind: "stopping" });
-                            if (interruption()) return undefined;
-                            const stopped = ports.stopReservedContainer({ config: resolvedConfig, name: remoteContainer.name, containerId: remoteContainer.id, token });
-                            if (stopped.kind === "failed") {
-                                stopOutcome = { kind: "failed", reason: "stop-failed", evidence: stopped.evidence };
+                    const stopContainer = (): RemoteExecutionResult<Evidence> => {
+                        let interrupted = interruption();
+                        if (interrupted) return interrupted;
+                        if (!removeClaim(true)) return { kind: "completed", exitCode };
+                        if ((interrupted = interruption())) return interrupted;
+                        ports.report({ kind: "stopping" });
+                        if ((interrupted = interruption())) return interrupted;
+                        const stopped = ports.stopReservedContainer({ config: resolvedConfig, name: remoteContainer.name, containerId: remoteContainer.id, token });
+                        if (stopped.kind === "failed") return { kind: "failed", reason: "stop-failed", evidence: stopped.evidence };
+                        // Both proved results have consumed this invocation's exact token.
+                        reservationNeedsRelease = false;
+                        cancelHeartbeat();
+                        if ((interrupted = interruption())) return interrupted;
+                        if (stopped.kind === "busy") {
+                            ports.report({ kind: "peer-active" });
+                            return interruption() ?? { kind: "completed", exitCode };
+                        }
+                        const observation = observeCapturedSync(syncHandle);
+                        if (observation.kind === "missing") return interruption() ?? { kind: "completed", exitCode };
+                        if (observation.kind === "unknown" || observation.kind === "conflict") {
+                            return { kind: "failed", reason: observation.kind === "unknown" ? "sync-unknown" : "sync-conflict", evidence: observation.evidence };
+                        }
+                        if ((interrupted = interruption())) return interrupted;
+                        ports.report({ kind: "pausing" });
+                        if ((interrupted = interruption())) return interrupted;
+                        const paused = ports.pauseSync(syncHandle.identifier);
+                        if (!paused.ok) return { kind: "failed", reason: "sync-pause-failed", evidence: paused.evidence };
+                        return interruption() ?? { kind: "completed", exitCode };
+                    };
+                    const stopOutcome = await settleRemoteLifecycleLock(ports, syncLifecyclePrefix(syncAuthority), async (): Promise<RemoteExecutionResult<Evidence>> => {
+                        const interrupted = interruption();
+                        if (interrupted) return interrupted;
+                        const callback: { outcome?: RemoteExecutionResult<Evidence> } = {};
+                        try {
+                            ports.withLifecycleLock(remoteContainerPrefix, () => {
+                                try { callback.outcome = stopContainer(); }
+                                catch (error) { callback.outcome = { kind: "fault", error }; }
                                 return undefined;
-                            }
-                            // Both proved results have consumed this invocation's exact token.
-                            reservationNeedsRelease = false;
-                            cancelHeartbeat();
-                            if (interruption()) return undefined;
-                            if (stopped.kind === "busy") {
-                                ports.report({ kind: "peer-active" });
-                                return undefined;
-                            }
-                            const observation = observeCapturedSync(syncHandle);
-                            if (observation.kind === "missing") return undefined;
-                            if (observation.kind === "unknown" || observation.kind === "conflict") {
-                                stopOutcome = { kind: "failed", reason: observation.kind === "unknown" ? "sync-unknown" : "sync-conflict", evidence: observation.evidence };
-                                return undefined;
-                            }
-                            if (interruption()) return undefined;
-                            ports.report({ kind: "pausing" });
-                            if (interruption()) return undefined;
-                            const paused = ports.pauseSync(syncHandle.identifier);
-                            if (!paused.ok) stopOutcome = { kind: "failed", reason: "sync-pause-failed", evidence: paused.evidence };
-                            return undefined;
-                        });
-                    });
-                    if (stopOutcome) return stopOutcome;
+                            });
+                        } catch (error) {
+                            if (!callback.outcome) return { kind: "fault", error };
+                            if (!["failed", "fault", "cancelled"].includes(callback.outcome.kind)) return { kind: "fault", error };
+                            recordCleanupFault("release-container-guard", error);
+                        }
+                        return callback.outcome!;
+                    }, error => recordCleanupFault("release-sync-guard", error));
+                    if (stopOutcome.kind !== "completed") return stopOutcome;
                     if ((interrupted = interruption())) return interrupted;
                 }
             }
@@ -357,6 +372,9 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
     }
 
     async function remoteTerminate(projectPath: string): Promise<RemoteTerminateOutcome<Evidence>> {
+        const cleanupFailures: RemoteCleanupFailure<Evidence>[] = [];
+        const finish = (outcome: RemoteTerminateOutcome<Evidence>): RemoteTerminateOutcome<Evidence> =>
+            cleanupFailures.length > 0 ? { ...outcome, cleanupFailures } : outcome;
         try {
             const fullPath = ports.resolveProjectPath(projectPath);
             const config = loadRemoteConfig(fullPath);
@@ -369,7 +387,7 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                 return { kind: "failed", reason: "config-invalid" };
             }
             const authority = { localPath: fullPath, user: config.user, host: config.host, projectId: ports.getProjectId(fullPath) };
-            return await ports.withLifecycleLockAsync(syncLifecyclePrefix(authority), async (): Promise<RemoteTerminateOutcome<Evidence>> => {
+            return finish(await settleRemoteLifecycleLock(ports, syncLifecyclePrefix(authority), async (): Promise<RemoteTerminateOutcome<Evidence>> => {
                 const observation = inspectSync(authority);
                 if (observation.kind === "missing") {
                     ports.report({ kind: "sync-inactive" });
@@ -382,8 +400,8 @@ export function createRemoteServices<Evidence>(ports: RemoteServicesPorts<Eviden
                 if (!terminated.ok) return { kind: "failed", reason: "sync-terminate-failed", evidence: terminated.evidence };
                 ports.report({ kind: "sync-terminated" });
                 return { kind: "completed", state: "terminated" };
-            });
-        } catch (error) { return { kind: "fault", error }; }
+            }, error => cleanupFailures.push({ kind: "cleanup-fault", phase: "release-sync-guard", error })));
+        } catch (error) { return finish({ kind: "fault", error }); }
     }
 
     return { checkTailscale, checkMutagen, isHostReachable, remoteExec, remoteSetup, remoteCheck, remoteTerminate };

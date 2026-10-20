@@ -8,7 +8,7 @@ import { getContainerName } from "../docker.js";
 import { legacyRemoteConfigDir, readCccConfig, updateCccConfig } from "../home-layout.js";
 import { createSessionLock, removeSessionLock, removeSessionLockInHeldLifecycleLock, withContainerLifecycleLock, withContainerLifecycleLockAsync } from "../session.js";
 import { remoteContainerStartScript, remoteSessionReservationShell, remoteRefreshSessionShell, remoteReleaseSessionShell, remoteStopShell, shellEscapeArg } from "./remote-shell.js";
-import type { RemoteConfig, RemoteEvent, RemoteExecutionOutcome, RemoteFailureKind, RemoteObservedSync, RemotePrompt, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncInventory, RemoteTerminateOutcome } from "../domain/remote-services.js";
+import type { RemoteCleanupFailure, RemoteConfig, RemoteEvent, RemoteExecutionOutcome, RemoteFailureKind, RemoteObservedSync, RemotePrompt, RemoteSyncAuthority, RemoteSyncBinding, RemoteSyncInventory, RemoteTerminateOutcome } from "../domain/remote-services.js";
 import type { RemoteServicesPorts } from "../ports/remote-services.js";
 import { captureInteractiveTerminal } from "./interactive-terminal.js";
 
@@ -276,18 +276,23 @@ export function projectRemoteExecutionOutcome(outcome: RemoteExecutionOutcome<Na
     if (outcome.kind === "failed") report({ kind: "unexpected-error", error: failureError(outcome.reason, outcome.evidence) });
     if (outcome.kind === "fault") report({ kind: "unexpected-error", error: outcome.error });
     for (const failure of outcome.cleanupFailures) {
-        const error = failure.kind === "cleanup-fault" ? failure.error :
-            new Error(`Failed to release remote session reservation: ${failure.evidence.execution?.stderr || failure.evidence.execution?.error?.message || failure.evidence.execution?.status}`);
-        report({ kind: "unexpected-error", error });
+        report({ kind: "unexpected-error", error: cleanupError(failure) });
     }
     if (outcome.kind === "cancelled") { process.kill(process.pid, outcome.signal); return; }
     const code = outcome.kind === "completed" ? outcome.exitCode : 1;
     process.exit(code === 0 && outcome.cleanupFailures.length > 0 ? 1 : code);
 }
 
+function cleanupError(failure: RemoteCleanupFailure<NativeEvidence>): unknown {
+    return failure.kind === "cleanup-fault" ? failure.error :
+        new Error(`Failed to release remote session reservation: ${failure.evidence.execution?.stderr || failure.evidence.execution?.error?.message || failure.evidence.execution?.status}`);
+}
+
 export function projectRemoteTerminateOutcome(outcome: RemoteTerminateOutcome<NativeEvidence>): void {
+    for (const failure of outcome.cleanupFailures ?? []) report({ kind: "unexpected-error", error: cleanupError(failure) });
     if (outcome.kind === "failed") throw failureError(outcome.reason, outcome.evidence);
     if (outcome.kind === "fault") throw outcome.error;
+    if (outcome.cleanupFailures?.length) throw cleanupError(outcome.cleanupFailures[0]);
 }
 
 // Readline interfaces share and pause the physical stdin stream, even across factories.
