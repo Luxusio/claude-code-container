@@ -5,6 +5,7 @@ import { createNativeSessionClaims, ensureNativeSessionClaimsDirectory } from ".
 import { armNativeSessionOwnership, assertNativeSessionOwnership, validateNativeSessionOwnership } from "./composition/session-ownership.js";
 import { captureNativeSessionOwnership, nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership } from "./adapters/session-ownership.js";
 import { createSessionAcquisition } from "./application/session-acquisition.js";
+import { createSessionPublicationCoordinator } from "./application/session-publication-coordinator.js";
 import type { SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisitionResult } from "./ports/session-acquisition.js";
 import { getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
 import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
@@ -98,11 +99,22 @@ let acquisitionSettled: Promise<AcquisitionOutcome> = Promise.resolve({ kind: "c
 let ownershipAuthorization: (() => void) | null = null;
 let capturedOwnership: SessionOwnershipReceipt | null = null;
 let capturedRuntimeInvocation: NativeRuntimeInvocation | null = null;
-let pendingOwnershipUpdate: Promise<void> = Promise.resolve();
-let capturedContainerId: string | null = null;
-let sessionCleanupEnabled = true;
-let cleanupAuthorizationVersion = 0;
 let disposeSessionCleanupSignals: (() => void) | null = null;
+
+const sessionPublication = createSessionPublicationCoordinator({
+    currentOwnership: () => ownership,
+    prepareStandaloneUpdate(activeOwnership, containerId, enabled) {
+        const current = sessionCleanup.getCurrentSession();
+        // Cleanup may already have retired this claim while its outer guard returns.
+        if (!current.lockFile) return;
+        if (!current.projectPath) throw new Error("Session update lacks its captured project binding.");
+        const prefix = sessionClaimPrefix(getProjectId(current.projectPath), current.profile);
+        return withContainerLifecycleLock(prefix, () =>
+            activeOwnership.prepareContainerUpdateInHeldLifecycleLock(containerId, enabled));
+    },
+    setCleanupEnabled: enabled => sessionCleanup.setSessionCleanupEnabled(enabled),
+    setContainerId: containerId => sessionCleanup.setSessionContainerId(containerId),
+});
 
 function ownershipFailed(error: Error): void {
     if (acquiringOwnership) { acquisitionFailure = error; return; }
@@ -201,10 +213,7 @@ export async function acquireHostSessionOwnership(
                 sessionCleanup.clearSession();
                 capturedRuntimeInvocation = runtimeInvocation;
                 sessionCleanup.setSession(lockFile, binding.projectPath, binding.profile, binding.toolName);
-                capturedContainerId = null;
-                sessionCleanupEnabled = false;
-                sessionCleanup.setSessionCleanupEnabled(false);
-                cleanupAuthorizationVersion++;
+                sessionPublication.beginCapture(false);
                 ownershipAuthorization = () => { throw new Error("Host session ownership was not established."); };
                 const receipt = captureNativeSessionOwnership(lockFile);
                 validateNativeSessionOwnership({ ...binding, lockFile }, receipt, process.pid);
@@ -223,8 +232,7 @@ export async function acquireHostSessionOwnership(
                 if (!await ownership!.updateContainerInHeldLifecycleLock(id, false)) {
                     throw new Error("Existing session ownership acknowledgement was superseded.");
                 }
-                capturedContainerId = id;
-                sessionCleanup.setSessionContainerId(id);
+                sessionPublication.captureAcknowledgedContainer(id);
             },
             reconcileForeign(prefix, lockFile) {
                 if (acquisitionFailure) throw acquisitionFailure;
@@ -243,10 +251,7 @@ export async function acquireHostSessionOwnership(
                 ownershipAuthorization = null;
                 capturedOwnership = null;
                 capturedRuntimeInvocation = null;
-                pendingOwnershipUpdate = Promise.resolve();
-                capturedContainerId = null;
-                sessionCleanupEnabled = true;
-                cleanupAuthorizationVersion++;
+                sessionPublication.retire();
                 if (previous) await previous.release();
                 acquisitionRolledBack = true;
             },
@@ -268,9 +273,8 @@ export async function acquireHostSessionOwnership(
     }
 }
 
-export async function confirmSessionOwnership(): Promise<void> {
-    await pendingOwnershipUpdate;
-    ownership?.assertOwnership();
+export function confirmSessionOwnership(): Promise<void> {
+    return sessionPublication.confirm();
 }
 
 export function setSession(lockFile: string, projectPath: string, profile?: string, toolName?: string): void {
@@ -282,9 +286,7 @@ export function setSession(lockFile: string, projectPath: string, profile?: stri
     validateNativeSessionOwnership({ lockFile, projectPath, profile, toolName }, receipt, process.pid);
     sessionCleanup.setSession(lockFile, projectPath, profile, toolName);
     capturedRuntimeInvocation = runtimeInvocation;
-    capturedContainerId = null;
-    sessionCleanupEnabled = true;
-    cleanupAuthorizationVersion++;
+    sessionPublication.beginCapture(true);
     ownershipAuthorization = () => assertNativeSessionOwnership(receipt);
     capturedOwnership = receipt;
 }
@@ -293,95 +295,27 @@ export function setSession(lockFile: string, projectPath: string, profile?: stri
 export function setSessionCleanupEnabled(enabled: boolean): void {
     if (typeof enabled !== "boolean") throw new TypeError("Invalid session cleanup authorization.");
     if (acquiringOwnership) throw new Error("Cannot update host session ownership during acquisition.");
-    sessionCleanupEnabled = enabled;
-    const version = ++cleanupAuthorizationVersion;
-    if (!enabled || !ownership) sessionCleanup.setSessionCleanupEnabled(enabled);
-    queueOwnershipUpdate(version);
-}
-
-function queueOwnershipUpdate(version: number): void {
-    if (!ownership) return;
-    const activeOwnership = ownership;
-    const containerId = capturedContainerId;
-    const enabled = sessionCleanupEnabled;
-    const current = sessionCleanup.getCurrentSession();
-    // The cleanup application may already have retired this claim while its
-    // outer guard is returning. Its old handle has no record left to publish.
-    if (!current.lockFile) return;
-    if (!current.projectPath) throw new Error("Session update lacks its captured project binding.");
-    const prefix = sessionClaimPrefix(getProjectId(current.projectPath), current.profile);
-    const dispatch = withContainerLifecycleLock(prefix, () =>
-        activeOwnership.prepareContainerUpdateInHeldLifecycleLock(containerId, enabled));
-    enqueueOwnershipUpdate(version, activeOwnership, enabled, dispatch);
-}
-
-function enqueueOwnershipUpdate(version: number, activeOwnership: SessionOwnershipHandle, enabled: boolean,
-    dispatch: () => Promise<boolean>): void {
-    const previous = pendingOwnershipUpdate;
-    // Keep the primary failure, but never discard a later positive start merely
-    // because an older queued transport request rejected.
-    const execution = previous.catch(() => undefined).then(async () => {
-        if (ownership !== activeOwnership || cleanupAuthorizationVersion !== version) return;
-        const acknowledged = await dispatch();
-        // A stale successful ACK must not reauthorize a subsequently revoked session.
-        if (acknowledged && ownership === activeOwnership && cleanupAuthorizationVersion === version) {
-            sessionCleanup.setSessionCleanupEnabled(enabled);
-        }
-    });
-    pendingOwnershipUpdate = Promise.allSettled([previous, execution]).then(results => {
-        const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
-        if (failures.length === 1) throw failures[0];
-        if (failures.length > 1) throw new AggregateError(failures, "Session ownership publication failed.", { cause: failures[0] });
-    });
-    // ACK failure invokes ownershipFailed; consume now while confirm retains rejection.
-    void pendingOwnershipUpdate.catch(() => undefined);
+    sessionPublication.setCleanupEnabled(enabled);
 }
 
 export function beginSessionStartupInHeldLifecycleLock(): void {
     if (!ownership || acquiringOwnership) throw new Error("Session startup requires an armed ownership guardian.");
-    ownership.beginStartupInHeldLifecycleLock();
-    cleanupAuthorizationVersion++;
-    sessionCleanupEnabled = false;
-    sessionCleanup.setSessionCleanupEnabled(false);
+    sessionPublication.beginStartupInHeldLifecycleLock(ownership);
 }
 
 export function recordSessionOwnStartInHeldLifecycleLock(containerId: string): void {
     if (!ownership || acquiringOwnership) throw new Error("Session start requires an armed ownership guardian.");
-    // Durable compensation precedes transport and cannot be lost to its queue.
-    ownership.recordOwnStartInHeldLifecycleLock(containerId);
-    capturedContainerId = containerId;
-    sessionCleanup.setSessionContainerId(containerId);
-    sessionCleanupEnabled = true;
-    sessionCleanup.setSessionCleanupEnabled(true);
-    const version = ++cleanupAuthorizationVersion;
-    const active = ownership;
-    const dispatch = active.prepareContainerUpdateInHeldLifecycleLock(containerId, true);
-    enqueueOwnershipUpdate(version, active, true, dispatch);
+    sessionPublication.recordOwnStartInHeldLifecycleLock(ownership, containerId);
 }
 
 export function publishSessionReadyInHeldLifecycleLock(containerId: string, handoff: { startedByInvocation: boolean }): void {
     if (!ownership || acquiringOwnership) throw new Error("Session readiness requires an armed ownership guardian.");
-    capturedContainerId = containerId;
-    sessionCleanup.setSessionContainerId(containerId);
-    sessionCleanupEnabled = handoff.startedByInvocation;
-    if (!sessionCleanupEnabled) sessionCleanup.setSessionCleanupEnabled(false);
-    const version = ++cleanupAuthorizationVersion;
-    const active = ownership;
-    const dispatch = active.prepareContainerUpdateInHeldLifecycleLock(containerId, sessionCleanupEnabled);
-    enqueueOwnershipUpdate(version, active, sessionCleanupEnabled, dispatch);
+    sessionPublication.publishReadyInHeldLifecycleLock(ownership, containerId, handoff);
 }
 
 export function setSessionContainerId(containerId: string | null): void {
     if (acquiringOwnership) throw new Error("Cannot update host session ownership during acquisition.");
-    // Permission belongs to the captured identity, never its replacement. Revoke
-    // before publishing a different ID so guardian EOF cannot stop a failed join.
-    if (ownership && capturedContainerId !== containerId) {
-        sessionCleanupEnabled = false;
-        sessionCleanup.setSessionCleanupEnabled(false);
-    }
-    capturedContainerId = containerId;
-    sessionCleanup.setSessionContainerId(containerId);
-    queueOwnershipUpdate(++cleanupAuthorizationVersion);
+    sessionPublication.setContainerId(containerId);
 }
 
 /** Existing exact claim receipt; callers cannot manufacture a basename exclusion. */
@@ -397,9 +331,7 @@ export function clearSession(): void {
     if (armingOwnership || acquiringOwnership) throw new Error("Cannot clear host session ownership during acquisition.");
     if (ownership) cleanupSession();
     sessionCleanup.clearSession();
-    capturedContainerId = null;
-    sessionCleanupEnabled = true;
-    cleanupAuthorizationVersion++;
+    sessionPublication.beginCapture(true);
     ownershipAuthorization = null;
     capturedOwnership = null;
     capturedRuntimeInvocation = null;
@@ -521,10 +453,7 @@ export function cleanupSession(): void {
     if (!sessionCleanup.getCurrentSession().lockFile) {
         const previous = ownership;
         ownership = null;
-        pendingOwnershipUpdate = Promise.resolve();
-        capturedContainerId = null;
-        sessionCleanupEnabled = true;
-        cleanupAuthorizationVersion++;
+        sessionPublication.retire();
         ownershipAuthorization = null;
         capturedOwnership = null;
         capturedRuntimeInvocation = null;
