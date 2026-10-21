@@ -79,7 +79,7 @@ function fixture(recording: RecordingRecord = active, kind: AndroidRecordingPort
         expect(state.files.get(remote)).toBe("complete remote media");
         expect(state.files.has(stage.stagedPath)).toBe(false);
     };
-    return { app, ports, state, effects, timeouts, stop, retained };
+    return { app, ports, state, stage, effects, timeouts, stop, retained };
 }
 
 describe("direct Android recording settlement", () => {
@@ -260,6 +260,140 @@ describe("direct Android recording settlement", () => {
         f.state.onGuest = () => { f.state.device = { ...f.state.device, recording: successor }; return undefined; };
         expect(await f.stop()).toMatchObject({ kind: "failure" }); f.retained(successor);
         expect(f.effects).not.toContain("stage"); expect(f.effects).not.toContain("remove");
+    });
+});
+
+describe("direct Android recording stage cleanup", () => {
+    function failDisposal(f: ReturnType<typeof fixture>) {
+        const error = { code: "EACCES", message: "private stage removal detail" };
+        const disposed: unknown[] = [];
+        f.ports.disposeStage = stage => { expect(stage).toBe(f.stage); f.effects.push("dispose"); disposed.push(stage); throw error; };
+        return { error, disposed };
+    }
+
+    it("preserves a copy refusal and pending recovery bytes when its allocated stage cannot be removed", async () => {
+        const f = fixture({ ...active, active: false }); f.state.copyOk = false;
+        const cleanup = failDisposal(f);
+        const result = await f.stop();
+
+        expect(result).toEqual({ kind: "cleanup-failure", primary: {
+            kind: "failure", message: `Error: copy denied. Android recording remains pending finalization for ${deviceId}.`,
+        }, error: cleanup.error, facts: {} });
+        if (!result || result.kind !== "cleanup-failure") throw new Error("Expected cleanup failure");
+        expect(result.error).toBe(cleanup.error);
+        expect(cleanup.disposed).toEqual([f.stage]); expect(cleanup.disposed[0]).toBe(f.stage);
+        expect(f.state.device.recording).toMatchObject({ active: false, remotePath: remote });
+        expect(f.state.files.get(destination)).toBe("previous destination");
+        expect(f.state.files.get(remote)).toBe("complete remote media");
+        expect(f.state.files.get(f.stage.stagedPath)).toBe("partial transfer");
+        expect(f.effects).not.toContain("commit"); expect(f.effects).not.toContain("remove");
+    });
+
+    it("retains successful finalization and its positive facts when only stage removal fails", async () => {
+        const f = fixture({ ...active, active: false }); const cleanup = failDisposal(f);
+        const result = await f.stop();
+
+        expect(result).toMatchObject({ kind: "cleanup-failure", primary: {
+            kind: "success", value: { deviceId, stopped: true, provider: "adb-screenrecord", status: 0 },
+        }, facts: { outputPublished: true, recordingStateCleared: true } });
+        if (!result || result.kind !== "cleanup-failure") throw new Error("Expected cleanup failure");
+        expect(result.error).toBe(cleanup.error); expect(cleanup.disposed).toEqual([f.stage]);
+        expect(f.effects.slice(f.effects.indexOf("stage"))).toEqual(["stage", "copy", "commit", "clear", "remove", "dispose"]);
+        expect(f.state.device.recording).toBeNull(); expect(f.state.files.has(remote)).toBe(false);
+        expect(f.state.files.get(destination)).toBe("complete remote media");
+    });
+
+    it.each([0, undefined])("retains a falsy copy throw %j together with failed single-stage cleanup", async thrown => {
+        const f = fixture({ ...active, active: false }); const cleanup = failDisposal(f);
+        f.ports.copyRecording = () => { f.effects.push("copy"); throw thrown; };
+
+        const result = await f.stop();
+        expect(result).toEqual({ kind: "cleanup-failure", primary: { kind: "thrown", error: thrown }, error: cleanup.error, facts: {} });
+        if (!result || result.kind !== "cleanup-failure" || result.primary.kind !== "thrown") throw new Error("Expected preserved thrown primary");
+        expect(result.primary.error).toBe(thrown); expect(result.error).toBe(cleanup.error);
+        expect(cleanup.disposed).toEqual([f.stage]); expect(f.effects).not.toContain("commit");
+        expect(f.effects).not.toContain("clear"); expect(f.effects).not.toContain("remove");
+        expect(f.state.files.get(destination)).toBe("previous destination"); expect(f.state.files.has(remote)).toBe(true);
+    });
+
+    it.each([0, undefined])("successful cleanup rethrows the exact falsy copy failure %j", async thrown => {
+        const f = fixture({ ...active, active: false }), disposed: unknown[] = [];
+        f.ports.copyRecording = () => { throw thrown; };
+        f.ports.disposeStage = stage => { disposed.push(stage); stage.cleanup(); return undefined; };
+
+        const observed = await f.stop().then(value => ({ returned: true, value }), error => ({ returned: false, error }));
+        expect(observed).toEqual({ returned: false, error: thrown }); expect(disposed).toEqual([f.stage]);
+        expect(f.effects).not.toContain("commit"); expect(f.effects).not.toContain("clear");
+    });
+
+    it("does not claim output publication after a refused commit and failed cleanup", async () => {
+        const f = fixture({ ...active, active: false }); f.state.commitOk = false;
+        const cleanup = failDisposal(f);
+        expect(await f.stop()).toEqual({ kind: "cleanup-failure", primary: {
+            kind: "failure", message: `publication denied. Android recording remains pending finalization for ${deviceId}.`,
+        }, error: cleanup.error, facts: {} });
+        expect(cleanup.disposed).toEqual([f.stage]); expect(f.state.files.get(destination)).toBe("previous destination");
+        expect(f.effects).not.toContain("clear"); expect(f.effects).not.toContain("remove");
+    });
+
+    it("records committed output before a generation successor causes guard refusal and cleanup also fails", async () => {
+        const f = fixture({ ...active, active: false }); const cleanup = failDisposal(f);
+        const commit = f.ports.commitStage, successor = { ...active, runtimeId: "successor-after-publication" };
+        f.ports.commitStage = stage => {
+            const result = commit(stage); f.state.device = { ...f.state.device, recording: successor }; return result;
+        };
+
+        const result = await f.stop();
+        expect(result).toMatchObject({ kind: "cleanup-failure", primary: {
+            kind: "failure", message: expect.stringContaining("state or target changed while stopping"),
+        }, error: cleanup.error, facts: { outputPublished: true } });
+        if (!result || result.kind !== "cleanup-failure") throw new Error("Expected cleanup failure");
+        expect(result.facts).toEqual({ outputPublished: true });
+        expect(cleanup.disposed).toEqual([f.stage]); expect(f.state.device.recording).toBe(successor);
+        expect(f.state.files.get(destination)).toBe("complete remote media"); expect(f.state.files.has(remote)).toBe(true);
+        expect(f.effects).not.toContain("clear"); expect(f.effects).not.toContain("remove");
+    });
+
+    it("retains both positive facts after clear succeeds but fresh attachment validation and cleanup fail", async () => {
+        const f = fixture({ ...active, active: false }, "android-device"), cleanup = failDisposal(f);
+        const update = f.ports.updateDevice;
+        f.ports.updateDevice = (id, change) => {
+            const next = update(id, change);
+            if (next?.recording === null) f.state.device = { ...next, leaseClaimNonce: "successor-attachment" };
+            return f.state.device;
+        };
+
+        expect(await f.stop()).toMatchObject({ kind: "cleanup-failure", primary: { kind: "failure" },
+            error: cleanup.error, facts: { outputPublished: true, recordingStateCleared: true } });
+        expect(cleanup.disposed).toEqual([f.stage]); expect(f.state.device.recording).toBeNull();
+        expect(f.state.device.leaseClaimNonce).toBe("successor-attachment"); expect(f.effects).not.toContain("remove");
+        expect(f.state.files.get(destination)).toBe("complete remote media"); expect(f.state.files.has(remote)).toBe(true);
+    });
+
+    it("preserves post-clear remote-removal throws and completed facts when stage cleanup fails too", async () => {
+        const f = fixture({ ...active, active: false }); const cleanup = failDisposal(f), removeError = { code: "EIO" };
+        f.ports.removeRecording = () => { f.effects.push("remove"); throw removeError; };
+
+        const result = await f.stop();
+        expect(result).toEqual({ kind: "cleanup-failure", primary: { kind: "thrown", error: removeError },
+            error: cleanup.error, facts: { outputPublished: true, recordingStateCleared: true } });
+        if (!result || result.kind !== "cleanup-failure" || result.primary.kind !== "thrown") throw new Error("Expected preserved thrown primary");
+        expect(result.primary.error).toBe(removeError); expect(result.error).toBe(cleanup.error);
+        expect(cleanup.disposed).toEqual([f.stage]); expect(f.state.device.recording).toBeNull();
+        expect(f.state.files.get(destination)).toBe("complete remote media"); expect(f.state.files.has(remote)).toBe(true);
+    });
+
+    it("retains the exact native admission refusal returned after stage allocation alongside cleanup failure", async () => {
+        const f = fixture({ ...active, active: false }), cleanup = failDisposal(f);
+        const refusal = { kind: "native" as const, value: { publicDiagnostic: "attachment refused" } };
+        const target = f.ports.target;
+        f.ports.target = (device, operation, validation) => f.effects.includes("stage") ? refusal : target(device, operation, validation);
+
+        const result = await f.stop();
+        expect(result).toEqual({ kind: "cleanup-failure", primary: refusal, error: cleanup.error, facts: {} });
+        if (!result || result.kind !== "cleanup-failure") throw new Error("Expected cleanup failure");
+        expect(result.primary).toBe(refusal); expect(cleanup.disposed).toEqual([f.stage]);
+        expect(f.effects).not.toContain("copy"); expect(f.effects).not.toContain("clear"); expect(f.effects).not.toContain("remove");
     });
 });
 

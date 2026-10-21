@@ -20,7 +20,8 @@
  * @typedef {{active?:boolean,frameDir?:string,archivePath?:string,hostArchivePath?:string,[field:string]:unknown}} HelperRecording
  * @typedef {{error:string,response?:undefined,helper?:unknown}|{error?:undefined,response:{ok:boolean,error?:string,recording?:HelperRecording},helper:unknown}} RecordingHelperResult
  * @typedef {RecordingRecord & {deviceId:string,recording:RecordingRecord|null,provider?:string,stopped?:boolean,device?:RecordingRecord|null,helper?:unknown}} RecordingValue
- * @typedef {RecordingRefusal|{kind:'success',value:RecordingValue}} RecordingOutcome
+ * @typedef {RecordingRefusal|{kind:'success',value:RecordingValue}} RecordingResult
+ * @typedef {RecordingResult|{kind:'cleanup-failure',primary:RecordingResult|{kind:'thrown',error:unknown},error:unknown,facts:{outputPublished?:true,recordingStateCleared?:true}}} RecordingOutcome
  */
 export {};
 /** @param {unknown} value @returns {value is RecordingRecord} */

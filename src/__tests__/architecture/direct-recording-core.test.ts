@@ -251,6 +251,178 @@ describe("direct recording generation and artifact outcomes", () => {
     });
 });
 
+describe("direct recording allocated-stage lifetime", () => {
+    function simulator(recording: RecordingRecord | null) {
+        const { state, common, stage } = repository(recording), effects: string[] = [], disposed: RecordingStage[] = [];
+        state.files.set(stage.stagedPath, "known video bytes");
+        const ports: SimulatorRecordingPorts = {
+            ...common, ...processLeaves, kind: "ios-simulator",
+            target: device => ({ kind: "ready", device, target: { kind: "simulator", executable: "/allocated/xcrun", target: "OWNED-SIMULATOR" } }),
+            createStage(_device, path, persistent) { effects.push(persistent ? "allocate-persistent" : "allocate-temporary"); expect(path).toBe(destination); return { ok: true, stage }; },
+            restoreStage(_device, path, stagedPath) { effects.push("restore"); expect([path, stagedPath]).toEqual([destination, stage.stagedPath]); return { ok: true, stage }; },
+            populateStage(source, output) { effects.push("populate"); expect(output).toBe(stage); state.files.set(output.stagedPath, state.files.get(source)!); return { ok: true }; },
+            commitStage(output) { effects.push("commit"); expect(output).toBe(stage); state.files.set(output.path, state.files.get(output.stagedPath)!); return { ok: true }; },
+            disposeStage(output) { effects.push("dispose"); disposed.push(output); output.cleanup(); return undefined; },
+        };
+        return { state, common, stage, ports, effects, disposed,
+            stop: () => createDirectRecordingApplication(ports).request("device_record_video_stop", { deviceId: id, localPath: destination }) };
+    }
+
+    it.each(["commit refusal", "commit throw", "clear refusal", "clear throw"])("retains persistent Simulator stage after %s without attempting disposal", async fault => {
+        const stagingPath = "/owned/output-stage/payload", previous = { active: false, runtimeId: "pending-runtime", localPath: destination, stagingPath };
+        const f = simulator(previous), thrown = { code: "EIO", privateDetail: "preserved internal fault" };
+        const successor = { active: true, runtimeId: "successor-runtime", stagingPath: "/owned/successor/payload" };
+        if (fault === "commit refusal") f.ports.commitStage = () => ({ ok: false, message: "publication refused" });
+        if (fault === "commit throw") f.ports.commitStage = () => { throw thrown; };
+        if (fault.startsWith("clear")) {
+            let updates = 0;
+            f.ports.updateDevice = (deviceId, update) => {
+                if (++updates === 2) {
+                    if (fault === "clear throw") throw thrown;
+                    f.state.device = { ...f.state.device, recording: successor };
+                }
+                return f.common.updateDevice(deviceId, update);
+            };
+        }
+
+        const result = await f.stop().then(value => ({ kind: "returned" as const, value }), error => ({ kind: "thrown" as const, error }));
+        if (fault.endsWith("throw")) {
+            expect(result).toEqual({ kind: "thrown", error: thrown });
+            if (result.kind !== "thrown") throw new Error("Expected persistent-stage throw");
+            expect(result.error).toBe(thrown);
+        } else expect(result).toMatchObject({ kind: "returned", value: { kind: "failure" } });
+        expect(f.disposed).toEqual([]); expect(f.effects).not.toContain("populate"); expect(f.effects).not.toContain("allocate-temporary");
+        expect(f.state.files.get(stagingPath)).toBe("known video bytes");
+        expect(f.state.files.get(destination)).toBe(fault.startsWith("clear") ? "known video bytes" : "previous destination");
+        if (fault === "clear refusal") expect(f.state.device.recording).toBe(successor);
+        else expect(f.state.device.recording).toMatchObject({ active: false, stagingPath });
+    });
+
+    it.each(["populate", "commit", "clear"])("disposes the same temporary legacy Simulator stage once when %s throws", async fault => {
+        const source = "/owned/legacy-recording.mp4", f = simulator({ active: false, runtimeId: "legacy-runtime", localPath: source });
+        const thrown = { fault }; f.state.files.set(source, "legacy video bytes");
+        if (fault === "populate") f.ports.populateStage = () => { throw thrown; };
+        if (fault === "commit") f.ports.commitStage = () => { throw thrown; };
+        if (fault === "clear") {
+            let updates = 0;
+            f.ports.updateDevice = (deviceId, update) => {
+                if (++updates === 2) throw thrown;
+                return f.common.updateDevice(deviceId, update);
+            };
+        }
+
+        const result = await f.stop().then(value => ({ kind: "returned" as const, value }), error => ({ kind: "thrown" as const, error }));
+        expect(result).toEqual({ kind: "thrown", error: thrown }); expect(f.disposed).toEqual([f.stage]); expect(f.disposed[0]).toBe(f.stage);
+        expect(f.state.files.has(f.stage.stagedPath)).toBe(false); expect(f.state.files.get(source)).toBe("legacy video bytes");
+        expect(f.state.files.get(destination)).toBe(fault === "clear" ? "legacy video bytes" : "previous destination");
+        expect(f.state.device.recording).toMatchObject({ active: false, recorderRuntimeId: "legacy-runtime" });
+    });
+
+    it.each(["populate", "commit", "clear"])("retains legacy Simulator %s refusal and failed cleanup with truthful publication facts", async fault => {
+        const source = "/owned/legacy-recording.mp4", f = simulator({ active: false, runtimeId: "legacy-runtime", localPath: source });
+        const cleanupError = { code: "EACCES" }; f.state.files.set(source, "legacy video bytes");
+        const successor = { active: true, runtimeId: "successor-runtime" };
+        if (fault === "populate") f.ports.populateStage = () => ({ ok: false, message: "legacy source refused" });
+        if (fault === "commit") f.ports.commitStage = () => ({ ok: false, message: "publication refused" });
+        if (fault === "clear") {
+            let updates = 0;
+            f.ports.updateDevice = (deviceId, update) => {
+                if (++updates === 2) f.state.device = { ...f.state.device, recording: successor };
+                return f.common.updateDevice(deviceId, update);
+            };
+        }
+        f.ports.disposeStage = stage => { f.disposed.push(stage); throw cleanupError; };
+
+        const result = await f.stop();
+        const message = fault === "populate" ? `legacy source refused. iOS Simulator legacy recording remains pending finalization for ${id}.`
+            : fault === "commit" ? `publication refused. iOS Simulator recording remains pending finalization for ${id}.`
+            : `iOS Simulator recording state changed while stopping for ${id}; successor state and staged artifact were preserved.`;
+        expect(result).toEqual({ kind: "cleanup-failure", primary: { kind: "failure",
+            message,
+        }, error: cleanupError, facts: fault === "clear" ? { outputPublished: true } : {} });
+        if (!result || result.kind !== "cleanup-failure") throw new Error("Expected cleanup failure");
+        expect(result.error).toBe(cleanupError); expect(f.disposed).toEqual([f.stage]);
+        if (fault === "populate") expect(f.effects).not.toContain("commit");
+        if (fault === "clear") expect(f.state.device.recording).toBe(successor);
+        expect(f.state.files.get(destination)).toBe(fault === "clear" ? "legacy video bytes" : "previous destination");
+        expect(f.state.files.get(source)).toBe("legacy video bytes");
+    });
+
+    it("retains completed Simulator publication and clear facts when final stage disposal fails", async () => {
+        const f = simulator({ active: false, runtimeId: "pending-runtime", localPath: destination, stagingPath: "/owned/output-stage/payload" });
+        const cleanupError = { code: "EACCES" };
+        f.ports.disposeStage = stage => { f.disposed.push(stage); throw cleanupError; };
+
+        const result = await f.stop();
+        expect(result).toMatchObject({ kind: "cleanup-failure", primary: { kind: "success", value: { stopped: true, provider: "simctl-recordVideo" } },
+            facts: { outputPublished: true, recordingStateCleared: true } });
+        if (!result || result.kind !== "cleanup-failure") throw new Error("Expected cleanup failure");
+        expect(result.error).toBe(cleanupError); expect(f.disposed).toEqual([f.stage]);
+        expect(f.state.device.recording).toBeNull(); expect(f.state.files.get(destination)).toBe("known video bytes");
+    });
+
+    it.each(["not ready", "identity missing", "generation changed", "exited after admission"])("keeps %s start refusal when owned persistent-stage disposal fails", async fault => {
+        const f = simulator(null), cleanupError = { code: "EACCES" }, signals: string[] = [];
+        const successor = { active: true, runtimeId: "successor-runtime" };
+        f.ports.disposeStage = stage => { f.disposed.push(stage); throw cleanupError; };
+        f.ports.spawnRecorder = (_target, paths) => {
+            expect(paths.outputPath).toBe(f.stage.stagedPath);
+            if (fault === "generation changed") f.state.device = { ...f.state.device, recording: successor };
+            return { pid: 17, startup: async () => fault === "not ready" ? { kind: "error", message: "start refused" } : { kind: "ready" },
+                signal: signal => { signals.push(signal); return undefined; }, unref: () => undefined };
+        };
+        if (fault === "identity missing") f.ports.readIdentity = () => null;
+        if (fault === "exited after admission") f.ports.alive = () => false;
+
+        const result = await createDirectRecordingApplication(f.ports).request("device_record_video_start", { deviceId: id });
+        const message = fault === "not ready" ? "iOS Simulator recordVideo recorder failed to start: start refused"
+            : fault === "identity missing" ? `iOS Simulator recorder process identity could not be established for ${id}.`
+            : fault === "generation changed" ? `iOS Simulator recording state changed while starting for ${id}; the new recorder was stopped.`
+            : `iOS Simulator recorder exited before its state was committed for ${id}.`;
+        expect(result).toEqual({ kind: "cleanup-failure", primary: { kind: "failure", message }, error: cleanupError,
+            facts: fault === "exited after admission" ? { recordingStateCleared: true } : {} });
+        if (!result || result.kind !== "cleanup-failure") throw new Error("Expected cleanup failure");
+        expect(result.error).toBe(cleanupError); expect(f.disposed).toEqual([f.stage]);
+        expect(f.effects).toEqual(["allocate-persistent"]);
+        if (fault === "generation changed") expect(f.state.device.recording).toBe(successor);
+        else expect(f.state.device.recording).toBeNull();
+        expect(signals).toEqual(fault === "identity missing" || fault === "generation changed" ? ["SIGINT"] : []);
+    });
+
+    it("transfers persistent-stage lifetime to a successfully admitted Simulator recorder", async () => {
+        const f = simulator(null);
+        f.ports.spawnRecorder = (_target, paths) => {
+            expect(paths.outputPath).toBe(f.stage.stagedPath);
+            return { pid: 17, startup: async () => ({ kind: "ready" }), signal: unexpected, unref: () => undefined };
+        };
+        f.ports.disposeStage = () => { throw new Error("An active recorder still owns this stage"); };
+
+        expect(await createDirectRecordingApplication(f.ports).request("device_record_video_start", { deviceId: id })).toMatchObject({
+            kind: "success", value: { recording: { active: true, stagingPath: f.stage.stagedPath, runtimeId: "allocated-runtime" } },
+        });
+        expect(f.effects).toEqual(["allocate-persistent"]); expect(f.state.files.get(f.stage.stagedPath)).toBe("known video bytes");
+    });
+
+    it("preserves a macOS copy throw and failed disposal of its allocated output stage", async () => {
+        const { state, common, stage } = repository({ active: false, runtimeId: "pending-runtime", remotePath: remote, localPath: destination });
+        const primaryError = { code: "EIO" }, cleanupError = { code: "EACCES" }, disposed: RecordingStage[] = [];
+        const ports: MacosRecordingPorts = {
+            ...common, ...processLeaves, kind: "macos-vm", prepareWorkspace: () => undefined,
+            target: device => ({ kind: "ready", device, target: { kind: "ssh", executable: "/allocated/ssh", prefix: [], target: "owner@selected-guest", scp: "/allocated/scp", scpPrefix: [] } }),
+            createStage: () => ({ ok: true, stage }), fallbackStop: unexpected,
+            copyRecording: () => { throw primaryError; }, removeRecording: unexpected, commitStage: unexpected,
+            disposeStage: output => { disposed.push(output); throw cleanupError; },
+        };
+
+        const result = await createDirectRecordingApplication(ports).request("device_record_video_stop", { deviceId: id });
+        expect(result).toEqual({ kind: "cleanup-failure", primary: { kind: "thrown", error: primaryError }, error: cleanupError, facts: {} });
+        if (!result || result.kind !== "cleanup-failure" || result.primary.kind !== "thrown") throw new Error("Expected preserved throw");
+        expect(result.primary.error).toBe(primaryError); expect(result.error).toBe(cleanupError);
+        expect(disposed).toEqual([stage]); expect(disposed[0]).toBe(stage); expect(state.files.get(destination)).toBe("previous destination");
+        expect(state.device.recording).toMatchObject({ active: false, remotePath: remote });
+    });
+});
+
 
 describe("direct recording native copy observations", () => {
     it.each(["android-emulator", "android-device", "macos-vm"] as const)("normalizes %s native copy failures and preserves its public success fields", async kind => {

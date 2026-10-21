@@ -1,4 +1,5 @@
 import { androidActionPlan as semanticActionPlan, androidOrientationPlan as semanticOrientationPlan } from "../domain/android-control-transfer.mjs";
+import { renderStageCleanupFailure } from "./stage-cleanup-result.mjs";
 
 /** @typedef {import('../domain/android-control-transfer.mjs').Point} Point */
 /** @typedef {import('../domain/android-control-transfer.mjs').Swipe} Swipe */
@@ -79,9 +80,22 @@ function completionPayload(completion, variant) {
 
 /** @param {import('../ports/android-control-transfer.mjs').AndroidControlOutcome|undefined} outcome
  * @param {Variant} variant
- * @param {{jsonResult:(value:object)=>AndroidControlNativeResult,textResult:(ok:boolean,text:string)=>AndroidControlNativeResult,fail:(command:import('../ports/android-control-transfer.mjs').CommandReceipt)=>AndroidControlNativeResult}} renderers */
+ * @param {{jsonResult:(value:object)=>AndroidControlNativeResult,textResult:(ok:boolean,text:string)=>AndroidControlNativeResult,fail:(command:import('../ports/android-control-transfer.mjs').CommandReceipt)=>AndroidControlNativeResult}} renderers
+ * @returns {AndroidControlNativeResult|undefined} */
 export function presentAndroidControlOutcome(outcome, variant, renderers) {
     if (!outcome) return undefined;
+    if (outcome.kind === 'cleanup-failure') {
+        const primary = outcome.primary;
+        return renderStageCleanupFailure({
+            error: 'android-transfer-cleanup-failed',
+            primary: primary.kind === 'thrown' ? primary : {
+                kind: 'returned', outcome: primary.kind,
+                result: presentAndroidControlOutcome(primary, variant, renderers),
+            },
+            cleanupError: outcome.error,
+            ...(primary.kind === 'completed' ? { result: { kind: 'completed', completed: true } } : {}),
+        }, renderers.jsonResult);
+    }
     if (outcome.kind === 'text') return renderers.textResult(false,outcome.message);
     const command = /** @type {import('../ports/android-control-transfer.mjs').CommandReceipt} */ (outcome.evidence);
     if (outcome.kind === 'command-failure') return renderers.fail(command);

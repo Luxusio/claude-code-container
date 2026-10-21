@@ -1,3 +1,4 @@
+import { renderStageCleanupFailure } from "../adapters/stage-cleanup-result.mjs";
 import { performIosControl, createIosSimulatorNative } from "../adapters/ios-control-transfer.mjs";
 import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { createIosObservationAccess } from "../application/ios-observation-access.mjs";
@@ -43,9 +44,21 @@ const recordingNative = {
     },
 };
 const directRecording = createDirectRecording(recordingNative);
-/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome */
+/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome
+ * @returns {unknown} */
 function presentRecordingOutcome(outcome) {
     if (!outcome || outcome.kind === 'missing') return undefined;
+    if (outcome.kind === 'cleanup-failure') {
+        const primary = outcome.primary;
+        return renderStageCleanupFailure({
+            error: 'recording-stage-cleanup-failed',
+            primary: primary.kind === 'thrown' ? primary
+                : { kind: 'returned', outcome: primary.kind, result: presentRecordingOutcome(primary) },
+            cleanupError: outcome.error,
+            ...(primary.kind === 'success' || Object.keys(outcome.facts).length
+                ? { result: { ...outcome.facts, ...(primary.kind === 'success' ? { kind: 'completed', completed: true } : {}) } } : {}),
+        }, jsonResult);
+    }
     if (outcome.kind === 'failure') return textResult(false, outcome.message);
     if (outcome.kind === 'native') return outcome.value;
     return jsonResult(outcome.value);
@@ -838,8 +851,19 @@ function createObservationAccess(initialXcrun = null) {
     return createIosObservationAccess(observationPorts);
 }
 
+/** @returns {unknown} */
 function presentIosNativeOutcome(outcome) {
     if (outcome === undefined) return undefined;
+    if (outcome.kind === "cleanup-failure") {
+        const primary = outcome.primary;
+        return renderStageCleanupFailure({
+            error: "ios-transfer-cleanup-failed",
+            primary: primary.kind === "thrown" ? primary
+                : { kind: "returned", outcome: primary.kind, result: presentIosNativeOutcome(primary) },
+            cleanupError: outcome.error,
+            ...(primary.kind === "json" ? { result: { kind: "completed", completed: true } } : {}),
+        }, jsonResult);
+    }
     if (outcome.kind === "json") return jsonResult(outcome.payload);
     if (outcome.kind === "command-failure") return fail(outcome.receipt);
     if (outcome.kind === "conflict") {

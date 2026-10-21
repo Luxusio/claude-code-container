@@ -5,6 +5,12 @@ import { androidControlObservation } from "../../../packages/device-lab/provider
 type NativeToolResult = { content: { type: string; text?: string }[]; isError?: boolean };
 type AndroidControlHandler = (name: string, args: Record<string, unknown>) => Promise<NativeToolResult | undefined>;
 
+const { jsonResult, textResult, MCP_ERROR_TEXT_LIMIT_BYTES } = await vi.importActual<{
+    jsonResult(value: unknown): NativeToolResult;
+    textResult(ok: boolean, text: string): NativeToolResult;
+    MCP_ERROR_TEXT_LIMIT_BYTES: number;
+}>("../../../packages/device-lab/providers/responses.mjs");
+
 const native = vi.hoisted(() => ({
     result: { status: 0, stdout: "native output", stderr: "native diagnostic" } as CommandReceipt,
     leaseLost: false,
@@ -15,7 +21,7 @@ const native = vi.hoisted(() => ({
     disposeOutput: vi.fn<() => void>(),
     stageInput: vi.fn<(_value: unknown) => { ok: true; path: string; stagedPath: string; cleanup(): void }>(),
     stageOutput: vi.fn<(_value: unknown) => { ok: true; path: string; stagedPath: string; cleanup(): void }>(),
-    commit: vi.fn<(_stage: object) => { ok: true; path: string }>(),
+    commit: vi.fn<(_stage: object) => { ok: true; path: string } | { ok: false; message: string }>(),
 }));
 
 vi.mock("../../../packages/device-lab/providers/commands.mjs", async original => ({
@@ -76,6 +82,14 @@ function payload(result: { content: readonly { text?: string }[]; isError?: bool
     const text = result?.content[0]?.text;
     if (typeof text !== "string") throw new Error("missing native control response");
     return JSON.parse(text);
+}
+
+function cleanupPayload(result: NativeToolResult | undefined) {
+    expect(result?.isError).toBe(true);
+    const text = result?.content[0]?.text;
+    if (typeof text !== "string") throw new Error("missing native cleanup response");
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(MCP_ERROR_TEXT_LIMIT_BYTES);
+    return { text, value: JSON.parse(text) };
 }
 
 describe("Android control native normalization", () => {
@@ -140,6 +154,88 @@ describe.each([
         ]);
         payload(await invoke("mobile_long_press", { backend, deviceId, x: 5, y: 6 }));
         expect(native.run).toHaveBeenLastCalledWith("/fixture/adb", ["-s", serial, "shell", "input", "swipe", "5", "6", "5", "6", "700"]);
+    });
+
+    it.each(["upload", "download"] as const)("retains completed %s in the public response after local cleanup fails", async operation => {
+        const cleanup = Object.assign(new Error("private cleanup /stage/secret"), { code: "EACCES", path: "/stage/secret", data: "private-data" });
+        (operation === "upload" ? native.disposeInput : native.disposeOutput).mockImplementation(() => { throw cleanup; });
+        const response = cleanupPayload(await invoke(operation === "upload" ? "device_upload" : "device_download", {
+            backend, deviceId, localPath: "/requested/file", remotePath: "/sdcard/file",
+        }));
+        const ordinary = jsonResult({
+            ...(operation === "upload"
+                ? { uploaded: { localPath: "/local/input", remotePath: "/sdcard/file" } }
+                : { downloaded: { remotePath: "/sdcard/file", localPath: "/local/committed" } }),
+            provider: "adb", stdout: "native output", stderr: "native diagnostic", status: 0,
+        });
+        expect(response.value).toEqual({ ok: false, error: "android-transfer-cleanup-failed",
+            cause: { kind: "completed", result: ordinary }, cleanup: { operation: "local", failed: true, code: "EACCES" },
+            result: { kind: "completed", completed: true },
+        });
+        for (const secret of ["private cleanup", "/stage/secret", "private-data"]) expect(response.text).not.toContain(secret);
+        expect(native.timed).toHaveBeenCalledOnce();
+        expect(native.disposeInput).toHaveBeenCalledTimes(operation === "upload" ? 1 : 0);
+        expect(native.disposeOutput).toHaveBeenCalledTimes(operation === "download" ? 1 : 0);
+        if (operation === "download") expect(native.commit).toHaveBeenCalledExactlyOnceWith(native.stageOutput.mock.results[0]?.value, { label: "download-local-path" });
+        else expect(native.commit).not.toHaveBeenCalled();
+    });
+
+    it.each(["upload", "download"] as const)("retains the original native %s failure alongside a safe local-cleanup diagnostic", async operation => {
+        native.result = { status: 9, stderr: "native transfer denied" };
+        (operation === "upload" ? native.disposeInput : native.disposeOutput).mockImplementation(() => { throw { code: "EBUSY", private: "/stage/failure" }; });
+        const response = cleanupPayload(await invoke(operation === "upload" ? "device_upload" : "device_download", {
+            backend, deviceId, localPath: "/requested/file", remotePath: "/sdcard/file",
+        }));
+        expect(response.value).toEqual({ ok: false, error: "android-transfer-cleanup-failed",
+            cause: { kind: "command-failure", result: textResult(false, "Error: native transfer denied") },
+            cleanup: { operation: "local", failed: true, code: "EBUSY" },
+        });
+        expect(response.text).not.toContain("/stage/failure");
+        expect(native.timed).toHaveBeenCalledOnce();
+        expect(native.commit).not.toHaveBeenCalled();
+    });
+
+    it("retains a publication refusal in the public response when output-stage cleanup also fails", async () => {
+        native.commit.mockReturnValue({ ok: false, message: "destination changed" });
+        native.disposeOutput.mockImplementation(() => { throw { code: "EPERM" }; });
+        const response = cleanupPayload(await invoke("device_download", { backend, deviceId, localPath: "/requested/file", remotePath: "/sdcard/file" }));
+        expect(response.value).toEqual({ ok: false, error: "android-transfer-cleanup-failed",
+            cause: { kind: "text", result: textResult(false, "destination changed") },
+            cleanup: { operation: "local", failed: true, code: "EPERM" },
+        });
+        expect(native.timed).toHaveBeenCalledOnce(); expect(native.commit).toHaveBeenCalledOnce();
+        expect(native.disposeOutput).toHaveBeenCalledOnce();
+    });
+
+    it.each(["upload", "download", "commit"] as const)("projects thrown %s and cleanup failures without exposing raw exception data", async phase => {
+        const primary = Object.assign(new Error("private primary /internal/transfer"), { code: "EIO", path: "/internal/transfer" });
+        const cleanup = Object.assign(new Error("private cleanup /internal/stage"), { code: "EACCES", path: "/internal/stage" });
+        if (phase === "commit") native.commit.mockImplementation(() => { throw primary; });
+        else native.timed.mockImplementation(() => { throw primary; });
+        (phase === "upload" ? native.disposeInput : native.disposeOutput).mockImplementation(() => { throw cleanup; });
+        const response = cleanupPayload(await invoke(phase === "upload" ? "device_upload" : "device_download", {
+            backend, deviceId, localPath: "/requested/file", remotePath: "/sdcard/file",
+        }));
+        expect(response.value).toEqual({ ok: false, error: "android-transfer-cleanup-failed",
+            cause: { kind: "thrown", code: "EIO" }, cleanup: { operation: "local", failed: true, code: "EACCES" },
+        });
+        expect(response.text).not.toContain("private"); expect(response.text).not.toContain("/internal/");
+        expect(native.timed).toHaveBeenCalledOnce();
+        expect(native.commit).toHaveBeenCalledTimes(phase === "commit" ? 1 : 0);
+        expect(native.disposeInput).toHaveBeenCalledTimes(phase === "upload" ? 1 : 0);
+        expect(native.disposeOutput).toHaveBeenCalledTimes(phase === "upload" ? 0 : 1);
+    });
+
+    it("keeps the completed destination marker after bounding a large native download receipt", async () => {
+        native.result = { status: 0, stdout: "큰 native output\"".repeat(50000) };
+        native.disposeOutput.mockImplementation(() => { throw { code: "EACCES", private: "/stage/secret" }; });
+        const response = cleanupPayload(await invoke("device_download", { backend, deviceId, localPath: "/requested/file", remotePath: "/sdcard/file" }));
+        expect(response.value).toMatchObject({ ok: false, error: "android-transfer-cleanup-failed", diagnosticTruncated: true,
+            cause: { kind: "completed" }, cleanup: { operation: "local", failed: true, code: "EACCES" },
+            result: { kind: "completed", completed: true },
+        });
+        expect(response.text).not.toContain("/stage/secret");
+        expect(native.commit).toHaveBeenCalledOnce(); expect(native.disposeOutput).toHaveBeenCalledOnce();
     });
 
     it("uses owned transfer stages, the fixed native timeout and committed output path", async () => {

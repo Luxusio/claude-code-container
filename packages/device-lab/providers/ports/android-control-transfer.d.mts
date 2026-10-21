@@ -39,8 +39,10 @@ export type Swipe = import("../domain/android-control-transfer.mjs").Swipe;
 export type AndroidNavigation = import("../domain/android-control-transfer.mjs").Navigation;
 export type AndroidOrientation = import("../domain/android-control-transfer.mjs").Orientation;
 export type AndroidControlCompletion = import("../domain/android-control-transfer.mjs").Completion;
-export type AndroidControlOutcome =
+export type AndroidControlResult =
     | { kind: "completed"; completion: AndroidControlCompletion; evidence: unknown }
     | { kind: "text"; message: string }
     | { kind: "command-failure"; evidence: unknown };
+export type AndroidControlOutcome = AndroidControlResult
+    | { kind: "cleanup-failure"; primary: AndroidControlResult | { kind: "thrown"; error: unknown }; error: unknown };
 export type AndroidActionPlan = import("../domain/android-control-transfer.mjs").Plan;

@@ -32,11 +32,7 @@ function transferFailure(error, fallback) {
 
 /** @param {string} root */
 function cleanupTempRoot(root) {
-    try {
-        rmSync(root, { recursive: true, force: true });
-    } catch {
-        // The transfer result must not be replaced by best-effort temp cleanup.
-    }
+    rmSync(root, { recursive: true, force: true });
 }
 
 /** @param {unknown} value @param {TransferOptions} [options] @returns {InputStageResult} */
@@ -57,6 +53,8 @@ export function stageLocalInputFile(value, options = {}) {
         return transferFailure(error, `${label}-stage-create-failed`);
     }
     const stagedPath = join(root, "payload");
+    /** @type {NativeTransferFailure} */
+    let failure;
     try {
         copyFileAtomically(policy.path, stagedPath, { prefix: label, limitBytes });
         const stagedPolicy = validateLocalInputPath(stagedPath, {
@@ -65,19 +63,24 @@ export function stageLocalInputFile(value, options = {}) {
             rejectSecretName: false,
         });
         if (!stagedPolicy.ok) {
-            cleanupTempRoot(root);
-            return { ...stagedPolicy, path: policy.path, message: `${stagedPolicy.error}: ${policy.path}` };
+            failure = { ...stagedPolicy, path: policy.path, message: `${stagedPolicy.error}: ${policy.path}` };
+        } else {
+            return {
+                ok: true,
+                path: policy.path,
+                stagedPath,
+                cleanup: () => cleanupTempRoot(root),
+            };
         }
-        return {
-            ok: true,
-            path: policy.path,
-            stagedPath,
-            cleanup: () => cleanupTempRoot(root),
-        };
     } catch (error) {
-        cleanupTempRoot(root);
-        return transferFailure(error, `${label}-stage-failed`);
+        failure = transferFailure(error, `${label}-stage-failed`);
     }
+    try {
+        cleanupTempRoot(root);
+    } catch (error) {
+        throw new AggregateError([failure, error], "Transfer staging and cleanup failed.", { cause: failure });
+    }
+    return failure;
 }
 
 /** @param {Pick<NativeTransferStage,"stagedPath">} stage @param {string} destination @param {TransferOptions} [options] @returns {TransferCopyResult} */
@@ -152,7 +155,11 @@ export function discardLocalOutputStage(stagedPath, options = {}) {
     if (dirname(root) !== stageParent || !basename(root).startsWith(stagePrefix) || basename(resolvedStagePath) !== "payload") {
         return transferFailure(null, `${label}-stage-path-invalid`);
     }
-    cleanupTempRoot(root);
+    try {
+        cleanupTempRoot(root);
+    } catch {
+        return transferFailure(null, `${label}-stage-cleanup-failed`);
+    }
     return { ok: true };
 }
 

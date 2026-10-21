@@ -1,5 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 import {renderDesktopTransferCleanup} from "../../../packages/device-lab/providers/adapters/desktop-transfer-result.mjs";
+import {renderStageCleanupFailure} from "../../../packages/device-lab/providers/adapters/stage-cleanup-result.mjs";
 import type {DesktopCleanupFailure} from "../../../packages/device-lab/providers/domain/desktop-control-transfer.mjs";
 import {runDeviceFlow} from "../../../packages/device-lab/providers/application/device-flow.mjs";
 import type {DeviceFlowPorts} from "../../../packages/device-lab/providers/ports/device-flow.mjs";
@@ -128,5 +129,54 @@ describe("desktop transfer cleanup projection", () => {
             expect(outcome.stoppedAt).toBe(stopOnError ? 0 : undefined);
             expect(value(outcome.results[0].payload!)).toMatchObject({result: {kind: "completed", completed: true}});
         }
+    });
+});
+
+describe("shared transfer and recording cleanup projection", () => {
+    it.each(["android-transfer-cleanup-failed", "ios-transfer-cleanup-failed"])("retains a completed transfer result for %s", error => {
+        const ordinary = jsonResult({uploaded: {localPath: "logical", remotePath: "remote"}});
+        const response = renderStageCleanupFailure({error, primary: {kind: "returned", outcome: "completed", result: ordinary},
+            cleanupError: {code: "EPERM"}, result: {kind: "completed", completed: true}}, jsonResult);
+        expect(response.isError).toBe(true);
+        expect(value(response)).toEqual({ok: false, error, cause: {kind: "completed", result: ordinary},
+            cleanup: {operation: "local", failed: true, code: "EPERM"}, result: {kind: "completed", completed: true}});
+    });
+
+    it("preserves positive recording publication without claiming completion after finalization failed", () => {
+        const ordinary = textResult(false, "recording-generation-changed");
+        const response = renderStageCleanupFailure({error: "recording-stage-cleanup-failed",
+            primary: {kind: "returned", outcome: "failure", result: ordinary}, cleanupError: {code: "EACCES"},
+            result: {outputPublished: true}}, jsonResult);
+        expect(response.isError).toBe(true);
+        expect(value(response)).toEqual({ok: false, error: "recording-stage-cleanup-failed",
+            cause: {kind: "failure", result: ordinary}, cleanup: {operation: "local", failed: true, code: "EACCES"},
+            result: {outputPublished: true}});
+    });
+
+    it.each([0, undefined])("retains positive recording facts after an opaque thrown finalization %#", primaryError => {
+        const cleanup = Object.assign(new Error("private cleanup /owned/stage"), {code: "EIO", privateData: Symbol("private")});
+        const response = renderStageCleanupFailure({error: "recording-stage-cleanup-failed",
+            primary: {kind: "thrown", error: primaryError}, cleanupError: cleanup,
+            result: {outputPublished: true, recordingStateCleared: true}}, jsonResult);
+        expect(value(response)).toEqual({ok: false, error: "recording-stage-cleanup-failed", cause: {kind: "thrown"},
+            cleanup: {operation: "local", failed: true, code: "EIO"}, result: {outputPublished: true, recordingStateCleared: true}});
+        expect(response.content[0].text).not.toContain("private");
+        expect(response.content[0].text).not.toContain("/owned/stage");
+    });
+
+    it("keeps publication and state-clear facts through giant recording failure diagnostics", () => {
+        const response = renderStageCleanupFailure({error: "recording-stage-cleanup-failed",
+            primary: {kind: "returned", outcome: "failure", result: textResult(false, 'bad"\\\n'.repeat(40000))},
+            cleanupError: {code: "EPERM"}, result: {outputPublished: true, recordingStateCleared: true}}, jsonResult);
+        const text = response.content[0]?.text;
+        if (typeof text !== "string") throw new Error("expected bounded JSON text");
+        expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(MCP_ERROR_TEXT_LIMIT_BYTES);
+        expect(response.isError).toBe(true);
+        const bounded = value(response);
+        expect(bounded.error).toBe("recording-stage-cleanup-failed");
+        expect(bounded.cause.kind).toBe("failure");
+        expect(bounded.cleanup).toEqual({operation: "local", failed: true, code: "EPERM"});
+        expect(bounded.result).toEqual({outputPublished: true, recordingStateCleared: true});
+        expect(bounded.diagnosticTruncated).toBe(true);
     });
 });

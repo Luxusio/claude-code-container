@@ -11,6 +11,17 @@ function failure(message) { return { kind: 'failure', message }; }
 export function createDirectRecordingApplication(ports) {
     const generation = createRuntimeGenerationTransitions({ updateDevice: (id, update) => ports.updateDevice(id, update), newRuntimeId: () => ports.runtimeId() });
     const label = recordingLabel(ports.kind), provider = recordingProvider(ports.kind);
+    /** @param {ProcessPorts} effects
+     * @param {import('../domain/direct-recording.mjs').RecordingStage} stage
+     * @param {import('../domain/direct-recording.mjs').RecordingResult|{kind:'thrown',error:unknown}} primary
+     * @param {{outputPublished?:true,recordingStateCleared?:true}} facts
+     * @returns {Outcome} */
+    function finalizeStage(effects, stage, primary, facts) {
+        try { effects.disposeStage(stage); }
+        catch (error) { return { kind: 'cleanup-failure', primary, error, facts }; }
+        if (primary.kind === 'thrown') throw primary.error;
+        return primary;
+    }
     /** @param {unknown} id @param {Record} recording @returns {undefined} */
     function exited(id, recording) {
         generation.transitionRecordingGeneration(id, recording, { ...recording, active: false, endedAt: ports.timestamp() }, ports.timestamp());
@@ -203,8 +214,8 @@ export function createDirectRecordingApplication(ports) {
         const ready = await child.startup(150);
         const processLabel = ports.kind === 'ios-simulator' ? `${label} recordVideo` : ports.kind === 'macos-vm' ? `${label} screencapture` : `${label} screenrecord`;
         if (ready.kind !== 'ready') {
-            if (stage) ports.disposeStage(stage);
-            return failure(ready.kind === 'error' ? `${processLabel} recorder failed to start: ${ready.message}` : `${processLabel} recorder exited before it was ready: ${ready.signal || `exit ${ready.code}`}`);
+            const primary = failure(ready.kind === 'error' ? `${processLabel} recorder failed to start: ${ready.message}` : `${processLabel} recorder exited before it was ready: ${ready.signal || `exit ${ready.code}`}`);
+            return stage ? finalizeStage(ports, stage, primary, {}) : primary;
         }
         const afterStartup = startGuard ? startGuard() : null;
         if (afterStartup) {
@@ -214,8 +225,8 @@ export function createDirectRecordingApplication(ports) {
         const identity = ports.readIdentity(child.pid);
         if (!identity) {
             try { child.signal('SIGINT'); } catch { /* allocated recorder already exited */ }
-            if (stage) ports.disposeStage(stage);
-            return failure(`${label} recorder process identity could not be established for ${args.deviceId}.`);
+            const primary = failure(`${label} recorder process identity could not be established for ${args.deviceId}.`);
+            return stage ? finalizeStage(ports, stage, primary, {}) : primary;
         }
         const afterIdentity = startGuard ? startGuard() : null;
         if (afterIdentity) {
@@ -243,13 +254,13 @@ export function createDirectRecordingApplication(ports) {
                 return failure(`${label} recording state changed while starting for ${args.deviceId}; the new recorder was ${terminated ? 'stopped' : 'sent termination signals'}.`);
             }
             try { child.signal('SIGINT'); } catch { /* allocated recorder already exited */ }
-            if (stage) ports.disposeStage(stage);
-            return failure(`${label} recording state changed while starting for ${args.deviceId}; the new recorder was stopped.`);
+            const primary = failure(`${label} recording state changed while starting for ${args.deviceId}; the new recorder was stopped.`);
+            return stage ? finalizeStage(ports, stage, primary, {}) : primary;
         }
         if (didExit || !ports.alive(child.pid)) {
-            generation.transitionRecordingGeneration(args.deviceId, recording, null, ports.timestamp());
-            if (stage) ports.disposeStage(stage);
-            return failure(`${label} recorder exited before its state was committed for ${args.deviceId}.`);
+            const cleared = generation.transitionRecordingGeneration(args.deviceId, recording, null, ports.timestamp());
+            const primary = failure(`${label} recorder exited before its state was committed for ${args.deviceId}.`);
+            return stage ? finalizeStage(ports, stage, primary, cleared.committed ? { recordingStateCleared: true } : {}) : primary;
         }
         return { kind: 'success', value: { deviceId: args.deviceId, recording: committed.device ? recordingOf(committed.device) : null } };
     }
@@ -332,7 +343,10 @@ export function createDirectRecordingApplication(ports) {
         const created = ports.createStage(device, policy.path, false);
         if (!created.ok) return failure(created.message);
         const stage = created.stage;
-        try {
+        /** @type {{outputPublished?:true,recordingStateCleared?:true}} */
+        const facts = {};
+        /** @returns {import('../domain/direct-recording.mjs').RecordingResult} */
+        const complete = () => {
             refused = guard ? guard(pending) : null;
             if (refused) return refused;
             const remote = String(pending.remotePath);
@@ -343,16 +357,23 @@ export function createDirectRecordingApplication(ports) {
             if (refused) return refused;
             if (!copied.ok) return failure(`Error: ${copied.detail}. ${label} recording remains pending finalization for ${args.deviceId}.`);
             const committed = ports.commitStage(stage);
+            if (committed.ok) facts.outputPublished = true;
             refused = guard ? guard(pending) : null;
             if (refused) return refused;
             if (!committed.ok) return failure(`${committed.message}. ${label} recording remains pending finalization for ${args.deviceId}.`);
             const cleared = generation.transitionRecordingGeneration(args.deviceId, pending, null, ports.timestamp());
+            if (cleared.committed) facts.recordingStateCleared = true;
             if (!cleared.committed) return failure(`${label} recording state changed while stopping for ${args.deviceId}; successor state and remote artifact were preserved.`);
             refused = guard ? guard(null) : null;
             if (refused) return refused;
             ports.removeRecording(target, remote, transferTimeout);
             return { kind: 'success', value: { deviceId: args.deviceId, stopped: true, provider, recording: { ...pending, active: false, localPath: policy.path, stoppedAt: ports.timestamp() }, ...(ports.kind === 'android-device' ? {} : { device: cleared.device }), ...copied.output } };
-        } finally { ports.disposeStage(stage); }
+        };
+        /** @type {import('../domain/direct-recording.mjs').RecordingResult|{kind:'thrown',error:unknown}} */
+        let primary;
+        try { primary = complete(); }
+        catch (error) { primary = { kind: 'thrown', error }; }
+        return finalizeStage(ports, stage, primary, facts);
     }
     /** @param {import('../ports/direct-recording.mjs').SimulatorRecordingPorts} effects @param {Record} device @param {Record} previous @param {Record} pending @param {string} path @param {Args} args @returns {Promise<Outcome>} */
     async function finalizeSimulator(effects, device, previous, pending, path, args) {
@@ -360,22 +381,33 @@ export function createDirectRecordingApplication(ports) {
         const created = persistent ? effects.restoreStage(device, path, persistent) : effects.createStage(device, path, false);
         if (!created.ok) return failure(`${created.message}. ${label} recording remains pending finalization for ${args.deviceId}.`);
         const stage = created.stage;
-        if (!persistent) {
-            const populated = effects.populateStage(String(previous.stagingPath || previous.localPath), stage);
-            if (!populated.ok) { effects.disposeStage(stage); return failure(`${populated.message}. ${label} legacy recording remains pending finalization for ${args.deviceId}.`); }
-        }
-        const committed = effects.commitStage(stage);
-        if (!committed.ok) {
-            if (!persistent) effects.disposeStage(stage);
-            return failure(`${committed.message}. ${label} recording remains pending finalization for ${args.deviceId}.`);
-        }
-        const cleared = generation.transitionRecordingGeneration(args.deviceId, pending, null, effects.timestamp());
-        if (!cleared.committed) {
-            if (!persistent) effects.disposeStage(stage);
-            return failure(`${label} recording state changed while stopping for ${args.deviceId}; successor state and staged artifact were preserved.`);
-        }
-        effects.disposeStage(stage);
-        return { kind: 'success', value: { deviceId: args.deviceId, stopped: true, provider, recording: { ...pending, active: false, localPath: path, stoppedAt: effects.timestamp() }, device: cleared.device } };
+        let dispose = !persistent;
+        /** @type {{outputPublished?:true,recordingStateCleared?:true}} */
+        const facts = {};
+        /** @returns {import('../domain/direct-recording.mjs').RecordingResult} */
+        const complete = () => {
+            if (!persistent) {
+                const populated = effects.populateStage(String(previous.stagingPath || previous.localPath), stage);
+                if (!populated.ok) return failure(`${populated.message}. ${label} legacy recording remains pending finalization for ${args.deviceId}.`);
+            }
+            const committed = effects.commitStage(stage);
+            if (committed.ok) facts.outputPublished = true;
+            if (!committed.ok) return failure(`${committed.message}. ${label} recording remains pending finalization for ${args.deviceId}.`);
+            const cleared = generation.transitionRecordingGeneration(args.deviceId, pending, null, effects.timestamp());
+            if (cleared.committed) {
+                facts.recordingStateCleared = true;
+                dispose = true;
+            }
+            if (!cleared.committed) return failure(`${label} recording state changed while stopping for ${args.deviceId}; successor state and staged artifact were preserved.`);
+            return { kind: 'success', value: { deviceId: args.deviceId, stopped: true, provider, recording: { ...pending, active: false, localPath: path, stoppedAt: effects.timestamp() }, device: cleared.device } };
+        };
+        /** @type {import('../domain/direct-recording.mjs').RecordingResult|{kind:'thrown',error:unknown}} */
+        let primary;
+        try { primary = complete(); }
+        catch (error) { primary = { kind: 'thrown', error }; }
+        if (dispose) return finalizeStage(effects, stage, primary, facts);
+        if (primary.kind === 'thrown') throw primary.error;
+        return primary;
     }
     /** @param {import('../ports/direct-recording.mjs').SandboxRecordingPorts} effects @param {Record} device @param {Args} args @returns {Promise<Outcome>} */
     async function stopHelper(effects, device, args) {

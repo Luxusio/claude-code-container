@@ -1,3 +1,4 @@
+import { renderStageCleanupFailure } from "../adapters/stage-cleanup-result.mjs";
 import { dumpAndroidUi, readAndroidUi, observeAndroidApp, presentAndroidTextWait, presentAndroidAppWait } from "./android-wait.mjs";
 import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { recordingInputError } from "../domain/direct-recording.mjs";
@@ -48,9 +49,21 @@ const recordingNative = {
         : runWithTimeout(command.executable, command.args, command.timeoutMs),
 };
 const directRecording = createDirectRecording(recordingNative);
-/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome */
+/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome
+ * @returns {unknown} */
 function presentRecordingOutcome(outcome) {
     if (!outcome || outcome.kind === 'missing') return undefined;
+    if (outcome.kind === 'cleanup-failure') {
+        const primary = outcome.primary;
+        return renderStageCleanupFailure({
+            error: 'recording-stage-cleanup-failed',
+            primary: primary.kind === 'thrown' ? primary
+                : { kind: 'returned', outcome: primary.kind, result: presentRecordingOutcome(primary) },
+            cleanupError: outcome.error,
+            ...(primary.kind === 'success' || Object.keys(outcome.facts).length
+                ? { result: { ...outcome.facts, ...(primary.kind === 'success' ? { kind: 'completed', completed: true } : {}) } } : {}),
+        }, jsonResult);
+    }
     if (outcome.kind === 'failure') return textResult(false, outcome.message);
     if (outcome.kind === 'native') return outcome.value;
     return jsonResult(outcome.value);

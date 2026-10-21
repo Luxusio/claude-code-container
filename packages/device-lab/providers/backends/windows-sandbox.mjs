@@ -1,3 +1,4 @@
+import { renderStageCleanupFailure } from "../adapters/stage-cleanup-result.mjs";
 import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
@@ -1713,9 +1714,21 @@ const windowsRecordingNative = {
     copyFile: (source, destination) => copyWindowsSandboxFile(source, destination, "windows-helper-recording", WINDOWS_SANDBOX_OUTPUT_LIMIT_BYTES),
 };
 const windowsRecording = createDirectRecording(windowsRecordingNative);
-/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome */
+/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome
+ * @returns {unknown} */
 function windowsRecordingResult(outcome) {
     if (!outcome || outcome.kind === "missing") return undefined;
+    if (outcome.kind === 'cleanup-failure') {
+        const primary = outcome.primary;
+        return renderStageCleanupFailure({
+            error: 'recording-stage-cleanup-failed',
+            primary: primary.kind === 'thrown' ? primary
+                : { kind: 'returned', outcome: primary.kind, result: windowsRecordingResult(primary) },
+            cleanupError: outcome.error,
+            ...(primary.kind === 'success' || Object.keys(outcome.facts).length
+                ? { result: { ...outcome.facts, ...(primary.kind === 'success' ? { kind: 'completed', completed: true } : {}) } } : {}),
+        }, jsonResult);
+    }
     if (outcome.kind === "native") return outcome.value;
     if (outcome.kind === "failure") return textResult(false, outcome.message);
     return jsonResult(outcome.value);

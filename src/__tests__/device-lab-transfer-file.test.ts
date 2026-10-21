@@ -2,6 +2,7 @@ import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
+import { spawnSync } from "child_process";
 import {
     commitLocalOutputStage,
     createLocalOutputStage,
@@ -34,6 +35,164 @@ describe("device-lab transfer file boundaries", () => {
         expect(readFileSync(staged.stagedPath, "utf8")).toBe("before");
         staged.cleanup();
         expect(existsSync(staged.stagedPath)).toBe(false);
+    });
+
+    it("regression: native transfer cleanup reports a failed owned removal", () => {
+        const root = tempRoot();
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import fs from 'node:fs';
+import { dirname, join } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+const { stageLocalInputFile } = await import(process.argv[1]);
+const source = join(process.argv[2], 'source.txt');
+fs.writeFileSync(source, 'snapshot');
+const stage = stageLocalInputFile(source);
+if (!stage.ok) throw new Error('fixture staging failed');
+const ownedRoot = dirname(stage.stagedPath), originalRemove = fs.rmSync;
+const removalError = Object.assign(new Error('private removal failure'), { code: 'EPERM' });
+let attempts = 0, caught = false, code, sameError = false;
+try {
+    fs.rmSync = (target, options) => {
+        if (String(target) === ownedRoot) { attempts++; throw removalError; }
+        return originalRemove(target, options);
+    };
+    syncBuiltinESMExports();
+    try { stage.cleanup(); } catch (error) { caught = true; code = error?.code; sameError = error === removalError; }
+    console.log(JSON.stringify({ caught, code, sameError, attempts, retainedBytes: fs.readFileSync(stage.stagedPath, 'utf8') }));
+} finally {
+    fs.rmSync = originalRemove;
+    syncBuiltinESMExports();
+    originalRemove(ownedRoot, { recursive: true, force: true });
+}
+`, new URL("../../packages/device-lab/providers/transfer-file.mjs", import.meta.url).href, root], {
+            encoding: "utf8", timeout: 15000,
+            env: {...process.env, HOME: root, USERPROFILE: root, TMPDIR: root, TMP: root, TEMP: root},
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({caught: true, code: "EPERM", sameError: true, attempts: 1, retainedBytes: "snapshot"});
+    });
+
+    it.each(["output", "restored"])("reports %s stage cleanup failure without removing or undoing owned output", mode => {
+        const root = tempRoot();
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import fs from 'node:fs';
+import { join } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+const { createLocalOutputStage, restoreLocalOutputStage, commitLocalOutputStage } = await import(process.argv[1]);
+const parent = process.argv[2], mode = process.argv[3], destination = join(parent, 'destination.bin');
+fs.writeFileSync(destination, 'original');
+const options = { stageParent: parent, stagePrefix: '.owned-stage-' };
+const allocated = createLocalOutputStage(destination, options);
+if (!allocated.ok) throw new Error('fixture allocation failed');
+fs.writeFileSync(allocated.stagedPath, 'snapshot');
+const stage = mode === 'restored' ? restoreLocalOutputStage(destination, allocated.stagedPath, options) : allocated;
+if (!stage.ok) throw new Error('fixture restore failed');
+if (mode === 'output' && !commitLocalOutputStage(stage).ok) throw new Error('fixture publication failed');
+const originalRemove = fs.rmSync, removalError = Object.assign(new Error('private removal'), { code: 'EPERM' });
+let attempts = 0, sameError = false;
+try {
+    fs.rmSync = (target, options) => {
+        if (String(target) === allocated.stageRoot) { attempts++; throw removalError; }
+        return originalRemove(target, options);
+    };
+    syncBuiltinESMExports();
+    try { stage.cleanup(); } catch (error) { sameError = error === removalError; }
+    console.log(JSON.stringify({ sameError, attempts, retainedBytes: fs.readFileSync(stage.stagedPath, 'utf8'), destinationBytes: fs.readFileSync(destination, 'utf8') }));
+} finally {
+    fs.rmSync = originalRemove; syncBuiltinESMExports();
+    originalRemove(allocated.stageRoot, { recursive: true, force: true });
+}
+`, new URL("../../packages/device-lab/providers/transfer-file.mjs", import.meta.url).href, root, mode], {
+            encoding: "utf8", timeout: 15000,
+            env: {...process.env, HOME: root, USERPROFILE: root, TMPDIR: root, TMP: root, TEMP: root},
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({sameError: true, attempts: 1, retainedBytes: "snapshot", destinationBytes: mode === "output" ? "snapshot" : "original"});
+    });
+
+    it("retains the failed input staging result and cleanup error with exactly one removal attempt", () => {
+        const root = tempRoot();
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import fs from 'node:fs';
+import { join } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+const { stageLocalInputFile } = await import(process.argv[1]);
+const parent = process.argv[2], source = join(parent, 'source.txt');
+fs.writeFileSync(source, 'api_key=abcdefghijklmnop');
+const originalCreate = fs.mkdtempSync, originalRemove = fs.rmSync;
+const removalError = Object.assign(new Error('private removal failure'), { code: 'EPERM' });
+let ownedRoot, attempts = 0, failure;
+try {
+    fs.mkdtempSync = (...args) => {
+        const created = originalCreate(...args);
+        if (String(args[0]).startsWith(join(parent, 'ccc-device-upload-'))) ownedRoot = created;
+        return created;
+    };
+    fs.rmSync = (target, options) => {
+        if (ownedRoot && String(target) === ownedRoot) { attempts++; throw removalError; }
+        return originalRemove(target, options);
+    };
+    syncBuiltinESMExports();
+    try { stageLocalInputFile(source); } catch (error) { failure = error; }
+    console.log(JSON.stringify({ aggregate: failure instanceof AggregateError, message: failure?.message,
+        errorCount: failure?.errors?.length, causeSame: failure?.cause === failure?.errors?.[0],
+        primary: { ok: failure?.cause?.ok, error: failure?.cause?.error, sourceMatches: failure?.cause?.path === source },
+        cleanupSame: failure?.errors?.[1] === removalError, attempts,
+        retainedBytes: ownedRoot && fs.readFileSync(join(ownedRoot, 'payload'), 'utf8') }));
+} finally {
+    fs.mkdtempSync = originalCreate; fs.rmSync = originalRemove; syncBuiltinESMExports();
+    if (ownedRoot) originalRemove(ownedRoot, { recursive: true, force: true });
+}
+`, new URL("../../packages/device-lab/providers/transfer-file.mjs", import.meta.url).href, root], {
+            encoding: "utf8", timeout: 15000,
+            env: {...process.env, HOME: root, USERPROFILE: root, TMPDIR: root, TMP: root, TEMP: root},
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({aggregate: true, message: "Transfer staging and cleanup failed.", errorCount: 2,
+            causeSame: true, primary: {ok: false, error: "upload-local-path-secret-content", sourceMatches: true},
+            cleanupSame: true, attempts: 1, retainedBytes: "api_key=abcdefghijklmnop"});
+    });
+
+    it("reports failed discard and refuses foreign stage paths before removal", () => {
+        const root = tempRoot();
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import fs from 'node:fs';
+import { join } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+const { createLocalOutputStage, discardLocalOutputStage } = await import(process.argv[1]);
+const parent = process.argv[2], options = { stageParent: parent, stagePrefix: '.owned-stage-' };
+const stage = createLocalOutputStage(join(parent, 'destination.bin'), options);
+if (!stage.ok) throw new Error('fixture allocation failed');
+fs.writeFileSync(stage.stagedPath, 'owned bytes');
+const foreign = join(parent, 'foreign'), foreignPayload = join(foreign, 'payload');
+fs.mkdirSync(foreign); fs.writeFileSync(foreignPayload, 'foreign bytes');
+const originalRemove = fs.rmSync;
+let attempts = 0;
+try {
+    fs.rmSync = (target, options) => {
+        if (String(target) === stage.stageRoot) { attempts++; throw Object.assign(new Error('private stage ' + stage.stageRoot), { code: 'EPERM' }); }
+        if (String(target) === foreign) throw new Error('foreign removal attempted');
+        return originalRemove(target, options);
+    };
+    syncBuiltinESMExports();
+    const refused = discardLocalOutputStage(foreignPayload, options);
+    const failed = discardLocalOutputStage(stage.stagedPath, options);
+    console.log(JSON.stringify({ refused, failed, attempts, ownedBytes: fs.readFileSync(stage.stagedPath, 'utf8'), foreignBytes: fs.readFileSync(foreignPayload, 'utf8') }));
+} finally {
+    fs.rmSync = originalRemove; syncBuiltinESMExports();
+    originalRemove(stage.stageRoot, { recursive: true, force: true });
+    originalRemove(foreign, { recursive: true, force: true });
+}
+`, new URL("../../packages/device-lab/providers/transfer-file.mjs", import.meta.url).href, root], {
+            encoding: "utf8", timeout: 15000,
+            env: {...process.env, HOME: root, USERPROFILE: root, TMPDIR: root, TMP: root, TEMP: root},
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({
+            refused: {ok: false, error: "download-local-path-stage-path-invalid", message: "download-local-path-stage-path-invalid"},
+            failed: {ok: false, error: "download-local-path-stage-cleanup-failed", message: "download-local-path-stage-cleanup-failed"},
+            attempts: 1, ownedBytes: "owned bytes", foreignBytes: "foreign bytes",
+        });
     });
 
     it("rejects linked and secret upload content after staging", () => {

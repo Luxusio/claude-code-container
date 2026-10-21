@@ -2,6 +2,17 @@ import { androidActionPlan, androidOrientationPlan } from "../domain/android-con
 /** @typedef {import('../ports/android-control-transfer.mjs').AndroidControlOperation} Operation */
 /** @typedef {import('../ports/android-control-transfer.mjs').AndroidControlArguments} Arguments */
 /** @typedef {import('../ports/android-control-transfer.mjs').AndroidControlOutcome} Outcome */
+/** @typedef {import('../ports/android-control-transfer.mjs').AndroidControlResult} Result */
+
+/** @param {Result|{kind:'thrown',error:unknown}} primary
+ * @param {()=>undefined} dispose
+ * @returns {Outcome} */
+function finalizeStage(primary, dispose) {
+    try { dispose(); }
+    catch (error) { return { kind: "cleanup-failure", primary, error }; }
+    if (primary.kind === "thrown") throw primary.error;
+    return primary;
+}
 
 /** @template Target, InputStage, OutputStage
  * @param {import('../ports/android-control-transfer.mjs').AndroidControlTransferPorts<Target,InputStage,OutputStage>} ports */
@@ -18,29 +29,36 @@ export function createAndroidControlTransfer(ports) {
             if (!remote.ok) return { kind: "text", message: remote.message };
             const stage = ports.stageInput(input.localPath);
             if (!stage.ok) return { kind: "text", message: stage.message };
+            const handle = stage.handle;
+            /** @type {Result|{kind:'thrown',error:unknown}} */
+            let primary;
             try {
                 const command = ports.upload(target, stage.stagedPath, remote.path, 300_000);
-                return command.ok
+                primary = command.ok
                     ? { kind: 'completed', completion: {kind:'uploaded',localPath:stage.path,remotePath:remote.path}, evidence:command.evidence }
                     : { kind: "command-failure", evidence:command.evidence };
-            } finally {
-                ports.disposeInput(stage.handle);
-            }
+            } catch (error) { primary = { kind: "thrown", error }; }
+            return finalizeStage(primary, () => ports.disposeInput(handle));
         }
         if (operation === "device_download") {
             const remote = ports.guestPath(input.remotePath, "download-remote-path");
             if (!remote.ok) return { kind: "text", message: remote.message };
             const stage = ports.stageOutput(input.localPath);
             if (!stage.ok) return { kind: "text", message: stage.message };
+            const handle = stage.handle;
+            /** @type {Result|{kind:'thrown',error:unknown}} */
+            let primary;
             try {
                 const command = ports.download(target, remote.path, stage.stagedPath, 300_000);
-                if (!command.ok) return { kind: "command-failure", evidence:command.evidence };
-                const committed = ports.commitOutput(stage.handle);
-                if (!committed.ok) return { kind: "text", message: committed.message };
-                return { kind: 'completed', completion: {kind:'downloaded',remotePath:remote.path,localPath:committed.path}, evidence:command.evidence };
-            } finally {
-                ports.disposeOutput(stage.handle);
-            }
+                if (!command.ok) primary = { kind: "command-failure", evidence:command.evidence };
+                else {
+                    const committed = ports.commitOutput(handle);
+                    primary = committed.ok
+                        ? { kind: 'completed', completion: {kind:'downloaded',remotePath:remote.path,localPath:committed.path}, evidence:command.evidence }
+                        : { kind: "text", message: committed.message };
+                }
+            } catch (error) { primary = { kind: "thrown", error }; }
+            return finalizeStage(primary, () => ports.disposeOutput(handle));
         }
 
         if (operation === "mobile_set_orientation" || operation === "mobile_rotate_left" || operation === "mobile_rotate_right") {

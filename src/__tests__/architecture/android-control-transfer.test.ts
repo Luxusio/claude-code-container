@@ -7,7 +7,7 @@ type Input = { input: string };
 type Output = { output: string };
 
 function fixture() {
-    const target = { serial: "owned" }, output = { output: "allocated" };
+    const target = { serial: "owned" }, input = { input: "allocated" }, output = { output: "allocated" };
     const evidence = Object.freeze({ status: 17, stdout: "opaque evidence", error: { message: "not an inward decision" } });
     const good = (): AndroidControlObservation => ({ ok: true, evidence });
     const ports = {
@@ -22,13 +22,13 @@ function fixture() {
         upload: vi.fn((_target: Target, _local: string, _remote: string, _budget: number) => good()),
         download: vi.fn((_target: Target, _remote: string, _local: string, _budget: number) => good()),
         guestPath: vi.fn((_value: unknown, _label: "upload-remote-path" | "download-remote-path"): PathObservation => ({ ok: true, path: "/sdcard/approved" })),
-        stageInput: vi.fn((_value: unknown): StageObservation<Input> => ({ ok: true, path: "/local/input", stagedPath: "/stage/input", handle: { input: "allocated" } })),
+        stageInput: vi.fn((_value: unknown): StageObservation<Input> => ({ ok: true, path: "/local/input", stagedPath: "/stage/input", handle: input })),
         stageOutput: vi.fn((_value: unknown): StageObservation<Output> => ({ ok: true, path: "/local/destination", stagedPath: "/stage/output", handle: output })),
         commitOutput: vi.fn((_handle: Output): PathObservation => ({ ok: true, path: "/local/destination" })),
         disposeInput: vi.fn((_handle: Input): undefined => undefined),
         disposeOutput: vi.fn((_handle: Output): undefined => undefined),
     } satisfies AndroidControlTransferPorts<Target, Input, Output>;
-    return { ports, target, output, evidence, app: createAndroidControlTransfer(ports) };
+    return { ports, target, input, output, evidence, app: createAndroidControlTransfer(ports) };
 }
 
 describe("Android control and transfer policy", () => {
@@ -195,11 +195,121 @@ describe("Android control and transfer policy", () => {
         expect(ports.disposeOutput).toHaveBeenCalledOnce();
     });
 
-    it.each(["transfer", "commit"] as const)("preserves disposal exception precedence after %s throws", failure => {
-        const { ports, app } = fixture(), disposal = new Error("disposal remains authoritative");
-        if (failure === "transfer") ports.download.mockImplementation(() => { throw new Error("transfer error"); });
-        else ports.commitOutput.mockImplementation(() => { throw new Error("commit error"); });
-        ports.disposeOutput.mockImplementation(() => { throw disposal; });
-        expect(() => app.request("device_download", {})).toThrow(disposal);
+    it.each(["upload", "download"] as const)("retains completed %s publication when exact-stage disposal fails", operation => {
+        const { ports, app, input, output, evidence } = fixture();
+        const cleanup = Object.freeze({ code: "EACCES", privateStage: Symbol("owned stage") });
+        const order: string[] = [];
+        let destination = "original";
+        ports[operation].mockImplementation(() => { order.push("transfer"); return { ok: true, evidence }; });
+        ports.commitOutput.mockImplementation(handle => {
+            expect(handle).toBe(output);
+            order.push("commit"); destination = "published";
+            return { ok: true, path: "/local/published" };
+        });
+        if (operation === "upload") ports.disposeInput.mockImplementation(handle => {
+            expect(handle).toBe(input); order.push("dispose"); throw cleanup;
+        });
+        else ports.disposeOutput.mockImplementation(handle => {
+            expect(handle).toBe(output); order.push("dispose"); throw cleanup;
+        });
+        const result = app.request(operation === "upload" ? "device_upload" : "device_download", {});
+        expect(result).toEqual({ kind: "cleanup-failure", error: cleanup, primary: {
+            kind: "completed", evidence,
+            completion: operation === "upload"
+                ? { kind: "uploaded", localPath: "/local/input", remotePath: "/sdcard/approved" }
+                : { kind: "downloaded", remotePath: "/sdcard/approved", localPath: "/local/published" },
+        } });
+        if (result?.kind !== "cleanup-failure") throw new Error("expected retained cleanup observation");
+        expect(result.error).toBe(cleanup);
+        if (result.primary.kind !== "completed") throw new Error("expected completed primary");
+        expect(result.primary.evidence).toBe(evidence);
+        expect(ports[operation]).toHaveBeenCalledOnce();
+        expect(ports.disposeInput.mock.calls).toEqual(operation === "upload" ? [[input]] : []);
+        expect(ports.disposeOutput.mock.calls).toEqual(operation === "download" ? [[output]] : []);
+        expect(order).toEqual(operation === "upload" ? ["transfer", "dispose"] : ["transfer", "commit", "dispose"]);
+        expect(destination).toBe(operation === "download" ? "published" : "original");
+    });
+
+    it.each(["upload", "download"] as const)("retains opaque native %s failure while disposing only its exact stage once", operation => {
+        const { ports, app, input, output } = fixture();
+        const evidence = Symbol("opaque failed transfer"), cleanup = Symbol("opaque removal failure");
+        ports[operation].mockReturnValue({ ok: false, evidence });
+        if (operation === "upload") ports.disposeInput.mockImplementation(() => { throw cleanup; });
+        else ports.disposeOutput.mockImplementation(() => { throw cleanup; });
+        const result = app.request(operation === "upload" ? "device_upload" : "device_download", {});
+        expect(result).toEqual({ kind: "cleanup-failure", primary: { kind: "command-failure", evidence }, error: cleanup });
+        if (result?.kind !== "cleanup-failure" || result.primary.kind !== "command-failure") throw new Error("expected failed primary");
+        expect(result.primary.evidence).toBe(evidence); expect(result.error).toBe(cleanup);
+        expect(ports[operation]).toHaveBeenCalledOnce();
+        expect(ports.commitOutput).not.toHaveBeenCalled();
+        expect(ports.disposeInput.mock.calls).toEqual(operation === "upload" ? [[input]] : []);
+        expect(ports.disposeOutput.mock.calls).toEqual(operation === "download" ? [[output]] : []);
+    });
+
+    it("retains download commit refusal together with removal failure without repeating the pull or publication", () => {
+        const { ports, app, output } = fixture();
+        const cleanup = Object.freeze({ code: "EBUSY" });
+        ports.commitOutput.mockReturnValue({ ok: false, message: "destination changed" });
+        ports.disposeOutput.mockImplementation(() => { throw cleanup; });
+        const result = app.request("device_download", {});
+        expect(result).toEqual({ kind: "cleanup-failure", primary: { kind: "text", message: "destination changed" }, error: cleanup });
+        if (result?.kind !== "cleanup-failure") throw new Error("expected retained cleanup observation");
+        expect(result.error).toBe(cleanup);
+        expect(ports.download).toHaveBeenCalledOnce();
+        expect(ports.commitOutput).toHaveBeenCalledExactlyOnceWith(output);
+        expect(ports.disposeOutput).toHaveBeenCalledExactlyOnceWith(output);
+        expect(ports.disposeInput).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, null, false, 0, "", Symbol("opaque cleanup")])("retains falsy or opaque cleanup failure %# after completed download", cleanup => {
+        const { ports, app, evidence, output } = fixture();
+        ports.disposeOutput.mockImplementation(() => { throw cleanup; });
+        const result = app.request("device_download", {});
+        expect(result).toEqual({ kind: "cleanup-failure", primary: { kind: "completed", evidence,
+            completion: { kind: "downloaded", remotePath: "/sdcard/approved", localPath: "/local/destination" } }, error: cleanup });
+        if (result?.kind !== "cleanup-failure") throw new Error("expected cleanup failure even without a truthy exception");
+        expect(result.error).toBe(cleanup);
+        expect(ports.commitOutput).toHaveBeenCalledExactlyOnceWith(output);
+        expect(ports.disposeOutput).toHaveBeenCalledExactlyOnceWith(output);
+    });
+
+    const thrownValues = [new Error("original failure"), Symbol("opaque failure"), undefined, null, false, 0, ""];
+    describe.each(["upload", "download", "commit"] as const)("%s exceptions during cleanup", phase => {
+        it.each(thrownValues)("retains thrown primary %# and exact removal error together", primary => {
+            const { ports, app, input, output } = fixture();
+            const cleanup = Object.freeze({ code: "EIO", marker: Symbol("cleanup") });
+            const events: string[] = [];
+            if (phase === "commit") ports.commitOutput.mockImplementation(() => { events.push("primary"); throw primary; });
+            else ports[phase].mockImplementation(() => { events.push("primary"); throw primary; });
+            if (phase === "upload") ports.disposeInput.mockImplementation(handle => {
+                expect(handle).toBe(input); events.push("dispose"); throw cleanup;
+            });
+            else ports.disposeOutput.mockImplementation(handle => {
+                expect(handle).toBe(output); events.push("dispose"); throw cleanup;
+            });
+            const result = app.request(phase === "upload" ? "device_upload" : "device_download", {});
+            expect(result).toEqual({ kind: "cleanup-failure", primary: { kind: "thrown", error: primary }, error: cleanup });
+            if (result?.kind !== "cleanup-failure" || result.primary.kind !== "thrown") throw new Error("expected thrown primary");
+            expect(result.primary.error).toBe(primary); expect(result.error).toBe(cleanup);
+            expect(events).toEqual(["primary", "dispose"]);
+            expect(ports.disposeInput.mock.calls).toEqual(phase === "upload" ? [[input]] : []);
+            expect(ports.disposeOutput.mock.calls).toEqual(phase === "upload" ? [] : [[output]]);
+            expect(ports[phase === "upload" ? "upload" : "download"]).toHaveBeenCalledOnce();
+            if (phase === "commit") expect(ports.commitOutput).toHaveBeenCalledExactlyOnceWith(output);
+            else expect(ports.commitOutput).not.toHaveBeenCalled();
+        });
+
+        it.each(thrownValues)("rethrows the exact original value %# after successful disposal", primary => {
+            const { ports, app, input, output } = fixture();
+            if (phase === "commit") ports.commitOutput.mockImplementation(() => { throw primary; });
+            else ports[phase].mockImplementation(() => { throw primary; });
+            let caught: { threw: false } | { threw: true; error: unknown } = { threw: false };
+            try { app.request(phase === "upload" ? "device_upload" : "device_download", {}); }
+            catch (error) { caught = { threw: true, error }; }
+            expect(caught.threw).toBe(true);
+            if (caught.threw) expect(caught.error).toBe(primary);
+            expect(ports.disposeInput.mock.calls).toEqual(phase === "upload" ? [[input]] : []);
+            expect(ports.disposeOutput.mock.calls).toEqual(phase === "upload" ? [] : [[output]]);
+        });
     });
 });

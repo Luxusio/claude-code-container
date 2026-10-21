@@ -90,4 +90,9 @@ export interface IosSimulatorControlPorts extends IosControlPorts {
 export type IosControlTransferPorts = IosPhysicalControlPorts | IosSimulatorControlPorts;
 
 export type IosControlObservation = {kind:"succeeded"} | {kind:"failed"; message:string};
-export type IosControlOutcome = {kind:"json"; payload:object} | {kind:"text"; message:string} | {kind:"command-failure"; receipt:unknown};
+export type IosControlResult = {kind:"json"; payload:object} | {kind:"text"; message:string} | {kind:"command-failure"; receipt:unknown};
+export type IosControlOutcome = IosControlResult | {
+    kind: "cleanup-failure";
+    primary: IosControlResult | {kind:"thrown"; error:unknown};
+    error: unknown;
+};

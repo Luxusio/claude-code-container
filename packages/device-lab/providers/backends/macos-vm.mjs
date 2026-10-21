@@ -1,3 +1,4 @@
+import { renderStageCleanupFailure } from "../adapters/stage-cleanup-result.mjs";
 import { createDirectRecording } from "../adapters/direct-recording.mjs";
 import { macosImageProviderRefusal } from "../domain/macos-image-snapshots.mjs";
 import { createMacosImageSnapshots } from "../application/macos-image-snapshots.mjs";
@@ -1175,9 +1176,21 @@ const macosRecordingNative = {
     ensureWorkspace: device => { ensureMacosWorkspace(device); return undefined; },
 };
 const macosRecording = createDirectRecording(macosRecordingNative);
-/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome */
+/** @param {import('../domain/direct-recording.mjs').RecordingOutcome|undefined} outcome
+ * @returns {unknown} */
 function macosRecordingResult(outcome) {
     if (!outcome || outcome.kind === "missing") return undefined;
+    if (outcome.kind === 'cleanup-failure') {
+        const primary = outcome.primary;
+        return renderStageCleanupFailure({
+            error: 'recording-stage-cleanup-failed',
+            primary: primary.kind === 'thrown' ? primary
+                : { kind: 'returned', outcome: primary.kind, result: macosRecordingResult(primary) },
+            cleanupError: outcome.error,
+            ...(primary.kind === 'success' || Object.keys(outcome.facts).length
+                ? { result: { ...outcome.facts, ...(primary.kind === 'success' ? { kind: 'completed', completed: true } : {}) } } : {}),
+        }, jsonResult);
+    }
     if (outcome.kind === "native") return outcome.value;
     if (outcome.kind === "failure") return textResult(false, outcome.message);
     return jsonResult(outcome.value);

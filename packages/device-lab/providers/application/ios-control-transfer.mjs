@@ -1,4 +1,16 @@
 import { iosControlRequest, iosContainerRelativePathAllowed } from "../domain/ios-control-transfer.mjs";
+/** @typedef {import("../ports/ios-control-transfer.mjs").IosControlResult} ControlResult */
+/** @typedef {ControlResult | {kind:'thrown',error:unknown}} TransferPrimary */
+/** @param {import("../ports/ios-control-transfer.mjs").IosSimulatorControlPorts} ports
+ * @param {import("../ports/ios-control-transfer.mjs").IosTransferStage} stage
+ * @param {TransferPrimary} primary
+ * @returns {import("../ports/ios-control-transfer.mjs").IosControlOutcome} */
+function finalizeStage(ports, stage, primary) {
+    try { ports.disposeStage(stage); }
+    catch (error) { return { kind: "cleanup-failure", primary, error }; }
+    if (primary.kind === "thrown") throw primary.error;
+    return primary;
+}
 /** @param {import("../ports/ios-control-transfer.mjs").IosControlTransferPorts} ports */
 export function createIosControlTransfer(ports) {
     const physical = ports.kind === "physical";
@@ -15,7 +27,8 @@ export function createIosControlTransfer(ports) {
         }
         return facts;
     }
-    /** @param {string} name @param {import("../ports/ios-control-transfer.mjs").IosControlArgs} args */
+    /** @param {string} name @param {import("../ports/ios-control-transfer.mjs").IosControlArgs} args
+     * @returns {Promise<import("../ports/ios-control-transfer.mjs").IosControlOutcome|undefined>} */
     async function handle(name, args) {
         switch (name) {
             case "device_upload": {
@@ -40,43 +53,51 @@ export function createIosControlTransfer(ports) {
                 if (!localStage.ok) {
                     return textOutcome(localStage.message);
                 }
+                /** @type {TransferPrimary} */
+                let primary;
                 try {
-                    const discovery = ports.discovery();
-                    if (!discovery.available) {
-                        return textOutcome(`iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
+                    transfer: {
+                        const discovery = ports.discovery();
+                        if (!discovery.available) {
+                            primary = textOutcome(`iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
+                            break transfer;
+                        }
+                        const ownedTarget = ports.verifyTarget(discovery.xcrun, device);
+                        if (ownedTarget.error !== undefined) {
+                            primary = textOutcome(ownedTarget.error);
+                            break transfer;
+                        }
+                        const type = (containerType || "data");
+                        const container = ports.resolveContainer(discovery.xcrun, ownedTarget.target, bundleId, type);
+                        if (container.kind === "failed") {
+                            primary = commandOutcome(container.receipt);
+                            break transfer;
+                        }
+                        const target = containedPath(container.containerRoot, remotePath);
+                        if ("error" in target) {
+                            primary = textOutcome(target.error);
+                            break transfer;
+                        }
+                        const containment = ports.guardWrite(container.containerRoot, target.path);
+                        if (containment.error) {
+                            primary = textOutcome(containment.error);
+                            break transfer;
+                        }
+                        const copied = ports.copyInput(localStage, target.path);
+                        if (!copied.ok) {
+                            primary = textOutcome(copied.message);
+                            break transfer;
+                        }
+                        primary = jsonOutcome({
+                            uploaded: {
+                                localPath: localStage.path, remotePath: target.relativePath, bundleId, containerType: type
+                            },
+                            containerRoot: container.containerRoot,
+                            provider: "simctl-app-container"
+                        });
                     }
-                    const ownedTarget = ports.verifyTarget(discovery.xcrun, device);
-                    if (ownedTarget.error !== undefined) {
-                        return textOutcome(ownedTarget.error);
-                    }
-                    const type = (containerType || "data");
-                    const container = ports.resolveContainer(discovery.xcrun, ownedTarget.target, bundleId, type);
-                    if (container.kind === "failed") {
-                        return commandOutcome(container.receipt);
-                    }
-                    const target = containedPath(container.containerRoot, remotePath);
-                    if ("error" in target) {
-                        return textOutcome(target.error);
-                    }
-                    const containment = ports.guardWrite(container.containerRoot, target.path);
-                    if (containment.error) {
-                        return textOutcome(containment.error);
-                    }
-                    const copied = ports.copyInput(localStage, target.path);
-                    if (!copied.ok) {
-                        return textOutcome(copied.message);
-                    }
-                    return jsonOutcome({
-                        uploaded: {
-                            localPath: localStage.path, remotePath: target.relativePath, bundleId, containerType: type
-                        },
-                        containerRoot: container.containerRoot,
-                        provider: "simctl-app-container"
-                    });
-                }
-                finally {
-                    ports.disposeStage(localStage);
-                }
+                } catch (error) { primary = { kind: "thrown", error }; }
+                return finalizeStage(ports, localStage, primary);
             }
             case "device_download": {
                 if (ports.kind !== "simulator") {
@@ -100,50 +121,60 @@ export function createIosControlTransfer(ports) {
                 if (!localStage.ok) {
                     return textOutcome(localStage.message);
                 }
+                /** @type {TransferPrimary} */
+                let primary;
                 try {
-                    const discovery = ports.discovery();
-                    if (!discovery.available) {
-                        return textOutcome(`iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
+                    transfer: {
+                        const discovery = ports.discovery();
+                        if (!discovery.available) {
+                            primary = textOutcome(`iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
+                            break transfer;
+                        }
+                        const ownedTarget = ports.verifyTarget(discovery.xcrun, device);
+                        if (ownedTarget.error !== undefined) {
+                            primary = textOutcome(ownedTarget.error);
+                            break transfer;
+                        }
+                        const type = (containerType || "data");
+                        const container = ports.resolveContainer(discovery.xcrun, ownedTarget.target, bundleId, type);
+                        if (container.kind === "failed") {
+                            primary = commandOutcome(container.receipt);
+                            break transfer;
+                        }
+                        const source = containedPath(container.containerRoot, remotePath);
+                        if ("error" in source) {
+                            primary = textOutcome(source.error);
+                            break transfer;
+                        }
+                        if (!ports.exists(source.path)) {
+                            primary = textOutcome(`iOS Simulator download remotePath does not exist in app container: ${source.relativePath}`);
+                            break transfer;
+                        }
+                        const containment = ports.guardRead(container.containerRoot, source.path);
+                        if (containment.error) {
+                            primary = textOutcome(containment.error);
+                            break transfer;
+                        }
+                        const staged = ports.populateOutput(source.path, localStage);
+                        if (!staged.ok) {
+                            primary = textOutcome(staged.message);
+                            break transfer;
+                        }
+                        const committed = ports.commitOutput(localStage);
+                        if (!committed.ok) {
+                            primary = textOutcome(committed.message);
+                            break transfer;
+                        }
+                        primary = jsonOutcome({
+                            downloaded: {
+                                remotePath: source.relativePath, localPath: committed.path, bundleId, containerType: type
+                            },
+                            containerRoot: container.containerRoot,
+                            provider: "simctl-app-container"
+                        });
                     }
-                    const ownedTarget = ports.verifyTarget(discovery.xcrun, device);
-                    if (ownedTarget.error !== undefined) {
-                        return textOutcome(ownedTarget.error);
-                    }
-                    const type = (containerType || "data");
-                    const container = ports.resolveContainer(discovery.xcrun, ownedTarget.target, bundleId, type);
-                    if (container.kind === "failed") {
-                        return commandOutcome(container.receipt);
-                    }
-                    const source = containedPath(container.containerRoot, remotePath);
-                    if ("error" in source) {
-                        return textOutcome(source.error);
-                    }
-                    if (!ports.exists(source.path)) {
-                        return textOutcome(`iOS Simulator download remotePath does not exist in app container: ${source.relativePath}`);
-                    }
-                    const containment = ports.guardRead(container.containerRoot, source.path);
-                    if (containment.error) {
-                        return textOutcome(containment.error);
-                    }
-                    const staged = ports.populateOutput(source.path, localStage);
-                    if (!staged.ok) {
-                        return textOutcome(staged.message);
-                    }
-                    const committed = ports.commitOutput(localStage);
-                    if (!committed.ok) {
-                        return textOutcome(committed.message);
-                    }
-                    return jsonOutcome({
-                        downloaded: {
-                            remotePath: source.relativePath, localPath: committed.path, bundleId, containerType: type
-                        },
-                        containerRoot: container.containerRoot,
-                        provider: "simctl-app-container"
-                    });
-                }
-                finally {
-                    ports.disposeStage(localStage);
-                }
+                } catch (error) { primary = { kind: "thrown", error }; }
+                return finalizeStage(ports, localStage, primary);
             }
             default: {
                 const request = iosControlRequest(name, args);
