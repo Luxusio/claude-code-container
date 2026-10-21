@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as crypto from "crypto";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDeviceBrokerServer, type BrokerProcessTreeCleanup, type DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
@@ -43,6 +44,57 @@ async function cleanup(base: string) {
     return { status: response.status, body: await response.json() };
 }
 const successfulRunner = (): NonNullable<DeviceBrokerOptions["commandRunner"]> => command => ({ ...command, status: 0, stdout: "", stderr: "" });
+
+async function holdInventoryLockInChild(file: string) {
+    const moduleUrl = new URL("../../../packages/device-lab/providers/state/shared-mutation-lock.mjs", import.meta.url).href;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+import {withSharedMutationLockAsync} from ${JSON.stringify(moduleUrl)};
+import {setTimeout as delay} from 'node:timers/promises';
+let release;
+const requested = new Promise(resolve => { release = resolve; });
+process.once('message', value => release(Number(value.releaseAfterMs)));
+await withSharedMutationLockAsync(${JSON.stringify(file)}, async () => {
+    process.send({held:true});
+    const safety = setTimeout(() => release(0), 10000);
+    const milliseconds = await requested;
+    clearTimeout(safety);
+    await delay(Math.max(0, Math.min(5000, milliseconds)));
+});
+process.disconnect();
+`], { env: process.env, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    let diagnostics = "";
+    child.stdout!.on("data", chunk => { diagnostics += String(chunk); });
+    child.stderr!.on("data", chunk => { diagnostics += String(chunk); });
+    const ended = new Promise<void>(resolve => child.once("close", () => resolve()));
+    const waitForExit = async (timeoutMs: number) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try { return await Promise.race([ended.then(() => true), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); })]); }
+        finally { clearTimeout(timer); }
+    };
+    const releaseAfter = (milliseconds: number) => { if (child.connected) child.send?.({ releaseAfterMs: milliseconds }); };
+    const close = async () => {
+        releaseAfter(0);
+        if (await waitForExit(4000)) return;
+        child.kill("SIGTERM");
+        if (await waitForExit(1000)) return;
+        child.kill("SIGKILL");
+        expect(await waitForExit(1000), `owned inventory-lock child did not exit: ${diagnostics}`).toBe(true);
+    };
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`inventory-lock child admission timed out: ${diagnostics}`)), 10000);
+            child.once("message", message => {
+                clearTimeout(timer);
+                if (message && typeof message === "object" && "held" in message && message.held === true) resolve();
+                else reject(new Error(`unexpected inventory-lock child reply: ${JSON.stringify(message)}`));
+            });
+            child.once("error", error => { clearTimeout(timer); reject(error); });
+            child.once("exit", () => { clearTimeout(timer); reject(new Error(`inventory-lock child exited before release: ${diagnostics}`)); });
+        });
+        return { releaseAfter, close };
+    } catch (error) { await close(); throw error; }
+}
+
 describe("authenticated macOS broker lifecycle", () => {
     it("regression: Tart image clone receives a provisioning budget through the authenticated dispatcher", async () => {
         const runner = vi.fn(successfulRunner()), base = await start(runner);
@@ -61,6 +113,36 @@ describe("authenticated macOS broker lifecycle", () => {
         expect(runner.mock.calls[0][1]).toMatchObject({ timeoutMs: 600000 });
         expect(devices()[0]).not.toHaveProperty("requestTimeoutMs");
         expect(devices()[0]).not.toHaveProperty("remainingMs");
+    });
+
+    it.each([
+        { provider: " tart ", requestTimeoutMs: undefined, expectedNative: 600000, expectedParent: 630000 },
+        { provider: " auto ", requestTimeoutMs: 4000, expectedNative: 4000, expectedParent: 4000 },
+    ])("regression: canonical provider and image preserve Tart provisioning allowance %j", async ({ provider, requestTimeoutMs, expectedNative, expectedParent }) => {
+        let clock = 0;
+        const runner = vi.fn(successfulRunner()), base = await start(runner, { hyperVMonotonicNow: () => clock });
+        const result = await invoke(base, "device_create", { name: "Canonical clone", provider, image: " base-image ",
+            ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
+        });
+        expect(result.status).toBe(200);
+        expect(runner).toHaveBeenCalledOnce();
+        expect(runner.mock.calls[0][0]).toMatchObject({ provider: "tart", args: ["clone", "base-image", expect.any(String)] });
+        expect(runner.mock.calls[0][1]).toMatchObject({ timeoutMs: expectedNative });
+        const remaining = runner.mock.calls[0][1]?.remainingMs;
+        expect(remaining?.()).toBe(expectedParent);
+        clock += 500;
+        expect(remaining?.()).toBe(expectedParent - 500);
+        expect(devices()[0]).toMatchObject({ provider: "tart", status: "stopped" });
+    });
+
+    it("regression: canonical blank image remains provider-free metadata creation outside clone budget admission", async () => {
+        const runner = vi.fn(successfulRunner()), base = await start(runner);
+        const result = await invoke(base, "device_create", { name: "Blank image definition", provider: "tart", image: " \t ", requestTimeoutMs: 0 });
+        expect(result.status).toBe(200);
+        expect(result.body.result.providerCommand).toMatchObject({ mode: "noop", provider: "host-broker-state" });
+        expect(runner).not.toHaveBeenCalled();
+        expect(devices()).toHaveLength(1);
+        expect(devices()[0]).toMatchObject({ provider: "tart", status: "stopped" });
     });
 
     it.each([
@@ -161,6 +243,28 @@ describe("authenticated macOS broker lifecycle", () => {
             await first?.catch(() => undefined);
             await queued?.catch(() => undefined);
         }
+    });
+
+    it("regression: Tart clone inventory claim cannot publish after its parent allowance expires", async () => {
+        writeBrokerDevices(owner, "macos", [device()]);
+        const before = readFileSync(stateFile());
+        const lockFile = join(backendRoot(owner, "macos"), "devices.mutation.lock");
+        const holder = await holdInventoryLockInChild(lockFile);
+        const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => {
+            expect(command.args?.[0]).toBe("clone");
+            expect(existsSync(lockFile)).toBe(true);
+            // The independent child can release while synchronous claim acquisition waits.
+            holder.releaseAfter(3000);
+            return { ...command, status: 0, stdout: "clone completed", stderr: "" };
+        });
+        try {
+            const base = await start(runner);
+            const result = await invoke(base, "device_create", { name: "Inventory-contended clone", provider: "tart", image: "base-image", requestTimeoutMs: 2000 });
+            expect(result.status).toBeGreaterThanOrEqual(400);
+            expect(result.body).toMatchObject({ ok: false, rollback: { attempted: false, ok: false, reason: "macos-tart-create-budget-exhausted" } });
+            expect(runner.mock.calls.map(([command]) => command.args?.[0])).toEqual(["clone"]);
+            expect(readFileSync(stateFile())).toEqual(before);
+        } finally { await holder.close(); }
     });
 
     it("regression: default native runner refuses clone admission without room for identity-checked cleanup", async () => {

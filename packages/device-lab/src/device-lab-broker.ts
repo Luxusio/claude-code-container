@@ -4366,14 +4366,15 @@ function readOwnerDevices(ownerId: string, stateKey: string) {
     return readOwnerDeviceStateFile(ownerDevicesFile(ownerId, stateKey), DEVICE_BROKER_INVENTORY_FILE_LIMIT);
 }
 
-const ownerRepository = createBrokerOwnerRepository({
+const ownerRepositoryPorts: Parameters<typeof createBrokerOwnerRepository>[0] = {
     withLock: (ownerId, stateKey, operation) => withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), operation),
     read: readOwnerDevices,
     validate: devices => { assertOwnerDeviceStateWritable(devices, DEVICE_BROKER_INVENTORY_FILE_LIMIT); return undefined; },
     publish: (ownerId, stateKey, devices) => { writeJsonFileAtomically(ownerDevicesFile(ownerId, stateKey), { devices }); return undefined; },
     equal: isDeepStrictEqual,
     timestamp: () => new Date().toISOString(),
-});
+};
+const ownerRepository = createBrokerOwnerRepository(ownerRepositoryPorts);
 
 function ownerDeviceStateFailure(error: unknown, context: { backend?: string; stateKey?: string } = {}): { status: number; payload: Record<string, unknown> } {
     const code = ownerDeviceStateErrorCode(error);
@@ -9871,6 +9872,10 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
     };
 }
 function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerMacosVmLifecyclePorts<NativeProviderLifecycleEffect> {
+    const remaining = normalized.macosCreateRemainingMs;
+    const claimRepository = remaining ? createBrokerOwnerRepository({...ownerRepositoryPorts,
+        withLock: (ownerId, stateKey, operation) => withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), operation, {waitBudget: {remaining}}),
+    }) : ownerRepository;
     const observed = (receipt: ProviderCommandResult) => {
         const output = `${receipt.stderr || ""}\n${receipt.stdout || ""}`.toLowerCase();
         return { ...nativeLifecycleObservation(receipt), resourceMissing: output.includes("does not exist") || output.includes("not found") };
@@ -9910,7 +9915,7 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
             return { ...observed(receipt), address: String(receipt.stdout || "").trim() || null };
         },
         timestamp: () => new Date().toISOString(), runtimeId: randomUUID, now: () => performance.now(), sleep,
-        claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
+        claimDefinition: (owner, parsed, device) => claimRepository.claim(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed), remaining ? () => {assertCleanupDeadline(normalized); return undefined;} : undefined),
         cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntimeAsync(owner, parsed, normalized, expected),
         publish: (owner, state, id, expected, change) => publishLifecycleDevice(normalized, owner, state, id, expected, candidate => {
             const replacement = brokerMacosReplacement(candidate, change);
@@ -10655,7 +10660,7 @@ async function cleanupVirtualStopLocked(ownerId: string, target: { backend: stri
 function macosCreateRequestOptions(params: unknown, normalized: NormalizedBrokerOptions): NormalizedBrokerOptions | BrokerRpcResult {
     if (normalized.macosCreateRemainingMs || !params || typeof params !== "object" || Array.isArray(params)) return normalized;
     const input = params as Record<string, unknown>;
-    if (!isBrokerMacosTartImageCreate(input)) return normalized;
+    if (!isBrokerMacosTartImageCreate({...input, provider: optionalString(input, "provider"), image: optionalString(input, "image")})) return normalized;
     const duration = input.requestTimeoutMs;
     if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0 || duration > BROKER_MACOS_TART_CREATE_TIMEOUT_MS)) {
         return {status: 400, payload: {ok: false, error: "invalid-macos-tart-create-timeout"}};

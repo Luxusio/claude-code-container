@@ -2,7 +2,7 @@
 
 Tart image creation uses a provisioning budget rather than the broker's readiness-command default. The default native clone budget is 10 minutes, within a 10 minute 30 second outer RPC allowance; explicit shorter limits still apply.
 
-The client and host carry a decreasing operation allowance through preflight, runtime metadata locks, the authenticated owner mutation queue, device locking and native dispatch. Existing identity-checked containment and no-replay behavior remain in force.
+The client and host carry a decreasing operation allowance through preflight, runtime metadata locks, the authenticated owner mutation queue, device locking, native dispatch and device-definition publication. Existing identity-checked containment and no-replay behavior remain in force.
 
 This change addresses the confirmed 5-second broker clone timeout. The reported Darwin process-identity mismatch and actual partial-resource cleanup still require deployed macOS evidence; portable checks do not establish that they are fixed.
 
