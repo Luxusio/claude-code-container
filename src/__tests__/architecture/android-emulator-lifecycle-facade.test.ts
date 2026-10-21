@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -10,6 +11,36 @@ import { deviceLabTestHomeEnvironment } from "../helpers/device-lab-test-environ
 const project = fileURLToPath(new URL("../../../", import.meta.url));
 
 describe("Android emulator lifecycle current public MCP lifecycle", () => {
+    it("raw direct zero-budget boot retains a ready observation within one native clock millisecond", async () => {
+        await withAndroidLifecycleFixture("fractional-boot-clock", async c => {
+            const deviceId = "android-fractional-boot-clock";
+            const created = await c.client.callTool({ name: "create_android_emulator", arguments: {
+                name: "Fractional Boot Clock", deviceId, port: 5676, systemImage: ANDROID_SYSTEM_IMAGE,
+            } });
+            expect(created.isError, toolText(created)).not.toBe(true);
+            const script = `
+                import { performance } from "node:perf_hooks";
+                import { handleAndroidTool } from ${JSON.stringify(new URL("../../../packages/device-lab/providers/backends/android.mjs", import.meta.url).href)};
+                let ticks = 0;
+                Object.defineProperty(performance, "now", { value: () => 100.25 + (ticks++ / 1e6) });
+                const result = await handleAndroidTool("device_start", ${JSON.stringify({ deviceId, bootTimeoutMs: 0 })});
+                process.stdout.write(JSON.stringify(result));
+            `;
+            const started = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+                cwd: project, encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024, windowsHide: true,
+                env: { ...deviceLabTestHomeEnvironment(c.homeDir), PATH: c.binDir, NODE_ENV: "test",
+                    FAKE_ANDROID_LOG: c.logPath,
+                    NODE_OPTIONS: "--require=" + JSON.stringify(join(c.homeDir, "node-provider-routing.cjs")) },
+            });
+            expect(started.error).toBeUndefined();
+            expect(started.signal, started.stderr).toBeNull();
+            expect(started.status, started.stderr).toBe(0);
+            const result: unknown = JSON.parse(started.stdout);
+            expect(result).not.toMatchObject({ isError: true });
+            expect(toolJson(result)).toMatchObject({ device: { status: "running", bootReady: true }, boot: { ready: true } });
+        });
+    }, 30000);
+
     it("genuine current emitted MCP executes all four policies through existing native SDK authority", async () => {
         assertCurrentAndroidLifecycleEmission();
         await withAndroidLifecycleFixture("emitted-direct-four", async (c, ownerId) => {
