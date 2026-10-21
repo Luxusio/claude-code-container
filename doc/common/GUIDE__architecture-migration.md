@@ -1546,7 +1546,7 @@ rest of M11), M12–M14 and native acceptance remain outstanding. Config hardeni
 `src/application/requested-tool-setup.ts` owns the existing install-route,
 launcher-readiness and Codex sandbox sequencing policy. Its factory accepts four
 semantic `RequestedToolSetupPorts`: `ensureClaudeLauncher`, `ensureNpmTool`,
-`probeLauncher` and `ensureCodexSandbox`. Construction checks those callables in
+`ensureLauncherReady` and `ensureCodexSandbox`. Construction checks those callables in
 that order without invoking effects. `ensure(target, tool)` is synchronous and
 returns `undefined`; the application imports only canonical domain data/types
 and its port contract.
@@ -1554,18 +1554,20 @@ and its port contract.
 Installation dispatch uses the current tool name and passes the original tool
 object to the npm adapter. After installation, the application evaluates
 `binary || name`, including for Claude, and reads the current name again to choose
-the fixed Claude launcher or `/home/ccc/.local/bin/<binary>`. Metadata mutations,
-getters and raw probe property reads retain their original order. Exactly one
-launcher probe runs. Only `error.code === "ETIMEDOUT"` uses the existing timeout
-message; other truthy errors and nonzero, null or runtime-undefined statuses use
-the existing unavailable message. Statuses 124 and 137 are not normalized into
-timeouts. Original thrown values propagate; the application adds no retry.
+the fixed Claude launcher or `/home/ccc/.local/bin/<binary>`. Metadata mutations
+and path selection retain their existing order. The required readiness effect
+receives the exact original tool descriptor and performs one native launcher
+probe. Native `error.code === "ETIMEDOUT"` decoding and CLI error construction
+live in `ensureTools`; other truthy errors and nonzero, null or
+runtime-undefined statuses use the existing unavailable message. Statuses 124
+and 137 are not normalized into timeouts. The failure label reads the original
+tool name after the probe. Original thrown values propagate without retry.
 
 The Codex sandbox adapter runs only after successful launcher readiness and a
-current name of `codex`. Its failures propagate. The three effect ports return
-`void`, which TypeScript also accepts for async callbacks; trusted production
-composition supplies the existing synchronous helpers. The probe contract and
-application completion remain synchronous. These ports are not wire inputs or
+current name of `codex`. Its failures propagate. All four effect ports return
+`undefined`, so ordinary async callbacks do not satisfy their synchronous
+contract. Composition supplies the existing synchronous helpers, and
+application completion remains `undefined`. These ports are not wire inputs or
 an execution sandbox.
 
 `src/container-setup.ts` keeps the public `ensureTools(...): void` facade and
@@ -1576,11 +1578,11 @@ caller still owns its existing conditional container-loss retry. Final
 composition extraction remains M13 work.
 
 Verification anchors are the requested-tool core/facade/type suites, the retained
-container setup, index and tool-layout regressions, and both package payload
-smokes. The source facade suite delegates through the actual factory while
-observing native calls. Distribution verifies the compiled factory, declarations,
-facade composition and existing fenced Claude VALID/INSTALL execution in both
-fresh import orders. Portable proof does not substitute for native installation.
+container setup, index and tool-layout regressions. The source facade suite
+delegates through the actual factory while observing native calls. Workspace
+package smoke covers loading and payload layout, not requested-tool readiness
+execution. The separate compiled startup integration uses a real engine;
+portable proof does not substitute for native installation.
 
 Known ceiling: no real installer, Docker/Podman, rootless or Windows/macOS
 acceptance is established by this packet. Native npm/Claude/UV/bubblewrap policy,
