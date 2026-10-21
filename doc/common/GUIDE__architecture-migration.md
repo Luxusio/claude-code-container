@@ -845,11 +845,12 @@ compensation; late failures never delete the verified container.
 
 `src/composition/container-create-lifecycle.ts` joins the semantic application
 to the existing native string/exception contract and owns private cause capture
-and presentation. The adapter owns subprocesses. Create, forced rejected-ID removal and absence inspection use the
+and presentation. The adapter owns subprocesses and the explicit-absence stderr
+classifier. Create, forced rejected-ID removal and absence inspection use the
 CLI captured before the existing flow, with unchanged argv/stdio. Existing
 proof and synchronization collaborators still select their current runtime at
 the original points. The required native context supplies a nullable lazy lab
-warning, Docker's unchanged absence classifier and existing initialization hint;
+warning, the unchanged native absence-classifier callback and existing initialization hint;
 composition does not import Docker. Outer preparation, image/home/credential/lab
 mount policy, native source proof and the shared finish body remained in the
 facade at the M10g cutover. M10i below extracts that shared finish policy.

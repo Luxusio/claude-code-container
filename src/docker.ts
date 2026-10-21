@@ -35,6 +35,7 @@ import type { CodexConfigPreparationObservation, CodexConfigPreparationResult } 
 import { createCodexHostAccessRestoration } from "./application/credentials/codex-host-access.js";
 import { createNativeContainerExistingLifecycle } from "./composition/container-existing-lifecycle.js";
 import { createNativeContainerCreateLifecycle } from "./composition/container-create-lifecycle.js";
+import { containerInspectExplicitlyNotFound } from "./adapters/container-create-lifecycle.js";
 import { createNativeContainerDestructiveLifecycle } from "./composition/container-destructive-lifecycle.js";
 import { createNativeContainerImagePreparation } from "./composition/container-image-preparation.js";
 import type { ImageTagOutcome } from "./ports/container-image-preparation.js";
@@ -1360,15 +1361,6 @@ function verifyCreatedContainerMounts(
 ): MountVerification {
     return mountVerification(containerId, requiredMounts, getCurrentImageId, bindGuard)
         .application.verifyCreated(containerId, projectMountIdentity);
-}
-
-function containerInspectExplicitlyNotFound(
-    result: ReturnType<typeof runtimeSpawnSync>,
-): boolean {
-    return !result.error
-        && result.status !== null
-        && result.status !== 0
-        && /\bno such (?:container|object)\b/i.test(result.stderr?.toString() ?? "");
 }
 
 function hasKvmDevice(devices: unknown): boolean {

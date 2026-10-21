@@ -14,6 +14,15 @@ export interface NativeContainerCreateLifecycleContext {
     explicitlyNotFound(result: ReturnType<typeof spawnSync>): boolean;
 }
 
+export function containerInspectExplicitlyNotFound(
+    result: ReturnType<typeof spawnSync>,
+): boolean {
+    return !result.error
+        && result.status !== null
+        && result.status !== 0
+        && /\bno such (?:container|object)\b/i.test(result.stderr?.toString() ?? "");
+}
+
 export function createNativeContainerCreatePorts(
     context: NativeContainerCreateLifecycleContext,
 ) {
