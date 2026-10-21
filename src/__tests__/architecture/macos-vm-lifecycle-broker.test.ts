@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDeviceBrokerServer, type DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
+import { createDeviceBrokerServer, type BrokerProcessTreeCleanup, type DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { backendRoot, close, listen, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "../helpers/host-broker-test-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-environment.js";
@@ -123,9 +123,10 @@ describe("authenticated macOS broker lifecycle", () => {
 
     it("regression: failed clone preserves timeout and cleanup refusal without publication, replay or delete", async () => {
         writeBrokerDevices(owner, "macos", []);
+        const cleanup: BrokerProcessTreeCleanup = { attempted: false, ok: false, pid: 4242, signal: "SIGKILL", platform: "darwin", error: "spawned-process-identity-unavailable" };
         const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => ({ ...command, status: null,
             stdout: "", stderr: "native clone timed out; cleanup identity was not confirmed", timedOut: true,
-            cleanup: { ok: false, reason: "process-identity-unconfirmed" },
+            cleanup,
         }));
         const base = await start(runner), result = await invoke(base, "device_create", { name: "Failed clone", provider: "tart", image: "base-image" });
         expect(result.status).toBe(502);
