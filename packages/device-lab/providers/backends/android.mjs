@@ -628,7 +628,7 @@ function androidEmulatorProcessExit(child) {
 async function waitForAndroidBoot(discovery, device, timeoutMs, child = null) {
     const serial = discovery.adb ? androidSerial(device) : null;
     return confirmAndroidEmulatorBoot(Boolean(discovery.adb), timeoutMs, {
-        now: () => performance.now(),
+        now: () => Math.floor(performance.now()),
         processExit: () => androidEmulatorProcessExit(child),
         probeBootCompleted() {
             const adbArgs = serial
