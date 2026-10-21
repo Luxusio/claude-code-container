@@ -5,7 +5,8 @@ Domain tooling owns the exact filename inventory, matching, parsing and first-to
 hint precedence. The application owns the complete recursive scan through five
 required synchronous ports: directory entries, observed byte size, UTF-8 text,
 child path and relative source path. Presentation owns the two exact context
-formatters; index.ts retains both existing scans and its prompt/acceptance order.
+formatters. The [mise setup application](GUIDE__mise-config-setup.md) owns the
+existing two-scan/prompt/acceptance order; index.ts binds its native effects.
 
 The facade combines the mutable COMMON_IGNORE_DIRS array with scanner-specific
 names once at module import. The application retains that explicit ignored set

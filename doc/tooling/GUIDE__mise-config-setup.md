@@ -1,0 +1,9 @@
+# Project mise configuration setup
+
+`createMiseConfigSetup` owns the existing project setup decisions. The public CLI `ensureMiseConfig(projectPath): Promise<void>` delegates through required ports; index.ts keeps native paths, file operations, prompt decoding, exact messages and the single Claude invocation. The existing scanner/hint/context implementations are reused.
+
+Existing `mise.toml` or `.mise.toml` returns before preferences/scanning. A remembered project skip returns before scanning. No version files means no prompt or remembered preference. An accepted prompt performs a fresh second scan: do not reuse the pre-prompt files, because the project can change while waiting. Detection still ignores the returned Claude status; if it did not create the primary config, write the existing default bytes. A thrown detection/write error stops setup unchanged. A generated file remains intact.
+
+The CLI maps only empty/y/yes answers to creation and n/no to remembered skipping. Other answers skip once. Preference writing and its success message retain their existing narrow catch and warning; other failures propagate. Ports carry the finite choice and events, not terminal strings or arbitrary command plans. Required file/detection/report effects complete synchronously; only confirmation is asynchronous. Public CLI behavior, skip-marker identity, prompt text/options, allowed Claude tools and timeout stay unchanged.
+
+This is an internal boundary change. It adds no UI, provider, fallback policy, install or authentication flow. Existing mise-prompt tests cover native composition and focused application tests cover decisions/failure boundaries. The [version scanning guide](GUIDE__version-file-scanning.md) remains authoritative for scanner behavior. Development checks are separate from formal review, native platform acceptance and delivery.
