@@ -20,4 +20,6 @@ Each facade owns concrete native evidence and public fallback behavior. Windows 
 
 Core tests verify policy, admission order, focus decisions, publication gates and allocation lifetimes using ordinary finite ports. Consumed type cases enforce required named capabilities, asynchronous Windows operations and synchronous X11/macOS operations, staging, commit and disposal. Existing provider/public tests verify command/helper bindings, output fallbacks, file contents and cleanup. Source expression, getter timing and function shape are not product contracts.
 
+The Windows public MCP fixture must also exercise a completed upload with an exact-stage deletion failure. Its response must retain completion and cleanup failure together, while the failed deletion leaves the staged file available for owned test teardown.
+
 Controlled fake-provider and packaged-entry checks do not establish live Windows/macOS GUI behavior, SSH authentication or provider availability. This boundary work does not certify the entire architecture migration or arbitrary container-runtime portability.

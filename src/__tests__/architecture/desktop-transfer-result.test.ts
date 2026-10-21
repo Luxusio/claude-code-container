@@ -1,10 +1,16 @@
 import {describe, expect, it, vi} from "vitest";
 import {renderDesktopTransferCleanup} from "../../../packages/device-lab/providers/adapters/desktop-transfer-result.mjs";
 import type {DesktopCleanupFailure} from "../../../packages/device-lab/providers/domain/desktop-control-transfer.mjs";
-import {jsonResult, textResult, MCP_ERROR_TEXT_LIMIT_BYTES} from "../../../packages/device-lab/providers/responses.mjs";
 import {runDeviceFlow} from "../../../packages/device-lab/providers/application/device-flow.mjs";
 import type {DeviceFlowPorts} from "../../../packages/device-lab/providers/ports/device-flow.mjs";
 import {decodeFlowResult} from "../../../device-lab-mcp/src/device-flow-adapter.mjs";
+
+type NativeReply = {isError?: boolean; content: {type: string; text?: string; data?: unknown; mimeType?: string}[]};
+const {jsonResult, textResult, MCP_ERROR_TEXT_LIMIT_BYTES} = await vi.importActual<{
+    jsonResult(value: unknown): NativeReply;
+    textResult(ok: boolean, text: string): NativeReply;
+    MCP_ERROR_TEXT_LIMIT_BYTES: number;
+}>("../../../packages/device-lab/providers/responses.mjs");
 
 const completed = {kind: "completed" as const, name: "device_upload", args: {localPath: "logical", remotePath: "remote"}, evidence: Symbol("native evidence")};
 function failure(primary: DesktopCleanupFailure["cleanup"]["primary"], error: unknown): DesktopCleanupFailure {
@@ -100,7 +106,6 @@ describe("desktop transfer cleanup projection", () => {
 
     it.each([true, false])("actual flow decoding honors stopOnError=%s after completed transfer cleanup failure", async stopOnError => {
         const response = renderDesktopTransferCleanup(failure(completed, {code: "EACCES"}), () => jsonResult({uploaded: completed.args}), jsonResult);
-        const flowResponse = {...response, content: response.content.map(({type, text}) => ({type, text}))};
         const dispatched: string[] = [];
         const unexpected = (): never => { throw new Error("unexpected validation failure"); };
         const ports: DeviceFlowPorts<ReturnType<typeof decodeFlowResult>["payload"]> = {
@@ -109,7 +114,8 @@ describe("desktop transfer cleanup projection", () => {
             withBrokerOperation: operation => operation(),
             dispatchTool: async operation => {
                 dispatched.push(operation);
-                return decodeFlowResult(operation === "device_upload" ? flowResponse : jsonResult({ok: true}));
+                const native = operation === "device_upload" ? response : jsonResult({ok: true});
+                return decodeFlowResult({...native, content: native.content.map(({type, text}) => ({type, text}))});
             },
             destructiveDenial: unexpected, dispatchFailure: unexpected,
         };
