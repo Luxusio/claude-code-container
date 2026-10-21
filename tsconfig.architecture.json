@@ -15,6 +15,7 @@
     "packages/device-lab/providers/adapters/direct-recording.mjs",
     "packages/device-lab/providers/adapters/ios-control-transfer.mjs",
     "packages/device-lab/providers/adapters/desktop-access-result.mjs",
+    "packages/device-lab/providers/adapters/desktop-transfer-result.mjs",
     "packages/device-lab/providers/adapters/mobile-inventory.mjs",
     "packages/device-lab/providers/state/physical-lease-store.mjs",
     "packages/device-lab/providers/state/broker-owner-secret.mjs",
