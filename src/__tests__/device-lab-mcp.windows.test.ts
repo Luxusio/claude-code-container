@@ -806,6 +806,50 @@ require('node:module').syncBuiltinESMExports();`);
         holdUpload = false;
         expect((await pendingUpload).isError).not.toBe(true);
         expect(readdirSync(started.device.helper.uploadsDir)).toEqual([]);
+
+        const cleanupFailureMarker = join(homeDir, "fake-windows-fail-scratch-remove");
+        const cleanupFailureRemote = "C:\\Users\\WDAGUtilityAccount\\cleanup-failed.txt";
+        let cleanupFailureStage: string | undefined;
+        holdUpload = true;
+        const cleanupFailedUpload = client.callTool({
+            name: "upload",
+            arguments: { deviceId: "windows-win-helper", localPath: uploadSource, remotePath: cleanupFailureRemote, timeoutMs: 2000, detail: true },
+        });
+        try {
+            const deadline = Date.now() + 1000;
+            while (!readdirSync(started.device.helper.inboxDir).some(name => name.endsWith(".json")) && Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            expect(readdirSync(started.device.helper.inboxDir).some(name => name.endsWith(".json"))).toBe(true);
+            const ownedStages = readdirSync(started.device.helper.uploadsDir);
+            expect(ownedStages).toHaveLength(1);
+            cleanupFailureStage = join(started.device.helper.uploadsDir, ownedStages[0]);
+            expect(readFileSync(cleanupFailureStage, "utf8")).toBe("upload");
+            writeFileSync(cleanupFailureMarker, cleanupFailureStage);
+            holdUpload = false;
+            const result = await cleanupFailedUpload;
+            expect(result.isError).toBe(true);
+            const text = (result.content as Array<{ text: string }>)[0].text;
+            const diagnostic = JSON.parse(text);
+            expect(diagnostic).toMatchObject({
+                ok: false, error: "desktop-transfer-cleanup-failed",
+                cause: { kind: "completed", result: { isError: false } },
+                cleanup: { operation: "local", failed: true, code: "EPERM" },
+                result: { kind: "completed", completed: true },
+            });
+            expect(JSON.parse(diagnostic.cause.result.content[0].text)).toMatchObject({
+                provider: "windows-helper", uploaded: { localPath: uploadSource, remotePath: cleanupFailureRemote },
+            });
+            expect(readFileSync(cleanupFailureStage, "utf8")).toBe("upload");
+            expect(text).not.toContain(cleanupFailureStage);
+        } finally {
+            holdUpload = false;
+            rmSync(cleanupFailureMarker, { force: true });
+            await cleanupFailedUpload.catch(() => undefined);
+            if (cleanupFailureStage) rmSync(cleanupFailureStage, { force: true });
+        }
+        expect(readdirSync(started.device.helper.uploadsDir)).toEqual([]);
+
         responseOverride = { ok: false, error: "upload rejected" };
         const refusedUpload = await client.callTool({ name: "upload", arguments: { deviceId: "windows-win-helper", localPath: uploadSource, remotePath: "C:\\Users\\WDAGUtilityAccount\\refused.txt", timeoutMs: 1000 } });
         expect(refusedUpload.isError).toBe(true);
