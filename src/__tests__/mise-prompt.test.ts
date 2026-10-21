@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync} from "fs";
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from "fs";
 import {tmpdir} from "os";
 import {join} from "path";
 
@@ -111,5 +111,59 @@ describe("mise creation prompt preference", () => {
         expect(spawnSync).not.toHaveBeenCalled();
         await ensureMiseConfig(project);
         expect(prompt).toHaveBeenCalledTimes(2);
+    });
+
+    it("uses a fresh scan after confirmation in the exact Claude invocation", async () => {
+        vi.mocked(prompt).mockResolvedValue("yes");
+        vi.mocked(scanVersionFiles)
+            .mockReturnValueOnce(new Map([["old-version-file", "first-scan-only"]]))
+            .mockReturnValueOnce(new Map([[".node-version", "20.11.0"]]));
+        await ensureMiseConfig(project);
+        expect(scanVersionFiles).toHaveBeenCalledTimes(2);
+        expect(scanVersionFiles).toHaveBeenNthCalledWith(1, project);
+        expect(scanVersionFiles).toHaveBeenNthCalledWith(2, project);
+        expect(prompt).toHaveBeenCalledExactlyOnceWith("Create mise.toml? (auto-detect tools) [Y/n]: ", true);
+        expect(spawnSync).toHaveBeenCalledExactlyOnceWith("claude", [
+            "-p", expect.stringContaining(`Task: Write "${join(project, "mise.toml")}" using Write tool.`),
+            "--allowedTools", "Read,Write",
+        ], {encoding: "utf-8", cwd: project, timeout: 60000, stdio: "inherit"});
+        const args = vi.mocked(spawnSync).mock.calls[0][1] as string[];
+        expect(args[1]).toContain("20.11.0");
+        expect(args[1]).not.toContain("first-scan-only");
+    });
+
+    it("ignores an unsuccessful Claude status and writes the existing default when no file was generated", async () => {
+        vi.mocked(prompt).mockResolvedValue("y");
+        vi.mocked(spawnSync).mockReturnValueOnce({status: 127} as ReturnType<typeof spawnSync>);
+        await expect(ensureMiseConfig(project)).resolves.toBeUndefined();
+        expect(readFileSync(join(project, "mise.toml"), "utf-8")).toBe(
+            '[tools]\n# No tools detected - add your tools here\n# node = "22"\n',
+        );
+        expect(spawnSync).toHaveBeenCalledOnce();
+        expect(existsSync(marker(project))).toBe(false);
+    });
+
+    it("preserves generated config bytes even when Claude reports an unsuccessful status", async () => {
+        vi.mocked(prompt).mockResolvedValue("");
+        const generated = '[tools]\nnode = "20.11.0"\n';
+        vi.mocked(spawnSync).mockImplementationOnce(() => {
+            writeFileSync(join(project, "mise.toml"), generated);
+            return {status: 1} as ReturnType<typeof spawnSync>;
+        });
+        await ensureMiseConfig(project);
+        expect(readFileSync(join(project, "mise.toml"), "utf-8")).toBe(generated);
+        expect(spawnSync).toHaveBeenCalledOnce();
+    });
+
+    it("propagates the native Claude failure unchanged without writing fallback config", async () => {
+        vi.mocked(prompt).mockResolvedValue("yes");
+        const failure = new Error("native process launch failed");
+        vi.mocked(spawnSync).mockImplementationOnce(() => { throw failure; });
+        await expect(ensureMiseConfig(project)).rejects.toBe(failure);
+        expect(spawnSync).toHaveBeenCalledOnce();
+        expect(existsSync(join(project, "mise.toml"))).toBe(false);
+        expect(existsSync(marker(project))).toBe(false);
+        expect(console.warn).not.toHaveBeenCalled();
+        expect(console.log).not.toHaveBeenCalledWith(`Created: ${join(project, "mise.toml")}`);
     });
 });

@@ -2,6 +2,7 @@
 
 import { spawnSync } from "child_process";
 import { createContainerExec, resolveContainerExecTools, attachContainerExecClipboardImage } from "./application/container-exec.js";
+import { createMiseConfigSetup } from "./application/tooling/mise-config.js";
 import { createNativeContainerExecPorts, ensureContainerExecSetupAvailable, ensureContainerExecTools, containerExecReplacementBlockReason } from "./composition/container-exec.js";
 import type { ContainerExecOptions } from "./ports/container-exec.js";
 import { createWorkspaceOpen } from "./application/workspace/open.js";
@@ -216,12 +217,13 @@ function ensureDirs(profile?: string): void {
     }
 }
 
-// Detect project tools using Claude CLI and write mise.toml
-function detectProjectToolsAndWriteMiseConfig(projectPath: string): void {
-    const miseConfigPath = join(projectPath, "mise.toml");
+const DEFAULT_MISE_CONFIG_CONTENT = `[tools]
+# No tools detected - add your tools here
+# node = "22"
+`;
 
-    console.log("Scanning project files...");
-    const scannedFiles = scanVersionFiles(projectPath);
+// Detect project tools using Claude CLI and write mise.toml
+function runProjectToolDetection(projectPath: string, miseConfigPath: string, scannedFiles: Map<string, string>): undefined {
     const hints = extractVersionHints(scannedFiles);
     const hintsText = formatVersionHints(hints);
     const filesContext = formatScannedFiles(scannedFiles);
@@ -229,11 +231,6 @@ function detectProjectToolsAndWriteMiseConfig(projectPath: string): void {
     console.log(
         `Found ${scannedFiles.size} version file(s), ${hints.length} version hint(s). Analyzing with Claude...`,
     );
-
-    const defaultContent = `[tools]
-# No tools detected - add your tools here
-# node = "22"
-`;
 
     const promptText = `${hintsText}${filesContext}
 
@@ -253,7 +250,7 @@ Format:
 <tool> = "<version>"
 
 If no tools:
-${defaultContent}`;
+${DEFAULT_MISE_CONFIG_CONTENT}`;
 
     spawnSync("claude", ["-p", promptText, "--allowedTools", "Read,Write"], {
         encoding: "utf-8",
@@ -262,12 +259,7 @@ ${defaultContent}`;
         stdio: "inherit",
     });
 
-    // Ensure file exists with default content if Claude didn't create it
-    if (!existsSync(miseConfigPath)) {
-        writeFileSync(miseConfigPath, defaultContent);
-    }
-
-    console.log(`Created: ${miseConfigPath}`);
+    return undefined;
 }
 
 export function resolveExecTools(
@@ -311,44 +303,57 @@ export async function maybeAttachCodexClipboardImageForCommand(
     return attachContainerExecClipboardImage(projectPath, cmd, commandTool, clipboard, attachClipboardImage);
 }
 
+const miseConfigSetup = createMiseConfigSetup({
+    configPath: (projectPath, kind) => join(projectPath, kind === "primary" ? "mise.toml" : ".mise.toml"),
+    skipMarkerPath: projectPath => join(DATA_DIR, "mise-prompt-skipped", getProjectId(projectPath)),
+    exists: existsSync,
+    scanVersionFiles,
+    chooseCreation: async () => {
+        const answer = await prompt(
+            "Create mise.toml? (auto-detect tools) [Y/n]: ",
+            true,
+        );
+        if (answer === "" || answer === "y" || answer === "yes") return "create";
+        return answer === "n" || answer === "no" ? "remember-skip" : "skip-once";
+    },
+    runToolDetection: runProjectToolDetection,
+    writeDefaultConfig: path => {
+        writeFileSync(path, DEFAULT_MISE_CONFIG_CONTENT);
+        return undefined;
+    },
+    rememberSkip: path => {
+        mkdirSync(dirname(path), {recursive: true});
+        writeFileSync(path, "");
+        return undefined;
+    },
+    report: event => {
+        switch (event.kind) {
+            case "missing-config":
+                console.log(`\nNo mise.toml found in project.`);
+                break;
+            case "scanning":
+                console.log("Scanning project files...");
+                break;
+            case "created":
+                console.log(`Created: ${event.path}`);
+                break;
+            case "skipping":
+                console.log("Skipping mise.toml creation.");
+                break;
+            case "remembered":
+                console.log(`Remembered for this project. To ask again, delete: ${event.path}`);
+                break;
+            case "preference-save-failed":
+                console.warn("Could not save mise prompt preference; you may be asked again next time.");
+                break;
+        }
+        return undefined;
+    },
+});
+
 // Check if mise.toml exists and offer to create if not
 export async function ensureMiseConfig(projectPath: string): Promise<void> {
-    const miseConfigPath = join(projectPath, "mise.toml");
-
-    if (existsSync(miseConfigPath) || existsSync(join(projectPath, ".mise.toml"))) {
-        return;
-    }
-
-    const skippedPath = join(DATA_DIR, "mise-prompt-skipped", getProjectId(projectPath));
-    if (existsSync(skippedPath)) {
-        return;
-    }
-
-    const versionFiles = scanVersionFiles(projectPath);
-    if (versionFiles.size === 0) {
-        return;
-    }
-
-    console.log(`\nNo mise.toml found in project.`);
-    const answer = await prompt(
-        "Create mise.toml? (auto-detect tools) [Y/n]: ",
-        true,
-    );
-
-    if (answer === "" || answer === "y" || answer === "yes") {
-        detectProjectToolsAndWriteMiseConfig(projectPath);
-    } else {
-        console.log("Skipping mise.toml creation.");
-        if (answer === "n" || answer === "no") {
-            try {
-                mkdirSync(dirname(skippedPath), {recursive: true});
-                writeFileSync(skippedPath, "");
-                console.log(`Remembered for this project. To ask again, delete: ${skippedPath}`);
-            } catch {
-                console.warn("Could not save mise prompt preference; you may be asked again next time.");
-            }
-        }
-    }
+    return miseConfigSetup.ensure(projectPath);
 }
 
 const containerExec = createContainerExec(createNativeContainerExecPorts({
