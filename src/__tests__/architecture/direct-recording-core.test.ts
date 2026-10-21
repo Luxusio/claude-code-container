@@ -200,10 +200,97 @@ describe("direct recording generation and artifact outcomes", () => {
         expect(await createDirectRecordingApplication(ports).request("device_record_video_stop", { deviceId: id, localPath: destination })).toEqual({
             kind: "failure", message: `native source read refused. iOS Simulator legacy recording remains pending finalization for ${id}.`,
         });
-        expect(state.device.recording).toMatchObject({ active: false, runtimeId: "allocated-runtime", recorderRuntimeId: "legacy-runtime", localPath: destination });
+        expect(state.device.recording).toMatchObject({ active: false, runtimeId: "allocated-runtime", recorderRuntimeId: "legacy-runtime", localPath: source });
         expect(state.files.get(source)).toBe("legacy video bytes");
         expect(state.files.get(destination)).toBe("previous destination");
         expect(state.files.has(stage.stagedPath)).toBe(false);
+    });
+
+    it.each(["populate", "commit"])("regression: retries legacy Simulator finalization after %s refusal from the original source to the same explicit destination", async fault => {
+        const source = "/owned/legacy-video.mp4";
+        const previous = { active: false, runtimeId: "legacy-runtime", localPath: source };
+        const { state, common } = repository(previous);
+        state.files.set(source, "legacy video bytes");
+        const allocated: RecordingStage[] = [], disposed: RecordingStage[] = [], populatedSources: string[] = [];
+        let generation = 0, commits = 0, clears = 0;
+        const ports: SimulatorRecordingPorts = {
+            ...common, ...processLeaves, kind: "ios-simulator",
+            runtimeId: () => `finalization-${++generation}`,
+            updateDevice(deviceId, update) {
+                return common.updateDevice(deviceId, current => {
+                    const next = update(current);
+                    if (next.recording === null) {
+                        expect(current.recording).toMatchObject({ runtimeId: "finalization-2", recorderRuntimeId: "legacy-runtime" });
+                        expect(state.files.get(destination)).toBe("legacy video bytes");
+                        clears++;
+                    }
+                    return next;
+                });
+            },
+            target: device => ({ kind: "ready", device, target: { kind: "simulator", executable: "/allocated/xcrun", target: "OWNED-SIMULATOR" } }),
+            restoreStage: unexpected,
+            createStage(_device, path, persistent) {
+                expect(path).toBe(destination);
+                expect(persistent).toBe(false);
+                expect(state.device.recording).toMatchObject({ active: false, runtimeId: `finalization-${allocated.length + 1}` });
+                const stage: RecordingStage = {
+                    path, stagedPath: `/owned/retry-stage-${allocated.length + 1}/payload`, stageRoot: `/owned/retry-stage-${allocated.length + 1}`,
+                    cleanup() { state.files.delete(stage.stagedPath); },
+                };
+                allocated.push(stage);
+                return { ok: true, stage };
+            },
+            populateStage(input, output) {
+                expect(output).toBe(allocated[allocated.length - 1]);
+                populatedSources.push(input);
+                const bytes = state.files.get(input);
+                if (bytes === undefined) throw new Error("Legacy recording source missing");
+                if (allocated.length === 1 && fault === "populate") {
+                    state.files.set(output.stagedPath, "partial stage bytes");
+                    return { ok: false, message: "native source read refused" };
+                }
+                state.files.set(output.stagedPath, bytes);
+                return { ok: true };
+            },
+            commitStage(output) {
+                expect(output).toBe(allocated[allocated.length - 1]);
+                commits++;
+                if (allocated.length === 1 && fault === "commit") return { ok: false, message: "publication refused" };
+                const bytes = state.files.get(output.stagedPath);
+                if (bytes === undefined) throw new Error("Allocated output stage missing");
+                state.files.set(output.path, bytes);
+                return { ok: true };
+            },
+            disposeStage(output) { disposed.push(output); output.cleanup(); return undefined; },
+        };
+        const application = createDirectRecordingApplication(ports);
+
+        expect(await application.request("device_record_video_stop", { deviceId: id, localPath: destination })).toMatchObject({ kind: "failure" });
+        expect(state.device.recording).toMatchObject({ active: false, runtimeId: "finalization-1", recorderRuntimeId: "legacy-runtime", localPath: source });
+        expect(state.files.get(source)).toBe("legacy video bytes");
+        expect(state.files.get(destination)).toBe("previous destination");
+        expect(populatedSources).toEqual([source]);
+        expect(commits).toBe(fault === "commit" ? 1 : 0);
+        expect(clears).toBe(0);
+        expect(disposed).toEqual([allocated[0]]);
+        expect(disposed[0]).toBe(allocated[0]);
+        expect(state.files.has(allocated[0].stagedPath)).toBe(false);
+
+        expect(await application.request("device_record_video_stop", { deviceId: id, localPath: destination })).toMatchObject({
+            kind: "success", value: { deviceId: id, stopped: true, provider: "simctl-recordVideo",
+                recording: { active: false, runtimeId: "finalization-2", recorderRuntimeId: "legacy-runtime", localPath: destination } },
+        });
+        expect(populatedSources).toEqual([source, source]);
+        expect(state.files.get(destination)).toBe("legacy video bytes");
+        expect(state.device.recording).toBeNull();
+        expect(clears).toBe(1);
+        expect(commits).toBe(fault === "commit" ? 2 : 1);
+        expect(allocated).toHaveLength(2);
+        expect(disposed).toEqual(allocated);
+        for (let index = 0; index < allocated.length; index++) {
+            expect(disposed[index]).toBe(allocated[index]);
+            expect(state.files.has(allocated[index].stagedPath)).toBe(false);
+        }
     });
 
     it("preserves a Sandbox successor when completed-status archive publication races with its generation", async () => {

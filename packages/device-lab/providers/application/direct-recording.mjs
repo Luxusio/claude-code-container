@@ -330,7 +330,8 @@ export function createDirectRecordingApplication(ports) {
             }
             if (signal.signaled && !await ports.waitExit(previous.pid, 3000)) return failure(`${label} recording did not exit within 3000ms for ${args.deviceId}; state remains active.`);
         }
-        const claimed = generation.claimRecordingFinalization(args.deviceId, previous, { localPath: policy.path }, ports.timestamp());
+        const legacySimulator = ports.kind === 'ios-simulator' && !recordingString(previous, 'stagingPath');
+        const claimed = generation.claimRecordingFinalization(args.deviceId, previous, legacySimulator ? {} : { localPath: policy.path }, ports.timestamp());
         const savedPending = claimed.device ? recordingOf(claimed.device) : null;
         const pending = guard && savedPending ? { ...savedPending } : savedPending;
         if (!claimed.committed || !pending) return failure(`${label} recording state changed while stopping for ${args.deviceId}; successor state was preserved.`);
