@@ -3264,6 +3264,47 @@ describe("initWithSubmodules", () => {
         expect(gitmodules).toContain("branch = master");
     });
 
+    it("tracks main before the current branch when master is absent", () => {
+        const repo = join(tmpDir, "repo-a");
+        initRepo(repo);
+        const options = { cwd: repo, encoding: "utf-8" as const, stdio: "pipe" as const };
+        expect(spawnSync("git", ["branch", "-M", "main"], options).status).toBe(0);
+        expect(spawnSync("git", ["checkout", "-b", "develop"], options).status).toBe(0);
+
+        initWithSubmodules(tmpDir);
+
+        const tracking = spawnSync("git", ["config", "-f", ".gitmodules", "--get", "submodule.repo-a.branch"], {
+            cwd: tmpDir, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(tracking.status).toBe(0);
+        expect(tracking.stdout.trim()).toBe("main");
+        expect(spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], options).stdout.trim()).toBe("develop");
+    });
+
+    it("registers a detached repository without inventing a tracking branch", () => {
+        const repo = join(tmpDir, "repo-a");
+        initRepo(repo);
+        const options = { cwd: repo, encoding: "utf-8" as const, stdio: "pipe" as const };
+        expect(spawnSync("git", ["branch", "-M", "develop"], options).status).toBe(0);
+        expect(spawnSync("git", ["checkout", "--detach", "HEAD"], options).status).toBe(0);
+        const head = spawnSync("git", ["rev-parse", "HEAD"], options).stdout.trim();
+
+        initWithSubmodules(tmpDir);
+
+        const tracking = spawnSync("git", ["config", "-f", ".gitmodules", "--get", "submodule.repo-a.branch"], {
+            cwd: tmpDir, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(tracking.status).toBe(1);
+        expect(tracking.stdout).toBe("");
+        expect(spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], options).stdout.trim()).toBe("HEAD");
+        expect(spawnSync("git", ["rev-parse", "HEAD"], options).stdout.trim()).toBe(head);
+        const registered = spawnSync("git", ["ls-files", "--stage", "repo-a"], {
+            cwd: tmpDir, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(registered.status).toBe(0);
+        expect(registered.stdout.trim()).toBe(`160000 ${head} 0\trepo-a`);
+    });
+
     it("falls back to current branch when no master/main", () => {
         initRepo(join(tmpDir, "repo-a"));
         // Rename master to something else

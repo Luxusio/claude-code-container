@@ -10,6 +10,7 @@ import { createUnifiedWorkspaceRemoval } from "./application/workspace/unified-r
 import { createMultiWorkspaceRemoval } from "./application/workspace/multi-removal.js";
 import type { RemoveResult } from "./domain/workspace/removal-result.js";
 import { createMultiWorkspaceCreation } from "./application/workspace/multi-creation.js";
+import { createWorkspaceSubmoduleInitialization } from "./application/workspace/submodule-initialization.js";
 import type { WorkspaceEntry } from "./domain/workspace/source-entry.js";
 import { createUnifiedWorkspaceCreation } from "./application/workspace/unified-creation.js";
 import type { WorktreeResult, WorktreeRepoResult } from "./domain/workspace/creation-result.js";
@@ -5379,45 +5380,6 @@ export function needsSubmoduleSetup(dirPath: string): string[] | null {
 }
 
 /**
- * Detect the default branch for submodule tracking.
- * Priority: master → main → current branch.
- * Returns empty string if nothing is detected (e.g. detached HEAD, no branches).
- */
-function detectDefaultBranch(repoPath: string): string {
-    // Check if 'master' exists
-    const masterCheck = spawnSync(
-        "git",
-        ["rev-parse", "--verify", "refs/heads/master"],
-        { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (masterCheck.status === 0) {
-        return "master";
-    }
-
-    // Check if 'main' exists
-    const mainCheck = spawnSync(
-        "git",
-        ["rev-parse", "--verify", "refs/heads/main"],
-        { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (mainCheck.status === 0) {
-        return "main";
-    }
-
-    // Fall back to current branch
-    const result = spawnSync(
-        "git",
-        ["rev-parse", "--abbrev-ref", "HEAD"],
-        { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    const branch = (result.stdout ?? "").trim();
-    if (!branch || branch === "HEAD") {
-        return "";
-    }
-    return branch;
-}
-
-/**
  * Get the remote origin URL of a git repo.
  * Returns empty string if no remote is configured.
  */
@@ -5430,106 +5392,84 @@ function getRemoteUrl(repoPath: string): string {
     return (result.stdout ?? "").trim();
 }
 
-/**
- * Initialize a directory as a git repo with child repos as submodules.
- *
- * - git init the directory
- * - For each child git repo: add as submodule using its remote URL
- * - Submodules remain registered without automatic checkout updates
- * - Sets ignore = all so parent doesn't report submodule changes as dirty
- * - Commits the initial state
- *
- * @throws {Error} If git init or submodule add fails
- */
-export function initWithSubmodules(dirPath: string): void {
-    const resolved = resolve(dirPath);
+const generatedRepositoryConfiguration = {
+    "author-email": ["user.email", "ccc@localhost"],
+    "author-name": ["user.name", "ccc"],
+    "unsigned-commits": ["commit.gpgsign", "false"],
+    "local-file-transport": ["protocol.file.allow", "always"],
+    "local-submodule-marker": ["ccc.localSubmodules", "true"],
+} as const;
 
-    // git init
-    const initResult = spawnSync("git", ["init"], {
-        cwd: resolved,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-    });
-    if (initResult.status !== 0) {
-        throw new Error(
-            `Failed to git init: ${(initResult.stderr ?? "").trim()}`,
-        );
-    }
-
-    // Configure user if not set (needed for commit)
-    spawnSync("git", ["config", "user.email", "ccc@localhost"], {
-        cwd: resolved,
-        stdio: "pipe",
-    });
-    spawnSync("git", ["config", "user.name", "ccc"], {
-        cwd: resolved,
-        stdio: "pipe",
-    });
-    spawnSync("git", ["config", "commit.gpgsign", "false"], {
-        cwd: resolved,
-        stdio: "pipe",
-    });
-    // This repository is generated from already-present child repositories.
-    // Keep their local-path submodule URLs usable in the resulting worktrees.
-    spawnSync("git", ["config", "protocol.file.allow", "always"], {
-        cwd: resolved,
-        stdio: "pipe",
-    });
-    spawnSync("git", ["config", "ccc.localSubmodules", "true"], {
-        cwd: resolved,
-        stdio: "pipe",
-    });
-
-    const entries = scanDirectory(resolved);
-    const gitRepos = entries.filter((e) => e.isGitRepo);
-
-    for (const repo of gitRepos) {
-        const branch = detectDefaultBranch(repo.path);
-        const remoteUrl = getRemoteUrl(repo.path);
-        // Prefer remote URL; fall back to absolute path for local-only repos
-        // (absolute path avoids resolution issues in worktrees)
-        const url = remoteUrl || repo.path;
-
-        const args = ["submodule", "add"];
-        if (branch) {
-            args.push("-b", branch);
-        }
-        args.push(url, repo.name);
-
-        const addResult = spawnSync("git", args, {
-            cwd: resolved,
+const workspaceSubmoduleInitialization = createWorkspaceSubmoduleInitialization({
+    resolveSource: path => resolve(path),
+    initializeRepository: root => {
+        const result = spawnSync("git", ["init"], {
+            cwd: root,
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
         });
-        if (addResult.status !== 0) {
-            throw new Error(
-                `Failed to add submodule ${repo.name}: ${(addResult.stderr ?? "").trim()}`,
-            );
+        if (result.status !== 0) {
+            throw new Error(`Failed to git init: ${(result.stderr ?? "").trim()}`);
         }
-    }
+        return undefined;
+    },
+    configureRoot: (root, setting) => {
+        spawnSync("git", ["config", ...generatedRepositoryConfiguration[setting]], {
+            cwd: root,
+            stdio: "pipe",
+        });
+        return undefined;
+    },
+    scanEntries: root => scanDirectory(root),
+    localBranchExists: (repository, branch) => {
+        const result = spawnSync("git", ["rev-parse", "--verify", `refs/heads/${branch}`], {
+            cwd: repository, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        });
+        return result.status === 0;
+    },
+    currentBranch: repository => {
+        const result = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+            cwd: repository, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        });
+        return (result.stdout ?? "").trim();
+    },
+    originUrl: getRemoteUrl,
+    addSubmodule: (root, name, url, branch) => {
+        const args = ["submodule", "add"];
+        if (branch) args.push("-b", branch);
+        args.push(url, name);
+        const result = spawnSync("git", args, {
+            cwd: root,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        });
+        if (result.status !== 0) {
+            throw new Error(`Failed to add submodule ${name}: ${(result.stderr ?? "").trim()}`);
+        }
+        return undefined;
+    },
+    configureSubmodule: (root, name, setting) => {
+        const [key, value] = setting === "ignore-content" ? ["ignore", "all"] : ["update", "none"];
+        spawnSync("git", ["config", "-f", ".gitmodules", `submodule.${name}.${key}`, value], {
+            cwd: root, stdio: "pipe",
+        });
+        return undefined;
+    },
+    stage: root => {
+        spawnSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
+        return undefined;
+    },
+    commit: root => {
+        spawnSync("git", ["commit", "-m", "chore: init workspace with submodules"], {
+            cwd: root, stdio: "pipe",
+        });
+        return undefined;
+    },
+});
 
-    // Configure submodules: ignore = all + update = none
-    // ignore = all: parent won't report submodule content changes as dirty
-    // update = none: generic recursive updates cannot reset active development
-    for (const repo of gitRepos) {
-        spawnSync(
-            "git",
-            ["config", "-f", ".gitmodules", `submodule.${repo.name}.ignore`, "all"],
-            { cwd: resolved, stdio: "pipe" },
-        );
-        spawnSync(
-            "git",
-            ["config", "-f", ".gitmodules", `submodule.${repo.name}.update`, "none"],
-            { cwd: resolved, stdio: "pipe" },
-        );
-    }
-
-    // Add all and commit
-    spawnSync("git", ["add", "-A"], { cwd: resolved, stdio: "pipe" });
-    spawnSync("git", ["commit", "-m", "chore: init workspace with submodules"], {
-        cwd: resolved,
-        stdio: "pipe",
-    });
+/** Initialize the generated parent without automatically updating child checkouts. */
+export function initWithSubmodules(dirPath: string): void {
+    workspaceSubmoduleInitialization.initialize(dirPath);
 }
 
 // === Write Functions ===
