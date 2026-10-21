@@ -57,8 +57,9 @@ function fixture(name = "first") {
     const effects: SessionOwnershipPublicationEffects = {
         store,
         guardianStartToken: vi.fn(() => "captured-guardian-start"),
-        withLifecycleLock: vi.fn(async <T>(operation: () => T | Promise<T>): Promise<T> => operation()),
+        async withLifecycleLock<T>(operation: () => T | Promise<T>): Promise<T> { return operation(); },
     };
+    vi.spyOn(effects, "withLifecycleLock");
     const app = createSessionOwnershipPublication(binding, receipt, runtime, effects);
     const current = (): SessionClaimObservationSnapshot => {
         if (!saved) throw new Error("fixture has no registered observation");
