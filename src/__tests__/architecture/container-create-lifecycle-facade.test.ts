@@ -84,6 +84,8 @@ vi.mock("../../container-runtime.js", async original => {
     return { ...actual, runtimeCli: native.runtime,
     isContainerHostRemote: native.remote,
     getRuntimeInfo: () => ({ runtime: "docker", dockerDesktop: false, socketPath: "/var/run/docker.sock" }),
+    containerManagerSocketPath: () => "/var/run/docker.sock",
+    containerManagerSocketMountArgs: () => ["-v", "/var/run/docker.sock:/var/run/docker.sock"],
     runtimeExtraRunArgs: () => [],
     bindMountArgs: (host: string, container: string, options?: { readonly?: boolean }) => ["-v", `${host}:${container}${options?.readonly ? ":ro" : ""}`],
         getRuntimeInvocation: () => invocation, bindNativeRuntimeInvocation: runner,
