@@ -5181,7 +5181,7 @@ describe("isValidWorktree", () => {
         const cli = spawnSync(process.execPath, [
             "--import", import.meta.resolve("tsx"),
             resolve("src/index.ts"),
-            "runtime", `@${branch}`,
+            `@${branch}`, "profile", "list",
         ], {
             cwd: tmpDir,
             input: "y\n",
@@ -9317,8 +9317,6 @@ describe("the removal preflight, through the CLI entry point", () => {
         writeFileSync(join(nested, "stuff.txt"), "files the operator put here");
 
         const repoRoot = resolve(__dirname, "..", "..");
-        const tsx = join(repoRoot, "node_modules", ".bin", "tsx");
-        expect(existsSync(tsx), "tsx is a declared devDependency of this repo").toBe(true);
         // Intercept only the external runtime transport inside the child. The real
         // CLI, ownership checks, lifecycle lock, and Git removal all execute. Unknown
         // runtime commands fail closed, and no call can reach the developer's daemon.
@@ -9392,7 +9390,7 @@ require("node:module").syncBuiltinESMExports();
         // `-f`, not bare `rm`. Same preflight, and it lets this assert the claim the whole fix
         // is about — that the CLI removes what the library removes — instead of stopping at
         // "the preflight did not fire".
-        const ran = spawnSync(tsx, [join(repoRoot, "src", "index.ts"), "@cli-loose", "rm", "-f"], {
+        const ran = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), join(repoRoot, "src", "index.ts"), "@cli-loose", "rm", "-f"], {
             cwd: src,
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
