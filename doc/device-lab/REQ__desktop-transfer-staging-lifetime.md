@@ -16,6 +16,14 @@ operation as primary evidence. Cleanup failure after successful destination
 publication must retain truthful completed-publication evidence: it cannot claim
 that publication was prevented, undone or safe to replay automatically.
 
+Shared native stage cleanup must expose a failed removal to its operation;
+validated discard must not report success after a failed removal. Failed input
+staging attempts its own cleanup once, without re-entering the staging catch.
+Disposable recording finalization stages follow this rule, while persistent
+simulator stages retain their existing recovery lifetime. Confirmed output
+publication and recording state clearance remain explicit when later cleanup
+fails. See [the cleanup contract](GUIDE__transfer-stage-cleanup.md).
+
 Native transfer observations must match the requested operation before artifact
 publication. Unexpected Windows guest actions and malformed Linux download
 framing produce failure, followed by owned-stage finalization. Byte limits,
