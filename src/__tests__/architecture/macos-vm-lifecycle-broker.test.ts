@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import * as crypto from "crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDeviceBrokerServer, type BrokerProcessTreeCleanup, type DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
@@ -10,6 +11,7 @@ import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-envi
 import { withSharedMutationLockAsync } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
 
 vi.mock("os", async original => ({ ...await original<typeof import("node:os")>(), totalmem: () => 64 * 1024 ** 3, freemem: () => 48 * 1024 ** 3 }));
+vi.mock("crypto", async original => ({ ...await original<typeof import("crypto")>() }));
 let home: string, restore: () => void, owner: string;
 let server: ReturnType<typeof createDeviceBrokerServer> | undefined;
 beforeEach(() => {
@@ -73,7 +75,9 @@ describe("authenticated macOS broker lifecycle", () => {
 
     it.each([false, true])("regression: elapsed device-lock wait shrinks clone allowance and expired=%s dispatches nothing", async expired => {
         writeBrokerDevices(owner, "macos", []);
-        const lockFile = join(backendRoot(owner, "macos"), "operations", `${createHash("sha256").update("unit").digest("hex").slice(0, 32)}.lock`);
+        const admissionUuid = "12345678-1234-4123-8123-123456789abc";
+        const generatedDeviceId = `macos-${admissionUuid}`;
+        const lockFile = join(backendRoot(owner, "macos"), "operations", `${createHash("sha256").update(generatedDeviceId).digest("hex").slice(0, 32)}.lock`);
         let release!: () => void, entered!: () => void, clock = 0;
         const gate = new Promise<void>(resolve => { release = resolve; });
         const ready = new Promise<void>(resolve => { entered = resolve; });
@@ -81,10 +85,15 @@ describe("authenticated macOS broker lifecycle", () => {
         await ready;
         const monotonicNow = vi.fn(() => clock), runner = vi.fn(successfulRunner());
         let pending: ReturnType<typeof invoke> | undefined;
+        let restoreUuid: (() => void) | undefined;
         try {
             const base = await start(runner, { hyperVMonotonicNow: monotonicNow });
+            // Provision authentication before controlling only the next creation admission UUID.
+            ownerRpcHeaders(owner);
+            const uuidSpy = vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(admissionUuid);
+            restoreUuid = () => uuidSpy.mockRestore();
             const observationsBefore = monotonicNow.mock.calls.length;
-            pending = invoke(base, "device_create", { deviceId: "unit", name: "Locked clone", provider: "tart", image: "base-image", requestTimeoutMs: 10000 });
+            pending = invoke(base, "device_create", { name: "Locked clone", provider: "tart", image: "base-image", requestTimeoutMs: 10000 });
             await vi.waitFor(() => expect(monotonicNow.mock.calls.length).toBeGreaterThan(observationsBefore));
             expect(runner).not.toHaveBeenCalled();
             clock = expired ? 10001 : 2500;
@@ -96,6 +105,7 @@ describe("authenticated macOS broker lifecycle", () => {
                 expect(devices()).toEqual([]);
             } else {
                 expect(result.status).toBe(200);
+                expect(result.body.result.device.id).toBe(generatedDeviceId);
                 expect(runner).toHaveBeenCalledOnce();
                 expect(runner.mock.calls[0][1]).toMatchObject({ timeoutMs: 7500 });
                 const remaining = runner.mock.calls[0][1]?.remainingMs;
@@ -103,7 +113,54 @@ describe("authenticated macOS broker lifecycle", () => {
                 clock += 1000;
                 expect(remaining?.()).toBe(6500);
             }
-        } finally { release(); await held; await pending?.catch(() => undefined); }
+        } finally {
+            release(); await held;
+            try { await pending?.catch(() => undefined); }
+            finally { restoreUuid?.(); }
+        }
+    });
+
+    it("regression: authenticated owner queue spends Tart clone allowance before lifecycle dispatch", async () => {
+        const original = device();
+        writeBrokerDevices(owner, "macos", [original]);
+        let release!: () => void, entered!: () => void, received!: () => void, clock = 0;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const firstEntered = new Promise<void>(resolve => { entered = resolve; });
+        const secondReceived = new Promise<void>(resolve => { received = resolve; });
+        const runner = vi.fn(successfulRunner());
+        const deviceToolRunner: NonNullable<DeviceBrokerOptions["deviceToolRunner"]> = async () => {
+            entered();
+            await gate;
+            return { status: 200, payload: { ok: true, result: { stdout: "held owner operation completed" } } };
+        };
+        const base = await start(runner, { deviceToolRunner, hyperVMonotonicNow: () => clock });
+        let first: Promise<Response> | undefined, queued: ReturnType<typeof invoke> | undefined;
+        try {
+            first = fetch(ownerRpcEndpoint(base, owner), { method: "POST", headers: ownerRpcHeaders(owner), body: JSON.stringify({
+                method: "broker.device.tool.invoke", params: { backend: "macos-vm", deviceId: original.id, tool: "device_exec", command: "owned fixture operation" },
+            }) });
+            await firstEntered;
+            // Observe the real second HTTP body, then let authentication and queue admission settle.
+            server!.once("request", request => request.once("end", received));
+            let settled = false;
+            queued = invoke(base, "device_create", { name: "Queued clone", provider: "tart", image: "base-image", requestTimeoutMs: 10000 })
+                .finally(() => { settled = true; });
+            await secondReceived;
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(settled).toBe(false);
+            expect(runner).not.toHaveBeenCalled();
+            clock = 10001;
+            release();
+            expect((await first).status).toBe(200);
+            const result = await queued;
+            expect(result).toMatchObject({ status: 504, body: { ok: false, error: "macos-tart-create-budget-exhausted" } });
+            expect(runner).not.toHaveBeenCalled();
+            expect(devices()).toEqual([original]);
+        } finally {
+            release();
+            await first?.catch(() => undefined);
+            await queued?.catch(() => undefined);
+        }
     });
 
     it("regression: default native runner refuses clone admission without room for identity-checked cleanup", async () => {

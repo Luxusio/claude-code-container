@@ -3,7 +3,7 @@ import { build as bundleBrokerApi } from "esbuild-wasm";
 import type { BrokerSupervisionPorts } from "../../device-lab-mcp/src/ports/broker-supervision.mjs";
 import { pathToFileURL } from "node:url";
 import { directorySymlink } from "./helpers/file-symlink-fixture.js";
-import { deviceLabTestHomeEnvironment } from "./helpers/device-lab-test-environment.js";
+import { deviceLabTestHomeEnvironment, isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { DEVICE_BROKER_PROTOCOL_VERSION } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
 import { callInternalBroker } from "./helpers/device-lab-mcp-fixture.js";
 import { spawn } from "child_process";
@@ -83,6 +83,62 @@ async function withUnverifiedBrokerFixture<T>(operation: () => Promise<T>): Prom
         else process.env.NODE_ENV = originalNodeEnv;
         if (originalEscape === undefined) delete process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
         else process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = originalEscape;
+    }
+}
+
+async function holdRuntimeLockInChild(file: string) {
+    const moduleUrl = pathToFileURL(join(repoRoot, "packages/device-lab/providers/state/shared-mutation-lock.mjs")).href;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+import {withSharedMutationLockAsync} from ${JSON.stringify(moduleUrl)};
+import {setTimeout as delay} from 'node:timers/promises';
+let release;
+const requested = new Promise(resolve => { release = resolve; });
+process.once('message', value => release(Number(value.releaseAfterMs)));
+await withSharedMutationLockAsync(${JSON.stringify(file)}, async () => {
+    process.send({held:true});
+    const safety = setTimeout(() => release(0), 10000);
+    const milliseconds = await requested;
+    clearTimeout(safety);
+    await delay(Math.max(0, Math.min(5000, milliseconds)));
+});
+process.disconnect();
+`], { env: process.env, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    let diagnostics = "";
+    child.stdout!.on("data", chunk => { diagnostics += String(chunk); });
+    child.stderr!.on("data", chunk => { diagnostics += String(chunk); });
+    const ended = new Promise<void>(resolve => child.once("close", () => resolve()));
+    const waitForExit = async (timeoutMs: number) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            return await Promise.race([ended.then(() => true), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); })]);
+        } finally { clearTimeout(timer); }
+    };
+    const releaseAfter = (milliseconds: number) => {
+        if (child.connected) child.send?.({ releaseAfterMs: milliseconds });
+    };
+    const close = async () => {
+        releaseAfter(0);
+        if (await waitForExit(3000)) return;
+        child.kill("SIGTERM");
+        if (await waitForExit(1000)) return;
+        child.kill("SIGKILL");
+        expect(await waitForExit(1000), `owned runtime-lock child did not exit: ${diagnostics}`).toBe(true);
+    };
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`runtime-lock child admission timed out: ${diagnostics}`)), 10000);
+            child.once("message", message => {
+                clearTimeout(timer);
+                if (message && typeof message === "object" && "held" in message && message.held === true) resolve();
+                else reject(new Error(`unexpected runtime-lock child reply: ${JSON.stringify(message)}`));
+            });
+            child.once("error", error => { clearTimeout(timer); reject(error); });
+            child.once("exit", () => { clearTimeout(timer); reject(new Error(`runtime-lock child exited before release: ${diagnostics}`)); });
+        });
+        return { releaseAfter, close };
+    } catch (error) {
+        await close();
+        throw error;
     }
 }
 
@@ -1248,11 +1304,76 @@ describe("device-lab MCP", () => {
                 expect(Number.isFinite(requests[0].params.requestTimeoutMs)).toBe(true);
                 expect(Number(requests[0].params.requestTimeoutMs)).toBeGreaterThan(0);
                 expect(Number(requests[0].params.requestTimeoutMs)).toBeLessThanOrEqual(630000);
-                expect(result.selected?.timeoutMs).toBeLessThanOrEqual(expected);
+                if (!("selected" in result) || !result.selected) throw new Error("successful-clone-response-missing-selected-transport");
+                expect(result.selected.timeoutMs).toBeGreaterThan(0);
+                expect(result.selected.timeoutMs).toBeLessThanOrEqual(expected);
             }
         } finally {
             monotonic.mockRestore();
             await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        }
+    });
+
+    it.each([
+        { operation: "write", provisioning: true }, { operation: "remove", provisioning: true },
+        { operation: "write", provisioning: false }, { operation: "remove", provisioning: false },
+    ])("regression: $operation runtime metadata lock spends active provisioning allowance=$provisioning", async ({ operation, provisioning }) => {
+        const privateHome = mkdtempSync(join(tmpdir(), "ccc-tart-runtime-lock-"));
+        const restoreEnvironment = isolateDeviceLabTestEnvironment(privateHome);
+        const originalAuthRoot = isolatedAuthFixture.root;
+        isolatedAuthFixture.root = join(privateHome, "absent-conventional-auth");
+        const runtimeFile = join(privateHome, ".ccc", "devices", "broker", "runtime.json");
+        const lockFile = `${runtimeFile}.lock`;
+        let holder: Awaited<ReturnType<typeof holdRuntimeLockInChild>> | undefined;
+        let rpcRequests = 0;
+        const server = createServer((req, res) => {
+            if (sendTestOwnerResolve(req, res) || sendCurrentBrokerStatus(req, res)) return;
+            rpcRequests += 1;
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ ok: true, result: { completed: true } }));
+        });
+        try {
+            await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+            const port = (server.address() as AddressInfo).port;
+            const original = { ownerId: TEST_BROKER_OWNER_ID, managedBy: "ccc-host", pid: process.pid, host: "127.0.0.1", port,
+                startedAt: "2026-10-21T00:00:00.000Z", processStartToken: "fixture-runtime-lock-generation" };
+            const replacement = { ...original, startedAt: "2026-10-21T00:00:01.000Z" };
+            mkdirSync(join(privateHome, ".ccc", "devices", "broker"), { recursive: true });
+            writeFileSync(runtimeFile, JSON.stringify(original), { mode: 0o600 });
+            const before = readFileSync(runtimeFile);
+            holder = await holdRuntimeLockInChild(lockFile);
+            const mutateRuntime = () => operation === "write" ? writeBrokerRuntimeForTest(replacement, original) : removeBrokerRuntimeForTest(original);
+            if (provisioning) {
+                let observedPreflight = false, mutation: boolean | undefined, failure: unknown;
+                const result = await withUnverifiedBrokerFixture(() => brokerCommand({
+                    action: "invoke", backend: "macos-vm", command: "device_create", provider: "tart", image: "base-image", name: "Contended runtime clone",
+                    hostCandidates: ["127.0.0.1"], port, autolaunch: false, timeoutMs: 1000, rpcTimeoutMs: 1000,
+                    verifyBeforeAuthenticatedRequest: () => {
+                        observedPreflight = true;
+                        expect(existsSync(lockFile)).toBe(true);
+                        // Only this independent child can release while the synchronous lock waits.
+                        holder!.releaseAfter(2500);
+                        try { mutation = mutateRuntime(); } catch (error) { failure = error; }
+                        return true;
+                    },
+                }));
+                expect(observedPreflight, JSON.stringify(result)).toBe(true);
+                expect(mutation === false || failure !== undefined).toBe(true);
+                expect(readFileSync(runtimeFile)).toEqual(before);
+                expect(result.ok).toBe(false);
+                expect(rpcRequests).toBe(0);
+            } else {
+                holder.releaseAfter(100);
+                expect(mutateRuntime()).toBe(true);
+                if (operation === "write") expect(JSON.parse(readFileSync(runtimeFile, "utf8"))).toEqual(replacement);
+                else expect(existsSync(runtimeFile)).toBe(false);
+            }
+        } finally {
+            try { await holder?.close(); }
+            finally {
+                try { if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+                finally { isolatedAuthFixture.root = originalAuthRoot; restoreEnvironment(); rmSync(privateHome, { recursive: true, force: true }); }
+            }
         }
     });
 

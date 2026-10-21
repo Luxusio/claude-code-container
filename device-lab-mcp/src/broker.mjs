@@ -425,21 +425,25 @@ function brokerRuntimeMatches(expected) {
 }
 
 function writeBrokerRuntime(runtime, expected) {
+    const remaining = brokerOperations.getStore()?.macosCreateRemainingMs;
     return withSharedMutationLock(`${brokerRuntimeFile()}.lock`, () => {
         if (!brokerRuntimeMatches(expected)) return false;
+        assertMacosCreateAllowance();
         writeJsonFileAtomically(brokerRuntimeFile(), runtime);
         return true;
-    });
+    }, remaining ? {waitBudget: {remaining}} : {});
 }
 
 function removeBrokerRuntime(expected) {
     if (!expected) return false;
+    const remaining = brokerOperations.getStore()?.macosCreateRemainingMs;
     try {
         return withSharedMutationLock(`${brokerRuntimeFile()}.lock`, () => {
             if (!brokerRuntimeMatches(expected)) return false;
+            assertMacosCreateAllowance();
             unlinkSync(brokerRuntimeFile());
             return true;
-        });
+        }, remaining ? {waitBudget: {remaining}} : {});
     } catch {
         // Unknown, changed or unreadable metadata is retained as evidence.
         return false;

@@ -36,7 +36,8 @@ import {
 
 function toolProperty(toolName: string, property: string): Record<string, unknown> {
     const tool = TOOLS.find((candidate) => candidate.name === toolName);
-    return ((tool?.inputSchema?.properties || {})[property] || {}) as Record<string, unknown>;
+    const properties: Readonly<Record<string, Record<string, unknown>>> = tool?.inputSchema?.properties || {};
+    return properties[property] || {};
 }
 
 function snapshotRequestTimeout(action: string, args: Record<string, unknown> = {}) {

@@ -10652,20 +10652,29 @@ async function cleanupVirtualStopLocked(ownerId: string, target: { backend: stri
         observation: { ok: payload.ok === true, operationKind: native.mode === "noop" ? "metadata-only" : "runtime-stop", receipt: native }, ...facts };
 }
 
+function macosCreateRequestOptions(params: unknown, normalized: NormalizedBrokerOptions): NormalizedBrokerOptions | BrokerRpcResult {
+    if (normalized.macosCreateRemainingMs || !params || typeof params !== "object" || Array.isArray(params)) return normalized;
+    const input = params as Record<string, unknown>;
+    if (!isBrokerMacosTartImageCreate(input)) return normalized;
+    const duration = input.requestTimeoutMs;
+    if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0 || duration > BROKER_MACOS_TART_CREATE_TIMEOUT_MS)) {
+        return {status: 400, payload: {ok: false, error: "invalid-macos-tart-create-timeout"}};
+    }
+    const now = normalized.hyperVMonotonicNow;
+    const deadline = now() + (typeof duration === "number" ? duration : BROKER_MACOS_TART_CREATE_TIMEOUT_MS);
+    const boundedDeadline = Math.min(deadline, normalized.cleanupDeadlineAt ?? Infinity);
+    return {...normalized, cleanupDeadlineAt: boundedDeadline,
+        macosCreateRemainingMs: () => Math.max(0, boundedDeadline - now())};
+}
+
 async function lifecycleCommandInvoke(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
     const parsed = admitCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
     const macosCreate = isBrokerMacosTartImageCreate({...parsed, ...parsed.create});
     if (macosCreate) {
-        const duration = (params as Record<string, unknown>).requestTimeoutMs;
-        if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0 || duration > BROKER_MACOS_TART_CREATE_TIMEOUT_MS)) {
-            return {status: 400, payload: {ok: false, error: "invalid-macos-tart-create-timeout"}};
-        }
-        const now = normalized.hyperVMonotonicNow;
-        const deadline = now() + (typeof duration === "number" ? duration : BROKER_MACOS_TART_CREATE_TIMEOUT_MS);
-        const boundedDeadline = Math.min(deadline, normalized.cleanupDeadlineAt ?? Infinity);
-        normalized = {...normalized, cleanupDeadlineAt: boundedDeadline,
-            macosCreateRemainingMs: () => Math.max(0, boundedDeadline - now())};
+        const captured = macosCreateRequestOptions(params, normalized);
+        if ("status" in captured) return captured;
+        normalized = captured;
     }
     const hyperVCleanupDeadlineAt = isHyperVBackend(parsed.backend) && !parsed.dryRun
         ? normalized.hyperVMonotonicNow() + (parsed.command === "device_create"
@@ -11141,9 +11150,20 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
                     writeJson(res, auth.status, { ok: false, error: auth.error });
                     return;
                 }
+                const rpc = body.body && typeof body.body === "object" && !Array.isArray(body.body)
+                    ? body.body as {method?: unknown; params?: unknown} : null;
+                const requestNormalized = rpc?.method === "broker.command.invoke"
+                    ? macosCreateRequestOptions(rpc.params, ownerNormalized) : ownerNormalized;
+                if ("status" in requestNormalized) {
+                    writeJson(res, requestNormalized.status, requestNormalized.payload);
+                    return;
+                }
+                const dispatch = () => requestNormalized.macosCreateRemainingMs && !(requestNormalized.macosCreateRemainingMs() >= 1)
+                    ? Promise.resolve({status: 504, payload: {ok: false, error: "macos-tart-create-budget-exhausted"}})
+                    : handleBrokerRpc(ownerId, body.body, requestNormalized, startedAt);
                 const result = brokerRpcMutatesOwnerState(body.body)
-                    ? await serializeBrokerOwnerMutation(ownerId, () => handleBrokerRpc(ownerId, body.body, ownerNormalized, startedAt))
-                    : await handleBrokerRpc(ownerId, body.body, ownerNormalized, startedAt);
+                    ? await serializeBrokerOwnerMutation(ownerId, dispatch)
+                    : await dispatch();
                 writeJson(res, result.status, result.payload);
                 return;
             }
