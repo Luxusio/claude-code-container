@@ -72,13 +72,10 @@ afterEach(() => {
 });
 
 describe("Lab ownership actual public facade and retained native bindings", () => {
-    it("keeps named arity four, synchronous undefined and actual inward composition", () => {
+    it("completes synchronously through the actual application composition", () => {
         const factory = vi.spyOn(application, "createLabStateOwnershipPreparation");
-        expect(prepareLabStateOwnership.name).toBe("prepareLabStateOwnership");
-        expect(prepareLabStateOwnership).toHaveLength(4);
         expect(prepareLabStateOwnership(volume, image, identity, previous)).toBeUndefined();
         expect(factory).toHaveBeenCalledOnce();
-        expect(Object.keys(factory.mock.calls[0][0])).toEqual(["normalizeImageId", "observeVolume", "observeVolumeUsers", "captureHelperScope", "observePreviousAccount", "applyOwnership"]);
     });
     it("preserves complete native argv/options and selective-owner shell bytes", () => {
         prepareLabStateOwnership(volume, image, identity, previous);

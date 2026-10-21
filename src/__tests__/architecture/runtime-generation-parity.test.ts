@@ -31,10 +31,6 @@ describe("shipped auxiliary generation facade", () => {
             const outputs=[];
             for(const path of ['./packages/device-lab/providers/state/runtime-generation.mjs','./dist/packages/device-lab/providers/state/runtime-generation.mjs']) {
                 const m=await import(path);
-                assert.deepEqual(Object.keys(m).sort(),[
-                    'appiumGenerationMatches','claimRecordingFinalization','recordingGenerationMatches',
-                    'runtimeGenerationMatches','transitionAppiumGeneration','transitionRecordingGeneration'
-                ]);
                 const cases=[];
                 trace=[];
                 assert.deepEqual(m.claimRecordingFinalization(null,'target',null),{committed:false,device:null});

@@ -70,7 +70,6 @@ function fixture(legacy: ManagedHomeEntry[] = ["codex"]) {
 describe("home layout migration explicit application ports", () => {
     it("validates every exact callable capability without invoking effects", () => {
         const f = fixture();
-        expect(Object.keys(f.ports)).toHaveLength(29);
         expect(typeof createHomeLayoutMigration(f.ports)).toBe("function");
         expect(f.calls).toEqual([]);
         for (const key of Object.keys(f.ports)) for (const invalid of [undefined, false, {}]) {

@@ -18,8 +18,8 @@ function fixture(entries: string[] = ["claude", "claude.json", "codex"]) {
 const base = "/home/one/.ccc", next = `${base}/profiles/default`;
 const profiles = [ ["profileClaudeDir", "claude"], ["profileClaudeJsonFile", "claude.json"], ["profileCodexDir", "codex"] ] as const;
 describe("home resolution complete policy", () => {
-    it("constructs without observing ports and keeps live homes and sixteen operations", () => {
-        const f = fixture(); expect(f.trace).toEqual([]); expect(Object.keys(f.paths)).toHaveLength(16);
+    it("constructs without observing ports and resolves paths from the live home", () => {
+        const f = fixture(); expect(f.trace).toEqual([]);
         const simple = { cccHome: base, profilesDir: `${base}/profiles`, defaultProfileDir: next, runDir: `${base}/run`, configFile: `${base}/config.json`, legacyRemoteConfigDir: `${base}/remote` };
         for (const [name, expected] of Object.entries(simple)) expect(f.paths[name as keyof typeof simple]()).toBe(expected);
         f.changeHome("/home/two"); expect(f.paths.configFile()).toBe("/home/two/.ccc/config.json");

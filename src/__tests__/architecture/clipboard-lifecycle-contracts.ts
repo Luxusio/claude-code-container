@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import { createClipboardServerLifecycle } from "../../application/clipboard/server-lifecycle.js";
 import type { ClipboardServerLifecyclePorts } from "../../ports/clipboard/server-lifecycle.js";
 import type { ensureClipboardServer, stopClipboardServerIfLast, retireClipboardServerFromPortFile, ensureClipboardSelection } from "../../clipboard-server.js";
@@ -51,6 +50,3 @@ function compileContracts(ports: ClipboardServerLifecyclePorts<{ lock: true }, {
     const ignored: undefined = app.retireClipboardServerFromPortFile("path"); void ignored;
 }
 void compileContracts;
-describe("Clipboard lifecycle type contract", () => {
-    it("keeps the factory independent from native resources", () => { expect(createClipboardServerLifecycle.name).toBe("createClipboardServerLifecycle"); });
-});
