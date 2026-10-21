@@ -16,6 +16,7 @@ import {
     inspectHyperVUbuntuImageCache,
     readHyperVImageManifestMetadata,
     resolveHyperVImageForCreate,
+    resolveHyperVImageForCreateOutcome,
     inspectLargeRegularFile,
     stageLargeRegularFileFromProject,
     sha256LargeRegularFile,
@@ -41,13 +42,35 @@ function imagePreparationCapabilityContracts(ports: HyperVImagePreparationPorts,
     const { resolvePath: _resolvePath, ...withoutPathResolution } = ports;
     // @ts-expect-error Path resolution requires the native current-directory authority.
     createHyperVImagePreparation(withoutPathResolution);
+    const { imageRoot: _imageRoot, ...withoutImageRoot } = ports;
+    // @ts-expect-error Image layout requires the native image-root authority.
+    createHyperVImagePreparation(withoutImageRoot);
+    const { imageProfileRoot: _profileRoot, ...withoutProfileRoot } = ports;
+    // @ts-expect-error Global cache selection requires its native profile root.
+    createHyperVImagePreparation(withoutProfileRoot);
+    const { ownerImageProfileRoot: _ownerRoot, ...withoutOwnerRoot } = ports;
+    // @ts-expect-error Owner cache selection requires its native profile root.
+    createHyperVImagePreparation(withoutOwnerRoot);
+    const { joinPath: _joinPath, ...withoutPathJoining } = ports;
+    // @ts-expect-error Native path joining is distinct from absolute path resolution.
+    createHyperVImagePreparation(withoutPathJoining);
+    // @ts-expect-error Image-root selection must settle synchronously.
+    const asynchronousImageRoot: HyperVImagePreparationPorts["imageRoot"] = async () => "images";
+    // @ts-expect-error Global profile-root selection must settle synchronously.
+    const asynchronousProfileRoot: HyperVImagePreparationPorts["imageProfileRoot"] = async () => "global";
+    // @ts-expect-error Owner profile-root selection must settle synchronously.
+    const asynchronousOwnerRoot: HyperVImagePreparationPorts["ownerImageProfileRoot"] = async () => "owner";
+    // @ts-expect-error Native path joining must settle synchronously.
+    const asynchronousPathJoining: HyperVImagePreparationPorts["joinPath"] = async () => "joined";
     // @ts-expect-error Native path resolution must settle synchronously.
     const asynchronousPathResolution: HyperVImagePreparationPorts["resolvePath"] = async () => "image.vhdx";
     // @ts-expect-error Publication must complete before the application reports success.
     const asynchronousPublication: HyperVImagePreparationPorts["publishManifest"] = async () => undefined;
     // @ts-expect-error Root admission must finish before the preparation lock is entered.
     const asynchronousRootAdmission: HyperVImagePreparationPorts["ensurePreparationRoot"] = async () => undefined;
-    void [_dismount, _finalize, _resolvePath, missingDismount, missingFinalizer, asynchronousPathResolution, asynchronousPublication, asynchronousRootAdmission];
+    void [_dismount, _finalize, _resolvePath, _imageRoot, _profileRoot, _ownerRoot, _joinPath,
+        missingDismount, missingFinalizer, asynchronousImageRoot, asynchronousProfileRoot, asynchronousOwnerRoot,
+        asynchronousPathJoining, asynchronousPathResolution, asynchronousPublication, asynchronousRootAdmission];
 }
 void imagePreparationCapabilityContracts;
 
@@ -801,6 +824,38 @@ describe("Hyper-V ubuntu-lts image cache inspection", () => {
 
         expect(inspectWithoutSideEffects(privateRoot)).toEqual({ state: "valid", source: "global" });
     }));
+
+    it.each(["owner", "global"] as const)("selects the %s cache beneath the injected private root for dry-run and explicit images", source => withPrivateRoot(`layout-${source}`, async fixtureRoot => {
+        const privateRoot = join(fixtureRoot, "nested private broker");
+        const profileRoot = source === "owner"
+            ? hyperVOwnerImageProfileRoot(privateRoot, ownerId, "ubuntu-lts")
+            : hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
+        const imagePath = join(profileRoot, "base.vhdx");
+        writeCache(profileRoot, source === "owner" ? userProvidedManifest(profileRoot) : automaticManifest(profileRoot));
+        const before = treeSnapshot(fixtureRoot);
+        const resolveExecutable = vi.fn(() => null);
+        const run = vi.fn(async () => { throw new Error("unexpected provider command"); });
+        const runtime: HyperVImageStoreRuntime = {
+            cwd: fixtureRoot, privateRoot, resolveExecutable, run,
+            limits: { acquireTimeoutMs: 60_000, prepareTimeoutMs: 60_000, lockWaitMs: 60_000, commandOutputBytes: 64 * 1024 },
+        };
+        for (const explicitImage of [false, true]) {
+            const params = { name: "cached image selection" };
+            const result = await resolveHyperVImageForCreateOutcome(ownerId, {
+                backend: "linux-vm", dryRun: !explicitImage,
+                create: { profile: "ubuntu-lts", ...(explicitImage ? { image: imagePath } : {}) },
+            }, params, runtime);
+            expect(result).toEqual({
+                kind: "resolved", imagePath, prepared: false,
+                params: { ...params, profile: "ubuntu-lts", image: imagePath, baseImageSha256: imageSha256,
+                    baseImageGeneration: catalog.generation, diskMaxBytes: catalog.virtualSizeBytes },
+            });
+            expect(params).toEqual({ name: "cached image selection" });
+        }
+        expect(resolveExecutable).not.toHaveBeenCalled();
+        expect(run).not.toHaveBeenCalled();
+        expect(treeSnapshot(fixtureRoot)).toEqual(before);
+    })());
 
     it("inspects and hashes real cached bytes with Windows dev0 paths and bigint opened identities", withPrivateRoot("windows-identity", async privateRoot => {
         const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");

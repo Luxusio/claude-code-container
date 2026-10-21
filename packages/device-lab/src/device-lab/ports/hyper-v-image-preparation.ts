@@ -27,6 +27,10 @@ export interface HyperVImagePreparationPorts {
     catalog: HyperVAutomaticImageCatalogs;
     now(): number;
     preparedAt(): string;
+    imageRoot(privateRoot: string): string;
+    imageProfileRoot(privateRoot: string, profile: HyperVImageProfile): string;
+    ownerImageProfileRoot(privateRoot: string, ownerId: string, profile: HyperVImageProfile): string;
+    joinPath(...parts: string[]): string;
     resolvePath(...parts: string[]): string;
     capturePreparation(): HyperVImagePreparationEffects | null;
     assertDeadline(deadlineAt: number): undefined;

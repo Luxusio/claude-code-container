@@ -685,6 +685,10 @@ export async function resolveHyperVImageForCreateOutcome(
         cwd: runtime.cwd, privateRoot: runtime.privateRoot, limits: runtime.limits,
         catalog: HYPER_V_IMAGE_CATALOG,
         now, preparedAt: () => new Date().toISOString(),
+        imageRoot: hyperVImageRoot,
+        imageProfileRoot: hyperVImageProfileRoot,
+        ownerImageProfileRoot: hyperVOwnerImageProfileRoot,
+        joinPath: join,
         resolvePath: resolve,
         capturePreparation: () => {
             const executable = runtime.resolveExecutable("powershell.exe") || runtime.resolveExecutable("pwsh") || runtime.resolveExecutable("powershell");
