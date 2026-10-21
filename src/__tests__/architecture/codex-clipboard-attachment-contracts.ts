@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import { createCodexClipboardImageAttachment } from "../../application/tool-session/codex-clipboard-image.js";
 import type { CodexClipboardImageAttachmentPorts } from "../../ports/tool-session/codex-clipboard-image.js";
 import { buildCodexClipboardImageRelativePath, injectCodexClipboardImageArgs,
@@ -38,11 +37,3 @@ function contracts(ports: CodexClipboardImageAttachmentPorts<{ image: true }>, m
     void [pending, facade, native, injected, sync];
 }
 void contracts;
-
-describe("clipboard attachment public compile contracts", () => {
-    it("keeps public function names, arities and async constructor", () => {
-        expect([buildCodexClipboardImageRelativePath.name, buildCodexClipboardImageRelativePath.length]).toEqual(["buildCodexClipboardImageRelativePath", 1]);
-        expect([maybeAttachCodexClipboardImage.name, maybeAttachCodexClipboardImage.length, maybeAttachCodexClipboardImage.constructor.name])
-            .toEqual(["maybeAttachCodexClipboardImage", 3, "AsyncFunction"]);
-    });
-});

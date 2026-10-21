@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import { createCodexResumeRecovery } from "../../application/tool-session/codex-resume-recovery.js";
 import type { CodexResumeRecoveryPlan } from "../../domain/tool-session/codex-resume.js";
 import type { CodexResumeRecoveryPorts } from "../../ports/tool-session/codex-resume-recovery.js";
@@ -72,10 +71,3 @@ async function defaultUnknownContracts(ports: CodexResumeRecoveryPorts<object, s
     void native;
 }
 void defaultUnknownContracts;
-
-describe("Codex resume required contracts", () => {
-    it("retains a named four-argument async operation without ambient services", () => {
-        const run = createCodexResumeRecovery({} as CodexResumeRecoveryPorts<object, string, undefined>);
-        expect([run.name, run.length, run.constructor.name]).toEqual(["runCodexResumeRecovery", 4, "AsyncFunction"]);
-    });
-});

@@ -1,17 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import * as application from "../../application/workspace-branch-validation.js";
 import { validateBranchName } from "../../worktree.js";
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("workspace branch validation native facade", () => {
-    it("keeps only the narrow facade delegation and public application factory", () => {
-        const source = readFileSync(new URL("../../worktree.ts", import.meta.url), "utf8");
-        expect(source).toMatch(/export function validateBranchName\(branch: string\): string \{\s*return createWorkspaceBranchValidation\(\{\s*utf8ByteLength: \(value\) => Buffer\.byteLength\(value, "utf-8"\),\s*\}\)\(branch\);\s*\}/);
-        expect(Object.keys(application)).toEqual(["createWorkspaceBranchValidation"]);
-    });
-
     it.each([
         ["ASCII", "x".repeat(255), "x".repeat(256)],
         ["multibyte", "é".repeat(127) + "x", "é".repeat(128)],

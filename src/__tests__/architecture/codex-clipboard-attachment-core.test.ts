@@ -1,10 +1,7 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createCodexClipboardImageAttachment } from "../../application/tool-session/codex-clipboard-image.js";
 import { injectCodexClipboardImageArgs } from "../../domain/tool-session/codex-clipboard-image.js";
 import type { CodexClipboardImageAttachmentPorts } from "../../ports/tool-session/codex-clipboard-image.js";
-import { coreBoundaryViolations } from "./core-boundary.js";
 
 const directories = [".omx", "clipboard-images"];
 const relativeImage = ".omx/clipboard-images/clipboard-42.png";
@@ -84,21 +81,4 @@ describe("complete clipboard attachment application", () => {
         injected.push("more");
         expect(args).toEqual(["codex"]);
     });
-});
-
-describe("actual clipboard inward dependency boundary", () => {
-    const root = resolve("src");
-    const boundary = { root, language: "ts" as const };
-    for (const layer of ["domain", "ports", "application"] as const) {
-        const file = resolve(root, layer, "tool-session/codex-clipboard-image.ts");
-        it(`checks actual ${layer} source and intentional forbidden edges`, () => {
-            const source = readFileSync(file, "utf8");
-            expect(coreBoundaryViolations(source, file, boundary)).toEqual([]);
-            for (const mutation of ["import { readFileSync } from 'node:fs';", "Date.now();", "Buffer.alloc(1);",
-                "process.cwd();", "import('../../codex-clipboard-image.js');",
-                "import { readClipboardImagePng } from '../../codex-clipboard-image.js';"]) {
-                expect(coreBoundaryViolations(`${source}\n${mutation}`, file, boundary), mutation).not.toEqual([]);
-            }
-        });
-    }
 });

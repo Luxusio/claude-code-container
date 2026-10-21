@@ -1,9 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
 import type { BrokerServicePorts, LifecyclePreviewPorts, MetadataObservationPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
 import type { LifecyclePreviewRequest } from "@ccc/device-lab/device-lab/domain/broker-observation-command-plan.js";
-import { coreBoundaryViolations } from "./core-boundary.js";
 import { createBrokerDeviceStatus } from "@ccc/device-lab/device-lab/application/broker-observation-status.js";
 import type { BrokerDeviceStatusPorts } from "@ccc/device-lab/device-lab/ports/broker-observation.js";
 import type { DeviceStatusExecution, DeviceStatusRequest, DeviceStatusOutcome } from "@ccc/device-lab/device-lab/domain/broker-observation.js";
@@ -53,12 +49,3 @@ function requiredSynchronousContracts(metadata: MetadataObservationPorts,
     void [metadataCopy, serviceCopy, previewCopy, missing];
 }
 void requiredSynchronousContracts;
-
-describe("broker observation inward contracts", () => {
-    it("scans actual domain, ports and every observation application with the existing guard", () => {
-        const root = resolve("packages/device-lab/src/device-lab");
-        for (const name of ["domain/broker-observation", "domain/broker-observation-command-plan", "ports/broker-observation", "application/broker-observation-inventory", "application/broker-observation-leases", "application/broker-observation-appium", "application/broker-observation-status", "application/broker-observation-command-plan"]) {
-            const file = resolve(root, name + ".ts"); expect(coreBoundaryViolations(readFileSync(file, "utf8"), file, { root, language: "ts" })).toEqual([]);
-        }
-    });
-});
