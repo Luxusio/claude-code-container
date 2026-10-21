@@ -1538,7 +1538,7 @@ describe("assertWorkspaceBranch", () => {
                     replaced = true;
                 }
                 return result;
-            }) as typeof spawnSync;
+            }) as unknown as typeof spawnSync;
             expect(() => assertWorkspaceReady(workspace, runner, repoPath)).toThrow(/changed|metadata|inspect/i);
             expect(replaced).toBe(true);
             expect(readFileSync(metadata), "a rejected observation does not remove the replacement metadata").toEqual(contents);
@@ -1568,7 +1568,7 @@ describe("assertWorkspaceBranch", () => {
             writeFileSync(join(child, "untracked.txt"), "untracked foreign work");
             const foreignMetadata = join(child, ".git");
             const capture = () => {
-                const files = readdirSync(foreignMetadata, { recursive: true })
+                const files = (readdirSync(foreignMetadata, { recursive: true }) as string[])
                     .map((name) => join(foreignMetadata, name)).filter((file) => lstatSync(file).isFile()).sort();
                 files.push(...["init.txt", "foreign-history.txt", "staged.txt", "untracked.txt"].map((name) => join(child, name)));
                 return files.map((file) => {
@@ -3101,7 +3101,7 @@ describe("removeWorkspace", () => {
         const wsResult = createWorkspace(sourceDir, "extra-files");
         writeFileSync(join(wsResult.workspacePath, "stray.log"), "data");
 
-        const removeResult = removeWorkspace(sourceDir, "extra-files", {
+        removeWorkspace(sourceDir, "extra-files", {
             force: true,
         });
         expect(existsSync(wsResult.workspacePath)).toBe(false);
@@ -9497,7 +9497,7 @@ describe("strandedBranchRegistrations", () => {
     });
 
     it("says nothing when the removal really did finish", () => {
-        const { src, workspacePath } = sourceWithSubmodule("stranded-no");
+        const { src } = sourceWithSubmodule("stranded-no");
         expect(removeWorkspace(src, "stranded-no", { force: true }).errors).toEqual([]);
 
         // A clean removal deregisters as it goes. Advertising a prune here would send the
