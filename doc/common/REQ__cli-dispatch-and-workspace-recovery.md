@@ -56,7 +56,7 @@ whole-architecture completion.
 
 ## CLI module startup boundary
 
-The CLI module currently uses a test-runner environment marker to decide whether
+The CLI module previously used a test-runner environment marker to decide whether
 to start. That marker does not establish which file Node executed. Derived from
 the noninteractive Core boundary, importing the module must not start the CLI.
 Automatic startup occurs only when the canonical file named by `argv[1]` matches
