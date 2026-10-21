@@ -1,6 +1,6 @@
 # Shared Codex command facts
 
-Planned correction: clipboard attachment, launch and local resume consume the
+Clipboard attachment, launch and local resume consume the
 existing registry's command/value-option facts while retaining their individual
 eligibility policies. Administrative commands avoid clipboard access, and
 `--local-provider` keeps its value adjacent when attaching an interactive image.

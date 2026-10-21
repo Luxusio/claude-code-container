@@ -1,9 +1,9 @@
-import { mkdtempSync, existsSync, readFileSync, rmSync } from "fs";
+import { mkdtempSync, existsSync, readFileSync, readdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
 import { join } from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     CODEX_CLIPBOARD_IMAGE_PROMPT,
     buildCodexClipboardImageRelativePath,
@@ -71,6 +71,75 @@ describe("injectCodexClipboardImageArgs", () => {
 });
 
 describe("maybeAttachCodexClipboardImage", () => {
+    it("regression: plugin after a model value avoids all clipboard effects", async () => {
+        const projectPath = mkdtempSync(join(tmpdir(), "ccc-codex-clipboard-"));
+        tempDirs.push(projectPath);
+        const args = ["codex", "--model", "selected-model", "plugin", "list"];
+        const original = [...args];
+        const entries = readdirSync(projectPath);
+        const readImage = vi.fn(async () => Buffer.from("unused clipboard image"));
+        const result = await maybeAttachCodexClipboardImage(projectPath, args, {
+            enabled: true, clipboardUrl: "http://127.0.0.1:4321", clipboardToken: "token",
+            timestamp: 123, readImage,
+        });
+        expect(readImage).not.toHaveBeenCalled();
+        expect(result).toEqual({ args: original });
+        expect(args).toEqual(original);
+        expect(readdirSync(projectPath)).toEqual(entries);
+        expect(existsSync(join(projectPath, ".omx"))).toBe(false);
+    });
+
+    it.each(["e", "a", "remote-control", "update", "exec-server"])("regression: %s after a model value avoids all clipboard effects", async subcommand => {
+        const projectPath = mkdtempSync(join(tmpdir(), "ccc-codex-clipboard-"));
+        tempDirs.push(projectPath);
+        const args = ["codex", "--model", "plugin", subcommand, "request"];
+        const original = [...args], entries = readdirSync(projectPath);
+        const readImage = vi.fn(async () => Buffer.from("unused clipboard image"));
+        const result = await maybeAttachCodexClipboardImage(projectPath, args, {
+            enabled: true, clipboardUrl: "http://127.0.0.1:4321", clipboardToken: "token",
+            timestamp: 123, readImage,
+        });
+        expect(readImage).not.toHaveBeenCalled();
+        expect(result).toEqual({ args: original });
+        expect(result.args).not.toBe(args);
+        expect(args).toEqual(original);
+        expect(readdirSync(projectPath)).toEqual(entries);
+        expect(existsSync(join(projectPath, ".omx"))).toBe(false);
+    });
+
+    it.each(["inspect this image", undefined])("regression: local-provider keeps its value adjacent when attaching with prompt %s", async prompt => {
+        const projectPath = mkdtempSync(join(tmpdir(), "ccc-codex-clipboard-"));
+        tempDirs.push(projectPath);
+        const args = ["codex", "--model", "plugin", "--local-provider", "ollama", ...(prompt ? [prompt] : [])];
+        const original = [...args], image = Buffer.from("private synthetic png");
+        const readImage = vi.fn(async () => image);
+        const result = await maybeAttachCodexClipboardImage(projectPath, args, {
+            enabled: true, clipboardUrl: "http://127.0.0.1:4321", clipboardToken: "token",
+            timestamp: 123, readImage,
+        });
+        const relativeImagePath = ".omx/clipboard-images/clipboard-123.png";
+        expect(result).toEqual({ args: ["codex", "--model", "plugin", "--local-provider", "ollama", "--image", relativeImagePath,
+            prompt ?? CODEX_CLIPBOARD_IMAGE_PROMPT], relativeImagePath });
+        expect(readImage).toHaveBeenCalledExactlyOnceWith("http://127.0.0.1:4321", "token");
+        expect(readFileSync(join(projectPath, relativeImagePath))).toEqual(image);
+        expect(args).toEqual(original);
+        expect(result.args).not.toBe(args);
+    });
+
+    it.each([["-i", "existing.png"], ["--image", "existing.png"], ["--image=existing.png"]])("keeps explicit image exclusion with a local-provider value: %j", async (...imageArgs) => {
+        const projectPath = mkdtempSync(join(tmpdir(), "ccc-codex-clipboard-"));
+        tempDirs.push(projectPath);
+        const args = ["codex", "--local-provider", "ollama", ...imageArgs, "inspect this image"];
+        const original = [...args], readImage = vi.fn(async () => Buffer.from("unused clipboard image"));
+        const result = await maybeAttachCodexClipboardImage(projectPath, args, {
+            enabled: true, clipboardUrl: "http://127.0.0.1:4321", clipboardToken: "token", readImage,
+        });
+        expect(result).toEqual({ args: original });
+        expect(readImage).not.toHaveBeenCalled();
+        expect(args).toEqual(original);
+        expect(readdirSync(projectPath)).toEqual([]);
+    });
+
     it.each([
         ["codex", "migrate-rollouts", "--apply", "--thread", "session-id", "--json"],
         ["codex", "doctor", "--summary"],

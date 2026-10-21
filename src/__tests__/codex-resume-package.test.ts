@@ -15,6 +15,8 @@ function isolatedPackage(bundle: boolean) {
     writeFileSync(join(root, "package.json"), '{"type":"module"}');
     copyFileSync(new URL("../../dist/codex-resume-recovery.js", import.meta.url), join(root, "dist/codex-resume-recovery.js"));
     copyFileSync(new URL("../../dist/domain/tool-session/codex-resume.js", import.meta.url), join(root, "dist/domain/tool-session/codex-resume.js"));
+    copyFileSync(new URL("../../dist/domain/tool-registry.js", import.meta.url), join(root, "dist/domain/tool-registry.js"));
+    copyFileSync(new URL("../../dist/domain/tool-layout.js", import.meta.url), join(root, "dist/domain/tool-layout.js"));
     if (bundle) copyFileSync(new URL("../../dist/codex-resume-runtime.cjs", import.meta.url), join(root, "dist/codex-resume-runtime.cjs"));
     return root;
 }
@@ -51,6 +53,30 @@ describe("packaged typed Codex resume runtime", () => {
         expect(result.status).toBe(0);
         expect(JSON.parse(result.stdout)).toEqual(command);
         expect(result.stderr).toContain("rebuild or reinstall CCC");
+    });
+
+    it("plans local-provider resume from a relocated package without source or dependencies", () => {
+        const root = isolatedPackage(true);
+        const command = ["codex", "--local-provider", "ollama", "--model", "plugin", "resume", "--last", "thread"];
+        const result = invokeHost(root, command);
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stderr).toBe("");
+        const wrapped: string[] = JSON.parse(result.stdout);
+        expect(wrapped.slice(0, 4)).toEqual(["node", "-e", readFileSync(join(root, "dist/codex-resume-runtime.cjs"), "utf8"), "--"]);
+        expect(JSON.parse(wrapped[4])).toEqual({ command,
+            retry: ["codex", "--local-provider", "ollama", "--model", "plugin", "resume"], config: [], selector: "thread" });
+        expect(existsSync(join(root, "src"))).toBe(false);
+        expect(existsSync(join(root, "node_modules"))).toBe(false);
+    });
+
+    it.each(["-i", "--image", "-p", "--profile", "-C", "--cd"])("does not wrap relocated resume with excluded %s or require its runtime artifact", flag => {
+        const command = ["codex", "resume", "thread", flag, "selected-value"];
+        const result = invokeHost(isolatedPackage(false), command);
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual(command);
+        expect(result.stderr).toBe("");
     });
 
     it.each([["codex", "doctor"], ["codex", "resume", "id", "prompt"], ["codex", "resume", "--unknown"]])(

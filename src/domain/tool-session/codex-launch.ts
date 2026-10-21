@@ -1,8 +1,5 @@
-const VALUE_FLAGS = new Set([
-    "-c", "--config", "--enable", "--disable", "-i", "--image", "-m", "--model",
-    "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd",
-    "--add-dir", "-a", "--ask-for-approval",
-]);
+import { isCodexValueOption } from "../tool-registry.js";
+
 const BOOLEAN_FLAGS = new Set([
     "--oss", "--strict-config", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox",
     "--dangerously-bypass-hook-trust", "--worktree", "--search", "--no-alt-screen",
@@ -24,7 +21,7 @@ export function interactiveCommand(command: readonly string[]): InteractiveComma
         if (argument === "--") return result;
         if (argument.startsWith("-")) {
             const [flag] = argument.split("=", 1);
-            if (VALUE_FLAGS.has(flag)) {
+            if (isCodexValueOption(flag)) {
                 const args = [argument];
                 if (!argument.includes("=")) {
                     if (++index >= command.length) return null;
@@ -35,7 +32,7 @@ export function interactiveCommand(command: readonly string[]): InteractiveComma
                 continue;
             }
             // Accept attached short option values such as -cmodel="...".
-            if (!argument.startsWith("--") && argument.length > 2 && VALUE_FLAGS.has(argument.slice(0, 2))) {
+            if (!argument.startsWith("--") && argument.length > 2 && isCodexValueOption(argument.slice(0, 2))) {
                 if (argument.startsWith("-c")) result.daemonArgs.push(argument);
                 if (argument.startsWith("-p")) result.profile = true;
                 continue;

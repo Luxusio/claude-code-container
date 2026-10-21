@@ -157,6 +157,47 @@ describe("Codex resume pure planning and transport", () => {
         const command = ["codex", "-c=x", "resume", "--all", "--last", "thread", "--model", "m"];
         expect(selectCodexResumeRecovery(command)).toEqual({ eligible: true, plan: { command, retry: ["codex", "-c=x", "resume", "--model", "m"], config: ["-c=x"], selector: "thread" } });
     });
+    it("preserves local-provider and command-shaped option values in a prompt-free resume plan", () => {
+        const command = ["codex", "--local-provider", "ollama", "--model", "plugin", "--config", "model=x",
+            "resume", "--last", "thread", "--sandbox", "workspace-write", "--ask-for-approval", "never",
+            "--add-dir", "other-directory", "--oss", "--no-daemon"];
+        const before = [...command];
+        const selected = selectCodexResumeRecovery(command);
+        expect(selected).toEqual({ eligible: true, plan: {
+            command: before,
+            retry: ["codex", "--local-provider", "ollama", "--model", "plugin", "--config", "model=x", "resume",
+                "--sandbox", "workspace-write", "--ask-for-approval", "never", "--add-dir", "other-directory", "--oss", "--no-daemon"],
+            config: ["--config", "model=x"], selector: "thread",
+        } });
+        expect(command).toEqual(before);
+        if (!selected.eligible) throw new Error("expected eligible local resume");
+        expect(selected.plan.command).not.toBe(command);
+        selected.plan.retry.push("caller-change");
+        expect(command).toEqual(before);
+    });
+    it.each(["-i", "--image", "-p", "--profile", "-C", "--cd"])("explicitly excludes %s even though it is a canonical value option", flag => {
+        for (const args of [[flag, "selected-value", "resume", "thread"], ["resume", "thread", flag, "selected-value"]]) {
+            const command = ["codex", ...args], before = [...command];
+            const selected = selectCodexResumeRecovery(command);
+            expect(selected).toEqual({ eligible: false, command: before });
+            expect(command).toEqual(before);
+            if (selected.eligible) throw new Error("unsafe resume admitted");
+            expect(selected.command).not.toBe(command);
+        }
+    });
+    it.each([
+        ["--image=existing.png"], ["--profile=named"], ["--cd=other-directory"],
+        ["-iexisting.png"], ["-pnamed"], ["-Cother-directory"],
+        ["--remote", "wss://invalid"], ["--remote=wss://invalid"],
+        ["--local-provider"], ["--model"], ["--config"], ["--add-dir"],
+    ])("keeps recovery ineligible for excluded or incomplete resume arguments: %j", (...args) => {
+        const command = ["codex", "resume", "thread", ...args];
+        expect(selectCodexResumeRecovery(command)).toEqual({ eligible: false, command });
+    });
+    it("does not reinterpret an extra prompt as another local resume selector", () => {
+        const command = ["codex", "--local-provider", "ollama", "resume", "thread", "inspect this image"];
+        expect(selectCodexResumeRecovery(command)).toEqual({ eligible: false, command });
+    });
     it.each([["codex", "resume", "thread", "prompt"], ["codex", "resume", "--remote=wss://invalid"], ["codex", "resume", "-c"], ["claude", "resume"]])("does not admit %j", (...command) => {
         const selected = selectCodexResumeRecovery(command); expect(selected).toEqual({ eligible: false, command }); if (!selected.eligible) expect(selected.command).not.toBe(command);
     });

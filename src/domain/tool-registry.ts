@@ -4,6 +4,30 @@
 
 import { CLAUDE_BIN_PATH } from "./tool-layout.js";
 
+// Source: `codex --help`, retaining the catalog's order and aliases.
+const CODEX_SUBCOMMANDS: readonly string[] = [
+    "exec", "e",
+    "review",
+    "login", "logout",
+    "mcp", "plugin", "mcp-server", "app-server", "remote-control",
+    "completion", "update",
+    "doctor", "migrate-rollouts",
+    "sandbox", "debug",
+    "apply", "a",
+    "resume", "fork",
+    "cloud",
+    "exec-server", "features",
+    "help",
+];
+const CODEX_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+    "-c", "--config", "--enable", "--disable", "-i", "--image", "-m", "--model",
+    "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd",
+    "--add-dir", "-a", "--ask-for-approval",
+]);
+
+export function isCodexSubcommand(value: string): boolean { return CODEX_SUBCOMMANDS.includes(value); }
+export function isCodexValueOption(value: string): boolean { return CODEX_VALUE_OPTIONS.has(value); }
+
 export interface CredentialMount {
     hostDir: string;       // homedir-relative (e.g., ".gemini")
     containerDir: string;  // container absolute (e.g., "/home/ccc/.gemini")
@@ -63,21 +87,7 @@ export function createDefaultToolCatalog(): ToolDefinition[] {
             displayName: "Codex",
             binary: "codex",
             defaultFlags: ["--dangerously-bypass-approvals-and-sandbox"],
-            // Source: `codex --help` (subcommands list, incl. aliases `e` and `a`).
-            subcommands: [
-                "exec", "e",
-                "review",
-                "login", "logout",
-                "mcp", "plugin", "mcp-server", "app-server", "remote-control",
-                "completion", "update",
-                "doctor", "migrate-rollouts",
-                "sandbox", "debug",
-                "apply", "a",
-                "resume", "fork",
-                "cloud",
-                "exec-server", "features",
-                "help",
-            ],
+            subcommands: [...CODEX_SUBCOMMANDS],
             // Only `exec`, `resume`, and `fork` accept --dangerously-bypass-approvals-and-sandbox.
             // Verified via `codex <sub> --help`. Other subcommands reject the flag.
             subcommandsAcceptingDefaultFlags: ["exec", "e", "resume", "fork"],

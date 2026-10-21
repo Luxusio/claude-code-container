@@ -1,3 +1,5 @@
+import { isCodexValueOption } from "../tool-registry.js";
+
 export interface CodexResumeRecoveryPlan {
     command: string[];
     retry: string[];
@@ -18,10 +20,7 @@ export interface CodexResumeInvocation<Runner, Home, Reporter> {
     readonly report: Reporter;
 }
 
-const VALUE_OPTIONS = new Set([
-    "-c", "--config", "--enable", "--disable", "-m", "--model", "-s", "--sandbox",
-    "-a", "--ask-for-approval", "--local-provider", "--add-dir",
-]);
+const EXCLUDED_VALUE_OPTIONS = new Set(["-i", "--image", "-p", "--profile", "-C", "--cd"]);
 const CONFIG_OPTIONS = new Set(["-c", "--config", "--enable", "--disable"]);
 const BOOLEAN_OPTIONS = new Set([
     "--no-daemon", "--no-alt-screen", "--oss", "--strict-config", "--approve-for-me",
@@ -55,7 +54,7 @@ export function selectCodexResumeRecovery(command: readonly string[]): CodexResu
         }
         const equals = argument.indexOf("=");
         const flag = equals < 0 ? argument : argument.slice(0, equals);
-        if (VALUE_OPTIONS.has(flag)) {
+        if (isCodexValueOption(flag) && !EXCLUDED_VALUE_OPTIONS.has(flag)) {
             const values = [argument];
             if (equals < 0) {
                 if (++index >= command.length) return excluded();

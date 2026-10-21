@@ -26,6 +26,49 @@ describe("semantic Codex launch operation", () => {
         expect(f.ports.prepareStart).toHaveBeenCalledTimes(1);
         expect(f.ports.initializeDaemon).toHaveBeenCalledExactlyOnceWith(f.handle, ["-c", "model=x", "--enable=feature"]);
     });
+    it("keeps value arguments adjacent while preparing an interactive local-provider launch", () => {
+        const f = fixture(), command = ["codex", "--local-provider", "ollama", "--model", "plugin",
+            "--sandbox", "workspace-write", "--ask-for-approval", "never", "--add-dir", "other-directory",
+            "--cd", "project-directory", "--image", "existing.png", "--config", "model=x",
+            "--enable", "feature", "--disable=other", "--oss", "--search", "inspect this image"];
+        const before = [...command];
+        const result = f.app.prepare(command);
+        expect(result).toEqual({ ok: true, command: before });
+        expect(result.command).not.toBe(command);
+        expect(command).toEqual(before);
+        expect(f.ports.initializeDaemon).toHaveBeenCalledExactlyOnceWith(f.handle,
+            ["--config", "model=x", "--enable", "feature", "--disable=other"]);
+    });
+    it.each(["resume", "fork"])("allows %s after a value that resembles an administrative command", subcommand => {
+        const f = fixture(), command = ["codex", "--model", "plugin", "--local-provider", "ollama", subcommand, "thread"];
+        expect(f.app.prepare(command)).toEqual({ ok: true, command });
+        expect(f.ports.initializeDaemon).toHaveBeenCalledExactlyOnceWith(f.handle, []);
+        expect(command).toEqual(["codex", "--model", "plugin", "--local-provider", "ollama", subcommand, "thread"]);
+    });
+    it.each(["e", "a", "plugin", "remote-control", "update", "exec-server"])("does not prepare administrative %s after a model value", subcommand => {
+        const f = fixture(), command = ["codex", "--model", "selected-model", subcommand];
+        expect(f.app.prepare(command)).toEqual({ ok: true, command });
+        expect(f.ports.probeDaemonExecutable).not.toHaveBeenCalled();
+        expect(f.ports.prepareStart).not.toHaveBeenCalled();
+        expect(f.ports.initializeDaemon).not.toHaveBeenCalled();
+    });
+    it.each([
+        ["codex", "--local-provider"],
+        ["codex", "--model"],
+        ["codex", "--remote", "wss://invalid", "resume", "thread"],
+        ["codex", "--remote=wss://invalid", "resume", "thread"],
+        ["codex", "--unknown", "resume", "thread"],
+    ])("retains missing-value, remote and unknown launch refusal: %j", (...command) => {
+        const f = fixture();
+        expect(f.app.prepare(command)).toEqual({ ok: true, command });
+        expect(f.ports.probeDaemonExecutable).not.toHaveBeenCalled();
+        expect(f.ports.initializeDaemon).not.toHaveBeenCalled();
+    });
+    it.each([["-p", "named"], ["--profile", "named"], ["-pnamed"], ["--profile=named"]])("keeps named-profile launch refusal for %j", (...profile) => {
+        const f = fixture(), command = ["codex", ...profile, "resume", "thread"];
+        expect(f.app.prepare(command)).toEqual({ ok: false, command, status: 1, reason: "profile-unsupported" });
+        expect(f.ports.initializeDaemon).not.toHaveBeenCalled();
+    });
     it("does not prepare a start without positive absence", () => {
         const f = fixture(); vi.mocked(f.ports.probeDaemonExecutable).mockReturnValue({ kind: "available-or-inconclusive" });
         expect(f.app.prepare(["codex"])).toEqual({ ok: true, command: ["codex"] });
