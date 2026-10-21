@@ -16,6 +16,11 @@ operation as primary evidence. Cleanup failure after successful destination
 publication must retain truthful completed-publication evidence: it cannot claim
 that publication was prevented, undone or safe to replay automatically.
 
+**Derived:** The shared-cleanup guarantees below implement the preceding
+owned-stage finalization, primary-plus-cleanup failure retention, and truthful
+completed-publication requirements; they introduce no new user requirement.
+Exposing removal failures lets callers uphold those existing guarantees.
+
 Shared native stage cleanup must expose a failed removal to its operation;
 validated discard must not report success after a failed removal. Failed input
 staging attempts its own cleanup once, without re-entering the staging catch.
