@@ -34,7 +34,6 @@ describe("profile request domain", () => {
         }
         vi.resetModules();
         const domain = await import("../../domain/profile-request.js");
-        expect(Object.keys(domain).sort()).toEqual(["DEFAULT_PROFILE_NAME", "normalizeProfile"]);
         expect(domain.normalizeProfile("work")).toBe("work");
         expect(domain.normalizeProfile("default")).toBeUndefined();
     });

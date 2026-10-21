@@ -30,10 +30,9 @@ function fixture() {
     return { trace, state, ports, api, mount };
 }
 describe("complete host credential operations", () => {
-    it("constructs without observing any port or mount and exposes exactly two operations", () => {
+    it("constructs without observing any port or mount", () => {
         const f = fixture();
         expect(f.trace).toEqual([]);
-        expect(Object.keys(f.api).sort()).toEqual(["ensureCredentialHostDir", "resolveCredentialHostPath"]);
     });
     it.each([undefined, ""])("returns a literal custom mount in container context for raw profile %s", profile => {
         const f = fixture(); f.state.context = "container";

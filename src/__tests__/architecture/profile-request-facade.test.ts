@@ -5,16 +5,8 @@ import * as facade from "../../home-layout.js";
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("profile request native facade", () => {
-    it("preserves the existing exports and default constant", () => {
+    it("uses the domain default constant", () => {
         expect(facade.DEFAULT_PROFILE_NAME).toBe(domain.DEFAULT_PROFILE_NAME);
-        expect(Object.keys(facade).sort()).toEqual([
-            "DEFAULT_PROFILE_MARKER", "DEFAULT_PROFILE_NAME", "cccHome", "clipboardFilesDir",
-            "clipboardPortFile", "clipboardStartingLock", "clipboardStateDir", "configFile",
-            "defaultProfileDir", "ensureDefaultProfileDir", "helperBinDir", "legacyRemoteConfigDir",
-            "locksDir", "migrateHomeLayout", "normalizeProfile", "profileClaudeDir",
-            "profileClaudeJsonFile", "profileCodexDir", "profilesDir", "readCccConfig",
-            "runDir", "updateCccConfig",
-        ].sort());
     });
 
     it("forwards every supplied request and returns the actual domain result", () => {

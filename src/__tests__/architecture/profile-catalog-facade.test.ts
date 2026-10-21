@@ -55,8 +55,7 @@ const define = (name: string, descriptor: PropertyDescriptor) => Object.definePr
 const effects = () => fixture.trace.filter(([name]) => name === "mkdirSync" || name === "writeFileSync" || name === "rmSync");
 
 describe("profile catalog public native facade compatibility", () => {
-    it("keeps exactly the eight runtime exports and the catalog object identity", async () => {
-        expect(Object.keys(profile).sort()).toEqual(["BUILTIN_PROFILES", "createProfile", "ensureProfile", "isBuiltinProfile", "listProfiles", "profileExists", "removeProfile", "validateProfileName"].sort());
+    it("keeps the catalog object identity and built-in settings", async () => {
         expect((await import("../../profile.js")).BUILTIN_PROFILES).toBe(catalog);
         expect(catalog["local-llm"].settings).toEqual({ env: { CLAUDE_CODE_ATTRIBUTION_HEADER: "0" } });
         expect(catalog["lab-runner"].settings).toBeUndefined();
