@@ -33,7 +33,7 @@ const nativeProcessEnv = process.env;
 const mockQuestion = vi.fn();
 const mockOn = vi.fn();
 const mockClose = vi.fn();
-const mockCreateInterface = vi.fn(() => ({
+const mockCreateInterface = vi.fn((..._args: unknown[]) => ({
     question: mockQuestion,
     on: mockOn,
     close: mockClose,
