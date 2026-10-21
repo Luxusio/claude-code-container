@@ -1,4 +1,5 @@
-import type { MacosVmLifecycleInput, MacosVmLifecyclePorts, MacosVmProcessHandle, MacosVmDevice, MacosVmLifecycleClaim, MacosVmProviderPlan, MacosVmTransition, MacosVmCommandResult, MacosVmRollback, MacosCloneFailureEvidence, MacosVmNativePlan, MacosVmNativeObservation, MacosVmLifecycleOutcome, MacosNativeCloneFailureEvidence } from '../../ports/lifecycle/macos-vm-lifecycle.mjs';
+import type { MacosVmLifecycleInput, MacosVmLifecyclePorts, MacosVmProcessHandle, MacosVmDevice, MacosVmLifecycleClaim, MacosVmProviderPlan, MacosVmTransition, MacosVmCommandResult, MacosVmRollback, MacosCloneFailureEvidence, MacosVmNativePlan, MacosVmNativeObservation, MacosVmLifecycleOutcome, MacosNativeCloneFailureEvidence, MacosVmHelperReadinessPorts, MacosVmHelperReadinessOutcome } from '../../ports/lifecycle/macos-vm-lifecycle.mjs';
+export function waitForMacosGuestHelperReadiness(ports: MacosVmHelperReadinessPorts, preserveLateFailure?: boolean): Promise<MacosVmHelperReadinessOutcome>;
 export interface MacosVmLifecycle<Result> {
     create(input: MacosVmLifecycleInput, admittedDeviceId?: string): Result | undefined;
     createImage(input: MacosVmLifecycleInput, admittedDeviceId?: string): Result | undefined;

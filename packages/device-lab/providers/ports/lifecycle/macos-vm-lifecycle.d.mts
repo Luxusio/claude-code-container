@@ -60,6 +60,13 @@ export interface MacosVmProvision {
     ok: boolean; error?: string; command?: MacosVmCommandResult; provisioning?: unknown;
     [key: string]: unknown;
 }
+export interface MacosVmHelperReadinessPorts {
+    remainingMs(): number;
+    provision(): MacosVmProvision;
+    retryable(result: MacosVmProvision): boolean;
+    delay(ms: number): void | Promise<void>;
+}
+export type MacosVmHelperReadinessOutcome = {kind:'observed';result:MacosVmProvision}|{kind:'timeout';last?:MacosVmProvision};
 export interface MacosVmSignal { signaled: boolean; exited?: boolean; reason?: string }
 export interface MacosVmRollback { ok: boolean; attempted?: boolean; [key: string]: unknown }
 /** Relative allowance local to one direct start invocation. */

@@ -6,7 +6,7 @@ import { createDeviceObservation } from "../application/device-observation.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { observationMacosHelper } from "../domain/device-observation.mjs";
 import { materializeMacosObservationPlan, observationMacosStartArgs } from "../adapters/macos-observation-plan.mjs";
-import { createMacosVmLifecycleApplication } from "../application/lifecycle/macos-vm-lifecycle.mjs";
+import { createMacosVmLifecycleApplication, waitForMacosGuestHelperReadiness } from "../application/lifecycle/macos-vm-lifecycle.mjs";
 import { macosProviderInstanceReferenced, managedProviderResource, snapshotProviderInstances, restoreRecoveryProviderInstances } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { MACOS_WINDOW_JXA } from "./macos-window-focus.mjs";
 import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
@@ -949,22 +949,19 @@ export async function waitForMacosGuestHelper(device, deadlineAt, {
 }
 
 async function waitForMacosGuestHelperWithinBudget(budget, provision, delay = sleep, preserveLateFailure = false) {
-    let last;
-    while (budget.remainingMs() > 0) {
-        last = provision();
-        const observedRemainingMs = preserveLateFailure || last.ok ? budget.remainingMs() : 0;
-        if (last.ok && observedRemainingMs > 0) return last;
-        if (preserveLateFailure && !last.ok && !(observedRemainingMs > 0)) return last;
-        const command = last.command;
-        const transient = ["macos-helper-scp-failed", "macos-helper-chmod-failed"].includes(last.error)
-            && (command?.error?.code === "ETIMEDOUT"
-                || /connection (?:refused|reset|closed)|connection timed out|operation timed out|no route to host|network is unreachable/i.test(`${command?.stderr || ""}\n${command?.stdout || ""}`));
-        if (!transient && !last.ok) return last;
-        const remainingMs = budget.remainingMs();
-        if (!(remainingMs > 0)) break;
-        await delay(Math.min(500, remainingMs));
-    }
-    return { ok: false, error: "macos-helper-readiness-timeout", provisioning: { ...last?.provisioning, status: "failed", updatedAt: new Date().toISOString() } };
+    const outcome = await waitForMacosGuestHelperReadiness({
+        remainingMs: () => budget.remainingMs(),
+        provision,
+        retryable: (result) => {
+            const command = result.command;
+            return ["macos-helper-scp-failed", "macos-helper-chmod-failed"].includes(result.error)
+                && (command?.error?.code === "ETIMEDOUT"
+                    || /connection (?:refused|reset|closed)|connection timed out|operation timed out|no route to host|network is unreachable/i.test(`${command?.stderr || ""}\n${command?.stdout || ""}`));
+        },
+        delay,
+    }, preserveLateFailure);
+    if (outcome.kind === 'observed') return outcome.result;
+    return { ok: false, error: "macos-helper-readiness-timeout", provisioning: { ...outcome.last?.provisioning, status: "failed", updatedAt: new Date().toISOString() } };
 }
 
 /** @returns {{target:string, discovery:ReturnType<typeof sshDiscovery>, error?:undefined}|{error:ReturnType<typeof textResult>, target?:undefined, discovery?:undefined}} */

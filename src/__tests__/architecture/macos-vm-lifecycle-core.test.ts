@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createMacosVmLifecycleApplication } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
+import { createMacosVmLifecycleApplication, waitForMacosGuestHelperReadiness } from "../../../packages/device-lab/providers/application/lifecycle/macos-vm-lifecycle.mjs";
 import { createMacosImageSnapshots } from "../../../packages/device-lab/providers/application/macos-image-snapshots.mjs";
 import type { MacosImageSnapshotsPorts } from "../../../packages/device-lab/providers/ports/macos-image-snapshots.mjs";
 import type { MacosVmLifecyclePorts, MacosVmDevice, MacosVmCommandResult, MacosVmNativeObservation, MacosVmStartBudget } from "../../../packages/device-lab/providers/ports/lifecycle/macos-vm-lifecycle.mjs";
@@ -37,6 +37,47 @@ function startLeaves() {
     f.ports.timestamp = () => new Date(wall).toISOString();
     return { ...f, advance: (milliseconds: number) => { elapsed += milliseconds; }, shiftWall: (milliseconds: number) => { wall += milliseconds; } };
 }
+
+describe("macOS helper readiness allowance", () => {
+    it("bounds retries and their final delay by the supplied remaining allowance, retaining the last observation", async () => {
+        let remaining = 900;
+        const first = { ok: false, error: "temporary-first" }, last = { ok: false, error: "temporary-last", provisioning: { attempt: 2 } };
+        const attempts: number[] = [], delays: number[] = [];
+        const result = await waitForMacosGuestHelperReadiness({
+            remainingMs: () => remaining,
+            provision() {
+                attempts.push(remaining);
+                if (attempts.length === 1) { remaining -= 200; return first; }
+                if (attempts.length === 2) { remaining -= 75; return last; }
+                throw new Error("Provisioning must not run after the allowance expires");
+            },
+            retryable: () => true,
+            delay(milliseconds) { delays.push(milliseconds); remaining -= milliseconds; },
+        });
+        expect(attempts).toEqual([900, 200]);
+        expect(delays).toEqual([500, 125]);
+        expect(result.kind).toBe("timeout");
+        if (result.kind === "timeout") expect(result.last).toBe(last);
+        expect(remaining).toBe(0);
+    });
+
+    it("returns the timely successful observation unchanged without classifying it as a failure", async () => {
+        let remaining = 850, attempts = 0;
+        const transient = { ok: false, error: "temporary" }, ready = { ok: true, provisioning: { status: "provisioned" } };
+        const classified: unknown[] = [];
+        const result = await waitForMacosGuestHelperReadiness({
+            remainingMs: () => remaining,
+            provision() { attempts++; if (attempts === 1) { remaining -= 100; return transient; } return ready; },
+            retryable(observed) { classified.push(observed); return true; },
+            async delay(milliseconds) { remaining -= milliseconds; },
+        });
+        expect(result.kind).toBe("observed");
+        if (result.kind === "observed") expect(result.result).toBe(ready);
+        expect(attempts).toBe(2);
+        expect(classified).toEqual([transient]);
+        expect(remaining).toBe(250);
+    });
+});
 
 describe("direct macOS captured start allowance", () => {
     it.each([

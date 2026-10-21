@@ -300,6 +300,28 @@ describe("macOS current native facade", () => {
         expect(f.child.unref).toHaveBeenCalledTimes(1);
     });
 
+    it("recovers from native helper connection failure under the original allowance without relaunching the provider", async () => {
+        const f = await startNativeFixture();
+        let copies = 0;
+        commands.timed.mockImplementation((command, args) => {
+            if (command === "/fixture/scp" && ++copies === 1) {
+                f.advance(100);
+                return { status: 255, stdout: "", stderr: "Connection refused" };
+            }
+            return { status: 0, stdout: args[0] === "ip" ? "192.0.2.44" : "helper ready", stderr: "" };
+        });
+        const { pending } = await f.begin();
+        expect(vi.getTimerCount()).toBe(1);
+        f.advance(500); await vi.advanceTimersByTimeAsync(500);
+        expect(payload(await pending).device).toMatchObject({ status: "running", bootReady: true, runtime: { providerPid: 71 } });
+        expect(commands.spawn).toHaveBeenCalledTimes(1);
+        expect(commands.timed.mock.calls.map(([command, , timeout]) => [command, timeout])).toEqual([
+            ["/fixture/tart", 800], ["/fixture/scp", 800], ["/fixture/scp", 200], ["/fixture/ssh", 200],
+        ]);
+        expect(f.child.unref).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
     it("handles an asynchronous native error when an admitted spawn exhausts the settling allowance", async () => {
         const f = await startNativeFixture(), failure = new Error("admitted provider spawn rejected");
         let unhandled: unknown, handled = false;

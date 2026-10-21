@@ -3,14 +3,19 @@ import { waitForMacosGuestHelper } from "@ccc/device-lab/providers/backends/maco
 
 const refused = { ok: false, error: "macos-helper-scp-failed", command: { status: 255, stderr: "ssh: connect to host 10.0.0.2 port 22: Connection refused" } };
 describe("macOS start helper provisioning", () => {
-    it("retries SSH startup under the original deadline without restarting the VM", async () => {
+    it.each([
+        ["SSH connection refusal", refused],
+        ["ETIMEDOUT with empty streams", { ...refused, command: { status: null, stdout: "", stderr: "", error: { code: "ETIMEDOUT" } } }],
+        ["stdout-only connection failure", { ...refused, command: { status: 255, stdout: "Connection reset by peer", stderr: "" } }],
+    ])("retries %s under the original deadline without restarting the VM", async (_diagnostic, failure) => {
         let clock = 700;
-        const provision = vi.fn().mockReturnValueOnce(refused).mockReturnValueOnce({ ok: true, provisioning: { status: "provisioned" } });
+        const ready = { ok: true, provisioning: { status: "provisioned" } };
+        const provision = vi.fn().mockReturnValueOnce(failure).mockReturnValueOnce(ready);
         const device = { id: "mac-test" };
         const observed = await waitForMacosGuestHelper(device, 2000, {
             provision, now: () => clock, delay: async (ms: number) => { clock += ms; },
         });
-        expect(observed.ok).toBe(true);
+        expect(observed).toBe(ready);
         expect(provision.mock.calls).toEqual([[device, { deadlineAt: 2000 }], [device, { deadlineAt: 2000 }]]);
         expect(clock).toBe(1200);
     });
@@ -22,13 +27,24 @@ describe("macOS start helper provisioning", () => {
     });
     it("bounds repeated connection failures by the remaining boot budget", async () => {
         let clock = 700;
-        const provision = vi.fn(() => refused);
+        const native = { ...refused, provisioning: { status: "pending", updatedAt: "2020-01-01T00:00:00.000Z", workspaceDir: "/guest/owned-helper", attempt: 3 } };
+        const provision = vi.fn(() => native), before = Date.now();
         const observed = await waitForMacosGuestHelper({}, 1000, {
             provision, now: () => clock, delay: async (ms: number) => { clock += ms; },
         });
         expect(observed.error).toBe("macos-helper-readiness-timeout");
+        expect(observed.provisioning).toMatchObject({ status: "failed", workspaceDir: "/guest/owned-helper", attempt: 3 });
+        const updatedAt = Date.parse(String(observed.provisioning?.updatedAt));
+        expect(updatedAt).toBeGreaterThanOrEqual(before);
+        expect(updatedAt).toBeLessThanOrEqual(Date.now());
         expect(provision).toHaveBeenCalledTimes(1);
         expect(clock).toBe(1000);
+    });
+    it("does not retry an unrelated failure stage even when its diagnostics look like a transient network failure", async () => {
+        const native = { ...refused, error: "macos-helper-invalid-key" }, provision = vi.fn(() => native), delay = vi.fn();
+        expect(await waitForMacosGuestHelper({}, 1000, { provision, now: () => 0, delay })).toBe(native);
+        expect(provision).toHaveBeenCalledTimes(1);
+        expect(delay).not.toHaveBeenCalled();
     });
     it("does not retry invalid keys or authentication failure", async () => {
         for (const failure of [{ ok: false, error: "invalid-key" }, { ...refused, command: { status: 255, stderr: "Permission denied (publickey,password)." } }]) {

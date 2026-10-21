@@ -15,6 +15,25 @@ function problem(value) { return {kind:'problem',value}; }
 /** @param {import('../../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmNativeObservation} observation @returns {import('../../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmLifecycleOutcome} */
 function failed(observation) { return {kind:'failed',evidence:observation.evidence}; }
 
+/** @param {import('../../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmHelperReadinessPorts} ports
+ * @param {boolean} [preserveLateFailure]
+ * @returns {Promise<import('../../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmHelperReadinessOutcome>} */
+export async function waitForMacosGuestHelperReadiness(ports, preserveLateFailure = false) {
+    let last;
+    while ((0, ports.remainingMs)() > 0) {
+        last = (0, ports.provision)();
+        const observedRemainingMs = preserveLateFailure || last.ok ? (0, ports.remainingMs)() : 0;
+        if (last.ok && observedRemainingMs > 0) return {kind:'observed',result:last};
+        if (preserveLateFailure && !last.ok && !(observedRemainingMs > 0)) return {kind:'observed',result:last};
+        const transient = (0, ports.retryable)(last);
+        if (!transient && !last.ok) return {kind:'observed',result:last};
+        const remainingMs = (0, ports.remainingMs)();
+        if (!(remainingMs > 0)) break;
+        await (0, ports.delay)(Math.min(500, remainingMs));
+    }
+    return {kind:'timeout',...(last ? {last} : {})};
+}
+
 /** Complete direct policy; only trusted native leaves enter this composition.
  * @template {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmProcessHandle} Child
  * @param {import("../../ports/lifecycle/macos-vm-lifecycle.mjs").MacosVmLifecyclePorts<Child>} ports
