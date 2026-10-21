@@ -168,7 +168,7 @@ export const TOOLS = selected.map((operation) => {
     if (schema.properties.latitude) schema.properties.latitude.description = "Latitude in degrees.";
     if (schema.properties.longitude) schema.properties.longitude.description = "Longitude in degrees.";
     if (schema.properties.altitude) schema.properties.altitude.description = "Altitude in meters; backend default when omitted.";
-    if (tool.name === "status") tool.description = "Read device state and read-only automation diagnostics. Running container QEMU devices include live readiness; stopped devices do not run guest probes. Appium is optional and is not started by status.";
+    if (tool.name === "status") tool.description = "Inspect device state and automation diagnostics. Hyper-V status may recover unfinished operations, including VM start, stop, deletion, or snapshot repair. Use devices with view:owned to inspect stored records without recovery. Running container QEMU devices include live readiness; stopped container QEMU devices do not run guest probes. Appium is optional and is not started by status.";
     if (tool.name === "devices") {
         tool.description = "Find owned device IDs (default), available candidates across backends, or backend readiness. backend optionally filters the results. Select view:owned, available, or backends.";
         schema.properties = {

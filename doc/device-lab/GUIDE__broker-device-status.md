@@ -6,6 +6,8 @@ The application owns status preview and command admission, physical-device admis
 
 Ordinary status holds the owner-device scope without acquiring the host mutation lock. Pending Hyper-V recovery can require that host lock and can compensate or publish through existing recovery peers. Status projection itself does not publish owner-device state, but the complete status route is not always read-only. A status envelope is not proof that recovery had no partial effects.
 
+The public MCP description must expose this recovery behavior: unfinished Hyper-V operations can start, stop or delete a VM, or repair a snapshot. Callers that need stored owner records without recovery use `devices` with `view:"owned"`; that inventory does not establish live VM or guest readiness. Neither `detail:true` nor the status result is a read-only guarantee.
+
 Recovery admission is asymmetric. Snapshot-pending status checks the requested expected incarnation against the existing guarded incarnation evidence. Operation-only pending status follows the existing operation reconciliation path without inventing that same guard. Malformed journals, missing metadata, refused reconciliation and retained recovery resources keep their actual errors and partial outcomes. Conditional snapshot repair is not an unconditional recovery callback.
 
 Execution retains the typed Hyper-V deadline and exact VM identity checks before effects. Failed ADB status is tolerated only for an already-stopped emulator. Other provider failures remain truthful failures; physical lease refusal prevents provider execution. Dry-run and missing-command paths keep their current admission and result behavior. Native throws, deadlines and diagnostic bounds remain unchanged, with no catch-all success or extra retry.
