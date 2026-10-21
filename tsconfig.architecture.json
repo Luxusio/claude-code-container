@@ -30,7 +30,6 @@
     "packages/device-lab/src/device-lab/ports/**/*.ts",
     "packages/device-lab/src/device-lab/application/**/*.ts",
     "src/__tests__/architecture/**/*.ts",
-    "src/__tests__/device-lab-application-boundary.test.ts",
     "src/__tests__/device-lab-application-readiness.test.ts"
   ],
   "exclude": []

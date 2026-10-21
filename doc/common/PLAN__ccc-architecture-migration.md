@@ -255,7 +255,7 @@ Existing executable commands (not commands newly implemented by this design):
 
 | Purpose | Command / evidence |
 | --- | --- |
-| Fast readiness baseline | `node node_modules/vitest/vitest.mjs run src/__tests__/device-lab-start-readiness.test.ts src/__tests__/device-lab-application-readiness.test.ts src/__tests__/device-lab-application-boundary.test.ts` |
+| Fast readiness baseline | `node node_modules/vitest/vitest.mjs run src/__tests__/device-lab-start-readiness.test.ts src/__tests__/device-lab-application-readiness.test.ts src/__tests__/architecture/core-boundary.test.ts` |
 | New shared core typing | `node node_modules/typescript/bin/tsc --noEmit --allowJs --checkJs --target es2022 --module nodenext --skipLibCheck packages/device-lab/providers/application/start-readiness.mjs` (expand explicit scope in M01) |
 | Relevant portable regressions | direct Vitest with packet-owned existing filenames after artifact preparation; list exact files in packet handoff |
 | Build/package | `npm run build`, `npm run test:packages`, `npm run build:device-lab-mcp` |

@@ -200,6 +200,10 @@ metadata, implicit clocks/timers/randomness and ambient process access fail.
 These checks enforce source dependencies; they are not a sandbox for untrusted
 code. Concrete effects stay in adapters composed outside the core.
 
+Keep the single whole-production scan in `core-boundary.test.ts`. Do not add
+duplicate per-provider scans or synthetic parser fixtures that test the guard
+itself. Behavior and fault tests exercise the actual applications and adapters.
+
 Do not create empty modules to make a layer appear migrated. Legacy files outside
 the guarded core directories remain legacy. Add each migrated source to the
 explicit typecheck scope and run the guard when extending the boundary. Keep
@@ -215,7 +219,7 @@ fixtures fall back to the user's home, live broker, VMs or credentials.
 ```sh
 npm run build
 npm run typecheck:architecture
-node node_modules/vitest/vitest.mjs run src/__tests__/architecture src/__tests__/device-lab-application-readiness.test.ts src/__tests__/device-lab-application-boundary.test.ts src/__tests__/device-lab-start-readiness.test.ts
+node node_modules/vitest/vitest.mjs run src/__tests__/architecture src/__tests__/device-lab-application-readiness.test.ts src/__tests__/device-lab-start-readiness.test.ts
 ```
 
 The source/embedded readiness parity test requires fresh assembled artifacts.
