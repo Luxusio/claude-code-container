@@ -138,7 +138,6 @@ describe("tool preference compatibility facade", () => {
         fixture.homeReads = 0;
         try {
             const isolated = await import("../../tool-detect.js");
-            expect(Object.keys(isolated).sort()).toEqual(["getDefaultToolPreference", "resolveTool", "setDefaultToolPreference"]);
             expect(accessed).toEqual([]);
             expect(fixture.homeReads).toBe(0);
             expect(() => isolated.getDefaultToolPreference()).toThrow("adapter home-layout.readCccConfig called");

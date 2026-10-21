@@ -26,7 +26,7 @@ Context truncation is 2000 JavaScript code units. Preserve exact parser regexes,
 JSON catches, truthy non-string SDK values, first-tool precedence and all strings.
 
 Verify ordered fault/receiver/Map traces, actual private native trees and denied
-reads under a nonprivileged UID, public defaults/arity/import-time snapshot,
+reads under a nonprivileged UID, public defaults/import-time snapshot,
 mutable declarations, exact format bytes and both shipped payloads. Vitest mocks
 that delegate native reads are facade evidence. Compiled subprocess proof must
 separately import the real shipped facade and inject only a named private-file

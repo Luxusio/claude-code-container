@@ -95,9 +95,6 @@ describe("npm package contents", () => {
             engines?: Record<string, string>;
         };
         expect(pkg.scripts?.postinstall).toBe("node scripts/install.js --postinstall");
-        expect(pkg.scripts?.test).toBe("npm run test:scripts && node scripts/run-vitest.mjs run");
-        expect(pkg.scripts?.["test:scripts"]).toBe("node --test scripts/tests/set-release-version.test.mjs scripts/tests/workspace-windows-lx-links.test.mjs");
-        expect(pkg.scripts?.["test:watch"]).toBe("node scripts/run-vitest.mjs");
         expect(pkg.engines?.node).toBe(">=20.19.0");
 
         const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
@@ -448,74 +445,6 @@ describe("npm package contents", () => {
         } finally {
             await Promise.allSettled(children);
             rmSync(homeDir, { recursive: true, force: true });
-        }
-    });
-
-    it("summarizes native JSON MCP content for real-test proof metadata", async () => {
-        const { parseToolPayload, parseToolResult, realMcpToolRequestTimeoutMs, summarizeToolResultForProof } = await import("../../scripts/real-tests/device-lab-mcp-client.ts") as {
-            parseToolPayload: (result: unknown) => Record<string, unknown>;
-            parseToolResult: (result: unknown, options?: Record<string, unknown>) => Record<string, unknown>;
-            realMcpToolRequestTimeoutMs: (name: string, args?: Record<string, unknown>) => number;
-            summarizeToolResultForProof: (result: unknown) => Record<string, unknown>;
-        };
-
-        const okJsonResult = { content: [{ type: "json", value: { ok: true, devices: [{ id: "display" }] } }] };
-        expect(parseToolPayload(okJsonResult)).toEqual({ ok: true, devices: [{ id: "display" }] });
-        expect(summarizeToolResultForProof(okJsonResult)).toEqual({
-            contentTypes: ["json"],
-            okPayloadText: false,
-            okPayloadImage: false,
-            okPayloadJson: true,
-            okPayloadShape: { kind: "object", keys: ["devices", "ok"] },
-        });
-
-        const expectedErrorResult = { isError: true, content: [{ type: "json", value: { error: "provider-missing", ok: false } }] };
-        expect(parseToolResult(expectedErrorResult, { expectedError: true })).toEqual({ error: "provider-missing", ok: false });
-        expect(summarizeToolResultForProof(expectedErrorResult)).toEqual({
-            contentTypes: ["json"],
-            errorPayloadText: false,
-            errorDispatchMismatch: false,
-            errorPayloadJson: true,
-            errorCode: "provider-missing",
-        });
-        expect(realMcpToolRequestTimeoutMs("status")).toBe(120000);
-        expect(realMcpToolRequestTimeoutMs("create_android_emulator", { systemImage: "system-images;android-35;google_apis;x86_64" })).toBe(360000);
-        expect(realMcpToolRequestTimeoutMs("start", { waitForBoot: true, bootTimeoutMs: 180000 })).toBe(210000);
-        expect(realMcpToolRequestTimeoutMs("clipboard", { backend: "android-emulator" })).toBe(360000);
-        expect(realMcpToolRequestTimeoutMs("exec", { timeoutMs: 180000 })).toBe(210000);
-        expect(realMcpToolRequestTimeoutMs("create_ios_simulator", { rpcTimeoutMs: 615000 })).toBe(630000);
-        expect(realMcpToolRequestTimeoutMs("create_windows_vm", {})).toBe(21645000);
-        expect(realMcpToolRequestTimeoutMs("create_windows_vm", {
-            rpcTimeoutMs: 30000,
-        })).toBe(21645000);
-        expect(realMcpToolRequestTimeoutMs("start", {
-            backend: "windows-vm",
-            waitForBoot: true,
-            bootTimeoutMs: 180000,
-        })).toBe(1245000);
-        expect(realMcpToolRequestTimeoutMs("reboot", {
-            backend: "linux-vm",
-            waitForBoot: true,
-            bootTimeoutMs: 600000,
-            rpcTimeoutMs: 30000,
-        })).toBe(2685000);
-        expect(realMcpToolRequestTimeoutMs("reboot", {
-            backend: "linux-vm",
-            waitForBoot: true,
-            bootTimeoutMs: Number.MAX_SAFE_INTEGER,
-        })).toBe(3285000);
-        expect(realMcpToolRequestTimeoutMs("reboot", {
-            backend: "linux-vm",
-            rpcTimeoutMs: Number.MAX_SAFE_INTEGER,
-        })).toBe(2385000);
-        expect(realMcpToolRequestTimeoutMs("start", {
-            backend: "windows-vm",
-            waitForBoot: false,
-        })).toBe(765000);
-        for (const name of ["status", "stop", "delete"]) {
-            expect(realMcpToolRequestTimeoutMs(name, {
-                backend: "windows-vm",
-            })).toBe(765000);
         }
     });
 

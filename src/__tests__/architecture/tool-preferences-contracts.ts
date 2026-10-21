@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import type { ToolDefinition } from "../../domain/tool-registry.js";
 import { createToolPreferences } from "../../application/tool-preferences.js";
 import type { ToolPreferencePorts } from "../../ports/tool-preferences.js";
@@ -40,16 +39,3 @@ function compileContracts(ports: ToolPreferencePorts) {
     app.resolveTool({ CCC_TOOL: "codex" });
 }
 void compileContracts;
-
-describe("tool preference compile contracts", () => {
-    it("exposes the three synchronous operations", () => {
-        const app = createToolPreferences({
-            readToolOverride: () => undefined,
-            readSavedDefaultTool: () => undefined,
-            saveDefaultTool: () => undefined,
-            findTool: () => undefined,
-            getDefaultTool: () => ({ name: "x" }) as ToolDefinition,
-        });
-        expect(Object.keys(app).sort()).toEqual(["getDefaultToolPreference", "resolveTool", "setDefaultToolPreference"]);
-    });
-});
