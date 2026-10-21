@@ -1010,9 +1010,18 @@ export function ensureTools(containerName: string, activeTool: ToolDefinition): 
         createRequestedToolSetup({
             ensureClaudeLauncher: target => { ensureClaudeInContainer(target); return undefined; },
             ensureNpmTool: (target, tool) => { ensureNpmTool(target, tool); return undefined; },
-            probeLauncher: (target, path) => runtimeSpawnSync(["exec", target, "test", "-x", path],
-                { stdio: "ignore", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
-            ),
+            ensureLauncherReady: (target, path, originalTool) => {
+                const ready = runtimeSpawnSync(["exec", target, "test", "-x", path],
+                    { stdio: "ignore", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
+                );
+                if ((ready.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT") {
+                    throw new Error(`Requested tool ${originalTool.name} readiness check timed out`);
+                }
+                if (ready.error || ready.status !== 0) {
+                    throw new Error(`Requested tool ${originalTool.name} is unavailable after setup`);
+                }
+                return undefined;
+            },
             ensureCodexSandbox: target => { ensureCodexBubblewrap(target); return undefined; },
         }).ensure(containerName, activeTool);
         if (activeTool.name === "codex" && process.platform === "win32" && getRuntimeInfo().dockerDesktop) {

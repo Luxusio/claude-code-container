@@ -3,7 +3,7 @@ import type { ToolDefinition } from "../domain/tool-registry.js";
 import type { RequestedToolSetupPorts } from "../ports/requested-tool-setup.js";
 
 export function createRequestedToolSetup(ports: RequestedToolSetupPorts) {
-    for (const name of ["ensureClaudeLauncher", "ensureNpmTool", "probeLauncher", "ensureCodexSandbox"] as const) {
+    for (const name of ["ensureClaudeLauncher", "ensureNpmTool", "ensureLauncherReady", "ensureCodexSandbox"] as const) {
         if (typeof ports?.[name] !== "function") {
             throw new TypeError(`Requested tool setup requires a callable ${name} port.`);
         }
@@ -21,13 +21,7 @@ export function createRequestedToolSetup(ports: RequestedToolSetupPorts) {
         const executablePath = activeTool.name === "claude"
             ? CLAUDE_BIN_PATH
             : `/home/ccc/.local/bin/${configuredBinary}`;
-        const ready = ports.probeLauncher(target, executablePath);
-        if ((ready.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT") {
-            throw new Error(`Requested tool ${activeTool.name} readiness check timed out`);
-        }
-        if (ready.error || ready.status !== 0) {
-            throw new Error(`Requested tool ${activeTool.name} is unavailable after setup`);
-        }
+        ports.ensureLauncherReady(target, executablePath, activeTool);
         if (activeTool.name === "codex") ports.ensureCodexSandbox(target);
     }
 

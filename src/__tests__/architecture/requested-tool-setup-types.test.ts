@@ -8,27 +8,30 @@ import type { RequestedToolSetupPorts } from "../../ports/requested-tool-setup.j
 function compileContracts(ports: RequestedToolSetupPorts, tool: ToolDefinition, facade: typeof ensureTools) {
     const app = createRequestedToolSetup(ports);
     const result: undefined = app.ensure("target", tool);
+    const ready: undefined = ports.ensureLauncherReady("target", "/launcher", tool);
     const publicResult: void = facade("target", tool);
-    void [result, publicResult];
+    void [result, ready, publicResult];
 
     // @ts-expect-error The constructor requires its native capabilities.
     createRequestedToolSetup();
     // @ts-expect-error Claude installation is required.
-    createRequestedToolSetup({ ensureNpmTool: ports.ensureNpmTool, probeLauncher: ports.probeLauncher, ensureCodexSandbox: ports.ensureCodexSandbox });
+    createRequestedToolSetup({ ensureNpmTool: ports.ensureNpmTool, ensureLauncherReady: ports.ensureLauncherReady, ensureCodexSandbox: ports.ensureCodexSandbox });
     // @ts-expect-error npm installation is required.
-    createRequestedToolSetup({ ensureClaudeLauncher: ports.ensureClaudeLauncher, probeLauncher: ports.probeLauncher, ensureCodexSandbox: ports.ensureCodexSandbox });
-    // @ts-expect-error Readiness observation is required.
+    createRequestedToolSetup({ ensureClaudeLauncher: ports.ensureClaudeLauncher, ensureLauncherReady: ports.ensureLauncherReady, ensureCodexSandbox: ports.ensureCodexSandbox });
+    // @ts-expect-error Launcher readiness is required.
     createRequestedToolSetup({ ensureClaudeLauncher: ports.ensureClaudeLauncher, ensureNpmTool: ports.ensureNpmTool, ensureCodexSandbox: ports.ensureCodexSandbox });
     // @ts-expect-error Codex sandbox setup is required.
-    createRequestedToolSetup({ ensureClaudeLauncher: ports.ensureClaudeLauncher, ensureNpmTool: ports.ensureNpmTool, probeLauncher: ports.probeLauncher });
+    createRequestedToolSetup({ ensureClaudeLauncher: ports.ensureClaudeLauncher, ensureNpmTool: ports.ensureNpmTool, ensureLauncherReady: ports.ensureLauncherReady });
     // @ts-expect-error Claude installation must settle before readiness is checked.
     createRequestedToolSetup({ ...ports, ensureClaudeLauncher: async () => undefined });
     // @ts-expect-error npm installation must settle before readiness is checked.
     createRequestedToolSetup({ ...ports, ensureNpmTool: async () => undefined });
     // @ts-expect-error Sandbox setup must settle before synchronous completion.
     createRequestedToolSetup({ ...ports, ensureCodexSandbox: async () => undefined });
-    // @ts-expect-error Launcher readiness must be observed synchronously.
-    createRequestedToolSetup({ ...ports, probeLauncher: async () => ({ status: 0 }) });
+    // @ts-expect-error Launcher readiness must settle synchronously.
+    createRequestedToolSetup({ ...ports, ensureLauncherReady: async () => undefined });
+    // @ts-expect-error Readiness is a completed effect, not raw native process evidence.
+    createRequestedToolSetup({ ...ports, ensureLauncherReady: () => ({ status: 0 }) });
 }
 void compileContracts;
 
@@ -37,7 +40,7 @@ describe("requested tool setup compile contracts", () => {
         const app = createRequestedToolSetup({
             ensureClaudeLauncher: () => undefined,
             ensureNpmTool: () => undefined,
-            probeLauncher: () => ({ status: 0 }),
+            ensureLauncherReady: () => undefined,
             ensureCodexSandbox: () => undefined,
         });
         expect(app.ensure("target", createDefaultToolCatalog()[0]!)).toBeUndefined();

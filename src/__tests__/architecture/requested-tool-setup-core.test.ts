@@ -12,43 +12,56 @@ function ports() {
     return {
         ensureClaudeLauncher: vi.fn<RequestedToolSetupPorts["ensureClaudeLauncher"]>(() => undefined),
         ensureNpmTool: vi.fn<RequestedToolSetupPorts["ensureNpmTool"]>(() => undefined),
-        probeLauncher: vi.fn<RequestedToolSetupPorts["probeLauncher"]>(() => ({ status: 0 })),
+        ensureLauncherReady: vi.fn<RequestedToolSetupPorts["ensureLauncherReady"]>(() => undefined),
         ensureCodexSandbox: vi.fn<RequestedToolSetupPorts["ensureCodexSandbox"]>(() => undefined),
     };
 }
 
 describe("requested tool setup", () => {
     it("prepares Claude's launcher and verifies its installed path", () => {
-        const bindings = ports();
-        expect(createRequestedToolSetup(bindings).ensure("target", tool("claude"))).toBeUndefined();
-        expect(bindings.ensureClaudeLauncher).toHaveBeenCalledWith("target");
-        expect(bindings.probeLauncher).toHaveBeenCalledWith("target", CLAUDE_BIN_PATH);
+        const bindings = ports(), claude = tool("claude");
+        claude.binary = "custom-claude";
+        bindings.ensureLauncherReady.mockImplementation(() => {
+            expect(bindings.ensureClaudeLauncher).toHaveBeenCalledExactlyOnceWith("target");
+            return undefined;
+        });
+        expect(createRequestedToolSetup(bindings).ensure("target", claude)).toBeUndefined();
+        expect(bindings.ensureLauncherReady).toHaveBeenCalledExactlyOnceWith("target", CLAUDE_BIN_PATH, claude);
+        expect(bindings.ensureLauncherReady.mock.calls[0][2]).toBe(claude);
         expect(bindings.ensureNpmTool).not.toHaveBeenCalled();
         expect(bindings.ensureCodexSandbox).not.toHaveBeenCalled();
     });
 
     it("prepares Codex, verifies readiness and establishes its sandbox", () => {
         const bindings = ports(), codex = tool("codex");
-        bindings.probeLauncher.mockImplementation(() => {
-            expect(bindings.ensureNpmTool).toHaveBeenCalledWith("target", codex);
-            return { status: 0 };
-        });
-        bindings.ensureCodexSandbox.mockImplementation(() => {
-            expect(bindings.probeLauncher).toHaveBeenCalledWith("target", "/home/ccc/.local/bin/codex");
+        bindings.ensureLauncherReady.mockImplementation(() => {
+            expect(bindings.ensureNpmTool).toHaveBeenCalledExactlyOnceWith("target", codex);
+            expect(bindings.ensureNpmTool.mock.calls[0][1]).toBe(codex);
+            expect(bindings.ensureCodexSandbox).not.toHaveBeenCalled();
             return undefined;
         });
-        createRequestedToolSetup(bindings).ensure("target", codex);
-        expect(bindings.ensureCodexSandbox).toHaveBeenCalledWith("target");
+        bindings.ensureCodexSandbox.mockImplementation(() => {
+            expect(bindings.ensureLauncherReady).toHaveBeenCalledExactlyOnceWith("target", "/home/ccc/.local/bin/codex", codex);
+            expect(bindings.ensureLauncherReady.mock.calls[0][2]).toBe(codex);
+            return undefined;
+        });
+        expect(createRequestedToolSetup(bindings).ensure("target", codex)).toBeUndefined();
+        expect(bindings.ensureCodexSandbox).toHaveBeenCalledExactlyOnceWith("target");
     });
 
-    it.each([
-        { observation: { status: 1 }, message: "Requested tool codex is unavailable after setup" },
-        { observation: { status: 124 }, message: "Requested tool codex is unavailable after setup" },
-        { observation: { status: null, error: { code: "ETIMEDOUT" } }, message: "Requested tool codex readiness check timed out" },
-        { observation: { status: null, error: { code: "EIO" } }, message: "Requested tool codex is unavailable after setup" },
-    ])("blocks sandbox setup after failed readiness: $message", ({ observation, message }) => {
-        const bindings = ports(); bindings.probeLauncher.mockReturnValue(observation);
-        expect(() => createRequestedToolSetup(bindings).ensure("target", tool("codex"))).toThrow(message);
+    it.each(["custom-codex", ""])("uses configured binary %j with the tool-name fallback", binary => {
+        const bindings = ports(), codex = tool("codex"); codex.binary = binary;
+        createRequestedToolSetup(bindings).ensure("target", codex);
+        expect(bindings.ensureLauncherReady).toHaveBeenCalledExactlyOnceWith("target", `/home/ccc/.local/bin/${binary || "codex"}`, codex);
+    });
+
+    it.each([new Error("readiness failed"), { failure: "opaque readiness value" }])("propagates readiness failure unchanged and blocks the sandbox (%j)", failure => {
+        const bindings = ports();
+        bindings.ensureLauncherReady.mockImplementation(() => { throw failure; });
+        let caught: unknown;
+        try { createRequestedToolSetup(bindings).ensure("target", tool("codex")); } catch (error) { caught = error; }
+        expect(caught).toBe(failure);
+        expect(bindings.ensureLauncherReady).toHaveBeenCalledOnce();
         expect(bindings.ensureCodexSandbox).not.toHaveBeenCalled();
     });
 
@@ -57,14 +70,20 @@ describe("requested tool setup", () => {
         const fail = () => { throw failure; };
         if (name === "claude") bindings.ensureClaudeLauncher.mockImplementation(fail);
         else bindings.ensureNpmTool.mockImplementation(fail);
-        expect(() => createRequestedToolSetup(bindings).ensure("target", tool(name))).toThrow(failure);
-        expect(bindings.probeLauncher).not.toHaveBeenCalled();
+        let caught: unknown;
+        try { createRequestedToolSetup(bindings).ensure("target", tool(name)); } catch (error) { caught = error; }
+        expect(caught).toBe(failure);
+        expect(bindings.ensureLauncherReady).not.toHaveBeenCalled();
         expect(bindings.ensureCodexSandbox).not.toHaveBeenCalled();
     });
 
-    it("propagates a native probe exception without establishing the sandbox", () => {
-        const bindings = ports(); bindings.probeLauncher.mockImplementation(() => { throw new Error("probe failed"); });
-        expect(() => createRequestedToolSetup(bindings).ensure("target", tool("codex"))).toThrow("probe failed");
-        expect(bindings.ensureCodexSandbox).not.toHaveBeenCalled();
+    it("propagates sandbox failure unchanged after one successful readiness effect", () => {
+        const bindings = ports(), failure = new Error("sandbox failed");
+        bindings.ensureCodexSandbox.mockImplementation(() => { throw failure; });
+        let caught: unknown;
+        try { createRequestedToolSetup(bindings).ensure("target", tool("codex")); } catch (error) { caught = error; }
+        expect(caught).toBe(failure);
+        expect(bindings.ensureLauncherReady).toHaveBeenCalledOnce();
+        expect(bindings.ensureCodexSandbox).toHaveBeenCalledOnce();
     });
 });
