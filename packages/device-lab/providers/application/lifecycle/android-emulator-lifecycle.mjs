@@ -1,5 +1,25 @@
 import { androidLifecycleRefused, androidLifecycleConflict } from "../../domain/lifecycle/android-emulator-lifecycle.mjs";
 
+/** @param {boolean} adbAvailable
+ * @param {number} timeoutMs
+ * @param {import('../../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorBootConfirmationPorts} ports
+ * @returns {Promise<import('../../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorBoot>} */
+export async function confirmAndroidEmulatorBoot(adbAvailable, timeoutMs, ports) {
+    if (!adbAvailable) return { ready: false, skipped: true, reason: "adb missing" };
+    const deadline = ports.now() + Math.max(0, timeoutMs);
+    while (ports.now() <= deadline) {
+        const processExit = ports.processExit();
+        if (processExit) return { ready: false, skipped: false, reason: "emulator-process-exited", ...processExit };
+        const ready = ports.probeBootCompleted();
+        await ports.sleep(0);
+        const processExitAfterPoll = ports.processExit();
+        if (processExitAfterPoll) return { ready: false, skipped: false, reason: "emulator-process-exited", ...processExitAfterPoll };
+        if (ready) return { ready: true };
+        await ports.sleep(250);
+    }
+    return { ready: false, skipped: false, reason: "timeout" };
+}
+
 /** Compose the direct variant without capturing native getters before their phase.
  * @template {import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorProcessHandle} [Child=import("../../ports/lifecycle/android-emulator-lifecycle.mjs").AndroidEmulatorProcessHandle]
  * @param {import('../../ports/lifecycle/android-emulator-lifecycle.mjs').AndroidEmulatorLifecyclePorts<Child>} ports

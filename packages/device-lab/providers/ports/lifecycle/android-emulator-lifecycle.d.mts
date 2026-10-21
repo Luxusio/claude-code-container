@@ -114,6 +114,13 @@ export interface AndroidEmulatorBoot {
     [key: string]: unknown;
 }
 
+export interface AndroidEmulatorBootConfirmationPorts {
+    now(): number;
+    processExit(): { exitCode: number | null; signal: string | null } | null;
+    probeBootCompleted(): boolean;
+    sleep(ms: number): Promise<void>;
+}
+
 /** Every required step is looked up at its operation phase; no workflow port. */
 export interface AndroidEmulatorLifecyclePorts<Child extends AndroidEmulatorProcessHandle = AndroidEmulatorProcessHandle> {
     provisionAndroidAvd(discovery: AndroidEmulatorDiscovery, input: { avdName: string; systemImage: string; deviceProfile?: string }): AndroidEmulatorNativeObservation;

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createAndroidPreviewPortAllocation } from "../../../packages/device-lab/src/device-lab/application/broker-observation-command-plan.js";
 import type { LifecyclePreviewRequest } from "../../../packages/device-lab/src/device-lab/domain/broker-observation-command-plan.js";
 import type { AndroidPreviewPortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/broker-observation.js";
-import { createAndroidEmulatorLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/android-emulator-lifecycle.mjs";
-import type { AndroidEmulatorDevice, AndroidEmulatorStopObservation } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
+import { confirmAndroidEmulatorBoot, createAndroidEmulatorLifecycle } from "../../../packages/device-lab/providers/application/lifecycle/android-emulator-lifecycle.mjs";
+import type { AndroidEmulatorBootConfirmationPorts, AndroidEmulatorDevice, AndroidEmulatorStopObservation } from "../../../packages/device-lab/providers/ports/lifecycle/android-emulator-lifecycle.mjs";
 import { brokerLifecyclePorts, deferredAndroidEffect, directLifecyclePorts, type BrokerAndroidTestPorts } from "../helpers/android-emulator-lifecycle-fixture.js";
 import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import type { BrokerAndroidCreatePortAllocationPorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/android-emulator-lifecycle.js";
@@ -432,6 +432,82 @@ describe("authenticated Android launch recovery responsibility", () => {
 });
 
 const stoppedDevice = (): AndroidEmulatorDevice => ({ id: "android-unit", backend: "android-emulator", avdName: "ccc-owner-unit", serial: "emulator-5630", port: 5630, status: "stopped", extra: { raw: "retained" } });
+
+function bootConfirmationObservations() {
+    let time = 0, probes = 0;
+    let exit: { exitCode: number | null; signal: string | null } | null = null;
+    const sleeps: number[] = [];
+    const ports: AndroidEmulatorBootConfirmationPorts = {
+        now: () => time,
+        processExit: () => exit,
+        probeBootCompleted: () => { probes++; return false; },
+        sleep: async ms => { sleeps.push(ms); time += ms; },
+    };
+    return { ports, sleeps, probes: () => probes, time: () => time,
+        exit: (observed: NonNullable<ReturnType<AndroidEmulatorBootConfirmationPorts["processExit"]>>) => { exit = observed; } };
+}
+
+describe("direct Android boot confirmation", () => {
+    it("skips missing ADB without consulting the clock, process, probe or timer", async () => {
+        const unexpected = () => { throw Error("Missing ADB must not observe or wait"); };
+        expect(await confirmAndroidEmulatorBoot(false, 1000, {
+            now: unexpected, processExit: unexpected, probeBootCompleted: unexpected, sleep: unexpected,
+        })).toEqual({ ready: false, skipped: true, reason: "adb missing" });
+    });
+
+    it("paces an incomplete boot before retrying to readiness", async () => {
+        const f = bootConfirmationObservations(), observe = f.ports.probeBootCompleted;
+        f.ports.probeBootCompleted = () => { observe(); return f.probes() === 2; };
+        expect(await confirmAndroidEmulatorBoot(true, 1000, f.ports)).toEqual({ ready: true });
+        expect(f.probes()).toBe(2); expect(f.sleeps).toEqual([0, 250, 0]); expect(f.time()).toBe(250);
+    });
+
+    it("reports an already exited emulator before any ADB probe", async () => {
+        const f = bootConfirmationObservations(); f.exit({ exitCode: 17, signal: null });
+        expect(await confirmAndroidEmulatorBoot(true, 1000, f.ports)).toEqual({
+            ready: false, skipped: false, reason: "emulator-process-exited", exitCode: 17, signal: null,
+        });
+        expect(f.probes()).toBe(0); expect(f.sleeps).toEqual([]);
+    });
+
+    it("refuses readiness when the emulator exits during the boot probe", async () => {
+        const f = bootConfirmationObservations();
+        f.ports.probeBootCompleted = () => { f.exit({ exitCode: null, signal: "SIGTERM" }); return true; };
+        expect(await confirmAndroidEmulatorBoot(true, 1000, f.ports)).toEqual({
+            ready: false, skipped: false, reason: "emulator-process-exited", exitCode: null, signal: "SIGTERM",
+        });
+        expect(f.sleeps).toEqual([0]);
+    });
+
+    it("awaits the yielded native observation and gives its process exit precedence over readiness", async () => {
+        const f = bootConfirmationObservations(), yielded = deferredAndroidEffect<void>(), resume = deferredAndroidEffect<void>();
+        f.ports.probeBootCompleted = () => true;
+        f.ports.sleep = ms => { expect(ms).toBe(0); yielded.resolve(); return resume.promise; };
+        let settled = false;
+        const pending = confirmAndroidEmulatorBoot(true, 1000, f.ports).then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await yielded.promise; expect(settled).toBe(false);
+            f.exit({ exitCode: 0, signal: null }); resume.resolve();
+            expect(await pending).toEqual({
+                ready: false, skipped: false, reason: "emulator-process-exited", exitCode: 0, signal: null,
+            });
+        } finally { resume.resolve(); }
+    });
+
+    it("allows a probe at the exact deadline but does not retry after pacing crosses it", async () => {
+        const f = bootConfirmationObservations();
+        expect(await confirmAndroidEmulatorBoot(true, 250, f.ports)).toEqual({ ready: false, skipped: false, reason: "timeout" });
+        expect(f.probes()).toBe(2); expect(f.sleeps).toEqual([0, 250, 0, 250]); expect(f.time()).toBe(500);
+    });
+
+    it("preserves the immediate readiness observation for a zero boot budget", async () => {
+        const f = bootConfirmationObservations(); f.ports.probeBootCompleted = () => true;
+        expect(await confirmAndroidEmulatorBoot(true, 0, f.ports)).toEqual({ ready: true });
+        expect(f.sleeps).toEqual([0]); expect(f.time()).toBe(0);
+    });
+});
+
 describe("canonical direct Android emulator lifecycle policy", () => {
     it("allocation refusal precedes native discovery/read/provision", async () => {
         const f = directLifecyclePorts();

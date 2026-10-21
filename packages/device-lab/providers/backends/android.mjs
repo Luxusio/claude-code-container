@@ -10,12 +10,13 @@ import { createDeviceObservation } from "../application/device-observation.mjs";
 import { androidHostAvds } from "../adapters/mobile-inventory.mjs";
 import { readPhysicalLeases as observationPhysicalLeases } from "../state/physical-lease-store.mjs";
 import { publicObservationAndroidDevice } from "../domain/device-observation.mjs";
-import { createAndroidEmulatorLifecycle } from "../application/lifecycle/android-emulator-lifecycle.mjs";
+import { confirmAndroidEmulatorBoot, createAndroidEmulatorLifecycle } from "../application/lifecycle/android-emulator-lifecycle.mjs";
 import { createAndroidDeviceAccess } from "../application/android-device-access.mjs";
 import { createWaitBudget } from "../wait-budget.mjs";
 import { androidCreationChoices } from "./android-sdk-inventory.mjs";
 import { spawn } from "child_process";
 import { once } from "node:events";
+import { performance } from "node:perf_hooks";
 import { createHash, randomUUID } from "crypto";
 import { closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, unlinkSync, writeSync } from "fs";
 import { homedir } from "os";
@@ -619,30 +620,25 @@ function isSafeDeviceProfile(deviceProfile) {
 function androidEmulatorProcessExit(child) {
     if (!child || (child.exitCode === null && child.signalCode === null)) return null;
     return {
-        reason: "emulator-process-exited",
         exitCode: child.exitCode,
         signal: child.signalCode,
     };
 }
 
 async function waitForAndroidBoot(discovery, device, timeoutMs, child = null) {
-    if (!discovery.adb) return { ready: false, skipped: true, reason: "adb missing" };
-    const serial = androidSerial(device);
-    const deadline = Date.now() + Math.max(0, timeoutMs);
-    while (Date.now() <= deadline) {
-        const processExit = androidEmulatorProcessExit(child);
-        if (processExit) return { ready: false, skipped: false, ...processExit };
-        const adbArgs = serial
-            ? ["-s", serial, "shell", "getprop", "sys.boot_completed"]
-            : ["shell", "getprop", "sys.boot_completed"];
-        const r = run(discovery.adb, adbArgs);
-        await sleep(0);
-        const processExitAfterPoll = androidEmulatorProcessExit(child);
-        if (processExitAfterPoll) return { ready: false, skipped: false, ...processExitAfterPoll };
-        if (r.status === 0 && r.stdout.trim() === "1") return { ready: true };
-        await sleep(250);
-    }
-    return { ready: false, skipped: false, reason: "timeout" };
+    const serial = discovery.adb ? androidSerial(device) : null;
+    return confirmAndroidEmulatorBoot(Boolean(discovery.adb), timeoutMs, {
+        now: () => performance.now(),
+        processExit: () => androidEmulatorProcessExit(child),
+        probeBootCompleted() {
+            const adbArgs = serial
+                ? ["-s", serial, "shell", "getprop", "sys.boot_completed"]
+                : ["shell", "getprop", "sys.boot_completed"];
+            const r = run(discovery.adb, adbArgs);
+            return r.status === 0 && r.stdout.trim() === "1";
+        },
+        sleep,
+    });
 }
 
 async function sleep(ms) {
