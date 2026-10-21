@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDeviceBrokerServer, type DeviceBrokerOptions } from "../../../packages/device-lab/src/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
 import { backendRoot, close, listen, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "../helpers/host-broker-test-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-environment.js";
+import { withSharedMutationLockAsync } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
 
 vi.mock("os", async original => ({ ...await original<typeof import("node:os")>(), totalmem: () => 64 * 1024 ** 3, freemem: () => 48 * 1024 ** 3 }));
 let home: string, restore: () => void, owner: string;
@@ -22,8 +24,8 @@ afterEach(async () => {
 const stateFile = () => join(backendRoot(owner, "macos"), "devices.json");
 const devices = (): Array<Record<string, unknown>> => JSON.parse(readFileSync(stateFile(), "utf8")).devices;
 const device = () => ({ id: "unit", name: "Unit", backend: "macos-vm", provider: "tart", providerInstance: "owned-unit", status: "stopped", createdAt: "2026-10-10T00:00:00.000Z", recording: null });
-async function start(runner: NonNullable<DeviceBrokerOptions["commandRunner"]>) {
-    server = createDeviceBrokerServer({ cwd: home, host: "127.0.0.1", port: 0, platform: "darwin", providerPaths: { tart: "/fixture/tart", vz: "/fixture/vz", utmctl: "/fixture/utmctl" }, commandRunner: runner });
+async function start(runner?: NonNullable<DeviceBrokerOptions["commandRunner"]>, options: Partial<DeviceBrokerOptions> = {}) {
+    server = createDeviceBrokerServer({ cwd: home, host: "127.0.0.1", port: 0, platform: "darwin", providerPaths: { tart: "/fixture/tart", vz: "/fixture/vz", utmctl: "/fixture/utmctl" }, commandRunner: runner, ...options });
     return listen(server);
 }
 async function invoke(base: string, command: string, extra: Record<string, unknown> = {}, authenticated = true) {
@@ -40,6 +42,99 @@ async function cleanup(base: string) {
 }
 const successfulRunner = (): NonNullable<DeviceBrokerOptions["commandRunner"]> => command => ({ ...command, status: 0, stdout: "", stderr: "" });
 describe("authenticated macOS broker lifecycle", () => {
+    it("regression: Tart image clone receives a provisioning budget through the authenticated dispatcher", async () => {
+        const runner = vi.fn(successfulRunner()), base = await start(runner);
+        const created = await invoke(base, "device_create", { name: "Cold image clone", provider: "tart", image: "base-image" });
+        expect(created.status).toBe(200);
+        expect(runner).toHaveBeenCalledOnce();
+        expect(runner.mock.calls[0][0]).toMatchObject({ provider: "tart", args: ["clone", "base-image", expect.any(String)] });
+        expect(runner.mock.calls[0][1]).toMatchObject({ timeoutMs: 600000 });
+        expect(devices()[0]).toMatchObject({ provider: "tart", status: "stopped" });
+    });
+
+    it.each([undefined, "auto"])("regression: default or automatic Tart provider gets clone provisioning time (%s)", async provider => {
+        const runner = vi.fn(successfulRunner()), base = await start(runner);
+        const result = await invoke(base, "device_create", { name: "Default clone", image: "base-image", ...(provider === undefined ? {} : { provider }) });
+        expect(result.status).toBe(200);
+        expect(runner.mock.calls[0][1]).toMatchObject({ timeoutMs: 600000 });
+        expect(devices()[0]).not.toHaveProperty("requestTimeoutMs");
+        expect(devices()[0]).not.toHaveProperty("remainingMs");
+    });
+
+    it.each([
+        { commandTimeoutMs: 5000, requestTimeoutMs: 20000, expected: 5000 },
+        { commandTimeoutMs: 12000, requestTimeoutMs: 4000, expected: 4000 },
+    ])("regression: clone honors explicit native and parent caps %j", async ({ commandTimeoutMs, requestTimeoutMs, expected }) => {
+        const runner = vi.fn(successfulRunner()), base = await start(runner, { commandTimeoutMs, hyperVMonotonicNow: () => 0 });
+        expect((await invoke(base, "device_create", { name: "Bounded clone", provider: "tart", image: "base-image", requestTimeoutMs })).status).toBe(200);
+        expect(runner.mock.calls[0][1]).toMatchObject({ timeoutMs: expected });
+        expect(devices()[0]).not.toHaveProperty("requestTimeoutMs");
+    });
+
+    it.each([false, true])("regression: elapsed device-lock wait shrinks clone allowance and expired=%s dispatches nothing", async expired => {
+        writeBrokerDevices(owner, "macos", []);
+        const lockFile = join(backendRoot(owner, "macos"), "operations", `${createHash("sha256").update("unit").digest("hex").slice(0, 32)}.lock`);
+        let release!: () => void, entered!: () => void, clock = 0;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const ready = new Promise<void>(resolve => { entered = resolve; });
+        const held = withSharedMutationLockAsync(lockFile, async () => { entered(); await gate; });
+        await ready;
+        const monotonicNow = vi.fn(() => clock), runner = vi.fn(successfulRunner());
+        let pending: ReturnType<typeof invoke> | undefined;
+        try {
+            const base = await start(runner, { hyperVMonotonicNow: monotonicNow });
+            const observationsBefore = monotonicNow.mock.calls.length;
+            pending = invoke(base, "device_create", { deviceId: "unit", name: "Locked clone", provider: "tart", image: "base-image", requestTimeoutMs: 10000 });
+            await vi.waitFor(() => expect(monotonicNow.mock.calls.length).toBeGreaterThan(observationsBefore));
+            expect(runner).not.toHaveBeenCalled();
+            clock = expired ? 10001 : 2500;
+            release(); await held;
+            const result = await pending;
+            if (expired) {
+                expect(result.body).toMatchObject({ ok: false, error: "macos-tart-create-budget-exhausted" });
+                expect(runner).not.toHaveBeenCalled();
+                expect(devices()).toEqual([]);
+            } else {
+                expect(result.status).toBe(200);
+                expect(runner).toHaveBeenCalledOnce();
+                expect(runner.mock.calls[0][1]).toMatchObject({ timeoutMs: 7500 });
+                const remaining = runner.mock.calls[0][1]?.remainingMs;
+                expect(remaining?.()).toBe(7500);
+                clock += 1000;
+                expect(remaining?.()).toBe(6500);
+            }
+        } finally { release(); await held; await pending?.catch(() => undefined); }
+    });
+
+    it("regression: default native runner refuses clone admission without room for identity-checked cleanup", async () => {
+        const base = await start(undefined, { hyperVMonotonicNow: () => 0 });
+        const result = await invoke(base, "device_create", { name: "Unsafe short clone", provider: "tart", image: "base-image", requestTimeoutMs: 1001 });
+        expect(result.body).toMatchObject({ ok: false, error: "macos-tart-create-budget-exhausted" });
+        expect(existsSync(stateFile())).toBe(false);
+    });
+
+    it.each([0, -1, "4000", 630001, null])("regression: invalid cross-process clone duration %j is rejected before execution", async requestTimeoutMs => {
+        const runner = vi.fn(successfulRunner()), base = await start(runner);
+        const result = await invoke(base, "device_create", { name: "Invalid duration", provider: "tart", image: "base-image", requestTimeoutMs });
+        expect(result.status).toBe(400);
+        expect(runner).not.toHaveBeenCalled();
+        expect(existsSync(stateFile())).toBe(false);
+    });
+
+    it("regression: failed clone preserves timeout and cleanup refusal without publication, replay or delete", async () => {
+        writeBrokerDevices(owner, "macos", []);
+        const runner = vi.fn<NonNullable<DeviceBrokerOptions["commandRunner"]>>(command => ({ ...command, status: null,
+            stdout: "", stderr: "native clone timed out; cleanup identity was not confirmed", timedOut: true,
+            cleanup: { ok: false, reason: "process-identity-unconfirmed" },
+        }));
+        const base = await start(runner), result = await invoke(base, "device_create", { name: "Failed clone", provider: "tart", image: "base-image" });
+        expect(result.status).toBe(502);
+        expect(result.body).toMatchObject({ ok: false, error: "provider-command-failed" });
+        expect(JSON.stringify(result.body)).toContain("cleanup identity was not confirmed");
+        expect(runner.mock.calls.map(([command]) => command.args?.[0])).toEqual(["clone"]);
+        expect(devices()).toEqual([]);
+    });
+
     it.each([
         ["vz", "device_create writes owner-scoped broker metadata"],
         ["tart", "macOS VM device_create without image writes owner-scoped broker metadata"],

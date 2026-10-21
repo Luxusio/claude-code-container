@@ -1,6 +1,7 @@
 import { readBrokerOwnerSecret } from "@ccc/device-lab/providers/state/broker-owner-secret.mjs";
 import { createBrokerSupervision } from "./application/broker-supervision.mjs";
 import { supervisionErrorDetail } from "./domain/broker-supervision.mjs";
+import { isBrokerMacosTartImageCreate, brokerMacosTartCreateRpcTimeoutMs, BROKER_MACOS_TART_CREATE_TIMEOUT_MS } from "./domain/device-request.mjs";
 import { fileURLToPath } from "url";
 import { createWaitBudget } from "@ccc/device-lab/providers/wait-budget.mjs";
 import { AsyncLocalStorage } from "async_hooks";
@@ -74,6 +75,18 @@ const MAX_LAUNCH_TIMEOUT_MS = 15000;
 const ownedBrokerChildren = new Map();
 let cleanupRegistered = false;
 let exitingFromSignal = false;
+
+// Keep this Tart caller's allowance alongside the existing operation setup cache.
+function macosCreateTimeoutMs(timeoutMs) {
+    const remaining = brokerOperations.getStore()?.macosCreateRemainingMs;
+    return remaining ? Math.max(0, Math.min(timeoutMs, Math.floor(remaining()))) : timeoutMs;
+}
+
+function assertMacosCreateAllowance() {
+    if (macosCreateTimeoutMs(Infinity) < 1) {
+        throw Object.assign(new Error("macos-tart-create-budget-exhausted"), {code: "macos-tart-create-budget-exhausted"});
+    }
+}
 
 const brokerSupervision = createBrokerSupervision({
     protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
@@ -197,12 +210,14 @@ async function launchOwnedBroker(owner, launch) {
     /** @type {import('./domain/broker-supervision.mjs').BrokerRuntime|null} */
     let runtime = null;
     try {
+        assertMacosCreateAllowance();
         if (!executableExists(launch.command)) {
             return { kind: "failed", runtime, detail: "executable-not-found", diagnostics };
         }
         const log = createBrokerLogFile(owner);
         descriptor = log.descriptor;
         diagnostics.logPath = log.path;
+        assertMacosCreateAllowance();
         const child = spawn(launch.command, launch.args, { stdio: ["ignore", descriptor, descriptor], detached: false, windowsHide: true });
         runtime = {
             name: BROKER_NAME,
@@ -228,7 +243,10 @@ async function launchOwnedBroker(owner, launch) {
         runtime.processStartToken = pid && ownedBrokerChildren.get(pid) === owned ? readBrokerProcessStartToken(pid) : null;
         owned.processStartToken = runtime.processStartToken;
         for (let attempt = 0; pid && !runtime.processStartToken && attempt < 20; attempt += 1) {
-            await new Promise(resolve => setTimeout(resolve, 25));
+            const delay = macosCreateTimeoutMs(25);
+            if (delay < 1) break;
+            await new Promise(resolve => setTimeout(resolve, delay));
+            if (macosCreateTimeoutMs(Infinity) < 1) break;
             if (ownedBrokerChildren.get(pid) !== owned) break;
             runtime.processStartToken = readBrokerProcessStartToken(pid);
             owned.processStartToken = runtime.processStartToken;
@@ -642,6 +660,8 @@ async function readBrokerHttpJson(response, maxBytes) {
 }
 
 function brokerRpcHttpJsonRequest({ host, port, path, headers, body, timeoutMs, maxBytes }) {
+    assertMacosCreateAllowance();
+    timeoutMs = macosCreateTimeoutMs(timeoutMs);
     return new Promise((resolve, reject) => {
         let settled = false;
         const finish = (callback, value) => {
@@ -753,9 +773,11 @@ function brokerRpcHttpJsonRequest({ host, port, path, headers, body, timeoutMs, 
     });
 }
 
-async function probeBrokerHealth({ hostCandidates, port, timeoutMs }) {
+async function probeBrokerHealth({ hostCandidates, port, timeoutMs: timeout }) {
     const attempts = [];
     for (const host of hostCandidates) {
+        const timeoutMs = macosCreateTimeoutMs(timeout);
+        if (timeoutMs < 1) break;
         const endpoint = `http://${host}:${port}/health`;
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -795,6 +817,8 @@ async function probeBrokerHealth({ hostCandidates, port, timeoutMs }) {
 }
 
 async function probeCccHostBrokerProtocol(host, port, timeoutMs) {
+    assertMacosCreateAllowance();
+    timeoutMs = macosCreateTimeoutMs(timeoutMs);
     const endpoint = `http://${host}:${port}/status`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -833,10 +857,10 @@ async function probeCccHostBrokerProtocol(host, port, timeoutMs) {
 export const probeCccHostBrokerProtocolForTest = probeCccHostBrokerProtocol;
 
 async function waitForBrokerHealth({ host, port, timeoutMs }) {
-    const deadline = performance.now() + timeoutMs;
+    const deadline = performance.now() + macosCreateTimeoutMs(timeoutMs);
     const attempts = [];
     for (;;) {
-        const remainingMs = deadline - performance.now();
+        const remainingMs = macosCreateTimeoutMs(deadline - performance.now());
         if (!(remainingMs > 0)) break;
         const probe = await probeBrokerHealth({ hostCandidates: [host], port, timeoutMs: Math.min(250, remainingMs) });
         attempts.push(...probe.attempts);
@@ -868,7 +892,7 @@ function registerBrokerCleanup() {
 }
 
 async function waitForProcessExit(pid, timeoutMs = 1500) {
-    const deadline = performance.now() + timeoutMs;
+    const deadline = performance.now() + macosCreateTimeoutMs(timeoutMs);
     for (;;) {
         const remainingMs = deadline - performance.now();
         if (!(remainingMs > 0)) break;
@@ -882,6 +906,8 @@ async function waitForProcessExit(pid, timeoutMs = 1500) {
 }
 
 async function terminateBrokerProcess(pid, timeoutMs = 3000, expectedStartToken = null) {
+    timeoutMs = macosCreateTimeoutMs(timeoutMs);
+    if (timeoutMs < 1) return {ok: false, pid, reason: "macos-tart-create-budget-exhausted"};
     if (!pidAlive(pid)) return { ok: true, stale: true, pid };
     if (!expectedStartToken) {
         return { ok: false, pid, reason: "process-start-token-unavailable" };
@@ -894,6 +920,8 @@ async function terminateBrokerProcess(pid, timeoutMs = 3000, expectedStartToken 
             reason: currentStartToken ? "process-start-token-mismatch" : "process-start-token-unavailable",
         };
     }
+    timeoutMs = macosCreateTimeoutMs(timeoutMs);
+    if (timeoutMs < 1) return {ok: false, pid, reason: "macos-tart-create-budget-exhausted"};
     if (process.platform === "win32") {
         return terminateWindowsProcessByStartToken(pid, expectedStartToken, timeoutMs);
     }
@@ -924,6 +952,7 @@ function discoverLinuxBrokerPortProcess(port) {
     const portHex = Number(port).toString(16).toUpperCase().padStart(4, "0");
     const inodes = new Set();
     for (const file of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+        if (macosCreateTimeoutMs(Infinity) < 1) return null;
         try {
             const lines = readFileSync(file, "utf8").trim().split(/\n/).slice(1);
             for (const line of lines) {
@@ -937,9 +966,11 @@ function discoverLinuxBrokerPortProcess(port) {
     if (inodes.size === 0) return null;
     try {
         for (const pidText of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
+            if (macosCreateTimeoutMs(Infinity) < 1) return null;
             let fds = [];
             try { fds = readdirSync(`/proc/${pidText}/fd`); } catch { continue; }
             for (const fd of fds) {
+                if (macosCreateTimeoutMs(Infinity) < 1) return null;
                 let target = "";
                 try { target = readlinkSync(`/proc/${pidText}/fd/${fd}`); } catch { continue; }
                 const match = /^socket:\[(\d+)\]$/.exec(target);
@@ -963,11 +994,17 @@ function discoverLinuxBrokerPortProcess(port) {
 }
 
 function discoverCommandBrokerPortProcess(command, args) {
-    const result = spawnSync(command, args, { encoding: "utf8", windowsHide: true, timeout: 1000 });
+    let timeout = macosCreateTimeoutMs(1000);
+    if (timeout < 1) return null;
+    const result = spawnSync(command, args, { encoding: "utf8", windowsHide: true, timeout });
     const pid = Number((result.stdout?.match(/^p(\d+)$/m) || [])[1]);
     if (result.status !== 0 || !Number.isInteger(pid) || pid <= 0) return null;
-    const ps = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", windowsHide: true, timeout: 1000 });
-    const started = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", windowsHide: true, timeout: 1000 });
+    timeout = macosCreateTimeoutMs(1000);
+    if (timeout < 1) return null;
+    const ps = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", windowsHide: true, timeout });
+    timeout = macosCreateTimeoutMs(1000);
+    if (timeout < 1) return null;
+    const started = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", windowsHide: true, timeout });
     const startedAt = started.status === 0 ? String(started.stdout || "").trim() : "";
     return { pid, commandLine: String(ps.stdout || "").trim(), processStartToken: startedAt ? `ps:${startedAt}` : null };
 }
@@ -994,15 +1031,19 @@ export function parseWindowsNetstatListenerForTest(output, port) {
 }
 
 function discoverWindowsBrokerPortProcess(port) {
+    const netstatTimeout = macosCreateTimeoutMs(1500);
+    if (netstatTimeout < 1) return null;
     const netstatPath = canonicalWindowsSystemExecutablePath("netstat.exe");
     const netstat = netstatPath ? spawnSync(netstatPath, ["-ano", "-p", "tcp"], {
         encoding: "utf8",
         windowsHide: true,
-        timeout: 1500,
+        timeout: netstatTimeout,
     }) : { status: null, stdout: "" };
     const listener = netstat.status === 0 ? parseWindowsNetstatListenerForTest(netstat.stdout, port) : null;
     if (!listener) return null;
     const powershell = canonicalWindowsPowerShellPath();
+    const identityTimeout = macosCreateTimeoutMs(1500);
+    if (identityTimeout < 1) return null;
     const script = [
         `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${listener.pid}"`,
         `$h = Get-Process -Id ${listener.pid} -ErrorAction SilentlyContinue`,
@@ -1012,7 +1053,7 @@ function discoverWindowsBrokerPortProcess(port) {
     const result = powershell ? spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]), {
         encoding: "utf8",
         windowsHide: true,
-        timeout: 1500,
+        timeout: identityTimeout,
     }) : { status: null, stdout: "" };
     if (result.status === 0 && result.stdout) {
         try {
@@ -1041,6 +1082,7 @@ function discoverBrokerPortProcess(port) {
 
 function readBrokerProcessStartToken(pid, platform = process.platform) {
     if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return null;
+    if (macosCreateTimeoutMs(Infinity) < 1) return null;
     if (platform === "linux") {
         try {
             const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -1055,18 +1097,22 @@ function readBrokerProcessStartToken(pid, platform = process.platform) {
         const powershell = canonicalWindowsPowerShellPath();
         if (!powershell) return null;
         const script = `$P = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($P) { [Console]::Out.Write($P.StartTime.ToUniversalTime().ToString('o')) }`;
+        const timeout = macosCreateTimeoutMs(1500);
+        if (timeout < 1) return null;
         const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
             encoding: "utf8",
             windowsHide: true,
-            timeout: 1500,
+            timeout,
         });
         const value = result.status === 0 ? String(result.stdout || "").trim() : "";
         return value ? `windows:${value}` : null;
     }
+    const timeout = macosCreateTimeoutMs(1000);
+    if (timeout < 1) return null;
     const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], {
         encoding: "utf8",
         windowsHide: true,
-        timeout: 1000,
+        timeout,
     });
     const value = result.status === 0 ? String(result.stdout || "").trim() : "";
     return value ? `ps:${value}` : null;
@@ -1082,6 +1128,7 @@ function verifiedBrokerProcess(
     const pid = Number(runtime?.pid);
     if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port)) return null;
     const observed = portProcessResolver(port);
+    if (macosCreateTimeoutMs(Infinity) < 1) return null;
     const command = String(runtime?.command || "").replace(/\\/g, "/");
     const nodeLaunch = /(?:^|\/)node(?:\.exe)?$/i.test(command);
     const expectedCliPath = nodeLaunch && Array.isArray(runtime?.args) && typeof runtime.args[0] === "string"
@@ -1470,12 +1517,12 @@ async function cleanupLaunchedBrokerRuntime(runtime, timeoutMs) {
 }
 
 export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
-    const deadline = performance.now() + Math.max(1, timeoutMs);
+    const deadline = performance.now() + macosCreateTimeoutMs(Math.max(1, timeoutMs));
     const attempts = [];
     let lastResult = null;
     let lastHttpFailure = null;
     for (;;) {
-        const remainingMs = deadline - performance.now();
+        const remainingMs = macosCreateTimeoutMs(deadline - performance.now());
         if (!(remainingMs > 0)) break;
         const resolved = await resolveBrokerOwner({
             hostCandidates: [host],
@@ -1570,7 +1617,7 @@ async function resolveBrokerOwner(probeOptions, waitBudget) {
         profile: process.env.CCC_PROFILE || null,
     });
     for (const host of probeOptions.hostCandidates) {
-        const timeoutMs = waitBudget ? waitBudget.requestTimeout(probeOptions.timeoutMs) : probeOptions.timeoutMs;
+        const timeoutMs = macosCreateTimeoutMs(waitBudget ? waitBudget.requestTimeout(probeOptions.timeoutMs) : probeOptions.timeoutMs);
         if (timeoutMs <= 0) break;
         const endpoint = `http://${host}:${probeOptions.port}/v1/owner/resolve`;
         const controller = new AbortController();
@@ -1698,12 +1745,19 @@ function authenticatedBrokerHeaders(token, owner, runtime, body) {
 export const authenticatedBrokerHeadersForTest = authenticatedBrokerHeaders;
 
 async function brokerRpcRequest(options = {}) {
+    const macosCreate = options.method === "broker.command.invoke" && isBrokerMacosTartImageCreate(options.params || {});
+    const deadline = macosCreate ? performance.now() + brokerMacosTartCreateRpcTimeoutMs(options) : 0;
     try {
-        const result = await brokerRpcRequestUncached(options);
+        const result = macosCreate
+            ? await brokerOperations.run({...brokerOperations.getStore(), macosCreateRemainingMs: () => Math.max(0, deadline - performance.now())}, () => brokerRpcRequestUncached(options))
+            : await brokerRpcRequestUncached(options);
         if (!result.ok) invalidateBrokerSetup();
         return result;
     } catch (error) {
         invalidateBrokerSetup();
+        if (macosCreate && error?.code === "macos-tart-create-budget-exhausted") {
+            return {ok: false, ownerId: ownerId(), error: error.code, attempts: []};
+        }
         throw error;
     }
 }
@@ -1753,9 +1807,16 @@ async function brokerRpcRequestUncached(options = {}) {
         || options.params.requestTimeoutMs > 600000)) {
         return { ok: false, ownerId: owner, method, error: "invalid-appium-request-timeout", attempts: [] };
     }
+    const macosCreateRemainingMs = method === "broker.command.invoke" && isBrokerMacosTartImageCreate(options.params || {})
+        ? brokerOperations.getStore()?.macosCreateRemainingMs : undefined;
+    let waitBudget = macosCreateRemainingMs ? {
+        remaining: macosCreateRemainingMs,
+        requestTimeout: (maximum = BROKER_MACOS_TART_CREATE_TIMEOUT_MS) => Math.max(0, Math.floor(Math.min(maximum, macosCreateRemainingMs()))),
+    } : null;
     let launch = null;
     if (options.autolaunch === true) {
         launch = await ensureBroker(options);
+        if (macosCreateRemainingMs) assertMacosCreateAllowance();
         if (!launch.ok) {
             return {
                 ok: false,
@@ -1782,7 +1843,7 @@ async function brokerRpcRequestUncached(options = {}) {
         }
         probeOptions = { ...probeOptions, hostCandidates: [launch.host], port: launch.port };
     }
-    const waitBudget = explicitRequestBudget ? createWaitBudget(options.params.requestTimeoutMs) : null;
+    if (!waitBudget && explicitRequestBudget) waitBudget = createWaitBudget(options.params.requestTimeoutMs);
     let requestBody = JSON.stringify({
         ownerId: owner,
         method,
@@ -1799,6 +1860,7 @@ async function brokerRpcRequestUncached(options = {}) {
         };
     }
     const resolvedOwner = brokerSetupEvidence.get(launch)?.ownerResolve || await resolveBrokerOwner(probeOptions, waitBudget);
+    if (macosCreateRemainingMs) assertMacosCreateAllowance();
     if (resolvedOwner.ok) owner = resolvedOwner.ownerId;
     else {
         const brokerUnavailable = resolvedOwner.error === "broker-owner-resolve-unavailable"
@@ -1862,6 +1924,7 @@ async function brokerRpcRequestUncached(options = {}) {
         const startedAt = Date.now();
         try {
             const verifiedRuntime = await verifyAuthenticatedBrokerGeneration(host, probeOptions.port, launch, waitBudget ? { ...options, brokerProbeTimeoutMs: waitBudget.requestTimeout(5000), timeoutMs: waitBudget.requestTimeout(5000) } : options);
+            if (macosCreateRemainingMs) assertMacosCreateAllowance();
             if (!verifiedRuntime) {
                 return {
                     ok: false,
@@ -1903,7 +1966,8 @@ async function brokerRpcRequestUncached(options = {}) {
                 },
                 body: requestBody,
             });
-            if (waitBudget && waitBudget.remaining() <= 0) {
+            const macosCreateExpired = macosCreateRemainingMs && waitBudget && waitBudget.remaining() <= 0;
+            if (!macosCreateRemainingMs && waitBudget && waitBudget.remaining() <= 0) {
                 const error = new Error("broker RPC timed out");
                 error.name = "AbortError";
                 throw error;
@@ -1934,6 +1998,10 @@ async function brokerRpcRequestUncached(options = {}) {
                     launch,
                     attempts,
                 };
+            }
+            if (macosCreateExpired && response.ok) {
+                return {ok: false, ownerId: owner, method, selected: attempt, error: "macos-tart-create-budget-exhausted",
+                    status: response.status, result: body?.result ?? body, body: summarizeBody(body), launch, attempts};
             }
             if (response.ok) {
                 return {
@@ -2088,12 +2156,14 @@ export async function brokerCommand(options = {}) {
             attempts: [],
         };
     }
-    const lifecycleTimeoutMs = action === "invoke" && options.dryRun !== true && !Number.isFinite(options.timeoutMs)
+    const macosCreate = action === "invoke" && isBrokerMacosTartImageCreate(options);
+    const lifecycleTimeoutMs = action === "invoke" && options.dryRun !== true && !macosCreate && !Number.isFinite(options.timeoutMs)
         ? DEFAULT_LIFECYCLE_RPC_TIMEOUT_MS
         : options.timeoutMs;
     return brokerRpcRequest({
         ...options,
         ...(Number.isFinite(lifecycleTimeoutMs) ? { timeoutMs: lifecycleTimeoutMs } : {}),
+        ...(macosCreate ? {rpcTimeoutMs: brokerMacosTartCreateRpcTimeoutMs(options)} : {}),
         method,
         params: {
             ...Object.fromEntries(Object.entries(plainObject(options.options)).filter(([key]) => key !== "incarnationId")),

@@ -244,6 +244,35 @@ describe("creation broker endpoint selection without native effects", () => {
         expect(vi.mocked(f.ports.invokeBrokerLifecycle).mock.calls[0][0].devicePort).toBeUndefined();
     });
 
+    it.each([{}, { provider: "auto" }, { provider: "tart" }])("regression: eligible Tart clone default and explicit broker routes carry the full outer allowance %j", async provider => {
+        for (const route of [{}, { broker: true }]) {
+            const f = routing({ backend: "macos-vm", name: "Cold image clone", image: "base-image", ...route, ...provider });
+            await f.run();
+            expect(f.ports.invokeBrokerLifecycle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+                backend: "macos-vm", command: "device_create", image: "base-image", rpcTimeoutMs: 630000,
+            }));
+            const dispatched = vi.mocked(f.ports.invokeBrokerLifecycle).mock.calls[0][0];
+            expect(dispatched.timeoutMs).toBeUndefined();
+            expect(dispatched.brokerProbeTimeoutMs).toBe(100);
+        }
+    });
+
+    it.each([
+        { timeoutMs: 4000, rpcTimeoutMs: 9000 },
+        { timeoutMs: 9000, rpcTimeoutMs: 4000 },
+    ])("regression: Tart clone routing retains the shorter operation or RPC cap %j", async limits => {
+        const f = routing({ backend: "macos-vm", provider: "tart", name: "Short clone", image: "base-image", broker: true, ...limits });
+        await f.run();
+        expect(f.ports.invokeBrokerLifecycle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ rpcTimeoutMs: 4000 }));
+        expect(vi.mocked(f.ports.invokeBrokerLifecycle).mock.calls[0][0]).toMatchObject({ timeoutMs: limits.timeoutMs, brokerProbeTimeoutMs: 100 });
+    });
+
+    it.each([{ image: undefined }, { provider: "vz" }, { provider: "utmctl" }, { dryRun: true }])("regression: ineligible Mac creation routes retain the ordinary outer cap %j", async ineligible => {
+        const f = routing({ backend: "macos-vm", provider: "tart", name: "Definition only", image: "base-image", broker: true, ...ineligible });
+        await f.run();
+        expect(f.ports.invokeBrokerLifecycle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ rpcTimeoutMs: 120000 }));
+    });
+
     it.each(["windows-vm", "linux-vm", "macos-vm"])("never reinterprets a selected %s HTTP endpoint as a VM device port", async backend => {
         const f = routing({ backend, name: "Selected VM label", broker: true, port: 27123 });
         await f.run();

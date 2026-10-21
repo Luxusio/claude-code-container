@@ -47,6 +47,26 @@ function snapshotRequestTimeout(action: string, args: Record<string, unknown> = 
 }
 
 describe("device-lab public timeout bounds", () => {
+    describe("Tart image provisioning allowance", () => {
+        const clone = { backend: "macos-vm", command: "device_create", image: "base-image" };
+        it.each([{}, { provider: "auto" }, { provider: "tart" }])("regression: eligible Tart image creation keeps the full 630000ms outer default %j", provider => {
+            expect(brokerLifecycleExecutionTimeout({ ...clone, ...provider })).toEqual({ rpcTimeoutMs: 630000 });
+        });
+        it.each([
+            { image: undefined }, { provider: "vz" }, { provider: "utmctl" }, { dryRun: true },
+            { command: "device_delete" }, { backend: "ios-simulator" },
+        ])("regression: ineligible provisioning requests retain their ordinary outer default %j", ineligible => {
+            expect(brokerLifecycleExecutionTimeout({ ...clone, ...ineligible })).toEqual({ rpcTimeoutMs: 120000 });
+        });
+        it.each([
+            [{ timeoutMs: 4500.9 }, 4500], [{ rpcTimeoutMs: 5500.9 }, 5500],
+            [{ timeoutMs: 9000, rpcTimeoutMs: 4500 }, 4500], [{ timeoutMs: 4500, rpcTimeoutMs: 9000 }, 4500],
+            [{ timeoutMs: Number.MAX_SAFE_INTEGER }, 600000], [{ rpcTimeoutMs: Number.MAX_SAFE_INTEGER }, 630000],
+        ] as const)("regression: eligible clone obeys the shortest explicit bounded parent allowance %j", (limits, expected) => {
+            expect(brokerLifecycleExecutionTimeout({ ...clone, ...limits })).toEqual({ rpcTimeoutMs: expected });
+        });
+    });
+
     it("advertises finite helper and wait limits on every affected public tool", () => {
         const helperTools = [
             "screenshot",

@@ -48,7 +48,7 @@ import type { BrokerWindowsSandboxLifecyclePorts } from "./device-lab/ports/life
 import { createBrokerIosSimulatorLifecycle, createBrokerIosRecord, rollbackBrokerIosCreate } from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
 import { createBrokerMacosVmLifecycle, createBrokerMacosRecord, rollbackBrokerMacosCreate } from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import { brokerIosReplacement, brokerIosUniqueFields } from "./device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
-import { brokerMacosReplacement, brokerMacosUniqueFields, type BrokerMacosMetadataPurpose } from "./device-lab/domain/lifecycle/macos-vm-lifecycle.js";
+import { brokerMacosReplacement, brokerMacosUniqueFields, isBrokerMacosTartImageCreate, BROKER_MACOS_TART_CLONE_TIMEOUT_MS, BROKER_MACOS_TART_CREATE_TIMEOUT_MS, type BrokerMacosMetadataPurpose } from "./device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerIosSimulatorLifecyclePorts } from "./device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerMacosVmLifecyclePorts } from "./device-lab/ports/lifecycle/macos-vm-lifecycle.js";
 import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle, createBrokerAndroidRecord } from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
@@ -662,6 +662,8 @@ type NormalizedBrokerOptions = {
     startedAt: string;
     providerPaths: Record<string, string>;
     commandTimeoutMs: number;
+    explicitCommandTimeoutMs?: number;
+    macosCreateRemainingMs?: () => number;
     requestBodyTimeoutMs: number;
     hyperVMonotonicNow: () => number;
     commandRunner: ProviderCommandRunner;
@@ -1403,6 +1405,7 @@ function normalizeBrokerOptions(options: DeviceBrokerOptions = {}): NormalizedBr
         startedAt,
         providerPaths: options.providerPaths || {},
         commandTimeoutMs,
+        ...(Number.isFinite(options.commandTimeoutMs) ? {explicitCommandTimeoutMs: commandTimeoutMs} : {}),
         requestBodyTimeoutMs,
         hyperVMonotonicNow: options.hyperVMonotonicNow || (() => performance.now()),
         commandRunner: options.commandRunner || defaultProviderCommandRunner,
@@ -9879,7 +9882,14 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
             return observed(receipt);
         },
         execute: async (effect, options) => {
-            const receipt = await runBudgetedProviderCommand(normalized, effect.command, options);
+            let receipt: ProviderCommandResult;
+            try {receipt = await runBudgetedProviderCommand(normalized, effect.command, options);}
+            catch (error) {
+                // A successful clone's compensation may exhaust admission time.
+                // Preserve the original claim failure and this refused cleanup.
+                if (!normalized.macosCreateRemainingMs || effect.command.args?.[0] !== "delete" || !(error instanceof CleanupOperationDeadlineError)) throw error;
+                receipt = {mode: effect.command.mode, provider: effect.command.provider, status: null, error: "macos-tart-create-budget-exhausted", timedOut: true};
+            }
             if (normalized.cleanupObservation) normalized.cleanupObservation.execution = receipt;
             return observed(receipt);
         },
@@ -9910,7 +9920,10 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
                 replacement.lastBootCheck.result = change.boot.result.receipt instanceof NativeBrokerExecutionReceipt ? change.boot.result.receipt.value : change.boot.result;
             return { ...replacement, updatedAt: new Date().toISOString() };
         }),
-        stateErrorCode: ownerDeviceStateErrorCode, commandTimeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        stateErrorCode: ownerDeviceStateErrorCode, commandTimeoutMs: normalized.commandTimeoutMs,
+        createTimeoutMs: Math.min(BROKER_MACOS_TART_CLONE_TIMEOUT_MS, normalized.explicitCommandTimeoutMs ?? BROKER_MACOS_TART_CLONE_TIMEOUT_MS),
+        ...(normalized.macosCreateRemainingMs ? {remainingMs: normalized.macosCreateRemainingMs} : {}),
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     };
 }
 
@@ -10642,6 +10655,18 @@ async function cleanupVirtualStopLocked(ownerId: string, target: { backend: stri
 async function lifecycleCommandInvoke(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
     const parsed = admitCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
+    const macosCreate = isBrokerMacosTartImageCreate({...parsed, ...parsed.create});
+    if (macosCreate) {
+        const duration = (params as Record<string, unknown>).requestTimeoutMs;
+        if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0 || duration > BROKER_MACOS_TART_CREATE_TIMEOUT_MS)) {
+            return {status: 400, payload: {ok: false, error: "invalid-macos-tart-create-timeout"}};
+        }
+        const now = normalized.hyperVMonotonicNow;
+        const deadline = now() + (typeof duration === "number" ? duration : BROKER_MACOS_TART_CREATE_TIMEOUT_MS);
+        const boundedDeadline = Math.min(deadline, normalized.cleanupDeadlineAt ?? Infinity);
+        normalized = {...normalized, cleanupDeadlineAt: boundedDeadline,
+            macosCreateRemainingMs: () => Math.max(0, boundedDeadline - now())};
+    }
     const hyperVCleanupDeadlineAt = isHyperVBackend(parsed.backend) && !parsed.dryRun
         ? normalized.hyperVMonotonicNow() + (parsed.command === "device_create"
             ? DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS
@@ -10652,13 +10677,16 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
         ? { acquisitionOwner: "specialized", workflow: () => lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized) }
         : {
             acquisitionOwner: "broker", stateKey: parsed.stateKey, backend: parsed.backend,
-            waitBudget: isHyperVBackend(parsed.backend) ? { remaining: () => hyperVDeadlineAt - normalized.hyperVMonotonicNow() } : undefined,
+            waitBudget: macosCreate ? {remaining: normalized.macosCreateRemainingMs!} : isHyperVBackend(parsed.backend) ? { remaining: () => hyperVDeadlineAt - normalized.hyperVMonotonicNow() } : undefined,
             workflow: () => lifecycleCommandInvokeDeviceLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt),
         };
     if (executor.acquisitionOwner !== "broker") return invokeBrokerExecutor(ownerId, parsed.deviceId, executor);
     try {
         return await invokeBrokerExecutor(ownerId, parsed.deviceId, executor);
     } catch (error) {
+        if (macosCreate && (error instanceof CleanupOperationDeadlineError || isDeviceOperationLockTimeout(error) && !(normalized.macosCreateRemainingMs!() >= 1))) {
+            return {status: 504, payload: {ok: false, error: "macos-tart-create-budget-exhausted", ownerId, backend: parsed.backend, deviceId: parsed.deviceId}};
+        }
         if (error instanceof HyperVOperationDeadlineError) {
             return {
                 status: 504,

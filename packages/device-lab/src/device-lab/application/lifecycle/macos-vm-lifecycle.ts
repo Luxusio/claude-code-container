@@ -1,12 +1,14 @@
-import {brokerMacosRecord, brokerMacosCommandSucceeded, brokerMacosField, brokerMacosInstance, brokerMacosToleratesMissingDelete} from "../../domain/lifecycle/macos-vm-lifecycle.js";
+import {brokerMacosRecord, brokerMacosCommandSucceeded, brokerMacosField, brokerMacosInstance, brokerMacosToleratesMissingDelete, isBrokerMacosTartImageCreate} from "../../domain/lifecycle/macos-vm-lifecycle.js";
 import type {BrokerMacosLifecycleRequest, BrokerMacosLifecycleInput, BrokerMacosLifecycleResponse, BrokerMacosProviderResult, BrokerMacosIpObservation, BrokerMacosPlannedCommand, BrokerMacosRollback , BrokerMacosBoot, BrokerMacosPublication} from "../../domain/lifecycle/macos-vm-lifecycle.js";
 import type {BrokerMacosVmLifecyclePorts} from "../../ports/lifecycle/macos-vm-lifecycle.js";
 
 export async function rollbackBrokerMacosCreate<Effect>(ports: BrokerMacosVmLifecyclePorts<Effect>, device: Record<string,unknown>, existing: Record<string,unknown> | null, command: BrokerMacosPlannedCommand<Effect> | null | undefined): Promise<BrokerMacosRollback> {
     if (!command || command.kind !== "ready") return {attempted: false, ok: true, reason: "no-provider-resource-created"};
     if (existing?.provider === device.provider && existing?.providerInstance === device.providerInstance) return {attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device"};
+    const remaining = ports.remainingMs ? ports.remainingMs() : Infinity;
+    if (!(remaining >= 1)) return {attempted: false, ok: false, reason: "macos-tart-create-budget-exhausted"};
     const target = String(device.providerInstance);
-    const result = await ports.execute(ports.prepareDelete(command.effect,target),{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
+    const result = await ports.execute(ports.prepareDelete(command.effect,target),{timeoutMs: Math.min(ports.commandTimeoutMs, remaining), outputLimit: ports.outputLimit, ...(ports.remainingMs ? {remainingMs: ports.remainingMs} : {})});
     return {attempted: true, ok: brokerMacosCommandSucceeded(result), result};
 }
 export function createBrokerMacosRecord(ownerId: string, parsed: BrokerMacosLifecycleRequest, ports: {timestamp: () => string}): Record<string,unknown> {
@@ -79,8 +81,13 @@ export function createBrokerMacosVmLifecycle<Effect>(ports: BrokerMacosVmLifecyc
         if (command?.kind === "unavailable") return {kind: "refused", error: command.error, missing: command.missing || [], plan: plan || null};
         let execution: BrokerMacosProviderResult = {ok: true, mode: "noop", provider: "host-broker-state", resourceMissing: false, receipt: null};
         if (command?.kind === "ready") {
-            execution = await ports.execute(command.effect,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
+            const provisioned = isBrokerMacosTartImageCreate({...parsed, ...parsed.create});
+            const remaining = provisioned && ports.remainingMs ? ports.remainingMs() : Infinity;
+            if (!(remaining >= 1)) return {kind: "refused", error: "macos-tart-create-budget-exhausted", missing: [], plan: plan || null};
+            const timeoutMs = Math.min(provisioned ? ports.createTimeoutMs ?? ports.commandTimeoutMs : ports.commandTimeoutMs, remaining);
+            execution = await ports.execute(command.effect,{timeoutMs, outputLimit: ports.outputLimit, ...(provisioned && ports.remainingMs ? {remainingMs: ports.remainingMs} : {})});
             if (!brokerMacosCommandSucceeded(execution)) return {kind: "provider-failed", error: execution.typedCreateInvalidResult === true ? "hyper-v-create-invalid-result" : "provider-command-failed", plan, execution};
+            if (provisioned && ports.remainingMs && !(ports.remainingMs() >= 1)) return {kind: "provider-failed", error: "macos-tart-create-budget-exhausted", plan, execution};
         }
         let persistedParsed = parsed;
 

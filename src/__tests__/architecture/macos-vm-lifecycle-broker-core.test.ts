@@ -327,6 +327,89 @@ describe("broker macOS canonical stop and finite create effects", () => {
         } finally { held.resolve(native()); await pending.catch(() => undefined); }
     });
 
+    it("regression: legacy explicit lifecycle ports keep their command cap when optional create facts are absent", async () => {
+        const f = fixture(null), observed: number[] = [];
+        f.ports.execute = (_effect, options) => { observed.push(options.timeoutMs); return native(); };
+        const result = await createBrokerMacosVmLifecycle(f.ports).create(f.input("device_create", { create: { provider: "tart", image: "base-image" } }));
+        expect(result.kind).toBe("completed");
+        expect(observed).toEqual([15000]);
+        expect(f.claims).toHaveLength(1);
+    });
+
+    it("regression: clone execution receives the provisioning cap and the same decreasing parent allowance", async () => {
+        const f = fixture(null);
+        let remaining = 630000;
+        f.ports.createTimeoutMs = 600000;
+        f.ports.remainingMs = () => remaining;
+        f.ports.execute = (_effect, options) => {
+            expect(options.timeoutMs).toBe(600000);
+            expect(options.remainingMs?.()).toBe(630000);
+            remaining -= 2500;
+            expect(options.remainingMs?.()).toBe(627500);
+            return native();
+        };
+        expect(await createBrokerMacosVmLifecycle(f.ports).create(f.input("device_create", { create: { provider: "tart", image: "base-image" } })))
+            .toMatchObject({ kind: "completed", success: true });
+        expect(f.claims).toHaveLength(1);
+    });
+
+    it.each([0, -1])("regression: exhausted clone admission %sms performs no native execution or claim", async remaining => {
+        const f = fixture(null);
+        f.ports.createTimeoutMs = 600000;
+        f.ports.remainingMs = () => remaining;
+        const result = await createBrokerMacosVmLifecycle(f.ports).create(f.input("device_create", { create: { provider: "tart", image: "base-image" } }));
+        expect(result).toMatchObject({ kind: "refused", error: "macos-tart-create-budget-exhausted" });
+        expect(f.trace).toEqual([]);
+        expect(f.claims).toEqual([]);
+        expect(f.current()).toBeNull();
+    });
+
+    it("regression: expiration during clone execution cannot publish or start another native effect", async () => {
+        const f = fixture(null);
+        let remaining = 10000;
+        f.ports.createTimeoutMs = 600000;
+        f.ports.remainingMs = () => remaining;
+        f.ports.execute = effect => { f.trace.push(`execute:${effect.operation}`); remaining = 0; return native(); };
+        const result = await createBrokerMacosVmLifecycle(f.ports).create(f.input("device_create", { create: { provider: "tart", image: "base-image" } }));
+        expect(result.kind).not.toBe("completed");
+        expect(f.trace).toEqual(["execute:create"]);
+        expect(f.claims).toEqual([]);
+        expect(f.current()).toBeNull();
+    });
+
+    it("regression: a failed clone preserves its native cleanup refusal without claim, replay or delete", async () => {
+        const f = fixture(null);
+        const failure = { ...native(false), receipt: { timedOut: true, status: null, cleanup: { ok: false, reason: "process-identity-mismatch" } } };
+        f.ports.createTimeoutMs = 600000;
+        f.ports.remainingMs = () => 630000;
+        f.ports.execute = effect => { f.trace.push(`execute:${effect.operation}`); return failure; };
+        const result = await createBrokerMacosVmLifecycle(f.ports).create(f.input("device_create", { create: { provider: "tart", image: "base-image" } }));
+        expect(result).toMatchObject({ kind: "provider-failed", execution: failure });
+        expect(f.trace).toEqual(["execute:create"]);
+        expect(f.claims).toEqual([]);
+        expect(f.current()).toBeNull();
+    });
+
+    it("regression: create compensation observes the remaining parent allowance and preserves cleanup failure", async () => {
+        const f = fixture(null), winner = { ...device(), providerInstance: "winner-unit" };
+        let remaining = 630000;
+        const cleanupFailure = { ...native(false), receipt: { status: null, cleanup: { ok: false, reason: "process-identity-unconfirmed" } } };
+        f.ports.createTimeoutMs = 600000;
+        f.ports.remainingMs = () => remaining;
+        f.ports.claimDefinition = () => { f.trace.push("claim"); remaining = 4000; f.replace(winner); return { ok: false, error: "owner-device-id-conflict", field: "id", value: "unit", existing: winner }; };
+        f.ports.execute = (effect, options) => {
+            f.trace.push(`execute:${effect.operation}`);
+            if (effect.operation !== "compensate-delete") return native();
+            expect(options.remainingMs?.()).toBe(4000);
+            expect(options.timeoutMs).toBeLessThanOrEqual(4000);
+            return cleanupFailure;
+        };
+        const result = await createBrokerMacosVmLifecycle(f.ports).create(f.input("device_create", { create: { provider: "tart", image: "base-image", providerInstance: "owned-unit" } }));
+        expect(result).toMatchObject({ kind: "claim-conflict", error: "owner-device-conflict-rollback-failed", rollback: { attempted: true, ok: false, result: cleanupFailure } });
+        expect(f.trace).toEqual(["execute:create", "claim", "prepare-delete", "execute:compensate-delete"]);
+        expect(f.current()).toBe(winner);
+    });
+
     it("awaits compensation after a successful create loses its definition claim", async () => {
         const f = fixture(null), removal = deferred<BrokerMacosProviderResult>();
         const winner = { ...device(), providerInstance: "winner-unit" };

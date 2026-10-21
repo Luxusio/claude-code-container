@@ -38,6 +38,8 @@ import {
     wantsBrokerPhysical,
     boundedTimeoutMs,
     brokerDeviceToolExecutionTimeout,
+    isBrokerMacosTartImageCreate,
+    brokerMacosTartCreateRpcTimeoutMs,
     wantsBrokerBackends,
     wantsCurrentDisplayDevice,
     HYPER_V_LINUX_TOOLS,
@@ -52,6 +54,7 @@ import {
 export function createDeviceRequest(ports) {
     /** @param {Args} args */
     function brokerLifecycleExecutionTimeout(args) {
+        if (isBrokerMacosTartImageCreate(args)) return {rpcTimeoutMs: brokerMacosTartCreateRpcTimeoutMs(args)};
         const hyperVBackend = args?.backend === "windows-vm" || args?.backend === "linux-vm";
         if (hyperVBackend && args?.command === "device_create") {
             return { rpcTimeoutMs: HYPER_V_CREATE_RPC_TIMEOUT_MS };
@@ -380,7 +383,9 @@ export function createDeviceRequest(ports) {
             // A selected VM port is HTTP transport, never the Android console port.
             const probe = ports.implicitBrokerProbeOptions({ ...routeArgs, port: args.port ?? args.brokerPort });
             if (!probe) return implicitBrokerUnavailableResult("device-lifecycle-broker");
-            brokerArgs = { ...routeArgs, ...probe, devicePort: args.devicePort };
+            brokerArgs = { ...routeArgs, ...probe,
+                ...(isBrokerMacosTartImageCreate({...args, command: name}) ? {timeoutMs: args.timeoutMs, brokerProbeTimeoutMs: probe.brokerProbeTimeoutMs ?? probe.timeoutMs} : {}),
+                devicePort: args.devicePort };
         }
         const result = await ports.invokeBrokerLifecycle({
             ...brokerArgs,
@@ -416,6 +421,7 @@ export function createDeviceRequest(ports) {
             const result = await ports.invokeBrokerLifecycle({
                 ...args,
                 ...probe,
+                ...(isBrokerMacosTartImageCreate({...args, command: name}) ? {timeoutMs: args.timeoutMs, brokerProbeTimeoutMs: probe.brokerProbeTimeoutMs ?? probe.timeoutMs} : {}),
                 ...brokerLifecycleExecutionTimeout({ ...args, backend: requestedBackend, command: name }),
                 devicePort: args?.port,
                 action: "invoke",

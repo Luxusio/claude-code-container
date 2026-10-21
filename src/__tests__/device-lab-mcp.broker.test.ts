@@ -13,6 +13,7 @@ import { createServer } from "http";
 import { AddressInfo } from "net";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
+import { performance } from "node:perf_hooks";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
     cleanupDeviceLabMcpTestContext,
@@ -1205,6 +1206,56 @@ describe("device-lab MCP", () => {
         };
     }
 
+    it.each([
+        { label: "default clone", elapsed: 2500, limits: {}, expected: 627500 },
+        { label: "shorter operation limit", elapsed: 1500, limits: { timeoutMs: 4000, rpcTimeoutMs: 9000 }, expected: 2500 },
+        { label: "shorter RPC limit", elapsed: 1500, limits: { timeoutMs: 9000, rpcTimeoutMs: 4000 }, expected: 2500 },
+        { label: "expired preflight", elapsed: 4001, limits: { timeoutMs: 4000, rpcTimeoutMs: 9000 }, expected: 0 },
+    ])("regression: Tart $label spends owner preflight from the duration sent to the host", async ({ elapsed, limits, expected }) => {
+        let clock = 1000;
+        const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+        const server = createServer((req, res) => {
+            if (req.method === "POST" && req.url === "/v1/owner/resolve") {
+                clock += elapsed;
+                sendTestOwnerResolve(req, res);
+                return;
+            }
+            if (sendCurrentBrokerStatus(req, res)) return;
+            const chunks: Buffer[] = [];
+            req.on("data", chunk => chunks.push(Buffer.from(chunk)));
+            req.on("end", () => {
+                requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+                res.setHeader("content-type", "application/json");
+                res.end(JSON.stringify({ ok: true, result: { completed: true, device: { id: "macos-budget-fixture" } } }));
+            });
+        });
+        await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+        const monotonic = vi.spyOn(performance, "now").mockImplementation(() => clock);
+        try {
+            const result = await withUnverifiedBrokerFixture(() => brokerCommand({
+                action: "invoke", backend: "macos-vm", command: "device_create", provider: "tart", image: "base-image", name: "Budget fixture",
+                hostCandidates: ["127.0.0.1"], port: (server.address() as AddressInfo).port, autolaunch: false, ...limits,
+            }));
+            if (expected === 0) {
+                expect(result.ok).toBe(false);
+                expect(requests).toEqual([]);
+            } else {
+                expect(result.ok, JSON.stringify(result)).toBe(true);
+                expect(requests).toHaveLength(1);
+                expect(requests[0]).toMatchObject({ method: "broker.command.invoke", params: {
+                    backend: "macos-vm", command: "device_create", image: "base-image", requestTimeoutMs: expected,
+                } });
+                expect(Number.isFinite(requests[0].params.requestTimeoutMs)).toBe(true);
+                expect(Number(requests[0].params.requestTimeoutMs)).toBeGreaterThan(0);
+                expect(Number(requests[0].params.requestTimeoutMs)).toBeLessThanOrEqual(630000);
+                expect(result.selected?.timeoutMs).toBeLessThanOrEqual(expected);
+            }
+        } finally {
+            monotonic.mockRestore();
+            await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        }
+    });
+
     it.each(["windows-vm", "linux-vm", "macos-vm"])("does not replay a generated-ID %s birth across broker candidates after an accepted POST disconnects", async (backend) => {
         const fixture = await startCandidateDisconnectFixture("rpc");
         try {
@@ -1214,6 +1265,7 @@ describe("device-lab MCP", () => {
                 backend,
                 command: "device_create",
                 name: "同じ VM display label",
+                ...(backend === "macos-vm" ? { provider: "tart", image: "base-image" } : {}),
             }));
             expect(fixture.requests, JSON.stringify(result)).toHaveLength(1);
             expect(fixture.counts().providerCreates, JSON.stringify(result)).toBe(1);

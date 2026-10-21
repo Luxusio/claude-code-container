@@ -1,3 +1,21 @@
+export const BROKER_MACOS_TART_CLONE_TIMEOUT_MS = 600000;
+export const BROKER_MACOS_TART_CREATE_TIMEOUT_MS = 630000;
+
+/** Only a provider-backed Tart image creation needs the provisioning allowance. */
+export function isBrokerMacosTartImageCreate(input: {backend?: unknown; command?: unknown; dryRun?: unknown; provider?: unknown; image?: unknown}): boolean {
+    return input.backend === "macos-vm" && input.command === "device_create" && input.dryRun !== true
+        && (!input.provider || input.provider === "auto" || input.provider === "tart")
+        && typeof input.image === "string" && input.image.length > 0;
+}
+
+export function brokerMacosTartCreateRpcTimeoutMs(input: {timeoutMs?: unknown; rpcTimeoutMs?: unknown}): number {
+    const operation = typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs)
+        ? Math.min(BROKER_MACOS_TART_CLONE_TIMEOUT_MS, Math.max(1, Math.trunc(input.timeoutMs))) : BROKER_MACOS_TART_CREATE_TIMEOUT_MS;
+    const rpc = typeof input.rpcTimeoutMs === "number" && Number.isFinite(input.rpcTimeoutMs)
+        ? Math.min(BROKER_MACOS_TART_CREATE_TIMEOUT_MS, Math.max(1, Math.trunc(input.rpcTimeoutMs))) : BROKER_MACOS_TART_CREATE_TIMEOUT_MS;
+    return Math.min(operation, rpc);
+}
+
 /** Raw mutable broker carriers remain independent of direct-provider DTOs. */
 export interface BrokerMacosLifecycleRequest {
     ok: true; backend: string; stateKey: string; command: string; deviceId: string;
