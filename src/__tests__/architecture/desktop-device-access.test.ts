@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDesktopDeviceAccess, createDisplayDeviceAccess } from "../../../packages/device-lab/providers/application/desktop-device-access.mjs";
 import { createDesktopAccessResult } from "../../../packages/device-lab/providers/adapters/desktop-access-result.mjs";
+import { x11AccessTarget } from "../../../packages/device-lab/providers/domain/desktop-device-access.mjs";
 import { createDeviceRequest } from "../../../device-lab-mcp/src/application/device-request.mjs";
 import type { DeviceArguments, DeviceRequestPorts, ProviderRequest } from "../../../device-lab-mcp/src/ports/device-request.mjs";
 import type { WindowsDeviceAccessPorts, MacosDeviceAccessPorts, X11DeviceAccessPorts } from "../../../packages/device-lab/providers/ports/desktop-device-access.mjs";
@@ -82,6 +83,32 @@ function macosFixture() {
     };
     return { ports, state };
 }
+
+describe("current display focus capability facts", () => {
+    it.each([true, false, undefined])("regression: optional focus observation %s controls only the focus capability", focusAvailable => {
+        const noCapture = (): never => { throw new Error("capability-discovery-must-not-capture"); };
+        const ports: X11DeviceAccessPorts<{ id: string; capabilities: string[]; available: boolean }, { localPath: string }> = {
+            variant: "x11", owner: () => "owned-fixture", display: () => ":fixture", available: () => true,
+            ...(focusAvailable === undefined ? {} : { focusAvailable: () => focusAvailable }),
+            publicTarget: target => target, stageScreenshot: noCapture, capture: noCapture, readScreenshot: noCapture, disposeScreenshot: noCapture,
+        };
+        const target = createDisplayDeviceAccess(ports).current();
+        expect(target.available).toBe(true);
+        expect(target.capabilities.includes("device_focus_window")).toBe(focusAvailable === true);
+        expect(target.capabilities).toContain("device_key");
+        expect(target.capabilities).toContain("device_screenshot");
+        expect(target.capabilities).not.toContain("device_exec");
+        expect(target.capabilities).not.toContain("device_accessibility_snapshot");
+    });
+
+    it("regression: existing three-fact domain consumers default to no established focus", () => {
+        const legacy = x11AccessTarget("owner", ":fixture", true);
+        const verified = x11AccessTarget("owner", ":fixture", true, true);
+        expect(legacy.capabilities).not.toContain("device_focus_window");
+        expect(verified.capabilities).toContain("device_focus_window");
+        expect(verified.capabilities.filter(capability => capability !== "device_focus_window")).toEqual(legacy.capabilities);
+    });
+});
 
 describe("desktop device access policy", () => {
     it("returns macOS screenshot bytes and releases its remote and local capture", async () => {

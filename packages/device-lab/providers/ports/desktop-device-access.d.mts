@@ -34,6 +34,7 @@ export interface MacosDeviceAccessPorts<Target extends DesktopAccessTarget,Disco
 }
 export interface X11DeviceAccessPorts<Target extends DesktopAccessTarget,Stage extends DesktopScreenshotStage> {
     variant:'x11'; owner():string; display():string; available():boolean; publicTarget(target:X11AccessTarget):Target; stageScreenshot():Stage; capture(stage:Stage):DesktopNativeEffect;
+    focusAvailable?():boolean;
     readScreenshot(stage:Stage):DesktopScreenshotResult; disposeScreenshot(stage:Stage):undefined;
 }
 export type DesktopDeviceAccessPorts<Target extends DesktopAccessTarget,Helper,Discovery extends DesktopAccessDiscovery,Bridge extends DesktopAccessBridge,Stage extends DesktopScreenshotStage> = WindowsDeviceAccessPorts<Target,Helper>|MacosDeviceAccessPorts<Target,Discovery,Bridge,Stage>;

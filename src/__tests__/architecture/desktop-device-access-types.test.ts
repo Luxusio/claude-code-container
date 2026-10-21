@@ -56,6 +56,13 @@ function displayContracts(ports: X11DeviceAccessPorts<Target, Stage>) {
     createDisplayDeviceAccess({ ...ports, owner: async () => "owner" });
     // @ts-expect-error native availability observations are synchronous
     createDisplayDeviceAccess({ ...ports, available: async () => true });
+    const withFocus: X11DeviceAccessPorts<Target, Stage> = { ...ports, focusAvailable: () => true };
+    const { focusAvailable, ...legacyPorts } = withFocus;
+    const legacy: Target = createDisplayDeviceAccess(legacyPorts).current();
+    // @ts-expect-error optional focus availability must settle synchronously
+    createDisplayDeviceAccess({ ...ports, focusAvailable: async () => true });
+    // @ts-expect-error native focus availability is a boolean fact
+    createDisplayDeviceAccess({ ...ports, focusAvailable: () => "available" });
     // @ts-expect-error native target formatting cannot defer synchronous current()
     createDisplayDeviceAccess({ ...ports, publicTarget: async () => ({ id: "x11-current-display" }) });
     // @ts-expect-error one native capture observation is synchronous
@@ -66,14 +73,14 @@ function displayContracts(ports: X11DeviceAccessPorts<Target, Stage>) {
     createDisplayDeviceAccess({ ...ports, readScreenshot: async () => ({ kind: "image", data: "image" }) });
     // @ts-expect-error owned X11 stage disposal is synchronous
     createDisplayDeviceAccess({ ...ports, disposeScreenshot: async () => undefined });
-    void [current, result, disposeScreenshot, owner];
+    void [current, result, disposeScreenshot, owner, focusAvailable, legacy];
 }
 void [windowsContracts, macosContracts, displayContracts];
 
 describe("desktop device access typed display consumer", () => {
-    it("preserves current target metadata without adding X11 exec support", async () => {
+    it("regression: legacy typed display ports retain metadata without advertising unobserved focus or X11 exec", async () => {
         const unavailable = (): never => { throw new Error("unsupported-display-operation-must-not-stage-or-capture"); };
-        const ports: X11DeviceAccessPorts<{ id: string; display: string; creatable: false }, Stage> = {
+        const ports: X11DeviceAccessPorts<{ id: string; display: string; creatable: false; capabilities: string[] }, Stage> = {
             variant: "x11", owner: () => "owned-fixture", display: () => ":fixture", available: () => true,
             publicTarget: (target) => target,
             stageScreenshot: unavailable, capture: unavailable, readScreenshot: unavailable, disposeScreenshot: unavailable,
@@ -81,6 +88,7 @@ describe("desktop device access typed display consumer", () => {
         const app = createDisplayDeviceAccess(ports);
         const target: { id: string; display: string; creatable: false } = app.current();
         expect(target).toMatchObject({ id: "x11-current-display", display: ":fixture", creatable: false, ownerId: "owned-fixture", available: true });
+        expect(app.current().capabilities).not.toContain("device_focus_window");
         await expect(app.handle("device_exec")).resolves.toBeUndefined();
     });
 });

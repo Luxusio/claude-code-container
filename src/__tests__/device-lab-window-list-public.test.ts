@@ -17,6 +17,7 @@ beforeEach(()=>{fixture.calls.length=0;fixture.results.length=0;fixture.result={
 const call=(detail=false)=>fixture.handlers[1]({params:{name:"window_list",arguments:{deviceId:"x11-current-display",implicitBroker:false,detail}}});
 const display = (name:string, args:any = {}) => handleDisplayTool(name,args);
 const payload = (result:any) => JSON.parse(result.content[0].text);
+const publicTool = (name:string, args:any = {}) => fixture.handlers[1]({params:{name,arguments:{deviceId:"x11-current-display",implicitBroker:false,detail:true,...args}}});
 describe("public desktop windows",()=>{
     it("retains the 59-tool surface and advertises implemented display capability",()=>{
         expect(TOOLS).toHaveLength(59);
@@ -36,6 +37,53 @@ describe("public desktop windows",()=>{
         expect((await call()).isError).toBe(true);
         fixture.result={status:0,stdout:"bad",stderr:""};
         expect((await call()).isError).toBe(true);
+    });
+});
+
+describe("X11 public key regressions",()=>{
+    it.each([
+        ["Enter","Return"], ["Backspace","BackSpace"],
+        ["ArrowUp","Up"], ["ArrowDown","Down"], ["ArrowLeft","Left"], ["ArrowRight","Right"],
+        ["Ctrl+Enter","Ctrl+Return"], ["shift+ArrowLeft","shift+Left"],
+        ["ctrl+alt+Return","ctrl+alt+Return"], ["XF86AudioMute","XF86AudioMute"],
+    ])("regression: public key %s sends native expression %s and preserves the requested key",async(key,nativeKey)=>{
+        const result=await publicTool("key",{key});
+        expect(result.isError).not.toBe(true);
+        expect(payload(result)).toMatchObject({key,provider:"xdotool",status:0});
+        expect(fixture.calls).toEqual([["xdotool",["key","--",nativeKey]]]);
+    });
+
+    it.each(["\n","\r\n"])("regression: an ignored unknown key is a public error despite native exit zero (%j)",async(newline)=>{
+        fixture.result={status:0,stdout:"",stderr:`(symbol) No such key name 'CCC_UNKNOWN_KEY'. Ignoring it.${newline}`};
+        const result=await publicTool("key",{key:"CCC_UNKNOWN_KEY"});
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result)).toContain("No such key name");
+        expect(fixture.calls).toEqual([["xdotool",["key","--","CCC_UNKNOWN_KEY"]]]);
+    });
+
+    it("regression: benign native key stderr remains successful public evidence",async()=>{
+        const stderr="XGetInputFocus returned the focused window of 1. This is likely a bug in the X server.\n";
+        fixture.result={status:0,stdout:"native key output",stderr};
+        const result=await publicTool("key",{key:"Return"});
+        expect(result.isError).not.toBe(true);
+        expect(payload(result)).toMatchObject({key:"Return",stdout:"native key output",stderr,status:0});
+        expect(fixture.calls).toHaveLength(1);
+    });
+
+    it.each([undefined,false])("regression: real public run_flow stops on an ignored key unless continuation is explicit (%s)",async(stopOnError)=>{
+        fixture.results.push({status:0,stdout:"",stderr:"(symbol) No such key name 'CCC_UNKNOWN_KEY'. Ignoring it.\n"});
+        const result=await publicTool("run_flow",{
+            ...(stopOnError===undefined?{}:{stopOnError}),
+            steps:[{tool:"key",arguments:{key:"CCC_UNKNOWN_KEY"}},{tool:"click",arguments:{x:11,y:13}}],
+        });
+        expect(result.isError).toBe(true);
+        expect(payload(result).ok).toBe(false);
+        expect(payload(result).results).toHaveLength(stopOnError===false?2:1);
+        if(stopOnError===undefined)expect(payload(result).stoppedAt).toBe(0);
+        expect(fixture.calls).toEqual([
+            ["xdotool",["key","--","CCC_UNKNOWN_KEY"]],
+            ...(stopOnError===false?[["xdotool",["mousemove","11","13","click","1"]]]:[]),
+        ]);
     });
 });
 

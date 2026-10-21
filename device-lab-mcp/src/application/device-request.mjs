@@ -1045,11 +1045,12 @@ export function createDeviceRequest(ports) {
         if (!policy.ok) return policyDeniedResult(policy);
 
         if (name === "device_list_files" && args.deviceId === CURRENT_DISPLAY_DEVICE_ID) return ports.jsonResult({ ok: false, error: "list-files-unsupported", detail: "Current-display targets do not provide a filesystem adapter." });
-        if (wantsCurrentDisplayDevice(name, args)) {
+        if (wantsCurrentDisplayDevice(name, args) || (args.deviceId === CURRENT_DISPLAY_DEVICE_ID && DEVICE_REQUIRED_TOOLS.has(name))) {
             if (args.backend !== undefined && args.backend !== CURRENT_DISPLAY_DEVICE_ID) return ports.jsonResult({ ok: false, error: "device-backend-mismatch", actualBackend: CURRENT_DISPLAY_DEVICE_ID });
             const common = commonOperation(name, CURRENT_DISPLAY_DEVICE_ID, args);
             if (common.error) return ports.textResult(false, common.error);
-            return /** @type {Result} */ (await handleCurrentDisplayDeviceTool(name, args));
+            const displayResult = await handleCurrentDisplayDeviceTool(name, args);
+            return /** @type {Result} */ (displayResult ?? ports.textResult(false, JSON.stringify({ ok: false, error: "device-tool-unsupported", tool: name, deviceId: args.deviceId, backend: CURRENT_DISPLAY_DEVICE_ID })));
         }
 
         // An explicit route must never first offer the target to a local provider.

@@ -114,6 +114,40 @@ function requestPorts(operation: string, normalized: DeviceArguments = {}): Devi
 }
 
 describe("shared device request admission", () => {
+    it.each(["device_exec", "device_accessibility_snapshot"])("regression: current-display %s refuses locally before default, direct or explicit broker discovery", async operation => {
+        for (const route of [{}, { implicitBroker: false }, { broker: true }, { viaBroker: true }, { autolaunch: true }]) {
+            const args = { deviceId: "x11-current-display", ...route };
+            const ports = requestPorts(operation, args);
+            ports.OWNER_DEVICE_ID_PATTERN = /^[a-z][a-z0-9-]*$/;
+            ports.OPERATION_TOOLS = [{ name: operation, inputSchema: { required: ["deviceId"] } }];
+            const result = await createDeviceRequest(ports).request(operation === "device_exec" ? "exec" : "ui", args);
+            expect(result.selection).toBe("text");
+            expect(JSON.parse(String(result.value))).toEqual({ ok: false, error: "device-tool-unsupported", tool: operation, deviceId: "x11-current-display", backend: "x11-current-display" });
+            expect(ports.invokeBrokerLifecycle).not.toHaveBeenCalled();
+            expect(ports.handleAndroidTool).not.toHaveBeenCalled();
+        }
+    });
+
+    it("regression: unsupported current-display operations preserve explicit backend mismatch", async () => {
+        const args = { deviceId: "x11-current-display", backend: "android-emulator", broker: true };
+        const ports = requestPorts("device_exec", args);
+        ports.OWNER_DEVICE_ID_PATTERN = /^[a-z][a-z0-9-]*$/;
+        ports.OPERATION_TOOLS = [{ name: "device_exec", inputSchema: { required: ["deviceId"] } }];
+        expect(await createDeviceRequest(ports).dispatch("device_exec", args)).toEqual({ selection: "json", value: {
+            ok: false, error: "device-backend-mismatch", actualBackend: "x11-current-display",
+        } });
+    });
+
+    it("regression: current-display file listing retains its dedicated refusal without discovery", async () => {
+        const args = { deviceId: "x11-current-display", broker: true };
+        const ports = requestPorts("device_list_files", args);
+        ports.OWNER_DEVICE_ID_PATTERN = /^[a-z][a-z0-9-]*$/;
+        ports.OPERATION_TOOLS = [{ name: "device_list_files", inputSchema: { required: ["deviceId"] } }];
+        expect(await createDeviceRequest(ports).dispatch("device_list_files", args)).toMatchObject({ selection: "json", value: {
+            ok: false, error: "list-files-unsupported",
+        } });
+    });
+
     it("returns argument and destructive peer refusals before broker or provider work", async () => {
         const ports = requestPorts("device_status");
         ports.toolInputError = () => "deviceId determines the backend; omit backend";

@@ -76,7 +76,7 @@ export function createDesktopDeviceAccess(ports) {
  * @template {import('../ports/desktop-device-access.mjs').DesktopScreenshotStage} Stage
  * @param {import('../ports/desktop-device-access.mjs').X11DeviceAccessPorts<Target,Stage>} ports */
 export function createDisplayDeviceAccess(ports) {
-    function current() { return ports.publicTarget(x11AccessTarget(ports.owner(), ports.display(), ports.available())); }
+    function current() { return ports.publicTarget(x11AccessTarget(ports.owner(), ports.display(), ports.available(), ports.focusAvailable?.() ?? false)); }
     /** @param {string} name
      * @returns {Promise<import('../ports/desktop-device-access.mjs').DesktopAccessOutcome|undefined>} */
     async function handle(name) {

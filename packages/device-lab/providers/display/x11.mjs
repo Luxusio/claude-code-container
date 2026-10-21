@@ -32,6 +32,12 @@ function observeCommand(receipt) {
     return { ok: receipt.status === 0, evidence: { receipt } };
 }
 
+const X11_KEY_ALIASES = new Map([
+    ["Enter", "Return"], ["Backspace", "BackSpace"],
+    ["ArrowUp", "Up"], ["ArrowDown", "Down"],
+    ["ArrowLeft", "Left"], ["ArrowRight", "Right"],
+]);
+
 /** @type {import('../ports/desktop-control-transfer.mjs').X11Ports} */
 const x11Ports = {
     variant: "x11",
@@ -49,7 +55,12 @@ const x11Ports = {
     movePointer: (x, y) => observeCommand(run("xdotool", ["mousemove", String(x), String(y)])),
     click: (x, y, button) => observeCommand(run("xdotool", ["mousemove", String(x), String(y), "click", button === "right" ? "3" : "1"])),
     doubleClick: (x, y, button) => observeCommand(run("xdotool", ["mousemove", String(x), String(y), "click", "--repeat", "2", button === "right" ? "3" : "1"])),
-    key: key => observeCommand(run("xdotool", ["key", "--", key])),
+    key: key => {
+        const nativeKey = key?.split("+").map(part => X11_KEY_ALIASES.get(part) ?? part).join("+");
+        const receipt = run("xdotool", ["key", "--", nativeKey]);
+        const ignoredKey = /^\(symbol\) No such key name [^\r\n]+\. Ignoring it\.\r?$/m.test(receipt.stderr || "");
+        return { ok: receipt.status === 0 && !ignoredKey, evidence: { receipt } };
+    },
     type: text => observeCommand(run("xdotool", ["type", "--clearmodifiers", "--", text])),
     scroll: (x, y, direction, amount) => {
         const buttonId = direction === "up" ? 4 : direction === "down" ? 5 : direction === "left" ? 6 : 7;
@@ -86,6 +97,11 @@ const displayAccessPorts = {
     owner: () => ownerId(),
     display: () => DISPLAY,
     available: () => x11Available(),
+    focusAvailable: () => {
+        if (!x11Available()) return false;
+        const receipt = runWithTimeout("xdotool", ["getactivewindow"], 1000);
+        return receipt.status === 0 && /^[1-9][0-9]{0,19}$/.test(receipt.stdout.trim());
+    },
     publicTarget: target => withTargetStatus(target),
     stageScreenshot: () => {
         const tempRoot = mkdtempSync(join(tmpdir(), "ccc-x11-screenshot-"));
