@@ -58,7 +58,7 @@ const x11Ports = {
     key: key => {
         const nativeKey = key?.split("+").map(part => X11_KEY_ALIASES.get(part) ?? part).join("+");
         const receipt = run("xdotool", ["key", "--", nativeKey]);
-        const ignoredKey = /^\(symbol\) No such key name [^\r\n]+\. Ignoring it\.\r?$/m.test(receipt.stderr || "");
+        const ignoredKey = /^\(symbol\) No such key name [^\n]+\. Ignoring it\.\r?$/m.test(receipt.stderr || "");
         return { ok: receipt.status === 0 && !ignoredKey, evidence: { receipt } };
     },
     type: text => observeCommand(run("xdotool", ["type", "--clearmodifiers", "--", text])),

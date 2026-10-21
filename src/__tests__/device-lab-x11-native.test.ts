@@ -192,9 +192,11 @@ describe.skipIf(!nativeAvailable)("isolated native X11 public input", () => {
         expect(enter.isError).not.toBe(true);
         expect(await observedKeys()).toEqual(["Return", "Return"]);
 
-        const invalid = await call("key", { key: "CCC_NATIVE_UNKNOWN_KEY_1236" });
-        expect(invalid.isError).toBe(true);
-        expect(await observedKeys(), "invalid key must not generate an event in the owned window").toEqual(["Return", "Return"]);
+        for (const key of ["CCC_NATIVE_UNKNOWN_KEY_1236", "CCC_UNKNOWN\rKEY", "CCC_UNKNOWN_KEY\r"]) {
+            const invalid = await call("key", { key });
+            expect(invalid.isError, `invalid native key ${JSON.stringify(key)} must fail publicly`).toBe(true);
+            expect(await observedKeys(), `invalid key ${JSON.stringify(key)} must not generate an event in the owned window`).toEqual(["Return", "Return"]);
+        }
         expect(isolated.commands).not.toContain("bash");
     });
 

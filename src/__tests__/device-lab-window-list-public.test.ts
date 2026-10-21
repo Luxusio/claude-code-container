@@ -61,6 +61,25 @@ describe("X11 public key regressions",()=>{
         expect(fixture.calls).toEqual([["xdotool",["key","--","CCC_UNKNOWN_KEY"]]]);
     });
 
+    it.each(["CCC_UNKNOWN\rKEY","CCC_UNKNOWN_KEY\r"])("regression: an ignored unknown key containing carriage return remains a public error (%j)",async key=>{
+        fixture.result={status:0,stdout:"",stderr:`(symbol) No such key name '${key}'. Ignoring it.\n`};
+        const result=await publicTool("key",{key});
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result)).toContain("No such key name");
+        expect(fixture.calls).toEqual([["xdotool",["key","--",key]]]);
+    });
+
+    it.each(["CCC_UNKNOWN\rKEY","CCC_UNKNOWN_KEY\r"])("regression: default public run_flow stops when the ignored key contains carriage return (%j)",async key=>{
+        fixture.results.push({status:0,stdout:"",stderr:`(symbol) No such key name '${key}'. Ignoring it.\n`});
+        const result=await publicTool("run_flow",{
+            steps:[{tool:"key",arguments:{key}},{tool:"click",arguments:{x:11,y:13}}],
+        });
+        expect(result.isError).toBe(true);
+        expect(payload(result)).toMatchObject({ok:false,stoppedAt:0});
+        expect(payload(result).results).toHaveLength(1);
+        expect(fixture.calls).toEqual([["xdotool",["key","--",key]]]);
+    });
+
     it("regression: benign native key stderr remains successful public evidence",async()=>{
         const stderr="XGetInputFocus returned the focused window of 1. This is likely a bug in the X server.\n";
         fixture.result={status:0,stdout:"native key output",stderr};
