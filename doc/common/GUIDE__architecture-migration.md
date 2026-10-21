@@ -879,6 +879,33 @@ for the complete compatibility and verification requirements.
 Known ceiling: creation with an unknown outcome or no exact returned ID cannot
 authorize cleanup — upgrade when a separate reconciliation policy is approved.
 
+## Existing container run contract
+
+`src/application/container-run-contract.ts` owns strict admission and safe
+deferral through the required semantic ports in
+`src/ports/container-run-contract.ts`. Strict admission compares the desired
+image and user labels, then checks management, project identity, mount proof,
+auth/init/lab configuration and the exact device/group set. Deferral requires a
+running exact target, effective execution user and current mount proof, while
+allowing missing additive settings and only a subset of expected devices/groups.
+An unavailable proof is indeterminate for strict admission and refusal for
+deferral; it never grants execution or cleanup authority.
+
+`src/adapters/container-run-contract-observations.ts` keeps inspection records,
+runtime-selected schema differences, path comparison and native coercions
+outside the application. Fixed readers preserve staged decisions rather than
+decoding later fields before an earlier refusal. Every admission gets fresh
+inspection. Docker composition binds the existing mount-verification factory,
+bind guard, exact container ID, effective-user proof and diagnostics; it does
+not duplicate mount policy or acquire another runtime invocation. The shared
+fingerprint syntax check remains pure and also serves retained facade callers.
+
+The [derived admission contract](../runtime/REQ__container-run-contract.md)
+records strict/preflight/deferred behavior and error ordering. Focused semantic,
+native-decoding and consumed type contracts complement the existing public
+Docker, lifecycle, mount and runtime-failure tests. Their bounded results do
+not establish whole-architecture or native-platform acceptance.
+
 Known ceiling: legacy unexpected-error formatting remains, including `.message`
 access on primitive/null/undefined primaries when absence is unproved. This
 conversion does not universally normalize or sanitize native exceptions.

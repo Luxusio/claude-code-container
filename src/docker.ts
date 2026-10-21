@@ -93,6 +93,8 @@ import {
     withProjectFamilyLifecycleLock,
 } from "./session.js";
 import { createContainerMountVerification } from "./application/container-mount-verification.js";
+import { createContainerRunContract, mountIdentityLabelIsWellFormed } from "./application/container-run-contract.js";
+import { createNativeContainerRunContractPorts } from "./adapters/container-run-contract-observations.js";
 import type { StoppedMountPreflight } from "./ports/container-mount-verification.js";
 import {
     assertBindMountSourceIdentity,
@@ -126,12 +128,6 @@ const DIST_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const DEVICE_BROKER_AUTH_CONTAINER_FILE = "/run/ccc-device-broker-auth/owner.json";
 const DEVICE_LAB_MOUNT_IDENTITY_LABEL = "ccc.device-lab.mount-identity";
 const PROJECT_MOUNT_IDENTITY_LABEL = "ccc.project.mount-identity";
-
-/** Persisted fingerprints are hints; current bind proof decides stale values. */
-function mountIdentityLabelIsWellFormed(value: unknown): boolean {
-    return value === undefined || value === ""
-        || (typeof value === "string" && /^[a-f0-9]{64}$/.test(value));
-}
 
 const DEVICE_LAB_MOUNT_CONTRACT_VERSION = "2";
 const VERIFICATION_RETRY_DELAYS_MS = [100, 200, 400, 800] as const;
@@ -1291,17 +1287,6 @@ export function syncClipboardShims(containerName: string, distDir: string): void
     }
 }
 
-function envMap(values: unknown): Map<string, string> {
-    const map = new Map<string, string>();
-    if (!Array.isArray(values)) return map;
-    for (const value of values) {
-        const text = String(value);
-        const idx = text.indexOf("=");
-        if (idx > 0) map.set(text.slice(0, idx), text.slice(idx + 1));
-    }
-    return map;
-}
-
 function inspectContainerJsonWithRetry(containerId: string): Record<string, unknown> | null {
     return withBoundedVerificationRetry(
         () => inspectContainerJsonOnce(containerId),
@@ -1363,74 +1348,41 @@ function verifyCreatedContainerMounts(
         .application.verifyCreated(containerId, projectMountIdentity);
 }
 
-function hasKvmDevice(devices: unknown): boolean {
-    return JSON.stringify(devices ?? []).includes("/dev/kvm");
+function containerRunContract(
+    containerId: string,
+    requiredMounts: RequiredContainerMount[],
+    labRunner: LabRunnerRunConfig,
+    projectPath: string,
+    identity: ContainerUserIdentity,
+    reportReason: (reason: string) => void,
+    bindGuard?: RuntimeBindGuard,
+) {
+    return createContainerRunContract({
+        containerId,
+        identity,
+        labRunner,
+        brokerAuthContainerPath: DEVICE_BROKER_AUTH_CONTAINER_FILE,
+    }, createNativeContainerRunContractPorts({
+        containerId,
+        projectPath,
+        brokerAuthContainerPath: DEVICE_BROKER_AUTH_CONTAINER_FILE,
+        requiredMounts,
+        inspect: () => inspectContainerJsonWithRetry(containerId),
+        selectedRuntime: () => getRuntimeInfo().runtime,
+        projectPathMatches: projectPathIdentityMatches,
+        effectiveUserMatches: currentIdentity => containerExecIdentityMatches(containerId, currentIdentity),
+        verifyMounts: (observed, mode) => mode === "stopped-preflight"
+            ? preflightStoppedContainerMounts(containerId, observed, requiredMounts, getCurrentImageId, bindGuard)
+            : verifyRequiredContainerMounts(containerId, observed, requiredMounts, mode, false, bindGuard),
+        report: reportReason,
+        debugStrictFailure: reason => {
+            if (process.env.DEBUG) console.error(`[ccc:debug] containerMatchesRunContract: ${reason}`);
+        },
+        isRuntimeUnavailable: error => error instanceof ContainerEngineUnavailableError,
+    }));
 }
 
-function deviceEntries(devices: unknown): Array<{ hostPath: string; containerPath: string }> {
-    if (!Array.isArray(devices)) return [];
-    return devices.map((device) => {
-        if (!device || typeof device !== "object") return null;
-        const entry = device as { PathOnHost?: unknown; PathInContainer?: unknown };
-        return {
-            hostPath: String(entry.PathOnHost || ""),
-            containerPath: String(entry.PathInContainer || ""),
-        };
-    }).filter((entry): entry is { hostPath: string; containerPath: string } => Boolean(entry));
-}
-
-function hasDeviceRequests(deviceRequests: unknown): boolean {
-    return Array.isArray(deviceRequests) && deviceRequests.length > 0;
-}
-
-type InspectedHostConfig = {
-    Devices: unknown[] | null;
-    DeviceRequests: unknown[] | null;
-    GroupAdd: unknown[] | null;
-    Privileged: boolean;
-};
-
-function inspectedHostConfig(value: unknown): InspectedHostConfig | null {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const config = value as Record<string, unknown>;
-    if (typeof config.Privileged !== "boolean") return null;
-    // Podman 4.9.3's inspect schema omits Docker's DeviceRequests field.
-    // Runtime selection is trusted; inspected payloads cannot select this exception.
-    const normalized = !Object.hasOwn(config, "DeviceRequests") && getRuntimeInfo().runtime === "podman"
-        ? { ...config, DeviceRequests: [] }
-        : config;
-    for (const key of ["Devices", "DeviceRequests", "GroupAdd"] as const) {
-        if (!Object.hasOwn(normalized, key) || (normalized[key] !== null && !Array.isArray(normalized[key]))) {
-            return null;
-        }
-    }
-    return normalized as InspectedHostConfig;
-}
-
-function devicesMatchExpectedKvmOnly(devices: unknown, kvmDevicePath: string | undefined): boolean {
-    if (!kvmDevicePath) return false;
-    const actual = deviceEntries(devices);
-    return actual.length === 1
-        && actual[0].hostPath === kvmDevicePath
-        && actual[0].containerPath === kvmDevicePath;
-}
-
-function groupAddIncludes(groupAdd: unknown, groupId: number): boolean {
-    if (!Array.isArray(groupAdd)) return false;
-    return groupAdd.map(String).includes(String(groupId));
-}
-
-function groupAddMatchesExpected(groupAdd: unknown, groupId: number | undefined): boolean {
-    const actual = Array.isArray(groupAdd) ? groupAdd.map(String) : [];
-    const expected = groupId === undefined ? [] : [String(groupId)];
-    return actual.length === expected.length && expected.every((value) => actual.includes(value));
-}
-
-/**
- * Check if an existing container has the required mounts and immutable VM
- * contract. Env, device, and group wiring cannot be changed by `docker start`,
- * so stale containers are recreated.
- */
+/** Strict existing-container admission preserves preflight and live proof differences. */
 function containerMatchesRunContract(
     containerName: string,
     requiredMounts: RequiredContainerMount[],
@@ -1442,120 +1394,11 @@ function containerMatchesRunContract(
     phase: "preflight" | "live" = "live",
     bindGuard?: RuntimeBindGuard,
 ): boolean | null {
-    const inspectedResult = inspectContainerJsonWithRetry(containerName);
-    if (!inspectedResult) {
-        reportMismatch("container contract inspection failed");
-        return null;
-    }
-
-    try {
-        const failContract = (reason: string) => {
-            reportMismatch(reason);
-            if (process.env.DEBUG) console.error(`[ccc:debug] containerMatchesRunContract: ${reason}`);
-            return false;
-        };
-        const inspected = inspectedResult as {
-            Id?: unknown;
-            State?: { Running?: unknown };
-            Mounts?: InspectedContainerMount[];
-            Config?: { Env?: string[]; Labels?: Record<string, string> };
-            HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean; Init?: unknown };
-        };
-        if (phase === "preflight" && typeof inspected.State?.Running !== "boolean") {
-            reportMismatch("container running state inspection failed");
-            return null;
-        }
-        if (phase === "live" && inspected.State?.Running !== true) {
-            reportMismatch("container is not confirmed running during live verification");
-            return null;
-        }
-        if (normalizeImageId(String(inspectedResult.Image)) !== normalizeImageId(desiredImageId)
-            || !Object.entries(getIdentityLabels(identity)).every(([key, value]) => inspected.Config?.Labels?.[key] === value)) {
-            return failContract("image or user identity changed");
-        }
-        const mounts = inspected.Mounts || [];
-        const env = envMap(inspected.Config?.Env);
-        const hostConfig = inspectedHostConfig(inspected.HostConfig);
-        if (!hostConfig) return failContract("container host configuration is malformed");
-        if (inspected.Config?.Labels?.["ccc.managed"] !== "true") {
-            return failContract("container is not CCC-managed");
-        }
-        const labeledProjectPath = inspected.Config?.Labels?.["ccc.project.path"];
-        if (!labeledProjectPath || !projectPathIdentityMatches(labeledProjectPath, projectPath)) {
-            return failContract("project path identity changed");
-        }
-        const labeledProjectIdentity =
-            inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL];
-        if (!mountIdentityLabelIsWellFormed(labeledProjectIdentity)) {
-            return failContract("project mount identity is malformed");
-        }
-        if (!mountIdentityLabelIsWellFormed(inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL])) {
-            return failContract("device-lab mount identity is malformed");
-        }
-        const devices = hostConfig.Devices;
-        const deviceRequests = hostConfig.DeviceRequests;
-        const groupAdd = hostConfig.GroupAdd;
-        if (typeof inspected.Id !== "string") {
-            return failContract("bind mount identities could not be verified");
-        }
-        if (inspected.Id !== containerName) {
-            return failContract("container identity changed during contract inspection");
-        }
-        const staticStoppedPreflight = phase === "preflight" && inspected.State?.Running === false;
-        const mountVerification = staticStoppedPreflight
-            ? preflightStoppedContainerMounts(inspected.Id, mounts, requiredMounts, getCurrentImageId, bindGuard)
-            : verifyRequiredContainerMounts(inspected.Id, mounts, requiredMounts, "strict", false, bindGuard);
-        if (mountVerification.kind === "retryable") {
-            reportMismatch(mountVerification.reason);
-            return null;
-        }
-        if (mountVerification.kind !== "verified" && mountVerification.kind !== "preflight-verified") {
-            return failContract(mountVerification.reason);
-        }
-        const authRequired = requiredMounts.some((mount) => mount.containerPath === DEVICE_BROKER_AUTH_CONTAINER_FILE);
-        const authMounted = mounts.some((mount) => mount.Destination === DEVICE_BROKER_AUTH_CONTAINER_FILE);
-        if (authRequired !== authMounted) return failContract("stale isolated device broker auth mount");
-        if (authRequired && env.get("CCC_DEVICE_BROKER_AUTH_FILE") !== DEVICE_BROKER_AUTH_CONTAINER_FILE) {
-            return failContract("missing isolated device broker auth file environment");
-        }
-        if (!authRequired && env.has("CCC_DEVICE_BROKER_AUTH_FILE")) {
-            return failContract("stale isolated device broker auth file environment");
-        }
-        if (hostConfig.Privileged) return failContract("stale privileged container");
-        // Docker reports null and Podman omits the key when --init was not used.
-        if (inspected.HostConfig?.Init !== true) return failContract("missing init process");
-        if (hasDeviceRequests(deviceRequests)) return failContract("unexpected host device requests");
-        if (env.get("CCC_LAB_RUNNER") !== "1") return failContract("missing CCC_LAB_RUNNER=1");
-        if (env.get("CCC_LAB_RUNNER_STATUS") !== labRunner.status) return failContract(`CCC_LAB_RUNNER_STATUS is ${env.get("CCC_LAB_RUNNER_STATUS") || "unset"}, expected ${labRunner.status}`);
-        if (env.get("CCC_LAB_STATE_DIR") !== labRunner.stateContainerDir) return failContract(`CCC_LAB_STATE_DIR is ${env.get("CCC_LAB_STATE_DIR") || "unset"}, expected ${labRunner.stateContainerDir}`);
-        if (env.get("CCC_LAB_NET_MODE") !== labRunner.networkMode) return failContract(`CCC_LAB_NET_MODE is ${env.get("CCC_LAB_NET_MODE") || "unset"}, expected ${labRunner.networkMode}`);
-        if (labRunner.unsupportedReason && env.get("CCC_LAB_RUNNER_UNSUPPORTED_REASON") !== labRunner.unsupportedReason) return failContract("unsupported reason changed");
-        if (!labRunner.unsupportedReason && env.has("CCC_LAB_RUNNER_UNSUPPORTED_REASON")) return failContract("stale unsupported reason env");
-        if (labRunner.status === "ready") {
-            if (!hasKvmDevice(devices)) return failContract("missing /dev/kvm device");
-            if (!devicesMatchExpectedKvmOnly(devices, labRunner.kvmDevicePath)) return failContract("unexpected VM device set");
-            if (labRunner.kvmGroupId !== undefined && !groupAddIncludes(groupAdd, labRunner.kvmGroupId)) return failContract(`missing kvm group ${labRunner.kvmGroupId}`);
-            if (!groupAddMatchesExpected(groupAdd, labRunner.kvmGroupId)) return failContract("unexpected extra VM group-add");
-        } else {
-            if (deviceEntries(devices).length > 0) return failContract("stale device on unsupported config");
-            if (Array.isArray(groupAdd) && groupAdd.length > 0) return failContract("stale group-add on unsupported config");
-        }
-        return true;
-    } catch (error) {
-        if (error instanceof ContainerEngineUnavailableError) throw error;
-        reportMismatch("container contract inspection failed");
-        return null;
-    }
+    return containerRunContract(containerName, requiredMounts, labRunner, projectPath, identity,
+        reportMismatch, bindGuard).matches(desiredImageId, phase);
 }
 
-/**
- * A running managed container remains joinable while additive mount and
- * device-broker contract updates wait for the next stopped-container rebuild.
- * Core project identity, the writable project bind destination, and host
- * privilege expansion still fail closed. The host source is deferred because
- * Docker Desktop may report a different representation of the same Windows
- * path than the current CLI process.
- */
+/** A running container may defer additive updates after current identity and mount proof. */
 function containerRunContractIsSafeToDefer(
     containerName: string,
     requiredMounts: RequiredContainerMount[],
@@ -1565,82 +1408,8 @@ function containerRunContractIsSafeToDefer(
     reportUnsafe: (reason: string) => void = () => undefined,
     bindGuard?: RuntimeBindGuard,
 ): boolean {
-    const unsafe = (reason: string) => {
-        reportUnsafe(reason);
-        return false;
-    };
-    const inspectedResult = inspectContainerJsonWithRetry(containerName);
-    if (!inspectedResult) return unsafe("container contract inspection failed");
-    try {
-        const inspected = inspectedResult as {
-            Id?: unknown;
-            State?: { Running?: unknown };
-            Mounts?: InspectedContainerMount[];
-            Config?: { Env?: string[]; Labels?: Record<string, string> };
-            HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean };
-        };
-        const labels = inspected.Config?.Labels;
-        if (labels?.["ccc.managed"] !== "true") return unsafe("container is not CCC-managed");
-        if (!labels?.["ccc.project.path"]
-            || !projectPathIdentityMatches(labels["ccc.project.path"], projectPath)) {
-            return unsafe("project path identity changed");
-        }
-        const labeledProjectIdentity = labels[PROJECT_MOUNT_IDENTITY_LABEL];
-        if (!mountIdentityLabelIsWellFormed(labeledProjectIdentity)) {
-            return unsafe("project mount identity is malformed");
-        }
-        const hostConfig = inspectedHostConfig(inspected.HostConfig);
-        if (!hostConfig) return unsafe("container host configuration is malformed");
-        if (hostConfig.Privileged) return unsafe("stale privileged container");
-        const mounts = inspected.Mounts || [];
-        if (typeof inspected.Id !== "string") {
-            return unsafe("bind mount identities could not be verified");
-        }
-        if (inspected.Id !== containerName) {
-            return unsafe("container identity changed during contract inspection");
-        }
-        // Preserve safe-defer policy, but never run live probes on a known stopped
-        // or unknown-state object after a static preflight mismatch.
-        if (inspected.State?.Running !== true) return unsafe("container is not confirmed running for safe defer");
-        if (!containerExecIdentityMatches(containerName, identity)) return unsafe("container UID/GID does not match the host identity");
-        const mountVerification = verifyRequiredContainerMounts(
-            inspected.Id,
-            mounts,
-            requiredMounts,
-            "safe-defer",
-            false,
-            bindGuard,
-        );
-        if (mountVerification.kind === "retryable") {
-            return unsafe(mountVerification.reason);
-        }
-        if (mountVerification.kind === "mismatch") {
-            return unsafe(mountVerification.reason);
-        }
-        const devices = deviceEntries(hostConfig.Devices);
-        if (hasDeviceRequests(hostConfig.DeviceRequests)) {
-            return unsafe("unexpected host device requests");
-        }
-        const groupAdd = Array.isArray(hostConfig.GroupAdd)
-            ? hostConfig.GroupAdd.map(String)
-            : [];
-        if (labRunner.status === "ready") {
-            const expectedDevices = labRunner.kvmDevicePath ? [labRunner.kvmDevicePath] : [];
-            if (devices.some((device) => !expectedDevices.includes(device.hostPath) || device.hostPath !== device.containerPath)) {
-                return unsafe("unexpected VM device set");
-            }
-            const expectedGroups = labRunner.kvmGroupId === undefined ? [] : [String(labRunner.kvmGroupId)];
-            if (groupAdd.some((group) => !expectedGroups.includes(group))) {
-                return unsafe("unexpected extra VM group-add");
-            }
-        } else if (devices.length > 0 || groupAdd.length > 0) {
-            return unsafe("stale VM device or group on unsupported config");
-        }
-        return true;
-    } catch (error) {
-        if (error instanceof ContainerEngineUnavailableError) throw error;
-        return unsafe("container contract inspection failed");
-    }
+    return containerRunContract(containerName, requiredMounts, labRunner, projectPath, identity,
+        reportUnsafe, bindGuard).safeToDefer();
 }
 
 // Host ~/.gitconfig is copied after the container starts instead of bind-mounted.
