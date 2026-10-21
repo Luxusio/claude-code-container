@@ -1639,8 +1639,7 @@ async function verifyAuthenticatedBrokerGeneration(host, port, launch, options, 
         return null;
     }
     if (process.env.NODE_ENV === "test"
-        && (process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER === "1"
-            || options.autolaunch === false)) {
+        && process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER === "1") {
         return { ...(launch?.runtime || readBrokerRuntime() || {}), testOnly: true };
     }
     const probeTimeoutMs = options.brokerProbeTimeoutMs ?? options.timeoutMs;
@@ -1671,7 +1670,8 @@ async function verifyAuthenticatedBrokerGeneration(host, port, launch, options, 
 export const verifyAuthenticatedBrokerGenerationForTest = verifyAuthenticatedBrokerGeneration;
 
 function authenticatedBrokerHeaders(token, owner, runtime, body) {
-    if (runtime.testOnly === true && process.env.NODE_ENV === "test") {
+    if (runtime.testOnly === true && process.env.NODE_ENV === "test"
+        && process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER === "1") {
         return { "x-ccc-device-token": token };
     }
     const timestamp = String(Date.now());

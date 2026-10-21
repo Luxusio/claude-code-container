@@ -68,6 +68,23 @@ function sendCurrentBrokerStatus(req: { url?: string }, res: { setHeader(name: s
     return true;
 }
 
+// These allocated fake servers prove credential selection and transport behavior,
+// and cannot attest a broker process. Authorize only their individual requests.
+async function withUnverifiedBrokerFixture<T>(operation: () => Promise<T>): Promise<T> {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalEscape = process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+    process.env.NODE_ENV = "test";
+    process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = "1";
+    try {
+        return await operation();
+    } finally {
+        if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = originalNodeEnv;
+        if (originalEscape === undefined) delete process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+        else process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = originalEscape;
+    }
+}
+
 describe("device-lab MCP", () => {
     it("requires the current Hyper-V computer-use broker capability and caps screenshot responses separately", () => {
         expect(BROKER_RPC_SCREENSHOT_RESPONSE_LIMIT_BYTES).toBe(8 * 1024 * 1024);
@@ -101,6 +118,49 @@ describe("device-lab MCP", () => {
         );
         expect(authenticatedBrokerHeadersForTest(token, owner, runtime, body)["x-ccc-device-auth-nonce"])
             .not.toBe(headers["x-ccc-device-auth-nonce"]);
+    });
+
+    it.each([
+        { nodeEnv: "test", escape: undefined, testOnly: true, legacy: false },
+        { nodeEnv: "test", escape: "0", testOnly: true, legacy: false },
+        { nodeEnv: "test", escape: "1", testOnly: true, legacy: true },
+        { nodeEnv: "test", escape: "1", testOnly: false, legacy: false },
+        { nodeEnv: "production", escape: "1", testOnly: true, legacy: false },
+    ])("uses legacy headers only for deliberately authorized test-only runtimes: $nodeEnv, flag $escape, testOnly $testOnly", ({ nodeEnv, escape, testOnly, legacy }) => {
+        const originalNodeEnv = process.env.NODE_ENV;
+        const originalEscape = process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+        try {
+            process.env.NODE_ENV = nodeEnv;
+            if (escape === undefined) delete process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+            else process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = escape;
+            const token = "a".repeat(64);
+            const owner = TEST_BROKER_OWNER_ID;
+            const runtime = {
+                startedAt: "2026-07-29T00:00:00.000Z",
+                processStartToken: "windows:2026-07-29T00:00:00.0000000Z",
+                ...(testOnly ? { testOnly: true } : {}),
+            };
+            const body = JSON.stringify({ ownerId: owner, method: "broker.echo", params: { value: 1 } });
+            const headers = authenticatedBrokerHeadersForTest(token, owner, runtime, body);
+            if (legacy) {
+                expect(headers).toEqual({ "x-ccc-device-token": token });
+            } else {
+                expect(headers).not.toHaveProperty("x-ccc-device-token");
+                expect(headers["x-ccc-device-auth-nonce"]).toMatch(/^[a-f0-9]{32}$/);
+                expect(headers["x-ccc-device-broker-started-at"]).toBe(runtime.startedAt);
+                expect(headers["x-ccc-device-broker-start-token"]).toBe(runtime.processStartToken);
+                const payload = [
+                    "v1", owner, headers["x-ccc-device-auth-timestamp"], headers["x-ccc-device-auth-nonce"],
+                    runtime.startedAt, runtime.processStartToken, createHash("sha256").update(body).digest("hex"),
+                ].join("\n");
+                expect(headers["x-ccc-device-auth"]).toBe(createHmac("sha256", token).update(payload).digest("hex"));
+            }
+        } finally {
+            if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+            else process.env.NODE_ENV = originalNodeEnv;
+            if (originalEscape === undefined) delete process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+            else process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = originalEscape;
+        }
     });
 
     it("keeps the unverified broker fixture escape disabled outside explicit test mode", () => {
@@ -588,11 +648,11 @@ describe("device-lab MCP", () => {
             await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
             const options = { hostCandidates: ["127.0.0.1"], port: (server.address() as AddressInfo).port, timeoutMs: 1000, autolaunch: false };
             try {
-                const status = await brokerStatus(options);
+                const status = await withUnverifiedBrokerFixture(() => brokerStatus(options));
                 expect(status.available).toBe(true);
                 expect(status.rpcReady).toBe(expectedSecret !== null);
                 for (const method of ["broker.inventory", "broker.backends"]) {
-                    const result = await brokerRpc({ ...options, method });
+                    const result = await withUnverifiedBrokerFixture(() => brokerRpc({ ...options, method }));
                     expect(result.ok).toBe(expectedSecret !== null);
                     if (!expectedSecret) expect(result.error).toBe("broker-owner-auth-unavailable");
                 }
@@ -638,13 +698,13 @@ describe("device-lab MCP", () => {
         const address = server.address() as AddressInfo;
 
         try {
-            const result = await brokerRpc({
+            const result = await withUnverifiedBrokerFixture(() => brokerRpc({
                 method: "broker.echo",
                 hostCandidates: ["127.0.0.1"],
                 port: address.port,
                 timeoutMs: 1000,
                 autolaunch: false,
-            });
+            }));
             expect(result).toEqual(expect.objectContaining({
                 ok: false,
                 ownerId,
@@ -680,13 +740,13 @@ describe("device-lab MCP", () => {
         const address = server.address() as AddressInfo;
 
         try {
-            const result = await brokerRpc({
+            const result = await withUnverifiedBrokerFixture(() => brokerRpc({
                 method: "broker.echo",
                 hostCandidates: ["127.0.0.1"],
                 port: address.port,
                 timeoutMs: 1000,
                 autolaunch: false,
-            });
+            }));
             expect(result).toEqual(expect.objectContaining({ ok: false, ownerId, error: "broker-owner-auth-unavailable" }));
             expect(rpcRequests).toBe(0);
             expect(readFileSync(target, "utf8")).toBe(JSON.stringify({ ownerId, secret: "d".repeat(64), version: 1 }));
@@ -720,13 +780,13 @@ describe("device-lab MCP", () => {
         const address = server.address() as AddressInfo;
 
         try {
-            const result = await brokerRpc({
+            const result = await withUnverifiedBrokerFixture(() => brokerRpc({
                 method: "broker.echo",
                 hostCandidates: ["127.0.0.1"],
                 port: address.port,
                 timeoutMs: 1000,
                 autolaunch: false,
-            });
+            }));
             expect(result).toEqual(expect.objectContaining({ ok: false, ownerId, error: "broker-owner-auth-unavailable" }));
             expect(rpcRequests).toBe(0);
             expect(JSON.parse(readFileSync(join(externalRoot, `${ownerId}.json`), "utf8"))).toEqual({
@@ -814,13 +874,13 @@ describe("device-lab MCP", () => {
         const port = (server.address() as AddressInfo).port;
 
         try {
-            const result = await brokerRpc({
+            const result = await withUnverifiedBrokerFixture(() => brokerRpc({
                 method: "broker.echo",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 timeoutMs: 3000,
                 autolaunch: false,
-            });
+            }));
             expect(result).toEqual(expect.objectContaining({
                 ok: false,
                 error: "broker-response-too-large",
@@ -851,13 +911,13 @@ describe("device-lab MCP", () => {
         const port = (server.address() as AddressInfo).port;
 
         try {
-            const result = await brokerRpc({
+            const result = await withUnverifiedBrokerFixture(() => brokerRpc({
                 method: "broker.echo",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 timeoutMs: 3000,
                 autolaunch: false,
-            });
+            }));
             expect(result).toEqual(expect.objectContaining({
                 ok: false,
                 ownerId,
@@ -888,26 +948,26 @@ describe("device-lab MCP", () => {
         await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
         const port = (server.address() as AddressInfo).port;
         try {
-            const result = await brokerDeviceTool({
+            const result = await withUnverifiedBrokerFixture(() => brokerDeviceTool({
                 backend: "windows-vm", deviceId: "test-screenshot", tool: "device_screenshot",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 timeoutMs: 3000,
                 autolaunch: false,
-            });
+            }));
             expect(result).toEqual(expect.objectContaining({
                 ok: false,
                 error: "broker-response-too-large",
                 selected: expect.objectContaining({ maxBytes: BROKER_RPC_SCREENSHOT_RESPONSE_LIMIT_BYTES }),
             }));
             // Other desktop providers keep the general RPC limit for their screenshots.
-            const sandbox = await brokerDeviceTool({
+            const sandbox = await withUnverifiedBrokerFixture(() => brokerDeviceTool({
                 backend: "windows-sandbox", deviceId: "test-screenshot", tool: "device_screenshot",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 timeoutMs: 3000,
                 autolaunch: false,
-            });
+            }));
             expect(sandbox).not.toEqual(expect.objectContaining({ error: "broker-response-too-large" }));
         } finally {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -944,14 +1004,14 @@ describe("device-lab MCP", () => {
         });
 
         try {
-            const result = await brokerRpc({
+            const result = await withUnverifiedBrokerFixture(() => brokerRpc({
                 method: "broker.echo",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 rpcTimeoutMs: 1000,
                 timeoutMs: 1000,
                 autolaunch: false,
-            });
+            }));
             expect(result).toEqual(expect.objectContaining({
                 ok: true,
                 ownerId,
@@ -998,14 +1058,14 @@ describe("device-lab MCP", () => {
         const port = (server.address() as AddressInfo).port;
 
         try {
-            const result = await brokerRpc({
+            const result = await withUnverifiedBrokerFixture(() => brokerRpc({
                 method: "broker.echo",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 rpcTimeoutMs: 1000,
                 timeoutMs: 1000,
                 autolaunch: false,
-            });
+            }));
             expect(result).toEqual(expect.objectContaining({
                 ok: false,
                 ownerId,
@@ -1034,14 +1094,14 @@ describe("device-lab MCP", () => {
 
         try {
             const startedAt = Date.now();
-            const result = await brokerRpc({
+            const result = await withUnverifiedBrokerFixture(() => brokerRpc({
                 method: "broker.echo",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 rpcTimeoutMs: 50,
                 timeoutMs: 1000,
                 autolaunch: false,
-            });
+            }));
             expect(Date.now() - startedAt).toBeLessThan(500);
             expect(result).toEqual(expect.objectContaining({
                 ok: false,
@@ -1073,14 +1133,14 @@ describe("device-lab MCP", () => {
         const port = (server.address() as AddressInfo).port;
 
         try {
-            const result = await brokerRpc({
+            const result = await withUnverifiedBrokerFixture(() => brokerRpc({
                 method: "broker.echo",
                 hostCandidates: ["127.0.0.1"],
                 port,
                 rpcTimeoutMs: 1000,
                 timeoutMs: 1000,
                 autolaunch: false,
-            });
+            }));
             expect(result).toEqual(expect.objectContaining({
                 ok: false,
                 ownerId,
@@ -1148,13 +1208,13 @@ describe("device-lab MCP", () => {
     it.each(["windows-vm", "linux-vm", "macos-vm"])("does not replay a generated-ID %s birth across broker candidates after an accepted POST disconnects", async (backend) => {
         const fixture = await startCandidateDisconnectFixture("rpc");
         try {
-            const result = await brokerCommand({
+            const result = await withUnverifiedBrokerFixture(() => brokerCommand({
                 ...fixture.options,
                 action: "invoke",
                 backend,
                 command: "device_create",
                 name: "同じ VM display label",
-            });
+            }));
             expect(fixture.requests, JSON.stringify(result)).toHaveLength(1);
             expect(fixture.counts().providerCreates, JSON.stringify(result)).toBe(1);
             expect(fixture.requests[0]).toMatchObject({
@@ -1183,13 +1243,13 @@ describe("device-lab MCP", () => {
     it("allows broker candidate fallback before a VM birth POST is submitted", async () => {
         const fixture = await startCandidateDisconnectFixture("owner-resolve");
         try {
-            const result = await brokerCommand({
+            const result = await withUnverifiedBrokerFixture(() => brokerCommand({
                 ...fixture.options,
                 action: "invoke",
                 backend: "linux-vm",
                 command: "device_create",
                 name: "Linux discovery fallback",
-            });
+            }));
             expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { completed: true } });
             expect(fixture.counts()).toEqual({ ownerResolveRequests: 2, providerCreates: 1 });
             expect(fixture.requests).toHaveLength(1);
@@ -1209,9 +1269,9 @@ describe("device-lab MCP", () => {
     ])("retains broker candidate fallback for $label after a disconnected RPC response", async ({ options }) => {
         const fixture = await startCandidateDisconnectFixture("rpc");
         try {
-            const result = "method" in options
-                ? await brokerRpc({ ...fixture.options, ...options })
-                : await brokerCommand({ ...fixture.options, ...options });
+            const result = await withUnverifiedBrokerFixture(() => "method" in options
+                ? brokerRpc({ ...fixture.options, ...options })
+                : brokerCommand({ ...fixture.options, ...options }));
             expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { completed: true } });
             expect(fixture.requests).toHaveLength(2);
             expect(fixture.requests[1]).toEqual(fixture.requests[0]);
@@ -1238,7 +1298,7 @@ describe("device-lab MCP", () => {
         const port = (server.address() as AddressInfo).port;
 
         try {
-            const result = await brokerCommand({
+            const result = await withUnverifiedBrokerFixture(() => brokerCommand({
                 action: "invoke",
                 backend: "android-emulator",
                 command: "device_create",
@@ -1248,7 +1308,7 @@ describe("device-lab MCP", () => {
                 rpcTimeoutMs: 1000,
                 timeoutMs: 1000,
                 autolaunch: false,
-            });
+            }));
             expect(rpcRequests).toBe(1);
             expect(result).toEqual(expect.objectContaining({
                 ok: false,
@@ -1273,7 +1333,7 @@ describe("device-lab MCP", () => {
         const port = (server.address() as AddressInfo).port;
 
         try {
-            const result = await brokerCommand({
+            const result = await withUnverifiedBrokerFixture(() => brokerCommand({
                 action: "invoke",
                 backend: "windows-vm",
                 command: "device_create",
@@ -1283,7 +1343,7 @@ describe("device-lab MCP", () => {
                 rpcTimeoutMs: 1000,
                 timeoutMs: 1000,
                 autolaunch: false,
-            });
+            }));
             expect(rpcRequests).toBe(1);
             expect(result).toMatchObject({ ok: false, error: "broker-rpc-unavailable" });
             expect(result).not.toHaveProperty("transportRecovery");

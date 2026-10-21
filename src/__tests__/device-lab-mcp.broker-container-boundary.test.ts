@@ -207,18 +207,24 @@ describe("loopback-forwarded host broker at a container boundary", () => {
 describe("authenticated RPC generation check for a loopback-forwarded broker", () => {
     let server: Server;
     let port: number;
+    let originalNodeEnv: string | undefined;
     let originalEscape: string | undefined;
     let statusDelayMs: number;
+    let statusRequests: number;
     let statusIdentity = { pid: hostRuntime.pid, startToken: hostRuntime.processStartToken, startedAt: hostRuntime.startedAt };
 
     beforeEach(async () => {
+        originalNodeEnv = process.env.NODE_ENV;
         originalEscape = process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+        process.env.NODE_ENV = "production";
         delete process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
         statusDelayMs = 0;
+        statusRequests = 0;
         statusIdentity = { pid: hostRuntime.pid, startToken: hostRuntime.processStartToken, startedAt: hostRuntime.startedAt };
         server = createServer((req, res) => {
             res.setHeader("content-type", "application/json");
             if (req.url === "/status") {
+                statusRequests += 1;
                 const status = JSON.stringify({
                     ok: true,
                     broker: {
@@ -242,9 +248,36 @@ describe("authenticated RPC generation check for a loopback-forwarded broker", (
     });
 
     afterEach(async () => {
-        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-        if (originalEscape === undefined) delete process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
-        else process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = originalEscape;
+        try {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        } finally {
+            if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+            else process.env.NODE_ENV = originalNodeEnv;
+            if (originalEscape === undefined) delete process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+            else process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = originalEscape;
+        }
+    });
+
+    it.each([
+        { nodeEnv: "test", escape: undefined },
+        { nodeEnv: "test", escape: "0" },
+        { nodeEnv: "production", escape: "1" },
+    ])("attests matching and changed generations with autolaunch disabled in $nodeEnv mode and fixture flag $escape", async ({ nodeEnv, escape }) => {
+        process.env.NODE_ENV = nodeEnv;
+        if (escape === undefined) delete process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+        else process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = escape;
+        const runtime = { ...hostRuntime, port };
+        const options = { autolaunch: false };
+        const boundary = { containerBoundary: true, localListenerInspector: () => absent };
+
+        await expect(verifyAuthenticatedBrokerGenerationForTest("127.0.0.1", port, { runtime }, options, boundary))
+            .resolves.toEqual(runtime);
+        expect(statusRequests).toBe(1);
+
+        statusIdentity = { ...statusIdentity, startToken: "replacement-broker-generation" };
+        await expect(verifyAuthenticatedBrokerGenerationForTest("127.0.0.1", port, { runtime }, options, boundary))
+            .resolves.toBeNull();
+        expect(statusRequests).toBe(2);
     });
 
     it("binds the forwarded broker to the host runtime identity without local port verification", async () => {

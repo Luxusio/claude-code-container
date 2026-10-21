@@ -12,7 +12,7 @@ import { ownerId } from "@ccc/device-lab/providers/context.mjs";
 import { brokerRpc, brokerStatus, withBrokerOperation } from "../../device-lab-mcp/src/broker.mjs";
 import { DEVICE_BROKER_PROTOCOL_VERSION } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
 
-// Real HTTP and Linux process identity; deliberately no NODE_ENV=test escape.
+// Real HTTP and Linux process identity; deliberately no unverified-fixture escape.
 describe.skipIf(process.platform !== "linux")("broker setup reuse with authenticated generation checks", () => {
     let home: string;
     let child: ChildProcess;
@@ -146,6 +146,28 @@ server.listen(port,'127.0.0.1',()=>process.stdout.write(JSON.stringify({pid:proc
         });
         expect(requests().filter(path => path.endsWith("/rpc"))).toHaveLength(0);
         expect(count("/status")).toBe(2);
+    });
+
+    it.each(["test", "production"])("authenticates every RPC with autolaunch disabled and no fixture authorization in %s mode", async (nodeEnv) => {
+        vi.stubEnv("NODE_ENV", nodeEnv);
+        vi.stubEnv("CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER", undefined);
+        const request = () => brokerRpc({ ...options, autolaunch: false, method: "broker.echo", params: { message: "attested" } });
+
+        await withBrokerOperation(async () => {
+            expect(await request()).toMatchObject({ ok: true, result: { echo: { message: "attested" } } });
+            expect(count("/status")).toBe(1);
+            expect(requests().filter(path => path.endsWith("/rpc"))).toHaveLength(1);
+
+            expect((await request()).ok).toBe(true);
+            expect(count("/status")).toBe(2);
+            expect(requests().filter(path => path.endsWith("/rpc"))).toHaveLength(2);
+
+            writeFileSync(behavior, JSON.stringify({ changedGeneration: true }));
+            expect(await request()).toMatchObject({ ok: false, error: "broker-runtime-process-unverified" });
+            expect(count("/status")).toBe(3);
+            expect(requests().filter(path => path.endsWith("/rpc"))).toHaveLength(2);
+        });
+        expect(count("/health")).toBe(0);
     });
 
     it("reads owner credentials freshly instead of caching a token", async () => {

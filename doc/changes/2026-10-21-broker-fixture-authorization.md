@@ -1,0 +1,3 @@
+# Broker fixture authorization is explicit
+
+Disabling broker autolaunch no longer exempts an authenticated request from current-generation verification. Unverified fixtures must explicitly set both `NODE_ENV=test` and the existing `CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER=1` flag; legacy token headers additionally require `runtime.testOnly:true`. Other requests retain HMAC authentication and reject changed generations before RPC dispatch. The [derived fixture authorization requirement](../device-lab/REQ__broker-fixture-authorization.md) describes this boundary. Fake-server tests opt in within their own isolated environment, while real process/HMAC checks keep the exemption disabled. No public protocol, state schema, dependency or shared test framework changes.

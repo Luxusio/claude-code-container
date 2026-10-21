@@ -3454,6 +3454,9 @@ try {
         // Resolve provisions this initially absent test-owned secret. Do not
         // discover a real container's conventional isolated credential mount.
         env.CCC_DEVICE_BROKER_AUTH_FILE = secretFile;
+        // This case proves concurrent credential provisioning, not process attestation.
+        env.NODE_ENV = "test";
+        env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = "1";
         expect(existsSync(secretFile)).toBe(false);
         const clients = Array.from({ length: 12 }, () => new Promise<string>((resolve, reject) => {
             const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
