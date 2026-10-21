@@ -1,6 +1,6 @@
 # Physical attachment compensation
 
-Failed Android/iOS attachment releases its exact lease once
+Failed Android/iOS attachment attempts its exact lease release once
 and retains the original failure if release also throws. Broker publication
 and cleanup have separate exception boundaries; direct attachment preserves
 the primary value and cleanup error in an ordinary `AggregateError`.
