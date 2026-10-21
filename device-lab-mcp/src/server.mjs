@@ -29,6 +29,7 @@ import { flowStepArguments, normalizeToolArgs, normalizePublicToolArgs, toolInpu
 import { createWaitBudget } from "@ccc/device-lab/providers/wait-budget.mjs";
 import { runMcpDeviceFlow as runDeviceFlow } from "./device-flow-adapter.mjs";
 import { createDeviceRequest } from "./application/device-request.mjs";
+import { isBrokerMacosTartImageCreate, brokerMacosTartCreateRpcTimeoutMs } from "@ccc/device-lab/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 export { HYPER_V_LINUX_GUI_TIMEOUT_MS, HYPER_V_IMAGE_ACQUIRE_RPC_TIMEOUT_MS, HYPER_V_LIFECYCLE_RPC_BUFFER_MS, HYPER_V_CLEANUP_RESERVE_MS, HYPER_V_CREATE_RPC_TIMEOUT_MS, HYPER_V_HOST_LOCK_WAIT_MS, HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS, HYPER_V_MAX_BOOT_TIMEOUT_MS, MAX_DEVICE_HELPER_TIMEOUT_MS, MAX_DEVICE_OPERATION_TIMEOUT_MS, brokerDeviceToolExecutionTimeout } from "./domain/device-request.mjs";
 
 const deviceRequest = createDeviceRequest({
@@ -90,6 +91,7 @@ const deviceRequest = createDeviceRequest({
     brokerDeviceTool: async args => brokerObservation(await brokerDeviceTool(args)),
     brokerPhysical: async args => brokerObservation(await brokerPhysical(args)),
     implicitBrokerProbeOptions,
+    macosTartCreateRpcTimeoutMs: args => isBrokerMacosTartImageCreate(args) ? brokerMacosTartCreateRpcTimeoutMs(args) : null,
     withBrokerOperation,
     ownerId,
     currentDisplayTarget,

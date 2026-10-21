@@ -38,8 +38,6 @@ import {
     wantsBrokerPhysical,
     boundedTimeoutMs,
     brokerDeviceToolExecutionTimeout,
-    isBrokerMacosTartImageCreate,
-    brokerMacosTartCreateRpcTimeoutMs,
     wantsBrokerBackends,
     wantsCurrentDisplayDevice,
     HYPER_V_LINUX_TOOLS,
@@ -54,7 +52,8 @@ import {
 export function createDeviceRequest(ports) {
     /** @param {Args} args */
     function brokerLifecycleExecutionTimeout(args) {
-        if (isBrokerMacosTartImageCreate(args)) return {rpcTimeoutMs: brokerMacosTartCreateRpcTimeoutMs(args)};
+        const macosTartCreateRpcTimeoutMs = ports.macosTartCreateRpcTimeoutMs(args);
+        if (macosTartCreateRpcTimeoutMs !== null) return {rpcTimeoutMs: macosTartCreateRpcTimeoutMs};
         const hyperVBackend = args?.backend === "windows-vm" || args?.backend === "linux-vm";
         if (hyperVBackend && args?.command === "device_create") {
             return { rpcTimeoutMs: HYPER_V_CREATE_RPC_TIMEOUT_MS };
@@ -384,7 +383,7 @@ export function createDeviceRequest(ports) {
             const probe = ports.implicitBrokerProbeOptions({ ...routeArgs, port: args.port ?? args.brokerPort });
             if (!probe) return implicitBrokerUnavailableResult("device-lifecycle-broker");
             brokerArgs = { ...routeArgs, ...probe,
-                ...(isBrokerMacosTartImageCreate({...args, command: name}) ? {timeoutMs: args.timeoutMs, brokerProbeTimeoutMs: probe.brokerProbeTimeoutMs ?? probe.timeoutMs} : {}),
+                ...(ports.macosTartCreateRpcTimeoutMs({...args, command: name}) !== null ? {timeoutMs: args.timeoutMs, brokerProbeTimeoutMs: probe.brokerProbeTimeoutMs ?? probe.timeoutMs} : {}),
                 devicePort: args.devicePort };
         }
         const result = await ports.invokeBrokerLifecycle({
@@ -421,7 +420,7 @@ export function createDeviceRequest(ports) {
             const result = await ports.invokeBrokerLifecycle({
                 ...args,
                 ...probe,
-                ...(isBrokerMacosTartImageCreate({...args, command: name}) ? {timeoutMs: args.timeoutMs, brokerProbeTimeoutMs: probe.brokerProbeTimeoutMs ?? probe.timeoutMs} : {}),
+                ...(ports.macosTartCreateRpcTimeoutMs({...args, command: name}) !== null ? {timeoutMs: args.timeoutMs, brokerProbeTimeoutMs: probe.brokerProbeTimeoutMs ?? probe.timeoutMs} : {}),
                 ...brokerLifecycleExecutionTimeout({ ...args, backend: requestedBackend, command: name }),
                 devicePort: args?.port,
                 action: "invoke",

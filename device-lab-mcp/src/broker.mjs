@@ -1,7 +1,7 @@
 import { readBrokerOwnerSecret } from "@ccc/device-lab/providers/state/broker-owner-secret.mjs";
 import { createBrokerSupervision } from "./application/broker-supervision.mjs";
 import { supervisionErrorDetail } from "./domain/broker-supervision.mjs";
-import { isBrokerMacosTartImageCreate, brokerMacosTartCreateRpcTimeoutMs, BROKER_MACOS_TART_CREATE_TIMEOUT_MS } from "./domain/device-request.mjs";
+import { isBrokerMacosTartImageCreate, brokerMacosTartCreateRpcTimeoutMs, BROKER_MACOS_TART_CREATE_TIMEOUT_MS } from "@ccc/device-lab/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 import { fileURLToPath } from "url";
 import { createWaitBudget } from "@ccc/device-lab/providers/wait-budget.mjs";
 import { AsyncLocalStorage } from "async_hooks";

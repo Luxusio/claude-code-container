@@ -97,6 +97,7 @@ export interface DeviceRequestPorts<Result> {
  executeMobileEffect(args:DeviceArguments & {backend:string;deviceId:string},effect:MobileEffect):Promise<MobileObservation>;
  observeActiveApp(args: ActiveAppObservationInput): Promise<ActiveAppObservation>;
  presentActiveAppWait(outcome: ActiveAppWaitOutcome): Result;
+ macosTartCreateRpcTimeoutMs(args: DeviceArguments): number|null;
  implicitBrokerProbeOptions(args: DeviceArguments, behavior?: {allowDefault?: boolean}): DeviceArguments|null;
  withBrokerOperation<T>(operation: () => Promise<T>): Promise<T>;
  normalizeToolArgs(args: unknown, name: string): DeviceArguments;

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeviceRequest } from "../../../device-lab-mcp/src/application/device-request.mjs";
 import type { DeviceArguments, DeviceRequestPorts, MobileEffect } from "../../../device-lab-mcp/src/ports/device-request.d.mts";
+import { isBrokerMacosTartImageCreate, brokerMacosTartCreateRpcTimeoutMs } from "@ccc/device-lab/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 
 import { presentBrokerTool, presentBackendCatalog, presentMobileObservation, presentSourceWait, imageResult, presentActiveAppWait } from "../../../device-lab-mcp/src/device-request-presenter.mjs";
 type OpaqueResult = { selection: "json" | "text" | "image"; value: unknown };
@@ -21,6 +22,7 @@ function requestPorts(operation: string, normalized: DeviceArguments = {}): Devi
             { name: "device_click", inputSchema: { required: ["deviceId"] } },
         ],
         DEVICE_FLOW_TOOL_NAMES: ["screenshot"],
+        macosTartCreateRpcTimeoutMs: args => isBrokerMacosTartImageCreate(args) ? brokerMacosTartCreateRpcTimeoutMs(args) : null,
         now: () => 0,
         ownerId: unexpected,
         readOwnerDevices: unexpected,
