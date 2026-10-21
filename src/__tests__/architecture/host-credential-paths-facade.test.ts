@@ -24,8 +24,7 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 describe("actual native host credential facade", () => {
-    it("retains public arity and fresh/default/named/helper results", () => {
-        expect(api.resolveCredentialHostPath.length).toBe(2); expect(api.ensureCredentialHostDir.length).toBe(2);
+    it("retains fresh, default, named and helper path results", () => {
         expect(api.resolveCredentialHostPath(claude)).toBe(join(root, ".ccc", "profiles", "default", "claude"));
         expect(api.resolveCredentialHostPath(codex, "work")).toBe(join(root, ".ccc", "profiles", "work", "codex"));
         const spy = vi.spyOn(utils, "getClaudeDir").mockReturnValue("live-helper");

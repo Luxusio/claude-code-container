@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { expectTypeOf } from "vitest";
 import { createHostCredentialPaths } from "../../application/credentials/host-paths.js";
 import type { HostCredentialPathPorts, CredentialDirectoryOptions } from "../../ports/credentials/host-paths.js";
 import type { CredentialMount } from "../../domain/tool-registry.js";
@@ -47,6 +47,3 @@ function contracts(ports: HostCredentialPathPorts, mount: CredentialMount, publi
     void options;
 }
 void contracts;
-describe("host credential types", () => {
-    it("retains an explicit two-input factory", () => { expect(createHostCredentialPaths.length).toBe(2); });
-});

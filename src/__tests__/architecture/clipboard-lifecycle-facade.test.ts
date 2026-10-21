@@ -75,11 +75,7 @@ function pendingHealthResponse() {
 }
 
 describe("Clipboard lifecycle actual public native facade", () => {
-    it("exports ensure, selection and awaited retirement bindings", async () => {
-        expect(mod.ensureClipboardServer.name).toBe("ensureClipboardServer");
-        expect(mod.ensureClipboardSelection.name).toBe("ensureClipboardSelection");
-        expect(mod.stopClipboardServerIfLast.name).toBe("stopClipboardServerIfLast"); expect(mod.stopClipboardServerIfLast.length).toBe(1);
-        expect(mod.retireClipboardServerFromPortFile.name).toBe("retireClipboardServerFromPortFile"); expect(mod.retireClipboardServerFromPortFile.length).toBe(1);
+    it("returns an awaitable completion when another session prevents retirement", async () => {
         const completion = mod.stopClipboardServerIfLast(true); expect(completion).toBeInstanceOf(Promise); await completion;
     });
     it("reuses current authenticated health with the whole token after the first colon", async () => {

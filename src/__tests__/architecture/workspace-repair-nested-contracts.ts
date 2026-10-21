@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import { createNestedWorkspaceRepair } from "../../application/workspace/repair-nested.js";
 import type { NestedWorkspaceRepairPorts } from "../../ports/workspace/repair-nested.js";
 import type { WorkspaceRepairAuthority, WorkspaceRepairGitObservation } from "../../domain/workspace/repair-authority.js";
@@ -23,4 +22,3 @@ function contracts(ports: NestedWorkspaceRepairPorts<WorkspaceRepairAuthority>) 
     void pending;
 }
 void contracts;
-describe("nested repair compile contract", () => { it("requires explicit native authority ports", () => { expect(createNestedWorkspaceRepair.length).toBe(1); }); });

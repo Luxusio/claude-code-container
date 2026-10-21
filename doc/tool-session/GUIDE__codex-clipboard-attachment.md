@@ -17,14 +17,14 @@ image function once, creates `.omx/clipboard-images/clipboard-<timestamp>.png`,
 then returns the prepared image arguments and relative path. A missing image
 returns a new copy of the arguments as they exist after the awaited read.
 
-The timing of reads is part of compatibility. Do not snapshot the options or
-argument array at entry, bind a custom reader to the options object, or add an
-async forwarding wrapper. The facade forwards the application's named async
-function directly, retaining its name, arity, and completion boundary. Relative
-path composition lets the native `posix.join` callee be read before timestamp
-template coercion. Directory creation retains `mkdirSync` lookup before its
-nested native `join`. Reader selection, URL/token reads, and filesystem calls
-remain at their original stages.
+Admission precedes clipboard reads and filesystem effects. Keep one selected
+reader invocation and prepare the returned arguments after its awaited read, so
+live mutable arguments are not replaced by entry-time snapshots. The facade
+exposes the application's async operation and preserves its Promise completion
+boundary. Native adapters own path composition, directory creation and image
+writes. Verification checks eligibility, resulting arguments, completion and
+input/output failures rather than function reflection or native property-read
+order.
 
 The HTTP reader remains in the facade. It retains the original authenticated PNG
 endpoint, chunk conversion, status/body decisions, and request-error handling.

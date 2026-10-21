@@ -51,11 +51,7 @@ const withActiveInspection = (payload: string, ids = "active") => mocks.spawn.mo
 });
 
 describe("actual Codex retained-state native composition", () => {
-    it("retains public synchronous names, arities, scripts and exact bounded argv", () => {
-        expect(native.prepareCodexStateOwnership.name).toBe("prepareCodexStateOwnership");
-        expect(native.prepareCodexStateOwnership.length).toBe(6);
-        expect(native.assertCodexStateAccessible.name).toBe("assertCodexStateAccessible");
-        expect(native.assertCodexStateAccessible.length).toBe(2);
+    it("retains synchronous completion, scripts and exact bounded argv", () => {
         expect(invoke()).toBeUndefined();
         expect(mocks.acquire).toHaveBeenCalledExactlyOnceWith("/private/ccc", {waitMs: 0});
         expect(mocks.begin).toHaveBeenCalledExactlyOnceWith(mocks.guard, runtimeFacade.getRuntimeInvocation());

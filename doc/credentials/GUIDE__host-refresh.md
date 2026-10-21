@@ -21,10 +21,10 @@ or cleanup policy is added. Native reports preserve console.error receiver and
 the original generic warning bytes, never commands or credential contents.
 
 Canonical executable assets live in the native ssh-material module. Docker
-directly reexports the same functions with original names, defaults and arities.
-The Python provenance asset stays unchanged. Independent pre-extraction hashes
-and generated values must match SSH default/false/true, signing and Python
-outputs; comparing only two new imports is insufficient evidence.
+exposes the same public functions and default argument behavior. Verify generated
+SSH, signing and Python assets through completed-copy admission, provenance,
+stale-copy invalidation and failure behavior in private fixtures. Comparing two
+imports alone does not establish those outcomes.
 
 Existing/create callbacks stay separate, receiving verified IDs and preserving
 SSH-before-Git ordering. Verify core status/fault traces, fresh native capture and

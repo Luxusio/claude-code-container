@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import { createBrokenWorkspaceRepair } from "../../application/workspace/repair-broken.js";
 import type { BrokenWorkspaceRepairPorts } from "../../ports/workspace/repair-broken.js";
 import type { WorkspaceRepairAuthority } from "../../domain/workspace/repair-authority.js";
@@ -24,4 +23,3 @@ function contracts(ports: BrokenWorkspaceRepairPorts<WorkspaceRepairAuthority>) 
     void pending;
 }
 void contracts;
-describe("broken repair compile contracts", () => { it("requires explicit scoped native capabilities", () => { expect(createBrokenWorkspaceRepair.length).toBe(1); }); });

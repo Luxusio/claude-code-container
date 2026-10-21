@@ -117,9 +117,7 @@ describe.skipIf(process.platform === "win32")("actual non-Windows recovery gate"
 });
 
 describe.skipIf(process.platform !== "win32")("actual Windows Codex recovery native boundary", () => {
-    it("keeps its public synchronous name and arity and probes the socket after healthy ownership", () => {
-        expect(repairWindowsCodexPrivateState.name).toBe("repairWindowsCodexPrivateState");
-        expect(repairWindowsCodexPrivateState.length).toBe(2);
+    it("completes synchronously and probes the socket after healthy ownership", () => {
         expect(repairWindowsCodexPrivateState(cli, target)).toBeUndefined();
         expect(trace).toEqual(["ownership", "socket probe"]);
         expect(spawnCalls()).toEqual([

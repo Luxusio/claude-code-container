@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import { createRootWorkspaceRepair } from "../../application/workspace/repair-root.js";
 import type { RootWorkspaceRepairPorts } from "../../ports/workspace/repair-root.js";
 import type { WorkspaceRepairAuthority, WorkspaceRepairGitObservation, WorkspaceRepairBranchHeadObservation } from "../../domain/workspace/repair-authority.js";
@@ -28,4 +27,3 @@ function contracts(ports: RootWorkspaceRepairPorts<WorkspaceRepairAuthority>) {
     void pending;
 }
 void contracts;
-describe("root repair compile contracts", () => { it("requires explicit native receipts and operations", () => { expect(createRootWorkspaceRepair.length).toBe(1); }); });

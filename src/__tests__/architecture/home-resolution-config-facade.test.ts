@@ -37,9 +37,7 @@ describe("actual home facade private native filesystem", () => {
         vi.resetModules(); state.forbid = true; try { await expect(import("../../home-layout.js")).resolves.toBeDefined(); } finally { state.forbid = false; }
         expect(state.trace).toEqual([]);
     });
-    it("retains exact native public arities and constants", () => {
-        for (const name of ["cccHome", "profilesDir", "defaultProfileDir", "ensureDefaultProfileDir", "runDir", "locksDir", "clipboardFilesDir", "helperBinDir", "clipboardStateDir", "clipboardPortFile", "clipboardStartingLock", "configFile", "legacyRemoteConfigDir", "readCccConfig"] as const) expect(facade[name].length).toBe(0);
-        for (const name of ["profileClaudeDir", "profileClaudeJsonFile", "profileCodexDir", "updateCccConfig", "normalizeProfile"] as const) expect(facade[name].length).toBe(1);
+    it("retains the default profile name and marker", () => {
         expect(facade.DEFAULT_PROFILE_NAME).toBe("default"); expect(facade.DEFAULT_PROFILE_MARKER).toBe(".ccc-default-profile");
     });
     it("creates marker bytes and modes and never rewrites existing marker", () => {

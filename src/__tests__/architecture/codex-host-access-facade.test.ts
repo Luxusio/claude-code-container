@@ -56,8 +56,6 @@ void publicContract;
 describe("Codex actual native restoration facade", () => {
     it.each([undefined, "named"])("resolves profile %s with exact native effects and same captured mode", profile => {
         const config = utils.getCodexConfigFile(profile); native.lstat.mockClear(); denied();
-        expect(docker.restoreCodexConfigHostOwnership.length).toBe(2);
-        expect(docker.restoreCodexConfigHostOwnership.name).toBe("restoreCodexConfigHostOwnership");
         expect(docker.restoreCodexConfigHostOwnership(target, profile)).toBeUndefined();
         expect(native.access.mock.calls).toEqual([[config, 6], [config, 6]]);
         expect(native.lstat.mock.calls.slice(-2)).toEqual([[dirname(config)], [config]]);
