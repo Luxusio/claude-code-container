@@ -7,6 +7,7 @@ import { prepareCodexLaunch } from "../codex-launch.js";
 import { createContainerExec } from "../application/container-exec.js";
 import { createDefaultToolCatalog } from "../domain/tool-registry.js";
 import type { ContainerExecPorts } from "../ports/container-exec.js";
+import type { RuntimeBindGuard } from "../ports/runtime-bind-authority.js";
 
 const prefix = ["exec", "-w", "/project/with spaces", "--env-file", "/tmp/private-env", "ccc-fixture"];
 const bypass = "--dangerously-bypass-approvals-and-sandbox";
@@ -18,6 +19,10 @@ const startHelp = "Usage: codex app-server daemon start [OPTIONS]\n";
 const ready = (command: string[]) => ({ ok: true, command });
 function execFixture() {
     const catalog = createDefaultToolCatalog(), handle = Symbol("prepared"), events: string[] = [];
+    // Opaque application capability; native lock qualification is tested separately.
+    const bindGuard = Object.freeze({ root: "/fixture" }) as RuntimeBindGuard;
+    let stateHeld = false, lifecycleHeld = false, cleanupEnabled = false;
+    let readyId: string | null = null;
     const ports: ContainerExecPorts<symbol> = {
         ensureRuntime: vi.fn(), resolveProject: () => "/fixture/project", ensureDirectories: vi.fn(), ensureProjectTools: async () => {},
         projectId: () => "fixture", debugEnabled: () => false, terminalReady: vi.fn(() => false), runtime: () => "docker",
@@ -26,18 +31,43 @@ function execFixture() {
         async familyLock<T>(_id: string, operation: () => Promise<T> | T) { return operation(); },
         acquireOwnership: async () => ({ lockFile: "/fixture/session.lock", existingId: "final-id" }),
         inspectSessionContainer: () => ({ known: true, containerId: "final-id" }),
-        ensureClipboard: async () => null, clipboardPortFile: () => "/fixture/clipboard.port", clipboardConnection: () => ({}),
+        ensureClipboard: async () => null,
+        validateClipboard: vi.fn<ContainerExecPorts<symbol>["validateClipboard"]>(async (selection, guard) => {
+            expect(stateHeld).toBe(true); expect(guard).toBe(bindGuard); return selection;
+        }),
+        clipboardPortFile: () => "/fixture/clipboard.port", clipboardConnection: () => ({}),
         worktreeMounts: () => [], containerName: () => "fixture-container",
         containerStatus: () => ({ exists: true, running: true, containerId: "final-id", imageId: "image" }),
         sessionClaims: () => ["session.lock"], lockName: () => "session.lock", prepareDeviceBroker: async () => {},
-        lifecycleLock<T>(_id: string, operation: () => T) { return operation(); },
+        async lifecycleLock<T>(_id: string, operation: () => Promise<T> | T): Promise<T> {
+            expect(stateHeld).toBe(true); expect(lifecycleHeld).toBe(false); lifecycleHeld = true;
+            try { return await operation(); } finally { lifecycleHeld = false; }
+        },
         async setupLock<T>(_id: string, operation: () => Promise<T> | T) { return operation(); },
-        async stateLock<T>(operation: () => Promise<T> | T) { return operation(); },
-        prepareContainer: () => ({ start: ports.startContainer, initialize: () => {} }),
-        startContainer: (_path, _directories, _mounts, _port, _profile, _recreate, _replacement, onReady) => {
+        async stateLock<T>(operation: (guard: RuntimeBindGuard) => Promise<T> | T): Promise<T> {
+            expect(stateHeld).toBe(false); stateHeld = true;
+            try { return await operation(bindGuard); } finally { stateHeld = false; }
+        },
+        prepareContainer: () => ({ start: ports.startContainer, initialize: id => {
+            expect(stateHeld).toBe(false); expect(lifecycleHeld).toBe(false);
+            expect(id).toBe(readyId); expect(cleanupEnabled).toBe(false);
+        } }),
+        startContainer: (_path, _directories, _mounts, _port, _profile, _recreate, _replacement, onReady, expectedId, _onStarted, guard) => {
+            expect(stateHeld).toBe(true); expect(lifecycleHeld).toBe(true); expect(guard).toBe(bindGuard);
+            expect(expectedId).toBe("final-id");
+            expect(ports.beginSessionStartupInHeldLifecycleLock).toHaveBeenCalledOnce();
             onReady("final-id", { startedByInvocation: false }); return "fixture-container";
         },
-        setSessionContainer: vi.fn(), setCleanupEnabled: vi.fn(), confirmOwnership: vi.fn(async () => { events.push("confirm"); }),
+        beginSessionStartupInHeldLifecycleLock: vi.fn(() => {
+            expect(stateHeld).toBe(true); expect(lifecycleHeld).toBe(true); readyId = null; cleanupEnabled = false;
+        }),
+        recordSessionOwnStartInHeldLifecycleLock: vi.fn(() => { throw new Error("Reused fixture container must not publish an own start"); }),
+        publishSessionReadyInHeldLifecycleLock: vi.fn<ContainerExecPorts<symbol>["publishSessionReadyInHeldLifecycleLock"]>((id, handoff) => {
+            expect(stateHeld).toBe(true); expect(lifecycleHeld).toBe(true);
+            expect(id).toBe("final-id"); expect(handoff).toEqual({ startedByInvocation: false });
+            readyId = id; cleanupEnabled = handoff.startedByInvocation;
+        }),
+        setCleanupEnabled: vi.fn<ContainerExecPorts<symbol>["setCleanupEnabled"]>(enabled => { cleanupEnabled = enabled; }), confirmOwnership: vi.fn(async () => { events.push("confirm"); }),
         configLock<T>(operation: () => T) { return operation(); },
         restoreConfig: vi.fn(() => { events.push("restore"); }), ensureUv: vi.fn(), buildMcpConfig: async () => [],
         setupProxy: vi.fn(), containerRunning: () => true, installTools: vi.fn(), ensureClaude: vi.fn(),
@@ -58,7 +88,7 @@ function execFixture() {
         invalidRuntimeFailure: () => new Error("invalid container runtime"),
         cleanupSession: vi.fn(() => { events.push("cleanup"); }), report: vi.fn(),
     };
-    return { ports, handle, events, exec: createContainerExec(ports).exec };
+    return { ports, handle, events, bindGuard, exec: createContainerExec(ports).exec };
 }
 function runner(...results: ReturnType<typeof probe>[]) {
     const mock = vi.fn();
@@ -248,6 +278,10 @@ describe("actual application Codex preparation lifetime", () => {
         expect(f.events.indexOf("bridge")).toBeLessThan(f.events.indexOf("prepare"));
         expect(f.events.indexOf("codex")).toBeLessThan(f.events.indexOf("terminal"));
         expect(f.ports.prepareCodexCommand).toHaveBeenCalledExactlyOnceWith(f.handle);
+        expect(f.ports.validateClipboard).toHaveBeenCalledExactlyOnceWith(null, f.bindGuard);
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).toHaveBeenCalledOnce();
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith("final-id", { startedByInvocation: false });
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
         expect(f.ports.launchCommand).toHaveBeenCalledExactlyOnceWith(f.handle, { interactive: true, terminal: tty, codexRecovery: tty });
         expect(f.events.slice(-3)).toEqual(["restore", "dispose", "cleanup"]);
         expect(f.ports.restoreConfig).toHaveBeenLastCalledWith("final-id", "work");
@@ -263,6 +297,7 @@ describe("actual application Codex preparation lifetime", () => {
         expect(await f.exec("/fixture", ["codex"])).toBe(7);
         expect(f.events.slice(f.events.indexOf("codex")).filter(event => event !== "terminal")).toEqual(["codex", "confirm", "restore", "dispose", "cleanup"]);
         expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
     });
     it.each(["resolve", "reject"] as const)("awaits final ownership confirmation before launch (%s)", async outcome => {
         const f = execFixture(), cause = new Error("ownership refused");
