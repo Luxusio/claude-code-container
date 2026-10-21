@@ -127,13 +127,13 @@ describe("existing container application through native composition", () => {
     });
 
     it("defers a safe mismatch on the startup-running ID even when the guard authorizes replacement", () => {
-        const f = fixture({ inspectContract: () => false });
+        const f = fixture({ inspectContract: () => false, identity: vi.fn(() => ({ containerId: id, running: true })) });
         const recreate = vi.fn();
         const guard = vi.fn((replace: () => void) => { replace(); return true; });
         expect(f.lifecycle.run({ containerName: name, managedProjectPath: "/fixture/project", initiallyRunningContainerId: id, replacementGuard: guard, onRecreate: recreate })).toEqual({ kind: "joined", containerId: id });
         expect(guard).toHaveBeenCalledTimes(1);
         expect(f.ports.managedIdentity).not.toHaveBeenCalled();
-        expect(f.ports.identity).toHaveBeenCalledExactlyOnceWith(name);
+        expect(vi.mocked(f.ports.identity).mock.calls).toEqual([[name], [id]]);
         expect(native.runtime).not.toHaveBeenCalled();
         expect(native.spawn).not.toHaveBeenCalled();
         expect(console.log).not.toHaveBeenCalled();
@@ -203,7 +203,7 @@ describe("existing container application through native composition", () => {
         expect(native.spawn).toHaveBeenCalledExactlyOnceWith("podman", ["start", id], { stdio: "inherit", timeout: 30000, killSignal: "SIGKILL" });
     });
     it("reads required destinations only when reporting a mismatch and safely defers without MCP", () => {
-        const f = fixture({ inspectContract: (_id, report) => { report("credential mount changed"); return false; } });
+        const f = fixture({ inspectContract: (_id, report) => { report("credential mount changed"); return false; }, identity: vi.fn(() => ({ containerId: id, running: true })) });
         f.destinations.mockReturnValue(["/updated/destination"]);
         expect(f.lifecycle.run({ containerName: name, debug: true, replacementGuard: () => false })).toEqual({ kind: "joined", containerId: id });
         expect(vi.mocked(console.error).mock.calls).toEqual([
@@ -218,7 +218,7 @@ describe("existing container application through native composition", () => {
     });
 
     it("throws the original restart-guidance class with captured runtime after the ambient selector changes", () => {
-        const f = fixture({ inspectContract: () => false, safeToDefer: (_id, report) => { report("unsafe project source"); return false; } });
+        const f = fixture({ inspectContract: () => false, safeToDefer: (_id, report) => { report("unsafe project source"); return false; }, identity: vi.fn(() => ({ containerId: id, running: true })) });
         native.runtime.mockReturnValue("docker");
         let failure: unknown;
         try { f.lifecycle.run({ containerName: name, replacementGuard: () => false }); } catch (error) { failure = error; }
