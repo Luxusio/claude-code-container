@@ -111,7 +111,7 @@ function attachmentFixture(backend: Backend, options: Options = {}) {
     };
     const request: AttachRequest = { backend, deviceId: id, name: "Selected physical device", ...(backend === "android-device" ? { serial: options.wifi ? wifiHardware : hardware, ...(options.wifi ? { connection: "wifi" } : {}) } : { udid: hardware }) };
     return {
-        application: createPhysicalAttachmentApplication(ports), ports, request, publicationFault, calls,
+        application: createPhysicalAttachmentApplication(ports), ports, request, publicationFault, removalFault, calls,
         ownerRecords: () => records, authoritativeLease: () => lease, aggregateLeases: () => aggregate,
     };
 }
@@ -169,6 +169,49 @@ describe("direct physical attachment compensation", () => {
         expectWifiRollback(fixture);
     });
 
+    it.each(["connect", "missing", "offline"] as const)("regression: Android %s refusal retains its primary facts if exact lease release throws", phase => {
+        const receipt = { status: 19, stdout: "opaque connect evidence", stderr: "provider refused" };
+        const options: Options = { wifi: true, removeFailure: true };
+        if (phase === "connect") options.connect = { ok: false, receipt };
+        else options.inventory = phase === "missing" ? "missing" : { state: "offline", attachable: false };
+        const fixture = attachmentFixture("android-device", options);
+        let caught: unknown;
+        try { fixture.application.attach(fixture.request); } catch (error) { caught = error; }
+        expect(caught).toBeInstanceOf(AggregateError);
+        if (!(caught instanceof AggregateError)) throw new Error("expected primary and cleanup failures");
+        expect(caught.cause).toEqual(phase === "connect" ? { kind: "command-failure", command: receipt }
+            : { kind: "error", message: phase === "missing" ? `Android device is not visible to adb: ${wifiHardware}`
+                : `Android device ${wifiHardware} is not attachable; adb state is offline` });
+        expect(caught.errors).toHaveLength(2);
+        expect(caught.errors[0]).toBe(caught.cause);
+        expect(caught.errors[1]).toBe(fixture.removalFault);
+        if (phase === "connect") {
+            if (!caught.cause || typeof caught.cause !== "object" || !("command" in caught.cause)) throw new Error("expected native connect receipt");
+            expect(caught.cause.command).toBe(receipt);
+        }
+        expect(caught.message).toBe("Physical attachment compensation failed");
+        expect(fixture.calls.filter(call => call[0] === "release-lease")).toEqual([
+            ["release-lease", wifiHardware, id, { claimId: "allocated-claim", claimNonce: "attach-nonce" }],
+        ]);
+        expect(fixture.calls.some(call => call[0] === "publish" || call[0] === "heartbeat")).toBe(false);
+        expect(fixture.ownerRecords()).toEqual([]);
+        expect(fixture.authoritativeLease()).toMatchObject({ hardwareId: wifiHardware, deviceId: id, claimId: "allocated-claim", claimNonce: "attach-nonce" });
+        expect(fixture.aggregateLeases()).toEqual([fixture.authoritativeLease()]);
+    });
+
+    it.each(["connect", "inventory"] as const)("keeps unexpected thrown Android %s faults outside attachment compensation", phase => {
+        const fixture = attachmentFixture("android-device", { wifi: true }), fault = new Error("unexpected provider fault");
+        if (fixture.ports.backend !== "android-device") throw new Error("expected Android fixture");
+        if (phase === "connect") fixture.ports.connect = () => { throw fault; };
+        else fixture.ports.inventory = () => { throw fault; };
+        let caught: unknown;
+        try { fixture.application.attach(fixture.request); } catch (error) { caught = error; }
+        expect(caught).toBe(fault);
+        expect(fixture.calls.some(call => ["release-lease", "publish", "heartbeat"].includes(String(call[0])))).toBe(false);
+        expect(fixture.ownerRecords()).toEqual([]);
+        expect(fixture.authoritativeLease()).toMatchObject({ hardwareId: wifiHardware, claimNonce: "attach-nonce" });
+    });
+
     it("uses semantic connect and inventory success before publishing and starting its exact heartbeat", () => {
         const fixture = attachmentFixture("android-device", { wifi: true, connect: { ok: true, receipt: { status: 19 } },
             inventory: { state: "opaque native detail", attachable: true } });
@@ -221,15 +264,44 @@ describe("direct physical attachment compensation", () => {
             expect(fixture.ownerRecords()).toEqual([]);
             expect(fixture.authoritativeLease()).toBeNull();
             expect(fixture.aggregateLeases()).toEqual([]);
+            expect(fixture.calls.filter(call => call[0] === "release-lease")).toEqual([
+                ["release-lease", hardware, id, { claimId: "allocated-claim", claimNonce: "attach-nonce" }],
+            ]);
+            expect(fixture.calls.some(call => call[0] === "heartbeat")).toBe(false);
+        });
+
+        it.each(["throws", "refused"] as const)(`${backend} preserves publication %s and exact cleanup failure with one compensation attempt`, publication => {
+            const fixture = attachmentFixture(backend, { publication, removeFailure: true });
+            let caught: unknown;
+            try { fixture.application.attach(fixture.request); } catch (error) { caught = error; }
+            expect(caught).toBeInstanceOf(AggregateError);
+            if (!(caught instanceof AggregateError)) throw new Error("expected primary and cleanup failures");
+            if (publication === "throws") expect(caught.cause).toBe(fixture.publicationFault);
+            else expect(caught.cause).toEqual({ kind: "error", message: `Device identity already exists for this owner (id: ${id})` });
+            expect(caught.errors).toHaveLength(2);
+            expect(caught.errors[0]).toBe(caught.cause);
+            expect(caught.errors[1]).toBe(fixture.removalFault);
+            expect(caught.message).toBe("Physical attachment compensation failed");
+            expect(fixture.calls.filter(call => call[0] === "release-lease")).toEqual([
+                ["release-lease", hardware, id, { claimId: "allocated-claim", claimNonce: "attach-nonce" }],
+            ]);
+            expect(fixture.calls.some(call => call[0] === "heartbeat")).toBe(false);
+            expect(fixture.ownerRecords()).toEqual([]);
+            expect(fixture.authoritativeLease()).toMatchObject({ hardwareId: hardware, deviceId: id, claimId: "allocated-claim", claimNonce: "attach-nonce" });
+            expect(fixture.aggregateLeases()).toEqual([fixture.authoritativeLease()]);
         });
     }
 
-    it("does not release a replacement lease generation when publication refuses", () => {
-        const fixture = attachmentFixture("android-device", { publication: "successor" });
+    it.each(["android-device", "ios-device"] as const)("%s does not release a replacement lease generation when publication refuses", backend => {
+        const fixture = attachmentFixture(backend, { publication: "successor" });
         expect(fixture.application.attach(fixture.request).kind).toBe("error");
         expect(fixture.ownerRecords()).toEqual([]);
         expect(fixture.authoritativeLease()).toMatchObject({ hardwareId: hardware, deviceId: id, claimId: "allocated-claim", claimNonce: "successor-nonce" });
         expect(fixture.aggregateLeases()).toEqual([fixture.authoritativeLease()]);
+        expect(fixture.calls.filter(call => call[0] === "release-lease")).toEqual([
+            ["release-lease", hardware, id, { claimId: "allocated-claim", claimNonce: "attach-nonce" }],
+        ]);
+        expect(fixture.calls.some(call => call[0] === "heartbeat")).toBe(false);
     });
 
     it("restores the attachment and aggregate when lease removal fails, then permits a retry", async () => {

@@ -80,6 +80,105 @@ describe("broker physical devices", () => {
         expect(heartbeat).not.toHaveBeenCalled();
     });
 
+    it("regression: Android publication conflict releases once and preserves both failures when cleanup throws", () => {
+        const ports = physicalPorts(), successor = { generation: "successor" }, cleanup = new Error("lease cleanup failed");
+        ports.claimDevice = () => ({ ok: false, error: "owner-device-state-conflict", existing: successor });
+        const release = vi.fn<BrokerPhysicalDevicesPorts<string, { observed: boolean }>["releaseClaim"]>(() => { throw cleanup; });
+        const heartbeat = vi.fn(ports.heartbeat);
+        ports.releaseClaim = release; ports.heartbeat = heartbeat;
+        let caught: unknown;
+        try { createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone", serial: "usb" }); }
+        catch (error) { caught = error; }
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(release).toHaveBeenCalledWith("owner", { backend: "android-device", hardwareId: "usb", deviceId: "phone", claimId: "claim", claimNonce: "nonce" });
+        expect(caught).toBeInstanceOf(AggregateError);
+        if (!(caught instanceof AggregateError)) throw new Error("expected primary and cleanup failures");
+        expect(caught.cause).toEqual({ kind: "attach-refused", category: "conflict", error: "owner-device-state-conflict", existing: successor });
+        expect(caught.errors).toHaveLength(2);
+        expect(caught.errors[0]).toBe(caught.cause);
+        expect(caught.errors[0].existing).toBe(successor);
+        expect(caught.errors[1]).toBe(cleanup);
+        expect(caught.message).toBe("Physical attachment compensation failed");
+        expect(heartbeat).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { backend: "ios-device", publication: "conflict" },
+        { backend: "android-device", publication: "throws" },
+        { backend: "ios-device", publication: "throws" },
+    ] as const)("$backend publication $publication retains its primary failure when exact compensation throws", ({ backend, publication }) => {
+        const ports = physicalPorts(), primary = new Error("publication failed"), cleanup = new Error("lease cleanup failed"), successor = { generation: "successor" };
+        ports.claimDevice = () => {
+            if (publication === "throws") throw primary;
+            return { ok: false, error: "owner-device-state-conflict", existing: successor };
+        };
+        const release = vi.fn<BrokerPhysicalDevicesPorts<string, { observed: boolean }>["releaseClaim"]>(() => { throw cleanup; });
+        const heartbeat = vi.fn(ports.heartbeat);
+        ports.releaseClaim = release; ports.heartbeat = heartbeat;
+        let caught: unknown;
+        try { createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend, deviceId: "phone", ...(backend === "ios-device" ? { udid: "udid" } : { serial: "usb" }) }); }
+        catch (error) { caught = error; }
+        expect(release).toHaveBeenCalledExactlyOnceWith("owner", { backend, hardwareId: backend === "ios-device" ? "udid" : "usb", deviceId: "phone", claimId: "claim", claimNonce: "nonce" });
+        expect(caught).toBeInstanceOf(AggregateError);
+        if (!(caught instanceof AggregateError)) throw new Error("expected primary and cleanup failures");
+        if (publication === "throws") expect(caught.cause).toBe(primary);
+        else expect(caught.cause).toEqual({ kind: "attach-refused", category: "conflict", error: "owner-device-state-conflict", existing: successor });
+        expect(caught.errors).toHaveLength(2);
+        expect(caught.errors[0]).toBe(caught.cause);
+        expect(caught.errors[1]).toBe(cleanup);
+        expect(caught.message).toBe("Physical attachment compensation failed");
+        expect(heartbeat).not.toHaveBeenCalled();
+    });
+
+    it.each(["android-device", "ios-device"] as const)("%s keeps the existing publication-failure outcome after successful exact compensation", backend => {
+        const ports = physicalPorts(), primary = new Error("publication failed"), release = vi.fn(ports.releaseClaim), heartbeat = vi.fn(ports.heartbeat);
+        ports.claimDevice = () => { throw primary; };
+        ports.releaseClaim = release; ports.heartbeat = heartbeat;
+        expect(createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend, deviceId: "phone", ...(backend === "ios-device" ? { udid: "udid" } : { serial: "usb" }) }))
+            .toEqual({ kind: "attach-refused", category: "state-write-failed", error: "owner-state-write-failed", detail: primary.message });
+        expect(release).toHaveBeenCalledExactlyOnceWith("owner", { backend, hardwareId: backend === "ios-device" ? "udid" : "usb", deviceId: "phone", claimId: "claim", claimNonce: "nonce" });
+        expect(heartbeat).not.toHaveBeenCalled();
+    });
+
+    it.each(["android-device", "ios-device"] as const)("%s preserves a refused compensation without retrying or starting a heartbeat", backend => {
+        const ports = physicalPorts(), successor = { claimId: "claim", claimNonce: "successor-nonce" };
+        ports.claimDevice = () => ({ ok: false, error: "owner-device-state-conflict", existing: successor });
+        const release = vi.fn<BrokerPhysicalDevicesPorts<string, { observed: boolean }>["releaseClaim"]>(() => ({ kind: "conflict", error: "physical-lease-operation-mismatch", lease: successor }));
+        const heartbeat = vi.fn(ports.heartbeat);
+        ports.releaseClaim = release; ports.heartbeat = heartbeat;
+        expect(createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend, deviceId: "phone", ...(backend === "ios-device" ? { udid: "udid" } : { serial: "usb" }) }))
+            .toEqual({ kind: "attach-refused", category: "conflict", error: "owner-device-state-conflict", existing: successor });
+        expect(release).toHaveBeenCalledExactlyOnceWith("owner", { backend, hardwareId: backend === "ios-device" ? "udid" : "usb", deviceId: "phone", claimId: "claim", claimNonce: "nonce" });
+        expect(heartbeat).not.toHaveBeenCalled();
+    });
+
+    it.each(["connect", "inventory", "missing", "offline"] as const)("Android returned %s refusal retains opaque primary evidence when compensation throws", phase => {
+        const ports = physicalPorts(), receipt = { observed: true, evidence: "opaque connect result" }, connect = { ok: false, receipt }, cleanup = new Error("lease cleanup failed");
+        const inventory = { ok: phase !== "inventory", devices: phase === "offline" ? [{ serial: "usb", state: "offline", details: {}, connection: "usb", attachable: false }] : [] };
+        ports.connectAndroid = () => connect;
+        ports.androidInventory = () => inventory;
+        const publish = vi.fn(ports.claimDevice), heartbeat = vi.fn(ports.heartbeat);
+        const release = vi.fn<BrokerPhysicalDevicesPorts<string, { observed: boolean }>["releaseClaim"]>(() => { throw cleanup; });
+        ports.claimDevice = publish; ports.releaseClaim = release; ports.heartbeat = heartbeat;
+        let caught: unknown;
+        try { createBrokerPhysicalDevicesApplication(ports).attach("owner", { backend: "android-device", deviceId: "phone", ...(phase === "connect" ? { connection: "wifi", host: "host" } : { serial: "usb" }) }); }
+        catch (error) { caught = error; }
+        expect(caught).toBeInstanceOf(AggregateError);
+        if (!(caught instanceof AggregateError)) throw new Error("expected primary and cleanup failures");
+        expect(caught.cause).toEqual(phase === "connect" ? { kind: "attach-refused", category: "provider-failed", error: "adb-connect-failed", command: connect }
+            : phase === "inventory" ? { kind: "attach-refused", category: "provider-failed", error: "adb-inventory-failed", inventory }
+                : phase === "missing" ? { kind: "attach-refused", category: "missing", error: "android-device-not-visible", hardwareId: "usb", inventory }
+                    : { kind: "attach-refused", category: "conflict", error: "android-device-not-attachable", hardwareId: "usb", state: "offline" });
+        expect(caught.errors).toHaveLength(2);
+        expect(caught.errors[0]).toBe(caught.cause);
+        expect(caught.errors[1]).toBe(cleanup);
+        if (phase === "connect") expect(caught.errors[0].command).toBe(connect);
+        else if (phase !== "offline") expect(caught.errors[0].inventory).toBe(inventory);
+        expect(release).toHaveBeenCalledExactlyOnceWith("owner", { backend: "android-device", hardwareId: phase === "connect" ? "host:5555" : "usb", deviceId: "phone", claimId: "claim", claimNonce: "nonce" });
+        expect(publish).not.toHaveBeenCalled();
+        expect(heartbeat).not.toHaveBeenCalled();
+    });
+
     it.each(["missing-executable", "command-failed"] as const)("keeps Apple %s failure distinct before admission", reason => {
         const ports = physicalPorts(); ports.appleInventory = () => ({ kind: "failed", reason, receipt: { observed: true } });
         const claim = vi.fn(ports.claimLease); ports.claimLease = claim;

@@ -15,11 +15,17 @@ export function createPhysicalAttachmentApplication(ports) {
             const leaseClaimNonce = ports.nonce();
             /** @type {import("../ports/physical-leases.mjs").PhysicalLeaseResult|null} */
             let lease = null;
-            /** @param {string} hardwareId @param {string} id */
-            const releaseClaimedLease = (hardwareId, id) => lease?.lease && ports.releaseLease(hardwareId, id, {
-                claimId: lease.lease.claimId,
-                claimNonce: leaseClaimNonce,
-            });
+            /** @param {string} hardwareId @param {string} id @param {unknown} primary */
+            const releaseClaimedLease = (hardwareId, id, primary) => {
+                try {
+                    if (lease?.lease) ports.releaseLease(hardwareId, id, {
+                        claimId: lease.lease.claimId,
+                        claimNonce: leaseClaimNonce,
+                    });
+                } catch (cleanup) {
+                    throw new AggregateError([primary, cleanup], "Physical attachment compensation failed", {cause: primary});
+                }
+            };
 
             const discovery = ports.discover();
             if (!discovery.adb) return { kind: "error", message: "Android real-device backend missing prerequisites: adb" };
@@ -38,8 +44,10 @@ export function createPhysicalAttachmentApplication(ports) {
                 }
                 const connect = ports.connect(discovery.adb, connectTarget);
                 if (!connect.ok) {
-                    releaseClaimedLease(connectTarget, id);
-                    return { kind: "command-failure", command: connect.receipt };
+                    /** @type {Outcome} */
+                    const refusal = { kind: "command-failure", command: connect.receipt };
+                    releaseClaimedLease(connectTarget, id, refusal);
+                    return refusal;
                 }
                 resolvedSerial = connectTarget;
             }
@@ -48,12 +56,16 @@ export function createPhysicalAttachmentApplication(ports) {
             const inventory = ports.inventory(discovery);
             const hostDevice = inventory.devices.find((device) => device.serial === resolvedSerial);
             if (!hostDevice) {
-                if (connection === "wifi") releaseClaimedLease(resolvedSerial, deviceId || ports.deriveId(deviceName || resolvedSerial));
-                return { kind: "error", message: `Android device is not visible to adb: ${resolvedSerial}` };
+                /** @type {Outcome} */
+                const refusal = { kind: "error", message: `Android device is not visible to adb: ${resolvedSerial}` };
+                if (connection === "wifi") releaseClaimedLease(resolvedSerial, deviceId || ports.deriveId(deviceName || resolvedSerial), refusal);
+                return refusal;
             }
             if (!hostDevice.attachable) {
-                if (connection === "wifi") releaseClaimedLease(resolvedSerial, deviceId || ports.deriveId(deviceName || resolvedSerial));
-                return { kind: "error", message: `Android device ${resolvedSerial} is not attachable; adb state is ${hostDevice.state}` };
+                /** @type {Outcome} */
+                const refusal = { kind: "error", message: `Android device ${resolvedSerial} is not attachable; adb state is ${hostDevice.state}` };
+                if (connection === "wifi") releaseClaimedLease(resolvedSerial, deviceId || ports.deriveId(deviceName || resolvedSerial), refusal);
+                return refusal;
             }
 
             const id = deviceId || ports.deriveId(deviceName || resolvedSerial);
@@ -77,12 +89,14 @@ export function createPhysicalAttachmentApplication(ports) {
             try {
                 claim = ports.claim(device);
             } catch (error) {
-                releaseClaimedLease(resolvedSerial, id);
+                releaseClaimedLease(resolvedSerial, id, error);
                 throw error;
             }
             if (!claim.ok) {
-                releaseClaimedLease(resolvedSerial, id);
-                return { kind: "error", message: `Device identity already exists for this owner (${claim.field}: ${claim.value})` };
+                /** @type {Outcome} */
+                const refusal = { kind: "error", message: `Device identity already exists for this owner (${claim.field}: ${claim.value})` };
+                releaseClaimedLease(resolvedSerial, id, refusal);
+                return refusal;
             }
             ports.startHeartbeat(resolvedSerial, id, {
                 claimId: lease.lease.claimId,
@@ -120,16 +134,26 @@ export function createPhysicalAttachmentApplication(ports) {
                 ...attachmentRecord(backend,id,deviceName || hostDevice.name || udid,{owner:ports.owner(),port:ports.appiumPort(id),claimId:lease.lease.claimId,nonce:leaseClaimNonce,attachedAt:ports.now(),updatedAt:ports.now()}),
                 udid,connection:resolvedConnection,transport:{type:resolvedConnection,host:resolvedConnection === "wifi" ? host || null : null,port:resolvedConnection === "wifi" ? port || null : null,visibleVia:"xctrace"},hostDetails:hostDevice,
             };
+            /** @param {unknown} primary */
+            const releaseClaimedLease = (primary) => {
+                try {
+                    ports.releaseLease(udid, id, { claimId: lease.lease.claimId, claimNonce: leaseClaimNonce });
+                } catch (cleanup) {
+                    throw new AggregateError([primary, cleanup], "Physical attachment compensation failed", {cause: primary});
+                }
+            };
             let claim;
             try {
                 claim = ports.claim(device);
             } catch (error) {
-                ports.releaseLease(udid, id, { claimId: lease.lease.claimId, claimNonce: leaseClaimNonce });
+                releaseClaimedLease(error);
                 throw error;
             }
             if (!claim.ok) {
-                ports.releaseLease(udid, id, { claimId: lease.lease.claimId, claimNonce: leaseClaimNonce });
-                return { kind: "error", message: `Device identity already exists for this owner (${claim.field}: ${claim.value})` };
+                /** @type {Outcome} */
+                const refusal = { kind: "error", message: `Device identity already exists for this owner (${claim.field}: ${claim.value})` };
+                releaseClaimedLease(refusal);
+                return refusal;
             }
             ports.startHeartbeat(udid, id, { claimId: lease.lease.claimId, claimNonce: leaseClaimNonce });
             return { kind: "attached", device };

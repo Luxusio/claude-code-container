@@ -59,33 +59,43 @@ export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: B
         });
         if (lease.kind !== 'claimed') return {kind:'lease-refused',failure:lease};
         const leaseRecord = lease.lease;
-        const releaseLease = () => ports.releaseClaim(ownerId, {
-            backend: parsed.backend,
-            hardwareId: target,
-            deviceId: parsed.deviceId,
-            claimId: leaseRecord?.claimId,
-            claimNonce: leaseClaimNonce,
-        });
+        const releaseLease = (primary: unknown) => {
+            try {
+                ports.releaseClaim(ownerId, {
+                    backend: parsed.backend,
+                    hardwareId: target,
+                    deviceId: parsed.deviceId,
+                    claimId: leaseRecord?.claimId,
+                    claimNonce: leaseClaimNonce,
+                });
+            } catch (cleanup) {
+                throw new AggregateError([primary, cleanup], "Physical attachment compensation failed", {cause: primary});
+            }
+        };
         if (parsed.connection === "wifi") {
             const connect = ports.connectAndroid(target);
             if (!connect.ok) {
-                releaseLease();
-                return {kind:'attach-refused',category:'provider-failed',error: "adb-connect-failed", command: connect};
+                const refusal: AttachOutcome<Receipt> = {kind:'attach-refused',category:'provider-failed',error: "adb-connect-failed", command: connect};
+                releaseLease(refusal);
+                return refusal;
             }
         }
         const inventory = initialInventory || ports.androidInventory();
         if (!inventory.ok) {
-            releaseLease();
-            return {kind:'attach-refused',category:'provider-failed',error: "adb-inventory-failed", inventory};
+            const refusal: AttachOutcome<Receipt> = {kind:'attach-refused',category:'provider-failed',error: "adb-inventory-failed", inventory};
+            releaseLease(refusal);
+            return refusal;
         }
         const hostDevice = inventory.devices.find((device) => device.serial === target);
         if (!hostDevice) {
-            releaseLease();
-            return {kind:'attach-refused',category:'missing',error: "android-device-not-visible", hardwareId: target, inventory};
+            const refusal: AttachOutcome<Receipt> = {kind:'attach-refused',category:'missing',error: "android-device-not-visible", hardwareId: target, inventory};
+            releaseLease(refusal);
+            return refusal;
         }
         if (hostDevice.state !== "device") {
-            releaseLease();
-            return {kind:'attach-refused',category:'conflict',error: "android-device-not-attachable", hardwareId: target, state: hostDevice.state};
+            const refusal: AttachOutcome<Receipt> = {kind:'attach-refused',category:'conflict',error: "android-device-not-attachable", hardwareId: target, state: hostDevice.state};
+            releaseLease(refusal);
+            return refusal;
         }
         const now = ports.timestamp();
         const device = {
@@ -112,16 +122,16 @@ export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: B
             attachedAt: now,
             updatedAt: now,
         };
-        try {
-            const claim = ports.claimDevice(ownerId, parsed.stateKey, device, "serial");
-            if (!claim.ok) {
-                releaseLease();
-                return {kind:'attach-refused',category:'conflict',error: claim.error, existing: claim.existing};
-            }
-        }
+        let claim;
+        try {claim = ports.claimDevice(ownerId, parsed.stateKey, device, "serial");}
         catch (error) {
-            releaseLease();
+            releaseLease(error);
             return {kind:'attach-refused',category:'state-write-failed',error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error)};
+        }
+        if (!claim.ok) {
+            const refusal: AttachOutcome<Receipt> = {kind:'attach-refused',category:'conflict',error: claim.error, existing: claim.existing};
+            releaseLease(refusal);
+            return refusal;
         }
         const heartbeat = ports.heartbeat(ownerId, parsed.backend, target, parsed.deviceId, leaseRecord, leaseClaimNonce);
         return {kind:'attached',device, lease: leaseRecord, heartbeat, provider: "adb", inventory};
@@ -159,13 +169,19 @@ export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: B
         });
         if (lease.kind !== 'claimed') return {kind:'lease-refused',failure:lease};
         const leaseRecord = lease.lease;
-        const releaseLease = () => ports.releaseClaim(ownerId, {
-            backend: parsed.backend,
-            hardwareId: parsed.udid,
-            deviceId: parsed.deviceId,
-            claimId: leaseRecord?.claimId,
-            claimNonce: leaseClaimNonce,
-        });
+        const releaseLease = (primary: unknown) => {
+            try {
+                ports.releaseClaim(ownerId, {
+                    backend: parsed.backend,
+                    hardwareId: parsed.udid,
+                    deviceId: parsed.deviceId,
+                    claimId: leaseRecord?.claimId,
+                    claimNonce: leaseClaimNonce,
+                });
+            } catch (cleanup) {
+                throw new AggregateError([primary, cleanup], "Physical attachment compensation failed", {cause: primary});
+            }
+        };
         const now = ports.timestamp();
         const device = {
             id: parsed.deviceId,
@@ -189,16 +205,16 @@ export function createBrokerPhysicalDevicesApplication<Handle, Receipt>(ports: B
             attachedAt: now,
             updatedAt: now,
         };
-        try {
-            const claim = ports.claimDevice(ownerId, parsed.stateKey, device, "udid");
-            if (!claim.ok) {
-                releaseLease();
-                return {kind:'attach-refused',category:'conflict',error: claim.error, existing: claim.existing};
-            }
-        }
+        let claim;
+        try {claim = ports.claimDevice(ownerId, parsed.stateKey, device, "udid");}
         catch (error) {
-            releaseLease();
+            releaseLease(error);
             return {kind:'attach-refused',category:'state-write-failed',error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error)};
+        }
+        if (!claim.ok) {
+            const refusal: AttachOutcome<Receipt> = {kind:'attach-refused',category:'conflict',error: claim.error, existing: claim.existing};
+            releaseLease(refusal);
+            return refusal;
         }
         const heartbeat = ports.heartbeat(ownerId, parsed.backend, parsed.udid, parsed.deviceId, leaseRecord, leaseClaimNonce);
         return {kind:'attached',device, lease: leaseRecord, heartbeat, provider: "xcrun", inventory, command:inventory};
