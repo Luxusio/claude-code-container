@@ -64,6 +64,7 @@ function publicScreenshotRequest(macos:ProviderRequest<Reply>,display:ProviderRe
         actionResult,
         invokeBrokerListFiles: unexpected, listDirectDeviceFiles: unexpected, listFilesFromExecResult: unexpected,
         availableDevices: unexpected, startBootTimeoutMs: unexpected, finishStartReadiness: unexpected,
+        macosTartCreateRpcTimeoutMs: unexpected,
         cropScreenshotResult: unexpected, createWaitBudget: unexpected, runDeviceFlow: unexpected,
     } satisfies DeviceRequestPorts<Reply>;
     return createDeviceRequest(ports);
