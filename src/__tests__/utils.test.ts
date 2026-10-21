@@ -344,6 +344,42 @@ describe('EXCLUDE_ENV_KEYS', () => {
 });
 
 describe('collectForwardedEnv', () => {
+    it('counts UTF-8 bytes, key separators and entry terminators against the byte budget', () => {
+        const env = { B: '봄😀', A: 'é' };
+        // A=é takes 5 bytes and B=봄😀 takes 10, including one terminator each.
+        expect(collectForwardedEnv(env, { byteLimit: 15 })).toEqual({
+            forwarded: [['A', 'é'], ['B', '봄😀']],
+            skippedDueToLimit: [],
+            totalBytes: 15,
+        });
+        expect(collectForwardedEnv(env, { byteLimit: 14 })).toEqual({
+            forwarded: [['A', 'é']],
+            skippedDueToLimit: ['B'],
+            totalBytes: 5,
+        });
+    });
+
+    it('observes additions and removals to the public exclusion Set between calls', () => {
+        const env = { CUSTOM_FORWARD_TEST: 'value' };
+        const exclusionKey = 'custom_forward_test';
+        const wasExcluded = EXCLUDE_ENV_KEYS.has(exclusionKey);
+        try {
+            EXCLUDE_ENV_KEYS.delete(exclusionKey);
+            expect(collectForwardedEnv(env).forwarded).toEqual([['CUSTOM_FORWARD_TEST', 'value']]);
+            EXCLUDE_ENV_KEYS.add(exclusionKey);
+            expect(collectForwardedEnv(env)).toEqual({
+                forwarded: [],
+                skippedDueToLimit: [],
+                totalBytes: 0,
+            });
+            EXCLUDE_ENV_KEYS.delete(exclusionKey);
+            expect(collectForwardedEnv(env).forwarded).toEqual([['CUSTOM_FORWARD_TEST', 'value']]);
+        } finally {
+            if (wasExcluded) EXCLUDE_ENV_KEYS.add(exclusionKey);
+            else EXCLUDE_ENV_KEYS.delete(exclusionKey);
+        }
+    });
+
     it('keeps smaller env vars first when byte budget is tight', () => {
         const env = {
             BIG_CUSTOM: 'x'.repeat(120),
