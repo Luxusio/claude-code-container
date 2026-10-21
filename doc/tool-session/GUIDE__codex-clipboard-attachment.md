@@ -2,8 +2,10 @@
 
 The public `src/codex-clipboard-image.ts` facade composes one application operation
 from `src/application/tool-session/codex-clipboard-image.ts`. The domain module
-owns the unchanged argument scans, excluded subcommands, value options, prompt,
-filename, and directory segments. Ports supply the native clock, path joining,
+owns attachment argument scans, eligibility, prompt, filename, and directory
+segments. Canonical subcommands and value options come from the existing pure
+tool registry, shared with launch and local resume under their individual
+eligibility policies. Ports supply the native clock, path joining,
 default image reader, directory creation, and image write. The application uses
 opaque image values; it neither interprets nor copies native image bytes.
 
@@ -31,15 +33,13 @@ callbacks invoked later retain their original EventEmitter behavior; they do
 not acquire a new catch or settlement policy. Read/path/directory/write failures
 reject the attachment operation unchanged, with no new retry or cleanup.
 
-The architecture tests replay a frozen inert facade from commit
-`c284ead3a637d4d31ca93661920ee0f0200b9077` against the actual candidate under
-explicit synthetic native bindings. They check argv and result identity, option
-getters, mutations across await, function/receiver/callee behavior, coercion,
-HTTP callbacks, and raw failure identity. Pure core tests cover the operation
-sequence and dependency guard negatives; strict type fixtures preserve required
-ports and mutable public signatures. Existing clipboard image/server tests use
-synthetic HTTP and private files. The architecture typecheck includes these files
-through its existing explicit globs.
+Behavior tests check command exclusion before clipboard effects, option/value
+adjacency, interactive image arguments and existing asynchronous failure paths.
+Registry, launch and resume tests retain catalog independence and their distinct
+eligibility policies. Strict fixtures cover consumed ports and public signatures;
+clipboard image/server tests use synthetic HTTP and private files. Relocated
+resume execution includes its existing registry and tool-layout dependencies.
+Verification does not use a frozen implementation or source-shape comparisons.
 
 Root integration verifies emitted facade/domain/application modules and
 declarations in packed and materialized installer forms outside the checkout.
