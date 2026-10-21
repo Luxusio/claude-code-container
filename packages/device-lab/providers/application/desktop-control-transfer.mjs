@@ -1,14 +1,25 @@
 import { desktopPointValid, desktopDragValid } from '../domain/desktop-control-transfer.mjs';
 /** @typedef {import('../domain/desktop-control-transfer.mjs').DesktopArguments} Arguments */
 /** @typedef {import('../domain/desktop-control-transfer.mjs').DesktopOutcome} Outcome */
-/** @param {string} message @returns {Outcome} */
+/** @typedef {import('../domain/desktop-control-transfer.mjs').DesktopResult} Result */
+/** @param {string} message @returns {Result} */
 const refused = message => ({ kind: 'refused', message });
-/** @param {string} name @param {unknown} evidence @returns {Outcome} */
+/** @param {string} name @param {unknown} evidence @returns {Result} */
 const failed = (name, evidence) => ({ kind: 'failed', name, evidence });
-/** @param {string} name @param {Arguments} args @param {import('../ports/desktop-control-transfer.mjs').NativeObservation} observation @returns {Outcome} */
+/** @param {string} name @param {Arguments} args @param {import('../ports/desktop-control-transfer.mjs').NativeObservation} observation @returns {Result} */
 const observed = (name, args, observation) => observation.ok ? { kind: 'completed', name, args, evidence: observation.evidence } : failed(name, observation.evidence);
 /** @param {Arguments} args @returns {import('../ports/desktop-control-transfer.mjs').DragArguments} */
 const dragArguments = args => ({ x1: Number(args.x1), y1: Number(args.y1), x2: Number(args.x2), y2: Number(args.y2), durationMs: args.durationMs ?? 700 });
+/** @param {string} name
+ * @param {import('../domain/desktop-control-transfer.mjs').DesktopResult|{kind:'thrown',error:unknown}} primary
+ * @param {()=>undefined} dispose
+ * @returns {import('../domain/desktop-control-transfer.mjs').DesktopResult|import('../domain/desktop-control-transfer.mjs').DesktopCleanupFailure} */
+function finalizeStage(name, primary, dispose) {
+    try { dispose(); }
+    catch (error) { return { kind: 'failed', name, evidence: error, cleanup: { primary, error } }; }
+    if (primary.kind === 'thrown') throw primary.error;
+    return primary;
+}
 /** @param {import('../ports/desktop-control-transfer.mjs').X11Ports} ports @param {string} name @param {Arguments} args @returns {Outcome} */
 function x11(ports, name, args) {
     if (name === 'display_window_list') return observed(name, args, ports.windowList(Math.min(args.helperTimeoutMs || 30000, 30000)));
@@ -58,9 +69,12 @@ async function windows(ports, name, args) {
         if (name === 'device_upload') {
             const stage = ports.stageUpload(helper, local.path);
             if (!stage.ok) return refused(stage.message);
+            /** @type {import('../domain/desktop-control-transfer.mjs').DesktopResult|{kind:'thrown',error:unknown}} */
+            let primary;
             try {
-                return observed(name, normalized, await ports.upload(target, stage.guestPath, remote.path, args.helperTimeoutMs));
-            } finally { ports.disposeUpload(stage.handle); }
+                primary = observed(name, normalized, await ports.upload(target, stage.guestPath, remote.path, args.helperTimeoutMs));
+            } catch (error) { primary = { kind: 'thrown', error }; }
+            return finalizeStage(name, primary, () => ports.disposeUpload(stage.handle));
         }
         const result = await ports.download(target, remote.path, args.helperTimeoutMs);
         if (!result.ok) return failed(name, result.evidence);
@@ -119,19 +133,28 @@ function macos(ports, name, args) {
         if (name === 'device_upload') {
             const stage = ports.stageInput(args.localPath);
             if (!stage.ok) return refused(stage.message);
+            /** @type {import('../domain/desktop-control-transfer.mjs').DesktopResult|{kind:'thrown',error:unknown}} */
+            let primary;
             try {
-                return observed(name, { ...args, localPath: stage.path, remotePath: remote.path }, ports.upload(target, bridge.bridge, stage.stagedPath, remote.path, args.helperTimeoutMs));
-            } finally { ports.disposeInput(stage.handle); }
+                primary = observed(name, { ...args, localPath: stage.path, remotePath: remote.path }, ports.upload(target, bridge.bridge, stage.stagedPath, remote.path, args.helperTimeoutMs));
+            } catch (error) { primary = { kind: 'thrown', error }; }
+            return finalizeStage(name, primary, () => ports.disposeInput(stage.handle));
         }
         const stage = ports.stageOutput(args.localPath);
         if (!stage.ok) return refused(stage.message);
+        /** @type {import('../domain/desktop-control-transfer.mjs').DesktopResult|{kind:'thrown',error:unknown}} */
+        let primary;
         try {
             const result = ports.download(target, bridge.bridge, remote.path, stage.stagedPath, args.helperTimeoutMs);
-            if (!result.ok) return failed(name, result.evidence);
-            const committed = ports.commitOutput(stage.handle);
-            if (!committed.ok) return refused(committed.message);
-            return observed(name, { ...args, localPath: committed.path, remotePath: remote.path }, result);
-        } finally { ports.disposeOutput(stage.handle); }
+            if (!result.ok) primary = failed(name, result.evidence);
+            else {
+                const committed = ports.commitOutput(stage.handle);
+                primary = committed.ok
+                    ? observed(name, { ...args, localPath: committed.path, remotePath: remote.path }, result)
+                    : refused(committed.message);
+            }
+        } catch (error) { primary = { kind: 'thrown', error }; }
+        return finalizeStage(name, primary, () => ports.disposeOutput(stage.handle));
     }
     const { x, y, button = 'left', key, text, direction = 'down', amount = 1 } = args;
     if (name === 'device_click' || name === 'device_double_click') {

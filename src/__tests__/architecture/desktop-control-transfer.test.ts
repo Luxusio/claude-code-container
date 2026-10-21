@@ -658,3 +658,107 @@ it.each(["success", "failure", "throw"])("macOS upload %s disposes input after t
     else expect((await pending)?.kind).toBe(mode === "success" ? "completed" : "failed");
     expect(order).toEqual(["stage", "transfer", "dispose"]);
 });
+
+it("regression: staging cleanup preserves completed Windows upload", async () => {
+    const cleanupError = Symbol("owned-stage disposal failed");
+    const disposed: unknown[] = [];
+    let live = false, settle!: (result: NativeObservation) => void;
+    const transfer = new Promise<NativeObservation>(resolve => { settle = resolve; });
+    const app = create(win({
+        guestPath: () => ({ok: true, path: "remote"}),
+        inputPath: () => ({ok: true, path: "local"}),
+        stageUpload: () => { live = true; return {ok: true, handle: stage, guestPath: "staged"}; },
+        upload: () => { expect(live).toBe(true); return transfer; },
+        disposeUpload: handle => {
+            expect(live).toBe(true);
+            disposed.push(handle); live = false;
+            throw cleanupError;
+        },
+    }));
+    const pending = app.handle("device_upload", {});
+    expect(live).toBe(true);
+    expect(disposed).toEqual([]);
+    settle(good);
+    await expect(pending).resolves.toEqual({
+        kind: "failed", name: "device_upload", evidence: cleanupError,
+        cleanup: {primary: {kind: "completed", name: "device_upload", args: {localPath: "local", remotePath: "remote"}, evidence}, error: cleanupError},
+    });
+    expect(live).toBe(false);
+    expect(disposed).toEqual([stage]);
+});
+
+it.each([
+    {mode: "native failure", primaryError: null}, {mode: "synchronous throw", primaryError: Symbol("native throw")},
+    {mode: "asynchronous zero rejection", primaryError: 0}, {mode: "asynchronous undefined rejection", primaryError: undefined},
+])("Windows upload retains $mode when its own stage cleanup also fails", async ({mode, primaryError}) => {
+    const cleanupError = new Error("cleanup failed"), order: string[] = [];
+    const app = create(win({
+        guestPath: () => ({ok: true, path: "remote"}), inputPath: () => ({ok: true, path: "local"}),
+        stageUpload: () => { order.push("stage"); return {ok: true, handle: stage, guestPath: "staged"}; },
+        upload: () => {
+            order.push("transfer");
+            if (mode === "synchronous throw") throw primaryError;
+            return mode === "native failure" ? Promise.resolve(bad) : Promise.reject(primaryError);
+        },
+        disposeUpload: handle => { expect(handle).toBe(stage); order.push("dispose"); throw cleanupError; },
+    }));
+    const result = await app.handle("device_upload", {});
+    expect(result).toEqual({kind: "failed", name: "device_upload", evidence: cleanupError,
+        cleanup: {primary: mode === "native failure" ? {kind: "failed", name: "device_upload", evidence}
+            : {kind: "thrown", error: primaryError}, error: cleanupError}});
+    if (result?.kind === "failed") expect(result.evidence).toBe(cleanupError);
+    expect(order).toEqual(["stage", "transfer", "dispose"]);
+});
+
+it.each([
+    {action: "upload", mode: "completed"}, {action: "upload", mode: "native failure"}, {action: "upload", mode: "transfer throw"},
+    {action: "download", mode: "completed"}, {action: "download", mode: "native failure"}, {action: "download", mode: "transfer throw"},
+    {action: "download", mode: "commit refused"}, {action: "download", mode: "commit throw"},
+])("macOS $action retains $mode with failing owned-stage disposal", async ({action, mode}) => {
+    const cleanupError = Symbol("cleanup"), primaryError = mode === "commit throw" ? undefined : 0;
+    const order: string[] = [];
+    let live = false;
+    const allocate = () => {
+        live = true; order.push("stage");
+        return {ok: true as const, handle: stage, path: "logical", stagedPath: "temporary"};
+    };
+    const transfer = () => {
+        expect(live).toBe(true); order.push("transfer");
+        if (mode === "transfer throw") throw primaryError;
+        return mode === "native failure" ? bad : good;
+    };
+    const dispose = (handle: typeof stage): never => {
+        expect(handle).toBe(stage); expect(live).toBe(true);
+        live = false; order.push("dispose");
+        throw cleanupError;
+    };
+    const app = create(mac({
+        bridge: () => ({ok: true, bridge}), guestPath: () => ({ok: true, path: "remote"}),
+        stageInput: allocate, stageOutput: allocate, upload: transfer, download: transfer,
+        commitOutput: handle => {
+            expect(handle).toBe(stage); expect(live).toBe(true); order.push("commit");
+            if (mode === "commit throw") throw primaryError;
+            return mode === "commit refused" ? {ok: false, message: "publication-denied"} : {ok: true, path: "committed-logical"};
+        },
+        disposeInput: dispose, disposeOutput: dispose,
+    }));
+    const primary = mode.endsWith("throw") ? {kind: "thrown", error: primaryError}
+        : mode === "commit refused" ? {kind: "refused", message: "publication-denied"}
+        : mode === "native failure" ? {kind: "failed", name: `device_${action}`, evidence}
+        : {kind: "completed", name: `device_${action}`, args: {localPath: action === "download" ? "committed-logical" : "logical", remotePath: "remote"}, evidence};
+    const result = await app.handle(`device_${action}`, {});
+    expect(result).toEqual({kind: "failed", name: `device_${action}`, evidence: cleanupError, cleanup: {primary, error: cleanupError}});
+    expect(live).toBe(false);
+    expect(order).toEqual(action === "download" && mode !== "native failure" && mode !== "transfer throw"
+        ? ["stage", "transfer", "commit", "dispose"] : ["stage", "transfer", "dispose"]);
+});
+
+it.each([0, undefined])("Windows upload keeps falsy cleanup failure %s distinct from successful disposal", async cleanupError => {
+    const app = create(win({
+        guestPath: () => ({ok: true, path: "remote"}), inputPath: () => ({ok: true, path: "local"}),
+        stageUpload: () => ({ok: true, handle: stage, guestPath: "staged"}), upload: async () => good,
+        disposeUpload: handle => { expect(handle).toBe(stage); throw cleanupError; },
+    }));
+    await expect(app.handle("device_upload", {})).resolves.toEqual({kind: "failed", name: "device_upload", evidence: cleanupError,
+        cleanup: {primary: {kind: "completed", name: "device_upload", args: {localPath: "local", remotePath: "remote"}, evidence}, error: cleanupError}});
+});

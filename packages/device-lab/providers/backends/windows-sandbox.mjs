@@ -4,6 +4,7 @@ import { readPhysicalLeases as observationPhysicalLeases } from "../state/physic
 import { createWindowsSandboxCreate } from "../application/lifecycle/windows-sandbox-create.mjs";
 import { createWindowsSandboxStop, createWindowsSandboxLifecycle } from "../application/lifecycle/windows-sandbox-stop.mjs";
 import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
+import { renderDesktopTransferCleanup } from "../adapters/desktop-transfer-result.mjs";
 import { createDesktopDeviceAccess } from "../application/desktop-device-access.mjs";
 import { randomUUID } from "crypto";
 import { spawn } from "child_process";
@@ -1720,8 +1721,10 @@ function windowsRecordingResult(outcome) {
     return jsonResult(outcome.value);
 }
 
-/** @param {Exclude<import('../domain/desktop-control-transfer.mjs').DesktopOutcome,undefined>} outcome */
+/** @param {Exclude<import('../domain/desktop-control-transfer.mjs').DesktopOutcome,undefined>} outcome
+ * @returns {import('../adapters/desktop-transfer-result.mjs').DesktopTransferNativeResult} */
 function windowsDesktopResult(outcome) {
+    if (outcome.kind === "failed" && "cleanup" in outcome) return renderDesktopTransferCleanup(outcome, windowsDesktopResult, jsonResult);
     if (outcome.kind === "refused") return textResult(false, outcome.message);
     const native = /** @type {WindowsControlEvidence} */ (outcome.evidence);
     if (native.kind === "copy") return textResult(false, `Windows helper download output copy failed: ${native.result.error}`);

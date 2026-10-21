@@ -9,6 +9,7 @@ import { createMacosVmLifecycleApplication } from "../application/lifecycle/maco
 import { macosProviderInstanceReferenced, managedProviderResource, snapshotProviderInstances, restoreRecoveryProviderInstances } from "../domain/lifecycle/macos-vm-lifecycle.mjs";
 import { MACOS_WINDOW_JXA } from "./macos-window-focus.mjs";
 import { createDesktopControlTransfer } from "../application/desktop-control-transfer.mjs";
+import { renderDesktopTransferCleanup } from "../adapters/desktop-transfer-result.mjs";
 import { createDesktopDeviceAccess } from "../application/desktop-device-access.mjs";
 import { createDesktopAccessResult } from "../adapters/desktop-access-result.mjs";
 import { commandPath, run, runWithTimeout } from "../commands.mjs";
@@ -1119,9 +1120,17 @@ const macosAccess = createDesktopDeviceAccess(macosAccessPorts);
 
 const macosAccessResult = createDesktopAccessResult({jsonResult,textResult,fail});
 
-/** @param {import('../domain/desktop-control-transfer.mjs').DesktopOutcome} outcome */
+/** @param {import('../domain/desktop-control-transfer.mjs').DesktopOutcome} outcome
+ * @returns {import('../adapters/desktop-transfer-result.mjs').DesktopTransferNativeResult|undefined} */
 function macosDesktopResult(outcome) {
     if (outcome === undefined) return undefined;
+    if (outcome.kind === "failed" && "cleanup" in outcome) return renderDesktopTransferCleanup(outcome, macosDesktopPrimaryResult, jsonResult);
+    return macosDesktopPrimaryResult(outcome);
+}
+
+/** @param {import('../domain/desktop-control-transfer.mjs').DesktopResult} outcome
+ * @returns {import('../adapters/desktop-transfer-result.mjs').DesktopTransferNativeResult} */
+function macosDesktopPrimaryResult(outcome) {
     if (outcome.kind === "refused") return textResult(false, outcome.message);
     const evidence = /** @type {MacosDesktopEvidence} */ (outcome.evidence);
     if (evidence.kind === "native") return evidence.value;
