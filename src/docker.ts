@@ -73,7 +73,7 @@ import {
     isContainerHostRemote,
     getRuntimeInfo,
 } from "./container-runtime.js";
-import { ensureIdentityImage, getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName, normalizeImageId, resolveContainerIdentity, type ContainerIdentity as ContainerUserIdentity } from "./container-identity.js";
+import { ensureIdentityImage, getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName, resolveContainerIdentity, type ContainerIdentity as ContainerUserIdentity } from "./container-identity.js";
 import { beginRuntimeBindCreation, recordRuntimeBindAuthority, settleRuntimeBindCreation, withRuntimeBindGuard, withRuntimeBindGuardAsync } from "./adapters/runtime-bind-authority.js";
 import type { RuntimeBindCreationTicket, RuntimeBindGuard } from "./ports/runtime-bind-authority.js";
 import { codexConfigFileAclScript, codexConfigDirectoryAclScript } from "./codex-config-acl.js";
