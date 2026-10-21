@@ -54,6 +54,26 @@ registration snapshots. Cover missing receipts, successors, false restoration
 and settlement failures. Fixture evidence does not establish native host or
 whole-architecture completion.
 
+## CLI module startup boundary
+
+The CLI module currently uses a test-runner environment marker to decide whether
+to start. That marker does not establish which file Node executed. Derived from
+the noninteractive Core boundary, importing the module must not start the CLI.
+Automatic startup occurs only when the canonical file named by `argv[1]` matches
+the CLI module. Missing or unresolvable entry paths do not trigger startup.
+
+Test-runner markers, including `VITEST=0` and `VITEST=1`, neither start an import
+nor suppress direct execution. Keep the existing exported `main` and `runCli`
+entry points, startup-error handling and session-claim cleanup. File-identity
+observation failures must not swallow execution failures. Preserve npm, installed
+Unix-wrapper and real symlink launches through canonical file URLs.
+
+Verify these behaviors in emitted CLI child processes with informational
+arguments, private home/cwd and guarded native commands: silent import, absent
+and unresolvable entry paths, direct execution with absent/zero/one markers,
+explicit `runCli` once, and supported symlink launches. Importing or printing
+version information must not create a container or start a provider.
+
 ## Workspace removal application boundary
 
 Engineering-derived from the existing request for a noninteractive Core and the

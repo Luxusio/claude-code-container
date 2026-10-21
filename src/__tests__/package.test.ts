@@ -6,6 +6,7 @@ import { pathToFileURL } from "url";
 import { describe, expect, it } from "vitest";
 import { materializeUnixInstallPayload, unixWrapperContent } from "../../scripts/install.js";
 import { deviceLabTestHomeEnvironment } from "./helpers/device-lab-test-environment.js";
+import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 
 const repoRoot = join(__dirname, "../..");
 const HIDDEN_LEGACY_TRANSPORT_KEYS = new Set([
@@ -27,10 +28,92 @@ function schemaProperties(inputSchema: unknown): Record<string, unknown> {
     return Object.assign({}, schema?.properties, ...(schema?.oneOf || []).map(schemaProperties));
 }
 
+function cliBootstrapFixture() {
+    const homeDir = mkdtempSync(join(tmpdir(), "ccc-cli-bootstrap-"));
+    const guard = join(homeDir, "native-guard.cjs");
+    const nativeCalls = join(homeDir, "native-calls.jsonl");
+    writeFileSync(guard, `const fs=require('node:fs');const cp=require('node:child_process');
+for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork'])cp[name]=()=>{fs.appendFileSync(${JSON.stringify(nativeCalls)},JSON.stringify({name})+'\\n');throw new Error('informational-cli-must-not-dispatch-native-commands');};
+require('node:module').syncBuiltinESMExports();`);
+    const env: NodeJS.ProcessEnv = { ...process.env, ...deviceLabTestHomeEnvironment(homeDir) };
+    for (const key of Object.keys(env)) if (key === "VITEST" || key.startsWith("VITEST_")) delete env[key];
+    const entry = join(repoRoot, "dist", "index.js");
+    const version: string = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version;
+    return {
+        homeDir, guard, nativeCalls, env, entry, version,
+        run: (args: string[], overrides: NodeJS.ProcessEnv = {}) => execFileSync(process.execPath, ["--require", guard, ...args], {
+            cwd: homeDir, env: { ...env, ...overrides }, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
+        }),
+        dispose: () => rmSync(homeDir, { recursive: true, force: true }),
+    };
+}
+
 describe("npm package contents", () => {
+    it("regression: emitted CLI direct entry prints one version with inherited VITEST zero and one", () => {
+        const fixture = cliBootstrapFixture();
+        try {
+            const lines = ["0", "1"].map(marker => fixture.run([fixture.entry, "--version"], { VITEST: marker }).trim().split(/\r?\n/));
+            expect(lines).toEqual([[fixture.version], [fixture.version]]);
+            expect(existsSync(fixture.nativeCalls)).toBe(false);
+            expect(existsSync(join(fixture.homeDir, ".ccc"))).toBe(false);
+        } finally { fixture.dispose(); }
+    });
+
+    it("regression: emitted CLI direct entry prints one version without a runner marker", () => {
+        const fixture = cliBootstrapFixture();
+        try {
+            expect(fixture.run([fixture.entry, "--version"]).trim().split(/\r?\n/)).toEqual([fixture.version]);
+            expect(existsSync(fixture.nativeCalls)).toBe(false);
+            expect(existsSync(join(fixture.homeDir, ".ccc"))).toBe(false);
+        } finally { fixture.dispose(); }
+    });
+
+    it.each([undefined, "0", "1"])("regression: ordinary emitted CLI import prints only its caller sentinel with VITEST=%s", marker => {
+        const fixture = cliBootstrapFixture();
+        try {
+            const script = `process.argv=[process.execPath,${JSON.stringify(fixture.guard)},'--version'];await import(${JSON.stringify(pathToFileURL(fixture.entry).href)});process.stdout.write('import-sentinel\\n');`;
+            expect(fixture.run(["--input-type=module", "--eval", script], { VITEST: marker })).toBe("import-sentinel\n");
+            expect(existsSync(fixture.nativeCalls)).toBe(false);
+            expect(existsSync(join(fixture.homeDir, ".ccc"))).toBe(false);
+        } finally { fixture.dispose(); }
+    });
+
+    it.each(["missing", "unresolvable"])("regression: emitted CLI import with %s argv1 remains silent with informational arguments", entryKind => {
+        const fixture = cliBootstrapFixture();
+        try {
+            const entry = entryKind === "missing" ? "undefined" : JSON.stringify(join(fixture.homeDir, "absent-entry.js"));
+            const script = `process.argv=[process.execPath,${entry},'--version'];await import(${JSON.stringify(pathToFileURL(fixture.entry).href)});process.stdout.write('argv-sentinel\\n');`;
+            expect(fixture.run(["--input-type=module", "--eval", script])).toBe("argv-sentinel\n");
+            expect(existsSync(fixture.nativeCalls)).toBe(false);
+            expect(existsSync(join(fixture.homeDir, ".ccc"))).toBe(false);
+        } finally { fixture.dispose(); }
+    });
+
+    it.each([undefined, "0", "1"])("regression: explicit emitted runCli prints one version with VITEST=%s", marker => {
+        const fixture = cliBootstrapFixture();
+        try {
+            const script = `process.argv=[process.execPath,${JSON.stringify(fixture.guard)},'--version'];const cli=await import(${JSON.stringify(pathToFileURL(fixture.entry).href)});await cli.runCli();process.stdout.write('explicit-sentinel\\n');`;
+            expect(fixture.run(["--input-type=module", "--eval", script], { VITEST: marker }).trim().split(/\r?\n/)).toEqual([fixture.version, "explicit-sentinel"]);
+            expect(existsSync(fixture.nativeCalls)).toBe(false);
+            expect(existsSync(join(fixture.homeDir, ".ccc"))).toBe(false);
+        } finally { fixture.dispose(); }
+    });
+
+    it("regression: a real emitted CLI file symlink launches once with an inherited runner marker", context => {
+        const fixture = cliBootstrapFixture();
+        try {
+            const linkedEntry = join(fixture.homeDir, "linked-ccc.js");
+            fileSymlinkOrSkip(context, fixture.entry, linkedEntry);
+            expect(fixture.run([linkedEntry, "--version"], { VITEST: "1" }).trim().split(/\r?\n/)).toEqual([fixture.version]);
+            expect(existsSync(fixture.nativeCalls)).toBe(false);
+            expect(existsSync(join(fixture.homeDir, ".ccc"))).toBe(false);
+        } finally { fixture.dispose(); }
+    });
+
     it("materializes a self-contained Unix global install payload", async () => {
         const installRoot = mkdtempSync(join(tmpdir(), "ccc-global-install-"));
         const packageRoot = join(installRoot, "ccc-dist");
+        const fixture = cliBootstrapFixture();
         try {
             materializeUnixInstallPayload(repoRoot, packageRoot);
 
@@ -48,12 +131,26 @@ describe("npm package contents", () => {
             expect(existsSync(join(packageRoot, "dist", "x11-mcp"))).toBe(false);
             expect(unixWrapperContent(packageRoot)).toContain(join(packageRoot, "dist", "index.js"));
             await expect(import(`${pathToFileURL(brokerPath).href}?installed=${Date.now()}`)).resolves.toBeDefined();
+            expect(fixture.run([join(packageRoot, "dist", "index.js"), "--version"], { VITEST: "1" }).trim().split(/\r?\n/)).toEqual([fixture.version]);
+            if (process.platform !== "win32") {
+                const wrapper = join(installRoot, "ccc");
+                writeFileSync(wrapper, unixWrapperContent(packageRoot), { mode: 0o755 });
+                const output = execFileSync(wrapper, ["--version"], {
+                    cwd: fixture.homeDir,
+                    env: { ...fixture.env, VITEST: "1", NODE_OPTIONS: [fixture.env.NODE_OPTIONS, `--require ${JSON.stringify(fixture.guard)}`].filter(Boolean).join(" ") },
+                    encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
+                });
+                expect(output.trim().split(/\r?\n/)).toEqual([fixture.version]);
+            }
+            expect(existsSync(fixture.nativeCalls)).toBe(false);
+            expect(existsSync(join(fixture.homeDir, ".ccc"))).toBe(false);
 
             writeFileSync(join(packageRoot, "stale-install-marker"), "stale");
             materializeUnixInstallPayload(repoRoot, packageRoot);
             expect(existsSync(join(packageRoot, "stale-install-marker"))).toBe(false);
             expect(existsSync(androidStoragePath)).toBe(true);
         } finally {
+            fixture.dispose();
             rmSync(installRoot, { recursive: true, force: true });
         }
     });

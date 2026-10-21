@@ -11,9 +11,9 @@ import * as workspaceCliRemoval from "./application/workspace/cli-removal.js";
 import * as workspaceRemovalPresentation from "./adapters/workspace-removal-presentation.js";
 import { createNativeWorkspaceCliContainerRuntime } from "./adapters/workspace-cli-container-runtime.js";
 import { createWorkspaceContentRepairAdmission } from "./application/workspace/content-repair-admission.js";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "fs";
 import { basename, dirname, join, relative, resolve } from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import {
     formatScannedFiles,
     scanVersionFiles,
@@ -1275,5 +1275,12 @@ export function runCli(): Promise<void> {
     });
 }
 
-// Run only when executed directly (not when imported by test frameworks).
-if (!process.env.VITEST) void runCli();
+let isDirectEntry = false;
+if (process.argv[1]) {
+    try {
+        isDirectEntry = pathToFileURL(realpathSync(process.argv[1])).href === pathToFileURL(realpathSync(__filename)).href;
+    } catch {
+        // Missing or unresolvable entry paths do not authorize automatic startup.
+    }
+}
+if (isDirectEntry) void runCli();
