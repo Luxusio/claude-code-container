@@ -1,4 +1,5 @@
 import type { NativeRuntimeInvocation } from "./container-runtime-invocation.js";
+import type { SessionClaimObservationStore } from "./session-claim-observation.js";
 
 export interface SessionOwnershipBinding {
     lockFile: string;
@@ -60,6 +61,12 @@ export interface SessionOwnershipPublicationPorts {
     acknowledgeUpdate(publication: SessionOwnershipPublication): boolean;
     beginStartup(): void;
     recordOwnStart(containerId: string): void;
+}
+
+export interface SessionOwnershipPublicationEffects {
+    readonly store: Pick<SessionClaimObservationStore, "begin" | "assertCurrent" | "update">;
+    guardianStartToken(pid: number): string | null;
+    withLifecycleLock<T>(operation: () => T | Promise<T>): Promise<T>;
 }
 
 export interface SessionOwnershipPorts {
