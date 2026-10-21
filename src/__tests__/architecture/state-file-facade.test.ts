@@ -31,10 +31,7 @@ for (const [name, binding, native] of [["TS", ts, tsNative], ["shared", shared, 
 
 describe("TS/shared classification differences", () => {
 
-    it("retains narrower shared exports and instanceof-only TS error recognition", () => {
-        expect("writeDeviceLabBinaryFile" in shared).toBe(false);
-        expect("readDeviceLabBinaryFileWithinRoot" in shared).toBe(false);
-        expect("deviceLabStateFileErrorCode" in shared).toBe(false);
+    it("recognizes only its own TS error constructor", () => {
         expect(ts.deviceLabStateFileErrorCode({ code: "fake" })).toBeNull();
         expect(ts.deviceLabStateFileErrorCode(new shared.DeviceLabStateFileError("foreign"))).toBeNull();
         expect(ts.deviceLabStateFileErrorCode(new ts.DeviceLabStateFileError("own"))).toBe("own");

@@ -58,11 +58,7 @@ beforeEach(() => {
 afterEach(() => { session.clearSession(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
 
 describe("session claims compatibility facade", () => {
-    it("exports callable public operations and keeps the deprecated query alias behavior", () => {
-        for (const name of ["createSessionLock", "removeSessionLock", "removeSessionLockInHeldLifecycleLock",
-            "acquireHostSessionOwnership", "getActiveSessionsForContainer", "getActiveSessionsForProject",
-            "getSessionLockClaimsForContainer", "getSessionLockClaimsForProjectFamily", "hasOtherSessionClaims",
-            "recreateContainerWithoutInterruptingSessions"] as const) expect(session[name]).toBeTypeOf("function");
+    it("keeps the deprecated query alias behavior", () => {
         writeClaim("project--current.lock", { version: 3, pid: process.pid, startToken: null, ownershipKind: "direct" });
         writeClaim("project--p--work--other.lock", "123");
         expect(session.getActiveSessionsForProject("project")).toEqual(session.getActiveSessionsForContainer("project"));

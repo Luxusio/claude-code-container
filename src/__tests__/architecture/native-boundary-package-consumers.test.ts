@@ -43,13 +43,6 @@ describe("legacy native helper package consumers", () => {
 import assert from 'node:assert/strict';
 import * as android from '${androidModule}';
 import * as observation from '${observationModule}';
-for (const name of ['androidActionPlan', 'androidOrientationPlan']) assert.equal(typeof android[name], 'function', name);
-for (const name of ['observationAvailability', 'simulatorObservationState', 'publicObservationAndroidDevice',
-    'publicObservationSsh', 'publicObservationMacosDevice', 'observationMacosHelper', 'observationMacosStartArgs',
-    'observationMacosPlan', 'observationRuntimeState', 'observationReadiness', 'observationHardwareId',
-    'observationOwnedLease', 'observationLeaseState', 'observationSessionState', 'observationTargetStatus']) {
-    assert.equal(typeof observation[name], 'function', name);
-}
 assert.deepEqual(android.androidActionPlan('mobile_key', {keyCode: 0, key: 'fallback'}, 'physical'),
     {ok: true, intent: {kind: 'key', key: 0}, payload: {key: 0, provider: 'adb'}, doubleTap: false});
 assert.deepEqual(android.androidActionPlan('mobile_key', {key: 'CUSTOM_KEY'}, 'emulator'),

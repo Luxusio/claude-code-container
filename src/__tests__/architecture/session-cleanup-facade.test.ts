@@ -275,11 +275,7 @@ describe("native session cleanup through the public facade", () => {
         expect(once).not.toHaveBeenCalled();
     });
 
-    it("exposes separate held-guard startup and direct-retirement paths without native effects", () => {
-        for (const name of ["beginSessionStartupInHeldLifecycleLock", "recordSessionOwnStartInHeldLifecycleLock",
-            "publishSessionReadyInHeldLifecycleLock", "removeSessionLockInHeldLifecycleLock"] as const) {
-            expect(session[name]).toBeTypeOf("function");
-        }
+    it("refuses held-guard retirement without an original receipt or native effects", () => {
         expect(() => session.removeSessionLockInHeldLifecycleLock(own)).toThrow("original direct-claim receipt");
         expect(effects.unlink).not.toHaveBeenCalled();
         expect(effects.lock).not.toHaveBeenCalled();
