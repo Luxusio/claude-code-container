@@ -9474,7 +9474,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
         } finally { clock.mockRestore(); await close(server); cleanupOwner(ownerId); }
     });
 
-    it.each(["serial-delayed", "process-delayed", "both-delayed", "unrelated-offline", "serial-stays", "process-stays", "adb-fails", "process-fails", "budget-exhausted", "malformed-inventory"])(
+    it.each(["serial-delayed", "process-delayed", "both-delayed", "unrelated-offline", "serial-stays", "process-stays", "adb-fails", "process-fails", "process-overflow", "budget-exhausted", "malformed-inventory"])(
         "confirms Android stop completion with %s observations", async scenario => {
         const cwd = `/project/android-stop-completion-${scenario}`;
         const ownerId = deviceLabOwnerId(cwd);
@@ -9522,6 +9522,7 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 if (!deleting) {
                     observations.push({provider: "process", timeoutMs: options.timeoutMs, status: state().status, killed});
                     if (scenario === "process-fails") return { ...result, status: 1, stderr: "process observation unavailable" };
+                    if (scenario === "process-overflow") return { ...result, stdout: "unrelated partial process inventory\n", outputLimitExceeded: true };
                     if (scenario === "budget-exhausted") {
                         clockOffset += 2000;
                     }
@@ -9545,10 +9546,11 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
         try {
             const response = await invoke("device_stop");
             const body = await response.json();
-            const fails = ["serial-stays", "process-stays", "adb-fails", "process-fails", "budget-exhausted", "malformed-inventory"].includes(scenario);
+            const fails = ["serial-stays", "process-stays", "adb-fails", "process-fails", "process-overflow", "budget-exhausted", "malformed-inventory"].includes(scenario);
             if (fails) {
                 expect(response.status).toBe(502);
                 expect(body).toEqual(expect.objectContaining({ ok: false, error: "android-emulator-stop-unconfirmed" }));
+                if (scenario === "process-overflow") expect(body.detail).toBe("process-inventory-unavailable");
                 if (scenario === "budget-exhausted") expect(processChecks).toBe(1);
                 expect(state()).toEqual(expect.objectContaining({ status: "running", bootReady: true, lastBootCheck: { ready: true } }));
                 expect(existsSync(artifact)).toBe(true);
@@ -11689,6 +11691,11 @@ async function gate(name) {
     }
 }
 async function main() {
+    if (tool === 'process-inventory') {
+        if (args.length !== 2 || args[0] !== '-eo' || args[1] !== 'args=') throw Error('unallocated process inventory operation');
+        if (has('emulator-process')) console.log(fs.readFileSync(file('emulator-process'), 'utf8'));
+        return;
+    }
     if (tool === 'tart') {
         if (args[0] === 'run') {
             fs.writeFileSync(file('active-macos'), '');
@@ -11733,9 +11740,12 @@ async function main() {
     }
     if (tool === 'emulator') {
         const serial = 'emulator-' + args[args.indexOf('-port') + 1];
-        fs.writeFileSync(active(serial), '');
-        const deadline = Date.now() + 20000;
-        while (fs.existsSync(active(serial)) && !has('shutdown') && Date.now() < deadline) await pause(10);
+        fs.writeFileSync(file('emulator-process'), [process.execPath, ...process.argv.slice(1)].join(' '));
+        try {
+            fs.writeFileSync(active(serial), '');
+            const deadline = Date.now() + 20000;
+            while (fs.existsSync(active(serial)) && !has('shutdown') && Date.now() < deadline) await pause(10);
+        } finally { fs.rmSync(file('emulator-process'), {force: true}); }
         return;
     }
     let serial = '', operation = args;
@@ -11884,7 +11894,7 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
     writeFileSync(join(root, 'package.json'), JSON.stringify({type: 'commonjs'}));
     const brokerModule = import.meta.resolve('@ccc/device-lab/device-lab-broker.js');
     expect(new URL(brokerModule).pathname, 'current emitted broker is required').toMatch(/\/dist\/device-lab-broker\.js$/);
-    for (const tool of ['adb', 'emulator', 'avdmanager', 'tart']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
+    for (const tool of ['adb', 'emulator', 'avdmanager', 'tart', 'process-inventory']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
     if (phase === 'macos-spawn-error') {
         // An existing executable reaches the real POSIX spawn boundary, whose
         // missing interpreter yields an error event without assigning a PID.
@@ -11892,7 +11902,16 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
         writeFileSync(join(bin, 'tart'), '#!' + join(root, 'missing-fixture-interpreter') + '\n', {mode: 0o700});
     }
     const preload = join(root, 'fixture-preload.cjs'), worker = join(root, 'broker.cjs'), settings = join(root, 'settings.json'), appiumFixture = join(root, 'appium.cjs');
-    writeFileSync(preload, nodeProviderFixturePreloadSource(bin) + fakeAndroidLauncherPreloadSource(bin));
+    writeFileSync(preload, nodeProviderFixturePreloadSource(bin) + fakeAndroidLauncherPreloadSource(bin) + `
+// Isolate only the fake SDK's global inventory; PID/birth/command probes remain native.
+const androidHttpInventorySpawn = cp.spawn;
+cp.spawn = function(command, args = [], options = {}) {
+    return command === '/bin/ps' && Array.isArray(args) && args.length === 2 && args[0] === '-eo' && args[1] === 'args='
+        ? androidHttpInventorySpawn.call(this, path.join(root, 'process-inventory'), args, options)
+        : androidHttpInventorySpawn.call(this, command, args, options);
+};
+require('node:module').syncBuiltinESMExports();
+`);
     writeFileSync(worker, androidHttpFixtureBroker);
     writeFileSync(appiumFixture, androidHttpFixtureAppium);
     writeFileSync(settings, JSON.stringify({brokerModule, ownerModule: import.meta.resolve('@ccc/device-lab/device-lab-owner.js'),
@@ -12011,7 +12030,9 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             expect(fixture.nativeCalls().some(call => call.tool === 'adb' && call.args.at(-1) === 'kill')).toBe(false);
             fixture.release();
             expect(await start.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'running', bootReady: true}, boot: {ready: true}}}});
-            expect(await stop.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped', bootReady: false}}}});
+            const stopped = await stop.result;
+            expect(stopped, JSON.stringify(stopped)).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped', bootReady: false}}}});
+            expect(fixture.nativeCalls()).toContainEqual(expect.objectContaining({tool: 'process-inventory', args: ['-eo', 'args=']}));
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, status: 'stopped', bootReady: false, preferences: {keep: 'exact-publication-witness'}})]);
         } finally {await fixture.dispose();}
     });
@@ -12025,7 +12046,9 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             expect(fixture.records()).toEqual([fixture.initial]);
             expect(fixture.nativeCalls().some(call => call.tool === 'adb' && call.args.at(-1) === 'kill')).toBe(true);
             fixture.release();
-            expect(await stop.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped', bootReady: false}}}});
+            const stopped = await stop.result;
+            expect(stopped, JSON.stringify(stopped)).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped', bootReady: false}}}});
+            expect(fixture.nativeCalls()).toContainEqual(expect.objectContaining({tool: 'process-inventory', args: ['-eo', 'args=']}));
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, status: 'stopped', bootReady: false})]);
         } finally {await fixture.dispose();}
     });

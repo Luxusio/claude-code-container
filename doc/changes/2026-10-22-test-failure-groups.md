@@ -33,3 +33,5 @@ Known ceiling: native Darwin acceptance remains unverified — upgrade when the 
 Known ceiling: Linux verifies the recovery contract, not the historical Darwin interleaving — upgrade when focused Mac host verification is available.
 
 Known ceiling: Darwin acceptance remains pending — confirm with focused host results.
+
+Known ceiling: Linux confirms fixture isolation; the historical Mac semantic cause remains unproved — upgrade when actual host verification is available.
