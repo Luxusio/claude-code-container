@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const runnerSource = fileURLToPath(new URL("../test.mjs", import.meta.url));
 const fixtureProgram = `
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const root = process.cwd();
 const config = JSON.parse(readFileSync(join(root, "fixture.json"), "utf8"));
@@ -32,8 +32,11 @@ process.stderr.write(phase + " stderr\\n");
 if (phase === "vitest") {
     const delimiter = args.indexOf("--");
     const options = delimiter === -1 ? args : args.slice(0, delimiter);
-    const reportArg = options.findLast(arg => arg.startsWith("--outputFile.json="));
-    if (reportArg) writeFileSync(reportArg.slice("--outputFile.json=".length), JSON.stringify({
+    const reporterArg = options.findLast(arg => arg.startsWith("--reporter=") && arg !== "--reporter=default");
+    const reporterPath = reporterArg?.slice("--reporter=".length);
+    const reportPath = reporterPath && join(dirname(reporterPath), "vitest.json");
+    if (reporterPath && !readFileSync(reporterPath, "utf8").includes(JSON.stringify(reportPath))) throw new Error("Managed reporter does not bind its report path");
+    if (reportPath) writeFileSync(reportPath, JSON.stringify({
         numPassedTests: config.vitestCode ? 0 : 1,
         numFailedTests: config.vitestCode ? 1 : 0,
         testResults: [{ assertionResults: [{ fullName: "fixture suite assertion", failureMessages: config.vitestCode ? ["fixture assertion failed\\n at fixture.test.ts:7:3"] : [] }] }],
@@ -193,7 +196,7 @@ test("captures both streams, complete trailing output, structured results, and f
     assert.equal(setup.readJson("initialized.json"), true);
     assert.deepEqual(setup.readJson("scripts-args.json"), ["run", "test:scripts"]);
     assert.deepEqual(setup.readJson("vitest-args.json"), [
-        "run", "--reporter=default", "--reporter=json", `--outputFile.json=${metadata.reportFile}`, ...args,
+        "run", "--reporter=default", `--reporter=${join(metadata.runDirectory, "vitest-reporter.mjs")}`, ...args,
     ]);
     assert.equal(metadata.reportFile, join(metadata.runDirectory, "vitest.json"));
     assert.equal(JSON.parse(readFileSync(metadata.reportFile, "utf8")).numPassedTests, 1);
@@ -218,8 +221,7 @@ test("keeps managed report options before a user-supplied option delimiter", t =
     const forwarded = setup.readJson("vitest-args.json");
     const options = forwarded.slice(0, forwarded.indexOf("--"));
     assert.ok(options.includes("--reporter=default"));
-    assert.ok(options.includes("--reporter=json"));
-    assert.ok(options.includes(`--outputFile.json=${metadata.reportFile}`));
+    assert.ok(options.includes(`--reporter=${join(metadata.runDirectory, "vitest-reporter.mjs")}`));
     assert.equal(JSON.parse(readFileSync(metadata.reportFile, "utf8")).numPassedTests, 1);
 });
 
@@ -292,6 +294,8 @@ test("rejects managed reporter and output options before starting test children"
     for (const args of [
         ["--reporter=dot"], ["--reporter", "dot"], ["--outputFile=elsewhere.json"],
         ["--outputFile.json=elsewhere.json"], ["--outputFile.json", "elsewhere.json"],
+        ["--output-file=elsewhere.json"], ["--output-file.json=elsewhere.json"],
+        ["--output-file.json", "elsewhere.json"], ["--OUTPUT-FILE=elsewhere.json"],
     ]) {
         const result = setup.run(args);
         assert.notEqual(result.status, 0, JSON.stringify(args));
@@ -299,6 +303,44 @@ test("rejects managed reporter and output options before starting test children"
         assert.equal(existsSync(join(setup.root, "scripts-args.json")), false);
     }
 });
+
+for (const mode of ["directory", "existing latest"]) {
+    test(`repairs per-run metadata when latest publication fails with ${mode}`, t => {
+        const setup = fixture(t);
+        const latestPath = join(setup.root, "results", "tests", "latest.json");
+        let env = {};
+        let previous;
+        if (mode === "directory") {
+            mkdirSync(latestPath, { recursive: true });
+        } else {
+            assert.equal(setup.run().status, 0);
+            previous = readFileSync(latestPath, "utf8");
+            env = setup.fault(`
+const fs = require("node:fs");
+const originalRename = fs.renameSync;
+fs.renameSync = (source, destination) => {
+    if (destination === ${JSON.stringify(latestPath)}) throw new Error("fixture latest publication failed");
+    return originalRename(source, destination);
+};
+require("node:module").syncBuiltinESMExports();
+`);
+        }
+        const result = setup.run([], env);
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stderr, /Unable to finalize test results/);
+        const directories = readdirSync(join(setup.root, "results", "tests"), { withFileTypes: true })
+            .filter(entry => entry.isDirectory() && entry.name !== "latest.json");
+        const metadata = directories.map(entry => setup.readJson(join("results", "tests", entry.name, "run.json")))
+            .find(record => record.status === "failed");
+        assert.ok(metadata, "failed publication was persisted as a successful run");
+        assert.equal(metadata.exitCode, 1);
+        assert.equal(metadata.phase, "vitest");
+        assert.equal(typeof metadata.error, "string");
+        assert.ok(existsSync(metadata.reportFile));
+        if (mode === "directory") assert.deepEqual(readdirSync(latestPath), []);
+        else assert.equal(readFileSync(latestPath, "utf8"), previous);
+    });
+}
 
 test("fails before running children when result storage cannot be initialized", t => {
     const setup = fixture(t);
@@ -369,6 +411,37 @@ for (const mode of ["interruption", "capture failure", "ignored SIGTERM"]) {
         if (mode === "capture failure") assert.match(result.stderr, /fixture capture write failed/);
     });
 }
+
+test("stops an ignoring same-group descendant after its parent closes all captured pipes", { skip: process.platform === "win32" }, async t => {
+    const setup = fixture(t);
+    const env = realNpmTree(setup);
+    writeFileSync(join(setup.root, "scripts", "held.mjs"), `
+import { spawn } from "node:child_process";
+spawn(process.execPath, ["scripts/no-pipes.mjs"], { stdio: "ignore" });
+setInterval(() => {}, 1000);
+`);
+    writeFileSync(join(setup.root, "scripts", "no-pipes.mjs"), `
+import { writeFileSync } from "node:fs";
+writeFileSync("held.pid", String(process.pid));
+process.on("SIGTERM", () => {});
+let count = 0;
+writeFileSync("heartbeat", String(count));
+setInterval(() => writeFileSync("heartbeat", String(++count)), 20);
+writeFileSync("held-ready", "ready");
+setTimeout(() => process.exit(92), 30_000);
+`);
+    const running = setup.start([], env);
+    await waitFor(() => existsSync(join(setup.root, "held-ready")));
+    setup.ownPid(Number(readFileSync(join(setup.root, "held.pid"), "utf8")));
+    running.child.kill("SIGTERM");
+    const result = await running.completed;
+    assert.notEqual(result.status, 0);
+    const heartbeat = readFileSync(join(setup.root, "heartbeat"), "utf8");
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(readFileSync(join(setup.root, "heartbeat"), "utf8"), heartbeat, "descendant survived after wrapper completion");
+    assert.equal(setup.latest().status, "interrupted");
+    assert.equal(existsSync(join(setup.root, "vitest-args.json")), false);
+});
 
 for (const [phase, signal] of [["scripts", "SIGTERM"], ["vitest", "SIGINT"]]) {
     test(`records ${signal} during ${phase} even when the child exits successfully`, { skip: process.platform === "win32" }, async t => {

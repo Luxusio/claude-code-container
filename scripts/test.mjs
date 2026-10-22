@@ -86,6 +86,7 @@ async function run(executable, childArgs) {
         child.stderr.pipe(process.stderr, { end: false });
         child.once("error", error => { spawnError = error; });
         child.once("close", (code, signal) => {
+            if (terminationTimer && process.platform !== "win32") signalChildTree(child, "SIGKILL");
             clearTimeout(terminationTimer);
             terminationTimer = undefined;
             activeChild = undefined;
@@ -108,6 +109,7 @@ try {
     const runDirectory = mkdtempSync(join(resultsRoot, `${startedAt.replace(/[:.]/g, "-")}-${process.pid}-`));
     const logFile = join(runDirectory, "test.log");
     const reportPath = join(runDirectory, "vitest.json");
+    const reporterPath = join(runDirectory, "vitest-reporter.mjs");
     logDescriptor = openSync(logFile, "wx");
     record = {
         schemaVersion: 1,
@@ -129,9 +131,11 @@ try {
     writeJson(metadataPath, record);
     announce(`Test output: ${logFile}`);
     announce(`Test metadata: ${metadataPath}`);
-    if (args.some(arg => /^--(?:reporter|reporters|outputFile)(?:$|[=.])/.test(arg))) {
+    if (args.some(arg => /^--(?:reporters?|output-?file)(?:$|[=.])/i.test(arg))) {
         throw new Error("npm test manages --reporter and --outputFile to save results; use node scripts/run-vitest.mjs run for custom reporters.");
     }
+    // A unique reporter avoids inheriting a custom config's JSON output options.
+    writeFileSync(reporterPath, `import { JsonReporter } from "vitest/node";\nexport default class extends JsonReporter {\n    constructor() { super({ outputFile: ${JSON.stringify(reportPath)} }); }\n}\n`);
     const npmCli = process.env.npm_execpath;
     if (process.platform === "win32" && !npmCli) {
         throw new Error("Unable to run script tests: npm_execpath is unavailable on Windows");
@@ -139,7 +143,7 @@ try {
     const stages = [
         ["script-tests", npmCli ? process.execPath : "npm", npmCli ? [npmCli, "run", "test:scripts"] : ["run", "test:scripts"]],
         ["vitest", process.execPath, [join(repoRoot, "scripts", "run-vitest.mjs"), "run",
-            "--reporter=default", "--reporter=json", `--outputFile.json=${reportPath}`, ...args]],
+            "--reporter=default", `--reporter=${reporterPath}`, ...args]],
     ];
     for (const [phase, executable, childArgs] of stages) {
         if (interrupted || captureError) break;
@@ -170,7 +174,7 @@ try {
         record.signal ??= interrupted ?? null;
         record.status = record.signal ? "interrupted" : exitCode === 0 ? "passed" : "failed";
         if (captureError) record.error = errorMessage(captureError);
-        announce(`Test results: ${record.runDirectory} (${record.status}, exit ${exitCode})`);
+        announce(`Test results: ${record.runDirectory}`);
     }
     try {
         if (logDescriptor !== undefined) closeSync(logDescriptor);
@@ -190,6 +194,16 @@ try {
     } catch (error) {
         process.stderr.write(`Unable to finalize test results: ${errorMessage(error)}\n`);
         if (exitCode === 0) exitCode = 1;
+        if (record) {
+            record.exitCode = exitCode;
+            record.status = record.signal ? "interrupted" : "failed";
+            record.error = errorMessage(error);
+            try {
+                writeJson(join(record.runDirectory, "run.json"), record);
+            } catch (metadataError) {
+                process.stderr.write(`Unable to update test metadata: ${errorMessage(metadataError)}\n`);
+            }
+        }
     }
     process.exitCode = exitCode;
 }
