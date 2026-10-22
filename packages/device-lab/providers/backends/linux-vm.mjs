@@ -18,6 +18,7 @@ import { ownerId as canonicalOwnerId } from "../context.mjs";
 import { textResult } from "../responses.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { readProcessIdentity, inspectProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
+import { waitForExpectedRuntimeExitSync } from "@ccc/device-lab/device-lab/adapters/process/runtime-exit.js";
 
 export const DEFAULT_LAB_STATE_DIR = join(homedir(), ".ccc/labs");
 export const PROVIDER_NAME = "container-qemu";
@@ -675,18 +676,10 @@ function inspectQemuRuntime(runtime) {
     return { status: observed.status === "match" ? "match" : observed.status === "mismatch" ? "mismatch" : observed.status === "exited" ? "exited" : "unavailable" };
 }
 
-const qemuExitWaiter = new Int32Array(new SharedArrayBuffer(4));
 /** @param {import('../domain/qemu-lifecycle.mjs').QemuRuntime} runtime @param {number} timeoutMs */
 function waitQemuRuntimeExit(runtime, timeoutMs) {
-    const deadline = performance.now() + timeoutMs;
-    do {
-        const observed = inspectQemuRuntime(runtime);
-        if (observed.status === "exited") return { exited: true };
-        if (observed.status === "mismatch") return { exited: false, reason: observed.status };
-        const remaining = deadline - performance.now();
-        if (remaining <= 0) return { exited: false, reason: observed.status === "unavailable" ? "unavailable" : "runtime-process-still-running" };
-        Atomics.wait(qemuExitWaiter, 0, 0, Math.min(25, remaining));
-    } while (true);
+    const observed = waitForExpectedRuntimeExitSync(runtime.processIdentity, timeoutMs);
+    return observed === "ended" ? { exited: true } : { exited: false, reason: observed === "still-running" ? "runtime-process-still-running" : "unavailable" };
 }
 
 function qemuLifecycleApplication(options = {}) {

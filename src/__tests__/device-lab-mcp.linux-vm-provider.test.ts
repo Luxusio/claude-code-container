@@ -4,6 +4,7 @@ import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import * as nativeFs from "fs";
 import * as runtimeIdentity from "../../packages/device-lab/providers/state/process-identity.mjs";
+import * as runtimeExit from "@ccc/device-lab/device-lab/adapters/process/runtime-exit.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
@@ -79,6 +80,9 @@ vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
 vi.mock("../../packages/device-lab/providers/state/process-identity.mjs", async original => ({
     ...await original<typeof import("../../packages/device-lab/providers/state/process-identity.mjs")>(),
 }));
+vi.mock("@ccc/device-lab/device-lab/adapters/process/runtime-exit.js", async original => ({
+    ...await original<typeof import("@ccc/device-lab/device-lab/adapters/process/runtime-exit.js")>(),
+}));
 
 // Ordinary provider fixtures report one owned generation and its confirmed exit.
 function runtimeExitFixture(pid: number) {
@@ -88,6 +92,11 @@ function runtimeExitFixture(pid: number) {
         if (observedPid !== pid) return inspect(expected, observedPid, options);
         if (exited) return { status: "exited", current: null, liveness: "exited" };
         return { status: "match", current: { pid, startToken: "fixture-birth", commandHash: "fixture-command" }, liveness: "alive" };
+    });
+    const wait = runtimeExit.waitForExpectedRuntimeExitSync;
+    vi.spyOn(runtimeExit, "waitForExpectedRuntimeExitSync").mockImplementation((expected, timeoutMs, options = undefined) => {
+        if ((expected as { pid?: number })?.pid !== pid) return wait(expected, timeoutMs, options);
+        return exited ? "ended" : "still-running";
     });
     return { exit: () => { exited = true; } };
 }
@@ -404,21 +413,65 @@ describe("device-lab Linux VM container-QEMU provider", () => {
         }
     });
 
-    it("waits for a delayed native exit before publishing stopped metadata", () => {
+    it("waits for native exit confirmation before publishing stopped metadata", () => {
         const root = tempRoot(), env = { CCC_PROFILE: "delayed-runtime", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
         const created = createLab({ name: "Delayed Runtime" }, { env, stateRoot: root });
         const createdLab = created.lab;
         assert.ok(createdLab);
         startLab({ labId: createdLab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true, commandRunner: () => ({ ok: true, pid: 4242, processIdentity: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" } }) });
         const file = join(createdLab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
-        let signaled = false, polls = 0;
+        let signaled = false;
         vi.spyOn(runtimeIdentity, "inspectProcessIdentity").mockImplementation(() => {
-            if (signaled) { polls++;expect(readFileSync(file, "utf8")).toBe(before); }
-            if (signaled && polls >= 3) return { status: "exited", current: null, liveness: "exited" };
             return { status: "match", current: { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" }, liveness: "alive" };
         });
+        const wait = vi.spyOn(runtimeExit, "waitForExpectedRuntimeExitSync").mockImplementation(() => {
+            expect(signaled).toBe(true);
+            expect(readFileSync(file, "utf8")).toBe(before);
+            return "ended";
+        });
         expect(stopLab({ labId: createdLab.id, timeoutMs: 1000 }, { env, stateRoot: root, killProcess: () => { signaled = true; } })).toEqual(expect.objectContaining({ ok: true, stopped: true }));
-        expect(polls).toBe(3);expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
+        expect(wait).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expect.objectContaining({ runtimeState: "stopped", runtime: null }));
+    });
+
+    it.each(["ended", "still-running", "unavailable"] as const)("uses saved-incarnation %s proof after the displayed runtime command changes", observation => {
+        const root = tempRoot(), env = { CCC_PROFILE: "changed-runtime-command", CCC_LAB_RUNNER: "1", CCC_LAB_RUNNER_STATUS: "ready" };
+        const created = createLab({ name: "Changed Runtime Command" }, { env, stateRoot: root });
+        assert.ok(created.lab);
+        const identity = { pid: 4242, startToken: "fixture-birth", commandHash: "fixture-command" };
+        expect(startLab({ labId: created.lab.id }, { env, stateRoot: root, qemuPath: "/usr/bin/qemu-system-x86_64", kvmAvailable: true,
+            commandRunner: () => ({ ok: true, pid: identity.pid, processIdentity: identity }) }).ok).toBe(true);
+        const file = join(created.lab.paths.labDir, "lab.json"), before = readFileSync(file, "utf8");
+        let signaled = false;
+        vi.spyOn(runtimeIdentity, "inspectProcessIdentity").mockImplementation(() => signaled
+            ? { status: "mismatch", current: { ...identity, commandHash: "dying-command" }, liveness: "alive" }
+            : { status: "match", current: identity, liveness: "alive" });
+        const wait = vi.spyOn(runtimeExit, "waitForExpectedRuntimeExitSync").mockImplementation(() => {
+            expect(signaled).toBe(true);
+            expect(readFileSync(file, "utf8")).toBe(before);
+            return observation;
+        });
+        const killProcess = vi.fn(() => { signaled = true; });
+        const stopped = stopLab({ labId: created.lab.id, timeoutMs: 30 }, { env, stateRoot: root, killProcess });
+
+        expect(stopped).not.toBeInstanceOf(Promise);
+        expect(wait).toHaveBeenCalledExactlyOnceWith(identity, 30);
+        expect(killProcess).toHaveBeenCalledExactlyOnceWith(identity.pid);
+        if (observation === "ended") {
+            expect(stopped).toMatchObject({ ok: true, stopped: true, lab: { runtimeState: "stopped", runtime: null } });
+            expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ runtimeState: "stopped", runtime: null });
+        } else {
+            expect(stopped).toMatchObject({ ok: false, error: "lab-stop-runtime-not-exited" });
+            expect(readFileSync(file, "utf8")).toBe(before);
+            expect(deleteLab({ labId: created.lab.id, force: true }, { env, stateRoot: root, killProcess })).toMatchObject({
+                ok: false, error: "lab-delete-stop-failed",
+                stop: { error: "lab-stop-process-identity-unverified", reason: "mismatch" },
+            });
+            expect(killProcess).toHaveBeenCalledTimes(1);
+            expect(wait).toHaveBeenCalledTimes(1);
+            expect(readFileSync(file, "utf8")).toBe(before);
+            expect(existsSync(created.lab.paths.labDir)).toBe(true);
+        }
     });
 
     it("reports unsupported outside the lab-runner profile without requiring user configuration", () => {

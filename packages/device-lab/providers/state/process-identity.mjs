@@ -1,6 +1,7 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
+import { waitForExpectedRuntimeExitAsync } from "@ccc/device-lab/device-lab/adapters/process/runtime-exit.js";
 import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs } from "./windows-system-powershell.mjs";
 
 function captureRemainingMs(durationMs, options = {}) {
@@ -346,16 +347,49 @@ export async function terminateOwnedRuntimeProcess(runtime, label, options = {})
     return terminateRuntimeProcess(runtime, label, timeoutMs, { ...options, remainingMs });
 }
 
+async function reconcileFailedSignalExit(runtime, timeoutMs, options) {
+    const remainingMs = captureRemainingMs(timeoutMs, options);
+    const initialRemaining = remainingMs();
+    const duration = Math.floor(initialRemaining);
+    if (duration < 1) return false;
+    // Injected identity/liveness effects do not establish native proof for their PID.
+    const observeExit = options.waitForExit || (options.readIdentity || options.probeLiveness ? null : (expected, allowance) => {
+        let first = true;
+        return waitForExpectedRuntimeExitAsync(expected, allowance, {
+            // The observer's deadline follows the already captured phase/parent
+            // remainder, including any parent shrink while native I/O is pending.
+            now: () => {
+                const remaining = remainingMs();
+                if (first) { first = false; return 0; }
+                return Math.max(0, initialRemaining - remaining);
+            },
+            ...(options.sleep ? { sleep: options.sleep } : {}),
+        });
+    });
+    if (!observeExit) return false;
+    try {
+        const observation = await observeExit(runtime.processIdentity, duration);
+        return observation === "ended" && remainingMs() >= 1;
+    } catch {
+        return false;
+    }
+}
+
 async function terminateRuntimeProcess(runtime, label, timeoutMs, options) {
     for (const signal of ["SIGINT", "SIGTERM", "SIGKILL"]) {
         const result = signalOwnedRuntimeProcess(runtime, signal, options);
         if (result.reason === "runtime-process-exited") return { exited: true, signaled: false, reason: result.reason };
         if (!result.signaled) {
+            const signalError = result.attempted ? result.error : undefined;
+            if (result.attempted && await reconcileFailedSignalExit(runtime, timeoutMs, options)) {
+                return { exited: true, signaled: false, reason: "runtime-process-exited", signalError };
+            }
             return {
                 exited: false,
                 signaled: false,
                 reason: result.reason,
                 error: `${label} process identity could not be verified: ${result.reason}`,
+                ...(signalError ? { signalError } : {}),
             };
         }
         if (await waitForRuntimeProcessExit(runtime?.pid, timeoutMs, options)) {

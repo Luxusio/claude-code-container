@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import * as nativeProcess from "child_process";
 import * as nativeFs from "fs";
+import * as runtimeExit from "@ccc/device-lab/device-lab/adapters/process/runtime-exit.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     inspectProcessIdentity,
@@ -16,6 +17,9 @@ import {
 
 vi.mock("fs", async original => ({ ...await original<typeof import("fs")>() }));
 vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>() }));
+vi.mock("@ccc/device-lab/device-lab/adapters/process/runtime-exit.js", async original => ({
+    ...await original<typeof import("@ccc/device-lab/device-lab/adapters/process/runtime-exit.js")>(),
+}));
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -228,6 +232,107 @@ describe("device runtime process identity", () => {
 
         expect(result).toEqual(expect.objectContaining({ exited: true, signaled: true }));
         expect(killTree).toHaveBeenCalledWith(-42, "SIGINT");
+    });
+
+    describe("saved-incarnation proof after an admitted signal failure", () => {
+        const nativeFailure = () => Object.assign(new Error("native process group signal denied"), { code: "EPERM" });
+
+        it("qualifies an admitted failed group signal only with independent positive exit proof", async () => {
+            const clock = localClock(), readIdentity = vi.fn(() => savedIdentity);
+            const killTree = vi.fn(() => { clock.advance(4); throw nativeFailure(); });
+            const waitForExit = vi.fn(async () => "ended" as const);
+            const result = await terminateOwnedRuntimeProcessTree(savedRuntime, "Emulator", {
+                platform: "darwin", timeoutMs: 30, now: clock.now, remainingMs: () => 50,
+                readIdentity, killTree, waitForExit,
+            });
+
+            expect(result).toMatchObject({ exited: true, signaled: false, signalError: "native process group signal denied" });
+            expect(killTree).toHaveBeenCalledExactlyOnceWith(-42, "SIGINT");
+            expect(readIdentity).toHaveBeenCalledTimes(2);
+            expect(waitForExit).toHaveBeenCalledExactlyOnceWith(savedIdentity, 30);
+        });
+
+        it.each(["unavailable", "still-running"] as const)("retains the primary native failure when independent proof is %s", async observation => {
+            const clock = localClock(), killTree = vi.fn(() => { throw nativeFailure(); });
+            const waitForExit = vi.fn(async () => observation), sleep = vi.fn();
+            const result = await terminateOwnedRuntimeProcessTree(savedRuntime, "Emulator", {
+                platform: "darwin", timeoutMs: 30, now: clock.now,
+                readIdentity: () => savedIdentity, killTree, waitForExit, sleep,
+            });
+
+            expect(result).toMatchObject({ exited: false, signaled: false, reason: "runtime-process-signal-failed",
+                error: "Emulator process identity could not be verified: runtime-process-signal-failed",
+                signalError: "native process group signal denied" });
+            expect(killTree).toHaveBeenCalledExactlyOnceWith(-42, "SIGINT");
+            expect(waitForExit).toHaveBeenCalledTimes(1);
+            expect(sleep).not.toHaveBeenCalled();
+        });
+
+        it.each(["phase", "aggregate"] as const)("refuses late positive proof after the captured %s allowance", async allowance => {
+            const clock = localClock(), killTree = vi.fn(() => { clock.advance(4); throw nativeFailure(); });
+            const waitForExit = vi.fn(async () => { clock.advance(7); return "ended" as const; });
+            const result = await terminateOwnedRuntimeProcessTree(savedRuntime, "Emulator", {
+                platform: "darwin", timeoutMs: allowance === "phase" ? 5 : 30,
+                now: clock.now, remainingMs: () => allowance === "aggregate" ? 10 : 100,
+                readIdentity: () => savedIdentity, killTree, waitForExit,
+            });
+
+            expect(result).toMatchObject({ exited: false, signaled: false, reason: "runtime-process-signal-failed",
+                error: "Emulator process identity could not be verified: runtime-process-signal-failed",
+                signalError: "native process group signal denied" });
+            expect(waitForExit).toHaveBeenCalledExactlyOnceWith(savedIdentity, allowance === "phase" ? 5 : 6);
+            expect(killTree).toHaveBeenCalledExactlyOnceWith(-42, "SIGINT");
+        });
+
+        it("does not observe or signal a mismatching generation before admission", async () => {
+            const killTree = vi.fn(), waitForExit = vi.fn(async () => "ended" as const);
+            const result = await terminateOwnedRuntimeProcessTree(savedRuntime, "Emulator", {
+                platform: "darwin", timeoutMs: 30,
+                readIdentity: () => ({ ...savedIdentity, startToken: "successor" }), killTree, waitForExit,
+            });
+            expect(result).toMatchObject({ exited: false, signaled: false, reason: "runtime-process-identity-mismatch" });
+            expect(killTree).not.toHaveBeenCalled();
+            expect(waitForExit).not.toHaveBeenCalled();
+        });
+
+        it("does not query a real fake PID when injected identity readers have no independent exit port", async () => {
+            const waitForExit = vi.spyOn(runtimeExit, "waitForExpectedRuntimeExitAsync").mockResolvedValue("ended");
+            const kill = vi.fn(() => { throw nativeFailure(); });
+            const result = await terminateOwnedRuntimeProcess(savedRuntime, "Emulator", {
+                timeoutMs: 30, readIdentity: () => savedIdentity, kill,
+            });
+            expect(result).toMatchObject({ exited: false, signaled: false, reason: "runtime-process-signal-failed" });
+            expect(kill).toHaveBeenCalledExactlyOnceWith(42, "SIGINT");
+            expect(waitForExit).not.toHaveBeenCalled();
+        });
+
+        it("does not create a positive wait after a zero-duration failed signal", async () => {
+            const waitForExit = vi.fn(async () => "ended" as const), kill = vi.fn(() => { throw nativeFailure(); });
+            const result = await terminateOwnedRuntimeProcess(savedRuntime, "Emulator", {
+                timeoutMs: 0, readIdentity: () => savedIdentity, kill, waitForExit,
+            });
+            expect(result).toMatchObject({ exited: false, signaled: false, reason: "runtime-process-signal-failed" });
+            expect(kill).toHaveBeenCalledExactlyOnceWith(42, "SIGINT");
+            expect(waitForExit).not.toHaveBeenCalled();
+        });
+
+        it("uses the existing asynchronous native exit observer after default full admission", async () => {
+            platform("darwin");
+            const clock = localClock();
+            vi.spyOn(nativeProcess, "spawnSync").mockImplementation(((_file, args) => nativeOutput(
+                args?.includes("lstart=") ? "Wed Oct 15 12:00:00 2026\n" : "owned emulator\n",
+            )) as typeof nativeProcess.spawnSync);
+            const identity = readProcessIdentity(42)!;
+            expect(identity).toBeTruthy();
+            const waitForExit = vi.spyOn(runtimeExit, "waitForExpectedRuntimeExitAsync").mockResolvedValue("ended");
+            const killTree = vi.fn(() => { throw nativeFailure(); });
+            const result = await terminateOwnedRuntimeProcessTree({ ...savedRuntime, processIdentity: identity }, "Emulator", {
+                platform: "darwin", timeoutMs: 30, now: clock.now, killTree,
+            });
+            expect(result).toMatchObject({ exited: true, signaled: false, signalError: "native process group signal denied" });
+            expect(waitForExit).toHaveBeenCalledExactlyOnceWith(identity, 30, expect.objectContaining({ now: expect.any(Function) }));
+            expect(killTree).toHaveBeenCalledExactlyOnceWith(-42, "SIGINT");
+        });
     });
 
     it("uses Windows taskkill tree only after exact identity verification", async () => {

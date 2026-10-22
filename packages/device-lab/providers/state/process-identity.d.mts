@@ -90,6 +90,9 @@ export type ProcessSignalResult = ProcessSignalFields & (
 export interface ProcessTerminationOptions extends ProcessSignalOptions {
     timeoutMs?: unknown;
     sleep?: (milliseconds: number) => void | PromiseLike<void>;
+    /** Exit-only evidence after an admitted native signal failure; never signal authority. */
+    waitForExit?: (expectedIdentity: ProcessIdentity, timeoutMs: number) =>
+        "ended" | "still-running" | "unavailable" | PromiseLike<"ended" | "still-running" | "unavailable">;
 }
 
 /** Only these taskkill fields are consumed; native spawn results fit this shape. */
@@ -112,6 +115,8 @@ interface ProcessTerminationFields {
     signaled: boolean;
     reason?: ProcessSignalReason;
     error?: string;
+    /** Original admitted signal failure, retained even when independent exit is proved. */
+    signalError?: string;
     method?: "taskkill-tree";
     status?: number | null;
 }
