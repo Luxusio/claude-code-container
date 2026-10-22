@@ -7,6 +7,7 @@ import { deviceLabTestHomeEnvironment, isolateDeviceLabTestEnvironment } from ".
 import { DEVICE_BROKER_PROTOCOL_VERSION } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
 import { callInternalBroker } from "./helpers/device-lab-mcp-fixture.js";
 import { spawn } from "child_process";
+import * as childProcess from "child_process";
 import { createHash, createHmac } from "crypto";
 import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createServer } from "http";
@@ -30,6 +31,7 @@ const TEST_BROKER_OWNER_ID = "1111111111111111";
 const HOOK_TIMEOUT = Math.max(TIMEOUT, 60000);
 
 const isolatedAuthFixture = vi.hoisted(() => ({ root: "/__ccc_test_auth_mount_absent__" }));
+vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>() }));
 vi.mock("fs", async () => {
     const actual = await vi.importActual<typeof import("fs")>("fs");
     function mapped(path: unknown) {
@@ -442,6 +444,41 @@ describe("device-lab MCP", () => {
             { ...statusBroker, process: { pid: runtime.pid, startToken: "windows:successor" } },
             () => ({ pid: runtime.pid, commandLine, processStartToken: runtime.processStartToken }),
         )).toBeNull();
+    });
+
+    it("uses fixed Darwin observation tools with a private PATH and retains PID/start-token proof", () => {
+        const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+        const runtime = { managedBy: "device-lab-mcp", pid: 4321, port: 17373,
+            command: "/owned/node", args: ["/owned/broker-entry.js"],
+            processStartToken: "ps:Wed Oct 21 15:32:43 2026", startedAt: "2026-10-21T15:32:43.000Z" };
+        const status = { name: "ccc-device-broker", mode: "host-broker-daemon", port: runtime.port,
+            startedAt: runtime.startedAt, process: { pid: runtime.pid, startToken: runtime.processStartToken } };
+        const observed: Array<{ executable: string; args: readonly string[] }> = [];
+        const native = vi.spyOn(childProcess, "spawnSync").mockImplementation(((executable: string, args: readonly string[]) => {
+            observed.push({ executable, args });
+            const stdout = executable === "/usr/sbin/lsof" ? `p${runtime.pid}\n`
+                : executable === "/bin/ps" && args[3] === "command=" ? "/owned/node /owned/broker-entry.js devices broker serve --port 17373\n"
+                : executable === "/bin/ps" && args[3] === "lstart=" ? "Wed Oct 21 15:32:43 2026\n" : "";
+            if (!stdout) throw new Error("Unexpected native process probe");
+            return { status: 0, stdout, stderr: "", signal: null, pid: 0, output: [null, stdout, ""] };
+        }) as typeof childProcess.spawnSync);
+        const savedPath = process.env.PATH;
+        try {
+            Object.defineProperty(process, "platform", { ...descriptor, value: "darwin" });
+            process.env.PATH = "/private/owned-fixture-bin";
+            expect(verifiedBrokerProcessForTest(runtime, runtime.port, status)).toMatchObject({ pid: runtime.pid, processStartToken: runtime.processStartToken });
+            expect(observed).toEqual([
+                { executable: "/usr/sbin/lsof", args: ["-nP", "-iTCP:17373", "-sTCP:LISTEN", "-Fp"] },
+                { executable: "/bin/ps", args: ["-p", "4321", "-o", "command="] },
+                { executable: "/bin/ps", args: ["-p", "4321", "-o", "lstart="] },
+            ]);
+            expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, process: { ...status.process, pid: 9876 } })).toBeNull();
+            expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, process: { ...status.process, startToken: "ps:successor" } })).toBeNull();
+        } finally {
+            Object.defineProperty(process, "platform", descriptor);
+            if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+            native.mockRestore();
+        }
     });
 
     it("terminates a command-line-redacted broker only after status and OS start-token attestation", async () => {

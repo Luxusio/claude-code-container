@@ -31,6 +31,8 @@ This extraction does not change CLI syntax, provider lifecycle, storage schema o
 
 ## Verification
 
+On macOS, native listener and process-start observations use the fixed system `lsof` and `ps` executables so an isolated provider PATH does not hide or substitute them. Keep the existing observation deadlines, exact PID/port/command/start-token checks, and refusal when proof is missing. A working command lookup does not itself authorize broker reuse, termination or replacement.
+
 Use existing broker owners to exercise native preflight/log/spawn failures, post-spawn bookkeeping failure with captured runtime/tracking, missing-token refusal, no-PID/asynchronous error, actual child logging after parent descriptor release, both publication successor races, and cleanup refusal/throw preserving primary failure with one attempt. Reuse the existing native composition port capture; no production test getter or contract-shape test is required.
 
 Build and packaged stdio checks must exercise the current source. Portable deterministic observations are separate from current Windows compilation and actual provider acceptance; none establishes macOS, live-engine or global architecture completion.

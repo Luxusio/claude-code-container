@@ -1005,10 +1005,11 @@ function discoverCommandBrokerPortProcess(command, args) {
     if (result.status !== 0 || !Number.isInteger(pid) || pid <= 0) return null;
     timeout = macosCreateTimeoutMs(1000);
     if (timeout < 1) return null;
-    const ps = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", windowsHide: true, timeout });
+    const psExecutable = process.platform === "darwin" ? "/bin/ps" : "ps";
+    const ps = spawnSync(psExecutable, ["-p", String(pid), "-o", "command="], { encoding: "utf8", windowsHide: true, timeout });
     timeout = macosCreateTimeoutMs(1000);
     if (timeout < 1) return null;
-    const started = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", windowsHide: true, timeout });
+    const started = spawnSync(psExecutable, ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", windowsHide: true, timeout });
     const startedAt = started.status === 0 ? String(started.stdout || "").trim() : "";
     return { pid, commandLine: String(ps.stdout || "").trim(), processStartToken: startedAt ? `ps:${startedAt}` : null };
 }
@@ -1079,7 +1080,7 @@ function discoverWindowsBrokerPortProcess(port) {
 
 function discoverBrokerPortProcess(port) {
     if (process.platform === "linux") return discoverLinuxBrokerPortProcess(port);
-    if (process.platform === "darwin") return discoverCommandBrokerPortProcess("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"]);
+    if (process.platform === "darwin") return discoverCommandBrokerPortProcess("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"]);
     if (process.platform === "win32") return discoverWindowsBrokerPortProcess(port);
     return null;
 }
@@ -1113,7 +1114,7 @@ function readBrokerProcessStartToken(pid, platform = process.platform) {
     }
     const timeout = macosCreateTimeoutMs(1000);
     if (timeout < 1) return null;
-    const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], {
+    const result = spawnSync(platform === "darwin" ? "/bin/ps" : "ps", ["-p", String(pid), "-o", "lstart="], {
         encoding: "utf8",
         windowsHide: true,
         timeout,
