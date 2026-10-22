@@ -80,6 +80,7 @@ export async function runLabMcpSmoke(options = {}) {
     let closed = null;
     /** @type {import('../state/process-identity.mjs').RuntimeProcessRecord|null} */
     let runtime = null;
+    let childStopConfirmed = false;
     /** @type {Error|null} */
     let childError = null;
     /** @type {{ok:boolean;steps:Array<{name:string,status:string,error?:string,result?:unknown}>;error?:string}|undefined} */
@@ -171,10 +172,12 @@ export async function runLabMcpSmoke(options = {}) {
             labId,
             command: "true",
         }, baseOptions)));
-        step("lab-stop", () => assertOk("lab-stop", stopLab({
+        const stopped = step("lab-stop", () => assertOk("lab-stop", stopLab({
             labId,
             force: true,
         }, baseOptions)));
+        childStopConfirmed = Boolean(stopped.ok === true && stopped.stopped === true && child && runtime
+            && runtime.pid === child.pid && runtime.processIdentity?.pid === child.pid);
         step("snapshot-create", () => assertOk("snapshot-create", snapshotLab("create", {
             labId,
             snapshotName: "smoke",
@@ -192,7 +195,9 @@ export async function runLabMcpSmoke(options = {}) {
             if (child) {
                 let terminationError;
                 try {
-                    if (child.exitCode === null && child.signalCode === null) {
+                    // A successful stop already confirmed this saved child incarnation.
+                    // Its actual close event must still be joined before private cleanup.
+                    if (!childStopConfirmed && child.exitCode === null && child.signalCode === null) {
                         if (runtime) {
                             const stopped = await terminateOwnedRuntimeProcess(runtime, "Fake-provider smoke", { timeoutMs: 1000 });
                             if (!stopped.exited) terminationError = new Error(stopped.error || "fake-provider child exit unconfirmed");
