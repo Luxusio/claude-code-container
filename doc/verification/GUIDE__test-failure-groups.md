@@ -38,6 +38,8 @@ The failed-dial holder must use socket observations supported by the tested host
 
 Use the [descriptor root requirements](../remote/REQ__descriptor-root-portability.md) for remote lifecycle and bind tests. macOS directory descriptors are not Linux `/proc` namespaces; a portable implementation must retain each admitted root and its cleanup ownership.
 
+Do not assume that reopening `/dev/fd/N` read-only removes write capability on Darwin: descriptor duplication can retain the original file description. A refusal-write fault fixture must fail the exact intended write while retaining native descriptor metadata, and prove that the injected fault was reached. Keep unavailable-observation and unavailable-write cases distinct. For a native cancellation refusal whose saved log lacks its precise cause, add only nonsecret stage/status diagnostics to the generated test shell; preserve every original result and ownership decision until actual host evidence identifies the failing observation.
+
 ## Focused evidence and host follow-up
 
 Run changed owners or original failing-name filters through the root Vitest configuration. Do not run `test:level3` to verify a fixture or a pure broker observation change. Distribution tests must use the changed source's minimal private emit or bundle; a stale shared `dist` tree is not evidence for a source correction.

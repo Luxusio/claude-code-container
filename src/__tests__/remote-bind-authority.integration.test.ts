@@ -136,6 +136,39 @@ function installProcessProbe(f: ReturnType<typeof fixture>, mode: "admission" | 
     return (shell: string) => shell.replaceAll("/bin/ps", shellEscapeArg(executable));
 }
 
+function withScopeSignalDiagnostics(shell: string): string {
+    for (const [name, next] of [
+        ["observe", "decode"], ["match", "capture"], ["capture", "resume"],
+        ["resume", "native"], ["native", "child_exit"],
+    ]) {
+        const header = `_ccc_scope_${name}() {`;
+        const boundary = `_ccc_scope_${next}() {`;
+        if (!shell.includes(header) || !shell.includes(boundary)) throw new Error(`missing scope diagnostic boundary: ${name}`);
+        const status = `_ccc_fixture_${name}_status`;
+        const lines = [
+            `${header}`,
+            ...(name === "match" ? ["    _ccc_fixture_observe_status=0"] : []),
+            `    ${status}=0`,
+            `    _ccc_fixture_scope_${name} "$@" || ${status}=$?`,
+            `    if [ "$${status}" != 0 ]; then`,
+        ];
+        if (name === "match") lines.push(
+            '        if [ "$_ccc_fixture_observe_status" = 1 ]; then _ccc_fixture_match_category=absent',
+            '        elif [ "$_ccc_fixture_observe_status" != 0 ]; then _ccc_fixture_match_category=observe',
+            '        elif [ "${_ccc_observed_birth:-}" != "${_ccc_expected_birth:-}" ]; then _ccc_fixture_match_category=birth',
+            '        elif [ "${_ccc_observed_command:-}" != "${_ccc_expected_command:-}" ]; then _ccc_fixture_match_category=command',
+            '        elif [ "${_ccc_observed_parent:-}" != "${_ccc_expected_parent:-}" ]; then _ccc_fixture_match_category=ancestry',
+            '        else _ccc_fixture_match_category=unclassified; fi',
+            '        command printf "CCC scope fixture: match status=%s category=%s\\n" "$_ccc_fixture_match_status" "$_ccc_fixture_match_category" >&2 || true',
+        );
+        else lines.push(`        command printf "CCC scope fixture: ${name} status=%s\\n" "$${status}" >&2 || true`);
+        lines.push("    fi", `    return "$${status}"`, "}");
+        shell = shell.replace(header, `_ccc_fixture_scope_${name}() {`)
+            .replace(boundary, `${lines.join("\n")}\n${boundary}`);
+    }
+    return shell;
+}
+
 describe.runIf(process.platform !== "win32")("receiving-host global bind authority", () => {
     it("publishes a native shared claim and permanent marker only in the receiving home, including localhost", async () => {
         const client = fixture(); const receiver = fixture();
@@ -394,9 +427,13 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
     ] as const)("holds %s claims alive when refusal %s is unavailable", async (kind, fault) => {
         const f = fixture(); f.prepare(); const name = "ccc-refusal-channel-failure";
         const diagnostic = join(f.home, "refusal-diagnostic");
-        // Fault only this worker's inherited FD; every supervisor keeps its own admitted copy.
-        const descriptor = fault === "write" ? 'exec 9<"$_ccc_refusal_descriptor"' : "exec 9>&-";
-        const body = `${descriptor}; _ccc_refuse; printf late > ${shellEscapeArg(f.effect)}`;
+        // Fault only this worker's exact write or inherited observation; supervisors keep their admitted copy.
+        const faultBody = fault === "write" ? [
+            'printf() { if [ "$#" = 1 ] && [ "$1" = x ]; then',
+            ' command printf attempted > "$HOME/refusal-write-attempted"; return 1',
+            ' fi; command printf "$@"; }',
+        ].join("\n") : "exec 9>&-";
+        const body = `${faultBody}; _ccc_refuse; printf late > ${shellEscapeArg(f.effect)}`;
         const global = remoteRuntimeBindAuthorityShell(body, kind === "nested");
         const held = f.start(`exec 2>${shellEscapeArg(diagnostic)}; ${kind === "nested" ? remoteLifecycleShell(name, global) : global}`);
         await waitForFile(diagnostic);
@@ -405,6 +442,7 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
             if (Date.now() >= deadline) throw new Error(readFileSync(diagnostic, "utf8"));
             await new Promise(resolve => setTimeout(resolve, 10));
         }
+        if (fault === "write") expect(readFileSync(join(f.home, "refusal-write-attempted"), "utf8")).toBe("attempted");
         process.kill(held.child.pid!, "SIGTERM");
         await new Promise(resolve => setTimeout(resolve, 100));
         expect(held.closed).toBe(false);
@@ -737,7 +775,8 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         const f = fixture(); f.prepare(); const name = "ccc-owner-only-signal";
         const global = remoteRuntimeBindAuthorityShell(`${waitBody(f.home)}; printf late > ${shellEscapeArg(f.effect)}`, kind === "nested");
         const signalLog = join(f.home, "signal-diagnostic");
-        const held = f.start(`exec 2> ${shellEscapeArg(signalLog)}; ${kind === "nested" ? remoteSessionReservationShell(name, "9".repeat(32), 60, global) : global}`);
+        const command = withScopeSignalDiagnostics(kind === "nested" ? remoteSessionReservationShell(name, "9".repeat(32), 60, global) : global);
+        const held = f.start(`exec 2> ${shellEscapeArg(signalLog)}; ${command}`);
         await waitForFile(join(f.home, "ready"));
         process.kill(held.child.pid!, signal);
         const completed = await held.completed;
