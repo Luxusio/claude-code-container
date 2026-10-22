@@ -80,7 +80,7 @@ function waitBody(home: string): string {
     return `printf ready > ${shellEscapeArg(join(home, "ready"))}; while [ ! -e ${shellEscapeArg(join(home, "continue"))} ]; do sleep 0.01; done`;
 }
 
-function installDocker(f: ReturnType<typeof fixture>, name: string, existing = true): string {
+function installDocker(f: ReturnType<typeof fixture>, name: string, existing = true, failureStatus = 0): string {
     const log = join(f.home, "native-calls");
     writeFileSync(log, "", { mode: 0o600 });
     writeFileSync(join(f.bin, "docker"), [
@@ -92,20 +92,25 @@ function installDocker(f: ReturnType<typeof fixture>, name: string, existing = t
         ` 'inspect --format') if [ "$3" = '{{.Name}}' ]; then printf '%s\\n' ${shellEscapeArg(`/${name}`)}; elif [ ${existing ? "1" : "0"} -eq 1 ]; then printf '%s\\n' ${containerId}; else exit 1; fi ;;`,
         ` 'image inspect') printf '%s\\n' 'sha256:${"b".repeat(64)}' ;;`,
         ` 'run --rm') printf '%s\\n' '1000-1000' ;;`,
-        ` 'run -d') printf '%s\\n' ${containerId} ;;`,
-        ` 'start '*|'stop '*) exit 0 ;;`,
+        ` 'run -d') printf '%s\\n' ${containerId}; exit ${failureStatus} ;;`,
+        ` 'start '*|'stop '*) exit ${failureStatus} ;;`,
         ` *) exit 99 ;;`,
         `esac`,
     ].join("\n"), { mode: 0o700 });
     return log;
 }
 
-function installProcessProbe(f: ReturnType<typeof fixture>, mode: "admission" | "root-change" | "child-change") {
+function installProcessProbe(f: ReturnType<typeof fixture>, mode: "admission" | "root-change" | "child-change" | "fork-late") {
     const program = join(f.bin, "native-process-probe.cjs"); const executable = join(f.bin, "native-process-probe");
     writeFileSync(program, [
         'const fs = require("node:fs"); const { spawnSync } = require("node:child_process");',
+        'for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"]) process.on(signal, () => {});',
         `const home = ${JSON.stringify(f.home)}; const mode = ${JSON.stringify(mode)};`,
         'const args = process.argv.slice(2); const result = spawnSync("/bin/ps", args, { encoding: "utf8" }); let output = result.stdout;',
+        'if (mode === "fork-late" && args.includes("-A") && !fs.existsSync(home + "/fork-after-snapshot")) {',
+        ' fs.writeFileSync(home + "/fork-after-snapshot", "go");',
+        ' const gate = new Int32Array(new SharedArrayBuffer(4)); while (!fs.existsSync(home + "/native-child-ready")) Atomics.wait(gate, 0, 0, 5);',
+        '}',
         'const match = /^\\s*(\\d+)\\s+\\d+\\s+(\\S+)\\s+(?:\\S+\\s+){5}(.*)$/m.exec(output);',
         'if (args.includes("-p") && match) {',
         ' const pid = match[1]; const rootFile = home + "/probe-root";',
@@ -122,7 +127,7 @@ function installProcessProbe(f: ReturnType<typeof fixture>, mode: "admission" | 
         '  if ((mode === "root-change" && pid === root) || (mode === "child-change" && native && count > 1)) output = output.replace(/^(\\s*(?:\\S+\\s+){7})\\d{4}/m, (_, prefix) => prefix + "1970");',
         ' }',
         '}',
-        'process.stdout.write(output); process.stderr.write(result.stderr); process.exit(result.status ?? 1);',
+        'process.stdout.write(output, () => process.stderr.write(result.stderr, () => process.exit(result.status ?? 1)));',
     ].join("\n"));
     writeFileSync(executable, `#!/bin/sh\nexec ${shellEscapeArg(process.execPath)} ${shellEscapeArg(program)} "$@"\n`, { mode: 0o700 });
     return (shell: string) => shell.replaceAll("/bin/ps", shellEscapeArg(executable));
@@ -272,6 +277,99 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         expect(existsSync(join(f.root, "profiles", "default", "claude"))).toBe(true);
         expect(existsSync(f.lock)).toBe(false);
         withRuntimeBindGuard(home, guard => expect(readRuntimeBindAuthority(guard).coverage).toBe("incomplete"));
+    });
+
+    it.each([
+        ["standalone", true], ["standalone", false], ["nested", true], ["nested", false],
+    ] as const)("preserves Docker79 and releases %s claims for existing=%s", (kind, existing) => {
+        const f = fixture(); f.prepare(); const project = "/project/docker-failure-79";
+        const name = getContainerName(project);
+        const log = installDocker(f, name, existing, 79);
+        const start = remoteContainerStartScript(project, undefined, kind === "nested");
+        const command = kind === "nested" ? remoteSessionReservationShell(name, "a".repeat(32), 60, start, true) : start;
+        const result = f.run(command);
+        expect(result.status, result.stderr).toBe(79);
+        expect(readFileSync(log, "utf8")).toContain(existing ? `start ${containerId}` : "run -d --name");
+        expect(existsSync(f.lock)).toBe(false);
+        expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`))).toBe(false);
+        expect(readdirSync(f.root).some(entry => entry.startsWith(".scope-"))).toBe(false);
+    });
+
+    it.each([
+        ["standalone", "exit"], ["standalone", "exec"], ["standalone", "trap"],
+        ["nested", "exit"], ["nested", "exec"], ["nested", "trap"],
+    ] as const)("preserves raw79 and caller %s/%s semantics", (kind, form) => {
+        const f = fixture(); f.prepare(); const name = "ccc-raw-status-79";
+        const body = form === "exec" ? "exec /bin/sh -c 'exit 79'"
+            : form === "trap" ? "trap 'printf caller-exit' EXIT; exit 79" : "exit 79";
+        const global = remoteRuntimeBindAuthorityShell(body, kind === "nested");
+        const result = f.run(kind === "nested" ? remoteLifecycleShell(name, global) : global);
+        expect(result.status, result.stderr).toBe(79);
+        expect(result.stdout).toBe(form === "trap" ? "caller-exit" : "");
+        expect(existsSync(f.lock)).toBe(false);
+        expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`))).toBe(false);
+    });
+
+    it.each(["standalone", "nested"] as const)("preserves %s protected stdin with the private refusal descriptor", kind => {
+        const f = fixture(); f.prepare();
+        const global = remoteRuntimeBindAuthorityShell('IFS= read -r value; printf "%s" "$value"', kind === "nested");
+        const result = spawnSync("/bin/sh", ["-c", kind === "nested" ? remoteLifecycleShell("ccc-stdin", global) : global], {
+            env: f.env, input: "original-input\n", encoding: "utf8", timeout: 5000, killSignal: "SIGKILL",
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("original-input");
+        expect(existsSync(f.lock)).toBe(false);
+    });
+
+    it.each([
+        ["standalone", "write"], ["standalone", "observation"],
+        ["nested", "write"], ["nested", "observation"],
+    ] as const)("holds %s claims alive when refusal %s is unavailable", async (kind, fault) => {
+        const f = fixture(); f.prepare(); const name = "ccc-refusal-channel-failure";
+        const diagnostic = join(f.home, "refusal-diagnostic");
+        // Fault only this worker's inherited FD; every supervisor keeps its own admitted copy.
+        const descriptor = fault === "write" ? 'exec 9<"$_ccc_refusal_descriptor"' : "exec 9>&-";
+        const body = `${descriptor}; _ccc_refuse; printf late > ${shellEscapeArg(f.effect)}`;
+        const global = remoteRuntimeBindAuthorityShell(body, kind === "nested");
+        const held = f.start(`exec 2>${shellEscapeArg(diagnostic)}; ${kind === "nested" ? remoteLifecycleShell(name, global) : global}`);
+        await waitForFile(diagnostic);
+        const deadline = Date.now() + 3000;
+        while (!readFileSync(diagnostic, "utf8").includes("refusal evidence unavailable")) {
+            if (Date.now() >= deadline) throw new Error(readFileSync(diagnostic, "utf8"));
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        process.kill(held.child.pid!, "SIGTERM");
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(held.closed).toBe(false);
+        expect(existsSync(f.lock)).toBe(true);
+        expect(existsSync(f.effect)).toBe(false);
+        if (kind === "nested") expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`))).toBe(true);
+        expect(readdirSync(f.root).some(entry => entry.startsWith(".scope-"))).toBe(false);
+    });
+
+    it.each(["standalone", "nested"] as const)("preserves a %s refusal-channel successor before its first observation", kind => {
+        const f = fixture(); f.prepare(); const name = "ccc-refusal-successor";
+        const nativeStat = spawnSync("/bin/sh", ["-c", "command -v stat"], { encoding: "utf8" }).stdout.trim();
+        writeFileSync(join(f.bin, "stat"), [
+            "#!/bin/sh",
+            'case "$*" in */dev/fd/5|*/proc/self/fd/5)',
+            ' if [ ! -e "$HOME/channel-replaced" ]; then',
+            '  for channel in "$HOME/.ccc"/.scope-* "$HOME/.ccc/remote-runtime"/.scope-*; do',
+            '   [ -f "$channel" ] || continue',
+            '   mv "$channel" "$channel.original"; : > "$channel"',
+            '   printf "%s" "$channel" > "$HOME/channel-replaced"; break',
+            '  done',
+            ' fi ;; esac',
+            `exec ${shellEscapeArg(nativeStat)} "$@"`,
+        ].join("\n"), { mode: 0o700 });
+        const global = remoteRuntimeBindAuthorityShell(`printf late > ${shellEscapeArg(f.effect)}`, kind === "nested");
+        const result = f.run(kind === "nested" ? remoteLifecycleShell(name, global) : global);
+        expect(result.status, result.stderr).toBe(74);
+        const successor = readFileSync(join(f.home, "channel-replaced"), "utf8");
+        expect(statSync(successor).ino).not.toBe(statSync(`${successor}.original`).ino);
+        expect(readFileSync(successor, "utf8")).toBe("");
+        expect(existsSync(f.lock)).toBe(false);
+        expect(existsSync(f.effect)).toBe(false);
     });
 
     it.each(["live", "dead", "malformed"])("does not reclaim an existing %s claim or run a protected body", kind => {
@@ -519,6 +617,46 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         expect(existsSync(join(f.home, "released-early"))).toBe(false);
         expect(existsSync(f.effect)).toBe(false);
         expect(existsSync(f.lock)).toBe(false);
+    });
+
+    it.each([
+        ["standalone", "existing-child"], ["standalone", "fork-after-snapshot"],
+        ["nested", "existing-child"], ["nested", "fork-after-snapshot"],
+    ] as const)("joins %s native parent and its %s before releasing claims", async (kind, phase) => {
+        const f = fixture(); f.prepare(); const name = "ccc-native-foreground-parent";
+        const lifecycleLock = join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`);
+        const claims = [f.lock, ...(kind === "nested" ? [lifecycleLock] : [])];
+        const childProgram = [
+            'const fs = require("node:fs");',
+            `fs.writeFileSync(${JSON.stringify(join(f.home, "native-child-ready"))}, "ready");`,
+            `setTimeout(() => fs.writeFileSync(${JSON.stringify(join(f.home, "native-child-done"))},`,
+            ` ${JSON.stringify(claims)}.every(path => fs.existsSync(path)) ? "claims-held" : "claims-released"), 500);`,
+        ].join("\n");
+        const program = join(f.home, "native-parent.cjs");
+        writeFileSync(program, [
+            'const fs = require("node:fs"); const { spawn } = require("node:child_process");',
+            `process.on("SIGTERM", () => { fs.writeFileSync(${JSON.stringify(join(f.home, "native-parent-terminated"))}, "unsafe"); process.exit(143); });`,
+            `const begin = () => { const child = spawn(process.execPath, ["-e", ${JSON.stringify(childProgram)}], { stdio: "ignore" });`,
+            ` child.on("exit", () => fs.writeFileSync(${JSON.stringify(join(f.home, "native-parent-done"))}, "done")); };`,
+            phase === "fork-after-snapshot" ? [
+                `fs.writeFileSync(${JSON.stringify(join(f.home, "native-parent-ready"))}, "ready");`,
+                `const gate = setInterval(() => { if (fs.existsSync(${JSON.stringify(join(f.home, "fork-after-snapshot"))})) { clearInterval(gate); begin(); } }, 5);`,
+            ].join("\n") : "begin();",
+        ].join("\n"));
+        const native = `${shellEscapeArg(process.execPath)} ${shellEscapeArg(program)}; printf late > ${shellEscapeArg(f.effect)}`;
+        const global = remoteRuntimeBindAuthorityShell(native, kind === "nested");
+        let script = kind === "nested" ? remoteLifecycleShell(name, global) : global;
+        if (phase === "fork-after-snapshot") script = installProcessProbe(f, "fork-late")(script);
+        const held = f.start(script);
+        await waitForFile(join(f.home, phase === "fork-after-snapshot" ? "native-parent-ready" : "native-child-ready"));
+        process.kill(held.child.pid!, "SIGTERM");
+        expect((await held.completed).code).toBe(143);
+        expect(readFileSync(join(f.home, "native-child-done"), "utf8")).toBe("claims-held");
+        expect(existsSync(join(f.home, "native-parent-done"))).toBe(true);
+        expect(existsSync(join(f.home, "native-parent-terminated"))).toBe(false);
+        expect(existsSync(f.effect)).toBe(false);
+        expect(existsSync(f.lock)).toBe(false);
+        if (kind === "nested") expect(existsSync(lifecycleLock)).toBe(false);
     });
 
     it.each([

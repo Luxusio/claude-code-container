@@ -12,4 +12,8 @@ An interruptible supervisor may signal only its exact operation-owned worker and
 
 If a previously admitted descendant is reparented during cancellation, its unchanged birth and command permit waiting for its actual completion, without signaling it under the former ancestry. A parent already proved absent is distinct from an unavailable or changed process identity.
 
+An ordinary protected-command failure, including exit status 79, remains that command's result and permits normal cleanup once the work has completed and claim identity still matches. Internal ownership refusal requires separate operation-owned evidence; no ordinary exit code establishes refusal. Any private transport for this evidence must preserve stdin and public output, remain tied to an admitted inode, and leave no persistent record or new package requirement.
+
+Cancellation must not orphan a foreground native process's waiting children by terminating their parent and then releasing claims. A single live process-tree snapshot cannot prove that no child will be created before the signal. Native work whose quiescence cannot be established must remain under held claims until completion or explicit refusal.
+
 Verify the existing native lifecycle, session, bind-authority and cache-identity fixtures, including contention, replacement, rename, malformed records and interrupted cleanup. Portable Linux results establish only those exercised branches; macOS descriptor and native-tool acceptance requires focused host results.

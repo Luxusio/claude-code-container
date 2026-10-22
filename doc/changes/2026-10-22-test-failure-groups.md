@@ -19,3 +19,7 @@ Known ceiling: Darwin native acceptance remains pending host output — upgrade 
 Known ceiling: Native Darwin acceptance remains unverified — upgrade when the Mac host runs these four focused owners.
 
 Known ceiling: Darwin acceptance remains pending — upgrade when the Mac host runs these focused owners.
+
+Known ceiling: native parents with children finish naturally, potentially indefinitely. Previously destroyed ancestry and deliberately detached work cannot be recovered portably.
+
+Known ceiling: macOS 네이티브 동작은 호스트 검증 대기.
