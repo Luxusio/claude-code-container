@@ -365,6 +365,8 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         const global = remoteRuntimeBindAuthorityShell(`printf late > ${shellEscapeArg(f.effect)}`, kind === "nested");
         const result = f.run(kind === "nested" ? remoteLifecycleShell(name, global) : global);
         expect(result.status, result.stderr).toBe(74);
+        expect(result.stderr).toContain("CCC remote descriptor admission failed: refusal-reopened-meta-match");
+        expect(result.stderr).not.toContain(f.home);
         const successor = readFileSync(join(f.home, "channel-replaced"), "utf8");
         expect(statSync(successor).ino).not.toBe(statSync(`${successor}.original`).ino);
         expect(readFileSync(successor, "utf8")).toBe("");
