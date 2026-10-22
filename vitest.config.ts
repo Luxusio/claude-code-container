@@ -38,7 +38,7 @@ export default defineConfig({
             "scripts/real-tests/**/*.test.?(m|c)[jt]s",
         ],
         globals: true,
-        setupFiles: ['./scripts/real-tests/hidden-child-processes.cjs'],
+        setupFiles: ['./scripts/real-tests/hidden-child-processes.cjs', './scripts/test-temp-root.cjs'],
         maxWorkers,
         testTimeout: 30000,
         hookTimeout: 60000,

@@ -29,7 +29,8 @@ describe("Windows test child-process policy", () => {
         expect(vitestRunner).toContain('process.platform === "win32" ? process.execPath : "npm"');
         expect(vitestRunner).not.toContain('process.platform === "win32" ? "npm.cmd" : "npm"');
         expect(level3Config).toContain("setupFiles: [\"./scripts/real-tests/hidden-child-processes.cjs\"]");
-        expect(vitestConfig).toContain("setupFiles: ['./scripts/real-tests/hidden-child-processes.cjs']");
+        expect(vitestConfig).toContain("setupFiles: ['./scripts/real-tests/hidden-child-processes.cjs', './scripts/test-temp-root.cjs']");
+        expect(level3Config).not.toContain("test-temp-root.cjs");
         expect(vitestConfig).toContain("Math.min(8, Math.floor(availableParallelism() / 2))");
         expect(vitestConfig).toContain("maxWorkers,");
     });

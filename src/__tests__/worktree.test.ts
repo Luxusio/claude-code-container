@@ -67,7 +67,7 @@ import { workspaceRemovalFailureNote, assertRemovableWorkspace, strandedBranchNo
 /** Helper: create a real git repo with an initial commit */
 function initRepo(repoPath: string): void {
     mkdirSync(repoPath, { recursive: true });
-    spawnSync("git", ["init"], { cwd: repoPath, stdio: "pipe" });
+    spawnSync("git", ["init", "--initial-branch=master"], { cwd: repoPath, stdio: "pipe" });
     spawnSync("git", ["config", "user.email", "t@t.com"], {
         cwd: repoPath,
         stdio: "pipe",
