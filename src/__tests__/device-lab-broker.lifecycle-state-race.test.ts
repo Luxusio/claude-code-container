@@ -183,6 +183,12 @@ function rpc(base,owner,token,params){return new Promise((resolve,reject)=>{cons
    if(productionArgs.length!==args.length||args.some((value,index)=>productionArgs[index]!==value))throw Error('unadmitted self-identity argv');
    return{args,result:null};
   })};
+ }else if(process.platform==='darwin'){
+  const executable='/bin/ps',metadata=raw.lstatSync(executable);
+  if(!metadata.isFile()||metadata.isSymbolicLink()||raw.realpathSync.native(executable)!==executable)throw Error('unadmitted self-identity executable');
+  ownIdentityProbe={executable,queries:['command=','lstart='].map(field=>({
+   args:Object.freeze(['-p',String(process.pid),'-o',field]),result:null,
+  }))};
  }
  const broker=await import(pathToFileURL(path.join(directory,'device-lab-broker.'+(settings.lens==='source'?'ts':'js'))).href);
  const ownership=await import(pathToFileURL(path.join(directory,'device-lab-owner.'+(settings.lens==='source'?'ts':'js'))).href);
@@ -279,7 +285,7 @@ function executeCurrent(lens: "source" | "emitted", scenario: Scenario, expected
         // calls and caught-denial counters. HOME's ordinary cleanup below remains unchanged.
         writeFileSync(join(diagnostics, "receipt.json"), JSON.stringify(observed, null, 2), {mode: 0o600});
         expect(observed.denied, "all denials count before potentially caught native errors").toHaveLength(expectedDenials);
-        if (process.platform === "win32") {
+        if (process.platform === "win32" || process.platform === "darwin") {
             expect(observed.ownIdentityObservations).toBeGreaterThanOrEqual(1);
             expect(observed.ownIdentityObservations).toBeLessThanOrEqual(2);
         } else expect(observed.ownIdentityObservations).toBe(0);

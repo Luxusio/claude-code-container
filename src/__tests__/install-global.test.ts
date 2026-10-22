@@ -443,7 +443,7 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
             encoding: "utf8", env: { ...process.env, PATH: join(f.root, "commands"), FIXTURE_NODE_TRAP: trap },
         });
         expect(cli.error).toBeUndefined();
-        expect(cli.status).toBe(127);
+        expect(cli.status).toBe(process.platform === "darwin" ? 126 : 127);
         expect(cli.stderr).toContain(pinnedNode);
         expect(cli.stdout).toBe("");
         expect(existsSync(trap)).toBe(false);
@@ -592,9 +592,12 @@ function sudoSourceBuildFixture(options: {
     replaceAfterRepair?: { paths: string[]; kind: "symlink" | "file" };
 }) {
     const f = fixture();
-    const capture = join(f.root, "source-build-calls.jsonl"), observation = join(f.root, "npm-environment.json");
-    const ownership = join(f.root, "source-build-ownership.json"), recovery = join(f.root, "source-build-recovery.jsonl");
-    const loader = join(f.root, "source-build-loader.mjs"), platform = join(f.root, "source-build-platform.mjs");
+    // Keep fixture bookkeeping from changing the observed root's native link count.
+    const controls = join(f.root, "source-build-controls");
+    mkdirSync(controls);
+    const capture = join(controls, "source-build-calls.jsonl"), observation = join(controls, "npm-environment.json");
+    const ownership = join(controls, "source-build-ownership.json"), recovery = join(controls, "source-build-recovery.jsonl");
+    const loader = join(controls, "source-build-loader.mjs"), platform = join(controls, "source-build-platform.mjs");
     writeFileSync(join(f.installDir, "ccc"), "previous CLI");
     mkdirSync(join(f.installDir, "ccc-dist"));
     writeFileSync(join(f.installDir, "ccc-dist", "previous"), "previous payload");

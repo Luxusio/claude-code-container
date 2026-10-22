@@ -1681,7 +1681,7 @@ require(${JSON.stringify(realAvdmanagerPath)});
                 name: "delete",
                 arguments: { deviceId, force: true, deleteAvd: true, confirmDestructive: true },
             });
-            expect(deleted.isError).not.toBe(true);
+            expect(deleted.isError, JSON.stringify(deleted)).not.toBe(true);
             expect(readFileSync(logPath, "utf8")).not.toContain(`avdmanager delete avd --name ${avdName}`);
             expect(existsSync(join(homeDir, ".android", "avd", `${avdName}.avd`))).toBe(false);
             expect(existsSync(join(homeDir, ".android", "avd", `${avdName}.ini`))).toBe(false);

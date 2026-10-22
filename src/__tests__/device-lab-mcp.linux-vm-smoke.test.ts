@@ -8,7 +8,7 @@ describe("device-lab Linux VM provider smoke runner", () => {
     it("passes the fake-provider lifecycle without external VM prerequisites", async () => {
         const report = await runLabMcpSmoke();
 
-        expect(report.ok).toBe(true);
+        expect(report.ok, JSON.stringify(report)).toBe(true);
         expect(report.steps.map((step) => step.name)).toEqual([
             "provider-status",
             "image-import",

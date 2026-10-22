@@ -4,6 +4,8 @@ Remote lifecycle and global bind-authority operations must work on the supported
 
 Operations remain anchored to the directory generation opened and admitted by the caller. Canonical or lexical path spelling alone does not authorize a later write, claim, release or cleanup. A renamed or replaced root, symlink, invalid type or mode, changed inode, foreign claim or unavailable observation must retain the existing nonzero refusal and preserve successors and unrelated state.
 
+Early admission failures report their nonsecret validation stage on stderr while preserving the existing exit status and stdout protocol. Diagnostics must not disclose credentials or authorize a fallback when native proof is unavailable.
+
 If a pinned working directory is used, verify its identity against the held directory before admitting operations. Nested lifecycle and bind-authority work must retain each root independently, preserve exact container IDs and public output, and keep signal/exit cleanup scoped to owned claims. Repeated descriptor-bound reads must read the complete bounded record from its beginning rather than depend on platform-specific descriptor reopening offsets.
 
 Cancellation must work both for a signal to the owning shell PID and for a process-group signal. Every intermediate scope must retain ownership until its protected native foreground work has stopped; it must not release a claim merely because a child shell exited. When worker ownership is proved and cancellation is accepted, no later body statements may execute. If ownership cannot be proved, cancellation is refused: work may remain active, and its claims must remain held rather than reporting a completed cancellation.

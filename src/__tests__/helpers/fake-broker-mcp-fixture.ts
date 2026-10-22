@@ -56,6 +56,11 @@ const host = args[args.indexOf("--host") + 1] || "127.0.0.1";
 const port = Number(args[args.indexOf("--port") + 1] || 17373);
 const startedAt = new Date().toISOString();
 function processStartToken() {
+  if (process.platform === "darwin") {
+    const result = require("child_process").spawnSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], { encoding: "utf8", timeout: 1000, windowsHide: true });
+    const value = result.status === 0 ? String(result.stdout || "").trim() : "";
+    return value ? "ps:" + value : null;
+  }
   if (process.platform === "win32") {
     const executable = ${JSON.stringify(canonicalWindowsPowerShellPath())};
     if (!executable) return null;
@@ -184,6 +189,11 @@ const host = args[args.indexOf("--host") + 1] || "127.0.0.1";
 const port = Number(args[args.indexOf("--port") + 1] || 17373);
 const startedAt = new Date().toISOString();
 function processStartToken() {
+  if (process.platform === "darwin") {
+    const result = require("child_process").spawnSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], { encoding: "utf8", timeout: 1000, windowsHide: true });
+    const value = result.status === 0 ? String(result.stdout || "").trim() : "";
+    return value ? "ps:" + value : null;
+  }
   if (process.platform === "win32") {
     const executable = ${JSON.stringify(canonicalWindowsPowerShellPath())};
     if (!executable) return null;

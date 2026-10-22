@@ -18,17 +18,23 @@ Native process observations must use the admitted system executable and exact ca
 
 Generated Ubuntu container programs require their actual GNU prerequisites. Guard only cases executing those Linux-specific branches. Keep portable filesystem, layout and diagnostic assertions active on macOS. Other native fixtures must select their tested host platform explicitly, use an available interpreter with the required standard library, and arrange the expected runtime authority and mounted credentials. A missing native prerequisite is an explicit skip or error, never a successful assertion.
 
+Keep fixture bookkeeping outside directories whose metadata the test observes. Create a private control directory before taking ownership snapshots, then write logs and loader configuration within it. On Darwin, creating a file can change the observed directory link count; fixture logging must not simulate an unauthorized source-tree replacement.
+
 The Codex bootstrap fixtures require Python 3.11 or later with `tomllib`. Set `CCC_TEST_PYTHON` to a suitable executable when automatic discovery cannot find it. Missing default prerequisites produce an explicit narrow skip; an explicitly configured unsuitable interpreter is an error. This selects a host test prerequisite and does not change the container's fixed Python contract.
 
 ## Current contracts and deterministic observations
 
 Mock the adapter exports currently called by the server. Old facade exports do not intercept lexical calls inside the extracted adapter. Preserve current lock self-contention, deadline, catalog-validation and incomplete-history contracts when updating fixtures. An unknown observation authorizes no mutation.
 
+Fake provider fixtures must model their owned process inventory for both synchronous and Worker subprocess paths. Route only the exact inventory command into the fixture; keep PID, birth and command observations native. An unrelated host process listing must not decide a fake-provider result, and truncated or failed inventory must remain a product refusal.
+
 After an authenticated signal, join a fixture's saved process incarnation through the existing bounded native exit observer. An exiting Darwin process can have a changed displayed command; keep full identity and marker/journal/root validation before every signal, and accept removal only from positive exit evidence. Diagnostic exit messages alone do not prove completion.
 
 Fake-timer drivers must allow real asynchronous native observations to complete and continue advancing timers scheduled afterward, within a separate bounded real-time wait. A single `runAllTimersAsync` is insufficient when native `ps` finishes later. For terminal attributes, follow the narrowly defined Darwin kernel-state distinction in [session exit cleanup](../common/REQ__session-exit-cleanup.md#interactive-terminal-restoration); preserve every configured attribute and raw diagnostics without reading or flushing terminal input.
 
 Do not assume a fixed localhost port is closed. Unit refusal cases inject their owned socket error; native forwarding cases keep a private bound, non-listening allocation until all dials finish. Keep the negative native check separate from the unit error-forwarding assertion.
+
+The refusal holder must use socket observations supported by the tested host. Its controlled program can report the completed bind phase and portable socket type while retaining the same descriptor, address and nonce through close. Verify actual connection refusal independently while that allocation is held; an unavailable listening-state socket option must not prevent the native refusal check.
 
 Use the [descriptor root requirements](../remote/REQ__descriptor-root-portability.md) for remote lifecycle and bind tests. macOS directory descriptors are not Linux `/proc` namespaces; a portable implementation must retain each admitted root and its cleanup ownership.
 

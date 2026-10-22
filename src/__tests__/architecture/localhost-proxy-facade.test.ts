@@ -42,18 +42,19 @@ import socket, sys, os, json, time
 root, nonce = sys.argv[1:]
 if os.getcwd() != root or not (sys.flags.isolated and sys.flags.no_site):
     raise RuntimeError('invalid private refusal holder startup')
-sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP)
 try:
     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     sock.bind(('::1', 0))
     generation = open('/proc/self/stat').read().split()[21] if sys.platform.startswith('linux') else str(time.monotonic_ns())
     print(json.dumps({'type':'ready','pid':os.getpid(),'pgid':os.getpgid(0) if hasattr(os, 'getpgid') else None,
         'generation':generation,'root':root,'nonce':nonce,'descriptor':sock.fileno(),
-        'address':sock.getsockname(),'listening':sock.getsockopt(socket.SOL_SOCKET,socket.SO_ACCEPTCONN),
+        'address':sock.getsockname(),'phase':'bound','socketType':sock.getsockopt(socket.SOL_SOCKET,socket.SO_TYPE),'protocol':sock.proto,
         'soError':sock.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)}), flush=True)
     if sys.stdin.readline().strip() != nonce:
         raise RuntimeError('unauthenticated private refusal holder stop')
     print(json.dumps({'type':'before-close','nonce':nonce,'descriptor':sock.fileno(),
+        'address':sock.getsockname(),'socketType':sock.getsockopt(socket.SOL_SOCKET,socket.SO_TYPE),'protocol':sock.proto,
         'soError':sock.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)}), flush=True)
 finally:
     sock.close()
@@ -62,7 +63,7 @@ print(json.dumps({'type':'closed','nonce':nonce,'descriptor':sock.fileno()}), fl
 interface RefusalReceipt {
     type: string; pid: number; pgid: number | null; generation: string;
     root: string; nonce: string; descriptor: number; address: [string, number, number, number];
-    listening: number; soError: number;
+    phase: "bound"; socketType: number; protocol: number; soError: number;
 }
 async function refusalPort() {
     const directory = mkdtempSync(join(tmpdir(), "ccc-proxy-refusal-"));
@@ -100,7 +101,7 @@ async function refusalPort() {
             expect(result).toEqual({code:0,signal:null}); expect(stderr).toBe("");
             const frames = stdout.trim().split("\n").map(line => JSON.parse(line));
             expect(frames).toHaveLength(3);
-            expect(frames[1]).toMatchObject({type:"before-close",nonce,descriptor:frames[0].descriptor,soError:0});
+            expect(frames[1]).toMatchObject({type:"before-close",nonce,descriptor:frames[0].descriptor,address:frames[0].address,socketType:1,protocol:6,soError:0});
             expect(frames[2]).toEqual({type:"closed",nonce,descriptor:-1});
         } catch (error) { throw new Error(`Private refusal holder cleanup failed; retained ${directory}: ${String(error)}`); }
         refusalHolders.delete(stop);
@@ -108,7 +109,7 @@ async function refusalPort() {
     };
     refusalHolders.add(stop);
     const receipt = await ready;
-    expect(receipt).toMatchObject({type:"ready",pid:child.pid,root:directory,nonce,listening:0,soError:0});
+    expect(receipt).toMatchObject({type:"ready",pid:child.pid,root:directory,nonce,phase:"bound",socketType:1,protocol:6,soError:0});
     expect(receipt.descriptor).toBeGreaterThanOrEqual(0);
     expect(receipt.generation).toMatch(/^\d+$/);
     if (process.platform !== "win32") expect(receipt.pgid).toBeGreaterThan(0);

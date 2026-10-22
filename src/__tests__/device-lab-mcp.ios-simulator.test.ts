@@ -559,14 +559,14 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
         expect(stopWithoutRecording.isError).toBe(true);
         expect((stopWithoutRecording.content as Array<{ text?: string }>)[0].text).toContain("No iOS Simulator recording active");
 
-        const customRecordingPath = "/tmp/custom-ios-recording.mp4";
+        const customRecordingPath = join(homeDir, "custom-ios-recording.mp4");
         rmSync(customRecordingPath, { force: true });
         writeFileSync(customRecordingPath, "original");
         const recordStart = await client.callTool({
             name: "record_video",
             arguments: { action: "start", deviceId: ownedDeviceId, localPath: customRecordingPath },
         });
-        expect(recordStart.isError).not.toBe(true);
+        expect(recordStart.isError, JSON.stringify(recordStart)).not.toBe(true);
         const recordStartPayload = JSON.parse(((recordStart.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             deviceId: string;
             recording: { active: boolean; provider: string; runtimeId: string; processIdentity: { pid: number; startToken: string; commandHash: string }; localPath: string; stagingPath: string };
@@ -619,7 +619,7 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
             name: "record_video",
             arguments: { action: "stop", deviceId: ownedDeviceId },
         });
-        expect(recordStop.isError).not.toBe(true);
+        expect(recordStop.isError, JSON.stringify(recordStop)).not.toBe(true);
         const recordStopPayload = JSON.parse(((recordStop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             stopped: boolean;
             provider: string;
@@ -639,9 +639,9 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
         writeFileSync(join(homeDir, "fake-ios-record-fail-once"), "1");
         const failedRecordStart = await client.callTool({
             name: "record_video",
-            arguments: { action: "start", deviceId: ownedDeviceId, localPath: "/tmp/fail-immediate-ios-recording.mp4" },
+            arguments: { action: "start", deviceId: ownedDeviceId, localPath: join(homeDir, "fail-immediate-ios-recording.mp4") },
         });
-        expect(failedRecordStart.isError).toBe(true);
+        expect(failedRecordStart.isError, JSON.stringify(failedRecordStart)).toBe(true);
         expect((failedRecordStart.content as Array<{ text?: string }>)[0].text).toContain("recorder exited before it was ready");
         const statusAfterFailedStart = await client.callTool({
             name: "record_video",
@@ -650,9 +650,10 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
         expect(JSON.parse(((statusAfterFailedStart.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
 
         writeFileSync(join(homeDir, "fake-ios-record-natural-exit-once"), "1");
+        const naturalExitRecordingPath = join(homeDir, "natural-exit-ios-recording.mp4");
         const naturalExitStart = await client.callTool({
             name: "record_video",
-            arguments: { action: "start", deviceId: ownedDeviceId, localPath: "/tmp/natural-exit-ios-recording.mp4" },
+            arguments: { action: "start", deviceId: ownedDeviceId, localPath: naturalExitRecordingPath },
         });
         expect(naturalExitStart.isError, (naturalExitStart.content as Array<{ text?: string }>)[0].text).not.toBe(true);
         await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -662,14 +663,14 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
         });
         expect(JSON.parse(((statusAfterNaturalExit.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toEqual(expect.objectContaining({
             active: false,
-            localPath: "/tmp/natural-exit-ios-recording.mp4",
+            localPath: naturalExitRecordingPath,
         }));
         const naturalExitStop = await client.callTool({
             name: "record_video",
             arguments: { action: "stop", deviceId: ownedDeviceId },
         });
-        expect(naturalExitStop.isError).not.toBe(true);
-        expect(readFileSync("/tmp/natural-exit-ios-recording.mp4", "utf8")).toBe("fakevideo");
+        expect(naturalExitStop.isError, JSON.stringify(naturalExitStop)).not.toBe(true);
+        expect(readFileSync(naturalExitRecordingPath, "utf8")).toBe("fakevideo");
 
         const legacyRecordingSource = join(homeDir, "legacy-ios-recording.mp4");
         const legacyRecordingDestination = join(homeDir, "legacy-ios-recording-final.mp4");
@@ -693,11 +694,12 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
         expect(legacyRecordStop.isError, (legacyRecordStop.content as Array<{ text?: string }>)[0].text).not.toBe(true);
         expect(readFileSync(legacyRecordingDestination, "utf8")).toBe("legacy-video");
 
+        const stopCleanupRecordingPath = join(homeDir, "stop-cleanup-ios-recording.mp4");
         const stopCleanupRecordStart = await client.callTool({
             name: "record_video",
-            arguments: { action: "start", deviceId: ownedDeviceId, localPath: "/tmp/stop-cleanup-ios-recording.mp4" },
+            arguments: { action: "start", deviceId: ownedDeviceId, localPath: stopCleanupRecordingPath },
         });
-        expect(stopCleanupRecordStart.isError).not.toBe(true);
+        expect(stopCleanupRecordStart.isError, JSON.stringify(stopCleanupRecordStart)).not.toBe(true);
         const stopCleanupRecording = parseToolJson(stopCleanupRecordStart).recording as { runtimeId: string; stagingPath: string };
 
         const session = await client.callTool({
@@ -891,7 +893,7 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
             name: "stop",
             arguments: { deviceId: ownedDeviceId },
         });
-        expect(stop.isError).not.toBe(true);
+        expect(stop.isError, JSON.stringify(stop)).not.toBe(true);
         const stoppedPayload = JSON.parse(((stop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             device: { recording: { active: boolean; runtimeId: string; stagingPath: string }; status: string };
         };
@@ -914,13 +916,13 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
             arguments: { action: "stop", deviceId: ownedDeviceId },
         });
         expect(finalizeStoppedDeviceRecording.isError, (finalizeStoppedDeviceRecording.content as Array<{ text?: string }>)[0]?.text ?? "").not.toBe(true);
-        expect(readFileSync("/tmp/stop-cleanup-ios-recording.mp4", "utf8")).toBe("fakevideo");
+        expect(readFileSync(stopCleanupRecordingPath, "utf8")).toBe("fakevideo");
 
         const eraseReset = await client.callTool({
             name: "reset",
             arguments: { deviceId: ownedDeviceId, confirmDestructive: true },
         });
-        expect(eraseReset.isError).not.toBe(true);
+        expect(eraseReset.isError, JSON.stringify(eraseReset)).not.toBe(true);
         const erasePayload = JSON.parse(((eraseReset.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             reset: { eraseSimulator: boolean };
             device: { status: string; bootReady: boolean };
@@ -934,7 +936,7 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
             name: "record_video",
             arguments: { action: "start", deviceId: ownedDeviceId, localPath: deleteCleanupRecordingPath },
         });
-        expect(deleteCleanupRecordStart.isError).not.toBe(true);
+        expect(deleteCleanupRecordStart.isError, JSON.stringify(deleteCleanupRecordStart)).not.toBe(true);
         const deleteCleanupRecording = parseToolJson(deleteCleanupRecordStart).recording as { pid: number; stagingPath: string };
         expect(existsSync(deleteCleanupRecording.stagingPath)).toBe(true);
 
@@ -956,7 +958,7 @@ describe.skipIf(process.platform === "win32")("device-lab MCP iOS simulator life
             name: "delete",
             arguments: { deviceId: ownedDeviceId, force: true, deleteSimulator: true, confirmDestructive: true },
         });
-        expect(deleted.isError).not.toBe(true);
+        expect(deleted.isError, JSON.stringify(deleted)).not.toBe(true);
         const deletedPayload = JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             deleted: string;
             simulatorDeleted: boolean;
