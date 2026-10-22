@@ -147,7 +147,9 @@ def visit(parent, name):
         os.close(pinned)
         return
     entries.append((pinned, parent, name, s))
-    if s.st_dev != root_stat.st_dev or s.st_uid not in (root_stat.st_uid, uid) or s.st_gid not in (root_stat.st_gid, gid):
+    # Native admission verified the Windows owner and observed same-bind users on the captured runtime.
+    # CCC root setup helpers can create root-owned files on this same bind.
+    if s.st_dev != root_stat.st_dev or s.st_uid not in (0, root_stat.st_uid, uid) or s.st_gid not in (0, root_stat.st_gid, gid):
         raise RuntimeError('Unconfirmed owner or filesystem in Codex private state')
     if not (stat.S_ISDIR(s.st_mode) or stat.S_ISREG(s.st_mode) or stat.S_ISSOCK(s.st_mode)):
         raise RuntimeError('Unsupported Codex private state entry')
@@ -224,7 +226,8 @@ uid = os.geteuid()
 if os.lstat(root).st_uid != uid: sys.exit(1)
 for entry in os.listdir(root):
     path = root + '/' + entry
-    info = os.lstat(path)
+    try: info = os.lstat(path)
+    except FileNotFoundError: continue
     if stat.S_ISREG(info.st_mode) and info.st_uid != uid: sys.exit(1)
 # Rollout archives and logs are covered by the full state access guard. Walking
 # them again over a Windows bind share cannot fit this short ownership probe.
@@ -232,11 +235,13 @@ for name in ('app-server-control', 'app-server-daemon', 'tmp'):
     path = root + '/' + name
     if not os.path.lexists(path): continue
     if os.path.islink(path): sys.exit(1)
-    def inaccessible(error): sys.exit(1)
+    def inaccessible(error):
+        if not isinstance(error, FileNotFoundError): sys.exit(1)
     for directory, dirs, files in os.walk(path, followlinks=False, onerror=inaccessible):
         for entry in [directory] + [os.path.join(directory, file) for file in files]:
             if os.path.islink(entry): continue
-            info = os.lstat(entry)
+            try: info = os.lstat(entry)
+            except FileNotFoundError: continue
             if info.st_uid != uid: sys.exit(1)
 `;
 
