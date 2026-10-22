@@ -1,6 +1,6 @@
 # Test failure groups
 
-The saved Mac report's 1,085 assertions in 79 failed files are grouped in the ignored per-assertion analysis inventory. Unit fixtures now use canonical temporary roots and explicitly private MCP child temp directories. Installer and diagnostic entry guards recognize symlink invocation; Darwin MCP observations use system tools. Remote operations retain admitted directories through pinned working scopes and bounded descriptor reads. Native platform, current adapter, lock, deadline and authority fixtures follow their existing contracts. Focused portable checks validate these changes; post-fix Mac results are required before claiming the original failures resolved.
+The saved Mac report's 1,085 assertions in 79 failed files are grouped in the ignored per-assertion analysis inventory. Unit fixtures now use canonical temporary roots and explicitly private MCP child temp directories. Installer and diagnostic entry guards recognize symlink invocation; Darwin MCP observations use system tools. Remote operations retain admitted directories through pinned working scopes and bounded descriptor reads; cancellation waits for proved owned native work before releasing claims and preserves claims when identity proof is unavailable. Native platform, current adapter, lock, deadline and authority fixtures follow their existing contracts. Focused portable checks validate these changes; post-fix Mac results are required before claiming the original failures resolved.
 
 ## Known ceiling
 
@@ -17,3 +17,5 @@ Known ceiling: Darwin process cleanup/lifetime acceptance remains pending — up
 Known ceiling: Darwin native acceptance remains pending host output — upgrade when the Mac focused owner results are supplied.
 
 Known ceiling: Native Darwin acceptance remains unverified — upgrade when the Mac host runs these four focused owners.
+
+Known ceiling: Darwin acceptance remains pending — upgrade when the Mac host runs these focused owners.

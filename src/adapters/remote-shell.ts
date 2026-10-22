@@ -9,6 +9,165 @@ export function shellEscapeArg(arg: string): string {
     return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
+// Receiving-host scopes admit an owned stopped job before any protected effect.
+// Native birth, command and ancestry fence cancellation; unknown proof retains claims.
+const remoteScopeShell = `_ccc_scope_observe() {
+    _ccc_observed=$(LC_ALL=C TZ=UTC /bin/ps -ww -p "$1" -o pid= -o ppid= -o state= -o lstart= -o command= 2>/dev/null) || {
+        _ccc_scope_absent=$(LC_ALL=C kill -0 "$1" 2>&1) && return 74
+        case "$_ccc_scope_absent" in *'No such process'*) return 1 ;; *) return 74 ;; esac
+    }
+    IFS=' ' read -r _ccc_observed_pid _ccc_observed_parent _ccc_observed_state _ccc_observed_day _ccc_observed_month _ccc_observed_date _ccc_observed_time _ccc_observed_year _ccc_observed_command <<CCC_SCOPE_OBSERVE
+$_ccc_observed
+CCC_SCOPE_OBSERVE
+    case "$_ccc_observed_pid:$_ccc_observed_parent" in *[!0-9:]*|:*|*:) return 74 ;; esac
+    [ "$_ccc_observed_pid" = "$1" ] && [ -n "$_ccc_observed_command" ] && [ -n "$_ccc_observed_year" ] || return 74
+    case "$_ccc_observed_state" in Z*) return 1 ;; esac
+    _ccc_observed_birth="$_ccc_observed_day $_ccc_observed_month $_ccc_observed_date $_ccc_observed_time $_ccc_observed_year"
+    _ccc_observed_record="$_ccc_observed_pid|$_ccc_observed_parent|$_ccc_observed_birth|$_ccc_observed_command"
+}
+_ccc_scope_decode() {
+    IFS='|' read -r _ccc_expected_pid _ccc_expected_parent _ccc_expected_birth _ccc_expected_command <<CCC_SCOPE_RECORD
+$1
+CCC_SCOPE_RECORD
+}
+_ccc_scope_match() {
+    _ccc_scope_decode "$1"
+    _ccc_scope_observe "$_ccc_expected_pid" || return $?
+    [ "$_ccc_observed_birth" = "$_ccc_expected_birth" ] && [ "$_ccc_observed_command" = "$_ccc_expected_command" ] || return 74
+    [ "$2" = join ] || [ "$_ccc_observed_parent" = "$_ccc_expected_parent" ] || return 2
+}
+_ccc_scope_capture() {
+    _ccc_scope_records=
+    if [ -n "$_ccc_scope_root_record" ]; then
+        _ccc_scope_match "$_ccc_scope_root_record" signal || return $?
+    else
+        _ccc_scope_observe "$_ccc_scope_pid" || return $?
+    fi
+    [ "$_ccc_observed_parent" = "$_ccc_scope_parent" ] || return 74
+    case "$_ccc_observed_command" in *"$_ccc_scope_token"*) ;; *) return 74 ;; esac
+    _ccc_scope_records=$_ccc_observed_record
+    _ccc_scope_seen=" $_ccc_scope_pid "
+    _ccc_scope_frontier=" $_ccc_scope_pid "
+    _ccc_scope_snapshot=$(LC_ALL=C TZ=UTC /bin/ps -A -ww -o pid= -o ppid= 2>/dev/null) || return 74
+    while [ -n "$_ccc_scope_frontier" ]; do
+        _ccc_scope_next=
+        while IFS=' ' read -r _ccc_candidate_pid _ccc_candidate_parent; do
+            case "$_ccc_candidate_pid:$_ccc_candidate_parent" in *[!0-9:]*|:*|*:) continue ;; esac
+            case "$_ccc_scope_seen" in *" $_ccc_candidate_pid "*) continue ;; esac
+            case "$_ccc_scope_frontier" in *" $_ccc_candidate_parent "*) ;; *) continue ;; esac
+            _ccc_scope_observe "$_ccc_candidate_pid" || { [ "$?" = 1 ] && continue; return 74; }
+            [ "$_ccc_observed_parent" = "$_ccc_candidate_parent" ] || return 74
+            _ccc_scope_candidate=$_ccc_observed_record
+            _ccc_scope_parent_record=
+            while IFS= read -r _ccc_scope_existing; do
+                case "$_ccc_scope_existing" in "$_ccc_candidate_parent|"*) _ccc_scope_parent_record=$_ccc_scope_existing; break ;; esac
+            done <<CCC_SCOPE_PARENTS
+$_ccc_scope_records
+CCC_SCOPE_PARENTS
+            [ -n "$_ccc_scope_parent_record" ] || return 74
+            _ccc_scope_parent_status=0
+            _ccc_scope_match "$_ccc_scope_parent_record" signal || _ccc_scope_parent_status=$?
+            case "$_ccc_scope_parent_status" in 0|1) ;; *) return 74 ;; esac
+            _ccc_scope_records="$_ccc_scope_records
+$_ccc_scope_candidate"
+            _ccc_scope_seen="$_ccc_scope_seen$_ccc_candidate_pid "
+            _ccc_scope_next="$_ccc_scope_next$_ccc_candidate_pid "
+        done <<CCC_SCOPE_CHILDREN
+$_ccc_scope_snapshot
+CCC_SCOPE_CHILDREN
+        _ccc_scope_frontier=$_ccc_scope_next
+    done
+}
+_ccc_scope_child_exit() { trap '' HUP INT TERM; [ "\${_ccc_cleanup_refused:-0}" != 1 ] || exit 79; wait 2>/dev/null || true; exit "$1"; }
+_ccc_scope_cancel() {
+    _ccc_scope_signal_status=$1
+    trap '' HUP INT TERM
+    _ccc_scope_capture_status=0
+    _ccc_scope_capture || _ccc_scope_capture_status=$?
+    if [ "$_ccc_scope_capture_status" != 0 ] && [ "$_ccc_scope_capture_status" != 1 ]; then _ccc_cleanup_refused=1; fi
+    while IFS= read -r _ccc_scope_record; do
+        [ -n "$_ccc_scope_record" ] || continue
+        _ccc_scope_match_status=0
+        _ccc_scope_match "$_ccc_scope_record" signal || _ccc_scope_match_status=$?
+        if [ "$_ccc_scope_match_status" = 0 ]; then
+            kill -TERM "$_ccc_expected_pid" 2>/dev/null || true
+            if [ "$_ccc_expected_pid" = "$_ccc_scope_pid" ]; then kill -CONT "$_ccc_expected_pid" 2>/dev/null || true; fi
+        elif [ "$_ccc_scope_match_status" != 1 ] && [ "$_ccc_scope_match_status" != 2 ]; then _ccc_cleanup_refused=1; fi
+    done <<CCC_SCOPE_SIGNALS
+$_ccc_scope_records
+CCC_SCOPE_SIGNALS
+    if [ "\${_ccc_cleanup_refused:-0}" = 1 ]; then
+        printf '%s\\n' 'CCC remote cancellation ownership unavailable; retaining claims' >&2
+        "$_ccc_scope_callback" "$_ccc_scope_signal_status"
+    fi
+    _ccc_scope_join_status=0
+    wait "$_ccc_scope_pid" 2>/dev/null || _ccc_scope_join_status=$?
+    [ "$_ccc_scope_join_status" != 79 ] || _ccc_cleanup_refused=1
+    while IFS= read -r _ccc_scope_record; do
+        [ -n "$_ccc_scope_record" ] || continue
+        while :; do
+            _ccc_scope_match_status=0
+            _ccc_scope_match "$_ccc_scope_record" join || _ccc_scope_match_status=$?
+            [ "$_ccc_scope_match_status" != 0 ] || { sleep 0.01; continue; }
+            if [ "$_ccc_scope_match_status" != 1 ]; then _ccc_cleanup_refused=1; fi
+            break
+        done
+    done <<CCC_SCOPE_JOINS
+$_ccc_scope_records
+CCC_SCOPE_JOINS
+    "$_ccc_scope_callback" "$_ccc_scope_signal_status"
+}
+_ccc_scope_run() {
+    _ccc_scope_token=$1
+    _ccc_scope_body=$2
+    _ccc_scope_callback=$3
+    _ccc_scope_parent=$(exec /bin/sh -c 'printf "%s" "$PPID"') || return 74
+    _ccc_scope_root_record=
+    _ccc_scope_pending=0
+    trap '_ccc_scope_pending=129' HUP
+    trap '_ccc_scope_pending=130' INT
+    trap '_ccc_scope_pending=143' TERM
+    exec 3<&0
+    (
+        trap '_ccc_scope_child_exit 129' HUP
+        trap '_ccc_scope_child_exit 130' INT
+        trap '_ccc_scope_child_exit 143' TERM
+        exec 3<&-
+        _ccc_scope_self=$(exec /bin/sh -c 'printf "%s" "$PPID"') || exit 74
+        kill -STOP "$_ccc_scope_self" || exit 74
+        eval "$_ccc_scope_body"
+        exit $?
+    ) <&3 &
+    _ccc_scope_pid=$!
+    exec 3<&-
+    trap '_ccc_scope_cancel 129' HUP
+    trap '_ccc_scope_cancel 130' INT
+    trap '_ccc_scope_cancel 143' TERM
+    [ "$_ccc_scope_pending" = 0 ] || _ccc_scope_cancel "$_ccc_scope_pending"
+    _ccc_scope_attempt=0
+    while :; do
+        _ccc_scope_probe=0
+        _ccc_scope_observe "$_ccc_scope_pid" || _ccc_scope_probe=$?
+        if [ "$_ccc_scope_probe" != 0 ]; then _ccc_cleanup_refused=1; return 79; fi
+        [ "$_ccc_observed_parent" = "$_ccc_scope_parent" ] || { _ccc_cleanup_refused=1; return 79; }
+        case "$_ccc_observed_command" in *"$_ccc_scope_token"*) ;; *) _ccc_cleanup_refused=1; return 79 ;; esac
+        case "$_ccc_observed_state" in T*) break ;; esac
+        _ccc_scope_attempt=$((_ccc_scope_attempt + 1))
+        [ "$_ccc_scope_attempt" -lt 100 ] || { _ccc_cleanup_refused=1; return 79; }
+        sleep 0.01
+    done
+    _ccc_scope_root_record=$_ccc_observed_record
+    kill -CONT "$_ccc_scope_pid" || { _ccc_cleanup_refused=1; return 79; }
+    _ccc_scope_status=0
+    wait "$_ccc_scope_pid" || _ccc_scope_status=$?
+    trap '"$_ccc_scope_callback" 129' HUP
+    trap '"$_ccc_scope_callback" 130' INT
+    trap '"$_ccc_scope_callback" 143' TERM
+    [ "$_ccc_scope_status" != 79 ] || _ccc_cleanup_refused=1
+    return "$_ccc_scope_status"
+}
+`.trim();
+
 export function remoteLifecycleShell(containerName: string, body: string, lockWaitSeconds = 30): string {
     if (!Number.isFinite(lockWaitSeconds) || lockWaitSeconds <= 0 || lockWaitSeconds > 300) {
         throw new RangeError("lockWaitSeconds must be between 0 and 300");
@@ -20,6 +179,7 @@ export function remoteLifecycleShell(containerName: string, body: string, lockWa
         "set -eu",
         "umask 077",
         `_ccc_token=${token}`,
+        remoteScopeShell,
         "_ccc_assert_private() { [ -d \"$1\" ] && [ ! -L \"$1\" ] && [ -O \"$1\" ] || return 1; _ccc_mode=$(stat -c %a \"$1\" 2>/dev/null || stat -f %Lp \"$1\" 2>/dev/null) || return 1; case \"$_ccc_mode\" in ''|*[!0-7]*) return 1 ;; esac; [ $((0$_ccc_mode & 022)) -eq 0 ]; }",
         "_ccc_identity() { stat -L -c %d:%i \"$1\" 2>/dev/null || stat -L -f %d:%i \"$1\" 2>/dev/null; }",
         "_ccc_assert_private \"$HOME\" || exit 74",
@@ -45,9 +205,9 @@ export function remoteLifecycleShell(containerName: string, body: string, lockWa
         "_ccc_guard_owned=0",
         "_ccc_lock_owned=0",
         "_ccc_release_guard() { [ \"$_ccc_guard_owned\" -eq 1 ] || return 0; case \"$_ccc_guard_backend\" in flock) flock -u 9 2>/dev/null || true; eval 'exec 9>&-' ;; shlock) if read -r _ccc_guard_pid < \"$_ccc_guard\" 2>/dev/null && [ \"$_ccc_guard_pid\" = \"$$\" ]; then rm -f \"$_ccc_guard\"; fi ;; esac; _ccc_guard_owned=0; }",
-        "_ccc_unlock() { if command -v _ccc_bind_release >/dev/null 2>&1; then _ccc_bind_release || true; fi; if [ \"$_ccc_lock_owned\" -eq 1 ] && read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock\"; fi; _ccc_lock_owned=0; _ccc_release_guard; rm -f \"$_ccc_candidate\" 2>/dev/null || true; eval 'exec 8<&-' 2>/dev/null || true; }",
-        "_ccc_on_signal() { _ccc_signal_status=$1; trap - EXIT HUP INT TERM; wait 2>/dev/null || true; _ccc_unlock; exit \"$_ccc_signal_status\"; }",
-        "trap _ccc_unlock EXIT",
+        "_ccc_unlock() { [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || return 74; if command -v _ccc_bind_release >/dev/null 2>&1; then _ccc_bind_release || true; fi; if [ \"$_ccc_lock_owned\" -eq 1 ] && read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock\"; fi; _ccc_lock_owned=0; _ccc_release_guard; rm -f \"$_ccc_candidate\" 2>/dev/null || true; eval 'exec 8<&-' 2>/dev/null || true; }",
+        "_ccc_on_signal() { _ccc_signal_status=$1; trap - EXIT HUP INT TERM; wait 2>/dev/null || true; [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || exit 79; _ccc_unlock; exit \"$_ccc_signal_status\"; }",
+        "trap 'if [ \"${_ccc_cleanup_refused:-0}\" != 1 ]; then _ccc_unlock; fi' EXIT",
         "trap '_ccc_on_signal 129' HUP",
         "trap '_ccc_on_signal 130' INT",
         "trap '_ccc_on_signal 143' TERM",
@@ -59,7 +219,7 @@ export function remoteLifecycleShell(containerName: string, body: string, lockWa
         "_ccc_lock_owned=1",
         "rm -f \"$_ccc_candidate\"",
         "_ccc_assert_runtime || exit 74",
-        `( ${body} )`,
+        `_ccc_scope_run ${token} ${shellEscapeArg(body)} _ccc_on_signal`,
     ].join("; ");
 }
 
@@ -231,9 +391,9 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "_ccc_bind_claim_matches() { _ccc_bind_assert_root && _ccc_bind_private_file \"$1\" 16384 && [ \"$(_ccc_bind_identity \"$1\")\" = \"$_ccc_bind_claim_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_claim_bound\")\" = \"$_ccc_bind_claim_identity\" ] || return 1; _ccc_bind_claim_read=$(_ccc_bind_read \"$_ccc_bind_claim_bound\") || return 1; [ \"$_ccc_bind_claim_read\" = \"$_ccc_bind_record\" ] && _ccc_bind_private_file \"$1\" 16384 && [ \"$(_ccc_bind_identity \"$1\")\" = \"$_ccc_bind_claim_identity\" ]; }",
         // A losing publisher may remove only its captured, still single-link staging inode.
         // Native admission also protects displaced .release records; never delete a raced successor.
-        "_ccc_bind_release() { _ccc_bind_release_status=0; if [ \"$_ccc_bind_candidate_owned\" -eq 1 ]; then _ccc_bind_candidate_owned=0; if _ccc_bind_claim_matches \"$_ccc_bind_candidate\"; then rm -f \"$_ccc_bind_candidate\" || _ccc_bind_release_status=74; fi; fi; if [ \"$_ccc_bind_owned\" -eq 1 ]; then _ccc_bind_owned=0; _ccc_bind_release_status=74; if _ccc_bind_claim_matches \"$_ccc_bind_lock\"; then _ccc_bind_release_path=$_ccc_bind_root_bound/codex-state.lock.${_ccc_bind_token%????????????????}.release; if [ ! -e \"$_ccc_bind_release_path\" ] && [ ! -L \"$_ccc_bind_release_path\" ] && mv \"$_ccc_bind_lock\" \"$_ccc_bind_release_path\"; then if _ccc_bind_claim_matches \"$_ccc_bind_release_path\" && rm -f \"$_ccc_bind_release_path\"; then _ccc_bind_release_status=0; fi; fi; fi; fi; eval 'exec 4<&- 5<&- 6<&- 7<&-' 2>/dev/null || true; return \"$_ccc_bind_release_status\"; }",
-        "_ccc_bind_signal() { _ccc_bind_signal_status=$1; trap - EXIT HUP INT TERM; _ccc_bind_release || true; exit \"$_ccc_bind_signal_status\"; }",
-        "trap _ccc_bind_release EXIT",
+        "_ccc_bind_release() { [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || return 74; _ccc_bind_release_status=0; if [ \"$_ccc_bind_candidate_owned\" -eq 1 ]; then _ccc_bind_candidate_owned=0; if _ccc_bind_claim_matches \"$_ccc_bind_candidate\"; then rm -f \"$_ccc_bind_candidate\" || _ccc_bind_release_status=74; fi; fi; if [ \"$_ccc_bind_owned\" -eq 1 ]; then _ccc_bind_owned=0; _ccc_bind_release_status=74; if _ccc_bind_claim_matches \"$_ccc_bind_lock\"; then _ccc_bind_release_path=$_ccc_bind_root_bound/codex-state.lock.${_ccc_bind_token%????????????????}.release; if [ ! -e \"$_ccc_bind_release_path\" ] && [ ! -L \"$_ccc_bind_release_path\" ] && mv \"$_ccc_bind_lock\" \"$_ccc_bind_release_path\"; then if _ccc_bind_claim_matches \"$_ccc_bind_release_path\" && rm -f \"$_ccc_bind_release_path\"; then _ccc_bind_release_status=0; fi; fi; fi; fi; eval 'exec 4<&- 5<&- 6<&- 7<&-' 2>/dev/null || true; return \"$_ccc_bind_release_status\"; }",
+        "_ccc_bind_signal() { _ccc_bind_signal_status=$1; trap - EXIT HUP INT TERM; _ccc_bind_release || true; [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || exit 79; exit \"$_ccc_bind_signal_status\"; }",
+        "trap 'if [ \"${_ccc_cleanup_refused:-0}\" != 1 ]; then _ccc_bind_release; fi' EXIT",
         "trap '_ccc_bind_signal 129' HUP",
         "trap '_ccc_bind_signal 130' INT",
         "trap '_ccc_bind_signal 143' TERM",
@@ -279,40 +439,30 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "_ccc_bind_assert_directory && _ccc_bind_claim_matches \"$_ccc_bind_lock\" && _ccc_bind_no_archives || exit 74",
         // The parent keeps claim mutations in its pinned cwd. This child pins the
         // authority directory; the root pathname below is only used for validation.
-        "( cd -P \"$_ccc_bind_directory_path\" || exit 74",
-        "[ \"$(_ccc_bind_identity .)\" = \"$_ccc_bind_directory_identity\" ] || exit 74",
-        "_ccc_bind_root_bound=$_ccc_bind_root",
-        "_ccc_bind_lock=$_ccc_bind_root/codex-state.lock",
-        "_ccc_bind_directory_path=$_ccc_bind_root/runtime-bind-authority",
-        "_ccc_bind_directory_bound=.",
-        "_ccc_bind_marker=$_ccc_bind_directory_bound/receiving-host-incomplete",
-        "if [ ! -e \"$_ccc_bind_marker\" ] && [ ! -L \"$_ccc_bind_marker\" ]; then _ccc_bind_marker_candidate=$_ccc_bind_directory_bound/.receiving-host-incomplete.$_ccc_bind_token; (set -C; printf '%s\\n' ccc-runtime-bind-authority:remote-incomplete:v1 > \"$_ccc_bind_marker_candidate\") || exit 74; _ccc_bind_private_file \"$_ccc_bind_marker_candidate\" 4096 || exit 74; link \"$_ccc_bind_marker_candidate\" \"$_ccc_bind_marker\" || exit 74; rm -f \"$_ccc_bind_marker_candidate\"; fi",
-        "_ccc_bind_private_file \"$_ccc_bind_marker\" 4096 || exit 74",
-        "eval 'exec 4<\"$_ccc_bind_marker\"'",
-        "_ccc_bind_marker_bound=$_ccc_bind_fd_prefix/4",
-        "_ccc_bind_marker_identity=$(_ccc_bind_identity \"$_ccc_bind_marker_bound\") || exit 74",
-        "_ccc_bind_marker_record=$(_ccc_bind_read \"$_ccc_bind_marker_bound\") || exit 74",
-        "_ccc_bind_assert() { _ccc_bind_assert_directory && _ccc_bind_no_archives && _ccc_bind_claim_matches \"$_ccc_bind_lock\" && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker_bound\")\" = \"$_ccc_bind_marker_identity\" ] || return 1; _ccc_bind_marker_read=$(_ccc_bind_read \"$_ccc_bind_marker_bound\") || return 1; [ \"$_ccc_bind_marker_read\" = \"$_ccc_bind_marker_record\" ] && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ]; }",
-        "_ccc_bind_assert || exit 74",
-        `( ${body} )`,
-        "_ccc_bind_assert || exit 74",
-        ")",
+        `_ccc_scope_run ${token} ${shellEscapeArg([
+            'cd -P "$_ccc_bind_directory_path" || exit 74',
+            "[ \"$(_ccc_bind_identity .)\" = \"$_ccc_bind_directory_identity\" ] || exit 74",
+            "_ccc_bind_root_bound=$_ccc_bind_root",
+            "_ccc_bind_lock=$_ccc_bind_root/codex-state.lock",
+            "_ccc_bind_directory_path=$_ccc_bind_root/runtime-bind-authority",
+            "_ccc_bind_directory_bound=.",
+            "_ccc_bind_marker=$_ccc_bind_directory_bound/receiving-host-incomplete",
+            "if [ ! -e \"$_ccc_bind_marker\" ] && [ ! -L \"$_ccc_bind_marker\" ]; then _ccc_bind_marker_candidate=$_ccc_bind_directory_bound/.receiving-host-incomplete.$_ccc_bind_token; (set -C; printf '%s\\n' ccc-runtime-bind-authority:remote-incomplete:v1 > \"$_ccc_bind_marker_candidate\") || exit 74; _ccc_bind_private_file \"$_ccc_bind_marker_candidate\" 4096 || exit 74; link \"$_ccc_bind_marker_candidate\" \"$_ccc_bind_marker\" || exit 74; rm -f \"$_ccc_bind_marker_candidate\"; fi",
+            "_ccc_bind_private_file \"$_ccc_bind_marker\" 4096 || exit 74",
+            "eval 'exec 4<\"$_ccc_bind_marker\"'",
+            "_ccc_bind_marker_bound=$_ccc_bind_fd_prefix/4",
+            "_ccc_bind_marker_identity=$(_ccc_bind_identity \"$_ccc_bind_marker_bound\") || exit 74",
+            "_ccc_bind_marker_record=$(_ccc_bind_read \"$_ccc_bind_marker_bound\") || exit 74",
+            "_ccc_bind_assert() { _ccc_bind_assert_directory && _ccc_bind_no_archives && _ccc_bind_claim_matches \"$_ccc_bind_lock\" && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker_bound\")\" = \"$_ccc_bind_marker_identity\" ] || return 1; _ccc_bind_marker_read=$(_ccc_bind_read \"$_ccc_bind_marker_bound\") || return 1; [ \"$_ccc_bind_marker_read\" = \"$_ccc_bind_marker_record\" ] && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ]; }",
+            "_ccc_bind_assert || exit 74",
+            `_ccc_scope_run ${token} ${shellEscapeArg(body)} _ccc_scope_child_exit`,
+            "_ccc_bind_assert || exit 74",
+        ].join("; "))} _ccc_bind_signal`,
         "_ccc_bind_release || exit 74",
     ].join("; ") + " )";
     return [
-        "_ccc_bind_wait_signal() { trap - HUP INT TERM; wait 2>/dev/null || true; if command -v _ccc_on_signal >/dev/null 2>&1; then _ccc_on_signal \"$1\"; else exit \"$1\"; fi; }",
-        "trap '_ccc_bind_wait_signal 129' HUP",
-        "trap '_ccc_bind_wait_signal 130' INT",
-        "trap '_ccc_bind_wait_signal 143' TERM",
-        scope,
-        "_ccc_bind_scope_status=$?",
-        "trap - HUP INT TERM",
-        ...(lifecycleHeld ? [
-            "trap '_ccc_on_signal 129' HUP",
-            "trap '_ccc_on_signal 130' INT",
-            "trap '_ccc_on_signal 143' TERM",
-        ] : []),
-        '( exit "$_ccc_bind_scope_status" )',
+        ...(!lifecycleHeld ? [remoteScopeShell] : []),
+        `_ccc_scope_run ${token} ${shellEscapeArg(scope)} _ccc_scope_child_exit`,
     ].join("; ");
 }
 

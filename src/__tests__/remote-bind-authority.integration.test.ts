@@ -7,7 +7,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-    remoteContainerStartScript, remoteRuntimeBindAuthorityShell,
+    remoteContainerStartScript, remoteRuntimeBindAuthorityShell, remoteLifecycleShell,
 } from "../adapters/remote-shell.js";
 import {
     prepareRuntimeBindHome, readRuntimeBindAuthority, withRuntimeBindGuard,
@@ -98,6 +98,34 @@ function installDocker(f: ReturnType<typeof fixture>, name: string, existing = t
         `esac`,
     ].join("\n"), { mode: 0o700 });
     return log;
+}
+
+function installProcessProbe(f: ReturnType<typeof fixture>, mode: "admission" | "root-change" | "child-change") {
+    const program = join(f.bin, "native-process-probe.cjs"); const executable = join(f.bin, "native-process-probe");
+    writeFileSync(program, [
+        'const fs = require("node:fs"); const { spawnSync } = require("node:child_process");',
+        `const home = ${JSON.stringify(f.home)}; const mode = ${JSON.stringify(mode)};`,
+        'const args = process.argv.slice(2); const result = spawnSync("/bin/ps", args, { encoding: "utf8" }); let output = result.stdout;',
+        'const match = /^\\s*(\\d+)\\s+\\d+\\s+(\\S+)\\s+(?:\\S+\\s+){5}(.*)$/m.exec(output);',
+        'if (args.includes("-p") && match) {',
+        ' const pid = match[1]; const rootFile = home + "/probe-root";',
+        ' if (match[2].startsWith("T") && !fs.existsSync(rootFile)) fs.writeFileSync(rootFile, pid);',
+        ' const root = fs.existsSync(rootFile) ? fs.readFileSync(rootFile, "utf8") : "";',
+        ' if (mode === "admission" && pid === root && !fs.existsSync(home + "/probe-ready")) {',
+        '  fs.writeFileSync(home + "/probe-ready", "ready");',
+        '  const gate = new Int32Array(new SharedArrayBuffer(4)); while (!fs.existsSync(home + "/probe-continue")) Atomics.wait(gate, 0, 0, 5);',
+        ' }',
+        ' if (fs.existsSync(home + "/change-proof")) {',
+        `  const native = match[3].startsWith(${JSON.stringify(process.execPath + " ")}) && match[3].includes(home + "/retained-native.cjs");`,
+        '  const countFile = home + "/probe-count-" + pid; const count = native && fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, "utf8")) + 1 : 1;',
+        '  if (native) fs.writeFileSync(countFile, String(count));',
+        '  if ((mode === "root-change" && pid === root) || (mode === "child-change" && native && count > 1)) output = output.replace(/^(\\s*(?:\\S+\\s+){7})\\d{4}/m, (_, prefix) => prefix + "1970");',
+        ' }',
+        '}',
+        'process.stdout.write(output); process.stderr.write(result.stderr); process.exit(result.status ?? 1);',
+    ].join("\n"));
+    writeFileSync(executable, `#!/bin/sh\nexec ${shellEscapeArg(process.execPath)} ${shellEscapeArg(program)} "$@"\n`, { mode: 0o700 });
+    return (shell: string) => shell.replaceAll("/bin/ps", shellEscapeArg(executable));
 }
 
 describe.runIf(process.platform !== "win32")("receiving-host global bind authority", () => {
@@ -470,5 +498,92 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         expect(existsSync(f.lock)).toBe(false);
         expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`))).toBe(false);
         expect(existsSync(f.marker)).toBe(true);
+    });
+
+    it.each(["standalone", "nested"])("joins a TERM-ignoring native child before %s claim release", async kind => {
+        const f = fixture(); f.prepare(); const name = "ccc-delayed-native";
+        const lifecycle = join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`);
+        const native = join(f.home, "delayed-native.cjs");
+        writeFileSync(native, [
+            'const fs = require("node:fs"); process.on("SIGTERM", () => {});',
+            `fs.writeFileSync(${JSON.stringify(join(f.home, "ready"))}, "ready");`,
+            `setTimeout(() => { if (!fs.existsSync(${JSON.stringify(f.lock)})${kind === "nested" ? ` || !fs.existsSync(${JSON.stringify(lifecycle)})` : ""}) fs.writeFileSync(${JSON.stringify(join(f.home, "released-early"))}, "unsafe"); fs.writeFileSync(${JSON.stringify(join(f.home, "native-effect"))}, "finished"); }, 500);`,
+        ].join("\n"));
+        const body = `${shellEscapeArg(process.execPath)} ${shellEscapeArg(native)}; printf late > ${shellEscapeArg(f.effect)}`;
+        const global = remoteRuntimeBindAuthorityShell(body, kind === "nested");
+        const held = f.start(kind === "nested" ? remoteSessionReservationShell(name, "8".repeat(32), 60, global) : global);
+        await waitForFile(join(f.home, "ready"));
+        process.kill(-held.child.pid!, "SIGTERM");
+        expect((await held.completed).code).toBe(143);
+        expect(existsSync(join(f.home, "native-effect"))).toBe(true);
+        expect(existsSync(join(f.home, "released-early"))).toBe(false);
+        expect(existsSync(f.effect)).toBe(false);
+        expect(existsSync(f.lock)).toBe(false);
+    });
+
+    it.each([
+        ["standalone", "SIGHUP", 129], ["standalone", "SIGINT", 130], ["standalone", "SIGTERM", 143],
+        ["nested", "SIGHUP", 129], ["nested", "SIGINT", 130], ["nested", "SIGTERM", 143],
+    ] as const)("cancels %s work when only its owner PID receives %s", async (kind, signal, status) => {
+        const f = fixture(); f.prepare(); const name = "ccc-owner-only-signal";
+        const global = remoteRuntimeBindAuthorityShell(`${waitBody(f.home)}; printf late > ${shellEscapeArg(f.effect)}`, kind === "nested");
+        const signalLog = join(f.home, "signal-diagnostic");
+        const held = f.start(`exec 2> ${shellEscapeArg(signalLog)}; ${kind === "nested" ? remoteSessionReservationShell(name, "9".repeat(32), 60, global) : global}`);
+        await waitForFile(join(f.home, "ready"));
+        process.kill(held.child.pid!, signal);
+        expect((await held.completed).code).toBe(status);
+        writeFileSync(join(f.home, "continue"), "continue");
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(existsSync(f.effect)).toBe(false);
+        expect(existsSync(f.lock), readFileSync(signalLog, "utf8")).toBe(false);
+        expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`))).toBe(false);
+    });
+
+    it.each(["standalone", "nested"])("cancels %s before worker admission without entering its body", async kind => {
+        const f = fixture(); f.prepare(); const name = "ccc-before-ready";
+        const probe = installProcessProbe(f, "admission");
+        const global = remoteRuntimeBindAuthorityShell(`printf late > ${shellEscapeArg(f.effect)}`, kind === "nested");
+        const held = f.start(probe(kind === "nested" ? remoteSessionReservationShell(name, "a".repeat(32), 60, global) : global));
+        await waitForFile(join(f.home, "probe-ready"));
+        process.kill(held.child.pid!, "SIGTERM");
+        writeFileSync(join(f.home, "probe-continue"), "continue");
+        expect((await held.completed).code).toBe(143);
+        expect(existsSync(f.effect)).toBe(false);
+        expect(existsSync(f.lock)).toBe(false);
+        expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`))).toBe(false);
+    });
+
+    it("retains its lifecycle claim and sends no cancellation to a changed root identity", async () => {
+        const f = fixture(); const name = "ccc-changed-root"; const probe = installProcessProbe(f, "root-change");
+        const held = f.start(probe(remoteLifecycleShell(name, `${waitBody(f.home)}; printf late > ${shellEscapeArg(f.effect)}`)));
+        await waitForFile(join(f.home, "ready"));
+        writeFileSync(join(f.home, "change-proof"), "change");
+        process.kill(held.child.pid!, "SIGTERM");
+        await new Promise(resolve => setTimeout(resolve, 150));
+        expect(held.child.exitCode).toBeNull();
+        expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`))).toBe(true);
+        expect(existsSync(f.effect)).toBe(false);
+        // This group was created detached by this fixture; terminate it after proving refusal.
+        process.kill(-held.child.pid!, "SIGKILL");
+        expect((await held.completed).signal).toBe("SIGKILL");
+    });
+
+    it("does not signal a changed descendant identity and retains the lifecycle claim", async () => {
+        const f = fixture(); const name = "ccc-changed-child"; const probe = installProcessProbe(f, "child-change");
+        const native = join(f.home, "retained-native.cjs");
+        writeFileSync(native, [
+            'const fs = require("node:fs");',
+            `process.on("SIGTERM", () => fs.writeFileSync(${JSON.stringify(join(f.home, "native-signaled"))}, "unsafe"));`,
+            `fs.writeFileSync(${JSON.stringify(join(f.home, "ready"))}, "ready"); setTimeout(() => {}, 1000);`,
+        ].join("\n"));
+        const held = f.start(probe(remoteLifecycleShell(name, `${shellEscapeArg(process.execPath)} ${shellEscapeArg(native)}; printf late > ${shellEscapeArg(f.effect)}`)));
+        await waitForFile(join(f.home, "ready"));
+        writeFileSync(join(f.home, "change-proof"), "change");
+        process.kill(held.child.pid!, "SIGTERM");
+        const result = await held.completed;
+        expect([74, 79]).toContain(result.code);
+        expect(existsSync(join(f.home, "native-signaled"))).toBe(false);
+        expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`))).toBe(true);
+        expect(existsSync(f.effect)).toBe(false);
     });
 });
