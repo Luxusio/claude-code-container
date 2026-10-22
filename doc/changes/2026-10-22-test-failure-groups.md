@@ -6,6 +6,8 @@ The later Mac full run recorded 297 failed assertions in 12 files, with 15,911 p
 
 ## Known ceiling
 
+The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. New fixture corrections and remote admission still require host acceptance; retaining an earlier row does not make its superseded limitation current again.
+
 Known ceiling: Darwin acceptance remains pending host output — Linux alias reproduction verifies the shared mechanism, not native macOS behavior.
 
 Known ceiling: Darwin fixture passthrough requires host verification — native Mac acceptance remains pending.
