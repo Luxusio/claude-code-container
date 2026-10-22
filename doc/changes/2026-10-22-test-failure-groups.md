@@ -4,9 +4,11 @@ The saved Mac report's 1,085 assertions in 79 failed files are grouped in the ig
 
 The later Mac full run recorded 297 failed assertions in 12 files, with 15,911 passed and 684 skipped. The four process/terminal/timer residual owners passed all 170 cases. Remaining groups include fixture self-process observations, remote shell portability, fake-broker start tokens and native fixture assumptions; the new per-assertion inventory preserves the distinction between diagnosed candidates and host-verified corrections. Fixtures keep bookkeeping outside observed directory metadata and use portable socket observations while holding their refusal allocation. Unexplained public failures include their response payload in assertion diagnostics.
 
+The latest saved Mac run (`2026-10-22T07-35-46-846Z-91401-kbqlDl`) recorded 103 failures in seven files, with 16,107 passed and 684 skipped. Its separate inventory groups 99 remote failures at held-descriptor identity checks, one Android signal failure after identity admission, one QEMU post-signal command mismatch and two Darwin native socket timeouts. The current corrections obtain metadata directly from the inherited descriptor, reconcile failed admitted signals only with positive saved-incarnation exit proof, and use that same exit proof after QEMU signaling. Darwin socket fixtures expect the existing native timeout while retaining the allocated socket. Cancellation also rechecks process identity before resuming a stopped worker. Focused Linux verification passed 132 remote cases, 169 process/QEMU cases, 18 socket cases, 105 existing exit-observer cases and the affected Android force-delete case. These are portable checks; current corrections require a new Mac run.
+
 ## Known ceiling
 
-The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. New fixture corrections and remote admission still require host acceptance; retaining an earlier row does not make its superseded limitation current again.
+The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The latest 103-failure run replaces the earlier unknown exit74 diagnosis with the descriptor-identity stages above and contains no earlier Bash parser failure. Current descriptor, cancellation, runtime-exit and socket corrections still require host acceptance; retaining an earlier row does not make its superseded limitation current again.
 
 Known ceiling: Darwin acceptance remains pending host output — Linux alias reproduction verifies the shared mechanism, not native macOS behavior.
 
@@ -39,3 +41,5 @@ Known ceiling: Darwin acceptance remains pending — confirm with focused host r
 Known ceiling: Linux confirms fixture isolation; the historical Mac semantic cause remains unproved — upgrade when actual host verification is available.
 
 Known ceiling: Mac exit74 원인은 아직 미확정. 다음 일반 `npm test` 로그에서 새 진단 단계로 확인해야 함. Bash3 파서 수정은 소스 기반 검증이며 Mac 실행 확인은 대기.
+
+Known ceiling: Darwin acceptance awaits the next host result.

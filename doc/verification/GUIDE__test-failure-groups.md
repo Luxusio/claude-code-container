@@ -34,7 +34,7 @@ Fake-timer drivers must allow real asynchronous native observations to complete 
 
 Do not assume a fixed localhost port is closed. Unit refusal cases inject their owned socket error; native forwarding cases keep a private bound, non-listening allocation until all dials finish. Keep the negative native check separate from the unit error-forwarding assertion.
 
-The refusal holder must use socket observations supported by the tested host. Its controlled program can report the completed bind phase and portable socket type while retaining the same descriptor, address and nonce through close. Verify actual connection refusal independently while that allocation is held; an unavailable listening-state socket option must not prevent the native refusal check.
+The failed-dial holder must use socket observations supported by the tested host. Its controlled program can report the completed bind phase and portable socket type while retaining the same descriptor, address and nonce through close. Verify the actual failure while that allocation is held: Linux refuses the dial, while Darwin drops a SYN to the bound, closed socket and reaches the existing connection timeout. Keep the unit assertion for forwarding `ECONNREFUSED`; do not claim that the Darwin native fixture produces it. A test covering two native timeout attempts needs a test duration longer than their existing combined limit, without changing either product timeout.
 
 Use the [descriptor root requirements](../remote/REQ__descriptor-root-portability.md) for remote lifecycle and bind tests. macOS directory descriptors are not Linux `/proc` namespaces; a portable implementation must retain each admitted root and its cleanup ownership.
 

@@ -27,21 +27,21 @@ beforeEach(() => {
 });
 function track(socket: net.Socket) { sockets.add(socket); return socket; }
 const fixtureHost = "::1";
-const refusalHolders = new Set<() => Promise<void>>();
+const failedDialHolders = new Set<() => Promise<void>>();
 async function listen(connection: (socket: net.Socket) => void) {
     const server = net.createServer(socket => connection(track(socket))); servers.add(server);
     server.listen(0, fixtureHost); await once(server, "listening");
     const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing private listener");
     return { server, port: address.port };
 }
-// Keep the exact refusal allocation bound until all native dials finish. A closed
-// ephemeral listener is not an owned refusal endpoint, and IPv4 localhost may
-// be transparently redirected by the container's existing proxy rules.
-const refusalProgram = String.raw`
+// Keep the failed-dial allocation bound until all native dials finish. Linux
+// refuses the connection; Darwin drops its SYN until the existing dial deadline.
+// IPv4 localhost may be redirected by the container's existing proxy rules.
+const failedDialProgram = String.raw`
 import socket, sys, os, json, time
 root, nonce = sys.argv[1:]
 if os.getcwd() != root or not (sys.flags.isolated and sys.flags.no_site):
-    raise RuntimeError('invalid private refusal holder startup')
+    raise RuntimeError('invalid private failed-dial holder startup')
 sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP)
 try:
     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
@@ -52,7 +52,7 @@ try:
         'address':sock.getsockname(),'phase':'bound','socketType':sock.getsockopt(socket.SOL_SOCKET,socket.SO_TYPE),'protocol':sock.proto,
         'soError':sock.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)}), flush=True)
     if sys.stdin.readline().strip() != nonce:
-        raise RuntimeError('unauthenticated private refusal holder stop')
+        raise RuntimeError('unauthenticated private failed-dial holder stop')
     print(json.dumps({'type':'before-close','nonce':nonce,'descriptor':sock.fileno(),
         'address':sock.getsockname(),'socketType':sock.getsockopt(socket.SOL_SOCKET,socket.SO_TYPE),'protocol':sock.proto,
         'soError':sock.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)}), flush=True)
@@ -60,23 +60,23 @@ finally:
     sock.close()
 print(json.dumps({'type':'closed','nonce':nonce,'descriptor':sock.fileno()}), flush=True)
 `;
-interface RefusalReceipt {
+interface FailedDialReceipt {
     type: string; pid: number; pgid: number | null; generation: string;
     root: string; nonce: string; descriptor: number; address: [string, number, number, number];
     phase: "bound"; socketType: number; protocol: number; soError: number;
 }
-async function refusalPort() {
-    const directory = mkdtempSync(join(tmpdir(), "ccc-proxy-refusal-"));
+async function failedDialPort() {
+    const directory = mkdtempSync(join(tmpdir(), "ccc-proxy-failed-dial-"));
     const nonce = randomBytes(24).toString("hex");
     const native = await vi.importActual<typeof import("child_process")>("child_process");
     const executable = process.platform === "win32" ? "python" : "/usr/bin/python3";
-    const args = ["-I", "-S", "-c", refusalProgram, directory, nonce];
+    const args = ["-I", "-S", "-c", failedDialProgram, directory, nonce];
     const options = { cwd: directory, env: {}, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] };
     const child = native.spawn(executable, args, options);
     let stdout = "", stderr = "", stopped = false;
-    let readyResolve!: (value: RefusalReceipt) => void;
+    let readyResolve!: (value: FailedDialReceipt) => void;
     let readyReject!: (error: Error) => void;
-    const ready = new Promise<RefusalReceipt>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+    const ready = new Promise<FailedDialReceipt>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
     child.stdout.on("data", chunk => {
         stdout += chunk.toString();
         if (stdout.includes("\n")) {
@@ -86,9 +86,9 @@ async function refusalPort() {
     });
     child.stderr.on("data", chunk => { stderr += chunk.toString(); });
     child.stdin.on("error", error => { stderr += `stdin: ${error.message}\n`; readyReject(error); });
-    child.on("error", error => readyReject(new Error(`Private IPv6 refusal fixture requires ${executable}: ${error.message}; retained ${directory}`)));
+    child.on("error", error => readyReject(new Error(`Private IPv6 failed-dial fixture requires ${executable}: ${error.message}; retained ${directory}`)));
     const joined = new Promise<{code:number|null; signal:NodeJS.Signals|null}>(resolve => child.on("close", (code, signal) => {
-        readyReject(new Error(`Private IPv6 refusal holder closed before READY: ${stderr}; retained ${directory}`));
+        readyReject(new Error(`Private IPv6 failed-dial holder closed before READY: ${stderr}; retained ${directory}`));
         resolve({code, signal});
     }));
     const stop = async () => {
@@ -103,11 +103,11 @@ async function refusalPort() {
             expect(frames).toHaveLength(3);
             expect(frames[1]).toMatchObject({type:"before-close",nonce,descriptor:frames[0].descriptor,address:frames[0].address,socketType:1,protocol:6,soError:0});
             expect(frames[2]).toEqual({type:"closed",nonce,descriptor:-1});
-        } catch (error) { throw new Error(`Private refusal holder cleanup failed; retained ${directory}: ${String(error)}`); }
-        refusalHolders.delete(stop);
+        } catch (error) { throw new Error(`Private failed-dial holder cleanup failed; retained ${directory}: ${String(error)}`); }
+        failedDialHolders.delete(stop);
         rmSync(directory, {recursive:true,force:true});
     };
-    refusalHolders.add(stop);
+    failedDialHolders.add(stop);
     const receipt = await ready;
     expect(receipt).toMatchObject({type:"ready",pid:child.pid,root:directory,nonce,phase:"bound",socketType:1,protocol:6,soError:0});
     expect(receipt.descriptor).toBeGreaterThanOrEqual(0);
@@ -120,13 +120,13 @@ afterEach(async () => {
     probe.spawn.mock.calls.forEach(call => normalizeNativeRuntimeCall(call));
     for (const socket of sockets) socket.destroy(); sockets.clear();
     await Promise.all([...servers].map(server => server.listening ? new Promise<void>(resolve => server.close(() => resolve())) : Promise.resolve())); servers.clear();
-    await Promise.all([...refusalHolders].map(stop => stop()));
+    await Promise.all([...failedDialHolders].map(stop => stop()));
     vi.restoreAllMocks(); vi.clearAllMocks();
 });
 it.each([false, true])("actual native Socket forwarding is bidirectional with fallback=%s", async fallback => {
     const received: Buffer[] = []; let remote!: net.Socket;
     const upstream = await listen(socket => { remote = socket; socket.on("data", chunk => { received.push(chunk); socket.write(Buffer.from("reply:" + chunk.toString())); }); });
-    const localPort = fallback ? await refusalPort() : upstream.port;
+    const localPort = fallback ? await failedDialPort() : upstream.port;
     const proxy = await listen(socket => { void proxyConnection(socket, localPort, fixtureHost, fixtureHost, upstream.port); });
     const client = track(net.createConnection({ host: fixtureHost, port: proxy.port }));
     await once(client, "connect"); const response = once(client, "data"); client.write(Buffer.from("raw"));
@@ -230,15 +230,20 @@ it.each([{status:127},{status:null,error:new Error("timeout")},{status:0,error:n
     ]);
 });
 it("both failed private allocated dials close the actual native client", async () => {
-    const local = await refusalPort(); const host = await refusalPort();
+    const local = await failedDialPort(); const host = await failedDialPort();
     const proxy = await listen(socket => { void proxyConnection(socket, local, fixtureHost, fixtureHost, host); });
     const client = track(net.createConnection({ host: fixtureHost, port: proxy.port })); const closed = once(client, "close");
     await closed; expect(client.destroyed).toBe(true);
-}, 5000);
-it("actual native dial returns the same connected Socket and preserves refusal error", async () => {
+}, 10000);
+it("actual native dial returns the same connected Socket and preserves the native failed-dial outcome", async () => {
     const upstream = await listen(() => {}); const socket = track(await tryConnect(fixtureHost, upstream.port));
     expect(socket).toBeInstanceOf(net.Socket); expect(socket.remotePort).toBe(upstream.port);
-    await expect(tryConnect(fixtureHost, await refusalPort())).rejects.toMatchObject({ code: "ECONNREFUSED" });
+    const port = await failedDialPort();
+    const pending = tryConnect(fixtureHost, port);
+    if (process.platform === "darwin") {
+        await expect(pending).rejects.toMatchObject({ message: `Connection timeout to ${fixtureHost}:${port}` });
+        await expect(pending).rejects.not.toHaveProperty("code");
+    } else await expect(pending).rejects.toMatchObject({ code: "ECONNREFUSED" });
 });
 it("public start/stop binds an allocated loopback port and refuses missing original metadata", async () => {
     expect(PROXY_PORT).toBe(19999); const server = await startProxy(0); servers.add(server);
