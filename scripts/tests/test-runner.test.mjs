@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -56,7 +56,8 @@ if (held) {
 `;
 
 function fixture(t, config = {}) {
-    const root = mkdtempSync(join(tmpdir(), "ccc test runner "));
+    // Child ESM entry points resolve symlinks, including macOS's /var alias.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ccc test runner ")));
     const scripts = join(root, "scripts");
     mkdirSync(scripts);
     copyFileSync(runnerSource, join(scripts, "test.mjs"));
@@ -340,9 +341,35 @@ require("node:module").syncBuiltinESMExports();
         assert.equal(typeof metadata.error, "string");
         assert.ok(existsSync(metadata.reportFile));
         if (mode === "directory") assert.deepEqual(readdirSync(latestPath), []);
-        else assert.equal(readFileSync(latestPath, "utf8"), previous);
+        else {
+            assert.match(result.stderr, /fixture latest publication failed/);
+            assert.equal(readFileSync(latestPath, "utf8"), previous);
+        }
     });
 }
+
+test("publication fault injection works through a temporary directory alias", t => {
+    const base = mkdtempSync(join(tmpdir(), "ccc-test-temp-alias-"));
+    t.after(() => rmSync(base, { recursive: true, force: true }));
+    const realTempDir = join(base, "real");
+    const aliasTempDir = join(base, "alias");
+    mkdirSync(realTempDir);
+    symlinkSync(realTempDir, aliasTempDir, process.platform === "win32" ? "junction" : "dir");
+    const env = { ...process.env, NODE_OPTIONS: "", TMPDIR: aliasTempDir, TMP: aliasTempDir, TEMP: aliasTempDir };
+    delete env.NODE_TEST_CONTEXT;
+    const result = spawnSync(process.execPath, [
+        "--test",
+        "--test-reporter=tap",
+        "--test-name-pattern=^repairs per-run metadata when latest publication fails with existing latest$",
+        fileURLToPath(import.meta.url),
+    ], {
+        env,
+        encoding: "utf8", windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024,
+    });
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /# pass 1(?:\r?\n|$)/);
+});
 
 test("fails before running children when result storage cannot be initialized", t => {
     const setup = fixture(t);
