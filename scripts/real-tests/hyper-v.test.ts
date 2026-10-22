@@ -408,6 +408,31 @@ describe("Hyper-V Level 3 launcher", () => {
         expect(output).not.toContain("ATTEST Hyper-V elevation gate");
     });
 
+    it.each([
+        ["port: 17373\nruntimePresent: true\n", "brokerReady: false\nbrokerRepairError: host-broker-incompatible\n"],
+        ["port: 17373\n", ""],
+        ["", "brokerReady: false\n"],
+        ["", ""],
+    ])("preserves both broker failure streams and distinguishes a normal exit from a spawn error (%#)", async (stdout, stderr) => {
+        let diagnostic = "";
+        const spawn = vi.fn(() => ({ status: 1, signal: null, stdout, stderr }));
+        const probe = vi.fn();
+
+        expect(await ensureHostBrokerReady("/repo", {
+            spawn,
+            probeHostBrokerProtocolImpl: probe,
+            writeError: (message: string) => { diagnostic += message; },
+        })).toBe(1);
+
+        for (const output of [stdout, stderr].filter(Boolean)) {
+            expect(diagnostic).toContain(`${output.trimEnd()}\n`);
+        }
+        expect(diagnostic).toContain("status=1; signal=none; error=none; timeoutMs=180000");
+        expect(diagnostic).not.toContain("no-output");
+        expect(spawn).toHaveBeenCalledTimes(1);
+        expect(probe).not.toHaveBeenCalled();
+    });
+
     it("bounds the complete Windows broker repair and preserves spawn failures after partial output", async () => {
         let diagnostic = "";
         const observedTimeouts: number[] = [];

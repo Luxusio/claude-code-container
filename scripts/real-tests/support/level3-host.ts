@@ -191,12 +191,13 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
             const processError = result.error instanceof Error
                 ? `${result.error.name}: ${result.error.message}`
                 : result.error ? String(result.error) : "";
-            const childOutput = String(result.stderr || result.stdout || "").trimEnd();
+            const childOutput = [stdout, String(result.stderr || "")]
+                .map(output => output.trimEnd()).filter(Boolean).join("\n");
             const processDiagnostic = [
                 "CCC host broker repair preflight failed",
                 `status=${result.status ?? "missing"}`,
                 `signal=${result.signal || "none"}`,
-                `error=${processError || "no-output"}`,
+                `error=${processError || "none"}`,
                 `timeoutMs=${repairTimeoutMs}`,
             ].join("; ");
             writeError(`${childOutput ? `${childOutput}\n` : ""}${processDiagnostic}\n`);
