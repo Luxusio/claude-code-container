@@ -14,8 +14,24 @@ Native leaves preserve their different result rules: tool/query/preparation and 
 
 The native adapter owns the fixed Docker/Claude program, ordered marker/forwarded environment, literal argument quoting, UTF-8/base64 framing, stdio and effect timeouts. The seven public shell builders retain private-root ownership/mode/link checks, descriptor and pinned-ID fencing, lock-backend admission, peer/token handling and final-token cleanup. These are necessary authority boundaries, separate from the removed callee/receiver/arity capture machinery.
 
-Behavior evidence comes from the remote-services-core, remote-sync-core and remote-services-facade suites, consumed remote-services-type-contracts, original public remote tests, and actual temporary-home remote-shell-native, remote-lifecycle-lock and remote-cache-identity suites. Tests exercise consequential observations, failures, literal arguments and ownership; they do not compare old/new source or freeze function names, getters or object shapes. Qualification includes a fresh build and compiled/extracted package entry checks; those checks establish only the artifact bindings they actually exercise.
+Behavior evidence comes from the remote-services-core, remote-sync-core and remote-services-facade suites, consumed remote-services-type-contracts, original public remote tests, and actual temporary-home remote-shell-native, remote-lifecycle-lock and remote-cache-identity suites. Tests exercise consequential observations, failures, literal arguments and ownership rather than comparing old/new source snapshots. Native expectations also pin required command arguments, timeout options and consequential getter admission. Qualification includes a fresh build and compiled/extracted package entry checks; those checks establish only the artifact bindings they actually exercise.
 
 Sync names currently use the local project identity, while reservation locks also include the remote user and host. Simultaneous use of one project against different remote authorities is not isolated: replacing or pausing the shared sync can affect the other session. Correcting that existing ownership limitation requires a separate policy change and explicit legacy-name handling.
 
 This refactor preserves the current remote Docker/Claude scope. Controlled tests do not certify live SSH/auth/network/daemon reliability or remote Podman support. Those native and wider architecture acceptance obligations remain separate parts of the full M00–M14 Goal.
+
+## Sync wait budget
+
+The wait uses a monotonic deadline, passes the remaining duration to each native
+Mutagen query and clips sleeps to that duration. An expired or sub-millisecond
+usable process budget starts no native query. A watching observation returned
+after the deadline cannot finish the wait or open interactive SSH. Missing or
+failed observations retain their existing precedence and opaque failure details.
+The public/default wait remains 120000 ms; session reuse and endpoint identity
+keep their existing policy. Budgeted queries use native hard termination so a
+SIGTERM-handling query cannot retain the synchronous wait past its budget.
+Unbudgeted query options remain unchanged. See [the wait contract](REQ__sync-wait-budget.md).
+
+## Known ceiling
+
+Known ceiling: Controlled qualification does not prove live SSH/Mutagen reliability or isolate shared sync names across remote authorities — upgrade when separately authorized.

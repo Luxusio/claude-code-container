@@ -32,8 +32,8 @@ to `sudo`.
    container created before this change is recreated once, using the same rules as
    earlier contract changes:
    - a stopped container is recreated on its next start;
-   - a running container with no active sessions is recreated;
-   - a running container with active sessions is deferred until it stops. Finish
+   - a running container is preserved and replacement deferred until it stops,
+     including when no active session claims are observed. Finish
      its CCC sessions, then run `ccc stop` from that workspace using the same
      profile and runtime to apply the change sooner.
 
@@ -59,8 +59,10 @@ to `sudo`.
 4. The new group applies to new sessions and execs. A process that was already
    running when the group was added, such as an open agent session, keeps its old
    groups until it is restarted.
-5. If the probe or the root exec fails, times out, or reports something
-   unexpected, ccc prints one warning and the session continues.
+5. Returned probe/root-exec failure or timeout statuses, or malformed probe
+   output, trigger at most one warning per module lifetime and allow the session
+   to continue. Exceptions thrown by dispatch, result getters, output coercion,
+   or the warning itself propagate unchanged; they are not converted to warnings.
 6. When container creation fails, the runtime's own error stays live on the
    terminal (image pull progress is not buffered), and ccc adds a hint: if that
    error mentions docker-init, tini or catatonit, install the runtime's init binary.
@@ -89,9 +91,9 @@ behavior. On older versions, remove the anonymous volumes by name instead.
 - Known ceiling: a running pre-init container that has active sessions is joined
   as-is and keeps `tail` as PID 1 until it stops; the deferral is announced once.
   Run `ccc stop` to recreate it.
-- Known ceiling: the call site in `src/index.ts` is pinned by a source-structure
-  test rather than an end-to-end setup run; the behavior is proven by the unit
-  tests of `ensureContainerManagerSocketAccess` and the runtime check.
+- Known ceiling: setup is bound through the container-exec application and
+  composition. Core/facade/type and Docker behavioral tests cover calls and
+  outcomes; they do not certify every host through end-to-end execution.
 
 - Known ceiling: `ccc remote` starts its container with `sleep infinity` and no
   init, so remote containers can still accumulate zombies.
@@ -104,3 +106,13 @@ behavior. On older versions, remove the anonymous volumes by name instead.
 - `docker exec <container> ps -eo stat | grep -c ^Z` stays at 0 after orphaned
   processes exit.
 - `docker exec <container> docker ps` works without `sudo`.
+
+## Interactive terminal capabilities
+
+TTY launches preserve TERM, COLORTERM, TERM_PROGRAM, TERM_PROGRAM_VERSION and
+COLORFGBG through literal runtime environment arguments. Explicit Linux container
+overrides are case-sensitive and remain authoritative. Recognized modern Windows
+terminals may supply xterm-256color/truecolor defaults when no explicit TERM
+exists. Non-TTY commands receive no extra terminal flags. Capability identifiers
+are bounded to 1024 UTF-16 code units and exclude C0/DEL controls; this keeps the
+small argument set bounded without forwarding unrelated host environment values.

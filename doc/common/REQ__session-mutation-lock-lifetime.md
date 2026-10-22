@@ -44,6 +44,28 @@ On Windows, a pathname stat may omit the device number even when an opened descr
 
 Native timeouts bound individual client operations; daemon work may continue after timeout. Preserve uncertainty during qualification.
 
+## Successor admission during stale reclamation
+A delayed reclaimer must never admit another protected operation while a displaced
+live or unobservable owner still operates. Token qualification before or after a
+rename alone is insufficient. Admission verifies the complete published current
+claim and preserves exclusion represented by surviving displaced records.
+Interrupted publication, stale/malformed recovery and release retain the original
+bounded waits, conservative owner policy and pinned-directory admission. Cleanup
+removes only this operation's qualified current or displaced record; it cannot
+replace or erase a successor. Preserve the existing record/filename compatibility.
+The actual three-contender interleaving is a required regression witness.
+
+Displaced ownership evidence moves one way from the canonical claim to a unique
+archive, then qualified removal. It is never restored. Complete claim publication
+and close precede archive-owner admission and final current-token qualification.
+A live, foreign or unobservable archived owner vetoes admission for the original
+bounded allowance. Lost candidates clean only their own displaced tokens and
+retry without renewing the allowance. Release attempts main first, then own
+archives; native read/identity uncertainty never grants malformed cleanup.
+Continuously preserved owner evidence may reside in an archive during a true
+race. Legacy live/unknown archives remain conservative; mixed older participants
+that ignore archive admission are outside the new mutual-exclusion guarantee.
+
 ## Session cleanup target stability
 
 One cleanup attempt captures its own claim path, project/profile, container ID and authorization generation before invoking project lookup or lifecycle callbacks. Shared-device cleanup, diagnostic reporting and native runtime binding cannot retarget that attempt. Before successful own-claim retirement, a target, claim, project/profile or authorization change (including revoke then regrant or an ID changed away and back) interrupts cleanup without stopping a replacement container or removing a replacement claim. Keep the interrupted session available for an explicitly authorized retry. A native stop reads the pinned target only while that captured authorization is still current. Failed stop retains the claim.

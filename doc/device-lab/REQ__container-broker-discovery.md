@@ -162,3 +162,42 @@ Low-level broker callers that do not supply this internal override retain
 their explicit `timeoutMs` probe budget. Neither probe setting shortens the
 default backend discovery RPC budget; an Appium request's remaining overall
 wait budget still bounds its identity check.
+
+# One publisher for an MCP-supervised broker runtime
+
+The MCP parent launches its real broker entry with the internal
+`--runtime-managed-by-parent` flag. Only that launch skips the child serve
+listener's runtime publication: the parent remains the sole publisher of the
+`managedBy: "device-lab-mcp"` record. Standalone serve without the flag still
+publishes its normal `managedBy: "ccc-host"` runtime. Host/port parsing, endpoint
+shape, protocol and public authentication do not change.
+
+Parent initial/final exact-record compare-and-swap, listener/start-token checks,
+successor preservation and identity-bound shutdown stay authoritative. The child
+must not overwrite either its parent's record or a concurrent successor. The flag
+changes record publication only; it does not authorize signaling or bypass
+ownership admission.
+
+Verify actual source and built broker entries, not only the fake entry fixture,
+through `src/__tests__/device-lab-broker.attach-cli.test.ts` and
+`src/__tests__/device-lab-mcp.broker.test.ts`. Cover standalone publication,
+parent-owned absent/existing records, initial/final CAS races, reuse, shutdown and
+unchanged successor bytes. Controlled child tests do not certify host service
+installation or device-provider operation.
+
+# Parent ownership, request lifetime and qualified child profile
+A healthy fully attested MCP-managed broker is reusable by host callers at its
+saved port, including omitted-port discovery. Reuse preserves the parent-owned
+runtime record; it never adopts that process as ccc-host. Unknown or conflicting
+records still refuse, and trusted command/listener/start-token checks remain.
+An accepted signed request's nonce remains reserved through the entire signed
+timestamp validity window, including the existing positive client clock-skew
+allowance. Timestamp checks and eviction use one captured current time. Replays
+remain rejected without changing the wire format or allowed clock-skew bounds.
+A broker provider child uses the authenticated registration's qualified profile.
+The native child overrides or clears inherited CCC_PROFILE without changing the
+parent environment. Equal device IDs in other profile stores grant no authority.
+Source and built cleanup qualification executes the matching lifecycle binding;
+Source API-worker cleanup alone does not qualify a built parent lifecycle.
+
+Healthy reuse qualification grants no automatic replacement authority over a matching MCP-managed child. Incompatible protocol or required-bind mismatch preserves the prior refusal to signal or replace that child. Its parent and any concurrently published successor runtime evidence remain intact; existing ccc-host recovery stays supported.

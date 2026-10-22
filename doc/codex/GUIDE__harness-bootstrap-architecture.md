@@ -29,9 +29,12 @@ the trust key separately and are not included in the digest. No command hooks,
 stale hash or disabled trust refuses ready.
 
 Only absent state prints installation progress and opens the original temporary
-scope. Application supplies exact pinned Git commands, compares fetched revision
-before checkout, invokes the native interpreter/installer with `--codex-only`
-and fresh home observation, then re-probes after the temporary scope closes.
+scope. Application calls five finite stages: initialize repository, fetch the pinned revision,
+observe the fetched revision, check out that revision and install Codex. It compares
+the observed revision before checkout and re-probes after the temporary scope
+closes. The native Python adapter owns Git/Python argv and `--codex-only`, retains
+the current installer home used by managed-Python recognition, and restores the
+interpreter using the existing policy and fixed `/usr/bin/python3` installer.
 Source and revision remain unchanged. No real plugin download/installation is
 permitted in portable verification.
 
