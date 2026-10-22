@@ -1,4 +1,5 @@
 import { spawnSync } from "child_process";
+import { terminalEnvironment } from "../domain/terminal-environment.js";
 import { basename, resolve } from "path";
 import type { ContainerExecPorts, ContainerExecReport, ContainerExecReadinessPorts, ContainerExecReplacementPorts, ContainerExecReplacementReason } from "../ports/container-exec.js";
 import { runContainerCommand } from "../container-command.js";
@@ -73,6 +74,7 @@ interface PreparedContainerExecCommand {
     prefix: string[];
     target: string;
     command: string[];
+    terminalEnvironment: string[];
     dispose(): void;
 }
 
@@ -222,6 +224,8 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
             return {
                 runtime: intent.runtime, runner: bindNativeRuntimeInvocation(getRuntimeInvocation()), prefix: ["exec", "-w", intent.workdir, "--env-file", file.path], target: intent.target,
                 command: intent.command.kind === "claude" ? [CLAUDE_BIN_PATH, ...intent.command.arguments] : [...intent.command.arguments],
+                terminalEnvironment: terminalEnvironment(process.env, process.platform, intent.environment)
+                    .flatMap(([key, value]) => ["-e", `${key}=${value}`]),
                 dispose: () => file.dispose(),
             };
         },
@@ -235,7 +239,7 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         launchCommand(prepared, interaction) {
             const command = interaction.codexRecovery ? buildCodexResumeRecoveryCommand(prepared.command) : prepared.command;
             return runContainerCommand(prepared.runtime,
-                [...prepared.prefix, ...(interaction.terminal ? ["-it"] : []), prepared.target, ...command], interaction.interactive, prepared.runner);
+                [...prepared.prefix, ...(interaction.terminal ? ["-it", ...prepared.terminalEnvironment] : []), prepared.target, ...command], interaction.interactive, prepared.runner);
         },
         disposeCommand: prepared => prepared.dispose(),
         reportConversationFiles(target, projectId) {

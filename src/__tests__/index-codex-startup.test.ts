@@ -389,6 +389,11 @@ it("public Claude startup verifies the final container and runs without Codex Ha
 });
 
 it.each([false, true])("native prepared command preserves literal arguments and adds TTY flags only when terminal=%s", async terminal => {
+    vi.stubEnv("TERM", "xterm-256color");
+    vi.stubEnv("COLORTERM", "truecolor");
+    vi.stubEnv("TERM_PROGRAM", "vscode");
+    vi.stubEnv("TERM_PROGRAM_VERSION", "fixture-version");
+    vi.stubEnv("COLORFGBG", "15;0");
     const ports = createNativeContainerExecPorts({ ensureDirectories: () => {}, ensureProjectTools: async () => {}, assetDirectory: "/fixture/assets", trustedCliPath: "/fixture/ccc" });
     const argumentsToCommand = ["printf", "argument with spaces", "$(never executed)", "a'\";`literal`"];
     const environment: Array<[string, string]> = [["DUPLICATE", "first"], ["DUPLICATE", "last"]];
@@ -397,7 +402,7 @@ it.each([false, true])("native prepared command preserves literal arguments and 
     try {
         expect(await ports.launchCommand(prepared, { interactive: true, terminal, codexRecovery: false })).toBe(17);
         expect(f.envEntries).toEqual(environment);
-        expect(f.command).toHaveBeenCalledExactlyOnceWith("podman", ["exec", "-w", "/project/repo-id", "--env-file", "/fixture/exec.env", ...(terminal ? ["-it"] : []), f.finalId, ...argumentsToCommand], true, expect.objectContaining({invocation: expect.objectContaining({version: 1}), spawnSync: expect.any(Function)}));
+        expect(f.command).toHaveBeenCalledExactlyOnceWith("podman", ["exec", "-w", "/project/repo-id", "--env-file", "/fixture/exec.env", ...(terminal ? ["-it", "-e", "TERM=xterm-256color", "-e", "COLORTERM=truecolor", "-e", "TERM_PROGRAM=vscode", "-e", "TERM_PROGRAM_VERSION=fixture-version", "-e", "COLORFGBG=15;0"] : []), f.finalId, ...argumentsToCommand], true, expect.objectContaining({invocation: expect.objectContaining({version: 1}), spawnSync: expect.any(Function)}));
         expect(f.events).not.toContain("unlink");
     } finally { ports.disposeCommand(prepared); }
     expect(f.events).toEqual(["unlink"]);
