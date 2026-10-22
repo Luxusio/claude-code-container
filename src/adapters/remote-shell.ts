@@ -16,9 +16,12 @@ export function shellEscapeArg(arg: string): string {
 const remoteScopeShell = `_ccc_admission_failure() {
     printf 'CCC remote descriptor admission failed: %s\\n' "$1" >&2 || true
 }
+_ccc_fd_stat() {
+    stat -c "$1" - 2>/dev/null || stat -f "$2" 2>/dev/null
+}
 _ccc_refusal_stat() {
     [ -n "\${_ccc_refusal_descriptor:-}" ] && [ -f "$_ccc_refusal_descriptor" ] && [ -O "$_ccc_refusal_descriptor" ] || return 1
-    _ccc_refusal_meta=$(stat -L -c '%d:%i:%a:%h:%s' "$_ccc_refusal_descriptor" 2>/dev/null || stat -L -f '%d:%i:%Lp:%l:%z' "$_ccc_refusal_descriptor" 2>/dev/null) || return 1
+    _ccc_refusal_meta=$(_ccc_fd_stat '%d:%i:%a:%h:%s' '%d:%i:%Lp:%l:%z' <&"$_ccc_refusal_fd") || return 1
     IFS=: read -r _ccc_refusal_device _ccc_refusal_inode _ccc_refusal_mode _ccc_refusal_links _ccc_refusal_size <<CCC_REFUSAL_META
 $_ccc_refusal_meta
 CCC_REFUSAL_META
@@ -36,13 +39,13 @@ _ccc_refusal_open() {
     set -C
     exec 5>"$_ccc_refusal_path"
     case "$_ccc_refusal_options" in (*C*) ;; (*) set +C ;; esac
-    if [ -f /dev/fd/5 ]; then _ccc_refusal_created=/dev/fd/5; elif [ -f /proc/self/fd/5 ]; then _ccc_refusal_created=/proc/self/fd/5; else _ccc_admission_failure refusal-created-fd; return 74; fi
-    _ccc_refusal_identity=$(stat -L -c %d:%i "$_ccc_refusal_created" 2>/dev/null || stat -L -f %d:%i "$_ccc_refusal_created" 2>/dev/null) || { _ccc_admission_failure refusal-created-fd-identity; return 74; }
+    if [ ! -f /dev/fd/5 ] && [ ! -f /proc/self/fd/5 ]; then _ccc_admission_failure refusal-created-fd; return 74; fi
+    _ccc_refusal_identity=$(_ccc_fd_stat %d:%i %d:%i <&5) || { _ccc_admission_failure refusal-created-fd-identity; return 74; }
     [ -f "$_ccc_refusal_path" ] && [ ! -L "$_ccc_refusal_path" ] && [ -O "$_ccc_refusal_path" ] || { _ccc_admission_failure refusal-created-file-private; return 74; }
     case "$_ccc_refusal_fd" in (4) exec 4<>"$_ccc_refusal_path" ;; (9) exec 9<>"$_ccc_refusal_path" ;; (*) return 74 ;; esac
     if [ -f "/dev/fd/$_ccc_refusal_fd" ]; then _ccc_refusal_prefix=/dev/fd; elif [ -f "/proc/self/fd/$_ccc_refusal_fd" ]; then _ccc_refusal_prefix=/proc/self/fd; else _ccc_admission_failure refusal-reopened-fd; return 74; fi
     _ccc_refusal_descriptor=$_ccc_refusal_prefix/$_ccc_refusal_fd
-    _ccc_refusal_open_meta=$(stat -L -c '%d:%i:%a:%h:%s' "$_ccc_refusal_descriptor" 2>/dev/null || stat -L -f '%d:%i:%Lp:%l:%z' "$_ccc_refusal_descriptor" 2>/dev/null) || { _ccc_admission_failure refusal-reopened-meta-read; return 74; }
+    _ccc_refusal_open_meta=$(_ccc_fd_stat '%d:%i:%a:%h:%s' '%d:%i:%Lp:%l:%z' <&"$_ccc_refusal_fd") || { _ccc_admission_failure refusal-reopened-meta-read; return 74; }
     [ "$_ccc_refusal_open_meta" = "$_ccc_refusal_identity:600:1:0" ] && [ ! -L "$_ccc_refusal_path" ] || { _ccc_admission_failure refusal-reopened-meta-match; return 74; }
     [ "$(stat -L -c %d:%i "$_ccc_refusal_path" 2>/dev/null || stat -L -f %d:%i "$_ccc_refusal_path" 2>/dev/null)" = "$_ccc_refusal_identity" ] || { _ccc_admission_failure refusal-created-path-identity; return 74; }
     rm "$_ccc_refusal_path" || { _ccc_admission_failure refusal-unlink; return 74; }
@@ -99,7 +102,13 @@ _ccc_scope_capture() {
     _ccc_scope_cancel_command=$_ccc_observed_command
     # Notify the owned worker before nested observations delay cancellation forwarding.
     kill -TERM "$_ccc_scope_pid" 2>/dev/null || true
-    kill -CONT "$_ccc_scope_pid" 2>/dev/null || true
+    _ccc_scope_resume_status=0
+    _ccc_scope_match "$_ccc_scope_cancel_root" signal || _ccc_scope_resume_status=$?
+    case "$_ccc_scope_resume_status" in
+        (0) kill -CONT "$_ccc_expected_pid" 2>/dev/null || true ;;
+        (1) ;;
+        (*) return 74 ;;
+    esac
     _ccc_scope_snapshot=$(trap '' HUP INT TERM; LC_ALL=C TZ=UTC /bin/ps -A -ww -o pid= -o ppid= 2>/dev/null) || return 74
     while IFS=' ' read -r _ccc_candidate_pid _ccc_candidate_parent _ccc_candidate_extra; do
         [ -n "$_ccc_candidate_pid$_ccc_candidate_parent$_ccc_candidate_extra" ] || continue
@@ -116,7 +125,9 @@ $_ccc_scope_snapshot
 CCC_SCOPE_CHILDREN
 }
 _ccc_scope_resume() {
-    _ccc_scope_match "$1" signal || return 74
+    _ccc_scope_resume_status=0
+    _ccc_scope_match "$1" signal || _ccc_scope_resume_status=$?
+    case "$_ccc_scope_resume_status" in (1) return 0 ;; (0) ;; (*) return 74 ;; esac
     case "$_ccc_observed_state" in (T*) kill -CONT "$_ccc_expected_pid" 2>/dev/null ;; (*) return 74 ;; esac
 }
 _ccc_scope_native() {
@@ -284,11 +295,11 @@ export function remoteLifecycleShell(containerName: string, body: string, lockWa
         "_ccc_assert_private \"$_ccc_runtime_path\" || { _ccc_admission_failure lifecycle-runtime-private; exit 74; }",
         "chmod 700 \"$_ccc_runtime_path\"",
         "eval 'exec 8<\"$_ccc_runtime_path\"'",
-        "if [ -d /dev/fd/8 ]; then _ccc_runtime_descriptor=/dev/fd/8; elif [ -d /proc/self/fd/8 ]; then _ccc_runtime_descriptor=/proc/self/fd/8; else eval 'exec 8<&-'; _ccc_admission_failure lifecycle-runtime-fd; exit 74; fi",
-        "_ccc_runtime_identity=$(_ccc_identity \"$_ccc_runtime_descriptor\") || { _ccc_admission_failure lifecycle-runtime-fd-identity; exit 74; }",
+        "if [ ! -d /dev/fd/8 ] && [ ! -d /proc/self/fd/8 ]; then eval 'exec 8<&-'; _ccc_admission_failure lifecycle-runtime-fd; exit 74; fi",
+        "_ccc_runtime_identity=$(_ccc_fd_stat %d:%i %d:%i <&8) || { _ccc_admission_failure lifecycle-runtime-fd-identity; exit 74; }",
         "cd -P \"$_ccc_runtime_path\" || { _ccc_admission_failure lifecycle-runtime-cd; exit 74; }",
         "[ \"$(_ccc_identity .)\" = \"$_ccc_runtime_identity\" ] || { _ccc_admission_failure lifecycle-runtime-cwd-identity; exit 74; }",
-        "_ccc_assert_runtime() { _ccc_assert_private \"$_ccc_runtime_path\" && [ \"$(_ccc_identity \"$_ccc_runtime_path\")\" = \"$_ccc_runtime_identity\" ] && [ \"$(_ccc_identity \"$_ccc_runtime_descriptor\")\" = \"$_ccc_runtime_identity\" ] && [ \"$(_ccc_identity .)\" = \"$_ccc_runtime_identity\" ]; }",
+        "_ccc_assert_runtime() { _ccc_assert_private \"$_ccc_runtime_path\" && [ \"$(_ccc_identity \"$_ccc_runtime_path\")\" = \"$_ccc_runtime_identity\" ] && [ \"$(_ccc_fd_stat %d:%i %d:%i <&8)\" = \"$_ccc_runtime_identity\" ] && [ \"$(_ccc_identity .)\" = \"$_ccc_runtime_identity\" ]; }",
         "_ccc_runtime=.",
         `_ccc_refusal_open .scope-$$-${token} 4 || exit 74`,
         `_ccc_lock=$_ccc_runtime/lifecycle-${key}.lock`,
@@ -468,21 +479,21 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         // seeks to zero; dd bounds concurrent growth and the trailer preserves errors.
         // Its cap includes the 16 KiB record, token and native exit status.
         "_ccc_bind_read() { LC_ALL=C; export LC_ALL",
-        "_ccc_bind_read_size=$(stat -L -c %s \"$1\" 2>/dev/null || stat -L -f %z \"$1\" 2>/dev/null) || return 1",
+        "_ccc_bind_read_size=$(_ccc_fd_stat %s %z <&\"${1##*/}\") || return 1",
         "case \"$_ccc_bind_read_size\" in ''|*[!0-9]*) return 1 ;; esac",
         "[ \"$_ccc_bind_read_size\" -le 16384 ] || return 1",
         "_ccc_bind_read_suffix=$(printf '\\nccc-tail-%s:0' \"$_ccc_bind_token\")",
         "_ccc_bind_read_value=$({ _ccc_bind_read_status=0; tail -c \"$_ccc_bind_read_size\" \"$1\" 2>/dev/null || _ccc_bind_read_status=$?; printf '\\nccc-tail-%s:%s' \"$_ccc_bind_token\" \"$_ccc_bind_read_status\"; } | dd bs=1 count=16440 2>/dev/null) || return 1",
         "case \"$_ccc_bind_read_value\" in *\"$_ccc_bind_read_suffix\") _ccc_bind_read_value=${_ccc_bind_read_value%\"$_ccc_bind_read_suffix\"} ;; *) return 1 ;; esac",
         "[ \"${#_ccc_bind_read_value}\" -eq \"$_ccc_bind_read_size\" ] || return 1",
-        "_ccc_bind_read_after=$(stat -L -c %s \"$1\" 2>/dev/null || stat -L -f %z \"$1\" 2>/dev/null) || return 1",
+        "_ccc_bind_read_after=$(_ccc_fd_stat %s %z <&\"${1##*/}\") || return 1",
         "[ \"$_ccc_bind_read_after\" = \"$_ccc_bind_read_size\" ] || return 1",
         "printf '%s' \"$_ccc_bind_read_value\"; }",
         "_ccc_bind_root=$HOME/.ccc",
-        "_ccc_bind_assert_root() { _ccc_bind_private_dir \"$HOME\" 022 && _ccc_bind_private_dir \"$_ccc_bind_root\" 022 && [ \"$(_ccc_bind_identity \"$_ccc_bind_root\")\" = \"$_ccc_bind_root_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_root_bound\")\" = \"$_ccc_bind_root_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_root_descriptor\")\" = \"$_ccc_bind_root_identity\" ]; }",
-        "_ccc_bind_assert_directory() { _ccc_bind_assert_root && _ccc_bind_private_dir \"$_ccc_bind_directory_path\" 077 && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_path\")\" = \"$_ccc_bind_directory_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_bound\")\" = \"$_ccc_bind_directory_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_descriptor\")\" = \"$_ccc_bind_directory_identity\" ]; }",
+        "_ccc_bind_assert_root() { _ccc_bind_private_dir \"$HOME\" 022 && _ccc_bind_private_dir \"$_ccc_bind_root\" 022 && [ \"$(_ccc_bind_identity \"$_ccc_bind_root\")\" = \"$_ccc_bind_root_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_root_bound\")\" = \"$_ccc_bind_root_identity\" ] && [ \"$(_ccc_fd_stat %d:%i %d:%i <&7)\" = \"$_ccc_bind_root_identity\" ]; }",
+        "_ccc_bind_assert_directory() { _ccc_bind_assert_root && _ccc_bind_private_dir \"$_ccc_bind_directory_path\" 077 && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_path\")\" = \"$_ccc_bind_directory_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_bound\")\" = \"$_ccc_bind_directory_identity\" ] && [ \"$(_ccc_fd_stat %d:%i %d:%i <&6)\" = \"$_ccc_bind_directory_identity\" ]; }",
         "_ccc_bind_no_archives() { for _ccc_bind_archive in \"$_ccc_bind_root_bound\"/codex-state.lock.*.stale \"$_ccc_bind_root_bound\"/codex-state.lock.*.release \"$_ccc_bind_root_bound\"/codex-state.lock.*.malformed; do [ ! -e \"$_ccc_bind_archive\" ] && [ ! -L \"$_ccc_bind_archive\" ] || return 1; done; }",
-        "_ccc_bind_claim_matches() { _ccc_bind_assert_root && _ccc_bind_private_file \"$1\" 16384 && [ \"$(_ccc_bind_identity \"$1\")\" = \"$_ccc_bind_claim_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_claim_bound\")\" = \"$_ccc_bind_claim_identity\" ] || return 1; _ccc_bind_claim_read=$(_ccc_bind_read \"$_ccc_bind_claim_bound\") || return 1; [ \"$_ccc_bind_claim_read\" = \"$_ccc_bind_record\" ] && _ccc_bind_private_file \"$1\" 16384 && [ \"$(_ccc_bind_identity \"$1\")\" = \"$_ccc_bind_claim_identity\" ]; }",
+        "_ccc_bind_claim_matches() { _ccc_bind_assert_root && _ccc_bind_private_file \"$1\" 16384 && [ \"$(_ccc_bind_identity \"$1\")\" = \"$_ccc_bind_claim_identity\" ] && [ \"$(_ccc_fd_stat %d:%i %d:%i <&5)\" = \"$_ccc_bind_claim_identity\" ] || return 1; _ccc_bind_claim_read=$(_ccc_bind_read \"$_ccc_bind_claim_bound\") || return 1; [ \"$_ccc_bind_claim_read\" = \"$_ccc_bind_record\" ] && _ccc_bind_private_file \"$1\" 16384 && [ \"$(_ccc_bind_identity \"$1\")\" = \"$_ccc_bind_claim_identity\" ]; }",
         // A losing publisher may remove only its captured, still single-link staging inode.
         // Native admission also protects displaced .release records; never delete a raced successor.
         "_ccc_bind_release() { [ \"$_ccc_bind_owned\" -eq 1 ] || [ \"$_ccc_bind_candidate_owned\" -eq 1 ] || return 0; _ccc_refusal_empty || _ccc_refuse; [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || return 74; _ccc_bind_release_status=0; if [ \"$_ccc_bind_candidate_owned\" -eq 1 ]; then _ccc_bind_candidate_owned=0; if _ccc_bind_claim_matches \"$_ccc_bind_candidate\"; then rm -f \"$_ccc_bind_candidate\" || _ccc_bind_release_status=74; fi; fi; if [ \"$_ccc_bind_owned\" -eq 1 ]; then _ccc_bind_owned=0; _ccc_bind_release_status=74; if _ccc_bind_claim_matches \"$_ccc_bind_lock\"; then _ccc_bind_release_path=$_ccc_bind_root_bound/codex-state.lock.${_ccc_bind_token%????????????????}.release; if [ ! -e \"$_ccc_bind_release_path\" ] && [ ! -L \"$_ccc_bind_release_path\" ] && mv \"$_ccc_bind_lock\" \"$_ccc_bind_release_path\"; then if _ccc_bind_claim_matches \"$_ccc_bind_release_path\" && rm -f \"$_ccc_bind_release_path\"; then _ccc_bind_release_status=0; fi; fi; fi; fi; eval 'exec 4<&- 5<&- 6<&- 7<&-' 2>/dev/null || true; return \"$_ccc_bind_release_status\"; }",
@@ -497,8 +508,7 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "_ccc_bind_private_dir \"$_ccc_bind_root\" 022 || { _ccc_admission_failure global-root-private; exit 74; }",
         "eval 'exec 7<\"$_ccc_bind_root\"'",
         "if [ -d /dev/fd/7 ]; then _ccc_bind_fd_prefix=/dev/fd; elif [ -d /proc/self/fd/7 ]; then _ccc_bind_fd_prefix=/proc/self/fd; else _ccc_admission_failure global-root-fd; exit 75; fi",
-        "_ccc_bind_root_descriptor=$_ccc_bind_fd_prefix/7",
-        "_ccc_bind_root_identity=$(_ccc_bind_identity \"$_ccc_bind_root_descriptor\") || { _ccc_admission_failure global-root-fd-identity; exit 74; }",
+        "_ccc_bind_root_identity=$(_ccc_fd_stat %d:%i %d:%i <&7) || { _ccc_admission_failure global-root-fd-identity; exit 74; }",
         "cd -P \"$_ccc_bind_root\" || { _ccc_admission_failure global-root-cd; exit 74; }",
         "[ \"$(_ccc_bind_identity .)\" = \"$_ccc_bind_root_identity\" ] || { _ccc_admission_failure global-root-cwd-identity; exit 74; }",
         "_ccc_bind_root_bound=.",
@@ -515,7 +525,7 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "_ccc_bind_private_file \"$_ccc_bind_candidate\" 16384 || exit 74",
         "eval 'exec 5<\"$_ccc_bind_candidate\"'",
         "_ccc_bind_claim_bound=$_ccc_bind_fd_prefix/5",
-        "_ccc_bind_claim_identity=$(_ccc_bind_identity \"$_ccc_bind_claim_bound\") || exit 74",
+        "_ccc_bind_claim_identity=$(_ccc_fd_stat %d:%i %d:%i <&5) || exit 74",
         "_ccc_bind_claim_matches \"$_ccc_bind_candidate\" && _ccc_bind_claim_matches \"$_ccc_bind_candidate\" || exit 75",
         "_ccc_bind_candidate_owned=1",
         "_ccc_bind_assert_root && _ccc_bind_no_archives || exit 74",
@@ -528,8 +538,7 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "if [ ! -e \"$_ccc_bind_directory_path\" ] && [ ! -L \"$_ccc_bind_directory_path\" ]; then mkdir \"$_ccc_bind_directory_path\" 2>/dev/null || true; fi",
         "_ccc_bind_private_dir \"$_ccc_bind_directory_path\" 077 || exit 74",
         "eval 'exec 6<\"$_ccc_bind_directory_path\"'",
-        "_ccc_bind_directory_descriptor=$_ccc_bind_fd_prefix/6",
-        "_ccc_bind_directory_identity=$(_ccc_bind_identity \"$_ccc_bind_directory_descriptor\") || exit 74",
+        "_ccc_bind_directory_identity=$(_ccc_fd_stat %d:%i %d:%i <&6) || exit 74",
         "_ccc_bind_directory_bound=$_ccc_bind_directory_path",
         "_ccc_bind_assert_directory && _ccc_bind_claim_matches \"$_ccc_bind_lock\" && _ccc_bind_no_archives || exit 74",
         // The parent keeps claim mutations in its pinned cwd. This child pins the
@@ -546,9 +555,9 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
             "_ccc_bind_private_file \"$_ccc_bind_marker\" 4096 || exit 74",
             "eval 'exec 4<\"$_ccc_bind_marker\"'",
             "_ccc_bind_marker_bound=$_ccc_bind_fd_prefix/4",
-            "_ccc_bind_marker_identity=$(_ccc_bind_identity \"$_ccc_bind_marker_bound\") || exit 74",
+            "_ccc_bind_marker_identity=$(_ccc_fd_stat %d:%i %d:%i <&4) || exit 74",
             "_ccc_bind_marker_record=$(_ccc_bind_read \"$_ccc_bind_marker_bound\") || exit 74",
-            "_ccc_bind_assert() { _ccc_bind_assert_directory && _ccc_bind_no_archives && _ccc_bind_claim_matches \"$_ccc_bind_lock\" && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker_bound\")\" = \"$_ccc_bind_marker_identity\" ] || return 1; _ccc_bind_marker_read=$(_ccc_bind_read \"$_ccc_bind_marker_bound\") || return 1; [ \"$_ccc_bind_marker_read\" = \"$_ccc_bind_marker_record\" ] && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ]; }",
+            "_ccc_bind_assert() { _ccc_bind_assert_directory && _ccc_bind_no_archives && _ccc_bind_claim_matches \"$_ccc_bind_lock\" && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ] && [ \"$(_ccc_fd_stat %d:%i %d:%i <&4)\" = \"$_ccc_bind_marker_identity\" ] || return 1; _ccc_bind_marker_read=$(_ccc_bind_read \"$_ccc_bind_marker_bound\") || return 1; [ \"$_ccc_bind_marker_read\" = \"$_ccc_bind_marker_record\" ] && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ]; }",
             "_ccc_bind_assert || exit 74",
             `_ccc_scope_run ${token} ${shellEscapeArg(body)} _ccc_scope_child_exit`,
             "_ccc_bind_assert || exit 74",

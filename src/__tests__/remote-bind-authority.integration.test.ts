@@ -68,9 +68,9 @@ function fixture() {
     return { home, root, lock, marker, effect, bin, env, run, prepare, start };
 }
 
-async function waitForFile(file: string): Promise<void> {
+async function waitForFile(file: string, content?: string): Promise<void> {
     const deadline = Date.now() + 3000;
-    while (!existsSync(file)) {
+    while (!existsSync(file) || (content !== undefined && !readFileSync(file, "utf8").includes(content))) {
         if (Date.now() >= deadline) throw new Error(`fixture did not publish ${file}`);
         await new Promise(resolve => setTimeout(resolve, 10));
     }
@@ -124,7 +124,10 @@ function installProcessProbe(f: ReturnType<typeof fixture>, mode: "admission" | 
         `  const native = match[3].startsWith(${JSON.stringify(process.execPath + " ")}) && match[3].includes(home + "/retained-native.cjs");`,
         '  const countFile = home + "/probe-count-" + pid; const count = native && fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, "utf8")) + 1 : 1;',
         '  if (native) fs.writeFileSync(countFile, String(count));',
-        '  if ((mode === "root-change" && pid === root) || (mode === "child-change" && native && count > 1)) output = output.replace(/^(\\s*(?:\\S+\\s+){7})\\d{4}/m, (_, prefix) => prefix + "1970");',
+        '  if ((mode === "root-change" && pid === root) || (mode === "child-change" && native && count > 1)) {',
+        '   output = output.replace(/^(\\s*(?:\\S+\\s+){7})\\d{4}/m, (_, prefix) => prefix + "1970");',
+        '   if (pid === root) fs.writeFileSync(home + "/changed-root-proof", "changed");',
+        '  }',
         ' }',
         '}',
         'process.stdout.write(output, () => process.stderr.write(result.stderr, () => process.exit(result.status ?? 1)));',
@@ -321,6 +324,70 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         expect(existsSync(f.lock)).toBe(false);
     });
 
+    it.each(["standalone", "nested"] as const)("uses %s BSD stdin metadata when descriptor paths expose synthetic identities", kind => {
+        const f = fixture(); f.prepare(); const name = "ccc-bsd-stdin-stat";
+        const lifecycle = join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`);
+        const nativeStat = spawnSync("/bin/sh", ["-c", "command -v stat"], { encoding: "utf8" }).stdout.trim();
+        const gnuStat = spawnSync(nativeStat, ["-c", "%d:%i", "-"], { input: "", encoding: "utf8" }).status === 0;
+        const stdinIdentity = `${shellEscapeArg(nativeStat)} ${gnuStat ? "-c %d:%i -" : "-f %d:%i"}`;
+        writeFileSync(join(f.bin, "stat"), [
+            "#!/bin/sh",
+            '_ccc_fixture_follow=',
+            'if [ "$1" = -L ]; then _ccc_fixture_follow=-L; shift; fi',
+            // Require the production BSD fallback even on a GNU fixture host.
+            'case "$1" in (-c) exit 1 ;; (-f) ;; (*) exit 96 ;; esac',
+            '_ccc_fixture_format=$2; shift 2',
+            'if [ "$#" = 0 ]; then',
+            ` ${stdinIdentity} >> "$HOME/stdin-identities" || exit 96`,
+            ' printf "%s\\n" "$_ccc_fixture_format" >> "$HOME/stdin-formats"',
+            'else',
+            ' case "$1" in (/dev/fd/*|/proc/self/fd/*)',
+            '  printf "%s\\n" "$1" >> "$HOME/descriptor-path-stats"',
+            '  printf "999999:999999\\n"; exit 0 ;; esac',
+            'fi',
+            ...(gnuStat ? [
+                'case "$_ccc_fixture_format" in',
+                ' (%d:%i) ;; (%Lp) _ccc_fixture_format=%a ;; (%z) _ccc_fixture_format=%s ;;',
+                ' (%Lp:%l:%z) _ccc_fixture_format=%a:%h:%s ;;',
+                ' (%d:%i:%Lp:%l:%z) _ccc_fixture_format=%d:%i:%a:%h:%s ;; (*) exit 96 ;; esac',
+                `if [ "$#" = 0 ]; then exec ${shellEscapeArg(nativeStat)} -c "$_ccc_fixture_format" -; fi`,
+                `exec ${shellEscapeArg(nativeStat)} ` + '${_ccc_fixture_follow:+"$_ccc_fixture_follow"} -c "$_ccc_fixture_format" "$@"',
+            ] : [
+                `exec ${shellEscapeArg(nativeStat)} ` + '${_ccc_fixture_follow:+"$_ccc_fixture_follow"} -f "$_ccc_fixture_format" "$@"',
+            ]),
+        ].join("\n"), { mode: 0o700 });
+        const body = [
+            'cat "$HOME/.ccc/codex-state.lock" > "$HOME/claim-snapshot"',
+            ...(kind === "nested" ? [`cat ${shellEscapeArg(lifecycle)} > "$HOME/lifecycle-snapshot"`] : []),
+            'IFS= read -r value; printf "%s" "$value"',
+        ].join("; ");
+        const global = remoteRuntimeBindAuthorityShell(body, kind === "nested");
+        const result = spawnSync("/bin/sh", ["-c", kind === "nested" ? remoteLifecycleShell(name, global) : global], {
+            env: f.env, input: "original-input\n", encoding: "utf8", timeout: 5000, killSignal: "SIGKILL",
+        });
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("original-input");
+        expect(JSON.parse(readFileSync(join(f.home, "claim-snapshot"), "utf8"))).toEqual({
+            token: expect.stringMatching(/^[a-f0-9]{32}$/), pid: result.pid,
+            host: hostname(), processIdentityStatus: "unavailable",
+        });
+        if (kind === "nested") expect(readFileSync(join(f.home, "lifecycle-snapshot"), "utf8"))
+            .toMatch(new RegExp(`^${result.pid} [a-f0-9]{32}\\n$`));
+        expect(readFileSync(f.marker, "utf8")).toBe("ccc-runtime-bind-authority:remote-incomplete:v1\n");
+        expect(statSync(f.marker).mode & 0o777).toBe(0o600);
+        const observed = readFileSync(join(f.home, "stdin-identities"), "utf8").trim().split("\n");
+        for (const path of [f.root, join(f.root, "runtime-bind-authority"), ...(kind === "nested" ? [join(f.root, "remote-runtime")] : [])]) {
+            const actual = statSync(path);
+            expect(observed).toContain(`${actual.dev}:${actual.ino}`);
+        }
+        expect(readFileSync(join(f.home, "stdin-formats"), "utf8")).toContain("%d:%i:%Lp:%l:%z\n");
+        expect(readFileSync(join(f.home, "stdin-formats"), "utf8")).toContain("%z\n");
+        expect(existsSync(join(f.home, "descriptor-path-stats"))).toBe(false);
+        expect(existsSync(f.lock)).toBe(false);
+        expect(existsSync(lifecycle)).toBe(false);
+    });
+
     it.each([
         ["standalone", "write"], ["standalone", "observation"],
         ["nested", "write"], ["nested", "observation"],
@@ -352,10 +419,12 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         const nativeStat = spawnSync("/bin/sh", ["-c", "command -v stat"], { encoding: "utf8" }).stdout.trim();
         writeFileSync(join(f.bin, "stat"), [
             "#!/bin/sh",
-            'case "$*" in */dev/fd/5|*/proc/self/fd/5)',
+            'case "$*" in "-c %d:%i -"|"-f %d:%i")',
             ' if [ ! -e "$HOME/channel-replaced" ]; then',
+            `  channel_identity=$(${shellEscapeArg(nativeStat)} -c %d:%i - 2>/dev/null || ${shellEscapeArg(nativeStat)} -f %d:%i 2>/dev/null) || exit 96`,
             '  for channel in "$HOME/.ccc"/.scope-* "$HOME/.ccc/remote-runtime"/.scope-*; do',
             '   [ -f "$channel" ] || continue',
+            `   [ "$(${shellEscapeArg(nativeStat)} -c %d:%i "$channel" 2>/dev/null || ${shellEscapeArg(nativeStat)} -f %d:%i "$channel" 2>/dev/null)" = "$channel_identity" ] || continue`,
             '   mv "$channel" "$channel.original"; : > "$channel"',
             '   printf "%s" "$channel" > "$HOME/channel-replaced"; break',
             '  done',
@@ -671,7 +740,8 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         const held = f.start(`exec 2> ${shellEscapeArg(signalLog)}; ${kind === "nested" ? remoteSessionReservationShell(name, "9".repeat(32), 60, global) : global}`);
         await waitForFile(join(f.home, "ready"));
         process.kill(held.child.pid!, signal);
-        expect((await held.completed).code).toBe(status);
+        const completed = await held.completed;
+        expect(completed.code, readFileSync(signalLog, "utf8")).toBe(status);
         writeFileSync(join(f.home, "continue"), "continue");
         await new Promise(resolve => setTimeout(resolve, 30));
         expect(existsSync(f.effect)).toBe(false);
@@ -706,6 +776,105 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         // This group was created detached by this fixture; terminate it after proving refusal.
         process.kill(-held.child.pid!, "SIGKILL");
         expect((await held.completed).signal).toBe("SIGKILL");
+    });
+
+    it("sends no CONT after TERM changes the root identity and retains its exact lifecycle claim", async () => {
+        const f = fixture(); const name = "ccc-root-changed-after-term";
+        const probe = installProcessProbe(f, "root-change");
+        const lifecycle = join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`);
+        const signals = join(f.home, "root-signals"); const diagnostic = join(f.home, "signal-diagnostic");
+        const native = join(f.home, "retained-native.cjs");
+        writeFileSync(signals, "", { mode: 0o600 });
+        writeFileSync(native, [
+            'const fs = require("node:fs");',
+            `fs.writeFileSync(${JSON.stringify(join(f.home, "ready"))}, "ready"); setInterval(() => {}, 1000);`,
+        ].join("\n"));
+        const captureSignals = [
+            "kill() {",
+            ' if [ "$#" = 2 ] && [ -f "$HOME/probe-root" ] && [ "$2" = "$(cat "$HOME/probe-root")" ]; then',
+            '  case "$1" in',
+            '   -TERM) command kill "$@" || return $?;',
+            '    printf "TERM\\n" >> "$HOME/root-signals"; printf changed > "$HOME/change-proof"; return 0 ;;',
+            // A possible stale resume is recorded without dispatching to a changed identity.
+            '   -CONT) if [ -e "$HOME/change-proof" ]; then printf "CONT\\n" >> "$HOME/root-signals"; return 0; fi ;;',
+            '  esac',
+            ' fi',
+            ' command kill "$@"',
+            "}",
+        ].join("\n");
+        const body = `${shellEscapeArg(process.execPath)} ${shellEscapeArg(native)}; printf late > ${shellEscapeArg(f.effect)}`;
+        const held = f.start(`${captureSignals}\nexec 2> ${shellEscapeArg(diagnostic)}; ${probe(remoteLifecycleShell(name, body))}`);
+        await waitForFile(join(f.home, "ready"));
+        const claim = readFileSync(lifecycle); const inode = lstatSync(lifecycle).ino;
+        process.kill(held.child.pid!, "SIGTERM");
+        await waitForFile(diagnostic, "cancellation ownership unavailable; retaining claims");
+
+        expect(existsSync(join(f.home, "changed-root-proof"))).toBe(true);
+        expect(readFileSync(signals, "utf8")).toBe("TERM\n");
+        expect(readFileSync(lifecycle)).toEqual(claim);
+        expect(lstatSync(lifecycle).ino).toBe(inode);
+        expect(existsSync(f.effect)).toBe(false);
+        // The inert child keeps the owned root available for exact post-TERM observation.
+        expect(held.child.exitCode).toBeNull();
+        process.kill(-held.child.pid!, "SIGKILL");
+        expect((await held.completed).signal).toBe("SIGKILL");
+    });
+
+    it("completes cancellation without CONT when the owned native child exits after TERM before resume", async () => {
+        const f = fixture(); const name = "ccc-native-absent-before-resume";
+        const lifecycle = join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`);
+        const signals = join(f.home, "native-signals"); const diagnostic = join(f.home, "signal-diagnostic");
+        const native = join(f.home, "exiting-native.cjs");
+        writeFileSync(signals, "", { mode: 0o600 });
+        writeFileSync(native, [
+            'const fs = require("node:fs");',
+            `fs.writeFileSync(${JSON.stringify(join(f.home, "native-pid"))}, String(process.pid));`,
+            `fs.writeFileSync(${JSON.stringify(join(f.home, "ready"))}, "ready"); setInterval(() => {}, 1000);`,
+        ].join("\n"));
+        const exitBeforeResume = [
+            "kill() {",
+            ' if [ "$#" = 2 ] && [ -f "$HOME/native-pid" ] && [ "$2" = "$(cat "$HOME/native-pid")" ]; then',
+            '  case "$1" in',
+            '   -TERM)',
+            '    _ccc_fixture_pid=$2',
+            '    _ccc_fixture_state=$(/bin/ps -p "$_ccc_fixture_pid" -o state= 2>/dev/null) || return 1',
+            '    case "$_ccc_fixture_state" in (*T*) ;; (*) printf running > "$HOME/fixture-error"; return 1 ;; esac',
+            '    command kill "$@" || return $?',
+            '    printf "TERM\\n" >> "$HOME/native-signals"',
+            // TERM remains queued while this exact admitted fixture child is stopped.
+            '    command kill -KILL "$_ccc_fixture_pid" || return $?',
+            '    _ccc_fixture_attempt=0',
+            '    while [ "$_ccc_fixture_attempt" -lt 100 ]; do',
+            '     if _ccc_fixture_state=$(LC_ALL=C /bin/ps -p "$_ccc_fixture_pid" -o state= 2>/dev/null); then',
+            '      case "$_ccc_fixture_state" in (*Z*) printf zombie > "$HOME/native-absent"; return 0 ;; esac',
+            '     else',
+            '      _ccc_fixture_absence=$(LC_ALL=C command kill -0 "$_ccc_fixture_pid" 2>&1) || true',
+            '      case "$_ccc_fixture_absence" in (*"No such process"*) printf absent > "$HOME/native-absent"; return 0 ;; esac',
+            '     fi',
+            '     _ccc_fixture_attempt=$((_ccc_fixture_attempt + 1)); sleep 0.01',
+            '    done',
+            '    printf unavailable > "$HOME/fixture-error"; return 1 ;;',
+            // Record any production resume attempt without signaling an absent PID.
+            '   -CONT) printf "CONT\\n" >> "$HOME/native-signals"; return 0 ;;',
+            '  esac',
+            ' fi',
+            ' command kill "$@"',
+            "}",
+        ].join("\n");
+        const body = `${shellEscapeArg(process.execPath)} ${shellEscapeArg(native)}; printf late > ${shellEscapeArg(f.effect)}`;
+        const held = f.start(`${exitBeforeResume}\nexec 2> ${shellEscapeArg(diagnostic)}; ${remoteLifecycleShell(name, body)}`);
+        await waitForFile(join(f.home, "ready"));
+        expect(existsSync(lifecycle)).toBe(true);
+        process.kill(held.child.pid!, "SIGTERM");
+        await waitForFile(join(f.home, "native-absent"));
+        const completed = await held.completed;
+
+        expect(existsSync(join(f.home, "fixture-error"))).toBe(false);
+        expect(completed.code, readFileSync(diagnostic, "utf8")).toBe(143);
+        expect(readFileSync(signals, "utf8")).toBe("TERM\n");
+        expect(existsSync(f.effect)).toBe(false);
+        expect(existsSync(lifecycle)).toBe(false);
+        expect(readFileSync(diagnostic, "utf8")).not.toContain("cancellation ownership unavailable");
     });
 
     it("does not signal a changed descendant identity and retains the lifecycle claim", async () => {
