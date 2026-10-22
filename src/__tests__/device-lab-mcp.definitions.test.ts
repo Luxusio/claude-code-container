@@ -377,7 +377,7 @@ describe("device-lab MCP backend definitions", () => {
         expect(inventory.isError).not.toBe(true);
         const available = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(available.discovery).toMatchObject({ available: false, missing: [missing] });
-        expect(available.hostVms).toMatchObject({ lazy: true, missing: ["macos-host"] });
+        expect(available.hostVms).toMatchObject({ lazy: true, missing: [missing] });
         expect(available.devices).toEqual([]);
 
         const start = await client.callTool({ name: "start", arguments: { deviceId: "macos-vm-missing-fixture" } });
