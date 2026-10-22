@@ -131,7 +131,7 @@ try {
     writeJson(metadataPath, record);
     announce(`Test output: ${logFile}`);
     announce(`Test metadata: ${metadataPath}`);
-    if (args.some(arg => /^--(?:reporters?|output-?file)(?:$|[=.])/i.test(arg))) {
+    if (args.some(arg => /^--(?:no-)?(?:reporters?|output-?file)(?:$|[=.])/i.test(arg))) {
         throw new Error("npm test manages --reporter and --outputFile to save results; use node scripts/run-vitest.mjs run for custom reporters.");
     }
     // A unique reporter avoids inheriting a custom config's JSON output options.

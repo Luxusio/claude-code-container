@@ -296,6 +296,8 @@ test("rejects managed reporter and output options before starting test children"
         ["--outputFile.json=elsewhere.json"], ["--outputFile.json", "elsewhere.json"],
         ["--output-file=elsewhere.json"], ["--output-file.json=elsewhere.json"],
         ["--output-file.json", "elsewhere.json"], ["--OUTPUT-FILE=elsewhere.json"],
+        ["--no-reporter"], ["--no-reporters"], ["--no-outputFile"],
+        ["--no-output-file.json"], ["--NO-REPORTER"],
     ]) {
         const result = setup.run(args);
         assert.notEqual(result.status, 0, JSON.stringify(args));
