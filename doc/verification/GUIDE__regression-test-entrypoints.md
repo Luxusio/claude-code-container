@@ -8,7 +8,7 @@
 
 ## Level 3 broker preflight failures
 
-`npm run test:level3` builds its artifacts, then verifies the host broker before starting provider tests. A failed preflight prints both stdout and stderr from the broker status command, followed by its exit status, signal, spawn error, and configured timeout. `error=none` means the child had no spawn error; `timeoutMs=180000` states the limit and does not mean a timeout occurred.
+`npm run test:level3` builds its artifacts, then verifies the host broker before starting provider tests. The `CCC host broker repair preflight failed` diagnostic preserves both available output streams from the broker status command, followed by its exit status, signal, spawn error, and configured timeout. Protocol mismatch and later attestation failures have separate diagnostics. `error=none` means the child had no spawn error; `timeoutMs=180000` states the limit and does not mean a timeout occurred.
 
 `host-broker-incompatible` with an unverified port owner can occur even when the broker protocol is compatible. Compare the host's `~/.ccc/devices/broker/runtime.json` process metadata, the actual listening PID and command, the broker's read-only HTTP `/status`, and the current checkout's broker entry paths. A broker from a global installation or another checkout can fail the exact entry-path check. Do not delete metadata or kill an unverified listener to bypass this failure. `ccc devices broker status --verbose` may automatically repair a verified broker; it is not a read-only probe.
 
