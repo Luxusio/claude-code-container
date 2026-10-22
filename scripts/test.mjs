@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, renameSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -9,6 +9,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const resultsRoot = join(repoRoot, "results", "tests");
 const args = process.argv.slice(2);
 let activeChild;
+let terminationTimer;
 let interrupted;
 let captureError;
 let logDescriptor;
@@ -23,6 +24,33 @@ function writeJson(path, value) {
     renameSync(temporary, path);
 }
 
+function signalChildTree(child, signal) {
+    try {
+        if (process.platform === "win32") {
+            const result = spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+                stdio: "ignore", windowsHide: true, timeout: 5000,
+            });
+            if (result.error || result.status !== 0) throw result.error ?? new Error(`taskkill exited ${result.status}`);
+        } else {
+            // Each stage owns a process group, including npm's shell and tests.
+            // Its leader may have exited while descendants still hold the pipes.
+            process.kill(-child.pid, signal);
+        }
+    } catch (error) {
+        if (error.code !== "ESRCH") {
+            captureError ??= error;
+            process.stderr.write(`Unable to stop test processes: ${errorMessage(error)}\n`);
+        }
+    }
+}
+
+function stopActiveChild(signal) {
+    const child = activeChild;
+    if (!child?.pid) return;
+    signalChildTree(child, signal);
+    terminationTimer ??= setTimeout(() => signalChildTree(child, "SIGKILL"), 1500);
+}
+
 function log(chunk) {
     if (captureError) return;
     try {
@@ -30,7 +58,7 @@ function log(chunk) {
     } catch (error) {
         captureError = error;
         process.stderr.write(`Unable to save test output: ${errorMessage(error)}\n`);
-        activeChild?.kill("SIGTERM");
+        stopActiveChild("SIGTERM");
     }
 }
 
@@ -48,6 +76,7 @@ async function run(executable, childArgs) {
             env: process.env,
             stdio: ["inherit", "pipe", "pipe"],
             windowsHide: true,
+            detached: process.platform !== "win32",
         });
         activeChild = child;
         child.stdout.on("data", log);
@@ -57,6 +86,8 @@ async function run(executable, childArgs) {
         child.stderr.pipe(process.stderr, { end: false });
         child.once("error", error => { spawnError = error; });
         child.once("close", (code, signal) => {
+            clearTimeout(terminationTimer);
+            terminationTimer = undefined;
             activeChild = undefined;
             resolve({ code: code ?? (signal ? signalExitCode(signal) : 1), signal, error: spawnError });
         });
@@ -66,7 +97,7 @@ async function run(executable, childArgs) {
 for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => {
         interrupted ??= signal;
-        activeChild?.kill(signal);
+        stopActiveChild(signal);
     });
 }
 
@@ -107,8 +138,8 @@ try {
     }
     const stages = [
         ["script-tests", npmCli ? process.execPath : "npm", npmCli ? [npmCli, "run", "test:scripts"] : ["run", "test:scripts"]],
-        ["vitest", process.execPath, [join(repoRoot, "scripts", "run-vitest.mjs"), "run", ...args,
-            "--reporter=default", "--reporter=json", `--outputFile.json=${reportPath}`]],
+        ["vitest", process.execPath, [join(repoRoot, "scripts", "run-vitest.mjs"), "run",
+            "--reporter=default", "--reporter=json", `--outputFile.json=${reportPath}`, ...args]],
     ];
     for (const [phase, executable, childArgs] of stages) {
         if (interrupted || captureError) break;
@@ -116,7 +147,7 @@ try {
         writeJson(metadataPath, record);
         const result = await run(executable, childArgs);
         exitCode = result.code;
-        record.signal = interrupted ?? result.signal;
+        record.signal = interrupted ?? (captureError ? null : result.signal);
         if (result.error) throw result.error;
         if (exitCode !== 0 || record.signal || captureError) break;
     }

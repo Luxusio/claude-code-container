@@ -30,7 +30,9 @@ if (phase === "scripts") {
 process.stdout.write(phase + " stdout\\n");
 process.stderr.write(phase + " stderr\\n");
 if (phase === "vitest") {
-    const reportArg = args.findLast(arg => arg.startsWith("--outputFile.json="));
+    const delimiter = args.indexOf("--");
+    const options = delimiter === -1 ? args : args.slice(0, delimiter);
+    const reportArg = options.findLast(arg => arg.startsWith("--outputFile.json="));
     if (reportArg) writeFileSync(reportArg.slice("--outputFile.json=".length), JSON.stringify({
         numPassedTests: config.vitestCode ? 0 : 1,
         numFailedTests: config.vitestCode ? 1 : 0,
@@ -61,7 +63,11 @@ function fixture(t, config = {}) {
     writeFileSync(join(scripts, "fake-npm.mjs"), 'process.env.FIXTURE_PHASE = "scripts"; await import("./fixture.mjs");\n');
     writeFileSync(join(scripts, "run-vitest.mjs"), 'process.env.FIXTURE_PHASE = "vitest"; await import("./fixture.mjs");\n');
     const active = new Set();
+    const descendantPids = new Set();
     t.after(async () => {
+        for (const pid of descendantPids) {
+            try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+        }
         for (const running of active) running.child.kill("SIGKILL");
         await Promise.allSettled([...active].map(running => running.completed));
         rmSync(root, { recursive: true, force: true });
@@ -122,7 +128,47 @@ function fixture(t, config = {}) {
         writeFileSync(preload, source);
         return { NODE_OPTIONS: `--require=${JSON.stringify(preload)}` };
     };
-    return { root, run, start, readJson, latest, fault };
+    return { root, run, start, readJson, latest, fault, ownPid: pid => descendantPids.add(pid) };
+}
+
+function captureFault(setup, rejectedText) {
+    return setup.fault(`
+const fs = require("node:fs");
+const originalOpen = fs.openSync;
+const originalWrite = fs.writeFileSync;
+const logDescriptors = new Set();
+fs.openSync = (path, ...args) => {
+    const descriptor = originalOpen(path, ...args);
+    if (String(path).endsWith("test.log")) logDescriptors.add(descriptor);
+    return descriptor;
+};
+fs.writeFileSync = (file, ...args) => {
+    if (logDescriptors.has(file) && String(args[0]).includes(${JSON.stringify(rejectedText)})) throw new Error("fixture capture write failed");
+    return originalWrite(file, ...args);
+};
+require("node:module").syncBuiltinESMExports();
+`);
+}
+
+function realNpmTree(setup) {
+    writeFileSync(join(setup.root, "package.json"), JSON.stringify({
+        type: "module", scripts: { "test:scripts": "node scripts/held.mjs" },
+    }));
+    writeFileSync(join(setup.root, "scripts", "held.mjs"), `
+import { readFileSync, writeFileSync } from "node:fs";
+const config = JSON.parse(readFileSync("fixture.json", "utf8"));
+writeFileSync("held.pid", String(process.pid));
+process.on("SIGTERM", () => {
+    writeFileSync("held-signaled", "SIGTERM");
+    if (!config.ignoreTerm) process.exit(0);
+});
+process.on("exit", () => writeFileSync("held-exited", "exited"));
+writeFileSync("held-ready", "ready");
+process.stdout.write("held tree output\\n");
+setInterval(() => {}, 1000);
+setTimeout(() => process.exit(92), 30_000);
+`);
+    return { npm_execpath: process.env.npm_execpath || "" };
 }
 
 async function waitFor(condition) {
@@ -147,7 +193,7 @@ test("captures both streams, complete trailing output, structured results, and f
     assert.equal(setup.readJson("initialized.json"), true);
     assert.deepEqual(setup.readJson("scripts-args.json"), ["run", "test:scripts"]);
     assert.deepEqual(setup.readJson("vitest-args.json"), [
-        "run", ...args, "--reporter=default", "--reporter=json", `--outputFile.json=${metadata.reportFile}`,
+        "run", "--reporter=default", "--reporter=json", `--outputFile.json=${metadata.reportFile}`, ...args,
     ]);
     assert.equal(metadata.reportFile, join(metadata.runDirectory, "vitest.json"));
     assert.equal(JSON.parse(readFileSync(metadata.reportFile, "utf8")).numPassedTests, 1);
@@ -159,6 +205,22 @@ test("captures both streams, complete trailing output, structured results, and f
         assert.ok(log.includes(`${phase} stderr\n`));
         assert.ok(log.includes("x".repeat(96 * 1024) + `${phase} trailing output\n`));
     }
+});
+
+test("keeps managed report options before a user-supplied option delimiter", t => {
+    const setup = fixture(t);
+    const args = ["src/tests/a file.test.ts", "--"];
+    const result = setup.run(args);
+    assert.equal(result.status, 0, result.stderr);
+    const metadata = setup.latest();
+    assert.equal(metadata.status, "passed");
+    assert.deepEqual(metadata.args, args);
+    const forwarded = setup.readJson("vitest-args.json");
+    const options = forwarded.slice(0, forwarded.indexOf("--"));
+    assert.ok(options.includes("--reporter=default"));
+    assert.ok(options.includes("--reporter=json"));
+    assert.ok(options.includes(`--outputFile.json=${metadata.reportFile}`));
+    assert.equal(JSON.parse(readFileSync(metadata.reportFile, "utf8")).numPassedTests, 1);
 });
 
 test("announces the run directory and streams output before script tests finish", async t => {
@@ -273,22 +335,7 @@ for (const { label, config, rejectedText, expectedCode } of [
     { label: "the failed final announcement", config: { vitestCode: 19 }, rejectedText: "Test results:", expectedCode: 19 },
 ]) test(`fails capture of ${label} and preserves an existing test failure code`, t => {
     const setup = fixture(t, config);
-    const env = setup.fault(`
-const fs = require("node:fs");
-const originalOpen = fs.openSync;
-const originalWrite = fs.writeFileSync;
-const logDescriptors = new Set();
-fs.openSync = (path, ...args) => {
-    const descriptor = originalOpen(path, ...args);
-    if (String(path).endsWith("test.log")) logDescriptors.add(descriptor);
-    return descriptor;
-};
-fs.writeFileSync = (file, ...args) => {
-    if (logDescriptors.has(file) && String(args[0]).includes(${JSON.stringify(rejectedText)})) throw new Error("fixture capture write failed");
-    return originalWrite(file, ...args);
-};
-require("node:module").syncBuiltinESMExports();
-`);
+    const env = captureFault(setup, rejectedText);
     const result = setup.run([], env);
     assert.equal(result.status, expectedCode, result.stderr);
     assert.match(result.stderr, /fixture capture write failed/);
@@ -297,6 +344,31 @@ require("node:module").syncBuiltinESMExports();
     assert.equal(metadata.exitCode, expectedCode);
     if (config.hold === "scripts") assert.equal(existsSync(join(setup.root, "vitest-args.json")), false);
 });
+
+for (const mode of ["interruption", "capture failure", "ignored SIGTERM"]) {
+    test(`stops the real npm shell descendant tree after ${mode}`, { skip: process.platform === "win32" }, async t => {
+        const setup = fixture(t, { ignoreTerm: mode === "ignored SIGTERM" });
+        const env = realNpmTree(setup);
+        if (mode === "capture failure") Object.assign(env, captureFault(setup, "held tree output"));
+        const running = setup.start([], env);
+        await waitFor(() => existsSync(join(setup.root, "held-ready")));
+        setup.ownPid(Number(readFileSync(join(setup.root, "held.pid"), "utf8")));
+        const stoppedAt = Date.now();
+        if (mode !== "capture failure") running.child.kill("SIGTERM");
+        const result = await running.completed;
+        assert.ok(Date.now() - stoppedAt < 5_000, "descendant tree did not stop within the escalation bound");
+        assert.notEqual(result.status, 0);
+        assert.equal(readFileSync(join(setup.root, "held-signaled"), "utf8"), "SIGTERM");
+        assert.equal(existsSync(join(setup.root, "held-exited")), mode !== "ignored SIGTERM");
+        assert.equal(existsSync(join(setup.root, "vitest-args.json")), false);
+        const metadata = setup.latest();
+        assert.equal(metadata.phase, "script-tests");
+        assert.equal(metadata.reportFile, null);
+        assert.equal(metadata.status, mode === "capture failure" ? "failed" : "interrupted");
+        assert.equal(metadata.signal, mode === "capture failure" ? null : "SIGTERM");
+        if (mode === "capture failure") assert.match(result.stderr, /fixture capture write failed/);
+    });
+}
 
 for (const [phase, signal] of [["scripts", "SIGTERM"], ["vitest", "SIGINT"]]) {
     test(`records ${signal} during ${phase} even when the child exits successfully`, { skip: process.platform === "win32" }, async t => {
