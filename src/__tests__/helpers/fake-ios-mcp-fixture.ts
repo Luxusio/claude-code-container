@@ -6,6 +6,7 @@ import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { createHash, randomUUID } from "crypto";
 import { pathToFileURL } from "url";
 import { inspectProcessIdentity, readProcessIdentity } from "@ccc/device-lab/providers/state/process-identity.mjs";
+import { waitForExpectedRuntimeExitAsync, type RuntimeExitObservation } from "@ccc/device-lab/device-lab/adapters/process/runtime-exit.js";
 import { tmpdir } from "os";
 import { join } from "path";
 import { installDefaultImplicitBroker, repoRoot, TIMEOUT } from "./device-lab-mcp-fixture.js";
@@ -24,6 +25,7 @@ type Identity = { pid: number; startToken: string; commandHash: string };
 type Observation = { status: string; liveness?: string };
 export interface FakeIosLifetimeEffects {
     inspect(identity: Identity, pid: number): Observation;
+    waitForExit(identity: Identity, timeoutMs: number): Promise<RuntimeExitObservation>;
     signal(pid: number, signal: NodeJS.Signals): void;
     beforeSignal?(pid: number): void;
     remove(path: string): void;
@@ -39,6 +41,7 @@ const nativeEffects: FakeIosLifetimeEffects = {
         }
         return inspectProcessIdentity(identity, pid);
     },
+    waitForExit: (identity, timeoutMs) => waitForExpectedRuntimeExitAsync(identity, timeoutMs),
     signal: (pid, signal) => { process.kill(pid, signal); },
     remove: path => rmSync(path, { recursive: true, force: true }),
 };
@@ -57,7 +60,6 @@ type Owner = {
 };
 const owners = new WeakMap<FakeIosMcpContext, Owner>();
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 // Native Windows identity hashes the unmodified command line produced by libuv.
 // Model only Node's fixed non-verbatim argv; never derive authority from a marker.
 function nodeInvocationHash(args: readonly string[]): string {
@@ -619,13 +621,14 @@ export async function cleanupFakeIosMcpContext(context: FakeIosMcpContext | unde
                 if (observation.status !== "match" || !contextMatches(context, owner) || !ownedRoots(owner) || !markersUnchanged() || !journalUnchanged()) throw new Error("runtime generation/marker changed before signal");
                 effects.signal(runtime.pid, signal);
                 const grace = signal === "SIGTERM" ? Math.min(deadline, Date.now() + 250) : deadline;
-                do {
-                    observation = effects.inspect(runtime.identity, runtime.pid);
-                    if (observation.status === "exited") break;
-                    if (observation.status !== "match") throw new Error(`runtime generation changed while joining: ${observation.status}; liveness=${observation.liveness ?? "unknown"}; currentStartToken=${observation.current?.startToken ?? "unavailable"}`);
-                    await delay(Math.min(20, Math.max(0, grace - Date.now())));
-                } while (Date.now() < grace);
-                if (observation.status === "exited") break;
+                const waitMs = grace - Date.now();
+                if (waitMs <= 0) throw new Error("aggregate teardown deadline");
+                // Exit observation does not require a zombie's command line to
+                // retain its live hash. It never authorizes a later signal.
+                const exited = await bounded(effects.waitForExit(runtime.identity, waitMs), grace);
+                if (Date.now() > grace) throw new Error("runtime exit observation exceeded teardown allowance");
+                if (exited === "ended") { observation = { status: "exited", liveness: "exited" }; break; }
+                if (exited !== "still-running") throw new Error("runtime exit observation unavailable");
             }
             if (observation.status !== "exited") throw new Error("runtime still live at teardown deadline");
         } catch (error) { verified = false; failures.push("runtime: " + String(error).slice(0, 512)); }

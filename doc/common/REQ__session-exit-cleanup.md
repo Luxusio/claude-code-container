@@ -42,6 +42,14 @@ POSIX PTY fixture must simulate a client enabling raw input and SGR mouse
 reporting before abrupt death, then compare actual input attributes and observe
 the disabling bytes before CCC hands control back. No real engine is needed.
 
+Compare configured attributes exactly while distinguishing kernel-maintained
+state. On Darwin, exclude only `PENDIN` from that equality: XNU sets this pending-input
+state when returning to canonical mode even when it was absent from the supplied
+attributes. Retain the raw difference for diagnostics and keep every other flag,
+control character and speed exact. Do not consume or flush input to force equality.
+The mouse-disabling assertions must still run. See [Apple's termios definition](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/termios.h#L248)
+and [canonical-mode transition](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/tty.c#L1313).
+
 Known ceiling: SIGKILL of CCC itself cannot run JavaScript cleanup. Missing or
 failed native terminal restoration remains best effort. Portable fixtures do
 not establish native Windows/macOS terminal execution or explain an engine

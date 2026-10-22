@@ -409,6 +409,12 @@ captured = bytearray()
 deadline = time.monotonic() + 7
 def flags(attributes):
     return {name: bool(attributes[3] & getattr(termios, name)) for name in ('ICANON', 'ECHO', 'ISIG')}
+def configured_attributes(attributes):
+    configured = list(attributes)
+    # XNU sets PENDIN when ICANON is restored; only this kernel state is excluded.
+    if sys.platform == 'darwin':
+        configured[3] &= ~termios.PENDIN
+    return configured
 def read_until(predicate):
     while not predicate(bytes(captured)):
         if time.monotonic() >= deadline:
@@ -439,7 +445,8 @@ try:
     outcome = json.loads(returned.splitlines()[0])
     after = termios.tcgetattr(slave)
     result = dict(outcome, before=flags(before), mutated=flags(mutated), after=flags(after),
-                  exactAttributesRestored=after == before, parentAliveAtObservation=parent.poll() is None,
+                  configuredAttributesRestored=configured_attributes(after) == configured_attributes(before),
+                  parentAliveAtObservation=parent.poll() is None,
                   attributeDifferences=[dict(field=field, before=repr(old), after=repr(new))
                       for field, old, new in zip(('iflag', 'oflag', 'cflag', 'lflag', 'ispeed', 'ospeed', 'cc'), before, after) if old != new],
                   bytesBeforeReturn=base64.b64encode(before_return).decode('ascii'))
@@ -461,7 +468,7 @@ print(json.dumps(result))
             const result = JSON.parse(run.stdout) as {
                 status: number; isRawBefore: boolean; isRawAtReturn: boolean;
                 before: Record<string, boolean>; mutated: Record<string, boolean>; after: Record<string, boolean>;
-                exactAttributesRestored: boolean; parentAliveAtObservation: boolean; bytesBeforeReturn: string;
+                configuredAttributesRestored: boolean; parentAliveAtObservation: boolean; bytesBeforeReturn: string;
                 attributeDifferences: Array<{ field: string; before: string; after: string }>;
             };
             expect(result.before).toEqual({ ICANON: true, ECHO: true, ISIG: true });
@@ -471,8 +478,8 @@ print(json.dumps(result))
             expect(result.isRawBefore).toBe(false);
             expect(result.isRawAtReturn).toBe(false);
             expect(result.after).toEqual(result.before);
-            expect(result.exactAttributesRestored, JSON.stringify(result.attributeDifferences)).toBe(true);
             expectTerminalRestored(Buffer.from(result.bytesBeforeReturn, "base64").toString("utf8"));
+            expect(result.configuredAttributesRestored, JSON.stringify(result.attributeDifferences)).toBe(true);
         } finally { rmSync(directory, { recursive: true, force: true }); }
     }, 15000);
 });

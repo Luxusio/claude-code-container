@@ -24,6 +24,10 @@ The Codex bootstrap fixtures require Python 3.11 or later with `tomllib`. Set `C
 
 Mock the adapter exports currently called by the server. Old facade exports do not intercept lexical calls inside the extracted adapter. Preserve current lock self-contention, deadline, catalog-validation and incomplete-history contracts when updating fixtures. An unknown observation authorizes no mutation.
 
+After an authenticated signal, join a fixture's saved process incarnation through the existing bounded native exit observer. An exiting Darwin process can have a changed displayed command; keep full identity and marker/journal/root validation before every signal, and accept removal only from positive exit evidence. Diagnostic exit messages alone do not prove completion.
+
+Fake-timer drivers must allow real asynchronous native observations to complete and continue advancing timers scheduled afterward, within a separate bounded real-time wait. A single `runAllTimersAsync` is insufficient when native `ps` finishes later. For terminal attributes, follow the narrowly defined Darwin kernel-state distinction in [session exit cleanup](../common/REQ__session-exit-cleanup.md#interactive-terminal-restoration); preserve every configured attribute and raw diagnostics without reading or flushing terminal input.
+
 Do not assume a fixed localhost port is closed. Unit refusal cases inject their owned socket error; native forwarding cases keep a private bound, non-listening allocation until all dials finish. Keep the negative native check separate from the unit error-forwarding assertion.
 
 Use the [descriptor root requirements](../remote/REQ__descriptor-root-portability.md) for remote lifecycle and bind tests. macOS directory descriptors are not Linux `/proc` namespaces; a portable implementation must retain each admitted root and its cleanup ownership.

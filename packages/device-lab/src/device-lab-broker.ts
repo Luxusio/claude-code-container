@@ -8930,11 +8930,31 @@ export function defaultProviderCommandRunner(command: ProviderCommand, options: 
             if (!remaining) break;
             Atomics.wait(admission, 0, 4, remaining);
         }
-        return terminateBrokerSpawnedProcessTree(Atomics.load(control, 2), {
-            expectedIdentity: providerProcessIdentityFromShared(control, identityTransport),
+        const pid = Atomics.load(control, 2);
+        const expectedIdentity = providerProcessIdentityFromShared(control, identityTransport);
+        const fallback = terminateBrokerSpawnedProcessTree(pid, {
+            expectedIdentity,
             requireIdentity: true,
             remainingMs: () => allowance.remainingMs(allowance.fallbackDeadlineAt),
         });
+        if (fallback.ok || !expectedIdentity || expectedIdentity.pid !== pid) return fallback;
+        // Cancellation can finish qualified Worker cleanup while the parent
+        // observes identity and attempts its own fallback.
+        while (allowance.remainingMs(allowance.fallbackDeadlineAt)) {
+            const state = Atomics.load(control, 0);
+            if (state === 1) {
+                try {
+                    const published = providerWorkerExecution(control, transport).cleanup;
+                    if (published?.ok === true && published.pid === pid
+                        && published.platform === process.platform && published.signal === "SIGKILL"
+                        && (published.attempted === true || (published.attempted === false && published.stale === true))
+                        && allowance.remainingMs(allowance.fallbackDeadlineAt)) return published;
+                } catch { /* Retain the failed fallback when transport is invalid. */ }
+                return fallback;
+            }
+            Atomics.wait(control, 0, state, allowance.remainingMs(allowance.fallbackDeadlineAt));
+        }
+        return fallback;
     };
     const wrapperExpired = (execution: Partial<ProviderCommandResult> = { status: null, stdout: "", stderr: "" }) => {
         cancelProviderWorker(admission, worker);

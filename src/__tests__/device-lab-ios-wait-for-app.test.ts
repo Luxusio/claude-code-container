@@ -1,4 +1,5 @@
 import { spawnSync } from "child_process";
+import { readFile } from "node:fs/promises";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
@@ -38,11 +39,19 @@ const result = (status: number | null, stdout = "", stderr = "", extra = {}) => 
 const failed = () => result(2, "", "simulator unavailable");
 const isPgrep = (args: string[]) => args[3] === "pgrep";
 async function finish<T>(pending: Promise<T>) {
-    await vi.runAllTimersAsync();
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    // waitUntil yields through real timers while native observations can schedule more fake timers.
+    await vi.waitUntil(async () => {
+        await vi.runAllTimersAsync();
+        return settled;
+    }, { timeout: 5000, interval: 1 });
     return pending;
 }
 const wait = (timeoutMs = 1) => finish(waitForIosApp("/fixture/xcrun", "SIM-UDID", bundleId, timeoutMs, 50));
-const call = (name: string, args: Record<string, unknown>) => finish(fixture.handlers[1]({ params: { name, arguments: args } }));
+// Exercise native asynchronous completion before the real provider's fake-timer pause on every host.
+const call = (name: string, args: Record<string, unknown>) => finish(readFile(new URL(import.meta.url))
+    .then(() => fixture.handlers[1]({ params: { name, arguments: args } })));
 const args = { deviceId: "ios-observation-fixture", appId: bundleId, timeoutMs: 1, intervalMs: 50, implicitBroker: false };
 
 beforeAll(async () => { await startServer(); });

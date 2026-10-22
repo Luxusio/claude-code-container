@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync, symlinkSync, unlinkSync, mkdte
 import { join } from "path";
 import { tmpdir } from "os";
 import { inspectProcessIdentity } from "@ccc/device-lab/providers/state/process-identity.mjs";
+import { waitForExpectedRuntimeExitAsync } from "@ccc/device-lab/device-lab/adapters/process/runtime-exit.js";
 import {
     cleanupFakeIosMcpContext, createFakeIosMcpContext, fakeIosFixtureDiagnostics,
     joinFakeIosFixtureChild, observeFakeIosFixtureAllocation, TIMEOUT, type FakeIosMcpContext, type FakeIosLifetimeEffects,
@@ -47,6 +48,7 @@ function controls(overrides: Partial<FakeIosLifetimeEffects> = {}) {
     const attempts = { signal: 0, remove: 0 };
     const effects: FakeIosLifetimeEffects = {
         inspect: (identity, pid) => inspectProcessIdentity(identity, pid),
+        waitForExit: (identity, timeoutMs) => waitForExpectedRuntimeExitAsync(identity, timeoutMs),
         signal: () => { attempts.signal++; throw new Error("negative signal attempted"); },
         remove: () => { attempts.remove++; throw new Error("negative removal attempted"); },
         ...overrides,
@@ -88,6 +90,65 @@ describe("fake iOS fixture owned lifetime (actual portable Node service)", () =>
         await cleanupFakeIosMcpContext(value); await terminal;
         expect(existsSync(value.homeDir)).toBe(false); expect(existsSync(value.binDir)).toBe(false);
         contexts.splice(contexts.indexOf(value), 1);
+    });
+    it("joins independent native exit after post-signal command identity becomes mismatched", { timeout: TIMEOUT }, async () => {
+        const value = await context(), running = await appium(value);
+        await until(() => fakeIosFixtureDiagnostics(value).includes('"phase":"listening"'));
+        const expected = JSON.parse(readFileSync(running.marker, "utf8")).identity;
+        const signals: NodeJS.Signals[] = [], removals: string[] = [];
+        let signaled = false, waited = false;
+        const fenced = controls({
+            inspect: (identity, pid) => signaled
+                ? { status: "mismatch", liveness: "alive", current: { ...identity, commandHash: "0".repeat(64) } }
+                : inspectProcessIdentity(identity, pid),
+            signal: (pid, signal) => { expect(pid).toBe(running.child.pid); signals.push(signal); process.kill(pid, signal); signaled = true; },
+            waitForExit: async (identity, timeoutMs) => {
+                expect(identity).toEqual(expected); expect(timeoutMs).toBeGreaterThan(0); expect(timeoutMs).toBeLessThanOrEqual(250);
+                const result = await waitForExpectedRuntimeExitAsync(identity, timeoutMs);
+                waited = result === "ended"; return result;
+            },
+            remove: path => { expect(waited).toBe(true); removals.push(path); rmSync(path, { recursive: true, force: true }); },
+        });
+        await cleanupFakeIosMcpContext(value, { effects: fenced.effects });
+        expect(signals).toEqual(["SIGTERM"]); expect(removals).toEqual([value.homeDir, value.binDir]);
+        contexts.splice(contexts.indexOf(value), 1);
+    });
+    it("retains allocations when exit observation is unavailable despite its exit diagnostic", { timeout: TIMEOUT }, async () => {
+        const value = await context(), running = await appium(value);
+        await until(() => fakeIosFixtureDiagnostics(value).includes('"phase":"listening"'));
+        const signals: NodeJS.Signals[] = [];
+        const fenced = controls({
+            signal: (pid, signal) => { expect(pid).toBe(running.child.pid); signals.push(signal); process.kill(pid, signal); },
+            waitForExit: async (identity, timeoutMs) => {
+                expect(await waitForExpectedRuntimeExitAsync(identity, timeoutMs)).toBe("ended");
+                await until(() => fakeIosFixtureDiagnostics(value).includes('"phase":"exit"'));
+                return "unavailable";
+            },
+        });
+        const close = vi.spyOn(value.client, "close").mockRejectedValue(new Error("primary close fault"));
+        try {
+            const failure = await cleanupFakeIosMcpContext(value, { effects: fenced.effects }).catch(error => error);
+            expect(failure).toBeInstanceOf(Error);
+            expect(failure.message).toContain("client-close: Error: primary close fault");
+            expect(failure.message).toContain("runtime exit observation unavailable");
+        } finally { close.mockRestore(); }
+        expect(signals).toEqual(["SIGTERM"]); expect(fenced.attempts.remove).toBe(0);
+        expect(fakeIosFixtureDiagnostics(value)).toContain('"phase":"exit"');
+        expect(existsSync(value.homeDir)).toBe(true); expect(existsSync(value.binDir)).toBe(true);
+    });
+    it("refuses a successor identity before escalating an unconfirmed runtime exit", { timeout: TIMEOUT }, async () => {
+        const value = await context(), running = await appium(value);
+        await until(() => fakeIosFixtureDiagnostics(value).includes('"phase":"listening"'));
+        const signals: NodeJS.Signals[] = [];
+        let changed = false;
+        const fenced = controls({
+            inspect: (identity, pid) => changed ? { status: "mismatch", liveness: "alive" } : inspectProcessIdentity(identity, pid),
+            signal: (pid, signal) => { expect(pid).toBe(running.child.pid); signals.push(signal); },
+            waitForExit: async () => { changed = true; return "still-running"; },
+        });
+        await expect(cleanupFakeIosMcpContext(value, { effects: fenced.effects })).rejects.toThrow("runtime generation/marker changed before signal");
+        expect(signals).toEqual(["SIGTERM"]); expect(fenced.attempts.remove).toBe(0);
+        expect(existsSync(value.homeDir)).toBe(true); expect(running.child.exitCode).toBeNull();
     });
     it("captures failed-listen code from an exactly owned busy listener", { timeout: TIMEOUT }, async () => {
         const value = await context(), listener = createServer();

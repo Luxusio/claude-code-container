@@ -1239,9 +1239,8 @@ describe('asynchronous broker fallback process-tree cleanup', () => {
         } finally {observation.release({status: 'match'}); await execution;}
     });
 
-    it.runIf(process.platform !== 'win32').each([false, true])('waits for late Worker cleanup evidence after unavailable parent identity and qualifies its captured pid (mismatch=%s)', async mismatch => {
-        const expected = {pid: 7029, startToken: 'linux:100', commandHash: 'e'.repeat(64)};
-        workerFixture.replacement = [
+    function lateCleanupWorkerScript(expected: {pid: number; startToken: string; commandHash: string}) {
+        return [
             "const {workerData, parentPort} = require('node:worker_threads');",
             "const control = new Int32Array(workerData.shared, 0, 4);",
             "const identity = Buffer.from(JSON.stringify(" + JSON.stringify(expected) + "));",
@@ -1252,14 +1251,19 @@ describe('asynchronous broker fallback process-tree cleanup', () => {
             "Atomics.store(new Int32Array(workerData.admissionShared, 0, 5), 4, failure.length);",
             "parentPort.on('message', message => {",
             "    if (message?.fixture !== 'publish-cleanup') return;",
-            "    const result = Buffer.from(JSON.stringify({status: null, stdout: '', stderr: '',",
+            "    const result = Buffer.from(message.malformed ? '{invalid' : JSON.stringify({status: null, stdout: '', stderr: '',",
             "        error: 'late-secondary-worker-error', timedOut: true,",
-            "        cleanup: {attempted: true, ok: true, pid: message.pid, platform: process.platform, signal: 'SIGKILL'}}));",
+            "        cleanup: message.cleanup || {attempted: true, ok: true, pid: message.pid, platform: process.platform, signal: 'SIGKILL'}}));",
             "    new Uint8Array(workerData.shared, 16).set(result);",
             "    Atomics.store(control, 1, result.length); Atomics.store(control, 0, 1); Atomics.notify(control, 0);",
             "    parentPort.postMessage({done: true});",
             "});",
         ].join('\n');
+    }
+
+    it.runIf(process.platform !== 'win32').each([false, true])('waits for late Worker cleanup evidence after unavailable parent identity and qualifies its captured pid (mismatch=%s)', async mismatch => {
+        const expected = {pid: 7029, startToken: 'linux:100', commandHash: 'e'.repeat(64)};
+        workerFixture.replacement = lateCleanupWorkerScript(expected);
         const observation = brokerNativeGate<{status: string}>();
         let observations = 0, settled = false;
         backendNative.inspect = (identity, pid) => {
@@ -1296,5 +1300,50 @@ describe('asynchronous broker fallback process-tree cleanup', () => {
             publish(expected.pid);
             await execution;
         }
+    });
+
+    it.runIf(process.platform !== 'win32').each([false, true].flatMap(asynchronous => [
+        'success', 'stale', 'wrong-pid', 'wrong-platform', 'wrong-signal', 'invalid-attempted', 'malformed', 'expired',
+    ].map(evidence => ({asynchronous, evidence}))))('qualifies same Worker evidence after parent EPERM ($evidence, async=$asynchronous)', async ({asynchronous, evidence}) => {
+        const expected = {pid: 7030, startToken: 'linux:101', commandHash: 'f'.repeat(64)};
+        workerFixture.replacement = lateCleanupWorkerScript(expected);
+        backendNative.inspect = (identity, pid) => {
+            expect(identity).toEqual(expected);
+            expect(pid).toBe(expected.pid);
+            return {status: 'match'};
+        };
+        let expired = false;
+        const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+            const control = new Int32Array(workerFixture.data!.shared, 0, 4);
+            expect(Atomics.load(control, 0)).not.toBe(1);
+            workerFixture.workers.at(-1)!.postMessage({fixture: 'publish-cleanup', malformed: evidence === 'malformed', cleanup: {
+                attempted: evidence !== 'stale' && evidence !== 'invalid-attempted',
+                ok: true,
+                ...(evidence === 'stale' ? {stale: true} : {}),
+                pid: evidence === 'wrong-pid' ? expected.pid + 1 : expected.pid,
+                platform: evidence === 'wrong-platform' ? 'win32' : process.platform,
+                signal: evidence === 'wrong-signal' ? 'SIGTERM' : 'SIGKILL',
+            }});
+            if (evidence === 'expired') {
+                Atomics.wait(control, 0, 0, 2000);
+                expect(Atomics.load(control, 0)).toBe(1);
+                expired = true;
+            }
+            throw Object.assign(new Error('kill EPERM'), {code: 'EPERM'});
+        });
+        const command = {mode: 'exec' as const, provider: 'late-worker-cleanup-eperm', executable: process.execPath, args: []};
+        const parentDeadlineAt = performance.now() + 3000;
+        const options = {timeoutMs: 2000, wrapperTimeoutMs: 500, cleanupGraceMs: 50, outputLimit: 64,
+            remainingMs: () => expired ? 0 : Math.max(0, parentDeadlineAt - performance.now())};
+        const result = asynchronous
+            ? await defaultProviderCommandRunnerAsync(command, options)
+            : defaultProviderCommandRunner(command, options);
+        const accepted = evidence === 'success' || evidence === 'stale';
+        expect(result.error).toBe('native-primary-before-wrapper-expiry; device-lab provider wrapper timed out after 500ms');
+        expect(result).toMatchObject({status: null, outputLimitExceeded: true, timedOut: false,
+            cleanup: {pid: expected.pid, platform: process.platform, signal: 'SIGKILL', ok: accepted}});
+        if (accepted) expect(result.cleanup).toMatchObject({attempted: evidence === 'success', ...(evidence === 'stale' ? {stale: true} : {})});
+        else expect(result.cleanup).toMatchObject({attempted: true, error: 'kill EPERM'});
+        expect(kill).toHaveBeenCalledExactlyOnceWith(-expected.pid, 'SIGKILL');
     });
 });
