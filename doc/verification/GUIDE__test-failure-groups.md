@@ -1,6 +1,6 @@
 # Diagnose test failures by shared cause
 
-Use the saved `vitest.json` and `test.log` described in [test results](GUIDE__test-results.md). Count failed assertions and failed files separately: Vitest's JSON suite counters also include nested suites. Retain the original report and latest metadata while running focused verification directly through Vitest.
+Use the saved `vitest.json` and `test.log` described in [test results](GUIDE__test-results.md). Count failed assertions and failed files separately: Vitest's JSON suite counters also include nested suites. During local diagnosis, retain the original report and per-run metadata and run focused verification directly through Vitest to leave the latest pointer untouched. The later host acceptance commands below intentionally publish a new latest pointer; the original run directory and its metadata remain available.
 
 ## Temporary paths and child environments
 
@@ -34,7 +34,7 @@ Run changed owners or original failing-name filters through the root Vitest conf
 
 An analysis inventory such as ignored `results/tests/failure-analysis-<date>.json` maps original assertions to common causes. Candidate classifications are not a post-fix result. Keep unresolved process-group errors, lifetime identity changes and PTY differences visible until the corresponding host run supplies evidence. Record exact focused commands and the tested commit alongside the new output.
 
-Run the fixture base and invocation regressions without a broad build:
+For host acceptance after local diagnosis, run the fixture base and invocation regressions without a broad build:
 
 ```sh
 CCC_E2E_SKIP_BUILD=1 npm test -- \
