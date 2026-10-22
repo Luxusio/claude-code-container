@@ -15,3 +15,5 @@ Known ceiling: macOS native acceptance remains pending host results — upgrade 
 Known ceiling: Darwin process cleanup/lifetime acceptance remains pending — upgrade when focused native host results identify the failing observation.
 
 Known ceiling: Darwin native acceptance remains pending host output — upgrade when the Mac focused owner results are supplied.
+
+Known ceiling: Native Darwin acceptance remains unverified — upgrade when the Mac host runs these four focused owners.

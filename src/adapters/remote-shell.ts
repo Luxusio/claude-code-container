@@ -212,7 +212,18 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "_ccc_bind_private_file() { [ -f \"$1\" ] && [ ! -L \"$1\" ] && [ -O \"$1\" ] || return 1; _ccc_bind_meta=$(stat -c '%a:%h:%s' \"$1\" 2>/dev/null || stat -f '%Lp:%l:%z' \"$1\" 2>/dev/null) || return 1; case \"$_ccc_bind_meta\" in ''|*[!0-9:]*|:*|*::*) return 1 ;; esac; _ccc_bind_mode=${_ccc_bind_meta%%:*}; _ccc_bind_rest=${_ccc_bind_meta#*:}; _ccc_bind_links=${_ccc_bind_rest%%:*}; _ccc_bind_size=${_ccc_bind_rest#*:}; [ $((0$_ccc_bind_mode & 077)) -eq 0 ] && [ \"$_ccc_bind_links\" -eq 1 ] && [ \"$_ccc_bind_size\" -le \"$2\" ]; }",
         // BSD fdesc reopening shares the original file offset. An exact-size tail
         // seeks to zero; dd bounds concurrent growth and the trailer preserves errors.
-        "_ccc_bind_read() { _ccc_bind_read_size=$(stat -L -c %s \"$1\" 2>/dev/null || stat -L -f %z \"$1\" 2>/dev/null) || return 1; case \"$_ccc_bind_read_size\" in ''|*[!0-9]*) return 1 ;; esac; [ \"$_ccc_bind_read_size\" -le 16384 ] || return 1; _ccc_bind_read_suffix=$(printf '\\nccc-tail-%s:0' \"$_ccc_bind_token\"); _ccc_bind_read_value=$({ _ccc_bind_read_status=0; tail -c \"$_ccc_bind_read_size\" \"$1\" 2>/dev/null || _ccc_bind_read_status=$?; printf '\\nccc-tail-%s:%s' \"$_ccc_bind_token\" \"$_ccc_bind_read_status\"; } | dd bs=1 count=16440 2>/dev/null) || return 1; case \"$_ccc_bind_read_value\" in *\"$_ccc_bind_read_suffix\") _ccc_bind_read_value=${_ccc_bind_read_value%\"$_ccc_bind_read_suffix\"} ;; *) return 1 ;; esac; _ccc_bind_read_after=$(stat -L -c %s \"$1\" 2>/dev/null || stat -L -f %z \"$1\" 2>/dev/null) || return 1; [ \"$_ccc_bind_read_after\" = \"$_ccc_bind_read_size\" ] || return 1; printf '%s' \"$_ccc_bind_read_value\"; }",
+        // Its cap includes the 16 KiB record, token and native exit status.
+        "_ccc_bind_read() { LC_ALL=C; export LC_ALL",
+        "_ccc_bind_read_size=$(stat -L -c %s \"$1\" 2>/dev/null || stat -L -f %z \"$1\" 2>/dev/null) || return 1",
+        "case \"$_ccc_bind_read_size\" in ''|*[!0-9]*) return 1 ;; esac",
+        "[ \"$_ccc_bind_read_size\" -le 16384 ] || return 1",
+        "_ccc_bind_read_suffix=$(printf '\\nccc-tail-%s:0' \"$_ccc_bind_token\")",
+        "_ccc_bind_read_value=$({ _ccc_bind_read_status=0; tail -c \"$_ccc_bind_read_size\" \"$1\" 2>/dev/null || _ccc_bind_read_status=$?; printf '\\nccc-tail-%s:%s' \"$_ccc_bind_token\" \"$_ccc_bind_read_status\"; } | dd bs=1 count=16440 2>/dev/null) || return 1",
+        "case \"$_ccc_bind_read_value\" in *\"$_ccc_bind_read_suffix\") _ccc_bind_read_value=${_ccc_bind_read_value%\"$_ccc_bind_read_suffix\"} ;; *) return 1 ;; esac",
+        "[ \"${#_ccc_bind_read_value}\" -eq \"$_ccc_bind_read_size\" ] || return 1",
+        "_ccc_bind_read_after=$(stat -L -c %s \"$1\" 2>/dev/null || stat -L -f %z \"$1\" 2>/dev/null) || return 1",
+        "[ \"$_ccc_bind_read_after\" = \"$_ccc_bind_read_size\" ] || return 1",
+        "printf '%s' \"$_ccc_bind_read_value\"; }",
         "_ccc_bind_root=$HOME/.ccc",
         "_ccc_bind_assert_root() { _ccc_bind_private_dir \"$HOME\" 022 && _ccc_bind_private_dir \"$_ccc_bind_root\" 022 && [ \"$(_ccc_bind_identity \"$_ccc_bind_root\")\" = \"$_ccc_bind_root_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_root_bound\")\" = \"$_ccc_bind_root_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_root_descriptor\")\" = \"$_ccc_bind_root_identity\" ]; }",
         "_ccc_bind_assert_directory() { _ccc_bind_assert_root && _ccc_bind_private_dir \"$_ccc_bind_directory_path\" 077 && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_path\")\" = \"$_ccc_bind_directory_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_bound\")\" = \"$_ccc_bind_directory_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_descriptor\")\" = \"$_ccc_bind_directory_identity\" ]; }",
@@ -266,6 +277,8 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "_ccc_bind_directory_identity=$(_ccc_bind_identity \"$_ccc_bind_directory_descriptor\") || exit 74",
         "_ccc_bind_directory_bound=$_ccc_bind_directory_path",
         "_ccc_bind_assert_directory && _ccc_bind_claim_matches \"$_ccc_bind_lock\" && _ccc_bind_no_archives || exit 74",
+        // The parent keeps claim mutations in its pinned cwd. This child pins the
+        // authority directory; the root pathname below is only used for validation.
         "( cd -P \"$_ccc_bind_directory_path\" || exit 74",
         "[ \"$(_ccc_bind_identity .)\" = \"$_ccc_bind_directory_identity\" ] || exit 74",
         "_ccc_bind_root_bound=$_ccc_bind_root",

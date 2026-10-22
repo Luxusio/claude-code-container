@@ -376,6 +376,22 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         expect(existsSync(f.marker)).toBe(true);
     });
 
+    it.each(["failed", "short", "oversized"])("refuses a %s bounded marker read before native effects", kind => {
+        const f = fixture(); f.prepare();
+        const nativeTail = spawnSync("/bin/sh", ["-c", "command -v tail"], { env: f.env, encoding: "utf8" }).stdout.trim();
+        const output = kind === "oversized" ? "x".repeat(5000) : "short";
+        writeFileSync(join(f.bin, "tail"), [
+            "#!/bin/sh",
+            'case "$3" in */4)',
+            ` printf '%s' ${shellEscapeArg(output)}; exit ${kind === "failed" ? 7 : 0} ;; esac`,
+            `exec ${shellEscapeArg(nativeTail)} "$@"`,
+        ].join("\n"), { mode: 0o700 });
+        const result = f.run(remoteRuntimeBindAuthorityShell(`printf changed > ${shellEscapeArg(f.effect)}`));
+        expect(result.status, result.stderr).toBe(74);
+        expect(existsSync(f.effect)).toBe(false);
+        expect(existsSync(f.lock)).toBe(false);
+    });
+
     it("retains the incomplete barrier when its exact owned shell is killed before release", async () => {
         const f = fixture(); const home = f.prepare();
         const held = f.start(remoteRuntimeBindAuthorityShell(waitBody(f.home)));
