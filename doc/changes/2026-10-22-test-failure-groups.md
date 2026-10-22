@@ -35,3 +35,5 @@ Known ceiling: Linux verifies the recovery contract, not the historical Darwin i
 Known ceiling: Darwin acceptance remains pending — confirm with focused host results.
 
 Known ceiling: Linux confirms fixture isolation; the historical Mac semantic cause remains unproved — upgrade when actual host verification is available.
+
+Known ceiling: Mac exit74 원인은 아직 미확정. 다음 일반 `npm test` 로그에서 새 진단 단계로 확인해야 함. Bash3 파서 수정은 소스 기반 검증이며 Mac 실행 확인은 대기.
