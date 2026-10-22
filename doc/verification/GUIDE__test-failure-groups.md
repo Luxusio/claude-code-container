@@ -1,0 +1,72 @@
+# Diagnose test failures by shared cause
+
+Use the saved `vitest.json` and `test.log` described in [test results](GUIDE__test-results.md). Count failed assertions and failed files separately: Vitest's JSON suite counters also include nested suites. Retain the original report and latest metadata while running focused verification directly through Vitest.
+
+## Temporary paths and child environments
+
+The root unit configuration canonicalizes the existing temporary-directory base before fixture modules load. On macOS, `/var` and `/tmp` are system aliases; using their lexical spelling can cause private-path and Git ownership checks to reject a fixture before its intended behavior executes. Normalize the fixture base, then deliberately create any linked files or ancestors inside that owned root. Keep production symlink and ownership rejection intact.
+
+MCP stdio transport inherits only a finite environment. The fixture's home environment must explicitly provide `TMPDIR`, `TMP` and `TEMP` pointing to a created, canonical private directory beneath its owned home. Setting only the parent Vitest environment does not cover generated child programs. Close owned runtimes before removing their temporary roots.
+
+Representative owners are `test-temp-root`, `helpers/device-lab-test-environment`, `device-lab-file-policy`, `worktree`, Hyper-V image preparation and the MCP transfer/recording fixtures. Use a private symlinked temp base to reproduce the mechanism on Linux; this portable check does not replace native Mac acceptance.
+
+## Invocation, native tools and platform fixtures
+
+An ESM main-entry guard must compare the actual invoked file with its own module. Canonical unit temp roots must not hide this source behavior: retain explicit symlink invocation and import-only regressions in the installer and installed MCP diagnostic owners.
+
+Native process observations must use the admitted system executable and exact captured PID, command and start token. A private provider PATH must not make Darwin `ps` or `lsof` disappear. Fixtures that prohibit arbitrary commands may admit narrowly matched observations of their own PID; they must continue rejecting other process commands.
+
+Generated Ubuntu container programs require their actual GNU prerequisites. Guard only cases executing those Linux-specific branches. Keep portable filesystem, layout and diagnostic assertions active on macOS. Other native fixtures must select their tested host platform explicitly, use an available interpreter with the required standard library, and arrange the expected runtime authority and mounted credentials. A missing native prerequisite is an explicit skip or error, never a successful assertion.
+
+The Codex bootstrap fixtures require Python 3.11 or later with `tomllib`. Set `CCC_TEST_PYTHON` to a suitable executable when automatic discovery cannot find it. Missing default prerequisites produce an explicit narrow skip; an explicitly configured unsuitable interpreter is an error. This selects a host test prerequisite and does not change the container's fixed Python contract.
+
+## Current contracts and deterministic observations
+
+Mock the adapter exports currently called by the server. Old facade exports do not intercept lexical calls inside the extracted adapter. Preserve current lock self-contention, deadline, catalog-validation and incomplete-history contracts when updating fixtures. An unknown observation authorizes no mutation.
+
+Do not assume a fixed localhost port is closed. Unit refusal cases inject their owned socket error; native forwarding cases keep a private bound, non-listening allocation until all dials finish. Keep the negative native check separate from the unit error-forwarding assertion.
+
+Use the [descriptor root requirements](../remote/REQ__descriptor-root-portability.md) for remote lifecycle and bind tests. macOS directory descriptors are not Linux `/proc` namespaces; a portable implementation must retain each admitted root and its cleanup ownership.
+
+## Focused evidence and host follow-up
+
+Run changed owners or original failing-name filters through the root Vitest configuration. Do not run `test:level3` to verify a fixture or a pure broker observation change. Distribution tests must use the changed source's minimal private emit or bundle; a stale shared `dist` tree is not evidence for a source correction.
+
+An analysis inventory such as ignored `results/tests/failure-analysis-<date>.json` maps original assertions to common causes. Candidate classifications are not a post-fix result. Keep unresolved process-group errors, lifetime identity changes and PTY differences visible until the corresponding host run supplies evidence. Record exact focused commands and the tested commit alongside the new output.
+
+Run the fixture base and invocation regressions without a broad build:
+
+```sh
+CCC_E2E_SKIP_BUILD=1 npm test -- \
+  src/__tests__/test-temp-root.test.ts \
+  src/__tests__/helpers/device-lab-test-environment.test.ts \
+  src/__tests__/device-lab-file-policy.test.ts \
+  src/__tests__/install-global.test.ts \
+  src/__tests__/installed-mcp-diagnostic.test.ts --maxWorkers=2
+```
+
+Qualify receiving-host lifecycle and bind authority on the host being tested:
+
+```sh
+CCC_E2E_SKIP_BUILD=1 npm test -- \
+  src/__tests__/architecture/remote-shell-native.test.ts \
+  src/__tests__/remote-lifecycle-lock.integration.test.ts \
+  src/__tests__/remote-bind-authority.integration.test.ts \
+  src/__tests__/remote-cache-identity.integration.test.ts --maxWorkers=2
+```
+
+Collect unresolved Mac lifetime, process-group and terminal evidence separately:
+
+```sh
+CCC_E2E_SKIP_BUILD=1 npm test -- \
+  src/__tests__/fake-ios-fixture-lifetime.test.ts \
+  src/__tests__/device-lab-broker.process-tree.test.ts \
+  src/__tests__/container-command.test.ts \
+  src/__tests__/device-lab-ios-wait-for-app.test.ts --maxWorkers=2
+```
+
+These commands retain the small Node prelude and save a new per-run log and JSON report. They do not execute the full Vitest suite or the Level 3 provider suite. Some distribution owners consume previously built artifacts; use the current source bundle cases for invocation checks, or build only the required artifact when verifying its installed form. For a Linux container sharing Mac `node_modules`, use an isolated matching Linux native executable/binding through `ESBUILD_BINARY_PATH` and `NODE_PATH`; do not overwrite the host dependency tree. These machine-specific paths are verification environment inputs, not repository defaults.
+
+## Known ceiling
+
+Portable Linux evidence does not certify Darwin descriptor operations, native process proof, PTY restoration or process cleanup. The original Mac failure inventory remains pending post-fix host evidence; see the [change evidence limits](../changes/2026-10-22-test-failure-groups.md#known-ceiling).
