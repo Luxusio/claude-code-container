@@ -323,6 +323,22 @@ describe.skipIf(process.platform === "win32")("failure-preserving native Unix pu
 
 // These process fixtures use POSIX executable shims and exercise Unix payloads.
 describe.skipIf(process.platform === "win32")("source global installer", () => {
+    it.each(["ancestor", "entry"] as const)("runs the private installer through a symlinked %s", aliasKind => {
+        const f = fixture();
+        const alias = join(f.root, "installer alias");
+        symlinkSync(join(f.root, "scripts", aliasKind === "entry" ? "install.js" : ""), alias,
+            aliasKind === "entry" ? "file" : "dir");
+        const entry = aliasKind === "entry" ? alias : join(alias, "install.js");
+        const result = spawnSync(process.execPath, [entry, "--skip-image"], {
+            encoding: "utf8", timeout: 10_000,
+            env: { ...process.env, PATH: join(f.root, "commands"), CCC_RUNTIME: "", FIXTURE_LOG: join(f.root, "calls") },
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain("CLI installed.");
+        expect(f.calls()).toBe("npm run build\n");
+        expect(existsSync(join(f.installDir, "ccc-dist", "dist", "index.js"))).toBe(true);
+    });
+
     it("builds and installs a runnable private CLI with zero runtime calls using --skip-image", () => {
         const f = fixture();
         const result = f.run(["--skip-image"], { CCC_RUNTIME: "docker" });
@@ -523,10 +539,16 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
         expect(existsSync(join(f.installDir, "ccc-dist"))).toBe(false);
     });
 
-    it("does not install or build on module import", () => {
+    it.each(["absent", "missing", "unrelated"] as const)("does not install or build on module import with an %s argv entry", mode => {
         const f = fixture();
-        const result = spawnSync(process.execPath, ["--input-type=module", "-e", `import(${JSON.stringify(join(f.root, "scripts/install.js"))})`], { encoding: "utf8" });
-        expect(result.status).toBe(0);
+        const unrelated = join(f.root, "unrelated.mjs");
+        writeFileSync(unrelated, "// unrelated entry\n");
+        const argv = mode === "absent" ? "undefined" : JSON.stringify(mode === "missing" ? join(f.root, "missing.mjs") : unrelated);
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e",
+            `process.argv[1]=${argv};process.argv[2]='--skip-image';await import(${JSON.stringify(pathToFileURL(join(f.root, "scripts/install.js")).href)});`],
+        { encoding: "utf8", env: { ...process.env, PATH: join(f.root, "commands"), FIXTURE_LOG: join(f.root, "calls") } });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("");
         expect(f.calls()).toBe("");
         expect(existsSync(join(f.installDir, "ccc"))).toBe(false);
     });

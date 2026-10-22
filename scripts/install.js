@@ -336,9 +336,17 @@ export function unixWrapperContent(targetDir) {
     return `#!/bin/sh\nexec ${quotedPaths[0]} ${quotedPaths[1]} "$@"\n`;
 }
 
-const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
-const modulePath = fileURLToPath(import.meta.url);
-if (invokedPath && (isWindows ? invokedPath.toLowerCase() === modulePath.toLowerCase() : invokedPath === modulePath)) {
+// Node resolves the module URL through symlinks, including macOS /var aliases.
+// Compare the same filesystem identity without dispatching an imported module.
+let directEntry = false;
+try {
+    if (process.argv[1]) {
+        const invokedPath = realpathSync(process.argv[1]);
+        const modulePath = realpathSync(fileURLToPath(import.meta.url));
+        directEntry = isWindows ? invokedPath.toLowerCase() === modulePath.toLowerCase() : invokedPath === modulePath;
+    }
+} catch { /* A missing argv entry cannot name this module. */ }
+if (directEntry) {
     const args = process.argv.slice(2);
     if (args.includes("--uninstall") || args.includes("-u")) {
         installerApplication().uninstall();

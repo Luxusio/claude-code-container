@@ -31,6 +31,10 @@ Verification must execute the real bundle and default admin route in a private
 materialized payload without development modules, check the protocol-call
 allowlist and confirm cleanup after failed initialization and stalled calls.
 
+## Direct invocation identity
+
+Invoking the installed diagnostic through a symlinked entry or ancestor must run the same diagnostic as its canonical path. Direct-entry detection compares the actual module identity; lexical path differences must not silently skip diagnostics. Importing the module must remain side-effect free for dispatch, including unrelated or unavailable process arguments. Exercise both explicit alias invocation and import-only behavior in private subprocess fixtures.
+
 ## Known ceiling
 
 This proves the installed diagnostic protocol and artifact closure. It does not

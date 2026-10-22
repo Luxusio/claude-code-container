@@ -20,6 +20,7 @@ new user requirements for a transaction framework or changed storage layout.
   and report that directory together with the publication and restoration errors.
 - Keep the public payload export, `ccc-dist` path, pinned Node launcher,
   executable mode, literal argument forwarding and Windows installation behavior.
+- Direct invocation through a symlinked entry or ancestor must dispatch the installer when Node has resolved the same actual module. Comparing only lexical argument spelling with the canonical module URL must not silently return success without executing. Importing the module, including with unrelated or unavailable process arguments, must not dispatch installation.
 
 Private native subprocess tests must show that old CLI execution survives
 copy/package/launcher preparation and publication failures. Also exercise the

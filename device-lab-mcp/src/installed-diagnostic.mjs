@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { DEFAULT_INHERITED_ENV_VARS, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { TOOLS } from "./tools.mjs";
@@ -161,7 +161,12 @@ export async function runInstalledMcpDiagnostic(options = {}) {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+let directEntry = false;
+try {
+    directEntry = !!process.argv[1]
+        && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+} catch { /* An import may have no existing argv entry. */ }
+if (directEntry) {
     runInstalledMcpDiagnostic({ serverPath: process.argv[2] }).then(result => {
         console.log(JSON.stringify(result, null, 2));
     }).catch(error => {

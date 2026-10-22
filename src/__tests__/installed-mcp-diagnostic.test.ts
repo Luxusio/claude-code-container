@@ -131,7 +131,8 @@ async function writeServer(path: string, logPath: string, token: string, mode: F
 }
 
 async function withDiagnostic(mode: FixtureMode, check: (result: ChildResult, events: Event[], env: NodeJS.ProcessEnv) => Promise<void> | void,
-    siblingDefault = false, bundleSource = join(repoRoot, "dist", "device-lab-mcp", "diagnostic.mjs")): Promise<void> {
+    siblingDefault = false, bundleSource = join(repoRoot, "dist", "device-lab-mcp", "diagnostic.mjs"),
+    aliasKind?: "ancestor" | "entry"): Promise<void> {
     const root = mkdtempSync(join(tmpdir(), "ccc-installed-diagnostic-"));
     const payload = join(root, unusualDirectory);
     mkdirSync(payload);
@@ -144,7 +145,13 @@ async function withDiagnostic(mode: FixtureMode, check: (result: ChildResult, ev
         copyFileSync(bundleSource, diagnostic);
         await writeServer(server, log, token, mode);
         const env = callerEnvironment(root);
-        result = await runNode(diagnostic, siblingDefault ? [] : [server], root, env);
+        let entry = diagnostic;
+        if (aliasKind) {
+            const alias = join(root, "diagnostic alias");
+            symlinkSync(aliasKind === "entry" ? diagnostic : payload, alias, aliasKind === "entry" ? "file" : "dir");
+            entry = aliasKind === "entry" ? alias : join(alias, "diagnostic.mjs");
+        }
+        result = await runNode(entry, siblingDefault ? [] : [server], root, env);
         const events = readEvents(log);
         const birth = events.find(event => event.kind === "birth");
         expect(birth, result.stderr).toBeDefined();
@@ -223,6 +230,36 @@ function expectHealthyDiagnostic(result: ChildResult, events: Event[], callerEnv
 }
 
 describe("installed MCP production diagnostic", () => {
+    it.skipIf(process.platform === "win32")("executes the actual diagnostic through symlinked ancestors and entries", { timeout: 45_000 }, async () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-diagnostic-entry-"));
+        try {
+            const server = join(root, "bundles", "server.mjs");
+            const built = await runNode(join(repoRoot, "device-lab-mcp", "scripts", "build.mjs"), ["--outfile", server], root,
+                { ...callerEnvironment(root), PATH: dirname(process.execPath) }, 30_000);
+            expect(built.status, built.stderr).toBe(0);
+            for (const aliasKind of ["ancestor", "entry"] as const) {
+                await withDiagnostic("healthy", expectHealthyDiagnostic, false, join(dirname(server), "diagnostic.mjs"), aliasKind);
+            }
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it.each(["absent", "missing", "unrelated"] as const)("only imports the diagnostic with an %s argv entry", async mode => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-diagnostic-import-"));
+        try {
+            const loader = join(root, "unrelated.mjs");
+            const argv = mode === "absent" ? "undefined" : JSON.stringify(mode === "missing" ? join(root, "missing.mjs") : loader);
+            writeFileSync(loader, `process.argv[1]=${argv};process.argv[2]=${JSON.stringify(join(root, "missing-server.mjs"))};await import(${JSON.stringify(pathToFileURL(join(repoRoot, "device-lab-mcp", "src", "installed-diagnostic.mjs")).href)});`);
+            const result = await runNode(loader, [], root, callerEnvironment(root));
+            expect(result.status, result.stderr).toBe(0);
+            expect(result.stdout).toBe("");
+            expect(result.stderr).toBe("");
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it.each(["diagnostic.mjs", "DiAgNoStIc.MjS"])("refuses a colliding --outfile %s before changing existing output bytes", async filename => {
         const root = mkdtempSync(join(tmpdir(), "ccc-mcp-build-collision-"));
         const outputDir = join(root, unusualDirectory);
