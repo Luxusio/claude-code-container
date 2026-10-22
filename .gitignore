@@ -42,3 +42,8 @@ doc/harness/.maintain-last-run
 doc/harness/.maintain-observe.log
 doc/harness/.maintain-pending.json
 .claude/worktrees/
+
+# Local diagnostics, dependency recovery and frozen Harness verification inputs
+/log/
+/node_modules.failed-*/
+/doc/harness/verification-inputs/
