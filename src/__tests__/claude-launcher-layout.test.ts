@@ -17,11 +17,16 @@ import { buildClaudeLauncherReportCommand, buildClaudeProbeScript, type ClaudeLa
 // launcher it did not create, and so `claude update` reported success while
 // every subsequent run executed the same stale binary.
 //
-// No Docker needed: the script is pure POSIX sh over paths, so pointing it at a
-// temp directory exercises the real branches.
+// No Docker needed on Linux: the POSIX shell program uses the Ubuntu image's
+// GNU utilities. Native filesystem and reporting cases remain portable below.
 
 let root: string
 let paths: ClaudeLayoutPaths
+
+// Version selection executes the Ubuntu container program with GNU timeout,
+// sort -V, find and mktemp. Filesystem-only adoption checks and doctor reports below
+// still run on the native host; they do not certify those Linux tool semantics.
+const linuxContainerIt = it.skipIf(process.platform !== "linux")
 
 // PATH is pinned to the system directories on purpose. The script treats
 // `command -v claude` as a migration donor, so with the ambient PATH these
@@ -295,7 +300,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(paths.bin)).toBe(false)
         })
 
-        it("does not copy a version the volume already holds", () => {
+        linuxContainerIt("does not copy a version the volume already holds", () => {
             // The skip before staging looks redundant with the one inside the
             // clearing block — same condition, same outcome — so removing it
             // passed the whole suite. The difference is 215MB of copying per
@@ -408,7 +413,7 @@ describe("claude launcher layout", () => {
             expect(result.stderr).toMatch(/^removed 2\.1\.261: a version must be a regular file$/m)
         })
 
-        it("recovers on the first start and stays recovered on later ones", () => {
+        linuxContainerIt("recovers on the first start and stays recovered on later ones", () => {
             // The measured regression this replaces: with a bad entry in the
             // volume, three consecutive starts all failed rc=1 and no run could
             // clear it. Repeating the probe is what a user does — `ccc` again —
@@ -454,7 +459,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.dataDir, "versions", "2.1.261"))).toBe(true)
         })
 
-        it("does not overwrite a version another container may be executing", () => {
+        linuxContainerIt("does not overwrite a version another container may be executing", () => {
             // Reported from a real ccc run: `cp: cannot create regular file
             // '.../.claude-data/./versions/2.1.261': Text file busy`. The volume
             // is shared by every project on the host, so a version already there
@@ -476,7 +481,7 @@ describe("claude launcher layout", () => {
             expect(readFileSync(shared, "utf8")).toContain("in use by another container")
         })
 
-        it("adopts a data dir symlinked somewhere else instead of abandoning the install", () => {
+        linuxContainerIt("adopts a data dir symlinked somewhere else instead of abandoning the install", () => {
             // Repointing the link on its own looks harmless and costs every
             // project on the host a fresh 215MB download, while the install it
             // walked away from sits untouched.
@@ -490,7 +495,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.5"))).toBe(true)
         })
 
-        it("moves an existing real data directory into the volume instead of discarding it", () => {
+        linuxContainerIt("moves an existing real data directory into the volume instead of discarding it", () => {
             // A container that predates this layout has a real ~/.local/share/claude.
             // Losing it would force a re-download of an install that already works.
             writeFakeClaude(join(paths.dataDir, "versions", "2.1.5"), "2.1.5")
@@ -531,7 +536,7 @@ describe("claude launcher layout", () => {
             expect(stderr).not.toContain("RESTORED")
         })
 
-        it("does not report success when the launcher path could not be removed", () => {
+        linuxContainerIt("does not report success when the launcher path could not be removed", () => {
             // rm -rf was unchecked, so a removal that failed left ln writing the
             // launcher INSIDE the surviving directory — where nothing runs it —
             // while the probe printed RESTORED and exited 0. No mount needed: a
@@ -555,7 +560,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.bin, "2.1.261"))).toBe(false)
         })
 
-        it("makes the launcher a symlink into versions/, which is what the native updater requires", () => {
+        linuxContainerIt("makes the launcher a symlink into versions/, which is what the native updater requires", () => {
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
 
             const result = run()
@@ -565,7 +570,7 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.5"))
         })
 
-        it("replaces a flattened regular-file launcher with a symlink", () => {
+        linuxContainerIt("replaces a flattened regular-file launcher with a symlink", () => {
             // The exact state this task exists to fix. Before, a valid binary
             // sitting here short-circuited the probe as VALID and stayed a
             // regular file forever.
@@ -578,7 +583,7 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.241"))
         })
 
-        it("clears a directory squatting on the launcher path instead of wedging", () => {
+        linuxContainerIt("clears a directory squatting on the launcher path instead of wedging", () => {
             // ccc cannot produce this state, so the point is to pin the choice:
             // self-heal rather than fail every startup until a human intervenes.
             mkdirSync(join(paths.bin, "junk"), { recursive: true })
@@ -588,7 +593,7 @@ describe("claude launcher layout", () => {
             expect(lstatSync(paths.bin).isSymbolicLink()).toBe(true)
         })
 
-        it("reports VALID and changes nothing on a second run", () => {
+        linuxContainerIt("reports VALID and changes nothing on a second run", () => {
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
 
             expect(run().stdout).toBe("RESTORED 2.1.5")
@@ -598,7 +603,7 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.bin)).toBe(linkAfterFirst)
         })
 
-        it("selects the newest version by version order, not lexical order", () => {
+        linuxContainerIt("selects the newest version by version order, not lexical order", () => {
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.9"), "2.1.9")
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.10"), "2.1.10")
 
@@ -607,7 +612,7 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.10"))
         })
 
-        it("skips a mise shim sitting in versions/ even though it answers --version", () => {
+        linuxContainerIt("skips a mise shim sitting in versions/ even though it answers --version", () => {
             // mise reshim can drop a wrapper anywhere on PATH, and it reports a
             // perfectly valid claude version because it forwards to the real
             // binary. Linking the launcher at it would make ccc depend on mise
@@ -620,7 +625,7 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.5"))
         })
 
-        it("finds a working version buried under many broken ones instead of reinstalling", () => {
+        linuxContainerIt("finds a working version buried under many broken ones instead of reinstalling", () => {
             // An earlier version stopped after the five newest candidates. Ten
             // broken entries above a good one therefore reported INSTALL, and
             // every project on the host re-downloaded 215MB while the working
@@ -637,7 +642,7 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.5"))
         })
 
-        it("gives each version check its own deadline so one wedged binary cannot stall startup", () => {
+        linuxContainerIt("gives each version check its own deadline so one wedged binary cannot stall startup", () => {
             // The probe's stdio is captured, so a binary that never returns is
             // 150 seconds of complete silence. A per-call timeout turns that
             // into one skipped candidate.
@@ -655,7 +660,7 @@ describe("claude launcher layout", () => {
             expect(elapsed).toBeLessThan(30_000)
         }, 60_000)
 
-        it("recovers past a truncated version that will never be replaced", () => {
+        linuxContainerIt("recovers past a truncated version that will never be replaced", () => {
             // Copies into the volume skip what already exists, so a version left
             // half-written by an interrupted install is never overwritten. That
             // is only safe because the scan does not stop at it: measured here,
@@ -671,7 +676,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(truncated)).toBe(true)
         })
 
-        it("skips a corrupt newest version and falls back to a working one", () => {
+        linuxContainerIt("skips a corrupt newest version and falls back to a working one", () => {
             writeFileSync(join(root, "corrupt"), "not a binary\n")
             mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
@@ -685,7 +690,7 @@ describe("claude launcher layout", () => {
     })
 
     describe("migration from the pre-symlink single-file cache", () => {
-        it("seeds versions/ from the legacy cache rather than reinstalling", () => {
+        linuxContainerIt("seeds versions/ from the legacy cache rather than reinstalling", () => {
             writeFakeClaude(paths.legacyCacheFile, "2.1.241")
 
             const result = run()
@@ -695,7 +700,7 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.241"))
         })
 
-        it("refuses to seed over a version name that already exists", () => {
+        linuxContainerIt("refuses to seed over a version name that already exists", () => {
             // mv -f onto a file succeeds even while another container is running
             // it — rename() swaps the directory entry, so that container gets a
             // donor copy on its next resolve. Refusing costs a re-download; the
@@ -710,7 +715,7 @@ describe("claude launcher layout", () => {
             expect(readFileSync(occupied, "utf8")).toContain("another container's copy")
         })
 
-        it("clears a directory squatting on the version it would seed", () => {
+        linuxContainerIt("clears a directory squatting on the version it would seed", () => {
             // A directory at versions/<v> is junk by construction, and it holds
             // the name the seed needs. Freeing it is the recovery; before, the
             // migration refused and the name stayed occupied forever.
@@ -730,7 +735,7 @@ describe("claude launcher layout", () => {
             expect(result.stderr).toMatch(/^removed 2\.1\.241: a version must be a regular file$/m)
         })
 
-        it("refuses to seed on top of a directory it could not clear", () => {
+        linuxContainerIt("refuses to seed on top of a directory it could not clear", () => {
             // The clearing is the recovery; this is the guarantee behind it. If
             // versions/<v> is a directory that stays, `mv -f` would deposit the
             // seed INSIDE it and leave the name permanently unusable — which
@@ -842,7 +847,7 @@ describe("claude launcher layout", () => {
             expect(result.stderr).toMatch(/^removed keepsafe: a version must be a real file, not a symlink$/m)
         })
 
-        it("does not clear a version name carrying somebody else's suffix", () => {
+        linuxContainerIt("does not clear a version name carrying somebody else's suffix", () => {
             // Allowing any suffix after the third number let 2.1.261.backup and
             // 1.0.0-my-notes through. The installer writes a version, or a
             // version with its own staging suffix, and nothing else.
@@ -862,7 +867,7 @@ describe("claude launcher layout", () => {
             }
         })
 
-        it("does not clear a dotted name that is not three numbers", () => {
+        linuxContainerIt("does not clear a dotted name that is not three numbers", () => {
             // The glob that licensed this admitted "2.1.3 (copy)" — anything
             // after the third group, not only the installer's staging suffix.
             const volVersions = join(paths.volumeDataDir, "versions")
@@ -877,7 +882,7 @@ describe("claude launcher layout", () => {
                 .toBe("a copied export")
         })
 
-        it("does not reach into a name that merely starts with a digit", () => {
+        linuxContainerIt("does not reach into a name that merely starts with a digit", () => {
             // A leading digit was not licence enough: 2026-notes starts with
             // one, and so does a dated export. What the installer writes is
             // three dot-separated numbers, and that is what may be cleared.
@@ -893,7 +898,7 @@ describe("claude launcher layout", () => {
                 .toBe("somebody's notes")
         })
 
-        it("does not let a version-shaped fragment bypass the age gate", () => {
+        linuxContainerIt("does not let a version-shaped fragment bypass the age gate", () => {
             // The gates on the reconstructed name closed the demonstrated case,
             // but a fragment that is itself version-shaped and carries .tmp.
             // passed them — and it was never the entry find aged. Handing the
@@ -937,7 +942,7 @@ describe("claude launcher layout", () => {
             expect(result.stderr).not.toMatch(/^removed sub: /m)
         })
 
-        it("does not delete a name a split record made up", () => {
+        linuxContainerIt("does not delete a name a split record made up", () => {
             // find -delete could only ever remove a path it matched. Reading
             // records back gave that up: a name holding a newline splits, and
             // one of the fragments was a real version — a working binary
@@ -956,7 +961,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(volVersions, "2.1.261"))).toBe(true)
         })
 
-        it("does not announce clearing something that was never there", () => {
+        linuxContainerIt("does not announce clearing something that was never there", () => {
             // Neither -L nor -f is true of a path that does not exist, so the
             // arm was entered for a fragment of a split name, rm -rf succeeded
             // on nothing, and the user was told a version had been destroyed in
@@ -972,7 +977,7 @@ describe("claude launcher layout", () => {
             expect(result.stderr).not.toMatch(/^removed 9\.9\.9/m)
         })
 
-        it("does not clear a .tmp. name whose suffix the installer would not write", () => {
+        linuxContainerIt("does not clear a .tmp. name whose suffix the installer would not write", () => {
             // The staging clause allowed any suffix after .tmp., so
             // 2.1.3.tmp.mynotes was recursively deleted. The real one is
             // <version>.tmp.<pid>.<timestamp>.<n> — all numbers.
@@ -988,7 +993,7 @@ describe("claude launcher layout", () => {
                 .toBe("somebody's notes")
         })
 
-        it("does not collect a .tmp. name the installer would never write", () => {
+        linuxContainerIt("does not collect a .tmp. name the installer would never write", () => {
             // The reaper had a name rule and no shape rule, so my.tmp.notes was
             // taken, silently, on a shared volume; a glob cannot say "digits"
             // either, so the first narrowing would still have taken this one.
@@ -1025,7 +1030,7 @@ describe("claude launcher layout", () => {
             expect(result.stderr).not.toMatch(/^removed settings\.json: a version/m)
         })
 
-        it("collects an installer staging file a killed install left behind", () => {
+        linuxContainerIt("collects an installer staging file a killed install left behind", () => {
             // Skipping it stops it being run; nothing was collecting it, so it
             // sat in a shared volume at up to 215MB a time. Age-gated, so an
             // install in flight is never touched.
@@ -1046,7 +1051,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(fresh)).toBe(true)
         })
 
-        it("does not run an installer staging file left under versions/", () => {
+        linuxContainerIt("does not run an installer staging file left under versions/", () => {
             // The installer stages as versions/<v>.tmp.<pid>.<ts>.<n>, and a
             // complete one sorts ABOVE the version it was becoming — so it was
             // selected, and the launcher pointed at a name the next install
@@ -1062,7 +1067,7 @@ describe("claude launcher layout", () => {
             expect(realpathSync(paths.bin)).toBe(join(volVersions, "2.1.261"))
         })
 
-        it("removes a link at a name that is not a version, and says so", () => {
+        linuxContainerIt("removes a link at a name that is not a version, and says so", () => {
             // The shape rule licenses a recursive delete, not an unlink. A link
             // destroys no bytes and can be what another project's launcher
             // resolves through, so it goes whatever it is called — and the REQ
@@ -1081,7 +1086,7 @@ describe("claude launcher layout", () => {
             expect(result.stderr).toMatch(/^removed my-notes: a version must be a real file, not a symlink$/m)
         })
 
-        it("does not reach into a directory whose name no installer would want", () => {
+        linuxContainerIt("does not reach into a directory whose name no installer would want", () => {
             // The licence for a recursive delete is that the entry holds a name
             // the installer needs. A name that is not a version holds nothing
             // anyone is waiting for, and deleting it destroys somebody's bytes
@@ -1112,7 +1117,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(volVersions, "2.1.261"))).toBe(false)
         })
 
-        it("does not reach into a hidden directory to free a name nobody wants", () => {
+        linuxContainerIt("does not reach into a hidden directory to free a name nobody wants", () => {
             // The recursive delete runs on every start against a volume every
             // project shares. A hidden name is not an installer target and the
             // selection never looks at one, so there is no name to free and no
@@ -1130,7 +1135,7 @@ describe("claude launcher layout", () => {
                 .toBe("somebody's state")
         })
 
-        it("collects a stale staging link at the volume root", () => {
+        linuxContainerIt("collects a stale staging link at the volume root", () => {
             // The reaper's two roots have two rules, and only the versions/ one
             // is about version names. At the volume root a .seed.* is a stale
             // stage whatever its type, and nothing else ever collects it.
@@ -1163,7 +1168,7 @@ describe("claude launcher layout", () => {
             expect(result.stderr).toMatch(/^removed 2\.1\.261: a version must be a regular file$/m)
         })
 
-        it("prefers an existing version over the legacy cache", () => {
+        linuxContainerIt("prefers an existing version over the legacy cache", () => {
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
             writeFakeClaude(paths.legacyCacheFile, "2.1.241")
 
@@ -1218,7 +1223,7 @@ describe("claude launcher layout", () => {
             expect(readdirSync(paths.volumeDataDir).filter(n => n.startsWith(".seed."))).toEqual([])
         })
 
-        it("refuses up front when it cannot create its failure marker", () => {
+        linuxContainerIt("refuses up front when it cannot create its failure marker", () => {
             // Review flagged this as the one line worth pinning: without the
             // guard on the marker's own creation, adopt cannot record any
             // failure and returns success — and the caller deletes the original
@@ -1233,7 +1238,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.dataDir, "versions", "2.1.5"))).toBe(true)
         })
 
-        it("keeps its failure marker out of the volume every project shares", () => {
+        linuxContainerIt("keeps its failure marker out of the volume every project shares", () => {
             // The marker is intra-container signalling. Putting it in the shared
             // volume means the one failure it exists to report — the volume
             // being unwritable — is the one it cannot record, and a failed run
@@ -1310,7 +1315,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(paths.bin)).toBe(false)
         })
 
-        it("never selects a staging file a killed start left behind", () => {
+        linuxContainerIt("never selects a staging file a killed start left behind", () => {
             // seed_from stages into versions/.seed.XXXXXX, chmods it executable
             // and then renames it. A start killed between those two steps leaves
             // a complete, claude-shaped file there — and once it is selectable
@@ -1325,7 +1330,7 @@ describe("claude launcher layout", () => {
             expect(result.stdout).toBe("INSTALL")
         })
 
-        it("finds a version whose name holds a glob character", () => {
+        linuxContainerIt("finds a version whose name holds a glob character", () => {
             // set -f, separately from IFS. Expansion happens against the
             // process's working directory, so the case only bites when that
             // directory holds a name the pattern matches — which is why this
@@ -1346,7 +1351,7 @@ describe("claude launcher layout", () => {
             expect((result.stdout ?? "").trim()).toBe("RESTORED 2.1.26?")
         })
 
-        it("finds a version whose name holds a space", () => {
+        linuxContainerIt("finds a version whose name holds a space", () => {
             // The selection loop read its candidates through $(ls), so a name
             // holding a space was split into two that do not exist and one
             // holding * was expanded against the working directory. Neither can
@@ -1362,7 +1367,7 @@ describe("claude launcher layout", () => {
             expect(realpathSync(paths.bin)).toBe(join(volVersions, "2.1.261 rc1"))
         })
 
-        it("does not select a version that is a symlink", () => {
+        linuxContainerIt("does not select a version that is a symlink", () => {
             // -f follows links, so a symlink under versions/ used to be chosen
             // and reported as a successful start — on precisely the layout the
             // doctor calls NOT updatable, which is the bug this whole change
@@ -1424,13 +1429,13 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.261"))).toBe(false)
         })
 
-        it("does not adopt a mise shim as a claude binary", () => {
+        linuxContainerIt("does not adopt a mise shim as a claude binary", () => {
             writeMiseShim(paths.bin)
 
             expect(run().stdout).toBe("INSTALL")
         })
 
-        it("does not copy a rejected donor into the shared volume", () => {
+        linuxContainerIt("does not copy a rejected donor into the shared volume", () => {
             // Rejecting the donor at the launcher step is not enough. Seeding it
             // first would put ~215MB of the wrong binary into a volume every ccc
             // project on the host shares, once per container start. The guard has
@@ -1443,7 +1448,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.volumeDataDir, "versions"))).toBe(false)
         })
 
-        it("does not copy a non-Claude binary into the shared volume either", () => {
+        linuxContainerIt("does not copy a non-Claude binary into the shared volume either", () => {
             // `bun 1.1.0` yields a plausible-looking version string, so a seeding
             // step that trusts the version regex alone would cache bun as claude.
             writeFileSync(paths.bin, `#!/bin/sh\necho "bun 1.1.0"\n`)
@@ -1454,7 +1459,7 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.volumeDataDir, "versions"))).toBe(false)
         })
 
-        it("accepts a version line that names Claude after the number", () => {
+        linuxContainerIt("accepts a version line that names Claude after the number", () => {
             // The word-boundary alternative of the version regex was dead: `\b`
             // inside a template literal is a backspace byte, not a boundary, so
             // only lines shaped like "2.1.5 (Claude Code)" ever matched. Every
@@ -1467,14 +1472,14 @@ describe("claude launcher layout", () => {
             expect(run().stdout).toBe("RESTORED 2.1.5")
         })
 
-        it("does not adopt a binary whose --version is not Claude-shaped", () => {
+        linuxContainerIt("does not adopt a binary whose --version is not Claude-shaped", () => {
             writeFileSync(paths.bin, `#!/bin/sh\necho "bun 1.1.0"\n`)
             chmodSync(paths.bin, 0o755)
 
             expect(run().stdout).toBe("INSTALL")
         })
 
-        it("does not read a Bun crash dump as a version, even though it names claude", () => {
+        linuxContainerIt("does not read a Bun crash dump as a version, even though it names claude", () => {
             // A crashing bun printed its argv, which contains the claude path.
             // A looser match would have adopted the crash output as proof of a
             // working binary and cached it. `is_claude` reads only the first
@@ -1501,6 +1506,14 @@ describe("what ccc doctor says about the launcher", () => {
     // exactly what looks fine in the broken state: 2.1.241 is a real version,
     // printed by a real binary, at the right path. Only the shape distinguishes
     // "up to date" from "pinned forever".
+    function installedLauncher(version: string): void {
+        const versionPath = join(paths.volumeDataDir, "versions", version)
+        writeFakeClaude(versionPath, version)
+        mkdirSync(join(paths.dataDir, ".."), { recursive: true })
+        symlinkSync(paths.volumeDataDir, paths.dataDir)
+        symlinkSync(versionPath, paths.bin)
+    }
+
     function report(binPath: string): { status: number, stdout: string } {
         try {
             const stdout = execFileSync("sh", ["-c", buildClaudeLauncherReportCommand(binPath, paths.dataDir)],
@@ -1513,8 +1526,7 @@ describe("what ccc doctor says about the launcher", () => {
     }
 
     it("says a symlinked launcher is updatable, and where it points", () => {
-        writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
-        run()
+        installedLauncher("2.1.5")
 
         const out = report(paths.bin).stdout
 
@@ -1548,8 +1560,7 @@ describe("what ccc doctor says about the launcher", () => {
         expect(report(paths.bin).status).toBe(2)
 
         rmSync(paths.bin)
-        writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
-        run()
+        installedLauncher("2.1.5")
         expect(report(paths.bin).status).toBe(0)
     })
 
@@ -1568,8 +1579,7 @@ describe("what ccc doctor says about the launcher", () => {
         // place. Nothing pinned that: reverting the failure branch to the
         // literal left the whole file green, in a file whose own history is
         // assertions that matched text instead of behavior.
-        writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
-        run()
+        installedLauncher("2.1.261")
         const updatable = report(paths.bin).stdout
 
         rmSync(paths.bin)

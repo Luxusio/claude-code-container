@@ -39,6 +39,10 @@ cp.spawnSync=function(command,args=[],options){
   fs.appendFileSync(log,JSON.stringify({kind:'exit',actor:mode})+'\\n');
   return {status:mode==='failure'?7:0,stdout:'',stderr:mode==='failure'?'native-stop-failed':'',...(mode==='status-zero-error'?{error:new Error('native-status-zero-error')}:{})};
  }
+ if(process.platform==='darwin'&&command==='/bin/ps'&&args.length===4&&args[0]==='-p'&&args[1]===String(process.pid)&&args[2]==='-o'&&['lstart=','command='].includes(args[3])){
+  assert.equal(options.windowsHide,true);assert.ok(Number.isInteger(options.timeout)&&options.timeout>0&&options.timeout<=5000);
+  return nativeSpawn(command,args,options); // Exact read-only own-process state-lock identity on macOS.
+ }
  if(/powershell|pwsh/i.test(String(command)))return nativeSpawn(command,args,options); // Read-only own-process identity adapter on Windows.
  throw Error('unexpected native command: '+command+' '+JSON.stringify(args));
 };
@@ -155,6 +159,10 @@ cp.spawnSync=function(command,args=[],options={}){
    assert.deepEqual(args,['stop','--id',guid]);assert.equal(options.timeout,60000);
    return {status:mode==='delete-native-failure'?7:0,stdout:'stop stdout',stderr:mode==='delete-native-failure'?'stop stderr':'',error:new Error('stop error')};
   }
+ }
+ if(process.platform==='darwin'&&command==='/bin/ps'&&args.length===4&&args[0]==='-p'&&args[1]===String(process.pid)&&args[2]==='-o'&&['lstart=','command='].includes(args[3])){
+  assert.equal(options.windowsHide,true);assert.ok(Number.isInteger(options.timeout)&&options.timeout>0&&options.timeout<=5000);
+  return nativeSpawnSync(command,args,options); // Exact read-only own-process state-lock identity on macOS.
  }
  if(/powershell(?:\\.exe)?$/i.test(String(command))){
   if(args.length===identityArgs.length&&args.every((arg,index)=>arg===identityArgs[index])){

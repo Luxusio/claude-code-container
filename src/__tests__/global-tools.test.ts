@@ -3,6 +3,7 @@ import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync
 import { tmpdir } from "os";
 import { join } from "path";
 import type { SpawnSyncReturns } from "child_process";
+import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "./helpers/native-runtime-fixture.js";
 
 // Mock child_process before importing the module under test
 const spawnSyncMock = vi.fn<
@@ -11,12 +12,17 @@ const spawnSyncMock = vi.fn<
 
 vi.mock("child_process", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
-    return { ...actual, spawnSync: spawnSyncMock };
+    return { ...actual, spawnSync: (...args: unknown[]) => spawnSyncMock(...normalizeNativeRuntimeCall(args)) };
 });
+// OpenCode's legacy data-access leaf needs only the selected runtime name.
+vi.mock("../container-runtime.js", async original => ({
+    ...await original<typeof import("../container-runtime.js")>(), runtimeCli: () => "docker",
+}));
 
 // Must import AFTER vi.mock so the mock is in effect
 const { ensureTools } = await import("../container-setup.js");
 const { getToolByName } = await import("../tool-registry.js");
+const runtime = await import("../container-runtime.js");
 
 function makeResult(status: number, stdout = ""): SpawnSyncReturns<string> {
     return {
@@ -34,11 +40,14 @@ describe("ensureTools (npm tools)", () => {
 
     beforeEach(() => {
         spawnSyncMock.mockReset();
+        runtime._resetRuntimeCacheForTest();
+        preloadNativeRuntimeFixture(runtime);
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "warn").mockImplementation(() => {});
     });
 
     afterEach(() => {
+        runtime._resetRuntimeCacheForTest();
         vi.restoreAllMocks();
     });
 

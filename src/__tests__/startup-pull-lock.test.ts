@@ -9,7 +9,16 @@ it.skipIf(process.platform === "win32")("releases the startup lock after a real 
     const home = mkdtempSync(join(tmpdir(), "ccc-pull-lock-"));
     const bin = join(home, "bin");
     mkdirSync(bin);
-    writeFileSync(join(bin, "docker"), '#!/bin/sh\ncase "$1" in\nimages) exit 0;;\npull) echo pull >> "$CCC_TEST_CALLS"; exit 1;;\n*) exit 93;;\nesac\n', { mode: 0o700 });
+    writeFileSync(join(bin, "docker"), `#!${process.execPath}
+const args = process.argv.slice(2);
+const command = args.find(value => ['context', '--version', 'info', 'images', 'pull'].includes(value));
+if (command === 'context') console.log(JSON.stringify({Name: 'default', Endpoints: {docker: {Host: 'unix:///fixture/engine.sock'}}}));
+else if (command === '--version') console.log('Docker version 27.0.0');
+else if (command === 'info') console.log(args.includes('{{.OperatingSystem}}') ? 'Fixture Linux' : '[]');
+else if (command === 'images') process.exit(0);
+else if (command === 'pull') { require('node:fs').appendFileSync(process.env.CCC_TEST_CALLS, 'pull\\n'); process.exit(1); }
+else process.exit(93);
+`, { mode: 0o700 });
     const module = new URL("../docker.ts", import.meta.url).href;
     const imageBuilder = fileURLToPath(new URL("../../scripts/build-distribution-image.mjs", import.meta.url));
     const buildInstruction = `node '${imageBuilder.replaceAll("'", "'\\''")}' --runtime docker`;

@@ -273,7 +273,7 @@ describe("container SSH credential copy", () => {
     it.each([
         { failure: "staging", status: 11, command: "mkdir", body: 'case "$1" in *.next.*) exit 42;; esac\nexec /bin/mkdir "$@"' },
         { failure: "archive-create", status: 12, command: "mktemp", body: "exit 42" },
-        { failure: "extract", status: 14, command: "tar", body: 'case "$1" in --no-same-owner) exit 42;; esac\nexec /bin/tar "$@"' },
+        { failure: "extract", status: 14, command: "tar", body: `case "$1" in --no-same-owner) exit 42;; esac\nexec ${existsSync("/usr/bin/tar") ? "/usr/bin/tar" : "/bin/tar"} "$@"` },
         { failure: "permissions", status: 15, command: "chmod", body: 'case "$1" in 600) exit 42;; esac\nexec /bin/chmod "$@"' },
         { failure: "completion", status: 17, command: "chmod", body: 'for path do case "$path" in */.ccc-copy-complete) exit 42;; esac; done\nexec /bin/chmod "$@"' },
         { failure: "publication", status: 18, command: "mv", body: 'case "$1" in *.next.*) exit 42;; esac\nexec /bin/mv "$@"' },

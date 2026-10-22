@@ -7,6 +7,7 @@ import { spawnSync } from "child_process";
 import { CODEX_HARNESS_BOOTSTRAP, ensureCodexHarness } from "../codex-harness.js";
 import { prepareCodexConfigForContainer, restoreCodexConfigHostOwnership } from "../docker.js";
 import { withCodexConfigLock } from "../codex-config-lock.js";
+import { modernPythonFixture, pythonFixtureProgram } from "./helpers/modern-python-fixture.js";
 
 vi.mock("child_process", () => ({ spawnSync: vi.fn() }));
 vi.mock("../container-runtime.js", async () => {
@@ -29,6 +30,8 @@ vi.mock("../container-runtime.js", async () => {
 vi.mock("../docker.js", () => ({ prepareCodexConfigForContainer: vi.fn(), restoreCodexConfigHostOwnership: vi.fn() }));
 vi.mock("../codex-config-lock.js", () => ({ withCodexConfigLock: vi.fn((operation) => operation()) }));
 const { spawnSync: realSpawn } = await vi.importActual<typeof import("child_process")>("child_process");
+const python = modernPythonFixture(realSpawn);
+const hostPython = python.executable ?? "";
 const temporary: string[] = [];
 const pin = "90a7afe02a9377d9e20cedd62e2c0d88e426d814";
 
@@ -42,16 +45,16 @@ function fixture(hookPrefix = "", managedVersion?: string) {
     const config = join(home, ".codex/config.toml");
     // Fake only the download transport; the actual orchestration executes a real
     // installer subprocess and probes the files/config it writes.
-    writeFileSync(join(home, "bin/git"), `#!/usr/bin/python3\nimport os, pathlib, shutil, sys\nhome = pathlib.Path.home()\nwith (home / 'git-calls').open('a') as f: f.write(' '.join(sys.argv[1:]) + '\\n')\nif os.environ.get('FAIL_FETCH'): sys.exit(2)\nif sys.argv[1] == 'rev-parse': print(os.environ.get('REVISION', '${pin}'))\nif sys.argv[1] == 'checkout': shutil.copy(home / 'installer.py', pathlib.Path.cwd() / 'install.py')\n`, { mode: 0o755 });
+    writeFileSync(join(home, "bin/git"), pythonFixtureProgram(hostPython, `import os, pathlib, shutil, sys\nhome = pathlib.Path.home()\nwith (home / 'git-calls').open('a') as f: f.write(' '.join(sys.argv[1:]) + '\\n')\nif os.environ.get('FAIL_FETCH'): sys.exit(2)\nif sys.argv[1] == 'rev-parse': print(os.environ.get('REVISION', '${pin}'))\nif sys.argv[1] == 'checkout': shutil.copy(home / 'installer.py', pathlib.Path.cwd() / 'install.py')\n`), { mode: 0o755 });
     const source = join(home, ".codex/harness");
     const root = join(source, "plugins/harness");
     const cache = join(home, ".codex/plugins/cache/harness/harness/2.3.0");
-    const interpreter = managedVersion ? join(home, `.local/share/mise/installs/python/${managedVersion}/bin/python3.12`) : "/usr/bin/python3";
+    const interpreter = managedVersion ? join(home, `.local/share/mise/installs/python/${managedVersion}/bin/python3.12`) : hostPython;
     if (managedVersion) {
         mkdirSync(join(interpreter, ".."), { recursive: true });
-        copyFileSync("/usr/bin/python3", interpreter);
+        copyFileSync(hostPython, interpreter);
     }
-    const hookCommand = `${hookPrefix}${interpreter} ${join(cache, "scripts/session-start.py")}`;
+    const hookCommand = `${hookPrefix}${JSON.stringify(interpreter)} ${JSON.stringify(join(cache, "scripts/session-start.py"))}`;
     // Keys ordered as the official installer's canonical JSON representation.
     const trustHash = "sha256:" + createHash("sha256").update(JSON.stringify({
         event_name: "session_start",
@@ -69,11 +72,12 @@ function fixture(hookPrefix = "", managedVersion?: string) {
         [join(cache, "scripts/session-start.py")]: "# hook",
         [join(cache, "hooks.json")]: JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: hookCommand }] }] } }),
     };
-    writeFileSync(join(home, "installer.py"), `import json, pathlib, sys\nassert sys.argv[1:] == ['--codex-only']\nassert pathlib.Path.cwd() == pathlib.Path.home()\nassert sys.executable.startswith('/usr/bin/python3')\nfiles = json.loads(${JSON.stringify(JSON.stringify(files))})\nfor name, contents in files.items():\n p = pathlib.Path(name)\n p.parent.mkdir(parents=True, exist_ok=True)\n p.write_text(contents)\n`);
+    writeFileSync(join(home, "installer.py"), `import json, pathlib, sys\nassert sys.argv[1:] == ['--codex-only']\nassert pathlib.Path.cwd() == pathlib.Path.home()\nassert sys.executable == ${JSON.stringify(hostPython)}\nfiles = json.loads(${JSON.stringify(JSON.stringify(files))})\nfor name, contents in files.items():\n p = pathlib.Path(name)\n p.parent.mkdir(parents=True, exist_ok=True)\n p.write_text(contents)\n`);
     mkdirSync(join(home, ".local/bin"), { recursive: true });
-    writeFileSync(join(home, ".local/bin/mise"), `#!/usr/bin/python3\nimport os, pathlib, shutil, sys\nhome=pathlib.Path.home()\n(home/'mise-calls').write_text(' '.join(sys.argv[1:]))\nassert sys.argv[1:] == ['install','python@3.12.14']\nif os.environ.get('FAIL_MISE'): sys.exit(2)\n${managedVersion ? `shutil.copyfile('/usr/bin/python3',${JSON.stringify(interpreter)}); os.chmod(${JSON.stringify(interpreter)},0o755)` : "raise RuntimeError('unexpected runtime installation')"}\n`, { mode: 0o755 });
-    const run = (env: Record<string, string> = {}, script = CODEX_HARNESS_BOOTSTRAP) => realSpawn("python3", ["-"], {
-        input: script, encoding: "utf-8", timeout: 10000,
+    writeFileSync(join(home, ".local/bin/mise"), pythonFixtureProgram(hostPython, `import os, pathlib, shutil, sys\nhome=pathlib.Path.home()\n(home/'mise-calls').write_text(' '.join(sys.argv[1:]))\nassert sys.argv[1:] == ['install','python@3.12.14']\nif os.environ.get('FAIL_MISE'): sys.exit(2)\n${managedVersion ? `shutil.copyfile(${JSON.stringify(hostPython)},${JSON.stringify(interpreter)}); os.chmod(${JSON.stringify(interpreter)},0o755)` : "raise RuntimeError('unexpected runtime installation')"}\n`), { mode: 0o755 });
+    const run = (env: Record<string, string> = {}, script = CODEX_HARNESS_BOOTSTRAP) => realSpawn(hostPython, ["-"], {
+        // Only the host fixture substitutes the image's fixed installer interpreter.
+        input: script.replaceAll('"/usr/bin/python3"', JSON.stringify(hostPython)), encoding: "utf-8", timeout: 10000,
         env: { ...process.env, HOME: home, TMPDIR: workspace, PATH: `${join(home, "bin")}:${process.env.PATH}`, ...env },
     });
     return { home, config, cache, run, interpreter, workspace };
@@ -91,6 +95,7 @@ afterEach(() => {
 });
 
 describe("Harness bootstrap script", () => {
+    beforeEach(({ skip }) => { if (!python.executable) skip(python.reason); });
     it("restores a trusted missing managed Python without changing registration, then reuses it", () => {
         const f = fixture("", "3.12.14");
         expect(f.run().status).toBe(0);

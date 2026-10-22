@@ -20,7 +20,7 @@ for (const backend of ["android", "ios"] as const) {
     describe(`${backend} provider observation to public wait contract`, () => {
         async function observe(result: Record<string, unknown>) {
             const run = vi.spyOn(commands, backend === "android" ? "runWithTimeout" : "run")
-                .mockImplementation(() => { time = 100; return { stdout: "", stderr: "", ...result }; });
+                .mockImplementation(() => { time = result.status === 0 && result.stdout ? 99 : 100; return { stdout: "", stderr: "", ...result }; });
             const value = backend === "android"
                 ? await waitForAndroidApp("adb", ["-s", "serial"], "com.fixture.app", 100, 50)
                 : await waitForIosApp("xcrun", "udid", "com.fixture.app", 100, 50);

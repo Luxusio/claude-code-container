@@ -61,8 +61,9 @@ finally:
 // between runs: it scales with how many leftover locks a host carries, not with the work being
 // done. That launch count cannot be observed from Linux, so these assert the property the
 // saving rests on instead: a pre-observed pid is USED, and the single-pid probe is not
-// consulted for it. A pid that does not exist makes that visible — the real probe would call it
-// missing, so an "active" answer can only have come from the map.
+// consulted for it. The synthetic token cannot be produced for this pid by the real probe,
+// so an "active" answer can only have come from the map. Native probes may reject this pid
+// as outside their range and correctly leave its identity unknown.
 describe("pre-observed process starts", () => {
     const absentPid = 999_999_000;
     const lock = (pid: number, startToken: string) => JSON.stringify({ version: 2, pid, startToken });
@@ -76,8 +77,8 @@ describe("pre-observed process starts", () => {
         ).toBe("active");
         expect(
             sessionLockLiveness(lock(absentPid, "windows:8675309")),
-            "and without the map the real probe answers for a pid that does not exist",
-        ).toBe("stale");
+            "without the map the real probe cannot establish this synthetic identity",
+        ).not.toBe("active");
     });
 
     it("keeps the map from ever inventing liveness", () => {

@@ -158,7 +158,7 @@ it.each(["match", "generation", "body"])("simulator text wait preserves one boot
     } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
 
-it("real physical heartbeat carries its deadline through the hardware lock into a contended aggregate lock", () => {
+it("real physical heartbeat rejects local aggregate-lock contention and releases its hardware lock", () => {
     vi.mocked(leases.heartbeatPhysicalLease).mockRestore();
     const root = testHome;
     const aggregate = join(root, ".ccc/devices/physical-leases/ios-device.mutation.lock");
@@ -169,7 +169,7 @@ it("real physical heartbeat carries its deadline through the hardware lock into 
             const deadline = performance.now() + 40;
             expect(() => leases.heartbeatPhysicalLease("ios-device", "UDID", device.id, {
                 waitBudget: { remaining: () => Math.max(0, deadline - performance.now()) },
-            })).toThrow(expect.objectContaining({ code: "shared-mutation-lock-timeout" }));
+            })).toThrow(expect.objectContaining({ code: "shared-mutation-lock-self-contention" }));
             expect(existsSync(hardware)).toBe(false);
         });
         expect(performance.now() - start).toBeLessThan(1500);

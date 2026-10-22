@@ -24,13 +24,19 @@ async function fixture() {
         const preload = join(home, "trace.cjs");
         writeFileSync(preload, `const fs=require('fs'),cp=require('child_process');
 const record=(kind,args)=>fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({kind,args})+'\\n');
-// Async state locks observe only their own process identity on Windows.
+// State locks observe only their own process identity through fixed native tools.
 const ownIdentityScript = "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + process.pid + "' -ErrorAction SilentlyContinue; $H = Get-Process -Id " + process.pid + " -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
 const ownIdentityArgs = ['-WindowStyle','Hidden','-NoProfile','-NonInteractive','-Command',ownIdentityScript];
 for(const key of ['spawn','spawnSync','exec','execSync','execFile','execFileSync']){const original=cp[key];cp[key]=function(...args){
-const ownIdentity = process.platform === 'win32' && ['execFile','spawn'].includes(key)
+const windowsIdentity = process.platform === 'win32' && ['execFile','spawn'].includes(key)
     && require('path').basename(String(args[0])).toLowerCase() === 'powershell.exe'
     && JSON.stringify(args[1]) === JSON.stringify(ownIdentityArgs);
+const psArgs = args[1]?.[0] === '-ww' ? args[1].slice(1) : args[1];
+const darwinIdentity = process.platform === 'darwin' && ['execFile','spawnSync'].includes(key)
+    && args[0] === '/bin/ps' && Array.isArray(psArgs) && psArgs.length === 4
+    && psArgs[0] === '-p' && psArgs[1] === String(process.pid) && psArgs[2] === '-o'
+    && ['command=','lstart='].includes(psArgs[3]);
+const ownIdentity = windowsIdentity || darwinIdentity;
 record(ownIdentity ? 'own-process-identity' : key,args.slice(0,2));return original.apply(this,args)}}
 globalThis.fetch=async()=>{record('fetch',[]);throw new Error('diagnostic fixture network unavailable')};
 const open=fs.openSync;fs.openSync=function(file,...args){if(require('path').basename(String(file))==='devices.json')record('state',[String(file)]);return open.call(this,file,...args)};
@@ -57,7 +63,7 @@ describe("public MCP terminal device diagnostics", () => {
                 expect(absent.isError).toBe(true);
                 expect(json(absent)).toMatchObject({ error: "device-not-found", deviceId: "absent-target", detail: expect.stringContaining("devices") });
             }
-            expect(ctx.activity().filter((entry) => entry.kind !== "state"), JSON.stringify(ctx.activity())).toEqual([]);
+            expect(ctx.activity().filter((entry) => !["state", "own-process-identity"].includes(entry.kind)), JSON.stringify(ctx.activity())).toEqual([]);
         } finally { await cleanupDeviceLabMcpTestContext(ctx); }
     });
 
@@ -91,7 +97,7 @@ describe("public MCP terminal device diagnostics", () => {
             const ambiguous = await ctx.client.callTool({ name: "ui", arguments: { deviceId: "duplicate" } });
             expect(ambiguous.isError).toBe(true);
             expect(json(ambiguous)).toMatchObject({ error: "ambiguous-device-backend", matches: expect.arrayContaining(["windows-vm", "linux-vm"]) });
-            expect(ctx.activity().every((entry) => entry.kind === "state" && !entry.args[0].includes("another-owner"))).toBe(true);
+            expect(ctx.activity().every((entry) => entry.kind === "own-process-identity" || entry.kind === "state" && !entry.args[0].includes("another-owner"))).toBe(true);
         } finally { await cleanupDeviceLabMcpTestContext(ctx); }
     });
 

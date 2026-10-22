@@ -38,19 +38,21 @@ it("routes the generated Windows Android launcher to the exact fake emulator wit
 it("models only the Windows AVD liveness query and leaves unrelated PowerShell commands untouched", () => {
     const root = mkdtempSync(join(tmpdir(), "ccc-android-probe-fixture-"));
     const preload = join(root, "routing.cjs");
-    writeFileSync(preload, nodeProviderFixturePreloadSource(root) + fakeAndroidLauncherPreloadSource(root));
+    const powershell = join(root, "powershell.exe");
+    writeFileSync(powershell, `#!${process.execPath}\nprocess.exit(23);`);
+    writeFileSync(preload, nodeProviderFixturePreloadSource(root) + fakeAndroidLauncherPreloadSource(root, powershell));
     try {
         const result = spawnSync(process.execPath, ["--require", preload, "-e", `
             const { spawnSync } = require('node:child_process');
-            const query = "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\\\.exe$' } | ForEach-Object { [string]$_.CommandLine }";
-            const observed = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', query]);
-            const unrelated = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'exit 23']);
+            const query = "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\\\.exe$' } | ForEach-Object { if ([string]::IsNullOrWhiteSpace([string]$_.CommandLine)) { throw 'android-emulator-process-command-unavailable' }; [string]$_.CommandLine }";
+            const observed = spawnSync(${JSON.stringify(powershell)}, ['-WindowStyle', 'Hidden', '-NoProfile', '-NonInteractive', '-Command', query]);
+            const unrelated = spawnSync(${JSON.stringify(powershell)}, ['-NoProfile', '-NonInteractive', '-Command', 'exit 23']);
             console.log(JSON.stringify({ observed: { status: observed.status, stdout: String(observed.stdout) }, unrelated: unrelated.status }));
-        `], { encoding: "utf8", timeout: 10000 });
+        `], { encoding: "utf8", timeout: 10000, env: { ...process.env, HOME: root, FAKE_ANDROID_LOG: join(root, "fixture.log") } });
         expect(result.status, result.stderr).toBe(0);
         const parsed = JSON.parse(result.stdout);
         expect(parsed.observed).toEqual({ status: 0, stdout: "" });
-        expect(parsed.unrelated).not.toBe(0);
+        expect(parsed.unrelated).toBe(23);
     } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

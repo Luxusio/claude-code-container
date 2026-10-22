@@ -3,10 +3,23 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { prepareRuntimeBindHome, withRuntimeBindGuard } from "../adapters/runtime-bind-authority.js";
 
 const fixture = vi.hoisted(() => ({ home: "", spawn: vi.fn(), capture: vi.fn() }));
 vi.mock("os", async original => ({ ...await original<typeof import("os")>(), homedir: () => fixture.home }));
-vi.mock("child_process", async original => ({ ...await original<typeof import("child_process")>(), spawnSync: (...args: unknown[]) => fixture.spawn(...normalizeNativeRuntimeCall(args)) }));
+vi.mock("child_process", async original => {
+    const native = await original<typeof import("child_process")>();
+    return { ...native, spawnSync: (...args: unknown[]) => {
+        const [command, argv, options] = args;
+        // The real private lock may observe this worker; no other native leaf escapes the fixture.
+        if (command === "/bin/ps" && Array.isArray(argv) && argv.length === 4
+            && argv[0] === "-p" && argv[1] === String(process.pid) && argv[2] === "-o"
+            && (argv[3] === "command=" || argv[3] === "lstart=")) {
+            return native.spawnSync(command, argv, options as import("child_process").SpawnSyncOptions);
+        }
+        return fixture.spawn(...normalizeNativeRuntimeCall(args));
+    } };
+});
 vi.mock("../adapters/container-runtime-invocation.js", async original => {
     const actual = await original<typeof import("../adapters/container-runtime-invocation.js")>();
     const {nativeRuntimeInvocationFixture} = await import("./helpers/native-runtime-fixture.js");
@@ -18,12 +31,14 @@ vi.mock("../utils.js", async original => ({
     get DATA_DIR() { return join(fixture.home, ".ccc"); },
 }));
 import { main } from "../index.js";
-import { _resetRuntimeCacheForTest } from "../container-runtime.js";
+import { _resetRuntimeCacheForTest, captureNativeRuntimeInvocation, runWithNativeRuntimeInvocation } from "../container-runtime.js";
 const argv = process.argv;
 const id = "a".repeat(64);
 
 beforeEach(() => {
     fixture.home = realpathSync(mkdtempSync(join(tmpdir(), "ccc-runtime-layout-")));
+    // Qualify a genuinely fresh home before publishing any legacy bind source.
+    withRuntimeBindGuard(prepareRuntimeBindHome(join(fixture.home, ".ccc")), () => {});
     mkdirSync(join(fixture.home, ".ccc", "codex"), { recursive: true, mode: 0o700 });
     writeFileSync(join(fixture.home, ".ccc", "codex", "sentinel"), "retained-state");
     _resetRuntimeCacheForTest();
@@ -49,9 +64,10 @@ afterEach(() => {
     rmSync(fixture.home, { recursive: true, force: true });
 });
 
-it("uses an explicit runtime's stopped-container inventory before moving legacy state", async () => {
+it("uses already captured explicit authority's stopped-container inventory before moving legacy state", async () => {
     process.argv = [process.execPath, "ccc", "--runtime", "podman", "codex"];
-    await expect(main()).rejects.toThrow("end dispatch fixture");
+    const invocation = captureNativeRuntimeInvocation("podman");
+    await expect(runWithNativeRuntimeInvocation(invocation, () => main())).rejects.toThrow("end dispatch fixture");
     expect(readFileSync(join(fixture.home, ".ccc", "codex", "sentinel"), "utf8")).toBe("retained-state");
     expect(fixture.capture).toHaveBeenCalledExactlyOnceWith("podman");
     expect(existsSync(join(fixture.home, ".ccc", "profiles", "default", "codex"))).toBe(false);
@@ -61,14 +77,32 @@ it("uses an explicit runtime's stopped-container inventory before moving legacy 
     ]);
 });
 
-it("allows migration when the selected default runtime has no retained containers", async () => {
+it("allows migration when captured default authority and complete history prove no retained containers", async () => {
     process.argv = [process.execPath, "ccc", "codex"];
-    await expect(main()).rejects.toThrow("end dispatch fixture");
+    const invocation = captureNativeRuntimeInvocation("docker");
+    await expect(runWithNativeRuntimeInvocation(invocation, () => main())).rejects.toThrow("end dispatch fixture");
     expect(existsSync(join(fixture.home, ".ccc", "codex"))).toBe(false);
     expect(readFileSync(join(fixture.home, ".ccc", "profiles", "default", "codex", "sentinel"), "utf8")).toBe("retained-state");
     expect(fixture.spawn.mock.calls.filter(([, args]) => args[0] === "ps" || args[0] === "inspect").map(([runtime]) => runtime)).toEqual(["docker"]);
     expect(fixture.spawn.mock.calls.every(([runtime]) => runtime === "docker")).toBe(true);
     expect(fixture.capture).toHaveBeenCalledExactlyOnceWith("docker");
+});
+
+it("preserves legacy state when no current authority has been captured", async () => {
+    process.argv = [process.execPath, "ccc", "codex"];
+    await expect(main()).rejects.toThrow("end dispatch fixture");
+    expect(readFileSync(join(fixture.home, ".ccc", "codex", "sentinel"), "utf8")).toBe("retained-state");
+    expect(fixture.capture).not.toHaveBeenCalled();
+    expect(fixture.spawn).not.toHaveBeenCalled();
+});
+
+it("preserves legacy state when existing authority history is missing even with captured authority", async () => {
+    rmSync(join(fixture.home, ".ccc", "runtime-bind-authority"), { recursive: true });
+    process.argv = [process.execPath, "ccc", "codex"];
+    const invocation = captureNativeRuntimeInvocation("docker");
+    await expect(runWithNativeRuntimeInvocation(invocation, () => main())).rejects.toThrow("end dispatch fixture");
+    expect(readFileSync(join(fixture.home, ".ccc", "codex", "sentinel"), "utf8")).toBe("retained-state");
+    expect(fixture.spawn).not.toHaveBeenCalled();
 });
 
 it.each([{ flags: ["--runtime"] }, { flags: ["--runtime", "invalid"] }])("rejects invalid runtime arguments before layout mutation: %j", async ({ flags }) => {

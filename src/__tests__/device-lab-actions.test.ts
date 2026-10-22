@@ -44,14 +44,16 @@ vi.mock("@ccc/device-lab/providers/backends/linux-vm.mjs", async (original) => (
 vi.mock("../../device-lab-mcp/src/broker.mjs", async (original) => ({
     ...await original<Record<string, unknown>>(),
     implicitBrokerProbeOptions: () => ({}),
-    brokerRpc: async () => ({ ok: true, result: { backends: fixture.inventory } }),
-    brokerCommand: async (args: any) => {
+    observeBrokerInventory: async () => ({ ok: true, backends: fixture.inventory, receipt: { ok: true, result: { backends: fixture.inventory } } }),
+    invokeBrokerLifecycle: async (args: any) => {
         fixture.calls.push({ name: args.command, args });
-        return { ok: true, result: { ok: true, device: { id: args.deviceId, backend: args.backend } } };
+        return { ok: true, receipt: { ok: true, result: { ok: true, device: { id: args.deviceId, backend: args.backend } } } };
     },
-    brokerAppium: async (args: any) => {
-        fixture.calls.push({ name: `appium:${args.action}`, args });
-        return { ok: true, result: { response: { body: { value: true } } } };
+    ensureMobileSession: async () => ({ ok: true, receipt: { ok: true } }),
+    executeMobileEffect: async (args: any, effect: { kind: string }) => {
+        const operations: Record<string, string> = { tap: "mobile_tap", "double-tap": "mobile_double_tap", "type-text": "mobile_type_text", "send-key": "mobile_key" };
+        fixture.calls.push({ name: operations[effect.kind] || effect.kind, args });
+        return { kind: "completed", receipt: { ok: true } };
     },
     brokerDeviceTool: async (args: any) => {
         fixture.calls.push({ name: args.tool, args });

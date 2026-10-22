@@ -28,11 +28,31 @@ function sendAndReceive(port: number, data: string, timeout = 500): Promise<stri
     })
 }
 
+// Refusal cases own their error source; a fixed localhost port may be routed or
+// occupied on the host. The native facade suite separately holds a bound,
+// non-listening allocation while exercising real kernel refusals.
+function refuseFixturePorts() {
+    const createConnection = nativeNet.createConnection
+    vi.spyOn(nativeNet, 'createConnection').mockImplementation(((...args: Parameters<typeof net.createConnection>) => {
+        const options = args[0]
+        if (typeof options === 'object' && 'host' in options && options.host === '127.0.0.2'
+            && 'port' in options && (options.port === 1 || options.port === 2)) {
+            const socket = new net.Socket()
+            queueMicrotask(() => socket.emit('error', Object.assign(new Error('fixture connection refused'), { code: 'ECONNREFUSED' })))
+            return socket
+        }
+        return Reflect.apply(createConnection, nativeNet, args)
+    }) as typeof net.createConnection)
+    syncBuiltinESMExports()
+}
+
 describe('localhost-proxy', () => {
     const servers: net.Server[] = []
     afterEach(() => {
         for (const s of servers) s.close()
         servers.length = 0
+        vi.restoreAllMocks()
+        syncBuiltinESMExports()
     })
 
     describe('tryConnect', () => {
@@ -72,14 +92,12 @@ describe('localhost-proxy', () => {
             socket.destroy()
         })
 
-        it('rejects with ECONNREFUSED when no server listening', async () => {
+        it('preserves ECONNREFUSED from the dial and releases the socket', async () => {
             const { tryConnect } = await import('../localhost-proxy.js')
-            try {
-                await tryConnect('127.0.0.2', 1)
-                expect.unreachable('should have thrown')
-            } catch (err: any) {
-                expect(err.code).toBe('ECONNREFUSED')
-            }
+            refuseFixturePorts()
+            await expect(tryConnect('127.0.0.2', 1)).rejects.toMatchObject({ code: 'ECONNREFUSED' })
+            const socket = vi.mocked(nativeNet.createConnection).mock.results[0].value as net.Socket
+            expect(socket.destroyed).toBe(true)
         })
     })
 
@@ -105,6 +123,7 @@ describe('localhost-proxy', () => {
 
         it('falls back to host when local connection refused (use case 1: host server)', async () => {
             const { proxyConnection } = await import('../localhost-proxy.js')
+            refuseFixturePorts()
 
             // "host" server simulating host.docker.internal
             const { port: hostPort, server: hostServer } = await echoServer('host')
@@ -125,6 +144,7 @@ describe('localhost-proxy', () => {
 
         it('destroys client when both local and host fail', async () => {
             const { proxyConnection } = await import('../localhost-proxy.js')
+            refuseFixturePorts()
             const proxyServer = net.createServer((client) => {
                 proxyConnection(client, 1, '127.0.0.2', '127.0.0.2', 2)
             })

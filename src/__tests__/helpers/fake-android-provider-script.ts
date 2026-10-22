@@ -145,11 +145,11 @@ main().catch(error => { console.error(error); process.exitCode = 1; });
 `;
 
 /** Exercise Windows launcher creation while substituting only this fixture's fake emulator. */
-export function fakeAndroidLauncherPreloadSource(binDir: string): string {
+export function fakeAndroidLauncherPreloadSource(binDir: string, systemPowerShell = canonicalWindowsPowerShellPath()): string {
     return String.raw`
 const androidSpawn = cp.spawn;
 const androidSpawnSync = cp.spawnSync;
-const androidSystemPowerShell = ${JSON.stringify(canonicalWindowsPowerShellPath())};
+const androidSystemPowerShell = ${JSON.stringify(systemPowerShell)};
 const androidResolverCandidate = ${JSON.stringify("\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")};
 const androidLstatSync = fs.lstatSync;
 const androidMonotonicNow = performance.now.bind(performance);

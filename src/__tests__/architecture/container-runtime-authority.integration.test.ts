@@ -43,7 +43,7 @@ const out = value => { if (value !== undefined) process.stdout.write(typeof valu
 const absent = () => { process.stderr.write('Error: No such object: ' + state.id); process.exit(1); };
 const image = 'sha256:' + '1'.repeat(64), derived = 'sha256:' + '2'.repeat(64);
 const identity = { 'ccc.identity.version': '1', 'ccc.identity.uid': '1000', 'ccc.identity.gid': '1000',
-  'ccc.identity.mapping': mode === 'podman-remote' ? 'podman-keep-id' : 'host', 'ccc.identity.base': image };
+  'ccc.identity.mapping': mode === 'podman-remote' ? 'podman-keep-id' : process.platform === 'linux' ? 'host' : 'desktop', 'ccc.identity.base': image };
 function inspected() {
   const mounts = [], labels = {}, env = [], tmpfs = {};
   const argv = state.runArgs;

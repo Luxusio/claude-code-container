@@ -433,6 +433,7 @@ const { deviceLabOwnerId } = await import("@ccc/device-lab/device-lab-owner.js")
 const {
     _resetRuntimeCacheForTest,
     _setRuntimeInfoForTest,
+    getRuntimeInfo,
 } = await import("../container-runtime.js");
 
 function makeResult(
@@ -503,12 +504,17 @@ function fullCredentialMountsJson(
         { Source: clipboardFilesDir(), Destination: CLIPBOARD_FILES_CONTAINER_DIR, Type: "bind", RW: true },
     ];
     const hostSshPath = join(homedir(), ".ssh");
+    const runtime = getRuntimeInfo();
     const coreMounts = [
         { Source: getIdentityMiseVolumeName(mockIdentity), Destination: "/home/ccc/.local/share/mise", Type: "volume", RW: true },
         { Source: getIdentityCodexPackagesVolumeName(mockIdentity), Destination: CODEX_PACKAGES_CONTAINER_DIR, Type: "volume", RW: true },
         { Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock", Type: "bind", RW: true },
         ...(mockExistsSync(hostSshPath)
             ? [{ Source: hostSshPath, Destination: "/home/ccc/.ssh", Type: "bind", RW: false }]
+            : []),
+        ...(process.platform === "darwin" && runtime.runtime === "docker" && runtime.dockerDesktop
+            && !extra.some(mount => mount.Destination === "/tmp/ssh-agent.sock")
+            ? [{ Source: "/run/host-services/ssh-auth.sock", Destination: "/tmp/ssh-agent.sock", Type: "bind", RW: true }]
             : []),
     ];
     const deviceLabMounts = options.deviceLabState === false
@@ -2751,6 +2757,8 @@ describe("docker.ts module exports", () => {
         });
 
         it.each(["verified", "mismatch", "unavailable", "host swap", "live challenge mismatch"])("checks opaque WSL filesystem alias: %s", outcome => {
+            // The opaque WSL proof runs in a Linux client context on every test host.
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
             const inspected = JSON.parse(makeDriftedRunningContract(() => undefined));
             const mount = inspected.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude");
             const hostPath = mount.Source;

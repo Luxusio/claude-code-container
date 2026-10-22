@@ -205,7 +205,7 @@ describe("explicit historical Device Lab fixture-state repair", () => {
     it.each(["hyper-v", "windows-sandbox"])("does not mutate state when the %s mutation lock is held", provider => {
         put(networkFile, networkState()); const before = readFileSync(networkFile);
         const lock = join(homeDir, ".ccc/devices/host-locks", `${provider}.mutation.lock`);
-        withSharedMutationLock(lock, () => expect(repair).toThrow(/Timed out acquiring shared mutation lock/));
+        withSharedMutationLock(lock, () => expect(repair).toThrow(expect.objectContaining({ code: "shared-mutation-lock-self-contention" })));
         expect(readFileSync(networkFile)).toEqual(before);
         expect(network).not.toHaveBeenCalled();
     });

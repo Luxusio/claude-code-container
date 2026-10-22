@@ -32,7 +32,7 @@ it("holds a real private host lock through mutation and releases after failure",
 
 it("serializes the default alias while allowing a distinct named profile", () => {
     withCodexConfigLock(() => {
-        expect(() => withCodexConfigLock(() => { throw new Error("must not run"); }, "default")).toThrow(/Timed out acquiring/);
+        expect(() => withCodexConfigLock(() => { throw new Error("must not run"); }, "default")).toThrow(expect.objectContaining({ code: "shared-mutation-lock-self-contention" }));
         expect(withCodexConfigLock(() => "work", "work")).toBe("work");
     });
     expect(state.calls[0].file).toBe(state.calls[1].file);

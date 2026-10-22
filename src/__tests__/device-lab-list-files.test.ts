@@ -10,7 +10,7 @@ const roots: string[] = [];
 function directory() { const root = mkdtempSync(join(tmpdir(), "ccc-list-files-")); roots.push(root); return root; }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function execute(path: string, extra = {}) {
-    const command = buildListFilesCommand("linux-vm", { deviceId: "test-device", path, ...extra });
+    const command = buildListFilesCommand(process.platform === "darwin" ? "macos-vm" : "linux-vm", { deviceId: "test-device", path, ...extra });
     const result = spawnSync("/bin/sh", ["-c", command], { cwd: path, encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024 });
     expect(result.status, result.stderr || String(result.error || "")).toBe(0);
     return { raw: result.stdout, value: parseListFilesOutput(result.stdout) };

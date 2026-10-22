@@ -377,6 +377,7 @@ describe.skipIf(process.platform === "win32")("real inherited POSIX terminal res
         const directory = mkdtempSync(join(tmpdir(), "ccc-container-command-pty-"));
         const clientPath = join(directory, "owned-runtime-client.mjs");
         const parentPath = join(directory, "owned-parent.mjs");
+        const startPath = join(directory, "allow-client-start");
         const releasePath = join(directory, "allow-client-death");
         const helperUrl = new URL("../../dist/container-command.js", import.meta.url).href;
         writeFileSync(clientPath, [
@@ -389,8 +390,11 @@ describe.skipIf(process.platform === "win32")("real inherited POSIX terminal res
             "setTimeout(()=>process.kill(process.pid,'SIGKILL'),7000);",
         ].join("\n"));
         writeFileSync(parentPath, [
+            "import {existsSync} from 'node:fs';",
             `import {runContainerCommand} from ${JSON.stringify(helperUrl)};`,
             "const isRawBefore=process.stdin.isRaw===true;",
+            'process.stdout.write("CCC_PARENT_READY\\n");',
+            `while(!existsSync(${JSON.stringify(startPath)}))await new Promise(resolve=>setTimeout(resolve,10));`,
             `const status=await runContainerCommand(process.execPath,[${JSON.stringify(clientPath)}],true);`,
             'process.stdout.write("CCC_CONTROL_RETURNED "+JSON.stringify({status,isRawBefore,isRawAtReturn:process.stdin.isRaw===true})+"\\n");',
             // The controller inspects shared termios while this process remains
@@ -419,8 +423,12 @@ try:
     initial = termios.tcgetattr(slave)
     initial[3] |= termios.ICANON | termios.ECHO | termios.ISIG
     termios.tcsetattr(slave, termios.TCSANOW, initial)
-    before = termios.tcgetattr(slave)
     parent = subprocess.Popen([sys.argv[1], sys.argv[2]], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+    # Observe the boundary owned by runContainerCommand after Node initializes its TTY streams.
+    read_until(lambda data: b'CCC_PARENT_READY' in data)
+    before = termios.tcgetattr(slave)
+    with open(sys.argv[4], 'w') as gate:
+        gate.write('start only this owned client')
     read_until(lambda data: b'CCC_CLIENT_RAW' in data)
     mutated = termios.tcgetattr(slave)
     with open(sys.argv[3], 'w') as gate:
@@ -432,6 +440,8 @@ try:
     after = termios.tcgetattr(slave)
     result = dict(outcome, before=flags(before), mutated=flags(mutated), after=flags(after),
                   exactAttributesRestored=after == before, parentAliveAtObservation=parent.poll() is None,
+                  attributeDifferences=[dict(field=field, before=repr(old), after=repr(new))
+                      for field, old, new in zip(('iflag', 'oflag', 'cflag', 'lflag', 'ispeed', 'ospeed', 'cc'), before, after) if old != new],
                   bytesBeforeReturn=base64.b64encode(before_return).decode('ascii'))
 finally:
     if parent is not None:
@@ -445,13 +455,14 @@ finally:
 print(json.dumps(result))
 `;
         try {
-            const run = spawnSync("python3", ["-c", controller, process.execPath, parentPath, releasePath], { encoding: "utf8", timeout: 11000, killSignal: "SIGKILL" });
+            const run = spawnSync("python3", ["-c", controller, process.execPath, parentPath, releasePath, startPath], { encoding: "utf8", timeout: 11000, killSignal: "SIGKILL" });
             expect(run.error, run.stderr).toBeUndefined();
             expect(run.status, run.stderr).toBe(0);
             const result = JSON.parse(run.stdout) as {
                 status: number; isRawBefore: boolean; isRawAtReturn: boolean;
                 before: Record<string, boolean>; mutated: Record<string, boolean>; after: Record<string, boolean>;
                 exactAttributesRestored: boolean; parentAliveAtObservation: boolean; bytesBeforeReturn: string;
+                attributeDifferences: Array<{ field: string; before: string; after: string }>;
             };
             expect(result.before).toEqual({ ICANON: true, ECHO: true, ISIG: true });
             expect(result.mutated).toEqual({ ICANON: false, ECHO: false, ISIG: false });
@@ -460,7 +471,7 @@ print(json.dumps(result))
             expect(result.isRawBefore).toBe(false);
             expect(result.isRawAtReturn).toBe(false);
             expect(result.after).toEqual(result.before);
-            expect(result.exactAttributesRestored).toBe(true);
+            expect(result.exactAttributesRestored, JSON.stringify(result.attributeDifferences)).toBe(true);
             expectTerminalRestored(Buffer.from(result.bytesBeforeReturn, "base64").toString("utf8"));
         } finally { rmSync(directory, { recursive: true, force: true }); }
     }, 15000);

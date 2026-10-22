@@ -30,7 +30,7 @@ vi.mock("@ccc/device-lab/providers/backends/linux-vm.mjs", async (original) => (
 }));
 vi.mock("../../device-lab-mcp/src/broker.mjs", async (original) => ({
     ...await original<Record<string, unknown>>(), implicitBrokerProbeOptions: () => ({}),
-    brokerRpc: async () => ({ ok: true, result: { backends: [{ stateKey: "windows-vm", devices: [{ id: "vm" }] }] } }),
+    observeBrokerInventory: async () => ({ ok: true, backends: [{ stateKey: "windows-vm", devices: [{ id: "vm" }] }], receipt: { ok: true } }),
     brokerDeviceTool: async (args: any) => ({ ok: true, result: { mcpResult: response(args.tool, args) } }),
 }));
 import { startServer } from "../../device-lab-mcp/src/server.mjs";

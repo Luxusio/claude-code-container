@@ -622,7 +622,7 @@ export async function cleanupFakeIosMcpContext(context: FakeIosMcpContext | unde
                 do {
                     observation = effects.inspect(runtime.identity, runtime.pid);
                     if (observation.status === "exited") break;
-                    if (observation.status !== "match") throw new Error("runtime generation changed while joining");
+                    if (observation.status !== "match") throw new Error(`runtime generation changed while joining: ${observation.status}; liveness=${observation.liveness ?? "unknown"}; currentStartToken=${observation.current?.startToken ?? "unavailable"}`);
                     await delay(Math.min(20, Math.max(0, grace - Date.now())));
                 } while (Date.now() < grace);
                 if (observation.status === "exited") break;

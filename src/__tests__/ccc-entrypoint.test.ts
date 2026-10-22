@@ -27,6 +27,11 @@ function makeFixture(): Fixture {
     const stateFile = join(dir, 'state.txt');
     writeFileSync(stateFile, '');
 
+    // The container uses Bash 5's EPOCHREALTIME. macOS Bash 3 reaches the
+    // GNU-date fallback, so provide that clock leaf inside the owned PATH.
+    writeFileSync(join(bin, 'date'), `#!${process.execPath}\nif (process.argv[2] !== '+%s%3N') process.exit(1);\nconsole.log(Date.now());\n`);
+    chmodSync(join(bin, 'date'), 0o755);
+
     // Mock iptables — exit codes come from env. -C (check) returns
     // MOCK_CHECK_EXIT (default 1, meaning "rule not present"); -A (add)
     // returns the n-th entry of MOCK_ADD_EXITS (space-separated).
@@ -220,11 +225,14 @@ describe('ccc-entrypoint.sh', () => {
         expect(result.stderr).toMatch(/user missing/);
     });
 
-    it('always emits a one-line summary when proxy setup runs', () => {
+    it('always emits a one-line summary when proxy setup uses the legacy clock', () => {
+        const legacyClock = join(fx.dir, 'legacy-clock.sh');
+        writeFileSync(legacyClock, 'unset EPOCHREALTIME\n');
         const result = runEntrypoint(fx, {
             CCC_PROXY_ENABLED: '1',
             MOCK_CHECK_EXIT: '1',
             MOCK_ADD_EXITS: '0',
+            BASH_ENV: legacyClock,
         });
 
         expect(result.status).toBe(0);

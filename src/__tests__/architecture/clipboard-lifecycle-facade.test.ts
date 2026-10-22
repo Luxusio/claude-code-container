@@ -8,7 +8,25 @@ import {NATIVE_RUNTIME_SELECTOR_KEYS} from "../../ports/container-runtime-invoca
 
 type NativeGlobalGuard = typeof import("../../adapters/runtime-bind-authority.js").withRuntimeBindGuardAsync;
 const native = vi.hoisted(() => ({root: "", realHash: false, namedDevice: "native" as "native" | "zero" | "other", read: vi.fn(), exists: vi.fn(), spawn: vi.fn(), request: vi.fn(), acquire: vi.fn(), recover: vi.fn(), release: vi.fn(), bindUsers: vi.fn(), global: vi.fn(), originalGlobal: undefined as NativeGlobalGuard | undefined}));
-vi.mock("child_process", () => ({ spawn: native.spawn, spawnSync: () => { throw new Error("No native command"); } }));
+vi.mock("child_process", async original => {
+    const actual = await original<typeof import("node:child_process")>();
+    function ownIdentity(command: unknown, args: readonly string[]) {
+        const fields = args[0] === "-ww" ? args.slice(1) : args;
+        return process.platform === "darwin" && command === "/bin/ps" && fields.length === 4
+            && fields[0] === "-p" && fields[1] === String(process.pid) && fields[2] === "-o"
+            && ["command=", "lstart="].includes(fields[3]);
+    }
+    return { spawn: native.spawn,
+        spawnSync: (...args: Parameters<typeof actual.spawnSync>) => {
+            if (!ownIdentity(args[0], args[1] as string[])) throw new Error("No native command");
+            return actual.spawnSync(...args);
+        },
+        execFile: (...args: Parameters<typeof actual.execFile>) => {
+            if (!ownIdentity(args[0], args[1] as string[])) throw new Error("No native command");
+            return actual.execFile(...args);
+        },
+    };
+});
 vi.mock("./../../utils.js", () => ({ CLIPBOARD_FILES_CONTAINER_DIR: "/clipboard-files" }));
 vi.mock("./../../home-layout.js", () => ({cccHome: () => native.root, clipboardFilesDir: () => join(native.root, "files"), clipboardPortFile: () => join(native.root, "port"), clipboardStartingLock: () => join(native.root, "lock"), helperBinDir: () => join(native.root, "bin"), locksDir: () => join(native.root, "locks")}));
 vi.mock("./../../clipboard-startup-lock.js", () => ({ tryAcquireClipboardStartupLock: native.acquire, recoverDeadClipboardStartupLock: native.recover, releaseClipboardStartupLock: native.release }));

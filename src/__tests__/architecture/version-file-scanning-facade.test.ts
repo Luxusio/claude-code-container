@@ -58,18 +58,20 @@ describe("native version scanner compatibility", () => {
             "bin",
             "obj",
             "Pods",
-            ".hidden",
-            "Node_modules"
+            ".hidden"
         ]) {
             mkdirSync(join(root, name));
             writeFileSync(join(root, name, "Cargo.toml"), name);
         }
+        const mixedCase = join(root, "mixed-case", "Node_modules");
+        mkdirSync(mixedCase, { recursive: true });
+        writeFileSync(join(mixedCase, "Cargo.toml"), "Node_modules");
         expect(statSync(join(root, "package.json")).size).toBe(102400);
         expect(statSync(join(root, "go.mod")).size).toBe(102401);
         const files = scanVersionFiles(root);
         expect(files.get("package.json")).toBe(exact);
         expect(files.get(".nvmrc")).toBe("22");
-        expect(files.get(join("Node_modules", "Cargo.toml"))).toBe("Node_modules");
+        expect(files.get(join("mixed-case", "Node_modules", "Cargo.toml"))).toBe("Node_modules");
         expect(files.size).toBe(3);
     });
     it("preserves native directory order and skips file and directory links when available", ({ skip }) => {

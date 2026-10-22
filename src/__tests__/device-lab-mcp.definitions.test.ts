@@ -366,7 +366,8 @@ describe("device-lab MCP backend definitions", () => {
             name: "Mac Test", provider: "auto", image: "macos-restore-image", memoryMb: 8192, cpus: 4,
         } });
         expect(create.isError).toBe(true);
-        expect((create.content as Array<{ text?: string }>)[0].text).toContain("macos-host");
+        const missing = process.platform === "darwin" ? "macos-vm-provider" : "macos-host";
+        expect((create.content as Array<{ text?: string }>)[0].text).toContain(missing);
 
         const list = await client.callTool({ name: "devices", arguments: {} });
         const listed = JSON.parse(((list.content as Array<{ text?: string }>)[0].text ?? "{}"));
@@ -375,7 +376,7 @@ describe("device-lab MCP backend definitions", () => {
         const inventory = await client.callTool({ name: "devices", arguments: { view: "available", backend: "macos-vm" } });
         expect(inventory.isError).not.toBe(true);
         const available = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}"));
-        expect(available.discovery).toMatchObject({ available: false, missing: ["macos-host"] });
+        expect(available.discovery).toMatchObject({ available: false, missing: [missing] });
         expect(available.hostVms).toMatchObject({ lazy: true, missing: ["macos-host"] });
         expect(available.devices).toEqual([]);
 

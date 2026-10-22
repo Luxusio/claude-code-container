@@ -43,23 +43,23 @@ describe("saved provider failure evidence", () => {
     });
 
     it.each([undefined, "window_list"])("preserves known validation evidence through actual error artifacts, record=%s", name => {
-        const { message, saved } = savedFailure("window_list does not support incarnationId", name);
-        expect(JSON.parse(saved).failure).toMatchObject({ validation: { kind: "unsupported-argument", tool: "window_list", field: "incarnationId" } });
-        expect(message).toContain("validation=unsupported-argument: tool=window_list: field=incarnationId");
+        const { message, saved } = savedFailure("window_list does not support appId", name);
+        expect(JSON.parse(saved).failure).toMatchObject({ validation: { kind: "unsupported-argument", tool: "window_list", field: "appId" } });
+        expect(message).toContain("validation=unsupported-argument: tool=window_list: field=appId");
         if (name) expect(JSON.parse(saved).failure.tool).toBe(name);
         else expect(JSON.parse(saved).failure).not.toHaveProperty("tool");
         expect(message + saved).not.toMatch(/PRIVATE-ARGUMENT|PRIVATE-RECORD|password/);
     });
     it.each([
         "window_list does not support PRIVATE-FIELD",
-        "private_tool does not support incarnationId",
-        "window_list does not support incarnationId PRIVATE-SUFFIX",
-        "window_list does not support incarnationId\n",
+        "private_tool does not support appId",
+        "window_list does not support appId PRIVATE-SUFFIX",
+        "window_list does not support appId\n",
     ])("does not preserve arbitrary validation text: %s", raw => {
         const { message, saved } = savedFailure(raw, "private_tool");
         expect(JSON.parse(saved).failure).not.toHaveProperty("validation");
         expect(JSON.parse(saved).failure).not.toHaveProperty("tool");
-        expect(message + saved).not.toMatch(/PRIVATE|private_tool|incarnationId/);
+        expect(message + saved).not.toMatch(/PRIVATE|private_tool|appId/);
     });
     it("adds only the catalog-approved call identity to ordinary provider errors", () => {
         const { message, saved } = savedFailure("device-not-found", "window_list");
