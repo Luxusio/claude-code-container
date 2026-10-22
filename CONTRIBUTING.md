@@ -276,15 +276,24 @@ call goes through `runtimeCli()`.
 ## Testing
 
 ```bash
-# Run all tests
+# Run all tests and save their output and Vitest JSON report
 npm test
 
-# Run specific test file
-npx vitest run src/__tests__/docker.test.ts
+# Run a specific test file with the same saved results
+npm test -- src/__tests__/docker.test.ts
 
 # Run tests in watch mode
 npm run test:watch
 ```
+
+Each `npm test` invocation saves script-test, build and Vitest output in a unique
+`results/tests/<timestamp-pid-random>/` directory. Start with
+`results/tests/latest.json` to locate the most recently finished run's `test.log`,
+`vitest.json` and metadata. Results are ignored by Git and retained without
+automatic deletion.
+
+See [saved test results](doc/verification/GUIDE__test-results.md) for failure and
+interruption handling, focused commands and Mac host evidence requirements.
 
 ## Release Process
 
