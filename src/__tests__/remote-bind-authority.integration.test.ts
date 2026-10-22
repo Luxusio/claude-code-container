@@ -316,6 +316,66 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         expect(existsSync(f.marker)).toBe(false);
     });
 
+    it("keeps marker publication on the held authority directory when its path is replaced", async () => {
+        const f = fixture(); f.prepare();
+        const nativeLink = spawnSync("/bin/sh", ["-c", "command -v link"], { env: f.env, encoding: "utf8" }).stdout.trim();
+        writeFileSync(join(f.bin, "link"), [
+            "#!/bin/sh",
+            'case "${2##*/}" in receiving-host-incomplete)',
+            ' printf ready > "$HOME/ready"; while [ ! -e "$HOME/continue" ]; do sleep 0.01; done ;; esac',
+            `exec ${shellEscapeArg(nativeLink)} "$@"`,
+        ].join("\n"), { mode: 0o700 });
+        const held = f.start(remoteRuntimeBindAuthorityShell(`printf changed > ${shellEscapeArg(f.effect)}`));
+        await waitForFile(join(f.home, "ready"));
+        const directory = join(f.root, "runtime-bind-authority"); const displaced = `${directory}.displaced`;
+        renameSync(directory, displaced); mkdirSync(directory, { mode: 0o700 });
+        writeFileSync(f.marker, "successor marker", { mode: 0o600 });
+        const successor = lstatSync(f.marker).ino;
+        writeFileSync(join(f.home, "continue"), "continue");
+
+        expect((await held.completed).code).toBe(74);
+        expect(readFileSync(f.marker, "utf8")).toBe("successor marker");
+        expect(lstatSync(f.marker).ino).toBe(successor);
+        expect(readFileSync(join(displaced, "receiving-host-incomplete"), "utf8")).toBe("ccc-runtime-bind-authority:remote-incomplete:v1\n");
+        expect(existsSync(f.effect)).toBe(false);
+        expect(existsSync(f.lock)).toBe(false);
+    });
+
+    it("rereads held records from the beginning when native descriptor reopening shares offsets", () => {
+        const f = fixture(); f.prepare();
+        const nativeDd = spawnSync("/bin/sh", ["-c", "command -v dd"], { env: f.env, encoding: "utf8" }).stdout.trim();
+        writeFileSync(join(f.bin, "dd"), [
+            `#!${process.execPath}`,
+            'const fs = require("node:fs"); const { spawnSync } = require("node:child_process");',
+            'const args = process.argv.slice(2); const input = args.find(arg => /^if=\\/.*\\/(4|5)$/.test(arg));',
+            'if (input) { const fd = Number(input.slice(-1)); const value = Buffer.alloc(16385); const size = fs.readSync(fd, value, 0, value.length, null); process.stdout.write(value.subarray(0, size)); }',
+            `else { const result = spawnSync(${JSON.stringify(nativeDd)}, args, { stdio: "inherit" }); process.exit(result.status ?? 1); }`,
+        ].join("\n"), { mode: 0o700 });
+        writeFileSync(join(f.bin, "tail"), [
+            `#!${process.execPath}`,
+            'const fs = require("node:fs"); const args = process.argv.slice(2);',
+            'const fd = Number(args[2]?.slice(-1)); const size = Number(args[1]);',
+            // Model Apple's regular-file RBYTES seek: equality forces position zero.
+            'if (args[0] !== "-c" || ![4, 5].includes(fd) || size !== fs.fstatSync(fd).size || size > 16384) process.exit(96);',
+            'const value = Buffer.alloc(size); const count = fs.readSync(fd, value, 0, size, 0);',
+            'const drain = Buffer.alloc(16385); while (fs.readSync(fd, drain, 0, drain.length, null) > 0) {}',
+            'process.stdout.write(value.subarray(0, count));',
+        ].join("\n"), { mode: 0o700 });
+        const result = f.run(remoteRuntimeBindAuthorityShell('_ccc_bind_assert && _ccc_bind_assert && printf verified'));
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("verified");
+        expect(existsSync(f.lock)).toBe(false);
+    });
+
+    it("keeps authority validation and release in their held cwd when the body changes directory", () => {
+        const f = fixture(); f.prepare();
+        const result = f.run(remoteRuntimeBindAuthorityShell('cd "$HOME"; printf verified'));
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("verified");
+        expect(existsSync(f.lock)).toBe(false);
+        expect(existsSync(f.marker)).toBe(true);
+    });
+
     it("retains the incomplete barrier when its exact owned shell is killed before release", async () => {
         const f = fixture(); const home = f.prepare();
         const held = f.start(remoteRuntimeBindAuthorityShell(waitBody(f.home)));
@@ -349,9 +409,9 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         },
     );
 
-    it.each(["stat", "link", "dd"])("refuses a missing %s safe primitive before creating credentials or native effects", missing => {
+    it.each(["stat", "link", "dd", "tail"])("refuses a missing %s safe primitive before creating credentials or native effects", missing => {
         const f = fixture(); f.prepare(); const limited = join(f.home, "limited-bin"); mkdirSync(limited, { mode: 0o700 });
-        for (const tool of ["stat", "mkdir", "link", "rm", "mv", "hostname", "dd"]) {
+        for (const tool of ["stat", "mkdir", "link", "rm", "mv", "hostname", "dd", "tail"]) {
             if (tool === missing) continue;
             const located = spawnSync("/bin/sh", ["-c", `command -v ${tool}`], { encoding: "utf8" });
             expect(located.status).toBe(0);

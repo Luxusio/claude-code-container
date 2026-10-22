@@ -31,10 +31,12 @@ export function remoteLifecycleShell(containerName: string, body: string, lockWa
         "_ccc_assert_private \"$_ccc_runtime_path\" || exit 74",
         "chmod 700 \"$_ccc_runtime_path\"",
         "eval 'exec 8<\"$_ccc_runtime_path\"'",
-        "if [ -d /proc/$$/fd/8 ]; then _ccc_runtime_bound=/proc/$$/fd/8; elif [ -d /dev/fd/8 ]; then _ccc_runtime_bound=/dev/fd/8; else eval 'exec 8<&-'; exit 74; fi",
-        "_ccc_runtime_identity=$(_ccc_identity \"$_ccc_runtime_bound\") || exit 74",
-        "_ccc_assert_runtime() { _ccc_assert_private \"$_ccc_runtime_path\" && [ \"$(_ccc_identity \"$_ccc_runtime_path\")\" = \"$_ccc_runtime_identity\" ] && [ \"$(_ccc_identity \"$_ccc_runtime_bound\")\" = \"$_ccc_runtime_identity\" ]; }",
-        "_ccc_runtime=$_ccc_runtime_bound",
+        "if [ -d /dev/fd/8 ]; then _ccc_runtime_descriptor=/dev/fd/8; elif [ -d /proc/self/fd/8 ]; then _ccc_runtime_descriptor=/proc/self/fd/8; else eval 'exec 8<&-'; exit 74; fi",
+        "_ccc_runtime_identity=$(_ccc_identity \"$_ccc_runtime_descriptor\") || exit 74",
+        "cd -P \"$_ccc_runtime_path\" || exit 74",
+        "[ \"$(_ccc_identity .)\" = \"$_ccc_runtime_identity\" ] || exit 74",
+        "_ccc_assert_runtime() { _ccc_assert_private \"$_ccc_runtime_path\" && [ \"$(_ccc_identity \"$_ccc_runtime_path\")\" = \"$_ccc_runtime_identity\" ] && [ \"$(_ccc_identity \"$_ccc_runtime_descriptor\")\" = \"$_ccc_runtime_identity\" ] && [ \"$(_ccc_identity .)\" = \"$_ccc_runtime_identity\" ]; }",
+        "_ccc_runtime=.",
         `_ccc_lock=$_ccc_runtime/lifecycle-${key}.lock`,
         `_ccc_guard=$_ccc_runtime/lifecycle-${key}.guard`,
         `_ccc_candidate=$_ccc_runtime/.lifecycle-${key}.$$.${token}`,
@@ -44,7 +46,7 @@ export function remoteLifecycleShell(containerName: string, body: string, lockWa
         "_ccc_lock_owned=0",
         "_ccc_release_guard() { [ \"$_ccc_guard_owned\" -eq 1 ] || return 0; case \"$_ccc_guard_backend\" in flock) flock -u 9 2>/dev/null || true; eval 'exec 9>&-' ;; shlock) if read -r _ccc_guard_pid < \"$_ccc_guard\" 2>/dev/null && [ \"$_ccc_guard_pid\" = \"$$\" ]; then rm -f \"$_ccc_guard\"; fi ;; esac; _ccc_guard_owned=0; }",
         "_ccc_unlock() { if command -v _ccc_bind_release >/dev/null 2>&1; then _ccc_bind_release || true; fi; if [ \"$_ccc_lock_owned\" -eq 1 ] && read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock\"; fi; _ccc_lock_owned=0; _ccc_release_guard; rm -f \"$_ccc_candidate\" 2>/dev/null || true; eval 'exec 8<&-' 2>/dev/null || true; }",
-        "_ccc_on_signal() { _ccc_signal_status=$1; trap - EXIT HUP INT TERM; _ccc_unlock; exit \"$_ccc_signal_status\"; }",
+        "_ccc_on_signal() { _ccc_signal_status=$1; trap - EXIT HUP INT TERM; wait 2>/dev/null || true; _ccc_unlock; exit \"$_ccc_signal_status\"; }",
         "trap _ccc_unlock EXIT",
         "trap '_ccc_on_signal 129' HUP",
         "trap '_ccc_on_signal 130' INT",
@@ -57,7 +59,7 @@ export function remoteLifecycleShell(containerName: string, body: string, lockWa
         "_ccc_lock_owned=1",
         "rm -f \"$_ccc_candidate\"",
         "_ccc_assert_runtime || exit 74",
-        body,
+        `( ${body} )`,
     ].join("; ");
 }
 
@@ -199,7 +201,7 @@ export function remoteStopShell(containerName: string, ownToken: string, expecte
 /** Receiving-host no-reclaim subset of the native codex-state shared claim protocol. */
 export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = false): string {
     const token = randomBytes(16).toString("hex");
-    return [
+    const scope = "( " + [
         "set -eu",
         "umask 077",
         `_ccc_bind_token=${token}`,
@@ -208,30 +210,33 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "_ccc_bind_identity() { stat -L -c %d:%i \"$1\" 2>/dev/null || stat -L -f %d:%i \"$1\" 2>/dev/null; }",
         "_ccc_bind_private_dir() { [ -d \"$1\" ] && [ ! -L \"$1\" ] && [ -O \"$1\" ] || return 1; _ccc_bind_mode=$(stat -c %a \"$1\" 2>/dev/null || stat -f %Lp \"$1\" 2>/dev/null) || return 1; case \"$_ccc_bind_mode\" in ''|*[!0-7]*) return 1 ;; esac; [ $((0$_ccc_bind_mode & $2)) -eq 0 ]; }",
         "_ccc_bind_private_file() { [ -f \"$1\" ] && [ ! -L \"$1\" ] && [ -O \"$1\" ] || return 1; _ccc_bind_meta=$(stat -c '%a:%h:%s' \"$1\" 2>/dev/null || stat -f '%Lp:%l:%z' \"$1\" 2>/dev/null) || return 1; case \"$_ccc_bind_meta\" in ''|*[!0-9:]*|:*|*::*) return 1 ;; esac; _ccc_bind_mode=${_ccc_bind_meta%%:*}; _ccc_bind_rest=${_ccc_bind_meta#*:}; _ccc_bind_links=${_ccc_bind_rest%%:*}; _ccc_bind_size=${_ccc_bind_rest#*:}; [ $((0$_ccc_bind_mode & 077)) -eq 0 ] && [ \"$_ccc_bind_links\" -eq 1 ] && [ \"$_ccc_bind_size\" -le \"$2\" ]; }",
-        "_ccc_bind_read() { dd if=\"$1\" bs=16385 count=1 2>/dev/null; }",
+        // BSD fdesc reopening shares the original file offset. An exact-size tail
+        // seeks to zero; dd bounds concurrent growth and the trailer preserves errors.
+        "_ccc_bind_read() { _ccc_bind_read_size=$(stat -L -c %s \"$1\" 2>/dev/null || stat -L -f %z \"$1\" 2>/dev/null) || return 1; case \"$_ccc_bind_read_size\" in ''|*[!0-9]*) return 1 ;; esac; [ \"$_ccc_bind_read_size\" -le 16384 ] || return 1; _ccc_bind_read_suffix=$(printf '\\nccc-tail-%s:0' \"$_ccc_bind_token\"); _ccc_bind_read_value=$({ _ccc_bind_read_status=0; tail -c \"$_ccc_bind_read_size\" \"$1\" 2>/dev/null || _ccc_bind_read_status=$?; printf '\\nccc-tail-%s:%s' \"$_ccc_bind_token\" \"$_ccc_bind_read_status\"; } | dd bs=1 count=16440 2>/dev/null) || return 1; case \"$_ccc_bind_read_value\" in *\"$_ccc_bind_read_suffix\") _ccc_bind_read_value=${_ccc_bind_read_value%\"$_ccc_bind_read_suffix\"} ;; *) return 1 ;; esac; _ccc_bind_read_after=$(stat -L -c %s \"$1\" 2>/dev/null || stat -L -f %z \"$1\" 2>/dev/null) || return 1; [ \"$_ccc_bind_read_after\" = \"$_ccc_bind_read_size\" ] || return 1; printf '%s' \"$_ccc_bind_read_value\"; }",
         "_ccc_bind_root=$HOME/.ccc",
-        "_ccc_bind_assert_root() { _ccc_bind_private_dir \"$HOME\" 022 && _ccc_bind_private_dir \"$_ccc_bind_root\" 022 && [ \"$(_ccc_bind_identity \"$_ccc_bind_root\")\" = \"$_ccc_bind_root_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_root_bound\")\" = \"$_ccc_bind_root_identity\" ]; }",
-        "_ccc_bind_assert_directory() { _ccc_bind_assert_root && _ccc_bind_private_dir \"$_ccc_bind_directory_path\" 077 && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_path\")\" = \"$_ccc_bind_directory_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_bound\")\" = \"$_ccc_bind_directory_identity\" ]; }",
+        "_ccc_bind_assert_root() { _ccc_bind_private_dir \"$HOME\" 022 && _ccc_bind_private_dir \"$_ccc_bind_root\" 022 && [ \"$(_ccc_bind_identity \"$_ccc_bind_root\")\" = \"$_ccc_bind_root_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_root_bound\")\" = \"$_ccc_bind_root_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_root_descriptor\")\" = \"$_ccc_bind_root_identity\" ]; }",
+        "_ccc_bind_assert_directory() { _ccc_bind_assert_root && _ccc_bind_private_dir \"$_ccc_bind_directory_path\" 077 && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_path\")\" = \"$_ccc_bind_directory_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_bound\")\" = \"$_ccc_bind_directory_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_directory_descriptor\")\" = \"$_ccc_bind_directory_identity\" ]; }",
         "_ccc_bind_no_archives() { for _ccc_bind_archive in \"$_ccc_bind_root_bound\"/codex-state.lock.*.stale \"$_ccc_bind_root_bound\"/codex-state.lock.*.release \"$_ccc_bind_root_bound\"/codex-state.lock.*.malformed; do [ ! -e \"$_ccc_bind_archive\" ] && [ ! -L \"$_ccc_bind_archive\" ] || return 1; done; }",
         "_ccc_bind_claim_matches() { _ccc_bind_assert_root && _ccc_bind_private_file \"$1\" 16384 && [ \"$(_ccc_bind_identity \"$1\")\" = \"$_ccc_bind_claim_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_claim_bound\")\" = \"$_ccc_bind_claim_identity\" ] || return 1; _ccc_bind_claim_read=$(_ccc_bind_read \"$_ccc_bind_claim_bound\") || return 1; [ \"$_ccc_bind_claim_read\" = \"$_ccc_bind_record\" ] && _ccc_bind_private_file \"$1\" 16384 && [ \"$(_ccc_bind_identity \"$1\")\" = \"$_ccc_bind_claim_identity\" ]; }",
         // A losing publisher may remove only its captured, still single-link staging inode.
         // Native admission also protects displaced .release records; never delete a raced successor.
         "_ccc_bind_release() { _ccc_bind_release_status=0; if [ \"$_ccc_bind_candidate_owned\" -eq 1 ]; then _ccc_bind_candidate_owned=0; if _ccc_bind_claim_matches \"$_ccc_bind_candidate\"; then rm -f \"$_ccc_bind_candidate\" || _ccc_bind_release_status=74; fi; fi; if [ \"$_ccc_bind_owned\" -eq 1 ]; then _ccc_bind_owned=0; _ccc_bind_release_status=74; if _ccc_bind_claim_matches \"$_ccc_bind_lock\"; then _ccc_bind_release_path=$_ccc_bind_root_bound/codex-state.lock.${_ccc_bind_token%????????????????}.release; if [ ! -e \"$_ccc_bind_release_path\" ] && [ ! -L \"$_ccc_bind_release_path\" ] && mv \"$_ccc_bind_lock\" \"$_ccc_bind_release_path\"; then if _ccc_bind_claim_matches \"$_ccc_bind_release_path\" && rm -f \"$_ccc_bind_release_path\"; then _ccc_bind_release_status=0; fi; fi; fi; fi; eval 'exec 4<&- 5<&- 6<&- 7<&-' 2>/dev/null || true; return \"$_ccc_bind_release_status\"; }",
-        ...(!lifecycleHeld ? [
-            "_ccc_bind_signal() { _ccc_bind_signal_status=$1; trap - EXIT HUP INT TERM; _ccc_bind_release || true; exit \"$_ccc_bind_signal_status\"; }",
-            "trap _ccc_bind_release EXIT",
-            "trap '_ccc_bind_signal 129' HUP",
-            "trap '_ccc_bind_signal 130' INT",
-            "trap '_ccc_bind_signal 143' TERM",
-        ] : []),
-        "for _ccc_bind_tool in stat mkdir link rm mv hostname dd; do command -v \"$_ccc_bind_tool\" >/dev/null 2>&1 || exit 75; done",
+        "_ccc_bind_signal() { _ccc_bind_signal_status=$1; trap - EXIT HUP INT TERM; _ccc_bind_release || true; exit \"$_ccc_bind_signal_status\"; }",
+        "trap _ccc_bind_release EXIT",
+        "trap '_ccc_bind_signal 129' HUP",
+        "trap '_ccc_bind_signal 130' INT",
+        "trap '_ccc_bind_signal 143' TERM",
+        "for _ccc_bind_tool in stat mkdir link rm mv hostname dd tail; do command -v \"$_ccc_bind_tool\" >/dev/null 2>&1 || exit 75; done",
         "_ccc_bind_private_dir \"$HOME\" 022 || exit 74",
         "if [ ! -e \"$_ccc_bind_root\" ] && [ ! -L \"$_ccc_bind_root\" ]; then mkdir \"$_ccc_bind_root\" 2>/dev/null || true; fi",
         "_ccc_bind_private_dir \"$_ccc_bind_root\" 022 || exit 74",
         "eval 'exec 7<\"$_ccc_bind_root\"'",
-        "if [ -d /proc/$$/fd/7 ]; then _ccc_bind_fd_prefix=/proc/$$/fd; elif [ -d /dev/fd/7 ]; then _ccc_bind_fd_prefix=/dev/fd; else exit 75; fi",
-        "_ccc_bind_root_bound=$_ccc_bind_fd_prefix/7",
-        "_ccc_bind_root_identity=$(_ccc_bind_identity \"$_ccc_bind_root_bound\") || exit 74",
+        "if [ -d /dev/fd/7 ]; then _ccc_bind_fd_prefix=/dev/fd; elif [ -d /proc/self/fd/7 ]; then _ccc_bind_fd_prefix=/proc/self/fd; else exit 75; fi",
+        "_ccc_bind_root_descriptor=$_ccc_bind_fd_prefix/7",
+        "_ccc_bind_root_identity=$(_ccc_bind_identity \"$_ccc_bind_root_descriptor\") || exit 74",
+        "cd -P \"$_ccc_bind_root\" || exit 74",
+        "[ \"$(_ccc_bind_identity .)\" = \"$_ccc_bind_root_identity\" ] || exit 74",
+        "_ccc_bind_root_bound=.",
         "_ccc_bind_assert_root || exit 74",
         "_ccc_bind_lock=$_ccc_bind_root_bound/codex-state.lock",
         "[ ! -e \"$_ccc_bind_lock\" ] && [ ! -L \"$_ccc_bind_lock\" ] && _ccc_bind_no_archives || exit 73",
@@ -257,9 +262,16 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "if [ ! -e \"$_ccc_bind_directory_path\" ] && [ ! -L \"$_ccc_bind_directory_path\" ]; then mkdir \"$_ccc_bind_directory_path\" 2>/dev/null || true; fi",
         "_ccc_bind_private_dir \"$_ccc_bind_directory_path\" 077 || exit 74",
         "eval 'exec 6<\"$_ccc_bind_directory_path\"'",
-        "_ccc_bind_directory_bound=$_ccc_bind_fd_prefix/6",
-        "_ccc_bind_directory_identity=$(_ccc_bind_identity \"$_ccc_bind_directory_bound\") || exit 74",
+        "_ccc_bind_directory_descriptor=$_ccc_bind_fd_prefix/6",
+        "_ccc_bind_directory_identity=$(_ccc_bind_identity \"$_ccc_bind_directory_descriptor\") || exit 74",
+        "_ccc_bind_directory_bound=$_ccc_bind_directory_path",
         "_ccc_bind_assert_directory && _ccc_bind_claim_matches \"$_ccc_bind_lock\" && _ccc_bind_no_archives || exit 74",
+        "( cd -P \"$_ccc_bind_directory_path\" || exit 74",
+        "[ \"$(_ccc_bind_identity .)\" = \"$_ccc_bind_directory_identity\" ] || exit 74",
+        "_ccc_bind_root_bound=$_ccc_bind_root",
+        "_ccc_bind_lock=$_ccc_bind_root/codex-state.lock",
+        "_ccc_bind_directory_path=$_ccc_bind_root/runtime-bind-authority",
+        "_ccc_bind_directory_bound=.",
         "_ccc_bind_marker=$_ccc_bind_directory_bound/receiving-host-incomplete",
         "if [ ! -e \"$_ccc_bind_marker\" ] && [ ! -L \"$_ccc_bind_marker\" ]; then _ccc_bind_marker_candidate=$_ccc_bind_directory_bound/.receiving-host-incomplete.$_ccc_bind_token; (set -C; printf '%s\\n' ccc-runtime-bind-authority:remote-incomplete:v1 > \"$_ccc_bind_marker_candidate\") || exit 74; _ccc_bind_private_file \"$_ccc_bind_marker_candidate\" 4096 || exit 74; link \"$_ccc_bind_marker_candidate\" \"$_ccc_bind_marker\" || exit 74; rm -f \"$_ccc_bind_marker_candidate\"; fi",
         "_ccc_bind_private_file \"$_ccc_bind_marker\" 4096 || exit 74",
@@ -269,9 +281,25 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         "_ccc_bind_marker_record=$(_ccc_bind_read \"$_ccc_bind_marker_bound\") || exit 74",
         "_ccc_bind_assert() { _ccc_bind_assert_directory && _ccc_bind_no_archives && _ccc_bind_claim_matches \"$_ccc_bind_lock\" && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ] && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker_bound\")\" = \"$_ccc_bind_marker_identity\" ] || return 1; _ccc_bind_marker_read=$(_ccc_bind_read \"$_ccc_bind_marker_bound\") || return 1; [ \"$_ccc_bind_marker_read\" = \"$_ccc_bind_marker_record\" ] && _ccc_bind_private_file \"$_ccc_bind_marker\" 4096 && [ \"$(_ccc_bind_identity \"$_ccc_bind_marker\")\" = \"$_ccc_bind_marker_identity\" ]; }",
         "_ccc_bind_assert || exit 74",
-        body,
+        `( ${body} )`,
         "_ccc_bind_assert || exit 74",
+        ")",
         "_ccc_bind_release || exit 74",
+    ].join("; ") + " )";
+    return [
+        "_ccc_bind_wait_signal() { trap - HUP INT TERM; wait 2>/dev/null || true; if command -v _ccc_on_signal >/dev/null 2>&1; then _ccc_on_signal \"$1\"; else exit \"$1\"; fi; }",
+        "trap '_ccc_bind_wait_signal 129' HUP",
+        "trap '_ccc_bind_wait_signal 130' INT",
+        "trap '_ccc_bind_wait_signal 143' TERM",
+        scope,
+        "_ccc_bind_scope_status=$?",
+        "trap - HUP INT TERM",
+        ...(lifecycleHeld ? [
+            "trap '_ccc_on_signal 129' HUP",
+            "trap '_ccc_on_signal 130' INT",
+            "trap '_ccc_on_signal 143' TERM",
+        ] : []),
+        '( exit "$_ccc_bind_scope_status" )',
     ].join("; ");
 }
 
@@ -314,5 +342,5 @@ export function remoteContainerStartScript(projectPath: string, profile?: string
         -w /project/${projectId} \
         --pids-limit ${CONTAINER_PID_LIMIT} \
         "$_ccc_remote_image" sleep infinity); fi`;
-    return remoteRuntimeBindAuthorityShell(command, lifecycleHeld);
+    return `_ccc_container_id=$( ${remoteRuntimeBindAuthorityShell(`${command}; printf '%s\\n' "$_ccc_container_id"`, lifecycleHeld)} )`;
 }

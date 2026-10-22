@@ -58,6 +58,14 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
         expect(statSync(join(home, ".ccc", "remote-runtime")).mode & 0o777).toBe(0o700);
     });
 
+    it("releases the held lifecycle lock when its body changes directory", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-cwd-home-")); roots.push(home);
+        const containerName = "ccc-lock-body-cwd";
+        await expect(runShell(remoteLifecycleShell(containerName, 'cd "$HOME"'), home)).resolves.toBe(0);
+        expect(existsSync(join(home, ".ccc", "remote-runtime", `lifecycle-${hashPath(containerName)}.lock`))).toBe(false);
+        await expect(runShell(remoteLifecycleShell(containerName, "exit 99", 0.15), home)).resolves.toBe(99);
+    });
+
     it("rejects a symlink substituted for the private runtime root", () => {
         const home = mkdtempSync(join(tmpdir(), "ccc-remote-lock-home-"));
         const external = mkdtempSync(join(tmpdir(), "ccc-remote-lock-external-"));
