@@ -46,8 +46,9 @@ export function createNativeContainerExistingLifecycle(
         remove: (id) => {
             context.beforeRemove?.();
             // Ordinary rm refuses removal if an external actor starts the container.
+            // Layer and bind-mount cleanup can exceed 30 seconds on Docker Desktop.
             const removed = runner.spawnSync(["rm", id], {
-                timeout: 30_000, killSignal: "SIGKILL",
+                timeout: 120_000, killSignal: "SIGKILL",
                 encoding: "utf-8",
                 stdio: ["ignore", "pipe", "pipe"],
             });

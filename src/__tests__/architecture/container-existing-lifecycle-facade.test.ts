@@ -69,7 +69,7 @@ describe("existing container application through native composition", () => {
         } catch (error) { caught = error; }
         expect(caught).toMatchObject({cause: failure});
         expect(native.spawn.mock.calls.map(call => call[1])).toEqual([[operation === "start" ? "start" : "rm", id]]);
-        expect(native.spawn.mock.calls[0][2]).toMatchObject({timeout: 30000});
+        expect(native.spawn.mock.calls[0][2]).toMatchObject({timeout: operation === "remove" ? 120000 : 30000});
         expect(f.ports.finish).not.toHaveBeenCalled(); expect(f.order).not.toContain("mcp");
     });
     beforeEach(() => {
@@ -146,7 +146,7 @@ describe("existing container application through native composition", () => {
     it("uses ordinary non-force removal on the captured stopped path without stop or managed reinspection", () => {
         const f = fixture();
         expect(f.lifecycle.replace({ containerName: name, expectedContainerId: id, reason: "changed", replacementGuard: operation => { operation(); return true; } })).toBe(true);
-        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" });
+        expect(native.spawn).toHaveBeenCalledExactlyOnceWith("podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 120000, killSignal: "SIGKILL" });
         expect(f.ports.managedIdentity).not.toHaveBeenCalled();
     });
 
@@ -242,8 +242,8 @@ describe("existing container application through native composition", () => {
         const callback = vi.fn();
         expect(f.lifecycle.replace({ containerName: name, reason: "changed", replacementGuard: replace => { replace(); replace(); return false; }, onRecreate: callback })).toBe(false);
         expect(native.spawn.mock.calls).toEqual([
-            ["podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" }],
-            ["podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" }],
+            ["podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 120000, killSignal: "SIGKILL" }],
+            ["podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 120000, killSignal: "SIGKILL" }],
         ]);
         expect(callback).toHaveBeenCalledTimes(2);
     });
