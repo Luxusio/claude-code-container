@@ -8,9 +8,11 @@ The subsequent Mac run (`2026-10-22T07-35-46-846Z-91401-kbqlDl`) recorded 103 fa
 
 The next Mac run (`2026-10-22T08-13-40-361Z-21780-wYr4lj`) recorded four failures in two files, with 16,221 passed and 684 skipped. It passed 98 previously failing exact names and one explicitly mapped renamed socket assertion. Android force-delete, remote lifecycle/native/cache and socket owners pass; QEMU stop, snapshot and deletion also pass. Remaining failures are two fixture write-fault injections that incorrectly assume reopening a Darwin descriptor removes its write capability, fake-smoke teardown redundantly terminating a child already confirmed stopped, and one SIGHUP cancellation that returns 129 without a late body effect but retains its claim after an ownership refusal. The saved refusal does not identify the uncertain native observation. Corrections preserve native metadata and actual child-close joins; fixture-only stage diagnostics identify the remaining cancellation branch without changing its ownership decisions. These new fixture changes require host verification.
 
+The latest Mac run (`2026-10-22T08-41-12-060Z-87955-TtrK53`) passed all four of those cases and recorded one different failure, with 16,232 passed and 684 skipped. The built broker lifecycle refused owner cleanup during fresh generation attestation before sending its authenticated RPC; broker termination itself succeeded. This case passed the preceding run, and the source and built cases both pass focused Linux verification. The saved failure does not distinguish the pinned-generation check, fresh status comparison or final native listener proof. Bounded fixture observations preserve those checks and are intended to locate a recurrence. The prior SIGHUP case passing does not establish the cause of its historical refusal.
+
 ## Known ceiling
 
-The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. Current fixture changes and the unexplained SIGHUP ownership refusal still require host evidence; retaining an earlier row does not make its superseded limitation current again.
+The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. Fresh broker cleanup attestation still needs host evidence; retaining an earlier row does not make its superseded limitation current again.
 
 Known ceiling: Darwin acceptance remains pending host output — Linux alias reproduction verifies the shared mechanism, not native macOS behavior.
 
@@ -45,3 +47,7 @@ Known ceiling: Linux confirms fixture isolation; the historical Mac semantic cau
 Known ceiling: Mac exit74 원인은 아직 미확정. 다음 일반 `npm test` 로그에서 새 진단 단계로 확인해야 함. Bash3 파서 수정은 소스 기반 검증이며 Mac 실행 확인은 대기.
 
 Known ceiling: Darwin acceptance awaits the next host result.
+
+Known ceiling: The Mac refusal’s underlying observation remains unknown — the trace will identify it if it recurs.
+
+Diagnostic receipts are best effort. Missing or incomplete receipts still leave the corresponding native observation uncertain.

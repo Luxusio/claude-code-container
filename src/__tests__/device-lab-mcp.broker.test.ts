@@ -6,10 +6,11 @@ import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { deviceLabTestHomeEnvironment, isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { DEVICE_BROKER_PROTOCOL_VERSION } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
 import { callInternalBroker } from "./helpers/device-lab-mcp-fixture.js";
+import { brokerObservationTracePreloadSource, readBrokerObservationTrace } from "./helpers/broker-observation-trace.js";
 import { spawn } from "child_process";
 import * as childProcess from "child_process";
 import { createHash, createHmac } from "crypto";
-import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createServer } from "http";
 import { AddressInfo } from "net";
 import { homedir, tmpdir } from "os";
@@ -1931,9 +1932,15 @@ describe("device-lab MCP", () => {
                     name: "ccc-device-broker", managedBy: "ccc-host", ownerId: expectedOwner,
                     pid: 987654321, host: "127.0.0.1", port,
                 }), { mode: 0o600 });
+                const traceFile = join(home, "broker-observation-trace.jsonl");
+                writeFileSync(traceFile, "", { mode: 0o600 });
+                appendFileSync(join(home, "isolate-broker-auth.cjs"), brokerObservationTracePreloadSource({
+                    port, runtimeFile: join(root, "runtime.json"), traceFile,
+                }));
             },
         });
         const runtimeFile = join(isolated.homeDir, ".ccc", "devices", "broker", "runtime.json");
+        const traceFile = join(isolated.homeDir, "broker-observation-trace.jsonl");
         let brokerPid: number | undefined;
         try {
             const first = await isolated.client.callTool({ name: "devices", arguments: { view: "owned", detail: true } });
@@ -1964,13 +1971,19 @@ describe("device-lab MCP", () => {
             }));
 
             expect(pidAlive(brokerPid!)).toBe(true);
+            writeFileSync(traceFile, "", { mode: 0o600 });
             const shutdown = await callInternalBroker(isolated.client, { operation: "brokerShutdown", arguments: {
                 confirmDestructive: true, stopDevices: false, detachPhysical: false,
             } });
-            expect(JSON.parse((shutdown.content as Array<{ text?: string }>)[0].text || "{}")).toEqual(expect.objectContaining({
-                ok: true, stopped: true, runtime: expect.objectContaining({ managedBy: "device-lab-mcp", pid: brokerPid }),
-                cleanup: expect.objectContaining({ ok: true, method: "broker.cleanup.owner" }),
-            }));
+            try {
+                expect(JSON.parse((shutdown.content as Array<{ text?: string }>)[0].text || "{}")).toEqual(expect.objectContaining({
+                    ok: true, stopped: true, runtime: expect.objectContaining({ managedBy: "device-lab-mcp", pid: brokerPid }),
+                    cleanup: expect.objectContaining({ ok: true, method: "broker.cleanup.owner" }),
+                }));
+            } catch (error) {
+                if (error instanceof Error) error.message += `\n${readBrokerObservationTrace(traceFile)}`;
+                throw error;
+            }
             expect(existsSync(runtimeFile)).toBe(false);
             // Shutdown and the parent's process reaping can finish on separate turns.
             await vi.waitFor(() => expect(pidAlive(brokerPid!)).toBe(false), { timeout: 3000 });
