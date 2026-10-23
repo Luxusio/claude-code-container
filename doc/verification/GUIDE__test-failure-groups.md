@@ -87,4 +87,4 @@ These commands retain the small Node prelude and save a new per-run log and JSON
 
 ## Known ceiling
 
-Portable Linux evidence does not certify Darwin descriptor operations, native process proof, PTY restoration or process cleanup. The original Mac failure inventory remains pending post-fix host evidence; see the [change evidence limits](../changes/2026-10-22-test-failure-groups.md#known-ceiling).
+Portable Linux evidence does not certify Darwin descriptor operations, native process proof, PTY restoration or process cleanup. The latest Mac comparison accounts for all original 1,085 failures: 1,046 pass, including six mapped names, and 39 are skipped by platform conditions. Host acceptance remains pending for the latest three remote-bind failures and the current fixture changes; see the [change evidence limits](../changes/2026-10-22-test-failure-groups.md#known-ceiling).

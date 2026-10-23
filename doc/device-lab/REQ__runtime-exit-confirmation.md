@@ -1,5 +1,7 @@
 # Saved-incarnation runtime exit confirmation
 
+Derived technical requirement: this specializes the existing [broker stop completion proof](REQ__broker-stop-completion-proof.md), [private VM effect identity](REQ__vm-instance-identity.md) and [monotonic observation budget](REQ__monotonic-wait-budget.md). Saved-incarnation waits and the fake-provider child's close join preserve those completion, ownership and deadline constraints through engineering corrections to the current adapters and fixtures.
+
 Android provider termination and the synchronous QEMU stop adapter must confirm that the saved process incarnation has ended before clearing runtime metadata or authorizing dependent deletion. Full PID, birth and command identity remain mandatory immediately before every signal and escalation.
 
 When QEMU reaches its existing post-signal exit-wait stage, use the bounded saved-incarnation observer. A changed displayed command after signaling is not proof of a live replacement or of exit. Native ended evidence may establish completion independently; unavailable observation, a live process or expired allowance must retain the refusal and recovery state. A failed non-ESRCH QEMU signal continues to refuse before that wait stage.
