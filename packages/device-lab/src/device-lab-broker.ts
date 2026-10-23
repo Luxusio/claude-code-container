@@ -1800,7 +1800,7 @@ async function stopIncompatibleHostBroker(
             hostPlatform: runtime.platform,
         };
     }
-    if (!processIsAlive(pid)) {
+    if (probeDeviceRuntimeProcessLiveness(pid) === "exited") {
         removeHostBrokerRuntime();
         return { stopped: true, restartable: true, reason: "runtime-pid-not-alive", runtime, compatibility };
     }
@@ -1878,15 +1878,26 @@ async function stopIncompatibleHostBroker(
             detail: stopped,
         };
     }
+    const revalidatePosixBrokerIdentity = () => {
+        // A captured command identity must never downgrade to token-only proof.
+        if (expectedIdentity) return inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid, identityOptions);
+        const currentStartToken = runtime.managedBy === "ccc-host-port-metadata" && expectedStartToken
+            ? readCurrentStartToken(pid) : null;
+        const status = currentStartToken
+            ? currentStartToken === expectedStartToken ? "match" as const : "mismatch" as const
+            : probeDeviceRuntimeProcessLiveness(pid) === "exited" ? "exited" as const : "unavailable" as const;
+        return { status, current: null, currentStartToken };
+    };
+    const brokerExited = () => probeDeviceRuntimeProcessLiveness(pid) === "exited";
     try {
-        const termIdentity = inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid, identityOptions);
+        const termIdentity = revalidatePosixBrokerIdentity();
         if (termIdentity.status !== "match") {
             return { stopped: false, restartable: false, reason: `runtime-process-identity-${termIdentity.status}`, runtime, compatibility, observation: termIdentity };
         }
         process.kill(pid, "SIGTERM");
-        const exited = await waitForProcessExit(pid, 1500);
+        const exited = await waitForProcessExit(pid, 1500, brokerExited);
         if (!exited) {
-            const killIdentity = inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid, identityOptions);
+            const killIdentity = revalidatePosixBrokerIdentity();
             if (killIdentity.status !== "match") {
                 if (killIdentity.status === "exited") {
                     removeHostBrokerRuntime();
@@ -1894,13 +1905,9 @@ async function stopIncompatibleHostBroker(
                 }
                 return { stopped: false, restartable: false, reason: `runtime-process-identity-${killIdentity.status}`, runtime, compatibility, observation: killIdentity };
             }
-            try {
-                process.kill(pid, "SIGKILL");
-            } catch {
-                // The process may have exited after the SIGTERM wait.
-            }
+            process.kill(pid, "SIGKILL");
         }
-        const killed = exited || await waitForProcessExit(pid, 500);
+        const killed = exited || await waitForProcessExit(pid, 500, brokerExited);
         if (!killed) {
             return { stopped: false, restartable: false, reason: "runtime-pid-still-alive", runtime, compatibility };
         }
@@ -1918,10 +1925,6 @@ async function stopIncompatibleHostBroker(
         };
     } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        if (!processIsAlive(pid)) {
-            removeHostBrokerRuntime();
-            return { stopped: true, restartable: true, reason: "runtime-pid-gone-after-signal", runtime, compatibility, detail };
-        }
         return { stopped: false, restartable: false, reason: "runtime-stop-failed", runtime, compatibility, detail };
     }
 }
@@ -2362,7 +2365,17 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
         && Number.isInteger(runtime.port)
         ? Number(runtime.port)
         : null;
-    const port = !Number.isInteger(options.port) && runtimePort !== null ? runtimePort : initial.port;
+    const nativeTokenFamily = process.platform === "linux" ? "linux:"
+        : process.platform === "win32" ? "windows:" : process.platform === "darwin" ? "ps:" : null;
+    const nativeToken = typeof runtime?.processStartToken === "string" ? runtime.processStartToken : null;
+    const runtimeIsLocal = runtime?.platform === process.platform
+        || ((runtime?.platform === undefined || runtime?.platform === null) && nativeTokenFamily !== null
+            && nativeToken !== null && nativeToken.startsWith(nativeTokenFamily)
+            && nativeToken.slice(nativeTokenFamily.length).trim().length > 0);
+    const exitedLocalHint = !Number.isInteger(options.port) && runtimePort !== null && runtimePort !== initial.port
+        && runtimePort > 0 && runtimePort <= 65535 && Number.isInteger(runtime?.pid) && Number(runtime?.pid) > 0 && runtimeIsLocal
+        && probeDeviceRuntimeProcessLiveness(runtime?.pid) === "exited";
+    const port = !Number.isInteger(options.port) && runtimePort !== null && !exitedLocalHint ? runtimePort : initial.port;
     const normalized = port === initial.port ? initial : { ...initial, port };
     const probeHost = options.probeHost || DEVICE_BROKER_DEFAULT_HOST;
     const probeTimeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Number(options.timeoutMs)) : 250;
@@ -3633,14 +3646,15 @@ function processIsAlive(pid: unknown) {
     }
 }
 
-async function waitForProcessExit(pid: unknown, timeoutMs = DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS) {
+async function waitForProcessExit(pid: unknown, timeoutMs = DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS,
+    exited: () => boolean = () => !processIsAlive(pid)) {
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return true;
     const deadline = Date.now() + Math.max(0, timeoutMs);
     while (Date.now() <= deadline) {
-        if (!processIsAlive(pid)) return true;
+        if (exited()) return true;
         await sleep(50);
     }
-    return !processIsAlive(pid);
+    return exited();
 }
 
 async function startDetachedProviderCommand(command: ProviderCommand, normalized: NormalizedBrokerOptions, label: string, parentRemainingMs?: () => number): Promise<ProviderCommandResult> {

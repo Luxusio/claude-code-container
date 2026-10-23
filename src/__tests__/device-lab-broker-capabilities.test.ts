@@ -1,5 +1,6 @@
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { createHash } from "crypto";
+import { EventEmitter } from "events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { createServer } from "http";
 import { tmpdir } from "os";
@@ -10,6 +11,8 @@ import { probeCccHostBrokerProtocolForTest } from "../../device-lab-mcp/src/brok
 import { createDeviceBrokerServer, ensureHostDeviceBroker, hostBrokerRuntimeFromPortProcessForTest, invokeHostDeviceBrokerOwnerRpc, type HostDeviceBrokerOptions } from "@ccc/device-lab/device-lab-broker.js";
 import { ownerId as deviceLabOwnerId } from "@ccc/device-lab/providers/context.mjs";
 import { readDeviceRuntimeProcessStartToken } from "@ccc/device-lab/device-lab-process-identity.js";
+import * as processIdentity from "@ccc/device-lab/device-lab-process-identity.js";
+import { DEVICE_LAB_VERSION } from "@ccc/device-lab/version.js";
 import { close, listen } from "./helpers/host-broker-test-fixture.js";
 
 describe("one broker protocol", () => {
@@ -253,5 +256,208 @@ describe("host CLI protocol reuse", () => {
         } finally {
             await close(server);
         }
+    });
+});
+
+
+// Canned control responses and mocked signals keep these recovery regressions
+// independent of any broker listening on the machine running this suite.
+describe("automatic broker recovery from native observations", () => {
+    let home: string, restoreHome: () => void;
+    const ownerId = "aaaaaaaaaaaaaaaa";
+    const cachedPid = 761001, launchedPid = 761002;
+    const privatePort = 47685, stablePort = 17373;
+    const cliPath = "/fixture/ccc/packages/device-lab/dist/broker-entry.js";
+    const startedAt = "2026-10-22T00:00:00.000Z";
+    const cachedToken = "test:cached-broker-birth";
+    const nativeToken = () => process.platform === "win32" ? "windows:cached-birth"
+        : process.platform === "darwin" ? "ps:Thu Oct 22 00:00:00 2026" : "linux:cached-birth";
+    const errno = (code: string) => Object.assign(new Error(`fixture ${code}`), { code });
+    const runtimeFile = () => join(home, ".ccc", "devices", "broker", "runtime.json");
+    const writeRuntime = (runtime: Record<string, unknown>) => {
+        mkdirSync(join(home, ".ccc", "devices", "broker"), { recursive: true });
+        const bytes = JSON.stringify(runtime, null, 2) + "\n";
+        writeFileSync(runtimeFile(), bytes, { mode: 0o600 }); return bytes;
+    };
+    const listener = (pid: number, token: string, port: number) => {
+        const commandLine = `node ${cliPath} devices broker serve --host 127.0.0.1 --port ${port}`;
+        return { pid, commandLine, processStartToken: token,
+            processIdentity: { pid, startToken: token, commandHash: createHash("sha256").update(commandLine).digest("hex") } };
+    };
+    beforeEach(() => {
+        home = mkdtempSync(join(tmpdir(), "ccc-broker-auto-recovery-"));
+        restoreHome = isolateDeviceLabTestEnvironment(home);
+    });
+    afterEach(() => {
+        vi.useRealTimers(); vi.restoreAllMocks(); rmSync(home, { recursive: true, force: true }); restoreHome();
+    });
+
+    const endpointCases = [
+        { name: "dead local MCP record", liveness: "exited", platform: "native", token: "native", expected: "stable" },
+        { name: "dead host record", manager: "ccc-host", liveness: "exited", platform: "native", token: "native", expected: "stable" },
+        { name: "missing platform with native token", liveness: "exited", platform: "missing", token: "native", expected: "stable" },
+        { name: "null platform with native token", liveness: "exited", platform: "null", token: "native", expected: "stable" },
+        { name: "explicit local platform without token", liveness: "exited", platform: "native", token: "missing", expected: "stable" },
+        { name: "explicit port", liveness: "exited", platform: "native", token: "native", explicit: true, expected: "explicit" },
+        { name: "live cached process", liveness: "alive", platform: "native", token: "native", expected: "cached" },
+        { name: "permission denied is not death", liveness: "EPERM", platform: "native", token: "native", expected: "cached" },
+        { name: "unknown process observation", liveness: "EIO", platform: "native", token: "native", expected: "cached" },
+        { name: "foreign platform cannot become native through options.platform", liveness: "exited", platform: "foreign", token: "native", expected: "cached" },
+        { name: "missing platform and foreign token", liveness: "exited", platform: "missing", token: "foreign", expected: "cached" },
+        { name: "missing platform and token", liveness: "exited", platform: "missing", token: "missing", expected: "cached" },
+        { name: "non-numeric cached PID", liveness: "exited", platform: "native", token: "native", pid: "761001", expected: "cached" },
+        { name: "zero cached PID", liveness: "exited", platform: "native", token: "native", pid: 0, expected: "cached" },
+    ] as const;
+    it.each(endpointCases)("selects the configured endpoint safely: $name", async entry => {
+        const foreignPlatform = process.platform === "win32" ? "darwin" : "win32";
+        const runtime = { name: "ccc-device-broker", managedBy: "manager" in entry ? entry.manager : "device-lab-mcp",
+            ownerId, pid: "pid" in entry ? entry.pid : cachedPid, host: "127.0.0.1", port: privatePort, startedAt,
+            ...(entry.platform === "native" ? { platform: process.platform }
+                : entry.platform === "foreign" ? { platform: foreignPlatform }
+                    : entry.platform === "null" ? { platform: null } : {}),
+            ...(entry.token !== "missing" ? { processStartToken: entry.token === "native" ? nativeToken() : "foreign:cached-birth" } : {}),
+        };
+        const runtimeBytes = writeRuntime(runtime);
+        const expectedPort = entry.expected === "stable" ? stablePort : entry.expected === "explicit" ? 47686 : privatePort;
+        const requests: number[] = [];
+        vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+            const url = new URL(String(input)); requests.push(Number(url.port));
+            expect(Number(url.port)).toBe(expectedPort);
+            expect(readFileSync(runtimeFile(), "utf8")).toBe(runtimeBytes);
+            const body = url.pathname === "/health" ? { ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" }
+                : url.pathname === "/status" ? { ok: true, broker: {
+                    name: "ccc-device-broker", mode: "host-broker-daemon", ownerId, host: "127.0.0.1", port: expectedPort,
+                    version: DEVICE_LAB_VERSION, protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION, startedAt,
+                    process: { pid: launchedPid, startToken: "test:stable-listener-birth" },
+                } } : { ok: true, result: { ownerId } };
+            return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+        });
+        const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+            expect(pid).toBe(cachedPid); expect(signal).toBe(0);
+            if (entry.liveness === "exited") throw errno("ESRCH");
+            if (entry.liveness !== "alive") throw errno(entry.liveness);
+            return true;
+        });
+        const spawnImpl = vi.fn(() => { throw new Error("fixture must never launch a real broker"); });
+        const options: HostDeviceBrokerOptions = { cwd: home, ownerId, bindHost: "127.0.0.1", probeHost: "127.0.0.1",
+            cliPath, timeoutMs: 100, spawnImpl: spawnImpl as any,
+            portProcessResolver: port => listener(launchedPid, "test:stable-listener-birth", port),
+            ...(entry.platform === "foreign" ? { platform: foreignPlatform as NodeJS.Platform } : {}),
+            ...("explicit" in entry ? { port: expectedPort } : {}),
+        };
+        const result = await ensureHostDeviceBroker(options);
+        expect(result.port).toBe(expectedPort); expect(requests.length).toBeGreaterThan(0);
+        if (entry.expected === "stable" || entry.expected === "explicit") expect(result).toMatchObject({ ok: true, reused: true });
+        if (runtime.managedBy === "ccc-host" && result.ok) {
+            expect(JSON.parse(readFileSync(runtimeFile(), "utf8")).pid).toBe(launchedPid);
+        } else expect(readFileSync(runtimeFile(), "utf8")).toBe(runtimeBytes);
+        expect(spawnImpl).not.toHaveBeenCalled();
+        expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+    });
+
+    describe.skipIf(process.platform === "win32")("native POSIX signaling without an injected terminator", () => {
+        type Mode = "term-exit" | "kill-exit" | "term-fails" | "kill-fails" | "exit-EPERM" | "exit-unknown"
+            | "term-pid-changed" | "term-token-changed" | "term-port-lost"
+            | "kill-pid-changed" | "kill-token-changed" | "kill-port-lost" | "full-identity-lost"
+            | "term-full-identity-lost" | "kill-full-identity-lost";
+        async function repair(mode: Mode) {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            const runtimeBytes = writeRuntime({ name: "ccc-device-broker", managedBy: "ccc-host", ownerId,
+                pid: cachedPid, host: "127.0.0.1", port: privatePort, platform: process.platform, startedAt, processStartToken: cachedToken });
+            let termSent = false, exited = false, launched = false, resolverReads = 0;
+            const fresh = listener(launchedPid, "test:replacement-birth", privatePort);
+            const captured = listener(cachedPid, cachedToken, privatePort);
+            vi.spyOn(processIdentity, "readDeviceRuntimeProcessIdentity").mockReturnValue(null);
+            const portProcessResolver = vi.fn((port: number) => {
+                expect(port).toBe(privatePort);
+                if (launched) return fresh;
+                resolverReads++;
+                if (mode === "full-identity-lost" || mode === "term-full-identity-lost" || mode === "kill-full-identity-lost") {
+                    // Full identity survives admission and both initial identity/token
+                    // checks. The later modes lose it only at the actual signal gate.
+                    const lost = mode === "full-identity-lost" ? resolverReads > 1
+                        : mode === "term-full-identity-lost" ? resolverReads >= 4 : termSent;
+                    return lost ? { pid: cachedPid, commandLine: "", processStartToken: cachedToken, processIdentity: null } : captured;
+                }
+                const changed = mode.startsWith("term-") && resolverReads >= 3 || mode.startsWith("kill-") && termSent;
+                if (changed && mode.endsWith("port-lost")) return null;
+                return { pid: changed && mode.endsWith("pid-changed") ? cachedPid + 1 : cachedPid,
+                    commandLine: "", processStartToken: changed && mode.endsWith("token-changed") ? "test:reused-pid" : cachedToken,
+                    processIdentity: null };
+            });
+            const signals = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+                expect(pid).toBe(cachedPid);
+                if (signal === 0) {
+                    if (exited) throw errno("ESRCH");
+                    if (termSent && mode === "exit-EPERM") throw errno("EPERM");
+                    if (termSent && mode === "exit-unknown") throw errno("EIO");
+                    return true;
+                }
+                if (signal === "SIGTERM") {
+                    if (mode === "term-fails") throw errno("EPERM");
+                    termSent = true; if (mode === "term-exit") exited = true; return true;
+                }
+                expect(signal).toBe("SIGKILL");
+                if (mode === "kill-fails") throw errno("EPERM");
+                if (mode === "kill-exit") exited = true;
+                return true;
+            });
+            vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+                const url = new URL(String(input)); expect(Number(url.port)).toBe(privatePort);
+                const body = url.pathname === "/health" ? { ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" }
+                    : url.pathname === "/status" ? { ok: true, broker: {
+                        name: "ccc-device-broker", mode: "host-broker-daemon", ownerId, port: privatePort, host: "127.0.0.1",
+                        version: DEVICE_LAB_VERSION, protocolVersion: launched ? DEVICE_BROKER_PROTOCOL_VERSION : DEVICE_BROKER_PROTOCOL_VERSION - 1,
+                        process: { pid: launched ? launchedPid : cachedPid, startToken: launched ? fresh.processStartToken : cachedToken },
+                        startedAt,
+                    } } : { ok: true, result: { ownerId } };
+                return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+            });
+            const child = Object.assign(new EventEmitter(), { pid: launchedPid, unref: vi.fn() });
+            const spawnImpl = vi.fn(() => { launched = true; return child; });
+            const pending = ensureHostDeviceBroker({ cwd: home, ownerId, port: privatePort, bindHost: "127.0.0.1", probeHost: "127.0.0.1",
+                cliPath, timeoutMs: 100, startupTimeoutMs: 1000, spawnImpl: spawnImpl as any, portProcessResolver,
+                processIdentityReader: pid => pid === launchedPid ? fresh.processIdentity : null,
+                processStartTokenReader: pid => pid === launchedPid ? fresh.processStartToken : null });
+            await vi.runAllTimersAsync();
+            return { result: await pending, runtimeBytes, signals, spawnImpl, resolverReads };
+        }
+        it.each(["term-exit", "kill-exit"] as const)("repairs an admitted metadata-only broker through %s", async mode => {
+            const f = await repair(mode);
+            expect(f.result).toMatchObject({ ok: true, launched: true, reused: false, port: privatePort, verifiedBrokerPid: launchedPid });
+            expect(f.signals.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([
+                [cachedPid, "SIGTERM"], ...(mode === "kill-exit" ? [[cachedPid, "SIGKILL"]] : []),
+            ]);
+            expect(f.spawnImpl).toHaveBeenCalledOnce();
+            expect(JSON.parse(readFileSync(runtimeFile(), "utf8")).pid).toBe(launchedPid);
+        });
+        it.each(["term-pid-changed", "term-token-changed", "term-port-lost", "full-identity-lost"] as const)("refuses signaling after %s without downgrading captured authority", async mode => {
+            const f = await repair(mode);
+            expect(f.result).toMatchObject({ ok: false, error: "host-broker-incompatible", launched: false });
+            expect(f.signals.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+            expect(readFileSync(runtimeFile(), "utf8")).toBe(f.runtimeBytes); expect(f.spawnImpl).not.toHaveBeenCalled();
+        });
+        it.each(["kill-pid-changed", "kill-token-changed", "kill-port-lost"] as const)("revalidates exact listener generation before escalation: %s", async mode => {
+            const f = await repair(mode);
+            expect(f.result).toMatchObject({ ok: false, error: "host-broker-incompatible", launched: false });
+            expect(f.signals.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([[cachedPid, "SIGTERM"]]);
+            expect(readFileSync(runtimeFile(), "utf8")).toBe(f.runtimeBytes); expect(f.spawnImpl).not.toHaveBeenCalled();
+        });
+        it.each(["term-full-identity-lost", "kill-full-identity-lost"] as const)("does not downgrade full identity to a matching token at the native signal gate: %s", async mode => {
+            const f = await repair(mode);
+            expect(f.result).toMatchObject({ ok: false, error: "host-broker-incompatible", launched: false });
+            expect(f.resolverReads).toBe(mode === "term-full-identity-lost" ? 4 : 5);
+            expect(f.signals.mock.calls.filter(([, signal]) => signal !== 0))
+                .toEqual(mode === "term-full-identity-lost" ? [] : [[cachedPid, "SIGTERM"]]);
+            expect(readFileSync(runtimeFile(), "utf8")).toBe(f.runtimeBytes);
+            expect(f.spawnImpl).not.toHaveBeenCalled();
+        });
+        it.each(["term-fails", "kill-fails", "exit-EPERM", "exit-unknown"] as const)("retains recovery evidence when stop completion is not proven: %s", async mode => {
+            const f = await repair(mode);
+            expect(f.result).toMatchObject({ ok: false, error: "host-broker-incompatible", launched: false });
+            expect(readFileSync(runtimeFile(), "utf8")).toBe(f.runtimeBytes); expect(f.spawnImpl).not.toHaveBeenCalled();
+            expect(f.signals.mock.calls.filter(([, signal]) => signal !== 0)).toEqual(mode === "term-fails"
+                ? [[cachedPid, "SIGTERM"]] : [[cachedPid, "SIGTERM"], [cachedPid, "SIGKILL"]]);
+        });
     });
 });
