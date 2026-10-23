@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, execFile, type ChildProcess } from "child_process";
 import { createServer, type Server } from "http";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync, statSync, mkdirSync, renameSync } from "fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync, statSync, mkdirSync, renameSync, chmodSync } from "fs";
 import { tmpdir } from "os";
 import { resolve, join } from "path";
 import { createInterface } from "readline";
@@ -14,6 +14,7 @@ let dir: string;
 let display: string;
 let env: NodeJS.ProcessEnv;
 let server: Server;
+let extraServers: Server[];
 let hostText: Buffer;
 let hostImage: Buffer | null;
 let token: string;
@@ -50,8 +51,8 @@ async function own(text: Buffer, target = "UTF8_STRING") {
 
 const read = (target = "UTF8_STRING") => command("/usr/bin/xclip", ["-selection", "clipboard", "-t", target, "-o"]);
 
-async function startControl() {
-    control = spawn("bash", ["-c", 'source "$1"; bridge_init; echo READY; while IFS= read -r action; do if [ "$action" = cycle ]; then bridge_cycle; echo "DONE:$?"; else bridge_cleanup; exit; fi; done', "test-bridge", script], { env, stdio: ["pipe", "pipe", "pipe"] });
+async function startControl(identity: { uid?: number; gid?: number } = {}) {
+    control = spawn("bash", ["-c", 'source "$1"; bridge_init; echo READY; while IFS= read -r action; do if [ "$action" = cycle ]; then bridge_cycle; echo "DONE:$?"; else bridge_cleanup; exit; fi; done', "test-bridge", script], { env, stdio: ["pipe", "pipe", "pipe"], ...identity });
     procs.push(control);
     createInterface({ input: control.stdout! }).on("line", line => lines.push(line));
     control.stderr!.on("data", chunk => { stderr += chunk; });
@@ -65,10 +66,46 @@ async function cycle() {
     return lines.filter(line => line.startsWith("DONE:")).at(-1);
 }
 
+function clipboardServer(credential: () => string = () => token, requestLog: () => typeof requests = () => requests): Server {
+    return createServer((req, res) => {
+        requestLog().push({ method: req.method!, path: req.url!, auth: req.headers.authorization });
+        if (req.headers.authorization !== `Bearer ${credential()}`) { res.writeHead(401).end(); return; }
+        if (req.method === "GET" && failHostReads) { res.writeHead(503).end("Clipboard read failed"); return; }
+        if (req.method === "POST" && req.url === "/clipboard/text") {
+            const chunks: Buffer[] = [];
+            req.on("data", chunk => chunks.push(chunk));
+            req.on("end", () => {
+                const body = Buffer.concat(chunks);
+                posts.push(body);
+                if (failPosts) { res.writeHead(503).end(); return; }
+                hostText = body;
+                hostImage = null;
+                res.writeHead(204).end();
+            });
+        } else if (req.url === "/clipboard/image/png") {
+            res.writeHead(hostImage ? 200 : 204).end(hostImage ?? undefined);
+        } else if (req.url === "/clipboard/text") {
+            const snapshot = hostText;
+            const send = () => res.writeHead(snapshot.length ? 200 : 204).end(snapshot);
+            if (deferTextRead) releaseTextRead = send;
+            else send();
+        } else res.writeHead(404).end();
+    });
+}
+
+async function privateEndpoint(credential: string) {
+    const endpointRequests: typeof requests = [];
+    const endpoint = clipboardServer(() => credential, () => endpointRequests);
+    extraServers.push(endpoint);
+    await new Promise<void>(resolve => endpoint.listen(0, "127.0.0.1", resolve));
+    return { port: (endpoint.address() as { port: number }).port, requests: endpointRequests };
+}
+
 describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
     beforeEach(async () => {
         dir = mkdtempSync(join(tmpdir(), "ccc-x11-copy-test-"));
         procs = [];
+        extraServers = [];
         posts = [];
         requests = [];
         lines = [];
@@ -84,30 +121,7 @@ describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
         procs.push(xvfb);
         const [number] = await once(xvfb.stdout!, "data");
         display = `:${String(number).trim()}`;
-        server = createServer((req, res) => {
-            requests.push({ method: req.method!, path: req.url!, auth: req.headers.authorization });
-            if (req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401).end(); return; }
-            if (req.method === "GET" && failHostReads) { res.writeHead(503).end("Clipboard read failed"); return; }
-            if (req.method === "POST" && req.url === "/clipboard/text") {
-                const chunks: Buffer[] = [];
-                req.on("data", chunk => chunks.push(chunk));
-                req.on("end", () => {
-                    const body = Buffer.concat(chunks);
-                    posts.push(body);
-                    if (failPosts) { res.writeHead(503).end(); return; }
-                    hostText = body;
-                    hostImage = null;
-                    res.writeHead(204).end();
-                });
-            } else if (req.url === "/clipboard/image/png") {
-                res.writeHead(hostImage ? 200 : 204).end(hostImage ?? undefined);
-            } else if (req.url === "/clipboard/text") {
-                const snapshot = hostText;
-                const send = () => res.writeHead(snapshot.length ? 200 : 204).end(snapshot);
-                if (deferTextRead) releaseTextRead = send;
-                else send();
-            } else res.writeHead(404).end();
-        });
+        server = clipboardServer();
         await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
         const port = (server.address() as { port: number }).port;
         writeFileSync(join(dir, "port"), `${port}:${token}`);
@@ -125,6 +139,10 @@ describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
         for (const proc of procs.reverse()) if (proc.exitCode === null) proc.kill("SIGKILL");
         server?.closeAllConnections();
         if (server) await new Promise<void>(resolve => server.close(() => resolve()));
+        for (const endpoint of extraServers) {
+            endpoint.closeAllConnections();
+            await new Promise<void>(resolve => endpoint.close(() => resolve()));
+        }
         rmSync(dir, { recursive: true, force: true });
     });
 
@@ -246,6 +264,116 @@ describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
         await cycle();
         expect(posts).toEqual([Buffer.from("rotated")]);
         expect(requests.every(req => req.auth === `Bearer ${token}`)).toBe(true);
+    });
+
+    it.each(["startup", "initialized"] as const)("refreshes port and token together with stale %s credentials and preserves no-echo state", async phase => {
+        if (phase === "initialized") {
+            await startControl(); await cycle();
+        } else await own(Buffer.from("stale local text before bootstrap"));
+        const nextToken = "replacement-token";
+        const next = await privateEndpoint(nextToken);
+        writeFileSync(join(dir, "port"), `${next.port}:${nextToken}`);
+        requests = [];
+        if (phase === "startup") { await startControl(); await cycle(); expect(await read()).toEqual(hostText); }
+        const local = Buffer.from("  회전된 endpoint 😀 ' \"\r\nlast\n\n");
+        await own(local); next.requests.length = 0;
+        await cycle();
+        expect(posts).toEqual([local]); expect(hostText).toEqual(local);
+        expect(next.requests[0]).toEqual({ method: "POST", path: "/clipboard/text", auth: `Bearer ${nextToken}` });
+        expect(requests).toEqual([]); // A remains listening: any stale-port request is observable.
+        hostText = Buffer.from("new endpoint host read 한글\n\n");
+        await cycle(); expect(await read()).toEqual(hostText);
+        await cycle(); expect(posts).toEqual([local]);
+        expect(next.requests.every(req => req.auth === `Bearer ${nextToken}`)).toBe(true);
+        expect(requests).toEqual([]);
+    });
+
+    it("retries pending local bytes on the rotated endpoint without restoring stale host text", async () => {
+        await startControl(); await cycle();
+        const local = Buffer.from("pending copy across restart 한글 😀\n\n");
+        await own(local); failPosts = true; hostText = Buffer.from("old endpoint changed");
+        await cycle(); expect(posts).toEqual([local]); expect(await read()).toEqual(local);
+        const nextToken = "retry-endpoint-token", next = await privateEndpoint(nextToken);
+        writeFileSync(join(dir, "port"), `${next.port}:${nextToken}`);
+        requests = []; failPosts = false; hostText = Buffer.from("new endpoint competing text");
+        await cycle();
+        expect(next.requests).toEqual([{ method: "POST", path: "/clipboard/text", auth: `Bearer ${nextToken}` }]);
+        expect(posts).toEqual([local, local]); expect(hostText).toEqual(local); expect(requests).toEqual([]);
+        await cycle(); expect(posts).toHaveLength(2); expect(requests).toEqual([]);
+    });
+
+    it("restores the paired environment fallback for invalid, retired and missing mounted records after a valid refresh", async () => {
+        await startControl(); await cycle();
+        const next = await privateEndpoint("mounted-token");
+        const portFile = join(dir, "port");
+        writeFileSync(portFile, `${next.port}:mounted-token`);
+        await cycle();
+        const invalid: Array<{ name: string; bytes?: string; directory?: true }> = [
+            { name: "empty", bytes: "" }, { name: "malformed", bytes: "no-port-or-token" },
+            { name: "zero port", bytes: "0:mounted-token" }, { name: "out of range", bytes: "65536:mounted-token" },
+            { name: "extra field", bytes: `${next.port}:mounted-token:extra` },
+            { name: "multiline", bytes: `${next.port}:mounted-token\n${next.port}:another-token\n` },
+            { name: "retired", bytes: `retired-v1:${next.port}:${"a".repeat(32)}` },
+            { name: "missing" }, { name: "directory", directory: true },
+        ];
+        for (const record of invalid) {
+            rmSync(portFile, { recursive: true, force: true });
+            if (record.directory) mkdirSync(portFile);
+            else if (record.bytes !== undefined) writeFileSync(portFile, record.bytes);
+            const local = Buffer.from(`fallback ${record.name} 한글\n\n`);
+            await own(local); requests = []; next.requests.length = 0;
+            await cycle();
+            expect(requests).toEqual([{ method: "POST", path: "/clipboard/text", auth: `Bearer ${env.CCC_CLIPBOARD_TOKEN}` }]);
+            expect(posts.at(-1)).toEqual(local); expect(hostText).toEqual(local);
+            expect(next.requests).toEqual([]);
+        }
+    });
+
+    it("keeps environment port and token paired when the mounted record is genuinely unreadable", async () => {
+        const next = await privateEndpoint("unreadable-mounted-token"), portFile = join(dir, "port");
+        writeFileSync(portFile, `${next.port}:unreadable-mounted-token`); chmodSync(portFile, 0o000);
+        const identity = process.getuid?.() === 0 ? { uid: 65534, gid: 65534 } : {};
+        if ("uid" in identity) chmodSync(dir, 0o777);
+        await new Promise<void>((resolve, reject) => execFile("bash", ["-c", '[ ! -r "$CCC_CLIPBOARD_PORT_FILE" ]'],
+            { env, timeout: 1000, ...identity }, error => error ? reject(error) : resolve()));
+        await startControl(identity); await cycle(); expect(await read()).toEqual(hostText);
+        const local = Buffer.from("unreadable record fallback 😀\n\n");
+        await own(local); requests = [];
+        await cycle();
+        expect(requests).toEqual([{ method: "POST", path: "/clipboard/text", auth: `Bearer ${env.CCC_CLIPBOARD_TOKEN}` }]);
+        expect(posts).toEqual([local]); expect(next.requests).toEqual([]);
+    });
+
+    it.each(["clipboard.fixture.invalid", "[fd00::1234]"])("preserves configured host %s while refreshing the endpoint pair", async host => {
+        const nextToken = "host-preserved-token", next = await privateEndpoint(nextToken);
+        const oldPort = (server.address() as { port: number }).port;
+        const capture = join(dir, "curl-requests.jsonl"), bin = join(dir, "bin"); mkdirSync(bin);
+        // Only the transport is redirected. Actual curl, HTTP auth/body handling
+        // and X11 synchronization still execute against our private endpoints.
+        writeFileSync(join(bin, "curl"), `#!${process.execPath}
+const {appendFileSync}=require('node:fs');
+const {spawnSync}=require('node:child_process');
+const args=process.argv.slice(2), index=args.findIndex(arg=>arg.startsWith('http://'));
+if(index<0) process.exit(92);
+const original=args[index], url=new URL(original);
+if(![${JSON.stringify(oldPort)},${JSON.stringify(next.port)}].includes(Number(url.port))) process.exit(93);
+appendFileSync(${JSON.stringify(capture)},JSON.stringify({url:original,args})+'\\n');
+url.hostname='127.0.0.1'; args[index]=url.href;
+const result=spawnSync('/usr/bin/curl',['--noproxy','*',...args],{stdio:'inherit'});
+process.exit(result.status??94);
+`, { mode: 0o700 });
+        env.PATH = `${bin}:${env.PATH}`;
+        env.CCC_CLIPBOARD_URL = `http://${host}:${oldPort}`;
+        writeFileSync(join(dir, "port"), `${next.port}:${nextToken}`);
+        await startControl(); await cycle();
+        const local = Buffer.from("preserved host text 한글 😀\n\n"); await own(local); await cycle();
+        expect(posts).toEqual([local]); expect(next.requests.every(req => req.auth === `Bearer ${nextToken}`)).toBe(true);
+        expect(requests).toEqual([]);
+        const calls = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line) as { url: string; args: string[] });
+        expect(calls.length).toBeGreaterThan(0);
+        expect(calls.every(call => call.url.startsWith(`http://${host}:${next.port}/clipboard/`))).toBe(true);
+        expect(calls.every(call => call.args.includes(`Authorization: Bearer ${nextToken}`))).toBe(true);
+        expect(await read()).toEqual(local);
     });
 
     it("uses private temporary files and cleans them on normal exit", async () => {

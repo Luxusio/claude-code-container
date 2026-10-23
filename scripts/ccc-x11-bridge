@@ -101,10 +101,22 @@ bridge_upload_local() {
 }
 
 bridge_cycle() {
-    url=${CCC_CLIPBOARD_URL:-}
-    token=${CCC_CLIPBOARD_TOKEN:-}
-    if [ -f "$CCC_CLIPBOARD_PORT_FILE" ]; then
-        token=$(cut -d: -f2- "$CCC_CLIPBOARD_PORT_FILE")
+    local url=${CCC_CLIPBOARD_URL:-} token=${CCC_CLIPBOARD_TOKEN:-} record
+    # Refresh the endpoint and credential as a pair, preserving the session host.
+    if [ -f "$CCC_CLIPBOARD_PORT_FILE" ] && [ -r "$CCC_CLIPBOARD_PORT_FILE" ] &&
+        record=$(awk -F: '
+            NR == 1 && NF == 2 && $1 ~ /^[0-9]+$/ && length($1) <= 5 &&
+            $1 > 0 && $1 <= 65535 && $2 ~ /^[A-Za-z0-9_-]+$/ { record = $0 }
+            END { if (NR != 1 || record == "") exit 1; print record }
+        ' "$CCC_CLIPBOARD_PORT_FILE" 2>/dev/null); then
+        # CCC supplies an explicit port; keep other URL shapes on the fallback.
+        case "${url##*:}" in
+            ''|*[!0-9]*) ;;
+            *)
+                url="${url%:*}:${record%%:*}"
+                token=${record#*:}
+                ;;
+        esac
     fi
     [ -n "$url" ] || return 1
     clipboard_x11_sync_cycle
