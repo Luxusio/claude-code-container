@@ -10,7 +10,7 @@ import type { ProcessStartObservation, SessionLockLiveness } from "../../domain/
 import { sessionLockOwner } from "../../domain/session-lock.js";
 import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation, type NativeRuntimeSelectors } from "../../ports/container-runtime-invocation.js";
 import type { SessionClaimObservationSnapshot } from "../../ports/session-claim-observation.js";
-import type { SessionClaimsPorts } from "../../ports/session-claims.js";
+import type { SessionClaimRecoveryScope, SessionClaimsPorts } from "../../ports/session-claims.js";
 import type { SessionOwnershipReceipt } from "../../ports/session-ownership.js";
 
 const current = "project--current.lock";
@@ -165,7 +165,7 @@ function fixture(entries: string[] = [], contents: Record<string, string> = {}) 
     };
     app = createSessionClaims(ports);
     const inGuard = <T>(operation: () => T) => ports.withLifecycleLock("project", operation);
-    const recover = () => inGuard(() => app.recoverPredecessorsInHeldLifecycleLock("project"));
+    const recover = (scope?: SessionClaimRecoveryScope) => inGuard(() => app.recoverPredecessorsInHeldLifecycleLock("project", undefined, scope));
     const dead = (pid: number) => observations.set(pid, { status: "missing" });
     const alive = (pid: number, token: string) => observations.set(pid, { status: "found", token });
     return { app, ports, trace, names, records, receipts, snapshots, writes, removals, cleanups, batches,
@@ -451,6 +451,168 @@ describe("guarded predecessor responsibility recovery", () => {
         expect(f.records[old]).toBe(content);
         expect(f.cleanups).toEqual([]);
         expect(f.removals).toEqual([]);
+    });
+});
+
+
+describe("project-scoped automatic legacy reconciliation", () => {
+    function recovery(f: ReturnType<typeof fixture>, initial: ReturnType<SessionClaimRecoveryScope["inspectContainer"]>) {
+        const state = { target: initial, stopped: [] as string[], inspections: 0 };
+        const scope: SessionClaimRecoveryScope = {
+            runtimeInvocation: invocation(),
+            inspectContainer() { expect(f.isHeld()).toBe(true); state.inspections++; return state.target; },
+            stopContainer(readId) {
+                expect(f.isHeld()).toBe(true);
+                const id = readId();
+                if (!id) throw new Error("target changed");
+                state.stopped.push(id); f.trace.push(`legacy-stop:${id}`);
+                state.target = { known: true, containerId: id, running: false };
+                return undefined;
+            },
+        };
+        return { scope, state };
+    }
+    it.each(["7", versioned(7)])("retires stale sidecar-less %s only after confirmed absence and returns a fresh listing", content => {
+        const f = fixture([old], { [old]: content }); f.dead(7);
+        const r = recovery(f, { known: true, containerId: null });
+        expect(f.recover(r.scope)).toEqual([]);
+        expect(r.state.inspections).toBeGreaterThan(0); expect(r.state.stopped).toEqual([]);
+        expect(f.removals).toEqual([`/claims/${old}`]); expect(f.cleanups).toEqual([]);
+        expect(f.trace.at(-2)).toBe("list");
+    });
+    it("retires two dead legacy records against an already stopped target without dispatching stop", () => {
+        const f = fixture([old, other], { [old]: "7", [other]: versioned(8) }); f.dead(7); f.dead(8);
+        const r = recovery(f, { known: true, containerId: fullId, running: false });
+        expect(f.recover(r.scope)).toEqual([]);
+        expect(r.state.stopped).toEqual([]); expect(f.removals).toEqual([`/claims/${old}`, `/claims/${other}`]);
+    });
+    it("stops the exact managed running orphan before retiring dead legacy records", () => {
+        const f = fixture([old, other], { [old]: "7", [other]: versioned(8) }); f.dead(7); f.dead(8);
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        expect(f.recover(r.scope)).toEqual([]);
+        expect(r.state.stopped).toEqual([fullId]);
+        expect(f.trace.indexOf(`legacy-stop:${fullId}`)).toBeLessThan(f.trace.indexOf(`retire:/claims/${old}`));
+        expect(f.removals).toEqual([`/claims/${old}`, `/claims/${other}`]);
+    });
+    it("uses the recorded start token to reclaim a reused legacy PID without touching the new process", () => {
+        const f = fixture([old], { [old]: versioned(7, "previous-start") }); f.alive(7, "different-start");
+        const r = recovery(f, { known: true, containerId: null });
+        expect(f.recover(r.scope)).toEqual([]); expect(f.removals).toEqual([`/claims/${old}`]);
+    });
+    it.each(["live", "unknown"] as const)("preserves a %s legacy owner without assuming file presence is process liveness", state => {
+        const f = fixture([old], { [old]: versioned(7) });
+        if (state === "live") f.alive(7, "opaque"); else f.observations.set(7, { status: "unknown" });
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        expect(f.recover(r.scope)).toEqual([old]); expect(r.state.stopped).toEqual([]); expect(f.removals).toEqual([]);
+    });
+    it.each([
+        { known: false, containerId: null, reason: "runtime-list-failed" },
+        { known: true, containerId: fullId },
+        { known: true, containerId: "short-id", running: true },
+        { known: true, containerId: fullId, running: true, requiresLiveVerification: true as const },
+    ])("preserves dead legacy responsibility when target proof is incomplete: %j", target => {
+        const f = fixture([old], { [old]: "7" }); f.dead(7);
+        const r = recovery(f, target);
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old]); expect(r.state.stopped).toEqual([]); expect(f.removals).toEqual([]);
+    });
+    it.each(["live", "unknown", "monitored"] as const)("does not stop a legacy orphan protected by a %s peer", state => {
+        const f = fixture([old, other], { [old]: "7", [other]: state === "monitored" ? monitored(8) : versioned(8) }); f.dead(7);
+        if (state === "live") f.alive(8, "opaque");
+        else if (state === "unknown") f.observations.set(8, { status: "unknown" });
+        else { f.dead(8); const peer = f.attach(other); f.alive(peer.observation.guardian.pid, "guardian-start"); }
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(r.state.stopped).toEqual([]); expect(f.names).toEqual([old, other]); expect(f.removals).toEqual([]);
+    });
+    it("cannot promote missing monitored evidence to legacy migration authority", () => {
+        const f = fixture([old], { [old]: monitored(7) }); f.dead(7);
+        const r = recovery(f, { known: true, containerId: null });
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old]); expect(r.state.stopped).toEqual([]); expect(f.removals).toEqual([]);
+    });
+    it("preserves partial legacy sidecars instead of treating an observation read failure as absence", () => {
+        const f = fixture([old], { [old]: "7" }); f.dead(7);
+        f.ports.responsibility!.observationStore.read = () => { throw new Error("partial sidecars"); };
+        const r = recovery(f, { known: true, containerId: null });
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old]); expect(f.removals).toEqual([]);
+    });
+    it("rechecks sidecar absence after observing the target and before stopping or retiring", () => {
+        const f = fixture([old], { [old]: "7" }); f.dead(7);
+        let sidecarAppeared = false;
+        f.ports.responsibility!.observationStore.read = () => {
+            if (sidecarAppeared) throw new Error("sidecar appeared");
+            return null;
+        };
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        r.scope.inspectContainer = () => { sidecarAppeared = true; return r.state.target; };
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(r.state.stopped).toEqual([]); expect(f.names).toEqual([old]); expect(f.removals).toEqual([]);
+    });
+    it("preserves a same-byte replacement made while inspecting a stale legacy target", () => {
+        const f = fixture([old], { [old]: "7" }); f.dead(7);
+        const original = f.receipts.get(old)!;
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        r.scope.inspectContainer = () => { f.install(old, "7"); return r.state.target; };
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.receipts.get(old)!.inode).not.toBe(original.inode);
+        expect(r.state.stopped).toEqual([]); expect(f.names).toEqual([old]); expect(f.removals).toEqual([]);
+    });
+    it("reobserves peers before stopping so an owner that becomes observable as live remains protective", () => {
+        const f = fixture([old, other], { [old]: "7", [other]: versioned(8) }); f.dead(7); f.dead(8);
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        r.scope.inspectContainer = () => { f.alive(8, "opaque"); return r.state.target; };
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(r.state.stopped).toEqual([]); expect(f.names).toEqual([old, other]); expect(f.removals).toEqual([]);
+    });
+    it("never redirects an orphan stop when a later managed-target observation changes ID", () => {
+        const f = fixture([old], { [old]: "7" }); f.dead(7);
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        let count = 0;
+        r.scope.inspectContainer = () => ({ known: true, containerId: ++count === 1 ? fullId : differentId, running: true });
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(r.state.stopped).toEqual([]); expect(f.names).toEqual([old]);
+    });
+    it("reports the freshly remaining files even when qualified retirement fails", () => {
+        const f = fixture([old], { [old]: "7" }); f.dead(7);
+        const r = recovery(f, { known: true, containerId: null });
+        f.ports.responsibility!.retireClaim = () => { f.install(other, versioned(9)); throw new Error("sharing violation"); };
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, r.scope));
+        expect(result.claims).toEqual([old, other]); expect(result.error).toBeInstanceOf(Error);
+        expect(result.error!.message).toMatch(/session-cleanup-responsibility-incomplete/);
+        expect(f.trace.at(-2)).toBe("list"); expect(f.removals).toEqual([]);
+    });
+    it("retires a dead legacy veto before settling a qualified dead monitored obligation on the same runtime and exact ID", () => {
+        const f = fixture([old, other], { [old]: "7", [other]: monitored(8) });
+        const monitoredClaim = f.attach(other); f.dead(7); f.dead(8); f.dead(monitoredClaim.observation.guardian.pid);
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        expect(f.recover(r.scope)).toEqual([]);
+        expect(r.state.stopped).toEqual([]); expect(f.cleanups).toEqual([monitoredClaim]);
+        expect(f.trace.indexOf(`retire:/claims/${old}`)).toBeLessThan(f.trace.indexOf(`stop:/claims/${other}`));
+        expect(f.removals).toEqual([`/claims/${old}`, `/claims/${other}`]);
+    });
+    it.each(["other-runtime", "pending", "live-guardian"] as const)("does not transfer a dead legacy veto to a monitored %s participant", state => {
+        const f = fixture([old, other], { [old]: "7", [other]: monitored(8) });
+        const monitoredClaim = f.attach(other, state === "pending" ? { lastAcknowledged: null,
+            pending: { kind: "startup", generation, sequence: 2, containerId: fullId, cleanupEnabled: true } } : {},
+            state === "other-runtime" ? invocation("unix:///other-engine.sock") : invocation());
+        f.dead(7); f.dead(8); f.dead(monitoredClaim.observation.guardian.pid);
+        if (state === "live-guardian") f.alive(monitoredClaim.observation.guardian.pid, "guardian-start");
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(r.state.stopped).toEqual([]); expect(f.removals).not.toContain(`/claims/${old}`);
+        expect(f.names).toContain(old);
+    });
+
+    it("keeps a failed orphan stop retryable and retires only after a later confirmed-absent attempt", () => {
+        const f = fixture([old], { [old]: "7" }); f.dead(7);
+        const r = recovery(f, { known: true, containerId: fullId, running: true });
+        r.scope.stopContainer = () => { throw new Error("daemon disconnected"); };
+        expect(() => f.recover(r.scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(f.names).toEqual([old]); expect(f.removals).toEqual([]);
+        r.state.target = { known: true, containerId: null };
+        expect(f.recover(r.scope)).toEqual([]); expect(f.removals).toEqual([`/claims/${old}`]);
     });
 });
 

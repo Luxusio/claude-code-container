@@ -32,7 +32,7 @@ export interface ContainerDestructiveLifecyclePorts {
     projectId(fullPath: string): string;
     containerName(fullPath: string, profile?: string): string;
     withLifecycleLock(prefix: string, operation: () => ContainerDestructiveLifecycleOutcome): ContainerDestructiveLifecycleOutcome;
-    sessionClaims(prefix: string): readonly string[];
+    sessionClaims(prefix: string, fullPath: string, profile?: string): readonly string[];
     ensureRuntime(): undefined;
     managedIdentity(name: string, fullPath: string): DestructiveContainerIdentity | null;
     cleanupDevices(fullPath: string, timeoutMs: number, profile?: string): ContainerDeviceCleanupObservation;

@@ -16,6 +16,7 @@ export type SessionContainerInspectionReason =
 export interface SessionContainerInspection {
     known: boolean;
     containerId: string | null;
+    running?: boolean;
     reason?: SessionContainerInspectionReason;
     /** Static stopped admission permits startup, never replacement before live proof. */
     requiresLiveVerification?: true;

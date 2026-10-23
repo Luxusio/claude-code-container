@@ -8,9 +8,17 @@ import { createHash } from "crypto";
 // All vi.mock() calls must be hoisted before any imports of the module under test.
 
 const mockSpawnSync = vi.fn();
+const mockNativeEnumeration = vi.fn();
 vi.mock("child_process", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
-    return { ...actual, spawnSync: (...args: unknown[]) => mockSpawnSync(...args) };
+    return { ...actual, spawnSync: (...args: unknown[]) => {
+        const command = Array.isArray(args[1]) ? args[1].slice(-5) : [];
+        if (command[0] === "ps" && command[1] === "-aq" && command[2] === "--no-trunc"
+            && command[3] === "-f" && typeof command[4] === "string" && /^id=[a-f0-9]{64}$/i.test(command[4])) {
+            return mockNativeEnumeration(...args);
+        }
+        return mockSpawnSync(...args);
+    } };
 });
 
 const mockExistsSync = vi.fn();
@@ -248,6 +256,11 @@ describe("session.ts", () => {
         vi.spyOn(process, "platform", "get").mockReturnValue("linux");
         claimFiles.clear(); claimDeleted.clear(); claimHandles.clear(); claimExternalIdentities.clear();
         mockSpawnSync.mockReset();
+        // Read-only cleanup observations do not consume scripted stop effects.
+        // Enumeration failure/absence and target revocation have a dedicated facade owner.
+        mockNativeEnumeration.mockReset().mockImplementation((_command: string, args: string[]) => ({
+            status: 0, stdout: `${args[args.length - 1].slice(3)}\n`,
+        }));
         mockExistsSync.mockReset();
         mockWriteFileSync.mockReset();
         mockUnlinkSync.mockReset();
@@ -384,7 +397,7 @@ describe("session.ts", () => {
                     "ccc.managed": "true", "ccc.project.path": projectPath, "ccc.project.mount-identity": identity,
                 } },
             }) });
-            expect(docker.inspectSessionContainerOwnership(projectPath, "work")).toEqual({ known: true, containerId: exactId });
+            expect(docker.inspectSessionContainerOwnership(projectPath, "work")).toEqual({ known: true, containerId: exactId, running });
             expect(mockSpawnSync).toHaveBeenCalledTimes(2);
             expect(mockSpawnSync.mock.calls[0][1]).toEqual(["ps", "-aq", "--no-trunc", "-f", expect.stringMatching(/^name=\^ccc-.*--p--work\$$/)]);
             expect(mockSpawnSync.mock.calls[1][1]).toEqual(["inspect", "-f", "{{json .}}", exactId]);
@@ -448,7 +461,7 @@ describe("session.ts", () => {
             // Other ordinary mounts do not change this project-only admission.
             inspected.Mounts.push({ Source: "/fixture/credentials", Destination: "/home/ccc/.ssh", Type: "bind", RW: false });
             expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
-                known: true, containerId: exactId, requiresLiveVerification: true,
+                known: true, containerId: exactId, running: false, requiresLiveVerification: true,
             });
             expectStoppedCopyAttempt();
         });
@@ -464,7 +477,7 @@ describe("session.ts", () => {
             });
             inspected.Mounts[0].Source = `${prefix}${projectPath}`;
             expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
-                known: true, containerId: exactId, requiresLiveVerification: true,
+                known: true, containerId: exactId, running: false, requiresLiveVerification: true,
             });
             expectStoppedCopyAttempt();
         });
@@ -521,7 +534,7 @@ describe("session.ts", () => {
                 }
                 return { status: 1, stdout: "" };
             });
-            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: true, containerId: exactId });
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: true, containerId: exactId, running: true });
             expect(mockWriteFileSync).toHaveBeenCalled();
             expect(mockSpawnSync.mock.calls.some(call => call[1]?.[0] === "exec" && call[1]?.[1] === exactId)).toBe(true);
             expect(mockSpawnSync.mock.calls.some(call => ["start", "stop", "rm"].includes(call[1]?.[0]))).toBe(false);
@@ -543,7 +556,7 @@ describe("session.ts", () => {
                 return { status: 1, stdout: "", stderr: "stopped or foreign command" };
             });
             expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
-                known: true, containerId: exactId, ...(running ? {} : { requiresLiveVerification: true }),
+                known: true, containerId: exactId, running, ...(running ? {} : { requiresLiveVerification: true }),
             });
             if (running) {
                 expect(mockWriteFileSync).toHaveBeenCalled();
@@ -619,7 +632,7 @@ describe("session.ts", () => {
                 if (args[0] === "cp") return { status: 0, stdout: "" };
                 throw new Error(`unexpected native effect ${args[0]}`);
             });
-            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: true, containerId: exactId });
+            expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({ known: true, containerId: exactId, running: false });
             expect(mockSpawnSync.mock.calls.filter(call => call[1]?.[0] === "inspect")).toHaveLength(2);
             expectStoppedCopyAttempt();
             expect(docker.getManagedProjectContainerIdentity(exactId, projectPath)).toEqual({containerId: exactId, running: false});

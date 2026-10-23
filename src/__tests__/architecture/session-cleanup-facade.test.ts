@@ -10,7 +10,7 @@ import { cleanupNativeSessionDevices } from "../../adapters/session-cleanup.js";
 const effects = vi.hoisted(() => ({
     mkdir: vi.fn(), stat: vi.fn(), chmod: vi.fn(), list: vi.fn(), read: vi.fn(), write: vi.fn(),
     exists: vi.fn(), unlink: vi.fn(), identity: vi.fn(), lock: vi.fn(),
-    runtime: vi.fn(), invocation: vi.fn(), devices: vi.fn(), spawn: vi.fn(), fork: vi.fn(), spawnAsync: vi.fn(),
+    runtime: vi.fn(), invocation: vi.fn(), devices: vi.fn(), spawn: vi.fn(), enumerate: vi.fn(), fork: vi.fn(), spawnAsync: vi.fn(),
     token: vi.fn(), observe: vi.fn(), classify: vi.fn(),
     arm: vi.fn(), authorize: vi.fn(), validate: vi.fn(), capture: vi.fn(), matches: vi.fn(), rollback: vi.fn(),
 }));
@@ -27,7 +27,12 @@ vi.mock("fs", async original => ({ ...await original<typeof import("node:fs")>()
     },
     existsSync: effects.exists, unlinkSync: effects.unlink,
 }));
-vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawnSync: effects.spawn, fork: effects.fork, spawn: effects.spawnAsync }));
+vi.mock("child_process", async original => ({ ...await original<typeof import("node:child_process")>(),
+    spawnSync: (...args: unknown[]) => {
+        const argv = args[1] as string[];
+        // Enumeration is an observation distinct from the stop effects asserted below.
+        return argv.includes("ps") ? effects.enumerate(...args) : effects.spawn(...args);
+    }, fork: effects.fork, spawn: effects.spawnAsync }));
 vi.mock("../../home-layout.js", () => ({ locksDir: () => join("/", "fixture", "locks") }));
 vi.mock("../../utils.js", () => ({ getProjectId: effects.identity }));
 vi.mock("../../container-runtime.js", async original => ({
@@ -219,6 +224,8 @@ function resetNativeFixtures(): void {
     effects.identity.mockReturnValue("project"); effects.list.mockReturnValue([]);
     effects.exists.mockReturnValue(true); effects.runtime.mockReturnValue("docker"); effects.invocation.mockReturnValue(invocation);
     effects.lock.mockImplementation((_path, operation) => operation()); effects.spawn.mockReturnValue({ status: 0 });
+    effects.enumerate.mockImplementation((_program: string, args: string[]) => ({ status: 0,
+        stdout: `${args.find(arg => arg.startsWith("id="))!.slice(3)}\n`, stderr: "" }));
     effects.devices.mockReturnValue({ ownerId: "fixture-owner", results: [] });
     effects.token.mockReturnValue(null); effects.observe.mockReturnValue(new Map()); effects.classify.mockReturnValue("active");
     effects.capture.mockImplementation(path => {
@@ -891,6 +898,53 @@ describe("host ownership acquisition through the facade", () => {
             await session.confirmSessionOwnership().catch(() => undefined);
         }
         session.clearSession(); vi.restoreAllMocks();
+    });
+
+    it("recovers a dead legacy absent target before reserving and reinspects after the old file is retired", async () => {
+        const foreign = join(fixtureLocks, "project--legacy.lock"); persistClaim(foreign, "123");
+        effects.classify.mockImplementation(content => sessionLockOwner(content)?.pid === 123 ? "stale" : "active");
+        const inspect = vi.fn(() => ({ known: true, containerId: null, runtime: "docker" as const }));
+        const result = await session.acquireHostSessionOwnership(request, inspect);
+        expect(effects.unlink).toHaveBeenCalledExactlyOnceWith(foreign);
+        expect(effects.unlink.mock.invocationCallOrder[0]).toBeLessThan(effects.write.mock.invocationCallOrder[0]!);
+        expect(inspect.mock.invocationCallOrder[0]).toBeLessThan(effects.write.mock.invocationCallOrder[0]!);
+        expect(inspect.mock.invocationCallOrder.at(-1)).toBeGreaterThan(effects.write.mock.invocationCallOrder[0]!);
+        expect(result.existingId).toBeNull(); expect(records.has(foreign)).toBe(false);
+        expect(effects.spawn).not.toHaveBeenCalled(); session.cleanupSession();
+    });
+
+    it("recovers a dead legacy running orphan on the captured runtime before arming the new session", async () => {
+        const foreign = join(fixtureLocks, "project--legacy.lock"); persistClaim(foreign, "123");
+        effects.classify.mockImplementation(content => sessionLockOwner(content)?.pid === 123 ? "stale" : "active");
+        let running = true;
+        effects.spawn.mockImplementation((_command: string, args: string[]) => {
+            expect(args).toEqual(stopArgs(capturedId)); running = false; return { status: 0 };
+        });
+        const inspect = vi.fn(() => ({ known: true, containerId: capturedId, running, runtime: "docker" as const }));
+        const result = await session.acquireHostSessionOwnership(request, inspect);
+        expect(effects.spawn).toHaveBeenCalledExactlyOnceWith(invocation.executable, stopArgs(capturedId), stopOptions);
+        expect(effects.spawn.mock.invocationCallOrder[0]).toBeLessThan(effects.unlink.mock.invocationCallOrder[0]!);
+        expect(effects.unlink.mock.invocationCallOrder[0]).toBeLessThan(effects.write.mock.invocationCallOrder[0]!);
+        expect(effects.write.mock.invocationCallOrder[0]).toBeLessThan(effects.arm.mock.invocationCallOrder[0]!);
+        expect(result.existingId).toBe(capturedId); expect(records.has(foreign)).toBe(false);
+        expect(update).toHaveBeenCalledExactlyOnceWith(capturedId, false);
+        session.cleanupSession();
+        expect(effects.spawn).toHaveBeenCalledTimes(1);
+    });
+
+    it("retains a failed legacy stop without reserving another claim and retries from fresh target state", async () => {
+        const foreign = join(fixtureLocks, "project--legacy.lock"); persistClaim(foreign, "123");
+        effects.classify.mockImplementation(content => sessionLockOwner(content)?.pid === 123 ? "stale" : "active");
+        effects.spawn.mockReturnValue({ status: 9 });
+        let running = true;
+        const inspect = vi.fn(() => ({ known: true, containerId: capturedId, running, runtime: "docker" as const }));
+        await expect(session.acquireHostSessionOwnership(request, inspect)).rejects.toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(records.has(foreign)).toBe(true); expect(effects.write).not.toHaveBeenCalled(); expect(effects.arm).not.toHaveBeenCalled();
+        expect(effects.rollback).not.toHaveBeenCalled(); expect(effects.devices).not.toHaveBeenCalled();
+        running = false;
+        await expect(session.acquireHostSessionOwnership(request, inspect)).resolves.toMatchObject({ existingId: capturedId });
+        expect(records.has(foreign)).toBe(false); expect(effects.spawn).toHaveBeenCalledTimes(1);
+        session.cleanupSession();
     });
 
     it("captures authority before reserving a claim and permits a fresh attempt after capture failure", async () => {

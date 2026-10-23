@@ -101,8 +101,11 @@ export function createNativeSessionClaimObservationStore(): SessionClaimObservat
         if (!nativeSessionOwnershipMatches(receipt)) return changed();
         const sidecars = paths(receipt);
         if (missing(sidecars.observation)) {
-            if (missing(sidecars.runtime)) return null;
-            return changed();
+            if (!missing(sidecars.runtime)) return changed();
+            sameDirectory(receipt.path, directory);
+            if (!nativeSessionOwnershipMatches(receipt) || !missing(sidecars.observation)
+                || !missing(sidecars.runtime)) return changed();
+            return null;
         }
         const observationReceipt = privateFile(sidecars.observation, OBSERVATION_LIMIT);
         const observation = decodeSessionClaimObservation(JSON.parse(Buffer.from(observationReceipt.bytes, "base64").toString("utf8")));

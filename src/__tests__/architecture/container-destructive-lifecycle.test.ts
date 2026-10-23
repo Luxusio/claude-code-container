@@ -95,6 +95,37 @@ describe("destructive claim authorization", () => {
         }
     });
 
+    it.each(["stop", "remove"] as const)("%s reconciles under the profile guard and counts the returned fresh remainder", operation => {
+        const f = fixture(); f.state.claims = ["dead-legacy", "failed-cleanup"];
+        f.ports.sessionClaims = (prefix, path, profile) => {
+            expect(prefix).toBe("project-id--p--work"); expect(path).toBe("/full/1"); expect(profile).toBe("work");
+            expect(f.trace.at(-1)).toBe("lock:project-id--p--work");
+            f.trace.push("recover:dead-legacy");
+            f.state.claims = ["replacement-still-present"];
+            return [...f.state.claims];
+        };
+        expect(() => f.app[operation]("input", "work")).toThrow("claimed:1");
+        expect(f.trace).toContain("refuse:1:/full/1");
+        expect(f.trace).not.toContain("runtime");
+        expect(f.trace.some(event => /^(cleanup:|stop:|remove:)/.test(event))).toBe(false);
+    });
+
+    it.each(["stop", "remove"] as const)("%s proceeds without force when automatic recovery leaves no claims", operation => {
+        const f = fixture(); f.state.claims = ["dead-legacy"];
+        f.ports.sessionClaims = () => { f.trace.push("recover-and-recount"); f.state.claims = []; return [...f.state.claims]; };
+        expect(f.app[operation]("input").kind).toBe("completed");
+        expect(f.trace.indexOf("recover-and-recount")).toBeLessThan(f.trace.indexOf("runtime"));
+        expect(f.trace).toContain("stop:pinned-id");
+    });
+
+    it("explicit force still attempts reconciliation before bypassing its remaining-file veto", () => {
+        const f = fixture();
+        f.ports.sessionClaims = () => { f.trace.push("recovery-incomplete-fresh-remainder"); return ["uncertain-record"]; };
+        expect(f.app.remove("input", undefined, { force: true }).kind).toBe("completed");
+        expect(f.trace.indexOf("recovery-incomplete-fresh-remainder")).toBeLessThan(f.trace.indexOf("runtime"));
+        expect(f.trace).toContain("remove:pinned-id");
+    });
+
     it.each(["stop", "remove"] as const)("%s keeps one captured path for profile, proof, cleanup and presentation", operation => {
         for (const profile of [undefined, "", "dev"]) {
             const f = fixture(); f.app[operation]("input", profile);

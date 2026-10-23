@@ -29,7 +29,7 @@ export function createContainerDestructiveLifecycle(ports: ContainerDestructiveL
         const projectId = ports.projectId(fullPath);
         const prefix = sessionClaimPrefix(projectId, profile);
         return ports.withLifecycleLock(prefix, () => {
-            const claims = ports.sessionClaims(prefix);
+            const claims = ports.sessionClaims(prefix, fullPath, profile);
             if (claims.length > 0 && options.force !== true) {
                 ports.throwSessionClaims(claims.length, fullPath);
             }

@@ -90,12 +90,17 @@ cp.spawnSync = function(command, args, options) {
         break;
     }
     args = args.slice(index);
-    if (args[0] === 'stop' && host !== 'unix:///fixture/engine-a.sock') throw new Error('fixture refused uncaptured authority');
+    if ((args[0] === 'stop' || args[0] === 'ps') && host !== 'unix:///fixture/engine-a.sock') throw new Error('fixture refused uncaptured authority');
     fs.appendFileSync(process.env.CCC_FIXTURE_LOG, JSON.stringify(args) + '\\n');
     let status = 0, stdout = '';
     if (args[0] === '--version') stdout = 'Docker version 27.1.1\\n';
     if (args[0] === 'info' && args[2] === '{{.OperatingSystem}}') stdout = 'Linux\\n';
     if (args[0] === 'info' && args[2] === '{{json .SecurityOptions}}') stdout = '[]\\n';
+    if (args[0] === 'ps') {
+        const expected = ['ps', '-aq', '--no-trunc', '-f', 'id=' + ${JSON.stringify(idA)}];
+        if (JSON.stringify(args) !== JSON.stringify(expected)) throw new Error('fixture refused non-exact container enumeration');
+        stdout = ${JSON.stringify(idA)} + '\\n';
+    }
     if (args[0] === 'stop') {
         const marker = process.env.CCC_FIXTURE_LOG + '.entered';
         fs.writeFileSync(marker, String(process.pid));
@@ -377,11 +382,17 @@ while (index < args.length) {
     break;
 }
 args = args.slice(index);
-if (args[0] === 'stop' && host !== 'unix:///fixture/engine-a.sock') process.exit(96);
+if ((args[0] === 'stop' || args[0] === 'ps') && host !== 'unix:///fixture/engine-a.sock') process.exit(96);
 appendFileSync(process.env.CCC_TEST_RUNTIME_LOG, JSON.stringify(args) + '\\n');
 if (args[0] === '--version') console.log('Docker version 27.1.1');
 if (args[0] === 'info' && args[2] === '{{.OperatingSystem}}') console.log('Linux');
 if (args[0] === 'info' && args[2] === '{{json .SecurityOptions}}') console.log('[]');
+if (args[0] === 'ps') {
+    const requested = args[4]?.slice(3);
+    if (![${JSON.stringify(idA)}, ${JSON.stringify(idB)}].includes(requested)
+        || JSON.stringify(args) !== JSON.stringify(['ps', '-aq', '--no-trunc', '-f', 'id=' + requested])) process.exit(95);
+    console.log(requested);
+}
 if (args[0] === 'stop' && process.env.CCC_TEST_STOP_FAIL === '1') process.exit(73);
 `);
         chmodSync(docker, 0o700);
@@ -787,14 +798,17 @@ export async function load(url, context, nextLoad) {
         await eventually(() => !existsSync(last.ready.lock), "last claim removal");
         await eventually(() => !running(last.ready.guardian), "last guardian exit");
         expect(stops()).toEqual([["stop", idA], ["stop", idB]]);
-        // Device cleanup may detect runtime flavor. Container name discovery
-        // (ps/inspect) and any other runtime operation remain forbidden here.
+        // Device cleanup may detect runtime flavor. Reconciliation queries
+        // only each captured full ID; name discovery and inspect remain forbidden.
         const metadata = new Set([
             JSON.stringify(["--version"]),
             JSON.stringify(["info", "--format", "{{.OperatingSystem}}"]),
             JSON.stringify(["info", "--format", "{{json .SecurityOptions}}"]),
         ]);
-        expect(calls().filter((args) => !metadata.has(JSON.stringify(args)))).toEqual(stops());
+        expect(calls().filter((args) => !metadata.has(JSON.stringify(args)))).toEqual([
+            ["ps", "-aq", "--no-trunc", "-f", `id=${idA}`], ["stop", idA],
+            ["ps", "-aq", "--no-trunc", "-f", `id=${idB}`], ["stop", idB],
+        ]);
     });
 
     it.skipIf(process.platform === "win32")("isolates profile and sibling project ownership", async () => {

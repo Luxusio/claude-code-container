@@ -11,6 +11,8 @@ import { getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./containe
 import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
 import type { SessionOwnershipHandle, SessionOwnershipReceipt } from "./ports/session-ownership.js";
 import { createNativeSessionClaimObservationStore } from "./adapters/session-claim-observation.js";
+import { stopNativeSessionContainer } from "./adapters/session-cleanup.js";
+import type { SessionClaimRecoveryScope } from "./ports/session-claims.js";
 import { currentSessionClaimAuthority } from "./domain/session-claim-observation.js";
 import { sessionClaimPrefix } from "./domain/session-claims.js";
 import { getProjectId } from "./utils.js";
@@ -166,6 +168,15 @@ export async function armSessionOwnership(): Promise<number | undefined> {
     return armOwnershipInContext();
 }
 
+function sessionRecoveryScope(runtimeInvocation: NativeRuntimeInvocation,
+    inspect: SessionClaimRecoveryScope["inspectContainer"]): SessionClaimRecoveryScope {
+    return {
+        runtimeInvocation,
+        inspectContainer: () => runWithNativeRuntimeInvocation(runtimeInvocation, inspect),
+        stopContainer: readId => stopNativeSessionContainer(readId, runtimeInvocation),
+    };
+}
+
 export async function acquireHostSessionOwnership(
     request: SessionAcquisitionRequest,
     inspectExisting: SessionAcquisitionPorts["inspectExisting"],
@@ -174,6 +185,17 @@ export async function acquireHostSessionOwnership(
         throw new Error("Host session ownership is already being acquired.");
     }
     const runtimeInvocation = getRuntimeInvocation();
+    const recovery = sessionRecoveryScope(runtimeInvocation, () => {
+        const inspected = inspectExisting(request);
+        // Native inspection is synchronous. An asynchronous extension cannot
+        // supply fresh synchronous destructive proof; preserve legacy records.
+        if (inspected instanceof Promise) {
+            void inspected.catch(() => undefined);
+            return { known: false, containerId: null };
+        }
+        if (inspected.runtime !== runtimeInvocation.runtime) return { known: false, containerId: null };
+        return inspected;
+    });
     acquiringOwnership = true;
     acquisitionFailure = null;
     acquisitionCancellation = null;
@@ -207,7 +229,7 @@ export async function acquireHostSessionOwnership(
     try {
         const acquired = await runWithNativeRuntimeInvocation(runtimeInvocation, () => createSessionAcquisition({
             withLifecycleLock: withContainerLifecycleLockAsync,
-            recoverPredecessors: prefix => sessionClaims.recoverPredecessorsInHeldLifecycleLock(prefix),
+            recoverPredecessors: prefix => { sessionClaims.recoverPredecessorsInHeldLifecycleLock(prefix, undefined, recovery); },
             reserve: sessionClaims.reserveSessionLockInHeldLifecycleLock,
             initializeCapture(binding, lockFile) {
                 sessionCleanup.clearSession();
@@ -236,7 +258,7 @@ export async function acquireHostSessionOwnership(
             },
             reconcileForeign(prefix, lockFile) {
                 if (acquisitionFailure) throw acquisitionFailure;
-                return sessionClaims.reconcileForeignClaimsInHeldLifecycleLock(prefix, lockFile);
+                return sessionClaims.reconcileForeignClaimsInHeldLifecycleLock(prefix, lockFile, recovery);
             },
             async rollback() {
                 try {
@@ -382,13 +404,20 @@ export function observeActiveSessionsForContainer(
     return sessionClaims.observeActiveSessionsForContainer(containerPrefix, currentLockFile);
 }
 
-/**
- * Return raw ownership claims without PID/start-token inference.
- * Automatic container shutdown must not turn an imperfect Windows process
- * observation into permission to terminate another session.
- */
-export function getSessionLockClaimsForContainer(containerPrefix: string): string[] {
-    return sessionClaims.getSessionLockClaimsForContainer(containerPrefix);
+/** Return raw claims, or reconcile first when an explicit project inspection is supplied. */
+export function getSessionLockClaimsForContainer(containerPrefix: string, recovery?: {
+    projectPath: string;
+    profile?: string;
+    inspectContainer: SessionClaimRecoveryScope["inspectContainer"];
+}): string[] {
+    if (!recovery) return sessionClaims.getSessionLockClaimsForContainer(containerPrefix);
+    if (sessionClaimPrefix(getProjectId(recovery.projectPath), recovery.profile) !== containerPrefix) {
+        throw new Error("Session reconciliation project/profile does not match its lifecycle guard.");
+    }
+    const scope = sessionRecoveryScope(getRuntimeInvocation(), recovery.inspectContainer);
+    const result = sessionClaims.reconcileSessionClaimsInHeldLifecycleLock(containerPrefix, undefined, scope);
+    if (result.error) console.warn(`[ccc] ${result.error.message}`);
+    return result.claims;
 }
 
 export function getSessionLockClaimsForProjectFamily(projectId: string): string[] {

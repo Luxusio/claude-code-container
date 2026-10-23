@@ -1089,8 +1089,8 @@ export function inspectSessionContainerOwnership(projectPath: string, profile?: 
         const managed = inspectManagedProjectContainerIdentity(listed.containerId, projectPath, listed.containerId);
         if ("reason" in managed) return { known: false, containerId: null, reason: managed.reason };
         return managed.requiresLiveVerification
-            ? { ...listed, requiresLiveVerification: true }
-            : listed;
+            ? { ...listed, running: managed.identity.running, requiresLiveVerification: true }
+            : { ...listed, running: managed.identity.running };
     } catch {
         return { known: false, containerId: null, reason: "container-inspection-unavailable" };
     }
@@ -2007,7 +2007,10 @@ function projectContainerDestructiveLifecycle() {
         projectId: getProjectId,
         containerName: getContainerName,
         withLifecycleLock: (prefix, operation) => withContainerLifecycleLock(prefix, operation),
-        sessionClaims: getSessionLockClaimsForContainer,
+        sessionClaims: (prefix, fullPath, profile) => getSessionLockClaimsForContainer(prefix, {
+            projectPath: fullPath, profile,
+            inspectContainer: () => inspectSessionContainerOwnership(fullPath, profile),
+        }),
         ensureRuntime: () => { ensureDockerRunning(); },
         managedIdentity: (name, path) => {
             const listed = getListedContainerId(name);

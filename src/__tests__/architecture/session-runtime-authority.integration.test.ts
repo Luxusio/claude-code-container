@@ -93,6 +93,13 @@ if (args[0] === 'context' && args[1] === 'inspect') {
 } else if (args[0] === '--version') console.log('Docker version 27.1.1');
 else if (args[0] === 'info' && args[2] === '{{.OperatingSystem}}') console.log('Linux');
 else if (args[0] === 'info' && args[2] === '{{json .SecurityOptions}}') console.log('[]');
+else if (args[0] === 'ps') {
+    const requested = args[4]?.slice(3);
+    if (!/^[a-f0-9]{64}$/.test(requested || '')
+        || JSON.stringify(args) !== JSON.stringify(['ps', '-aq', '--no-trunc', '-f', 'id=' + requested])) process.exit(95);
+    const engines = JSON.parse(readFileSync(${JSON.stringify(state)}, 'utf8'));
+    if (engines[endpoint] && Object.hasOwn(engines[endpoint], requested)) console.log(requested);
+}
 else if (args[0] === 'stop') {
     writeFileSync(${JSON.stringify(join(root, "stop-entered"))}, String(process.pid));
     const deadline = Date.now() + 15000;

@@ -162,6 +162,57 @@ describe("session claims compatibility facade", () => {
     });
 });
 
+
+describe("scoped administrative claim reconciliation", () => {
+    const reconcile = (inspectContainer: () => { known: boolean; containerId: string | null; running?: boolean }) =>
+        session.withContainerLifecycleLock("project", () => session.getSessionLockClaimsForContainer("project", { projectPath: root, inspectContainer }));
+
+    it.each(["absent", "stopped"] as const)("retires a positively stale legacy file against a confirmed %s target before returning fresh claims", state => {
+        const legacy = writeClaim("project--legacy.lock", { version: 2, pid: 4242, startToken: "old-process" });
+        effects.classify.mockReturnValue("stale");
+        const inspect = vi.fn(() => ({ known: true, containerId: state === "absent" ? null : containerId, running: false }));
+        expect(reconcile(inspect)).toEqual([]);
+        expect(inspect).toHaveBeenCalled(); expect(existsSync(legacy)).toBe(false); expect(effects.spawn).not.toHaveBeenCalled();
+    });
+    it("observes the selected project inside its captured runtime and stops an orphan by exact ID", () => {
+        const legacy = writeClaim("project--legacy.lock", "4242"); effects.classify.mockReturnValue("stale");
+        const captured = runtimeFacade.getRuntimeInvocation(); let running = true;
+        const inspect = vi.fn(() => {
+            expect(held).toBe(true);
+            expect(runtimeFacade.currentNativeRuntimeInvocation()).toEqual(captured);
+            return { known: true, containerId, running };
+        });
+        effects.spawn.mockImplementation((_program: string, args: string[]) => {
+            if (args.includes("ps")) return { status: 0, stdout: `${containerId}\n`, stderr: "" };
+            expect(args.slice(-2)).toEqual(["stop", containerId]); running = false;
+            return { status: 0 };
+        });
+        expect(reconcile(inspect)).toEqual([]);
+        expect(existsSync(legacy)).toBe(false);
+        expect(effects.spawn.mock.calls.map(call => (call[1] as string[]).slice(-2)))
+            .toEqual([["-f", `id=${containerId}`], ["stop", containerId]]);
+        expect(effects.cleanup).not.toHaveBeenCalled();
+    });
+    it("returns the remaining partial record with a bounded diagnostic instead of falsely reporting it alive", () => {
+        const legacy = writeClaim("project--legacy.lock", "4242"); effects.classify.mockReturnValue("stale");
+        writeFileSync(`${legacy}.runtime.json`, JSON.stringify({ PRIVATE_SELECTOR: "not-for-logs" }), { mode: 0o600 });
+        const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        expect(reconcile(() => ({ known: true, containerId: null }))).toEqual(["project--legacy.lock"]);
+        expect(readFileSync(legacy, "utf8")).toBe("4242"); expect(effects.spawn).not.toHaveBeenCalled();
+        expect(warning).toHaveBeenCalledOnce();
+        expect(warning.mock.calls[0]![0]).toMatch(/project--legacy.lock/);
+        expect(warning.mock.calls[0]![0]).not.toMatch(/not-for-logs|PRIVATE_SELECTOR|close its other CCC sessions/);
+    });
+    it("rejects project/profile mismatches before inspecting or reclaiming any record", () => {
+        const legacy = writeClaim("project--legacy.lock", "4242"); effects.classify.mockReturnValue("stale");
+        const inspect = vi.fn(() => ({ known: true, containerId: null }));
+        expect(() => session.withContainerLifecycleLock("project--p--work", () => session.getSessionLockClaimsForContainer("project--p--work", {
+            projectPath: root, inspectContainer: inspect,
+        }))).toThrow(/project\/profile does not match/);
+        expect(inspect).not.toHaveBeenCalled(); expect(readFileSync(legacy, "utf8")).toBe("4242"); expect(effects.spawn).not.toHaveBeenCalled();
+    });
+});
+
 describe("session claim filesystem adapter boundaries", () => {
     it.each(["file", "linked-directory"])("refuses a %s claim root before listing or writing", kind => {
         const store = createSessionClaimsStore({ directory: () => effects.directory, platform: () => "linux" });

@@ -148,6 +148,20 @@ describe("private native guardian evidence store", () => {
         return { store, begin, receipt, binding, runtimeInvocation };
     }
 
+    it.each(["4242", JSON.stringify({ version: 2, pid: 4242, startToken: "legacy-start" })])("positively distinguishes absent sidecars on a captured pre-v3 record: %s", content => {
+        const f = fixture(); writeFileSync(f.binding.lockFile, content, { mode: 0o600 });
+        const receipt = captureNativeSessionOwnership(f.binding.lockFile);
+        expect(f.store.read(receipt, { prefix: f.binding.prefix })).toBeNull();
+        expect(readFileSync(receipt.path, "utf8")).toBe(content);
+    });
+    it.each(["runtime", "guardian"] as const)("retains partial %s evidence on a legacy main record as incomplete", sidecar => {
+        const f = fixture(); writeFileSync(f.binding.lockFile, "4242", { mode: 0o600 });
+        const receipt = captureNativeSessionOwnership(f.binding.lockFile);
+        writeFileSync(`${receipt.path}.${sidecar}.json`, "{}", { mode: 0o600 });
+        expect(() => f.store.read(receipt, { prefix: f.binding.prefix })).toThrow();
+        expect(readFileSync(receipt.path, "utf8")).toBe("4242");
+    });
+
     it("keeps the immutable small main claim separate from bounded private runtime and observation files", () => {
         const f = fixture({ longRuntime: true });
         const original = readFileSync(f.binding.lockFile);

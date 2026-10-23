@@ -32,6 +32,7 @@ export function createNativeContainerDestructiveLifecycle(
         }
         return createContainerDestructiveLifecycle({
             ...ports,
+            sessionClaims: (prefix, fullPath, profile) => inRuntime(() => ports.sessionClaims(prefix, fullPath, profile)),
             ensureRuntime: () => inRuntime(() => ports.ensureRuntime()),
             managedIdentity: (name, path) => inRuntime(() => ports.managedIdentity(name, path)),
             stop: (id) => inRuntime(() => {
@@ -53,7 +54,7 @@ export function createNativeContainerDestructiveLifecycle(
                     : "[ccc] device cleanup unavailable before container stop");
             },
             throwSessionClaims: (count, fullPath) => {
-                throw new Error(`Container for workspace ${JSON.stringify(fullPath)} has ${count} session ownership claim(s); close its other CCC sessions and retry.`);
+                throw new Error(`Container for workspace ${JSON.stringify(fullPath)} has ${count} remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.`);
             },
         });
     }

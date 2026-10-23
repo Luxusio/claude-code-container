@@ -112,6 +112,20 @@ describe("native destructive lifecycle composition", () => {
         expect(native.runtime).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
     });
 
+    it("pins recovery and later destructive effects to the same runtime selected before reconciliation", async () => {
+        const { currentNativeRuntimeInvocation } = await import("../../container-runtime.js");
+        native.runtime.mockReturnValueOnce("podman").mockReturnValue("docker");
+        const scopes: unknown[] = [];
+        const f = fixture({ sessionClaims(prefix, path, profile) {
+            scopes.push({ prefix, path, profile, runtime: currentNativeRuntimeInvocation()?.runtime });
+            return [];
+        } });
+        f.lifecycle.remove("input", "work");
+        expect(scopes).toEqual([{ prefix: "project-id--p--work", path: "/full/project", profile: "work", runtime: "podman" }]);
+        expect(native.spawn.mock.calls.map(call => call[0])).toEqual(["podman", "podman"]);
+        expect(native.runtime).toHaveBeenCalledTimes(1);
+    });
+
     it("captures once before identity and retains the same native authority for exact-ID stop and plain rm", () => {
         native.runtime.mockReturnValueOnce("docker").mockReturnValueOnce("podman");
         const f = fixture(); expect(f.lifecycle.remove("input")).toBeUndefined();
@@ -150,14 +164,14 @@ describe("native destructive lifecycle composition", () => {
         expect(native.spawn).not.toHaveBeenCalled(); expect(console.log).toHaveBeenCalledExactlyOnceWith("Container not found");
     });
 
-    it.each(["stop", "remove"] as const)("%s rejects raw claims with the guard workspace and close/retry guidance before effects", operation => {
+    it.each(["stop", "remove"] as const)("%s refuses the reconciled remainder with accurate workspace diagnostics before engine effects", operation => {
         const f = fixture({ sessionClaims: () => ["stale", "live"] });
         let failure: unknown;
         try { f.lifecycle[operation]("input"); } catch (error) { failure = error; }
         expect(failure).toBeInstanceOf(Error);
-        expect((failure as Error).message).toBe('Container for workspace "/full/project" has 2 session ownership claim(s); close its other CCC sessions and retry.');
+        expect((failure as Error).message).toBe('Container for workspace "/full/project" has 2 remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.');
         expect(f.order).toEqual(["resolve:input", "project:/full/project", "lock:project-id", "unlock"]);
-        expect(native.order).toEqual([]); expect(native.runtime).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
+        expect(native.order).toEqual([]); expect(native.runtime).toHaveBeenCalledTimes(1); expect(native.spawn).not.toHaveBeenCalled();
     });
 
     it.each(["stop", "remove"] as const)("%s bounds thrown cleanup warnings and continues without exposing helper errors", operation => {
@@ -253,11 +267,20 @@ describe("public Docker destructive facade through actual application and compos
     it.each(["stop", "remove"] as const)("%s preserves raw-claim refusal and explicit force under profile lock", operation => {
         provider(); native.claims.mockReturnValue(["raw-claim"]);
         const execute = operation === "stop" ? stopProjectContainer : removeProjectContainer;
-        expect(() => execute(root, "work")).toThrow(`Container for workspace ${JSON.stringify(resolve(root))} has 1 session ownership claim(s); close its other CCC sessions and retry.`);
+        expect(() => execute(root, "work")).toThrow(`Container for workspace ${JSON.stringify(resolve(root))} has 1 remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.`);
         expect(native.spawn).not.toHaveBeenCalled(); expect(native.cleanup).not.toHaveBeenCalled();
         expect(native.lock).toHaveBeenCalledWith(`${getProjectId(root)}--p--work`, expect.any(Function));
         expect(execute(root, "work", { force: true })).toBeUndefined();
         expect(native.cleanup).toHaveBeenCalledExactlyOnceWith(resolve(root), 5000, "work");
+    });
+
+    it("passes selected project and profile plus an actual inspector into claim reconciliation before administrative veto", () => {
+        provider(); native.claims.mockReturnValue(["remaining-record"]);
+        expect(() => stopProjectContainer(root, "work")).toThrow(/remaining session ownership claim/);
+        expect(native.claims).toHaveBeenCalledExactlyOnceWith(`${getProjectId(root)}--p--work`, {
+            projectPath: resolve(root), profile: "work", inspectContainer: expect.any(Function),
+        });
+        expect(native.spawn).not.toHaveBeenCalled(); expect(native.cleanup).not.toHaveBeenCalled();
     });
 
     it.each(["stop", "remove"] as const)("%s refuses foreign managed proof even under force", operation => {

@@ -47,7 +47,28 @@ export function reportNativeSessionDeviceCleanupFailure(failure: SessionDeviceCl
 
 export function stopNativeSessionContainer(readContainerId: () => string | null, runtimeInvocation: NativeRuntimeInvocation): undefined {
     const runner = bindNativeRuntimeInvocation(runtimeInvocation);
-    const result = runner.spawnSync(["stop", readContainerId()!], {
+    const containerId = readContainerId();
+    if (!containerId || !/^[a-f0-9]{64}$/i.test(containerId)) {
+        throw new Error("Container shutdown target is not a full container ID; session cleanup remains incomplete.");
+    }
+    const listed = runner.spawnSync(["ps", "-aq", "--no-trunc", "-f", `id=${containerId}`], {
+        encoding: "utf8", stdio: "pipe", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 4096,
+    });
+    if (readContainerId() !== containerId) {
+        throw new Error("Container shutdown target changed; session cleanup remains incomplete.");
+    }
+    if (listed.error || listed.signal || listed.status !== 0 || typeof listed.stdout !== "string") {
+        throw new Error("Container shutdown state could not be verified; session cleanup remains incomplete.");
+    }
+    const observedId = listed.stdout.trim();
+    if (observedId !== "" && observedId !== containerId) {
+        throw new Error("Container shutdown state is ambiguous; session cleanup remains incomplete.");
+    }
+    if (readContainerId() !== containerId) {
+        throw new Error("Container shutdown target changed; session cleanup remains incomplete.");
+    }
+    if (observedId === "") return undefined;
+    const result = runner.spawnSync(["stop", containerId], {
         stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL",
     });
     if (result.error || result.signal || result.status !== 0) {

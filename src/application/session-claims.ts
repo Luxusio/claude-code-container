@@ -5,7 +5,7 @@ import { canTransferSessionClaimObligation, currentSessionClaimAuthority, select
 import { sessionLockOwner, type SessionLockLiveness, type SessionLockOwner } from "../domain/session-lock.js";
 import type { NativeRuntimeInvocation } from "../ports/container-runtime-invocation.js";
 import type { SessionClaimObservationSnapshot } from "../ports/session-claim-observation.js";
-import type { SessionClaimsPorts, SessionClaimResponsibilityPorts } from "../ports/session-claims.js";
+import type { SessionClaimsPorts, SessionClaimResponsibilityPorts, SessionClaimRecoveryScope } from "../ports/session-claims.js";
 import type { SessionCleanupPeerVetoes, SessionCleanupSettlement } from "../ports/session-cleanup.js";
 import type { SessionOwnershipBinding, SessionOwnershipReceipt } from "../ports/session-ownership.js";
 
@@ -228,52 +228,176 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
         settleSnapshot(qualifiedSnapshot(receipt, binding, runtimeInvocation));
     }
 
-    function recoverPredecessorsInHeldLifecycleLock(prefix: string, ownPath?: string): void {
+    function recoverLegacyClaim(item: ObservedClaim, prefix: string, scope?: SessionClaimRecoveryScope): void {
         const native = responsibility();
-        const claims = observeClaims(prefix).filter(item => item.receipt?.path !== ownPath);
-        const recoverable: SessionClaimObservationSnapshot[] = [];
-        const failures: unknown[] = [];
-        for (const item of claims) {
-            if (item.parent !== "stale") continue;
-            if (!item.owner || !item.receipt) { failures.push(incomplete("A dead claim could not be qualified.")); continue; }
-            if (item.owner.ownershipKind === "direct") {
-                try { native.retireClaim(item.receipt); } catch (error) { failures.push(error); }
-            } else if (item.owner.ownershipKind !== "monitored" || !item.snapshot) {
-                failures.push(incomplete("A dead legacy or monitored claim has no qualified guardian responsibility."));
-            } else if (item.guardian === "stale") {
-                if (noObligation(item.snapshot)) {
-                    try { retireSnapshot(item.snapshot); } catch (error) { failures.push(error); }
-                } else if (currentSessionClaimAuthority(item.snapshot.observation)) recoverable.push(item.snapshot);
-                else failures.push(retainRecoveryFailure(item.snapshot,
-                    incomplete("A dead session has pending or unknown cleanup authority.")));
+        const receipt = item.receipt!;
+        if (!scope) throw incomplete("Legacy recovery requires current project and runtime observations.");
+
+        function qualifyRecord(): void {
+            const current = observeClaims(prefix).find(peer => peer.name === item.name);
+            if (!native.matchesClaim(receipt) || !current?.receipt || current.parent !== "stale"
+                || !current.owner || current.owner.ownershipKind !== undefined
+                || current.receipt.path !== receipt.path
+                || native.observationStore.read(receipt, { prefix }) !== null
+                || !native.matchesClaim(receipt)) {
+                throw incomplete("Legacy process identity, receipt or sidecar absence changed.");
             }
         }
-        const groups = new Map<string, SessionClaimObservationSnapshot[]>();
-        for (const snapshot of recoverable) {
-            const id = currentSessionClaimAuthority(snapshot.observation)!.containerId;
-            groups.set(id, [...(groups.get(id) ?? []), snapshot]);
+        function inspectTarget() {
+            const target = scope!.inspectContainer();
+            if (!target.known || target.requiresLiveVerification
+                || target.containerId !== null && (!/^[a-f0-9]{64}$/i.test(target.containerId)
+                    || typeof target.running !== "boolean")) {
+                throw incomplete("The managed project container state or destructive identity is unconfirmed.");
+            }
+            return target;
         }
-        for (const group of groups.values()) {
-            try {
-                if (group.some(item => !sameRuntime(item.runtimeInvocation, group[0].runtimeInvocation))) {
-                    throw incomplete("The same opaque container ID has different captured native authorities.");
-                }
-                const selected = group.length === 1 ? group[0].observation
-                    : selectSessionClaimRecoverySurvivor(group.map(item => item.observation));
-                if (!selected) throw incomplete("Dead duplicate responsibilities have no qualified recovery survivor.");
-                const survivor = group.find(item => item.receipt.path === selected.claim.path)!;
-                for (const item of group) {
-                    if (item === survivor) continue;
-                    retireOwnedClaimInHeldLifecycleLock(item.receipt, item.observation.binding, item.runtimeInvocation, {
-                        containerId: currentSessionClaimAuthority(item.observation)!.containerId, cleanupEnabled: true,
-                        containerStopped: false, responsibilityTransferred: true,
-                    });
-                }
-                settleSnapshot(survivor);
-            } catch (error) { failures.push(error); }
+        function qualifyOrphanPeers(): void {
+            const peers = observeClaims(prefix);
+            if (peers.some(peer => !peer.receipt || !peer.owner || peer.parent !== "stale"
+                || peer.owner.ownershipKind === "monitored"
+                || !native.matchesClaim(peer.receipt)
+                || native.observationStore.read(peer.receipt, { prefix }) !== null)) {
+                throw incomplete("A live, unobservable or monitored peer prevents legacy orphan shutdown.");
+            }
+            qualifyRecord();
         }
-        if (failures.length) throw incomplete("One or more predecessor responsibilities remain incomplete.",
-            failures.length === 1 ? failures[0] : new AggregateError(failures, "Predecessor session recovery failed."));
+
+        qualifyRecord();
+        const target = inspectTarget();
+        if (target.containerId !== null && target.running) {
+            const pinnedId = target.containerId;
+            const recipient = scope.runtimeInvocation && observeClaims(prefix).find(peer => peer.snapshot
+                && peer.parent === "stale" && peer.guardian === "stale"
+                && sameRuntime(peer.snapshot.runtimeInvocation, scope.runtimeInvocation!)
+                && currentSessionClaimAuthority(peer.snapshot.observation)?.containerId === pinnedId);
+            if (recipient?.snapshot) {
+                // A current monitored responsibility can take over this exact
+                // target. Retire the legacy veto before the normal survivor pass.
+                const current = inspectTarget();
+                if (current.containerId !== pinnedId || !current.running) {
+                    throw incomplete("The legacy transfer target changed before retirement.");
+                }
+                qualifyRecord();
+                const cohort = observeClaims(prefix);
+                if (cohort.some(peer => !peer.receipt || !peer.owner || peer.parent !== "stale"
+                    || !native.matchesClaim(peer.receipt)
+                    || (peer.owner.ownershipKind === "monitored"
+                        ? !peer.snapshot || peer.guardian !== "stale"
+                            || !sameRuntime(peer.snapshot.runtimeInvocation, scope.runtimeInvocation!)
+                            || currentSessionClaimAuthority(peer.snapshot.observation)?.containerId !== pinnedId
+                            || !native.observationStore.matches(peer.snapshot)
+                        : native.observationStore.read(peer.receipt, { prefix }) !== null))) {
+                    throw incomplete("An uncertain peer or guardian prevents legacy responsibility transfer.");
+                }
+                const fresh = cohort.find(peer => peer.name === recipient.name);
+                if (!fresh?.snapshot) throw incomplete("The monitored recipient disappeared before legacy transfer.");
+                native.observationStore.assertCurrent(recipient.snapshot);
+                if (!native.matchesClaim(receipt)
+                    || native.observationStore.read(receipt, { prefix }) !== null) {
+                    throw incomplete("The legacy receipt or sidecars changed before transfer.");
+                }
+                native.observationStore.assertCurrent(recipient.snapshot);
+                native.retireClaim(receipt);
+                return;
+            }
+            scope.stopContainer(() => {
+                const current = inspectTarget();
+                if (current.containerId !== pinnedId || !current.running) {
+                    throw incomplete("The legacy orphan container changed before shutdown.");
+                }
+                // Repeat process, receipt and native sidecar absence observations
+                // after the runtime probe, immediately before the exact-ID effect.
+                qualifyOrphanPeers();
+                return pinnedId;
+            });
+        }
+        const settled = inspectTarget();
+        if (settled.containerId !== null && (settled.running || settled.containerId !== target.containerId)) {
+            throw incomplete("Legacy container shutdown is not confirmed for the observed target.");
+        }
+        qualifyRecord();
+        native.retireClaim(receipt);
+    }
+
+    function reconcileSessionClaimsInHeldLifecycleLock(prefix: string, ownPath?: string,
+        scope?: SessionClaimRecoveryScope): { claims: string[]; error?: Error } {
+        const native = responsibility();
+        const failures: Error[] = [];
+        const failed = (name: string, reason: string, cause?: unknown) => {
+            failures.push(incomplete(`${JSON.stringify(name.slice(0, 180))}: ${reason}`, cause));
+        };
+        try {
+            const claims = observeClaims(prefix).filter(item => item.receipt?.path !== ownPath);
+            const recoverable: SessionClaimObservationSnapshot[] = [];
+            const legacy: ObservedClaim[] = [];
+            for (const item of claims) {
+                if (item.parent !== "stale") continue;
+                if (!item.owner || !item.receipt) { failed(item.name, "dead claim receipt could not be qualified"); continue; }
+                if (item.owner.ownershipKind === "direct") {
+                    try { native.retireClaim(item.receipt); }
+                    catch (error) { failed(item.name, "direct claim retirement failed", error); }
+                } else if (item.owner.ownershipKind === undefined) {
+                    legacy.push(item);
+                } else if (!item.snapshot) {
+                    failed(item.name, "monitored guardian responsibility is missing, unreadable or replaced");
+                } else if (item.guardian === "stale") {
+                    if (noObligation(item.snapshot)) {
+                        try { retireSnapshot(item.snapshot); }
+                        catch (error) { failed(item.name, "unencumbered monitored claim retirement failed", error); }
+                    } else if (currentSessionClaimAuthority(item.snapshot.observation)) recoverable.push(item.snapshot);
+                    else failed(item.name, "pending or unknown monitored cleanup authority", retainRecoveryFailure(item.snapshot,
+                        incomplete("A dead session has pending or unknown cleanup authority.")));
+                }
+            }
+            for (const item of legacy) {
+                try { recoverLegacyClaim(item, prefix, scope); }
+                catch (error) {
+                    const marker = "session-cleanup-responsibility-incomplete: ";
+                    const reason = error instanceof Error && error.message.startsWith(marker)
+                        ? error.message.slice(marker.length, marker.length + 240) : "legacy process/container reconciliation failed";
+                    failed(item.name, reason, error);
+                }
+            }
+            const groups = new Map<string, SessionClaimObservationSnapshot[]>();
+            for (const snapshot of recoverable) {
+                const id = currentSessionClaimAuthority(snapshot.observation)!.containerId;
+                groups.set(id, [...(groups.get(id) ?? []), snapshot]);
+            }
+            for (const group of groups.values()) {
+                try {
+                    if (group.some(item => !sameRuntime(item.runtimeInvocation, group[0].runtimeInvocation))) {
+                        throw incomplete("The same opaque container ID has different captured native authorities.");
+                    }
+                    const selected = group.length === 1 ? group[0].observation
+                        : selectSessionClaimRecoverySurvivor(group.map(item => item.observation));
+                    if (!selected) throw incomplete("Dead duplicate responsibilities have no qualified recovery survivor.");
+                    const survivor = group.find(item => item.receipt.path === selected.claim.path)!;
+                    for (const item of group) {
+                        if (item === survivor) continue;
+                        retireOwnedClaimInHeldLifecycleLock(item.receipt, item.observation.binding, item.runtimeInvocation, {
+                            containerId: currentSessionClaimAuthority(item.observation)!.containerId, cleanupEnabled: true,
+                            containerStopped: false, responsibilityTransferred: true,
+                        });
+                    }
+                    settleSnapshot(survivor);
+                } catch (error) { failed(ports.claimName(group[0].receipt.path), "qualified monitored cleanup failed", error); }
+            }
+        } catch (error) { failed(prefix, "claim observations could not be reconciled", error); }
+        // Even partial cleanup is followed by a fresh file observation. A failed
+        // unlink or replacement remains a veto rather than a cached success.
+        const claims = getSessionLockClaimsForContainer(prefix);
+        return failures.length ? { claims, error: incomplete(
+            `Predecessor recovery remains incomplete: ${failures.slice(0, 8).map(error => error.message.slice(
+                "session-cleanup-responsibility-incomplete: ".length)).join("; ")}${failures.length > 8 ? "; additional records omitted" : ""}.`,
+            new AggregateError(failures, "Predecessor session recovery failed.")) } : { claims };
+    }
+
+    function recoverPredecessorsInHeldLifecycleLock(prefix: string, ownPath?: string,
+        scope?: SessionClaimRecoveryScope): string[] {
+        const result = reconcileSessionClaimsInHeldLifecycleLock(prefix, ownPath, scope);
+        if (result.error) throw result.error;
+        return result.claims;
     }
 
     function createSessionLock(projectId: string, profile?: string): string {
@@ -299,9 +423,8 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
         return path;
     }
 
-    function reconcileForeignClaimsInHeldLifecycleLock(prefix: string, ownPath: string): boolean {
-        recoverPredecessorsInHeldLifecycleLock(prefix, ownPath);
-        return hasOtherSessionClaims(prefix, ownPath);
+    function reconcileForeignClaimsInHeldLifecycleLock(prefix: string, ownPath: string, scope?: SessionClaimRecoveryScope): boolean {
+        return recoverPredecessorsInHeldLifecycleLock(prefix, ownPath, scope).some(name => name !== ports.claimName(ownPath));
     }
 
     function recreateContainerWithoutInterruptingSessions(prefix: string, ownPath: string, recreate: () => void,
@@ -320,7 +443,7 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
         hasOtherActiveSessions, hasOtherSessionClaims,
         hasOtherReconciledSessionClaims: hasOtherSessionClaims,
         reconcileForeignClaimsInHeldLifecycleLock,
-        recreateContainerWithoutInterruptingSessions, recoverPredecessorsInHeldLifecycleLock,
+        recreateContainerWithoutInterruptingSessions, recoverPredecessorsInHeldLifecycleLock, reconcileSessionClaimsInHeldLifecycleLock,
         peerVetoesInHeldLifecycleLock, retireOwnedClaimInHeldLifecycleLock,
         settleCapturedResponsibilityInHeldLifecycleLock };
 }
