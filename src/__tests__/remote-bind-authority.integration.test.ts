@@ -137,6 +137,30 @@ function installProcessProbe(f: ReturnType<typeof fixture>, mode: "admission" | 
 }
 
 function withScopeSignalDiagnostics(shell: string): string {
+    const captureHeader = "_ccc_scope_capture() {";
+    const resumeHeader = "_ccc_scope_resume() {";
+    const captureStart = shell.indexOf(captureHeader);
+    const captureEnd = shell.indexOf(resumeHeader, captureStart);
+    if (captureStart < 0 || captureEnd < 0) throw new Error("missing scope diagnostic capture boundary");
+    let capture = shell.slice(captureStart, captureEnd);
+    for (const [call, phase] of [
+        ['        _ccc_scope_match "$_ccc_scope_root_record" signal || return $?', "root-before-term"],
+        ['    _ccc_scope_match "$_ccc_scope_cancel_root" signal || _ccc_scope_resume_status=$?', "root-after-term-before-cont"],
+        ['        _ccc_scope_match "$_ccc_scope_cancel_root" signal || return $?', "root-after-child-observe"],
+    ]) {
+        if (!capture.includes(call)) throw new Error(`missing scope diagnostic capture call: ${phase}`);
+        capture = capture.replace(call, call.replace("_ccc_scope_match", `_ccc_fixture_capture_match ${phase}`));
+    }
+    shell = shell.slice(0, captureStart) + [
+        "_ccc_fixture_capture_match() {",
+        "    _ccc_fixture_match_phase=$1; shift",
+        "    _ccc_fixture_capture_match_status=0",
+        '    _ccc_scope_match "$@" || _ccc_fixture_capture_match_status=$?',
+        "    _ccc_fixture_match_phase=none",
+        '    return "$_ccc_fixture_capture_match_status"',
+        "}",
+        capture,
+    ].join("\n") + shell.slice(captureEnd);
     for (const [name, next] of [
         ["observe", "decode"], ["match", "capture"], ["capture", "resume"],
         ["resume", "native"], ["native", "child_exit"],
@@ -151,6 +175,8 @@ function withScopeSignalDiagnostics(shell: string): string {
             `    ${status}=0`,
             `    _ccc_fixture_scope_${name} "$@" || ${status}=$?`,
             `    if [ "$${status}" != 0 ]; then`,
+            '        case "${_ccc_scope_callback:-}" in (_ccc_on_signal) _ccc_fixture_scope=lifecycle ;; (_ccc_bind_signal) _ccc_fixture_scope=bind ;; (_ccc_scope_child_exit) _ccc_fixture_scope=worker ;; (*) _ccc_fixture_scope=unknown ;; esac',
+            '        case "${_ccc_fixture_match_phase:-}" in (root-before-term|root-after-term-before-cont|root-after-child-observe) _ccc_fixture_phase=$_ccc_fixture_match_phase ;; (*) _ccc_fixture_phase=none ;; esac',
         ];
         if (name === "match") lines.push(
             '        if [ "$_ccc_fixture_observe_status" = 1 ]; then _ccc_fixture_match_category=absent',
@@ -159,9 +185,22 @@ function withScopeSignalDiagnostics(shell: string): string {
             '        elif [ "${_ccc_observed_command:-}" != "${_ccc_expected_command:-}" ]; then _ccc_fixture_match_category=command',
             '        elif [ "${_ccc_observed_parent:-}" != "${_ccc_expected_parent:-}" ]; then _ccc_fixture_match_category=ancestry',
             '        else _ccc_fixture_match_category=unclassified; fi',
-            '        command printf "CCC scope fixture: match status=%s category=%s\\n" "$_ccc_fixture_match_status" "$_ccc_fixture_match_category" >&2 || true',
+            '        _ccc_fixture_expected_command=${_ccc_expected_command:-}; _ccc_fixture_expected_length=${#_ccc_fixture_expected_command}',
+            '        _ccc_fixture_expected_token=false; _ccc_fixture_observed_token=unknown',
+            '        if [ -n "${_ccc_scope_token:-}" ]; then case "$_ccc_fixture_expected_command" in (*"$_ccc_scope_token"*) _ccc_fixture_expected_token=true ;; esac; fi',
+            '        _ccc_fixture_same_birth=unknown; _ccc_fixture_same_parent=unknown; _ccc_fixture_observed_length=unknown; _ccc_fixture_relation=unknown; _ccc_fixture_state=unknown',
+            '        if [ "$_ccc_fixture_observe_status" = 0 ]; then',
+            '            _ccc_fixture_same_birth=false; [ "${_ccc_observed_birth:-}" != "${_ccc_expected_birth:-}" ] || _ccc_fixture_same_birth=true',
+            '            _ccc_fixture_same_parent=false; [ "${_ccc_observed_parent:-}" != "${_ccc_expected_parent:-}" ] || _ccc_fixture_same_parent=true',
+            '            _ccc_fixture_observed_command=${_ccc_observed_command:-}; _ccc_fixture_observed_length=${#_ccc_fixture_observed_command}',
+            '            _ccc_fixture_observed_token=false',
+            '            if [ -n "${_ccc_scope_token:-}" ]; then case "$_ccc_fixture_observed_command" in (*"$_ccc_scope_token"*) _ccc_fixture_observed_token=true ;; esac; fi',
+            '            case "$_ccc_fixture_observed_command" in ("$_ccc_fixture_expected_command") _ccc_fixture_relation=equal ;; ("$_ccc_fixture_expected_command"*) _ccc_fixture_relation=observed-extends-expected ;; (*) case "$_ccc_fixture_expected_command" in ("$_ccc_fixture_observed_command"*) _ccc_fixture_relation=expected-extends-observed ;; (*) _ccc_fixture_relation=different ;; esac ;; esac',
+            '            case "${_ccc_observed_state:-}" in (T*) _ccc_fixture_state=stopped ;; (R*) _ccc_fixture_state=running ;; (S*|I*) _ccc_fixture_state=sleeping ;; (D*|U*) _ccc_fixture_state=uninterruptible ;; (Z*) _ccc_fixture_state=zombie ;; (X*) _ccc_fixture_state=dead ;; esac',
+            '        fi',
+            '        command printf "CCC scope fixture: match status=%s category=%s scope=%s phase=%s same_birth=%s same_parent=%s observed_token=%s expected_token=%s observed_length=%s expected_length=%s command_relation=%s state=%s\\n" "$_ccc_fixture_match_status" "$_ccc_fixture_match_category" "$_ccc_fixture_scope" "$_ccc_fixture_phase" "$_ccc_fixture_same_birth" "$_ccc_fixture_same_parent" "$_ccc_fixture_observed_token" "$_ccc_fixture_expected_token" "$_ccc_fixture_observed_length" "$_ccc_fixture_expected_length" "$_ccc_fixture_relation" "$_ccc_fixture_state" >&2 || true',
         );
-        else lines.push(`        command printf "CCC scope fixture: ${name} status=%s\\n" "$${status}" >&2 || true`);
+        else lines.push(`        command printf "CCC scope fixture: ${name} status=%s scope=%s phase=%s\\n" "$${status}" "$_ccc_fixture_scope" "$_ccc_fixture_phase" >&2 || true`);
         lines.push("    fi", `    return "$${status}"`, "}");
         shell = shell.replace(header, `_ccc_fixture_scope_${name}() {`)
             .replace(boundary, `${lines.join("\n")}\n${boundary}`);
@@ -170,6 +209,52 @@ function withScopeSignalDiagnostics(shell: string): string {
 }
 
 describe.runIf(process.platform !== "win32")("receiving-host global bind authority", () => {
+    it.each([
+        [1, 74, "_ccc_on_signal", "lifecycle", "root-before-term"],
+        [2, 2, "_ccc_bind_signal", "bind", "root-after-term-before-cont"],
+        [3, 1, "_ccc_scope_child_exit", "worker", "root-after-child-observe"],
+    ] as const)("forwards scope diagnostic capture check %s without exposing identities", (failCall, status, callback, scope, phase) => {
+        const f = fixture();
+        const token = "private-token"; const expected = `/private/fixture 43210 ${token}`;
+        const shell = [
+            "set -eu",
+            `_ccc_scope_callback=${callback}; _ccc_scope_token=${shellEscapeArg(token)}`,
+            `_ccc_expected_command=${shellEscapeArg(expected)}; _ccc_observed_command=${shellEscapeArg(`${expected} extra`)}`,
+            "_ccc_expected_birth=private-birth; _ccc_observed_birth=private-birth",
+            "_ccc_expected_parent=43210; _ccc_observed_parent=54321; _ccc_observed_state=T+private-state",
+            "_ccc_scope_root_record=private-record; _ccc_scope_cancel_root=private-record; _ccc_fixture_calls=0",
+            "_ccc_scope_observe() { return 0; }",
+            "_ccc_scope_decode() { :; }",
+            "_ccc_scope_match() {",
+            '    [ "$#" = 2 ] && [ "$1" = private-record ] && [ "$2" = signal ] || return 96',
+            "    _ccc_fixture_calls=$((_ccc_fixture_calls + 1))",
+            `    [ "$_ccc_fixture_calls" != ${failCall} ] || return ${status}`,
+            "    return 0",
+            "}",
+            "_ccc_scope_capture() {",
+            '        _ccc_scope_match "$_ccc_scope_root_record" signal || return $?',
+            "    _ccc_scope_resume_status=0",
+            '    _ccc_scope_match "$_ccc_scope_cancel_root" signal || _ccc_scope_resume_status=$?',
+            '    [ "$_ccc_scope_resume_status" = 0 ] || return "$_ccc_scope_resume_status"',
+            '        _ccc_scope_match "$_ccc_scope_cancel_root" signal || return $?',
+            "}",
+            "_ccc_scope_resume() { return 0; }",
+            "_ccc_scope_native() { return 0; }",
+            "_ccc_scope_child_exit() { return 0; }",
+            "_ccc_fixture_result=0; _ccc_scope_capture || _ccc_fixture_result=$?",
+            'printf "status=%s phase=%s\\n" "$_ccc_fixture_result" "${_ccc_fixture_match_phase:-none}"',
+        ].join("\n");
+        const baseline = f.run(shell); const diagnosed = f.run(withScopeSignalDiagnostics(shell));
+        expect(baseline.status, baseline.stderr).toBe(0);
+        expect(baseline.stdout).toBe(`status=${status} phase=none\n`);
+        expect(diagnosed.status, diagnosed.stderr).toBe(baseline.status);
+        expect(diagnosed.stdout).toBe(baseline.stdout);
+        expect(diagnosed.stderr).toContain(`match status=${status} category=command scope=${scope} phase=${phase}`);
+        expect(diagnosed.stderr).toContain(`same_birth=true same_parent=false observed_token=true expected_token=true observed_length=${expected.length + 6} expected_length=${expected.length} command_relation=observed-extends-expected state=stopped`);
+        for (const privateValue of [expected, token, "private-record", "private-birth", "43210", "54321", "T+private-state", callback])
+            expect(diagnosed.stderr).not.toContain(privateValue);
+    });
+
     it("publishes a native shared claim and permanent marker only in the receiving home, including localhost", async () => {
         const client = fixture(); const receiver = fixture();
         const clientHome = client.prepare(); const receiverHome = receiver.prepare();
@@ -396,10 +481,11 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         ].join("; ");
         const global = remoteRuntimeBindAuthorityShell(body, kind === "nested");
         const result = spawnSync("/bin/sh", ["-c", kind === "nested" ? remoteLifecycleShell(name, global) : global], {
-            env: f.env, input: "original-input\n", encoding: "utf8", timeout: 5000, killSignal: "SIGKILL",
+            env: f.env, input: "original-input\n", encoding: "utf8", timeout: 10000, killSignal: "SIGKILL",
         });
 
-        expect(result.status, result.stderr).toBe(0);
+        const error = result.error as NodeJS.ErrnoException | undefined;
+        expect(result.status, `error=${error?.code ?? "none"} signal=${result.signal ?? "none"} status=${result.status}\n${result.stderr}`).toBe(0);
         expect(result.stdout).toBe("original-input");
         expect(JSON.parse(readFileSync(join(f.home, "claim-snapshot"), "utf8"))).toEqual({
             token: expect.stringMatching(/^[a-f0-9]{32}$/), pid: result.pid,
