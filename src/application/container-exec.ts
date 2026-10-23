@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "../domain/tool-registry.js";
+import type { RuntimeBindGuard } from "../ports/runtime-bind-authority.js";
 import type { ContainerExecOptions, ContainerExecPorts, ContainerExecReadinessPorts, ContainerExecReplacementPorts, ContainerExecReplacementReason } from "../ports/container-exec.js";
 
 export async function ensureContainerExecSetupAvailable(containerId: string, restart: () => Promise<string> | string, ports: Pick<ContainerExecReadinessPorts, "running" | "restarted">): Promise<string> {
@@ -128,10 +129,12 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             await ports.prepareDeviceBroker(fullPath, profile).catch((error) => {
                 ports.report({ kind: "broker-failed", cause: error });
             });
-            const recreateInsideLifecycleLock = (recreate: () => void) => {
-                // Static legacy admission establishes a startup candidate only.
-                // Replacement must wait for the existing full live-ready handoff.
-                if (requiresLiveVerification) return false;
+            const recreateInsideLifecycleLock = (recreate: () => void, bindGuard: RuntimeBindGuard) => {
+                if (requiresLiveVerification) {
+                    const oldId = containerStatus.containerId;
+                    if (!oldId || !ports.verifyStoppedSessionContainerForReplacement(fullPath, profile, oldId, bindGuard)) return false;
+                    requiresLiveVerification = false;
+                }
                 const blockedReason = containerExecReplacementBlockReason(
                     targetContainer,
                     sessionContainerPrefix,
@@ -147,6 +150,10 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                 return true;
             };
             const invocationStartedContainers = new Set<string>();
+            // Once this invocation has observed a ready or positively started
+            // target, later readiness retries must retain that exact identity.
+            let expectedStartupContainerId = containerStatus.running ? containerStatus.containerId ?? undefined : undefined;
+            let startupIntentPublished = false;
             let startup: ReturnType<ContainerExecPorts<Prepared>["prepareContainer"]>;
             const startContainer = async (
                 mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
@@ -159,7 +166,6 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                     const selectedPortFile = clipboardSelection?.portFile === portFile ? portFile : undefined;
                     return ports.lifecycleLock(sessionContainerPrefix, () => {
                         let readyContainerId: string | null = null;
-                        ports.beginSessionStartupInHeldLifecycleLock();
                         startup.start(
                             fullPath,
                             () => ports.ensureDirectories(profile),
@@ -167,21 +173,28 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                             selectedPortFile,
                             profile,
                             onRecreate,
-                            recreateInsideLifecycleLock,
+                            recreate => recreateInsideLifecycleLock(recreate, bindGuard),
                             (containerId, handoff) => {
                                 requiresLiveVerification = false;
                                 readyContainerId = containerId;
+                                expectedStartupContainerId = containerId;
                                 if (handoff.startedByInvocation) invocationStartedContainers.add(containerId);
                                 ports.publishSessionReadyInHeldLifecycleLock(containerId, {
                                     startedByInvocation: invocationStartedContainers.has(containerId),
                                 });
                             },
-                            containerStatus.running ? containerStatus.containerId ?? undefined : undefined,
+                            expectedStartupContainerId,
                             (containerId) => {
+                                expectedStartupContainerId = containerId;
                                 invocationStartedContainers.add(containerId);
                                 ports.recordSessionOwnStartInHeldLifecycleLock(containerId);
                             },
                             bindGuard,
+                            () => {
+                                if (startupIntentPublished || invocationStartedContainers.size > 0) return;
+                                ports.beginSessionStartupInHeldLifecycleLock();
+                                startupIntentPublished = true;
+                            },
                         );
                         if (!readyContainerId) {
                             throw ports.handoffFailure();

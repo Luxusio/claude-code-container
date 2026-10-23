@@ -78,6 +78,7 @@ export interface ContainerExecPorts<Prepared> {
     familyLock<T>(projectId: string, operation: () => Promise<T> | T): Promise<T>;
     acquireOwnership(request: SessionAcquisitionRequest, inspect: (request: SessionAcquisitionRequest) => SessionAcquisitionInspection): Promise<SessionAcquisitionResult>;
     inspectSessionContainer(path: string, profile?: string): SessionContainerInspection;
+    verifyStoppedSessionContainerForReplacement(projectPath: string, profile: string | undefined, exactOldId: string, bindGuard: RuntimeBindGuard): boolean;
     ensureClipboard(): Promise<ClipboardSelection | null>;
     validateClipboard(selection: ClipboardSelection | null, guard: RuntimeBindGuard): Promise<ClipboardSelection | null>;
     clipboardPortFile(): string;
@@ -95,7 +96,7 @@ export interface ContainerExecPorts<Prepared> {
     startContainer(path: string, ensureDirectories: () => void, mounts: ContainerExecMount[] | undefined, clipboardPortFile: string | undefined, profile: string | undefined,
         onRecreate: (() => void) | undefined, replacement: (recreate: () => void) => boolean,
         onReady: (id: string, handoff: { startedByInvocation: boolean }) => void,
-        expectedRunningId: string | undefined, onStarted: (id: string) => void, bindGuard?: RuntimeBindGuard): string;
+        expectedRunningId: string | undefined, onStarted: (id: string) => void, bindGuard?: RuntimeBindGuard, onBeforeMutation?: () => void): string;
     beginSessionStartupInHeldLifecycleLock(): void;
     recordSessionOwnStartInHeldLifecycleLock(id: string): void;
     publishSessionReadyInHeldLifecycleLock(id: string, handoff: { startedByInvocation: boolean }): void;

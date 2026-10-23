@@ -10,7 +10,7 @@ import { runtimeCli, runtimeSpawnSync, getRuntimeInvocation, currentNativeRuntim
 import { getToolByName, getDefaultTool } from "../tool-registry.js";
 import { isWorktreeWorkspace, assertWorkspaceReady, getWorktreeGitMounts } from "../worktree.js";
 import {
-    ensureDockerRunning, inspectSessionContainerOwnership, getContainerName, getContainerStatus,
+    ensureDockerRunning, inspectSessionContainerOwnership, getManagedProjectContainerIdentity, getContainerName, getContainerStatus,
     startProjectContainer, prepareProjectContainerStartup, withProjectContainerStateLockAsync, restoreCodexConfigHostOwnership, isContainerRunning,
     prepareCodexConfigForContainer, syncClipboardShims, ensureContainerManagerSocketAccess, isDockerDesktop,
 } from "../docker.js";
@@ -147,6 +147,11 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         familyLock: withProjectFamilyLifecycleLockAsync,
         acquireOwnership: acquireHostSessionOwnership,
         inspectSessionContainer: inspectSessionContainerOwnership,
+        verifyStoppedSessionContainerForReplacement(path, _profile, exactOldId, guard) {
+            if (!/^[a-f0-9]{64}$/i.test(exactOldId)) return false;
+            const observed = getManagedProjectContainerIdentity(exactOldId, path, guard);
+            return observed?.containerId === exactOldId && !observed.running;
+        },
         ensureClipboard: () => ensureClipboardSelection(getCurrentSessionOwnershipReceipt()),
         validateClipboard: validateClipboardSelection,
         clipboardPortFile,
@@ -272,6 +277,7 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         familyLock: (path, operation) => inRuntime(() => ports.familyLock(path, operation)),
         acquireOwnership: (request, inspect) => inRuntime(() => ports.acquireOwnership(request, inspect)),
         inspectSessionContainer: (path, profile) => inRuntime(() => ports.inspectSessionContainer(path, profile)),
+        verifyStoppedSessionContainerForReplacement: (...args) => inRuntime(() => ports.verifyStoppedSessionContainerForReplacement(...args)),
         ensureClipboard: () => inRuntime(ports.ensureClipboard),
         clipboardConnection: selection => inRuntime(() => ports.clipboardConnection(selection)),
         validateClipboard: (selection, guard) => inRuntime(() => ports.validateClipboard(selection, guard)),

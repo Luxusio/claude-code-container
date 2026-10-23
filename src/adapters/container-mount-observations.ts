@@ -2,13 +2,15 @@ import { createHash, randomBytes } from "crypto";
 import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, normalize, posix, resolve } from "path";
-import { containerEngineFailureHint, getRuntimeInfo, runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation } from "../container-runtime.js";
+import { containerEngineFailureHint, getRuntimeInfo, runtimeSpawnSync, getRuntimeInvocation, bindNativeRuntimeInvocation, runWithNativeRuntimeInvocation } from "../container-runtime.js";
 import { ContainerEngineUnavailableError } from "../domain/container-runtime.js";
 import { projectPathsEquivalent } from "../utils.js";
 import { proveWslBindSourceIdentity } from "../wsl-bind-source-proof.js";
 import type { LiveSourceProof, MountVerification, ObservedMountContract, RequiredMountContract } from "../bind-mount-verification.js";
 import type { ContainerMountSourceFacts, ContainerMountVerificationPorts } from "../ports/container-mount-verification.js";
 import type { RuntimeBindGuard } from "../ports/runtime-bind-authority.js";
+import { beginRuntimeBindCreation, settleRuntimeBindCreation } from "./runtime-bind-authority.js";
+import { cccHome } from "../home-layout.js";
 
 const CONTAINER_MANAGER_SOCKET = "/var/run/docker.sock";
 const PROJECT_MOUNT_IDENTITY_LABEL = "ccc.project.mount-identity";
@@ -180,7 +182,71 @@ export function readDirectoryMountMarker(containerId: string, markerPath: string
     return result;
 }
 
-type DirectoryMountMarkerResult = Pick<ReturnType<typeof readDirectoryMountMarker>, "error" | "status" | "stdout">;
+type DirectoryMountMarkerResult = Pick<ReturnType<typeof readDirectoryMountMarker>, "error" | "status" | "stdout">
+    & { signal?: ReturnType<typeof readDirectoryMountMarker>["signal"] };
+
+type StoppedProjectProofHelper = {
+    imageId: string;
+    bindGuard: RuntimeBindGuard;
+    mountDestinations: readonly string[];
+};
+
+function readInheritedProjectMountMarker(containerId: string, markerPath: string, helper: StoppedProjectProofHelper): DirectoryMountMarkerResult {
+    if (!/^sha256:[a-f0-9]{64}$/.test(helper.imageId) || helper.bindGuard.root !== resolve(cccHome())
+        || !Array.isArray(helper.mountDestinations) || helper.mountDestinations.length === 0) {
+        return { status: 1, stdout: "" };
+    }
+    // Inherited mounts must not replace the trusted image's executable, loader,
+    // libraries or preload configuration. The helper reads no inherited code.
+    for (const destination of helper.mountDestinations) {
+        if (typeof destination !== "string" || /[\x00-\x1f\x7f]/.test(destination) || !destination.startsWith("/")
+            || destination.includes("\\") || destination.includes("//") || pathHasTraversalSegments(destination)
+            || !(/^\/project\/[^/]+(?:\/[^/]+)*$/.test(destination)
+                || /^\/home\/ccc(?:\/[^/]+)*$/.test(destination)
+                || /^\/run\/ccc(?:\/[^/]+)*$/.test(destination)
+                || destination === "/tmp/ssh-agent.sock" || destination === "/var/run/docker.sock"
+                || destination === "/run/docker.sock" || destination === "/run/ccc-device-broker-auth/owner.json")) {
+            return { status: 1, stdout: "" };
+        }
+    }
+    const invocation = getRuntimeInvocation();
+    const runner = bindNativeRuntimeInvocation(invocation);
+    const scratch = mkdtempSync(join(tmpdir(), "ccc-stopped-bind-helper-"));
+    const cidPath = join(scratch, "cid");
+    try {
+        const ticket = beginRuntimeBindCreation(helper.bindGuard, invocation);
+        let result: ReturnType<typeof readDirectoryMountMarker> | undefined;
+        try {
+            result = runner.spawnSync([
+                "run", "--rm", "--pull", "never", "--cidfile", cidPath, "--network", "none", "--read-only",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "0:0",
+                "--workdir", "/", "--env", "LD_PRELOAD=", "--env", "LD_LIBRARY_PATH=",
+                "--volumes-from", `${containerId}:ro`, "--entrypoint", "/usr/bin/cat", helper.imageId, "--", markerPath,
+            ], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, killSignal: "SIGKILL", maxBuffer: 4096 });
+        } finally {
+            // A clean --rm completion has already removed this helper. An
+            // interrupted client may still have created it and needs exact cleanup.
+            if (!result || result.error || result.signal || result.status !== 0) {
+                try {
+                    const cidFile = lstatSync(cidPath);
+                    if (cidFile.isFile() && !cidFile.isSymbolicLink() && cidFile.size <= 66) {
+                        const cid = readFileSync(cidPath, "utf-8").trim();
+                        if (/^[a-f0-9]{64}$/.test(cid) && cid !== containerId) {
+                            runner.spawnSync(["rm", "-f", cid], { timeout: 5000, killSignal: "SIGKILL", stdio: "ignore" });
+                        }
+                    }
+                } catch { /* An uncertain helper request never grants creation settlement. */ }
+            }
+        }
+        if (!result) return { status: 1, stdout: "" };
+        if (result.error || result.signal || result.status !== 0) return result;
+        // Completion settles this helper even when its nonce subsequently mismatches.
+        settleRuntimeBindCreation(helper.bindGuard, ticket);
+        return result;
+    } finally {
+        rmSync(scratch, { recursive: true, force: true });
+    }
+}
 
 function readStoppedProjectMountMarker(containerId: string, markerPath: string): DirectoryMountMarkerResult {
     const directory = mkdtempSync(join(tmpdir(), "ccc-stopped-project-proof-"));
@@ -236,11 +302,11 @@ function proveContainerSeesCurrentBindSource(
             if (markerIdentity.kind !== "verified") return markerIdentity;
             const result = readMarker(containerId, posix.join(containerPath, challenge.markerName));
             let containerExecReady = false;
-            if (result.error || result.status !== 0) {
+            if (result.error || result.signal || result.status !== 0) {
                 session.containerExecReady ??= canExec(containerId, 200);
                 containerExecReady = session.containerExecReady;
             }
-            if (result.error) {
+            if (result.error || result.signal) {
                 verification = { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
             } else if (result.status !== 0) {
                 verification = containerExecReady && finalProofAttempt
@@ -270,11 +336,11 @@ function proveContainerSeesCurrentBindSource(
             const engineFailure = result.status !== 0 ? containerEngineFailureHint(Buffer.isBuffer(result.stderr) ? result.stderr.toString("utf8") : result.stderr) : undefined;
             if (engineFailure) throw new ContainerEngineUnavailableError(engineFailure);
             let containerExecReady = false;
-            if (result.error || result.status !== 0) {
+            if (result.error || result.signal || result.status !== 0) {
                 session.containerExecReady ??= canExec(containerId, 200);
                 containerExecReady = session.containerExecReady;
             }
-            if (result.error) {
+            if (result.error || result.signal) {
                 verification = { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
             } else if (result.status !== 0) {
                 verification = containerExecReady && finalProofAttempt
@@ -319,6 +385,7 @@ export function proveStoppedContainerProjectBindSource(
     hostPath: string,
     containerPath: string,
     expected: BindMountSourceIdentity,
+    helper?: StoppedProjectProofHelper,
 ): LiveSourceProof {
     if (!/^[a-f0-9]{64}$/i.test(containerId) || !/^\/project\/[^/]+$/.test(containerPath)
         || pathHasTraversalSegments(containerPath)) {
@@ -330,10 +397,17 @@ export function proveStoppedContainerProjectBindSource(
         if (!lstatSync(expected.realpath).isDirectory()) {
             return { kind: "mismatch", reason: "stopped project proof requires a project directory" };
         }
-        return runWithNativeRuntimeInvocation(invocation, () => proveContainerSeesCurrentBindSource(
-            containerId, hostPath, containerPath, expected, session, true, () => false,
-            readStoppedProjectMountMarker,
-        ));
+        return runWithNativeRuntimeInvocation(invocation, () => {
+            const copied = proveContainerSeesCurrentBindSource(
+                containerId, hostPath, containerPath, expected, session, true, () => false,
+                readStoppedProjectMountMarker,
+            );
+            return copied.kind === "retryable" && helper
+                ? proveContainerSeesCurrentBindSource(
+                    containerId, hostPath, containerPath, expected, session, true, () => false,
+                    (id, path) => readInheritedProjectMountMarker(id, path, helper),
+                ) : copied;
+        });
     } catch (error) {
         if (error instanceof ContainerEngineUnavailableError) throw error;
         return { kind: "retryable", reason: "stopped project bind proof is temporarily unavailable" };

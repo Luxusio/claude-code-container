@@ -50,6 +50,7 @@ function logicalNativeCall(call: unknown[]): unknown[] {
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
+import type { RuntimeBindGuard } from "../ports/runtime-bind-authority.js";
 import { createHash } from "crypto";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
@@ -67,7 +68,7 @@ const mockSharedMutationLock = vi.fn((_path: string, operation: () => unknown) =
 // These lifecycle units already replace every filesystem and native-process
 // leaf. Keep history as an explicit mocked native boundary here; the separate
 // publication integration owner exercises the actual private history and lock.
-const mockRuntimeBindGuard = Object.freeze({root: join(homedir(), ".ccc")});
+const mockRuntimeBindGuard = Object.freeze({root: join(homedir(), ".ccc")}) as RuntimeBindGuard;
 const mockRecordRuntimeBindAuthority = vi.fn();
 const mockBeginRuntimeBindCreation = vi.fn();
 const mockSettleRuntimeBindCreation = vi.fn();
@@ -3857,9 +3858,13 @@ describe("docker.ts module exports", () => {
             const contract = makeDriftedRunningContract(value => { value.Image = previousImage; }, false);
             mockReplacementRuntime(contract, { identityRunning: false });
             const guard = vi.fn((replace: () => void) => { replace(); return true; });
-            expect(startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard))
+            const beforeMutation = vi.fn();
+            expect(startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+                undefined, undefined, undefined, mockRuntimeBindGuard, beforeMutation))
                 .toBe(getContainerName(projectPath));
             expect(guard).toHaveBeenCalledOnce();
+            expect(beforeMutation).toHaveBeenCalledOnce();
+            expect(beforeMutation.mock.invocationCallOrder[0]).toBeLessThan(mockPrepareCodexStateOwnership.mock.invocationCallOrder[0]!);
             expect(mockPrepareCodexStateOwnership).toHaveBeenCalledWith(
                 expect.objectContaining({ Image: previousImage, Id: TEST_CONTAINER_ID }),
                 TEST_IDENTITY_IMAGE, mockIdentity, undefined, expect.any(Function), mockRuntimeBindGuard,
@@ -3877,7 +3882,7 @@ describe("docker.ts module exports", () => {
             expect(mockPrepareCodexStateOwnership.mock.invocationCallOrder[0])
                 .toBeLessThan(spawnSyncMock.mock.invocationCallOrder[removeIndex]);
             expect(spawnSyncMock.mock.calls.some(call => (call[1] as string[])[0] === "stop")).toBe(false);
-            expect(mockSharedMutationLock.mock.calls[0][0]).toMatch(/codex-state\.lock$/);
+            expect(mockRecordRuntimeBindAuthority.mock.calls[0]?.[0]).toBe(mockRuntimeBindGuard);
         });
 
         it.each([
@@ -4017,6 +4022,18 @@ describe("docker.ts module exports", () => {
             expect(guard).not.toHaveBeenCalled();
             expectNoContainerReplacement();
             expect(mockPrepareCodexStateOwnership).not.toHaveBeenCalled();
+        });
+
+        it("keeps project startup intent unpublished when an incompatible stopped target is refused before any mutation", () => {
+            const previousImage = `sha256:${"3".repeat(64)}`;
+            mockReplacementRuntime(makeDriftedRunningContract(value => { value.Image = previousImage; }, false), { identityRunning: false });
+            const beforeMutation = vi.fn();
+            expect(() => startProjectContainer(projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+                undefined, undefined, undefined, mockRuntimeBindGuard, beforeMutation)).toThrow();
+            expect(beforeMutation).not.toHaveBeenCalled();
+            expect(mockPrepareCodexStateOwnership).not.toHaveBeenCalled();
+            expect(mockPrepareLabStateOwnership).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
         });
 
         it("preserves an image-changed stopped container when replacement is denied", () => {
@@ -7347,7 +7364,7 @@ describe("docker.ts module exports", () => {
             try { stopProjectContainer(projectPath); } catch (error) { failure = error; }
             expect(failure).toBeInstanceOf(Error);
             expect((failure as Error).message).toBe(
-                `Container for workspace ${JSON.stringify(resolve(projectPath))} has 1 session ownership claim(s); close its other CCC sessions and retry.`,
+                `Container for workspace ${JSON.stringify(resolve(projectPath))} has 1 remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.`,
             );
             expect(spawnSyncMock).not.toHaveBeenCalled();
 

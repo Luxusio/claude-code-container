@@ -975,6 +975,10 @@ function inspectManagedProjectContainerIdentity(
                 if (preflight.kind !== "preflight-verified") return { reason: "project-bind-unverified" };
                 const proof = proveStoppedContainerProjectBindSource(
                     inspected.Id, projectPath, projectMountPath, currentIdentity,
+                    bindGuard && Array.isArray(inspected.Mounts) ? {
+                        imageId: getCurrentImageId() ?? "", bindGuard,
+                        mountDestinations: inspected.Mounts.map(mount => mount?.Destination),
+                    } : undefined,
                 );
                 if (proof.kind === "verified") {
                     const current = inspectContainerJsonWithRetry(inspected.Id) as {
@@ -1602,6 +1606,8 @@ type ProjectContainerStartup = (
     onContainerStarted?: (containerId: string) => void,
     /** Qualified global bind-publication guard, explicitly handed across the application ports. */
     bindGuard?: RuntimeBindGuard,
+    /** Publishes intent immediately before this startup operation first mutates retained state or containers. */
+    onBeforeMutation?: () => void,
 ) => string;
 
 function startProjectContainerLocked(
@@ -1609,7 +1615,7 @@ function startProjectContainerLocked(
     bindGuard: RuntimeBindGuard,
     ...args: Parameters<ProjectContainerStartup>
 ): string {
-    const [projectPath, ensureDirs, extraMounts, clipboardPortFile, profile, onRecreate, recreateRunningContainer, onContainerReady, initiallyRunningContainerId, onContainerStarted] = args;
+    const [projectPath, ensureDirs, extraMounts, clipboardPortFile, profile, onRecreate, recreateRunningContainer, onContainerReady, initiallyRunningContainerId, onContainerStarted, , onBeforeMutation] = args;
     if (bindGuard.root !== resolve(cccHome())) throw new Error("Container startup requires the current CCC home's bind-publication guard.");
     recordRuntimeBindAuthority(bindGuard, getRuntimeInvocation());
     ensureDirs();
@@ -1804,12 +1810,19 @@ function startProjectContainerLocked(
         || typeof previousContainer.Image !== "string" || !Array.isArray(previousContainer.Mounts))) {
         throw new Error("Previous container identity or state provenance could not be verified; the container was preserved.");
     }
+    let mutationIntentPublished = false;
+    const beforeMutation = () => {
+        if (mutationIntentPublished) return;
+        onBeforeMutation?.();
+        mutationIntentPublished = true;
+    };
     let retainedStatePrepared = false;
     const prepareRetainedState = () => {
         if (retainedStatePrepared) return;
         if (listedContainer.containerId && !previousContainer) {
             throw new Error("Previous container state provenance is unavailable; refusing unproven Codex state migration.");
         }
+        beforeMutation();
         if (previousContainer) {
             const codexRoot = getCodexDir(profile);
             const codexSource = captureBindMountSourceIdentity(codexRoot);
@@ -1952,6 +1965,7 @@ function startProjectContainerLocked(
     }, {
         createCli: cli,
         prepareRunArgs: () => {
+            beforeMutation();
             const runArgs = buildDockerRunArgs({
                 containerName,
                 fullPath,

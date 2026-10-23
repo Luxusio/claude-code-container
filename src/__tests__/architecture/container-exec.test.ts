@@ -33,6 +33,7 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
         async familyLock<T>(_id: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
         acquireOwnership: async () => ({lockFile: "/owned/session.lock", existingId: options.running ? "final-id" : null}),
         inspectSessionContainer: () => ({known: true, containerId: options.running ? "final-id" : null}),
+        verifyStoppedSessionContainerForReplacement: vi.fn(() => false),
         ensureClipboard: async () => null, validateClipboard: async selection => selection,
         clipboardPortFile: () => "/owned/clipboard.port", clipboardConnection: () => ({}),
         worktreeMounts: () => [], containerName: () => "ccc-repo",
@@ -42,9 +43,9 @@ function fixture(options: {running?: boolean; replace?: boolean} = {}) {
         async setupLock<T>(_prefix: string, operation: () => Promise<T> | T): Promise<T> { return operation(); },
         async stateLock<T>(operation: (guard: RuntimeBindGuard) => Promise<T> | T): Promise<T> { return operation(stateGuard); },
         prepareContainer: () => ({start: (...args) => ports.startContainer(...args), initialize: vi.fn()}),
-        startContainer: (_path, _ensure, _mounts, _port, _profile, _recreate, _replacement, onReady, _expected, onStarted) => {
+        startContainer: (_path, _ensure, _mounts, _port, _profile, _recreate, _replacement, onReady, _expected, onStarted, _guard, onBeforeMutation) => {
             const id = options.replace && first ? "setup-id" : "final-id"; first = false;
-            if (!options.running) onStarted(id); onReady(id, {startedByInvocation: !options.running}); return "ccc-repo";
+            if (!options.running) { onBeforeMutation?.(); onStarted(id); } onReady(id, {startedByInvocation: !options.running}); return "ccc-repo";
         },
         beginSessionStartupInHeldLifecycleLock: vi.fn(), recordSessionOwnStartInHeldLifecycleLock: vi.fn(),
         publishSessionReadyInHeldLifecycleLock: vi.fn(), setCleanupEnabled: vi.fn(),
@@ -241,7 +242,7 @@ describe("acquired session lifetime", () => {
         f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: "setup-id", requiresLiveVerification: true});
         f.ports.startContainer = (...args) => {
             expect(args[6](remove)).toBe(false);
-            if (started) args[9]("setup-id");
+            if (started) { args[11]?.(); args[9]("setup-id"); }
             expect(args[6](remove)).toBe(false);
             throw failure;
         };
@@ -252,6 +253,33 @@ describe("acquired session lifetime", () => {
         expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).toHaveBeenCalledTimes(started ? 1 : 0);
         expect(f.ports.publishSessionReadyInHeldLifecycleLock).not.toHaveBeenCalled();
         expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+    });
+
+    it.each(["verified", "unverified", "peer", "changed-id"] as const)("requalifies a provisional stopped upgrade under both guards and retains normal replacement checks: %s", outcome => {
+        const f = fixture(), oldId = "a".repeat(64), nextId = "b".repeat(64), replacement = vi.fn();
+        let stateHeld = false, lifecycleHeld = false;
+        f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: oldId, requiresLiveVerification: true});
+        f.ports.containerStatus = () => ({exists: true, running: false, containerId: oldId, imageId: "old-image"});
+        f.ports.stateLock = async operation => { stateHeld = true; try { return await operation(f.stateGuard); } finally { stateHeld = false; } };
+        f.ports.lifecycleLock = async (_prefix, operation) => { lifecycleHeld = true; try { return await operation(); } finally { lifecycleHeld = false; } };
+        f.ports.verifyStoppedSessionContainerForReplacement = vi.fn((path, profile, expectedId, guard) => {
+            expect(stateHeld).toBe(true); expect(lifecycleHeld).toBe(true);
+            expect([path, profile, expectedId, guard]).toEqual(["/project/repo", undefined, oldId, f.stateGuard]);
+            if (outcome === "peer") f.ports.sessionClaims = () => ["session.lock", "other.lock"];
+            if (outcome === "changed-id") f.ports.containerStatus = () => ({exists: true, running: false, containerId: nextId, imageId: "other-image"});
+            return outcome !== "unverified";
+        });
+        f.ports.startContainer = (...args) => {
+            const allowed = args[6](replacement);
+            expect(allowed).toBe(outcome === "verified");
+            throw new Error("controlled preflight ends here");
+        };
+        return expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: {message: "controlled preflight ends here"}}).then(() => {
+            expect(f.ports.verifyStoppedSessionContainerForReplacement).toHaveBeenCalledOnce();
+            expect(replacement).toHaveBeenCalledTimes(outcome === "verified" ? 1 : 0);
+            expect(f.ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
+            expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
+        });
     });
 
     it.each(["missing", "stale"])("replaces a stopped incompatible container through the real session guard after %s fingerprint bind proof", async fingerprint => {
@@ -313,7 +341,7 @@ describe("acquired session lifetime", () => {
         });
         f.ports.startContainer = (...args) => {
             expect(lifecycle.run({containerName: "ccc-repo", managedProjectPath: root, replacementGuard: args[6]})).toEqual({kind: "continue-to-create"});
-            args[9](nextId); args[7](nextId, {startedByInvocation: true}); return "ccc-repo";
+            args[11]?.(); args[9](nextId); args[7](nextId, {startedByInvocation: true}); return "ccc-repo";
         };
         f.ports.containerRunning = () => true;
         try {
@@ -336,7 +364,7 @@ describe("acquired session lifetime", () => {
         f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: "setup-id", requiresLiveVerification: true});
         f.ports.startContainer = (...args) => {
             expect(args[6](replace)).toBe(false);
-            args[9]("setup-id");
+            args[11]?.(); args[9]("setup-id");
             expect(args[6](replace)).toBe(false);
             args[7]("setup-id", {startedByInvocation: true});
             expect(args[6](replace)).toBe(true);
@@ -359,10 +387,36 @@ describe("acquired session lifetime", () => {
         expect(f.ports.launchCommand).not.toHaveBeenCalled();
     });
 
+    it.each([false, true])("pins a later readiness retry to the last positive target (own start=%s)", async ownStart => {
+        const f = fixture(), id = "a".repeat(64), refusal = new Error("retry target disappeared");
+        let attempts = 0, disappeared = false;
+        f.ports.containerStatus = () => ({exists: false, running: false, containerId: null, imageId: null});
+        f.ports.startContainer = (...args) => {
+            if (++attempts === 1) {
+                expect(args[8]).toBeUndefined();
+                if (ownStart) { args[11]?.(); args[9](id); }
+                args[7](id, {startedByInvocation: ownStart});
+                return "ccc-repo";
+            }
+            expect(args[8]).toBe(id);
+            throw refusal;
+        };
+        vi.mocked(f.ports.buildMcpConfig).mockImplementation(async () => { await Promise.resolve(); disappeared = true; return []; });
+        f.ports.containerRunning = () => !disappeared;
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: refusal});
+        expect(attempts).toBe(2);
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).toHaveBeenCalledTimes(ownStart ? 1 : 0);
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).toHaveBeenCalledTimes(ownStart ? 1 : 0);
+        if (ownStart) expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).toHaveBeenLastCalledWith(id);
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith(id, {startedByInvocation: ownStart});
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+
     it.each([false, true])("settles captured-start acknowledgement before cleanup after a synchronous start failure (ACK rejects=%s)", async rejects => {
         const f = fixture(), gate = deferred<void>(), entered = deferred<void>();
         const primary = new Error("start helper failed after creating container"), acknowledgement = new Error("ACK failed");
-        f.ports.startContainer = (...args) => { args[9]("partial-start-id"); throw primary; };
+        f.ports.startContainer = (...args) => { args[11]?.(); args[9]("partial-start-id"); throw primary; };
         vi.mocked(f.ports.confirmOwnership).mockImplementation(async () => { entered.resolve(); await gate.promise; });
         vi.mocked(f.ports.report).mockImplementation(report => { if (report.kind === "ownership-unconfirmed") throw new Error("report failed"); });
         const result = settled(f.exec("/repo", ["codex"]));
@@ -567,8 +621,11 @@ describe("container exec semantic workflow", () => {
             expect(held).toBe(true); expect(id).toBe("final-id"); expect(handoff).toEqual({startedByInvocation: true}); publications.push("ready");
         });
         f.ports.startContainer = (...args) => {
+            expect(publications).toEqual([]);
+            args[11]?.();
             expect(publications).toEqual(["intent"]);
             args[9]("final-id");
+            args[11]?.(); // Repeated native boundaries must not reset own-start evidence.
             expect(publications).toEqual(["intent", "own-start"]);
             // A late reuse observation must not discard this invocation's
             // positively recorded native start of the same exact target.
@@ -604,7 +661,7 @@ describe("container exec semantic workflow", () => {
         const f = fixture({running: true}), failure = new Error("joined initialization failed");
         f.ports.prepareContainer = () => ({start: f.ports.startContainer, initialize: () => { throw failure; }});
         await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
-        expect(f.ports.beginSessionStartupInHeldLifecycleLock).toHaveBeenCalledOnce();
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
         expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith("final-id", {startedByInvocation: false});
         expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
         expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
@@ -706,9 +763,9 @@ describe("container exec semantic workflow", () => {
             return operation();
         };
         let starts = 0;
-        f.ports.startContainer = (_path, _ensure, _mounts, _port, _profile, _recreate, _replacement, onReady, _expected, onStarted) => {
+        f.ports.startContainer = (_path, _ensure, _mounts, _port, _profile, _recreate, _replacement, onReady, _expected, onStarted, _guard, onBeforeMutation) => {
             const id = ++starts === 1 ? "initial-id" : "replacement-id";
-            onStarted(id); onReady(id, {startedByInvocation: true}); return "ccc-repo";
+            onBeforeMutation?.(); onStarted(id); onReady(id, {startedByInvocation: true}); return "ccc-repo";
         };
         let originalRunning = checkpoint !== "readiness";
         f.ports.containerRunning = id => id === "replacement-id" || originalRunning;
@@ -732,6 +789,7 @@ describe("container exec semantic workflow", () => {
         expect(f.ports.installTools).toHaveBeenLastCalledWith(finalId, expect.objectContaining({name: "codex"}));
         expect(f.ports.prepareCodexConfig).toHaveBeenCalledWith(finalId, undefined);
         expect(f.ports.prepareCommand).toHaveBeenCalledWith(expect.objectContaining({target: finalId}));
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).toHaveBeenCalledOnce();
         expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenLastCalledWith(finalId, {startedByInvocation: true});
     });
     it.each(["initial", "readiness", "tool-retry"] as const)("propagates a rejected %s guard without proceeding", async checkpoint => {

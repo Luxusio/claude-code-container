@@ -31,6 +31,7 @@ function execFixture() {
         async familyLock<T>(_id: string, operation: () => Promise<T> | T) { return operation(); },
         acquireOwnership: async () => ({ lockFile: "/fixture/session.lock", existingId: "final-id" }),
         inspectSessionContainer: () => ({ known: true, containerId: "final-id" }),
+        verifyStoppedSessionContainerForReplacement: vi.fn(() => false),
         ensureClipboard: async () => null,
         validateClipboard: vi.fn<ContainerExecPorts<symbol>["validateClipboard"]>(async (selection, guard) => {
             expect(stateHeld).toBe(true); expect(guard).toBe(bindGuard); return selection;
@@ -55,7 +56,7 @@ function execFixture() {
         startContainer: (_path, _directories, _mounts, _port, _profile, _recreate, _replacement, onReady, expectedId, _onStarted, guard) => {
             expect(stateHeld).toBe(true); expect(lifecycleHeld).toBe(true); expect(guard).toBe(bindGuard);
             expect(expectedId).toBe("final-id");
-            expect(ports.beginSessionStartupInHeldLifecycleLock).toHaveBeenCalledOnce();
+            expect(ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
             onReady("final-id", { startedByInvocation: false }); return "fixture-container";
         },
         beginSessionStartupInHeldLifecycleLock: vi.fn(() => {
@@ -279,7 +280,7 @@ describe("actual application Codex preparation lifetime", () => {
         expect(f.events.indexOf("codex")).toBeLessThan(f.events.indexOf("terminal"));
         expect(f.ports.prepareCodexCommand).toHaveBeenCalledExactlyOnceWith(f.handle);
         expect(f.ports.validateClipboard).toHaveBeenCalledExactlyOnceWith(null, f.bindGuard);
-        expect(f.ports.beginSessionStartupInHeldLifecycleLock).toHaveBeenCalledOnce();
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
         expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith("final-id", { startedByInvocation: false });
         expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
         expect(f.ports.launchCommand).toHaveBeenCalledExactlyOnceWith(f.handle, { interactive: true, terminal: tty, codexRecovery: tty });
