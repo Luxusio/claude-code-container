@@ -108,6 +108,9 @@ export function presentContainerExecReport(report: ContainerExecReport): void {
             for (const mount of report.mounts) console.error(`[ccc:debug]   ${mount.hostPath} -> ${mount.containerPath}`);
             return;
         case "replacement-blocked": console.error(`[ccc] Automatic container replacement blocked: ${presentContainerExecReplacementReason(report.evidence)}.`); return;
+        case "recovery-retained": console.warn("[ccc] WARNING: Unresolved predecessor records were retained; these records are not proof of live sessions. "
+            + "Using only the verified running container; automatic restart, replacement and cleanup are disabled. "
+            + report.message.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 512)); return;
         case "broker-failed": console.warn(`[ccc] WARNING: device broker auto-start failed (${report.cause instanceof Error ? report.cause.message : String(report.cause)}). Host-backed device MCP tools may be unavailable.`); return;
         case "restore-failed": console.warn(`[ccc] Unable to restore Codex config access after command exit: ${report.cause instanceof Error ? report.cause.message : String(report.cause)}`); return;
         case "ownership-unconfirmed": console.warn("[ccc] Unable to confirm session ownership after setup failure."); return;

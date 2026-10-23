@@ -1,5 +1,5 @@
 import { sessionClaimPrefix } from "../domain/session-claims.js";
-import type { SessionAcquisitionCheckpoint, SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisitionResult } from "../ports/session-acquisition.js";
+import type { SessionAcquisitionCheckpoint, SessionAcquisitionInspection, SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisitionResult } from "../ports/session-acquisition.js";
 
 export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
     for (const name of [
@@ -15,8 +15,15 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
         const prefix = sessionClaimPrefix(request.projectId, request.profile);
         return ports.withLifecycleLock(prefix, async () => {
             checkCancelled();
-            await ports.recoverPredecessors(prefix);
+            const recovery = await ports.recoverPredecessors(prefix);
             checkCancelled();
+            const verifyRetainedTarget = (inspection: SessionAcquisitionInspection) => {
+                if (recovery && (!inspection.known || !/^[a-f0-9]{64}$/i.test(recovery.containerId)
+                    || inspection.containerId !== recovery.containerId || inspection.runtime !== recovery.runtime
+                    || inspection.running !== true || inspection.requiresLiveVerification)) {
+                    throw new Error("Retained predecessor recovery only permits the same verified running container; no lifecycle changes were authorized.");
+                }
+            };
             const lockFile = ports.reserve(request.projectId, request.profile);
             let existingOwnershipAcknowledged = false;
             try {
@@ -27,22 +34,35 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
                 if (!inspection.known) {
                     throw new Error(`Existing session container ownership could not be inspected (${inspection.reason ?? "unavailable"}; runtime: ${inspection.runtime}). The existing container was preserved.`);
                 }
+                verifyRetainedTarget(inspection);
                 await ports.arm();
                 checkCancelled();
+                if (recovery) {
+                    const current = await ports.inspectExisting(request);
+                    checkCancelled();
+                    verifyRetainedTarget(current);
+                }
                 if (inspection.containerId !== null) {
                     await ports.acknowledge(inspection.containerId, inspection.runtime);
                     existingOwnershipAcknowledged = true;
                     checkCancelled();
                 }
                 ports.reconcileForeign(prefix, lockFile);
+                if (recovery) {
+                    const current = await ports.inspectExisting(request);
+                    checkCancelled();
+                    verifyRetainedTarget(current);
+                }
                 return {
                     lockFile, existingId: inspection.containerId,
                     ...(inspection.requiresLiveVerification ? { requiresLiveVerification: true as const } : {}),
+                    ...(recovery ? { existingOnly: true as const, recoveryWarning: recovery.diagnostic } : {}),
                 };
             } catch (error) {
-                // Once transferred, the receipt must survive partial predecessor
-                // reconciliation so guarded cleanup can still stop the owned ID.
-                if (!existingOwnershipAcknowledged) {
+                // Ordinary acknowledged responsibility survives failed admission.
+                // Restricted admission never owns startup or cleanup responsibility,
+                // so its qualified no-obligation reservation can still roll back.
+                if (!existingOwnershipAcknowledged || recovery) {
                     try { await ports.rollback(lockFile); }
                     catch (rollbackError) {
                         throw new AggregateError([error, rollbackError], "Session acquisition and rollback failed.", { cause: error });

@@ -321,10 +321,12 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
     }
 
     function reconcileSessionClaimsInHeldLifecycleLock(prefix: string, ownPath?: string,
-        scope?: SessionClaimRecoveryScope): { claims: string[]; error?: Error } {
+        scope?: SessionClaimRecoveryScope): { claims: string[]; error?: Error; retainedPendingOnly?: true } {
         const native = responsibility();
         const failures: Error[] = [];
-        const failed = (name: string, reason: string, cause?: unknown) => {
+        let retainedPendingOnly = true;
+        const failed = (name: string, reason: string, cause?: unknown, retainedPending = false) => {
+            retainedPendingOnly = retainedPendingOnly && retainedPending;
             failures.push(incomplete(`${JSON.stringify(name.slice(0, 180))}: ${reason}`, cause));
         };
         try {
@@ -332,6 +334,10 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
             const recoverable: SessionClaimObservationSnapshot[] = [];
             const legacy: ObservedClaim[] = [];
             for (const item of claims) {
+                if (item.parent === "unknown" || !item.receipt || !item.owner
+                    || item.owner.ownershipKind === "monitored" && (!item.snapshot || item.guardian === "unknown")) {
+                    retainedPendingOnly = false;
+                }
                 if (item.parent !== "stale") continue;
                 if (!item.owner || !item.receipt) { failed(item.name, "dead claim receipt could not be qualified"); continue; }
                 if (item.owner.ownershipKind === "direct") {
@@ -346,7 +352,13 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
                         try { retireSnapshot(item.snapshot); }
                         catch (error) { failed(item.name, "unencumbered monitored claim retirement failed", error); }
                     } else if (currentSessionClaimAuthority(item.snapshot.observation)) recoverable.push(item.snapshot);
-                    else failed(item.name, "pending or unknown monitored cleanup authority", retainRecoveryFailure(item.snapshot,
+                    else if (item.snapshot.observation.pending !== null && scope?.runtimeInvocation
+                        && sameRuntime(item.snapshot.runtimeInvocation, scope.runtimeInvocation)
+                        && native.matchesClaim(item.receipt) && native.observationStore.matches(item.snapshot)) {
+                        // The request is unresolved, not settled. Leave every
+                        // predecessor byte intact while reporting restricted admission.
+                        failed(item.name, "pending monitored cleanup authority is retained", undefined, true);
+                    } else failed(item.name, "pending or unknown monitored cleanup authority", retainRecoveryFailure(item.snapshot,
                         incomplete("A dead session has pending or unknown cleanup authority.")));
                 }
             }
@@ -390,7 +402,8 @@ export function createSessionClaims(ports: SessionClaimsPorts) {
         return failures.length ? { claims, error: incomplete(
             `Predecessor recovery remains incomplete: ${failures.slice(0, 8).map(error => error.message.slice(
                 "session-cleanup-responsibility-incomplete: ".length)).join("; ")}${failures.length > 8 ? "; additional records omitted" : ""}.`,
-            new AggregateError(failures, "Predecessor session recovery failed.")) } : { claims };
+            new AggregateError(failures, "Predecessor session recovery failed.")),
+            ...(retainedPendingOnly ? { retainedPendingOnly: true as const } : {}) } : { claims };
     }
 
     function recoverPredecessorsInHeldLifecycleLock(prefix: string, ownPath?: string,

@@ -703,3 +703,48 @@ describe("obligation transfer retains a responsible successor", () => {
         expect(f.removals).toEqual([`/claims/${second}`, `/claims/${first}`]);
     });
 });
+
+describe("retained pending-only recovery classification", () => {
+    function pendingPair() {
+        const f = fixture([old, other], {[old]: monitored(7), [other]: monitored(8)});
+        const snapshots = [old, other].map((name, index) => f.attach(name, {
+            generation: `pending-${index}`, lastAcknowledged: null,
+            pending: {kind: "startup", generation: `pending-${index}`, sequence: 2, containerId: null, cleanupEnabled: true},
+        }));
+        for (const snapshot of snapshots) { f.dead(snapshot.receipt.ownerPid); f.dead(snapshot.observation.guardian.pid); }
+        const scope: SessionClaimRecoveryScope = {runtimeInvocation: invocation(),
+            inspectContainer: () => ({known: true, containerId: fullId, running: true}),
+            stopContainer: () => { throw new Error("pending evidence cannot authorize stop"); }};
+        return {f, snapshots, scope};
+    }
+    it("reports two qualified same-runtime pending predecessors without changing either obligation", () => {
+        const {f, snapshots, scope} = pendingPair();
+        const before = JSON.stringify(snapshots);
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+        expect(result.claims).toEqual([old, other]); expect(result.error).toBeInstanceOf(Error);
+        expect(result.retainedPendingOnly).toBe(true);
+        expect(JSON.stringify([f.snapshots.get(old), f.snapshots.get(other)])).toBe(before);
+        expect(f.cleanups).toEqual([]); expect(f.removals).toEqual([]); expect(f.writes).toEqual([]);
+        expect(() => f.recover(scope)).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(JSON.stringify([f.snapshots.get(old), f.snapshots.get(other)])).toBe(before);
+    });
+    it.each(["runtime-mismatch", "missing-runtime", "unknown-guardian", "missing-evidence", "replaced-receipt", "mixed-cleanup-failure"] as const)("does not classify %s as the restricted pending-only class", fault => {
+        const {f, snapshots, scope} = pendingPair();
+        const selectedScope: SessionClaimRecoveryScope = fault === "runtime-mismatch" ? {...scope, runtimeInvocation: invocation("unix:///another-engine.sock")}
+            : fault === "missing-runtime" ? {inspectContainer: scope.inspectContainer, stopContainer: scope.stopContainer} : scope;
+        if (fault === "unknown-guardian") f.observations.set(snapshots[1].observation.guardian.pid, {status: "unknown"});
+        if (fault === "missing-evidence") f.snapshots.delete(other);
+        if (fault === "replaced-receipt") {
+            const observe = f.ports.observeOwners;
+            f.ports.observeOwners = pids => { const result = observe(pids); f.install(other, f.records[other]); return result; };
+        }
+        if (fault === "mixed-cleanup-failure") {
+            f.attach(other);
+            f.ports.responsibility!.cleanup = () => { throw new Error("qualified stop failed"); };
+        }
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, selectedScope));
+        expect(result.retainedPendingOnly).not.toBe(true);
+        if (fault !== "unknown-guardian") expect(result.error).toBeInstanceOf(Error);
+        expect(result.claims).toEqual([old, other]); expect(f.removals).toEqual([]);
+    });
+});

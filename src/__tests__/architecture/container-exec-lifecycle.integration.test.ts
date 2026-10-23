@@ -272,13 +272,13 @@ console.log(JSON.stringify({
 }, 20000);
 
 
-it.each(["preflight-refusal", "uncertain-mutation", "stopped-upgrade", "retry-target-missing"] as const)("composed native session retires only qualified startup responsibility: %s", async scenario => {
+it.each(["preflight-refusal", "uncertain-mutation", "stopped-upgrade", "retry-target-missing", "retained-join", "retained-stopped", "retained-changed", "retained-postack-changed"] as const)("composed native session retires only qualified startup responsibility: %s", async scenario => {
     const root = mkdtempSync(join(tmpdir(), "ccc-exec-native-retirement-"));
     const child = spawn(process.execPath, ["--input-type=module", "-e", `
 import assert from 'node:assert/strict';
 import cp from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
-import {existsSync,mkdirSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
+import {existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
 import {basename,join} from 'node:path';
 const root=${JSON.stringify(root)}, scenario=${JSON.stringify(scenario)}, project=join(root,'project');
 mkdirSync(project);
@@ -286,7 +286,8 @@ writeFileSync(join(project,'untracked.txt'),'uncommitted work\\n');
 const oldId='a'.repeat(64), nextId='b'.repeat(64), helperId='c'.repeat(64), image='sha256:'+'d'.repeat(64);
 const executable=join(root,'private-runtime'), originalSpawn=cp.spawnSync, effects=[];
 let removed=false, stopped=false, projectId, markerRead=false;
-const retryScenario=scenario==='retry-target-missing';
+const retryScenario=scenario==='retry-target-missing', retainedScenario=scenario.startsWith('retained-');
+const retainedFiles=[], cleanupFlags=[];let projectFingerprint, commandLaunched=false, falseAckAtLaunch=false, warningShown=false, falseAckBeforeFailure=false;
 let externallyRemoved=false, retryStarts=0, secondDispatches=0, expectedAtRetry, ownTargetAtRetry=false;
 cp.spawnSync=(command,argv,options)=>{
  if(command!==executable) return originalSpawn(command,argv,options);
@@ -294,8 +295,8 @@ cp.spawnSync=(command,argv,options)=>{
  effects.push(args[0]);
  if(args[0]==='ps') return {status:0,stdout:retryScenario&&externallyRemoved?'':(removed?nextId:oldId)+'\\n'};
  if(args[0]==='inspect'&&args.includes('{{.Id}}')) return {status:0,stdout:image};
- if(args[0]==='inspect') return {status:0,stdout:JSON.stringify({Id:oldId,Image:'sha256:'+'e'.repeat(64),State:{Running:false},
-   Config:{Labels:{'ccc.managed':'true','ccc.project.path':project}},
+ if(args[0]==='inspect') return {status:0,stdout:JSON.stringify({Id:oldId,Image:'sha256:'+'e'.repeat(64),State:{Running:retainedScenario},
+   Config:{Labels:{'ccc.managed':'true','ccc.project.path':project,...(retainedScenario?{'ccc.project.mount-identity':projectFingerprint}:{})}},
    Mounts:[{Type:'bind',Source:project,Destination:'/project/'+projectId,RW:true}]})};
  if(args[0]==='cp') return {status:1,stdout:'',stderr:'stopped copy unsupported'};
  if(args[0]==='run') {
@@ -331,25 +332,60 @@ const {captureNativeSessionOwnership}=await import(new URL('./adapters/session-o
 const {createNativeSessionClaimObservationStore}=await import(new URL('./adapters/session-claim-observation.js',${JSON.stringify(sessionUrl)}));
 projectId=getProjectId(project);
 const store=createNativeSessionClaimObservationStore();
+if(retainedScenario){
+ const {locksDir}=await import(new URL('./home-layout.js',${JSON.stringify(sessionUrl)}));
+ const {encodeSessionClaim}=await import(new URL('./domain/session-claims.js',${JSON.stringify(sessionUrl)}));
+ const {captureBindMountSourceIdentity,bindMountSourceIdentityDigest}=await import(new URL('./adapters/container-mount-observations.js',${JSON.stringify(sessionUrl)}));
+ projectFingerprint=bindMountSourceIdentityDigest(captureBindMountSourceIdentity(project));
+ mkdirSync(locksDir(),{recursive:true,mode:0o700});
+ session.withContainerLifecycleLock(projectId,()=>{
+   for(let index=0;index<2;index++){
+     const deadOwner=2000000000+index,deadGuardian=2000000010+index;
+     for(const pid of [deadOwner,deadGuardian]){try{process.kill(pid,0);throw new Error('fixture PID unexpectedly exists');}catch(error){if(error.code!=='ESRCH')throw error;}}
+     const path=join(locksDir(),projectId+'--retained-'+index+'.lock'),generation='retained-generation-'+index;
+     writeFileSync(path,encodeSessionClaim(deadOwner,'retained-owner-'+index,'monitored'),{mode:0o600,flag:'wx'});
+     let old=store.begin({receipt:captureNativeSessionOwnership(path),binding:{lockFile:path,projectPath:project,prefix:projectId},
+       runtimeInvocation:runtime.getRuntimeInvocation(),guardian:{pid:deadGuardian,startToken:'retained-guardian-'+index},generation});
+     old=store.update(old,{...old.observation,pending:{kind:'startup',generation,sequence:1,containerId:null,cleanupEnabled:true}});
+     for(const entry of [path,path+'.guardian.json',path+'.runtime.json']){
+       const stat=lstatSync(entry);retainedFiles.push({path:entry,bytes:readFileSync(entry,'utf8'),ino:stat.ino,dev:stat.dev});
+     }
+   }
+ });
+}
 const ports=createNativeContainerExecPorts({ensureDirectories(){},ensureProjectTools:async()=>{},assetDirectory:root,trustedCliPath:join(root,'unused-cli')});
 const noop=()=>{}, primary=new Error('controlled startup refusal');
 let claim, guardian, mutationIntents=0;
-const acquire=ports.acquireOwnership, begin=ports.beginSessionStartupInHeldLifecycleLock;
+const acquire=ports.acquireOwnership, begin=ports.beginSessionStartupInHeldLifecycleLock, setCleanup=ports.setCleanupEnabled;
 Object.assign(ports,{
  ensureRuntime:noop,resolveProject:()=>project,ensureDirectories:noop,ensureProjectTools:async()=>{},debugEnabled:()=>false,
  terminalReady:()=>false,tool:()=>undefined,isWorktreeWorkspace:()=>false,
  ensureClipboard:async()=>null,validateClipboard:async selected=>selected,worktreeMounts:()=>[],prepareDeviceBroker:async()=>{},
- containerName:()=> 'fixture-project',containerStatus:()=>retryScenario?{exists:false,running:false,containerId:null,imageId:null}:{exists:true,running:false,containerId:oldId,imageId:'old-image'},
- inspectSessionContainer:scenario==='stopped-upgrade'?docker.inspectSessionContainerOwnership:()=>({known:true,containerId:retryScenario?null:oldId,running:false}),
+ containerName:()=> 'fixture-project',containerStatus:()=>retainedScenario?{exists:true,running:scenario!=='retained-stopped',containerId:scenario==='retained-changed'?nextId:oldId,imageId:'current-image'}:retryScenario?{exists:false,running:false,containerId:null,imageId:null}:{exists:true,running:false,containerId:oldId,imageId:'old-image'},
+ inspectSessionContainer:scenario==='stopped-upgrade'||retainedScenario?(...args)=>{
+   const inspected=docker.inspectSessionContainerOwnership(...args);
+   if(scenario==='retained-postack-changed'){
+     const currentPath=session.getCurrentSession().lockFile;
+     const observed=currentPath?store.read(captureNativeSessionOwnership(currentPath),{prefix:projectId}):null;
+     if(observed?.observation.lastAcknowledged?.containerId===oldId&&observed.observation.lastAcknowledged.cleanupEnabled===false){
+       claim=currentPath;guardian=observed.observation.guardian.pid;falseAckBeforeFailure=true;
+       return {...inspected,containerId:nextId};
+     }
+   }
+   return inspected;
+ }:()=>({known:true,containerId:retryScenario?null:oldId,running:false}),
  async acquireOwnership(...args){
    const result=await acquire(...args); claim=result.lockFile;
    const snapshot=store.read(captureNativeSessionOwnership(claim),{prefix:projectId});
    assert.ok(snapshot); assert.equal(snapshot.observation.pending,null); guardian=snapshot.observation.guardian.pid;
    if(scenario==='stopped-upgrade') assert.equal(result.requiresLiveVerification,true);
+   if(retainedScenario){assert.equal(result.existingOnly,true);assert.equal(result.existingId,oldId);assert.equal(snapshot.observation.lastAcknowledged.cleanupEnabled,false);}
    return result;
  },
  beginSessionStartupInHeldLifecycleLock(){mutationIntents++;begin();},
+ setCleanupEnabled(enabled){cleanupFlags.push(enabled);setCleanup(enabled);},
  prepareContainer:()=>({start(...args){
+   if(retainedScenario){assert.equal(args[8],oldId);assert.equal(args[6](()=>{throw new Error('restricted replacement was dispatched');}),false);args[7](oldId,{startedByInvocation:false});return 'fixture-project';}
    if(retryScenario) {
      if(++retryStarts===1){args[11]();args[9](oldId);args[7](oldId,{startedByInvocation:true});return 'fixture-project';}
      expectedAtRetry=args[8];
@@ -379,20 +415,44 @@ Object.assign(ports,{
    }
    if(scenario==='uncertain-mutation'){args[11]();args[11]();}
    throw primary;
- },initialize(){if(!retryScenario)throw primary;}}),
- setupFailure:cause=>new Error('Container setup failed',{cause}),isRestartRequired:()=>false,report:noop,
+ },initialize(){if(!retryScenario&&!retainedScenario)throw primary;}}),
+ setupFailure:cause=>new Error('Container setup failed',{cause}),isRestartRequired:()=>false,report:event=>{if(event.kind==='recovery-retained')warningShown=true;},
 });
 if(retryScenario) Object.assign(ports,{
  configLock:operation=>operation(),restoreConfig:noop,ensureUv:noop,setupProxy:noop,
  buildMcpConfig:async()=>{await Promise.resolve();externallyRemoved=true;return [];},
  containerRunning:()=>!externallyRemoved,
 });
-let error;
-try {await createContainerExec(ports).exec(project,['printf']);} catch(cause){error=cause;}
-assert.ok(error);
+if(retainedScenario) Object.assign(ports,{
+ configLock:operation=>operation(),restoreConfig:noop,buildMcpConfig:async()=>[],containerRunning:()=>true,
+ installTools:noop,syncClipboard:noop,ensureSocketAccess:noop,startClipboardBridge:noop,
+ observeCommandEnvironment:()=>({forwarded:[],skippedKeys:[],containerMarker:['container','docker'],hostLangPresent:true}),
+ prepareCommand:intent=>{assert.equal(intent.target,oldId);return Symbol('private command');},
+ prepareCodexCommand:()=>({ok:true}),disposeCommand:noop,
+ launchCommand:async()=>{
+   const current=store.read(captureNativeSessionOwnership(claim),{prefix:projectId});assert.ok(current);
+   falseAckAtLaunch=current.observation.lastAcknowledged?.containerId===oldId
+     &&current.observation.lastAcknowledged.cleanupEnabled===false&&current.observation.ownStarted===null&&current.observation.pending===null;
+   assert.equal(falseAckAtLaunch,true);assert.ok(cleanupFlags.every(enabled=>enabled===false));commandLaunched=true;return 17;
+ },
+});
+let error,status;
+try {status=await createContainerExec(ports).exec(project,['printf']);} catch(cause){error=cause;}
+if(retainedScenario&&scenario==='retained-join'){assert.equal(error,undefined);assert.equal(status,17);}else assert.ok(error);
 const snapshot=existsSync(claim)?store.read(captureNativeSessionOwnership(claim),{prefix:projectId}):null;
 const retained=snapshot!==null, pending=snapshot?.observation.pending?.kind??null;
-if(scenario==='uncertain-mutation') {
+if(retainedScenario){
+ if(scenario==='retained-join'){assert.equal(commandLaunched,true);assert.equal(falseAckAtLaunch,true);assert.equal(warningShown,true);}
+ else {assert.ok(!(error instanceof AggregateError));
+   assert.match((error.cause??error).message,scenario==='retained-postack-changed'?/Retained predecessor recovery requires the same fully verified running managed container/:/Existing-only session/);
+   assert.equal(commandLaunched,false);
+ }
+ if(scenario==='retained-postack-changed')assert.equal(falseAckBeforeFailure,true);
+ assert.equal(retained,false);assert.equal(pending,null);assert.equal(mutationIntents,0);assert.ok(cleanupFlags.every(enabled=>enabled===false));
+ assert.equal(effects.some(effect=>['start','run','rm','stop'].includes(effect)),false);
+ for(const old of retainedFiles){const stat=lstatSync(old.path);assert.equal(readFileSync(old.path,'utf8'),old.bytes);assert.equal(stat.ino,old.ino);assert.equal(stat.dev,old.dev);}
+ assert.equal(retainedFiles.length,6);
+} else if(scenario==='uncertain-mutation') {
  assert.ok(error instanceof AggregateError); assert.equal(error.errors[0].cause,primary);
  assert.equal(pending,'startup'); assert.equal(mutationIntents,1); assert.equal(stopped,false);
  // The controlled fake effect created no resource. After asserting retention,
@@ -418,7 +478,9 @@ const until=Date.now()+5000;
 while(Date.now()<until){try{process.kill(guardian,0);}catch(cause){if(cause.code==='ESRCH')break;throw cause;} await new Promise(resolve=>setTimeout(resolve,20));}
 try{process.kill(guardian,0);throw new Error('owned guardian did not exit');}catch(cause){if(cause.code!=='ESRCH')throw cause;}
 console.log(JSON.stringify({retained,pending,mutationIntents,markerRead,removed,stopped,claimsRetired:true,
- ...(retryScenario?{retryStarts,secondDispatches,expectedAtRetry,ownTargetAtRetry}:{})}));
+ ...(retryScenario?{retryStarts,secondDispatches,expectedAtRetry,ownTargetAtRetry}:{}),
+ ...(retainedScenario?{retainedFiles:retainedFiles.length,commandLaunched,falseAckAtLaunch,cleanupFlags}: {}),
+ ...(scenario==='retained-postack-changed'?{falseAckBeforeFailure}:{})}));
 `], {cwd: root, env: {...process.env, HOME: root, USERPROFILE: root, CCC_HOME: undefined, CCC_PROFILE: undefined}, stdio: ["ignore", "pipe", "pipe"]});
     let stdout = "", stderr = "";
     child.stdout.on("data", data => { stdout += String(data); }); child.stderr.on("data", data => { stderr += String(data); });
@@ -428,9 +490,11 @@ console.log(JSON.stringify({retained,pending,mutationIntents,markerRead,removed,
         expect(await completed, stderr).toBe(0);
         expect(JSON.parse(stdout.trim())).toEqual({
             retained: scenario === "uncertain-mutation", pending: scenario === "uncertain-mutation" ? "startup" : null,
-            mutationIntents: scenario === "preflight-refusal" ? 0 : 1,
+            mutationIntents: scenario === "preflight-refusal" || scenario.startsWith("retained-") ? 0 : 1,
             markerRead: scenario === "stopped-upgrade", removed: scenario === "stopped-upgrade", stopped: scenario === "stopped-upgrade", claimsRetired: true,
             ...(scenario === "retry-target-missing" ? {retryStarts: 2, secondDispatches: 0, expectedAtRetry: "a".repeat(64), ownTargetAtRetry: true} : {}),
+            ...(scenario.startsWith("retained-") ? {retainedFiles: 6, commandLaunched: scenario === "retained-join", falseAckAtLaunch: scenario === "retained-join", cleanupFlags: scenario === "retained-join" ? [false] : []} : {}),
+            ...(scenario === "retained-postack-changed" ? {falseAckBeforeFailure: true} : {}),
         });
     } finally {
         clearTimeout(timeout); if (child.exitCode === null && child.signalCode === null) child.kill();

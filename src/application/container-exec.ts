@@ -98,7 +98,13 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                 })
                 : await acquire();
             const sessionLockFile = acquired.lockFile;
+            const existingOnly = acquired.existingOnly === true;
+            const existingOnlyContainerId = existingOnly ? acquired.existingId : null;
+            const existingOnlyFailure = () => new Error("Existing-only session requires its verified running container; automatic restart, replacement and cleanup are disabled.");
             let requiresLiveVerification = acquired.requiresLiveVerification === true;
+            if (existingOnly && (!existingOnlyContainerId || !/^[a-f0-9]{64}$/i.test(existingOnlyContainerId) || requiresLiveVerification)) {
+                throw existingOnlyFailure();
+            }
 
             // Start clipboard server early — must complete before container creation so
             // the port file exists and can be bind-mounted (file mount requires the file
@@ -117,6 +123,11 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             const targetContainer = ports.containerName(fullPath, profile);
             ports.report({ kind: "progress", phase: "checking" });
             const containerStatus = ports.containerStatus(targetContainer);
+            if (existingOnly) {
+                if (!containerStatus.exists || !containerStatus.running || containerStatus.containerId !== existingOnlyContainerId) throw existingOnlyFailure();
+                ports.report({ kind: "recovery-retained", message: (acquired.recoveryWarning || "Predecessor cleanup remains pending.")
+                    .replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 512) });
+            }
             let wasAlreadyRunning = containerStatus.running;
             const sessionContainerPrefix = profile ? `${projectId}--p--${profile}` : projectId;
             // Image and numeric-user upgrades are reconciled together by startProjectContainer.
@@ -130,6 +141,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                 ports.report({ kind: "broker-failed", cause: error });
             });
             const recreateInsideLifecycleLock = (recreate: () => void, bindGuard: RuntimeBindGuard) => {
+                if (existingOnly) return false;
                 if (requiresLiveVerification) {
                     const oldId = containerStatus.containerId;
                     if (!oldId || !ports.verifyStoppedSessionContainerForReplacement(fullPath, profile, oldId, bindGuard)) return false;
@@ -152,7 +164,8 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             const invocationStartedContainers = new Set<string>();
             // Once this invocation has observed a ready or positively started
             // target, later readiness retries must retain that exact identity.
-            let expectedStartupContainerId = containerStatus.running ? containerStatus.containerId ?? undefined : undefined;
+            let expectedStartupContainerId = (existingOnly ? existingOnlyContainerId
+                : containerStatus.running ? containerStatus.containerId : null) ?? undefined;
             let startupIntentPublished = false;
             let startup: ReturnType<ContainerExecPorts<Prepared>["prepareContainer"]>;
             const startContainer = async (
@@ -175,22 +188,25 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
                             onRecreate,
                             recreate => recreateInsideLifecycleLock(recreate, bindGuard),
                             (containerId, handoff) => {
+                                if (existingOnly && (containerId !== existingOnlyContainerId || handoff.startedByInvocation)) throw existingOnlyFailure();
                                 requiresLiveVerification = false;
                                 readyContainerId = containerId;
                                 expectedStartupContainerId = containerId;
                                 if (handoff.startedByInvocation) invocationStartedContainers.add(containerId);
                                 ports.publishSessionReadyInHeldLifecycleLock(containerId, {
-                                    startedByInvocation: invocationStartedContainers.has(containerId),
+                                    startedByInvocation: !existingOnly && invocationStartedContainers.has(containerId),
                                 });
                             },
                             expectedStartupContainerId,
                             (containerId) => {
+                                if (existingOnly) throw existingOnlyFailure();
                                 expectedStartupContainerId = containerId;
                                 invocationStartedContainers.add(containerId);
                                 ports.recordSessionOwnStartInHeldLifecycleLock(containerId);
                             },
                             bindGuard,
                             () => {
+                                if (existingOnly) throw existingOnlyFailure();
                                 if (startupIntentPublished || invocationStartedContainers.size > 0) return;
                                 ports.beginSessionStartupInHeldLifecycleLock();
                                 startupIntentPublished = true;
@@ -340,7 +356,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
 
                 await ports.confirmOwnership();
                 if (preparationStatus === null) {
-                    ports.setCleanupEnabled(true);
+                    ports.setCleanupEnabled(!existingOnly);
                     await ports.confirmOwnership();
                     resultStatus = await ports.launchCommand(prepared, { interactive: options.interactive !== false, terminal, codexRecovery: terminal && commandTool?.name === "codex" });
                 } else {

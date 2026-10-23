@@ -1,4 +1,4 @@
-import { join } from "path";
+import { basename, join } from "path";
 import { locksDir } from "./home-layout.js";
 import { withSharedMutationLock, withSharedMutationLockAsync } from "@ccc/device-lab/device-lab-shared-state.js";
 import { createNativeSessionClaims, ensureNativeSessionClaimsDirectory } from "./composition/session-claims.js";
@@ -6,7 +6,7 @@ import { armNativeSessionOwnership, assertNativeSessionOwnership, validateNative
 import { captureNativeSessionOwnership, nativeSessionOwnershipMatches, removeCapturedNativeSessionOwnership } from "./adapters/session-ownership.js";
 import { createSessionAcquisition } from "./application/session-acquisition.js";
 import { createSessionPublicationCoordinator } from "./application/session-publication-coordinator.js";
-import type { SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisitionResult } from "./ports/session-acquisition.js";
+import type { SessionAcquisitionPorts, SessionAcquisitionRequest, SessionAcquisitionResult, SessionAcquisitionRecovery } from "./ports/session-acquisition.js";
 import { getRuntimeInvocation, runWithNativeRuntimeInvocation } from "./container-runtime.js";
 import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
 import type { SessionOwnershipHandle, SessionOwnershipReceipt } from "./ports/session-ownership.js";
@@ -196,6 +196,16 @@ export async function acquireHostSessionOwnership(
         if (inspected.runtime !== runtimeInvocation.runtime) return { known: false, containerId: null };
         return inspected;
     });
+    let retainedRecovery: SessionAcquisitionRecovery | undefined;
+    const verifyRetainedTarget = (containerId?: string) => {
+        const inspected = recovery.inspectContainer();
+        if (!inspected.known || !inspected.containerId || !/^[a-f0-9]{64}$/i.test(inspected.containerId)
+            || inspected.running !== true || inspected.requiresLiveVerification
+            || containerId !== undefined && inspected.containerId !== containerId) {
+            throw new Error("Retained predecessor recovery requires the same fully verified running managed container; the existing records were preserved.");
+        }
+        return inspected.containerId;
+    };
     acquiringOwnership = true;
     acquisitionFailure = null;
     acquisitionCancellation = null;
@@ -229,7 +239,16 @@ export async function acquireHostSessionOwnership(
     try {
         const acquired = await runWithNativeRuntimeInvocation(runtimeInvocation, () => createSessionAcquisition({
             withLifecycleLock: withContainerLifecycleLockAsync,
-            recoverPredecessors: prefix => { sessionClaims.recoverPredecessorsInHeldLifecycleLock(prefix, undefined, recovery); },
+            recoverPredecessors(prefix) {
+                const report = sessionClaims.reconcileSessionClaimsInHeldLifecycleLock(prefix, undefined, recovery);
+                if (!report.error) return;
+                if (!report.retainedPendingOnly) throw report.error;
+                retainedRecovery = {
+                    containerId: verifyRetainedTarget(), runtime: runtimeInvocation.runtime,
+                    diagnostic: report.error.message.slice(0, 1536),
+                };
+                return retainedRecovery;
+            },
             reserve: sessionClaims.reserveSessionLockInHeldLifecycleLock,
             initializeCapture(binding, lockFile) {
                 sessionCleanup.clearSession();
@@ -258,7 +277,10 @@ export async function acquireHostSessionOwnership(
             },
             reconcileForeign(prefix, lockFile) {
                 if (acquisitionFailure) throw acquisitionFailure;
-                return sessionClaims.reconcileForeignClaimsInHeldLifecycleLock(prefix, lockFile, recovery);
+                const report = sessionClaims.reconcileSessionClaimsInHeldLifecycleLock(prefix, lockFile, recovery);
+                if (report.error && (!retainedRecovery || !report.retainedPendingOnly)) throw report.error;
+                if (retainedRecovery) verifyRetainedTarget(retainedRecovery.containerId);
+                return report.claims.some(name => name !== basename(lockFile));
             },
             async rollback() {
                 try {

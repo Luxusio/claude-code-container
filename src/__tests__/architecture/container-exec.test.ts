@@ -1102,3 +1102,80 @@ describe("replacement ownership observations", () => {
         expect(containerExecReplacementBlockReason("name", "prefix", "/owned/session.lock", "expected", {claims: () => claims, lockName: () => "session.lock", status: () => ({exists, containerId: id, running: true, imageId: "image"})})).toEqual(result);
     });
 });
+
+
+describe("retained predecessor existing-only execution", () => {
+    const id = "a".repeat(64);
+    function restricted() {
+        const f = fixture({running: true});
+        f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: id, existingOnly: true, recoveryWarning: "Old startup requests remain pending."});
+        f.ports.containerStatus = () => ({exists: true, running: true, containerId: id, imageId: "current-image"});
+        f.ports.startContainer = (...args) => { expect(args[8]).toBe(id); args[7](id, {startedByInvocation: false}); return "ccc-repo"; };
+        f.ports.containerRunning = () => true;
+        return f;
+    }
+    async function refused(f: ReturnType<typeof restricted>) {
+        const result = await settled(f.exec("/repo", ["codex"]));
+        expect(result.ok).toBe(false);
+        if (result.ok) throw new Error("restricted lifecycle effect was allowed");
+        const error = result.error as Error & {cause?: Error};
+        expect((error.cause ?? error).message).toMatch(/Existing-only session/);
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    }
+    it("runs ordinary guarded setup and commands without promoting cleanup or own-start authority", async () => {
+        const f = restricted();
+        vi.mocked(f.ports.launchCommand).mockImplementation(async () => {
+            expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+            expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith(id, {startedByInvocation: false});
+            return 23;
+        });
+        await expect(f.exec("/repo", ["codex"])).resolves.toBe(23);
+        expect(f.ports.prepareCodexConfig).toHaveBeenCalledWith(id, undefined);
+        expect(f.ports.ensureSocketAccess).toHaveBeenCalledWith(id);
+        expect(f.ports.prepareCommand).toHaveBeenCalledWith(expect.objectContaining({target: id}));
+        expect(f.ports.report).toHaveBeenCalledWith({kind: "recovery-retained", message: "Old startup requests remain pending."});
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true); expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+    it.each(["absent", "stopped", "changed", "invalid-acquired", "provisional"] as const)("refuses %s admission before any startup call", async fault => {
+        const f = restricted(), start = vi.fn(f.ports.startContainer); f.ports.startContainer = start;
+        if (fault === "invalid-acquired" || fault === "provisional") f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: fault === "invalid-acquired" ? "short" : id,
+            existingOnly: true, ...(fault === "provisional" ? {requiresLiveVerification: true as const} : {})});
+        else f.ports.containerStatus = () => ({exists: fault !== "absent", running: fault !== "stopped", containerId: fault === "changed" ? "b".repeat(64) : id, imageId: "image"});
+        await refused(f); expect(start).not.toHaveBeenCalled();
+    });
+    it("denies replacement before proof or peer inspection, preserving the running target", async () => {
+        const f = restricted(), replacement = vi.fn();
+        f.ports.startContainer = (...args) => { expect(args[6](replacement)).toBe(false); args[7](id, {startedByInvocation: false}); return "ccc-repo"; };
+        await expect(f.exec("/repo", ["codex"])).resolves.toBe(0);
+        expect(replacement).not.toHaveBeenCalled(); expect(f.ports.verifyStoppedSessionContainerForReplacement).not.toHaveBeenCalled();
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true);
+    });
+    it.each(["before-mutation", "own-start", "owned-ready", "different-ready"] as const)("rejects an unexpected %s callback before publishing authority or dispatching mutation", async callback => {
+        const f = restricted(); let dispatched = 0;
+        f.ports.startContainer = (...args) => {
+            if (callback === "before-mutation") args[11]?.();
+            else if (callback === "own-start") args[9](id);
+            else args[7](callback === "different-ready" ? "b".repeat(64) : id, {startedByInvocation: callback === "owned-ready"});
+            dispatched++; return "ccc-repo";
+        };
+        await refused(f); expect(dispatched).toBe(0); expect(f.ports.publishSessionReadyInHeldLifecycleLock).not.toHaveBeenCalled();
+    });
+    it("keeps the mutation barrier active on a later tool-readiness retry after a false ready handoff", async () => {
+        const f = restricted(); let running = true, starts = 0, dispatched = 0;
+        f.ports.containerRunning = () => running;
+        vi.mocked(f.ports.installTools).mockImplementation(() => { running = false; throw new Error("target disappeared during setup"); });
+        f.ports.startContainer = (...args) => {
+            expect(args[8]).toBe(id);
+            if (++starts === 1) { args[7](id, {startedByInvocation: false}); return "ccc-repo"; }
+            args[11]?.(); dispatched++; throw new Error("mutation should have been refused");
+        };
+        await refused(f); expect(starts).toBe(2); expect(dispatched).toBe(0);
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith(id, {startedByInvocation: false});
+    });
+});

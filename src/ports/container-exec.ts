@@ -56,6 +56,7 @@ export type ContainerExecReport =
     | { kind: "exec-debug"; projectPath: string; fullPath: string; projectId: string; command: string[] }
     | { kind: "mounts-debug"; mounts: ContainerExecMount[] }
     | { kind: "replacement-blocked"; evidence: ContainerExecReplacementReason }
+    | { kind: "recovery-retained"; message: string }
     | { kind: "broker-failed" | "restore-failed"; cause: unknown }
     | { kind: "ownership-unconfirmed" | "restarted" }
     | { kind: "cleanup-failed"; cause: unknown }

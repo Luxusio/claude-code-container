@@ -377,3 +377,60 @@ describe("acquisition cancellation checkpoints", () => {
         expect(f.trace).not.toContain("reconcile");
     });
 });
+
+describe("existing-running-only acquisition with retained predecessors", () => {
+    const id = "a".repeat(64), warning = "Predecessor startup requests remain pending.";
+    function restricted() {
+        const f = fixture();
+        f.ports.recoverPredecessors = () => { f.inGuard("recover-pending-only"); return {containerId: id, runtime: "podman", diagnostic: warning}; };
+        f.ports.inspectExisting = () => { f.inGuard("inspect-running"); return {known: true, containerId: id, runtime: "podman", running: true}; };
+        f.ports.acknowledge = async (containerId, runtime) => { f.inGuard("ack"); expect([containerId, runtime]).toEqual([id, "podman"]); };
+        f.ports.reconcileForeign = () => { f.inGuard("reconcile-retained"); return true; };
+        return f;
+    }
+    it.each([false, true])("keeps the restriction after second reconciliation (later recovery succeeds=%s)", recovered => {
+        const f = restricted();
+        f.ports.reconcileForeign = () => { f.inGuard("reconcile-retained"); return !recovered; };
+        return expect(createSessionAcquisition(f.ports).run(request)).resolves.toEqual({
+            lockFile: own, existingId: id, existingOnly: true, recoveryWarning: warning,
+        }).then(() => {
+            expect(f.trace.filter(event => event === "inspect-running")).toHaveLength(3);
+            expect(f.trace.indexOf("inspect-running")).toBeLessThan(f.trace.indexOf("ready"));
+            expect(f.trace.lastIndexOf("inspect-running")).toBeGreaterThan(f.trace.indexOf("reconcile-retained"));
+            expect([...f.claims]).toEqual([predecessor, own]); expect(f.trace).not.toContain("rollback");
+        });
+    });
+    it.each(["unknown", "absent", "stopped", "changed", "runtime", "provisional", "short-id"] as const)("refuses %s proof before guardian arm and acknowledgement", fault => {
+        const f = restricted();
+        f.ports.inspectExisting = () => ({known: fault !== "unknown", containerId: fault === "absent" ? null : fault === "changed" ? "b".repeat(64) : fault === "short-id" ? "short" : id,
+            runtime: fault === "runtime" ? "docker" : "podman", running: fault !== "stopped",
+            ...(fault === "provisional" ? {requiresLiveVerification: true as const} : {})});
+        return expect(createSessionAcquisition(f.ports).run(request)).rejects.toBeInstanceOf(Error).then(() => {
+            expect(f.trace).not.toContain("ready"); expect(f.trace).not.toContain("ack");
+            expect(f.trace).toContain("rollback"); expect([...f.claims]).toEqual([predecessor]);
+        });
+    });
+    it.each(["stopped", "changed", "runtime", "unknown"] as const)("retires only its cleanup-disabled claim when %s target changes after reconciliation", fault => {
+        const f = restricted(); let reads = 0;
+        f.ports.inspectExisting = () => ({known: ++reads < 3 || fault !== "unknown", containerId: reads === 3 && fault === "changed" ? "b".repeat(64) : id,
+            runtime: reads === 3 && fault === "runtime" ? "docker" : "podman", running: reads < 3 || fault !== "stopped"});
+        return expect(createSessionAcquisition(f.ports).run(request)).rejects.toBeInstanceOf(Error).then(() => {
+            expect(reads).toBe(3); expect(f.trace).toContain("ack"); expect(f.trace).toContain("rollback");
+            expect([...f.claims]).toEqual([predecessor]);
+        });
+    });
+    it("rechecks the running target after guardian arm before acknowledging an ID that changed during READY", async () => {
+        const f = restricted(); let armed = false;
+        f.ports.arm = async () => { f.inGuard("ready"); armed = true; };
+        f.ports.inspectExisting = () => ({known: true, containerId: armed ? "b".repeat(64) : id, runtime: "podman", running: true});
+        await expect(createSessionAcquisition(f.ports).run(request)).rejects.toBeInstanceOf(Error);
+        expect(f.trace).toContain("ready"); expect(f.trace).not.toContain("ack");
+        expect(f.trace).toContain("rollback"); expect([...f.claims]).toEqual([predecessor]);
+    });
+    it("a new unrelated second-reconciliation failure retires only its cleanup-disabled reservation", async () => {
+        const f = restricted(), failure = new Error("new unreadable predecessor");
+        f.ports.reconcileForeign = () => { f.inGuard("reconcile-failed"); throw failure; };
+        await expect(createSessionAcquisition(f.ports).run(request)).rejects.toBe(failure);
+        expect([...f.claims]).toEqual([predecessor]); expect(f.trace).toContain("rollback");
+    });
+});
