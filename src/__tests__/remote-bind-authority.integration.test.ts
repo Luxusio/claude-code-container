@@ -136,6 +136,106 @@ function installProcessProbe(f: ReturnType<typeof fixture>, mode: "admission" | 
     return (shell: string) => shell.replaceAll("/bin/ps", shellEscapeArg(executable));
 }
 
+type ScopeCancelProbe = {
+    before: "R" | "S";
+    after: "T" | "?" | "E" | "absent" | "unavailable";
+    change?: "command" | "birth" | "parent";
+    recheck?: "command" | "birth" | "parent" | "running";
+    childCaptureRefusal?: boolean;
+    unadmittedStopAfter?: number;
+};
+
+function runControlledScopeCancel(f: ReturnType<typeof fixture>, probe: ScopeCancelProbe) {
+    const generated = remoteLifecycleShell("ccc-controlled-cancel", ":");
+    const start = generated.indexOf("_ccc_scope_observe() {");
+    const end = generated.indexOf("_ccc_scope_run() {", start);
+    if (start < 0 || end < 0) throw new Error("missing generated scope helper boundary");
+    // Exercise the generated helpers with inert native ports; no fixture PID is signaled.
+    const helpers = generated.slice(start, end)
+        .replaceAll("/bin/ps", "_ccc_fixture_ps").replaceAll(/\bkill\b/g, "_ccc_fixture_kill");
+    const claim = join(f.home, "controlled-claim");
+    const events = join(f.home, "controlled-events");
+    writeFileSync(claim, "exact-owned-claim", { mode: 0o600 });
+    writeFileSync(events, "", { mode: 0o600 });
+    const shell = [
+        "set -eu",
+        "_ccc_fixture_before=" + shellEscapeArg(probe.before) + "; _ccc_fixture_after=" + shellEscapeArg(probe.after),
+        "_ccc_fixture_change=" + shellEscapeArg(probe.change ?? "") + "; _ccc_fixture_recheck=" + shellEscapeArg(probe.recheck ?? ""),
+        "_ccc_fixture_child=" + (probe.childCaptureRefusal ? 1 : 0),
+        "_ccc_fixture_admission_stop_after=" + (probe.unadmittedStopAfter ?? 0),
+        "_ccc_scope_pid=31001; _ccc_scope_parent=31000; _ccc_scope_token=private-token",
+        "_ccc_scope_root_record='31001|31000|Thu Jan 1 00:00:00 2026|owned-root-private-token'",
+        ' [ "$_ccc_fixture_admission_stop_after" = 0 ] || _ccc_scope_root_record=',
+        "_ccc_scope_callback=_ccc_fixture_callback",
+        "_ccc_fixture_event() {",
+        ' [ -f "$HOME/controlled-claim" ] || { printf "claim-released-early\\n" >&2; exit 97; }',
+        ' printf "%s\\n" "$1" >> "$HOME/controlled-events"',
+        "}",
+        "_ccc_fixture_kill() {",
+        ' _ccc_fixture_event "kill:$1:$2"',
+        ' case "$1:$2" in',
+        '  (-TERM:31001) printf term > "$HOME/controlled-term" ;;',
+        '  (-CONT:31001) printf resumed > "$HOME/controlled-resumed" ;;',
+        '  (-0:31001) if [ "$_ccc_fixture_after" = unavailable ]; then return 0; fi; printf "No such process\\n" >&2; return 1 ;;',
+        '  (-0:31002) printf "No such process\\n" >&2; return 1 ;;',
+        " esac",
+        " return 0",
+        "}",
+        "wait() {",
+        ' if [ "$_ccc_fixture_admission_stop_after" != 0 ] && [ ! -f "$HOME/controlled-resumed" ]; then',
+        '  _ccc_fixture_event pending-admission-stop-without-cont; exit 98',
+        " fi",
+        ' _ccc_fixture_event "wait:$1"; printf waited > "$HOME/controlled-waited"',
+        "}",
+        "_ccc_fixture_ps() {",
+        ' if [ "$1" = -A ]; then',
+        '  _ccc_fixture_event snapshot',
+        '  [ "$_ccc_fixture_child" = 0 ] || printf "31002 31001\\n"',
+        "  return 0",
+        " fi",
+        ' [ "$1:$2" = "-ww:-p" ] || return 96',
+        " _ccc_fixture_parent=31000; _ccc_fixture_birth='Thu Jan 1 00:00:00 2026'; _ccc_fixture_command=owned-root-private-token",
+        ' if [ "$3" = 31002 ]; then',
+        '  _ccc_fixture_event child-observed; printf child > "$HOME/controlled-child-observed"',
+        '  printf "31002 31001 T Thu Jan 1 00:00:00 2026 unproved-native-child\\n"; return 0',
+        " fi",
+        ' [ "$3" = 31001 ] || return 96',
+        ' if [ -e "$HOME/controlled-waited" ]; then',
+        '  if [ -e "$HOME/controlled-joined" ]; then _ccc_fixture_event root-join-absent; return 1; fi',
+        '  _ccc_fixture_event root-join-alive; printf joined > "$HOME/controlled-joined"; _ccc_fixture_state=S',
+        ' elif [ -e "$HOME/controlled-term" ]; then',
+        '  _ccc_fixture_count=0; [ ! -f "$HOME/controlled-count" ] || read -r _ccc_fixture_count < "$HOME/controlled-count"',
+        '  _ccc_fixture_count=$((_ccc_fixture_count + 1)); printf "%s\\n" "$_ccc_fixture_count" > "$HOME/controlled-count"',
+        '  _ccc_fixture_state=$_ccc_fixture_after; _ccc_fixture_change_now=$_ccc_fixture_change',
+        '  if [ "$_ccc_fixture_count" -le "$_ccc_fixture_admission_stop_after" ]; then _ccc_fixture_state=$_ccc_fixture_before; fi',
+        '  if [ "$_ccc_fixture_count" -ge 2 ] && [ -n "$_ccc_fixture_recheck" ]; then _ccc_fixture_change_now=$_ccc_fixture_recheck; fi',
+        '  case "$_ccc_fixture_change_now" in',
+        '   (command) _ccc_fixture_command=changed-command ;; (birth) _ccc_fixture_birth="Thu Jan 1 00:00:00 1970" ;;',
+        '   (parent) _ccc_fixture_parent=31099 ;; (running) _ccc_fixture_state=R ;;',
+        "  esac",
+        '  if [ -e "$HOME/controlled-child-observed" ]; then _ccc_fixture_birth="Thu Jan 1 00:00:00 1970"; fi',
+        '  _ccc_fixture_event "root-after:$_ccc_fixture_count:$_ccc_fixture_state"',
+        '  case "$_ccc_fixture_state" in (absent|unavailable) return 1 ;; ("?"|E) _ccc_fixture_command="(owned)" ;; esac',
+        " else",
+        '  _ccc_fixture_state=$_ccc_fixture_before; _ccc_fixture_event "root-before:$_ccc_fixture_state"',
+        " fi",
+        ' printf "31001 %s %s %s %s\\n" "$_ccc_fixture_parent" "$_ccc_fixture_state" "$_ccc_fixture_birth" "$_ccc_fixture_command"',
+        "}",
+        "_ccc_refuse() { _ccc_cleanup_refused=1; _ccc_fixture_event refusal; }",
+        "_ccc_refusal_empty() { _ccc_fixture_event refusal-channel; }",
+        "_ccc_fixture_callback() {",
+        ' _ccc_fixture_event "callback:$1:refused=${_ccc_cleanup_refused:-0}"',
+        ' printf "%s\\n" "$_ccc_scope_records"',
+        ' [ "${_ccc_cleanup_refused:-0}" != 1 ] || exit 79',
+        ' rm "$HOME/controlled-claim"; exit "$1"',
+        "}",
+        helpers,
+        "_ccc_scope_cancel 143",
+    ].join("\n");
+    const result = f.run(shell);
+    return { result, claim, events: readFileSync(events, "utf8").trim().split("\n") };
+}
+
 function withScopeSignalDiagnostics(shell: string): string {
     const captureHeader = "_ccc_scope_capture() {";
     const resumeHeader = "_ccc_scope_resume() {";
@@ -209,6 +309,111 @@ function withScopeSignalDiagnostics(shell: string): string {
 }
 
 describe.runIf(process.platform !== "win32")("receiving-host global bind authority", () => {
+    it.each([["R", 1], ["S", 2]] as const)("resumes an unadmitted %s root that reaches its admission STOP after %s post-TERM probes", (before, unadmittedStopAfter) => {
+        const f = fixture();
+        const { result, claim, events } = runControlledScopeCancel(f, { before, after: "T", unadmittedStopAfter });
+        expect(result.status, events.join("\n") + result.stderr).toBe(143);
+        expect(events).toContain("root-after:1:" + before);
+        const firstStopped = "root-after:" + (unadmittedStopAfter + 1) + ":T";
+        const freshStopped = "root-after:" + (unadmittedStopAfter + 2) + ":T";
+        expect(events).toEqual(expect.arrayContaining([firstStopped, freshStopped, "kill:-CONT:31001", "wait:31001", "root-join-absent"]));
+        expect(events.indexOf(firstStopped)).toBeLessThan(events.indexOf(freshStopped));
+        expect(events.indexOf(freshStopped)).toBeLessThan(events.indexOf("kill:-CONT:31001"));
+        expect(events.indexOf("kill:-CONT:31001")).toBeLessThan(events.indexOf("wait:31001"));
+        expect(existsSync(claim)).toBe(false);
+    });
+
+    it.each(["R", "S"] as const)("requires fresh stopped proof before CONT when a %s root stops after TERM", before => {
+        const f = fixture();
+        const { result, claim, events } = runControlledScopeCancel(f, { before, after: "T" });
+        expect(result.status, result.stderr).toBe(143);
+        expect(events.filter(event => event.startsWith("root-before:") || event.startsWith("root-after:") || event.startsWith("kill:-TERM:") || event.startsWith("kill:-CONT:"))).toEqual([
+            "root-before:" + before, "kill:-TERM:31001", "root-after:1:T", "root-after:2:T", "kill:-CONT:31001",
+        ]);
+        expect(events).toEqual(expect.arrayContaining(["wait:31001", "root-join-alive", "root-join-absent"]));
+        expect(events.indexOf("wait:31001")).toBeLessThan(events.indexOf("root-join-alive"));
+        expect(events.indexOf("root-join-alive")).toBeLessThan(events.indexOf("root-join-absent"));
+        expect(events.at(-1)).toBe("callback:143:refused=0");
+        expect(existsSync(claim)).toBe(false);
+    });
+
+    it.each(["?", "E"] as const)("keeps claims through positive joins without CONT for a fresh %s root with a changed display command", after => {
+        const f = fixture();
+        const { result, claim, events } = runControlledScopeCancel(f, { before: "S", after });
+        expect(result.status, result.stderr).toBe(143);
+        expect(events).toContain("root-after:1:" + after);
+        expect(events).not.toContain("kill:-CONT:31001");
+        expect(events).toEqual(expect.arrayContaining(["snapshot", "wait:31001", "refusal-channel", "root-join-alive", "root-join-absent"]));
+        expect(events.indexOf("snapshot")).toBeLessThan(events.indexOf("wait:31001"));
+        expect(events.indexOf("wait:31001")).toBeLessThan(events.indexOf("refusal-channel"));
+        expect(events.indexOf("refusal-channel")).toBeLessThan(events.indexOf("root-join-alive"));
+        expect(events.indexOf("root-join-alive")).toBeLessThan(events.indexOf("root-join-absent"));
+        expect(events.at(-1)).toBe("callback:143:refused=0");
+        expect(existsSync(claim)).toBe(false);
+    });
+
+    it("joins with claims held when the freshly proved stopped root is running at its final recheck", () => {
+        const f = fixture();
+        const { result, claim, events } = runControlledScopeCancel(f, { before: "S", after: "T", recheck: "running" });
+        expect(result.status, result.stderr).toBe(143);
+        expect(events).toContain("root-after:1:T");
+        expect(events).toContain("root-after:2:R");
+        expect(events).not.toContain("kill:-CONT:31001");
+        expect(events).toEqual(expect.arrayContaining(["wait:31001", "root-join-alive", "root-join-absent"]));
+        expect(events.at(-1)).toBe("callback:143:refused=0");
+        expect(existsSync(claim)).toBe(false);
+    });
+
+    it.each([
+        ["T", "command", false], ["T", "birth", false], ["T", "parent", false],
+        ["T", "command", true], ["T", "birth", true], ["T", "parent", true],
+        ["?", "birth", false], ["E", "parent", false],
+    ] as const)("retains claims without CONT for post-TERM state %s change %s at recheck=%s", (after, change, recheck) => {
+        const f = fixture();
+        const probe: ScopeCancelProbe = { before: "R", after };
+        if (recheck) probe.recheck = change;
+        else probe.change = change;
+        const { result, claim, events } = runControlledScopeCancel(f, probe);
+        expect(result.status, result.stderr).toBe(79);
+        expect(events).toContain("kill:-TERM:31001");
+        expect(events).not.toContain("kill:-CONT:31001");
+        expect(events.at(-1)).toBe("callback:143:refused=1");
+        expect(readFileSync(claim, "utf8")).toBe("exact-owned-claim");
+        expect(result.stderr).toContain("cancellation ownership unavailable; retaining claims");
+    });
+
+    it.each([
+        ["absent", 143], ["unavailable", 79],
+    ] as const)("distinguishes post-TERM %s observation without sending CONT", (after, status) => {
+        const f = fixture();
+        const { result, claim, events } = runControlledScopeCancel(f, { before: "S", after });
+        expect(result.status, result.stderr).toBe(status);
+        expect(events).not.toContain("kill:-CONT:31001");
+        expect(existsSync(claim)).toBe(status === 79);
+        if (after === "absent") {
+            expect(events).toContain("wait:31001");
+            expect(events).toContain("root-join-alive");
+            expect(events).toContain("root-join-absent");
+        } else {
+            expect(events.at(-1)).toBe("callback:143:refused=1");
+            expect(events).not.toContain("wait:31001");
+        }
+    });
+
+    it("skips every descendant signal after capture refuses and preserves its captured join records", () => {
+        const f = fixture();
+        const { result, claim, events } = runControlledScopeCancel(f, { before: "S", after: "T", childCaptureRefusal: true });
+        expect(result.status, result.stderr).toBe(79);
+        expect(events.filter(event => event.startsWith("kill:-") && event.endsWith(":31002"))).toEqual([]);
+        expect(events.filter(event => event === "child-observed")).toHaveLength(1);
+        expect(result.stdout.trim().split("\n")).toEqual([
+            "31001|31000|Thu Jan 1 00:00:00 2026|owned-root-private-token",
+            "31002|31001|Thu Jan 1 00:00:00 2026|unproved-native-child",
+        ]);
+        expect(events.at(-1)).toBe("callback:143:refused=1");
+        expect(readFileSync(claim, "utf8")).toBe("exact-owned-claim");
+    });
+
     it.each([
         [1, 74, "_ccc_on_signal", "lifecycle", "root-before-term"],
         [2, 2, "_ccc_bind_signal", "bind", "root-after-term-before-cont"],

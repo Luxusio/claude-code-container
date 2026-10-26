@@ -1266,9 +1266,12 @@ describe("device-lab admin cleanup and stop commands", () => {
         writeFileSync(claimFile, JSON.stringify({ version: 3, pid: process.pid, startToken: null, ownershipKind: "monitored" }), { mode: 0o600 });
         const containerId = "a".repeat(64), generation = "device-cleanup-fixture";
         const binDir = join(fixture.homeDir, "bin"), runtimeLog = join(fixture.homeDir, "session-runtime.jsonl");
+        const runtimePrefix = ["--config", "/fixture/config", "--host", "unix:///fixture/engine.sock", "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey="];
+        const preflightArgs = [...runtimePrefix, "ps", "-aq", "--no-trunc", "-f", `id=${containerId}`];
         mkdirSync(binDir, { recursive: true });
         const runtimeInvocation = { ...nativeRuntimeInvocationFixture(), executable: fixture.writeNodeTool(binDir, "docker", `
             appendFileSync(${JSON.stringify(runtimeLog)}, JSON.stringify(args) + "\\n");
+            if (JSON.stringify(args) === JSON.stringify(${JSON.stringify(preflightArgs)})) { process.stdout.write(${JSON.stringify(containerId + '\n')}); process.exit(0); }
             if (args.at(-2) !== "stop" || args.at(-1) !== ${JSON.stringify(containerId)} || args.filter(value => /^[a-f0-9]{64}$/.test(value)).length !== 1) process.exit(17);
         `) };
         const actualUnlink = nativeFs.unlinkSync, order: string[] = [];
@@ -1302,9 +1305,7 @@ describe("device-lab admin cleanup and stop commands", () => {
             expect(existsSync(`${claimFile}.guardian.json`)).toBe(false);
             expect(existsSync(`${claimFile}.runtime.json`)).toBe(false);
             const runtimeCalls = readFileSync(runtimeLog, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
-            expect(runtimeCalls).toHaveLength(1);
-            expect(runtimeCalls[0].slice(-2)).toEqual(["stop", containerId]);
-            expect(runtimeCalls[0].filter(value => /^[a-f0-9]{64}$/.test(value))).toEqual([containerId]);
+            expect(runtimeCalls).toEqual([preflightArgs, [...runtimePrefix, "stop", containerId]]);
             expect(session.getCurrentSession().lockFile).toBe(null);
         } finally { session.clearSession(); }
     });
@@ -1325,9 +1326,12 @@ describe("device-lab admin cleanup and stop commands", () => {
         writeFileSync(claimFile, JSON.stringify({ version: 3, pid: process.pid, startToken: null, ownershipKind: "monitored" }), { mode: 0o600 });
         const containerId = "b".repeat(64), generation = "device-cleanup-failure-fixture";
         const binDir = join(fixture.homeDir, "bin"), runtimeLog = join(fixture.homeDir, "session-runtime.jsonl");
+        const runtimePrefix = ["--config", "/fixture/config", "--host", "unix:///fixture/engine.sock", "--tls=false", "--tlscacert=", "--tlscert=", "--tlskey="];
+        const preflightArgs = [...runtimePrefix, "ps", "-aq", "--no-trunc", "-f", `id=${containerId}`];
         mkdirSync(binDir, { recursive: true });
         const runtimeInvocation = { ...nativeRuntimeInvocationFixture(), executable: fixture.writeNodeTool(binDir, "docker", `
             appendFileSync(${JSON.stringify(runtimeLog)}, JSON.stringify(args) + "\\n");
+            if (JSON.stringify(args) === JSON.stringify(${JSON.stringify(preflightArgs)})) { process.stdout.write(${JSON.stringify(containerId + '\n')}); process.exit(0); }
             if (args.at(-2) !== "stop" || args.at(-1) !== ${JSON.stringify(containerId)} || args.filter(value => /^[a-f0-9]{64}$/.test(value)).length !== 1) process.exit(17);
         `) };
         const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -1352,9 +1356,7 @@ describe("device-lab admin cleanup and stop commands", () => {
             expect(existsSync(`${claimFile}.guardian.json`)).toBe(false);
             expect(existsSync(`${claimFile}.runtime.json`)).toBe(false);
             const runtimeCalls = readFileSync(runtimeLog, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
-            expect(runtimeCalls).toHaveLength(1);
-            expect(runtimeCalls[0].slice(-2)).toEqual(["stop", containerId]);
-            expect(runtimeCalls[0].filter(value => /^[a-f0-9]{64}$/.test(value))).toEqual([containerId]);
+            expect(runtimeCalls).toEqual([preflightArgs, [...runtimePrefix, "stop", containerId]]);
             expect(fixture.readDevices(iosFile)).toEqual([]);
         } finally { session.clearSession(); }
     });

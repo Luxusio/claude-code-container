@@ -223,7 +223,12 @@ beforeEach(() => {
     f.state.mockImplementation((id, profile) => { expect(id).toBe(f.finalId); expect(profile).toBe(f.profile); f.events.push("state"); if (f.failState) throw new Error("state inaccessible"); });
     f.claude.mockImplementation((id: string) => { expect(id).toBe(f.finalId); f.events.push("claude"); });
     f.harness.mockImplementation((id, profile) => { expect(id).toBe(f.finalId); expect(profile).toBe(f.profile); f.events.push("harness"); });
-    f.spawn.mockImplementation((_runtime, args: string[]) => { if (args.includes("codex")) f.events.push("command"); return { status: 0, stdout: "", stderr: "" }; });
+    f.spawn.mockImplementation((runtime: string, args: string[]) => {
+        if (args.includes("codex")) f.events.push("command");
+        const stdout = runtime === "docker" && JSON.stringify(args) === JSON.stringify(["ps", "-aq", "--no-trunc", "-f", `id=${f.finalId}`])
+            ? `${f.finalId}\n` : "";
+        return { status: 0, stdout, stderr: "" };
+    });
 });
 afterEach(() => { rmSync(f.home, { recursive: true, force: true }); process.argv = originalArgv; vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 

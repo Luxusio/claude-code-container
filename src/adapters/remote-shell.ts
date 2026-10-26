@@ -102,13 +102,32 @@ _ccc_scope_capture() {
     _ccc_scope_cancel_command=$_ccc_observed_command
     # Notify the owned worker before nested observations delay cancellation forwarding.
     kill -TERM "$_ccc_scope_pid" 2>/dev/null || true
-    _ccc_scope_resume_status=0
-    _ccc_scope_match "$_ccc_scope_cancel_root" signal || _ccc_scope_resume_status=$?
-    case "$_ccc_scope_resume_status" in
-        (0) kill -CONT "$_ccc_expected_pid" 2>/dev/null || true ;;
-        (1) ;;
-        (*) return 74 ;;
-    esac
+    while :; do
+        _ccc_scope_resume_status=0
+        _ccc_scope_observe "$_ccc_scope_pid" || _ccc_scope_resume_status=$?
+        case "$_ccc_scope_resume_status" in
+            (0)
+                _ccc_scope_decode "$_ccc_scope_cancel_root"
+                [ "$_ccc_observed_birth" = "$_ccc_expected_birth" ] && [ "$_ccc_observed_parent" = "$_ccc_expected_parent" ] || return 74
+                # Resume only a freshly proved stopped worker, including a late admission stop.
+                case "$_ccc_observed_state" in
+                    (T*)
+                        _ccc_scope_resume_status=0
+                        _ccc_scope_match "$_ccc_scope_cancel_root" signal || _ccc_scope_resume_status=$?
+                        case "$_ccc_scope_resume_status" in
+                            (0) case "$_ccc_observed_state" in (T*) kill -CONT "$_ccc_expected_pid" 2>/dev/null || true; break ;; esac ;;
+                            (1) break ;;
+                            (*) return 74 ;;
+                        esac
+                        ;;
+                esac
+                ;;
+            (1) break ;;
+            (*) return 74 ;;
+        esac
+        [ -z "$_ccc_scope_root_record" ] || break
+        sleep 0.01
+    done
     _ccc_scope_snapshot=$(trap '' HUP INT TERM; LC_ALL=C TZ=UTC /bin/ps -A -ww -o pid= -o ppid= 2>/dev/null) || return 74
     while IFS=' ' read -r _ccc_candidate_pid _ccc_candidate_parent _ccc_candidate_extra; do
         [ -n "$_ccc_candidate_pid$_ccc_candidate_parent$_ccc_candidate_extra" ] || continue
@@ -188,6 +207,7 @@ _ccc_scope_cancel() {
     _ccc_scope_capture || _ccc_scope_capture_status=$?
     if [ "$_ccc_scope_capture_status" != 0 ] && [ "$_ccc_scope_capture_status" != 1 ]; then _ccc_refuse; fi
     while IFS= read -r _ccc_scope_record; do
+        [ "\${_ccc_cleanup_refused:-0}" != 1 ] || break
         [ -n "$_ccc_scope_record" ] || continue
         _ccc_scope_decode "$_ccc_scope_record"
         [ "$_ccc_expected_pid" != "$_ccc_scope_pid" ] || continue

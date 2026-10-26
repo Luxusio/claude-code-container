@@ -6,6 +6,7 @@ import {expect, it} from "vitest";
 
 const compositionUrl = new URL("../../../dist/composition/container-exec.js", import.meta.url).href;
 const sessionUrl = new URL("../../../dist/session.js", import.meta.url).href;
+const sessionLockLivenessUrl = new URL("../../../dist/session-lock-liveness.js", import.meta.url).href;
 const dockerUrl = new URL("../../../dist/docker.js", import.meta.url).href;
 const applicationUrl = new URL("../../../dist/application/container-exec.js", import.meta.url).href;
 const cleanupApplicationUrl = new URL("../../../dist/application/session-cleanup.js", import.meta.url).href;
@@ -280,11 +281,12 @@ import cp from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,renameSync,writeFileSync} from 'node:fs';
 import {basename,join} from 'node:path';
+import {inspect} from 'node:util';
 const root=${JSON.stringify(root)}, scenario=${JSON.stringify(scenario)}, project=join(root,'project');
 mkdirSync(project);
 writeFileSync(join(project,'untracked.txt'),'uncommitted work\\n');
 const oldId='a'.repeat(64), nextId='b'.repeat(64), helperId='c'.repeat(64), image='sha256:'+'d'.repeat(64);
-const executable=join(root,'private-runtime'), originalSpawn=cp.spawnSync, effects=[];
+const executable=join(root,'private-runtime'), originalSpawnSync=cp.spawnSync, effects=[];
 let removed=false, stopped=false, projectId, markerRead=false;
 const retryScenario=scenario==='retry-target-missing', retainedScenario=scenario.startsWith('retained-');
 const mixedRetained=scenario.startsWith('retained-mixed-'), cohortRace=mixedRetained&&scenario.endsWith('-race');
@@ -295,7 +297,7 @@ let targetRunning=retainedScenario&&!retainedStopped, exactStarts=0, retainedAtt
 const retainedFiles=[], cleanupFlags=[];let projectFingerprint, commandLaunched=false, falseAckAtLaunch=false, warningShown=false, falseAckBeforeFailure=false;
 let externallyRemoved=false, retryStarts=0, secondDispatches=0, expectedAtRetry, ownTargetAtRetry=false;
 cp.spawnSync=(command,argv,options)=>{
- if(command!==executable) return originalSpawn(command,argv,options);
+ if(command!==executable) return originalSpawnSync(command,argv,options);
  const offset=argv.indexOf('--tlskey=')+1, args=argv.slice(offset);
  effects.push(args[0]);
  if(args[0]==='ps') return {status:0,stdout:retryScenario&&externallyRemoved?'':(removed?nextId:oldId)+'\\n'};
@@ -361,17 +363,35 @@ const store=createNativeSessionClaimObservationStore();
 if(retainedScenario){
  const {locksDir}=await import(new URL('./home-layout.js',${JSON.stringify(sessionUrl)}));
  const {encodeSessionClaim}=await import(new URL('./domain/session-claims.js',${JSON.stringify(sessionUrl)}));
+ const {sessionLockLiveness}=await import(${JSON.stringify(sessionLockLivenessUrl)});
  const {captureBindMountSourceIdentity,bindMountSourceIdentityDigest}=await import(new URL('./adapters/container-mount-observations.js',${JSON.stringify(sessionUrl)}));
+ const reapedChildPid=()=>{
+   const result=originalSpawnSync(process.execPath,['-e',''],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','pipe'],windowsHide:true});
+   assert.equal(result.error,undefined,'fixture no-op child could not complete');
+   assert.equal(result.status,0,'fixture no-op child did not exit successfully');
+   assert.equal(result.signal,null,'fixture no-op child was signalled');
+   assert.ok(Number.isSafeInteger(result.pid)&&result.pid>0,'fixture no-op child did not supply a valid PID');
+   return result.pid;
+ };
+ // Real, synchronously reaped child PIDs stay within the native observer's PID range.
+ const deadOwner=reapedChildPid(),deadGuardian=reapedChildPid();
+ assert.notEqual(deadOwner,deadGuardian,'fixture no-op child PID was reused');
+ const staleReapedClaim=(pid,startToken)=>{
+   assert.throws(()=>process.kill(pid,0),{code:'ESRCH'},'fixture child PID was reused or remains live');
+   const content=encodeSessionClaim(pid,startToken,'monitored');
+   assert.equal(sessionLockLiveness(content),'stale','fixture child lacks native stale proof');
+   return content;
+ };
  projectFingerprint=bindMountSourceIdentityDigest(captureBindMountSourceIdentity(project));
  mkdirSync(locksDir(),{recursive:true,mode:0o700});
  session.withContainerLifecycleLock(projectId,()=>{
    seedRetained=index=>{
-     const deadOwner=2000000000+index,deadGuardian=2000000010+index;
-     for(const pid of [deadOwner,deadGuardian]){try{process.kill(pid,0);throw new Error('fixture PID unexpectedly exists');}catch(error){if(error.code!=='ESRCH')throw error;}}
      const path=join(locksDir(),projectId+'--retained-'+index+'.lock'),generation='retained-generation-'+index;
-     writeFileSync(path,encodeSessionClaim(deadOwner,'retained-owner-'+index,'monitored'),{mode:0o600,flag:'wx'});
+     const owner=staleReapedClaim(deadOwner,'retained-owner-'+index),guardian={pid:deadGuardian,startToken:'retained-guardian-'+index};
+     staleReapedClaim(guardian.pid,guardian.startToken);
+     writeFileSync(path,owner,{mode:0o600,flag:'wx'});
      let old=store.begin({receipt:captureNativeSessionOwnership(path),binding:{lockFile:path,projectPath:project,prefix:projectId},
-       runtimeInvocation:runtime.getRuntimeInvocation(),guardian:{pid:deadGuardian,startToken:'retained-guardian-'+index},generation});
+       runtimeInvocation:runtime.getRuntimeInvocation(),guardian,generation});
      const positive=mixedRetained&&index===1,ownStart=positive&&scenario.includes('-own-start-');
      old=store.update(old,{...old.observation,
        registration:positive?'ready':old.observation.registration,
@@ -501,7 +521,7 @@ if(retainedScenario){
    const expected=cohortRace?/session-cleanup-responsibility-incomplete/:scenario==='retained-postack-changed'?/Retained predecessor recovery requires the same identified managed container/:
      scenario==='retained-timeout'?/controlled existing-target start timeout/:scenario==='retained-live-proof'?/controlled live contract proof failed/:
      scenario==='retained-ack-failure'?/controlled disabled acknowledgement observation failed/:scenario==='retained-retry-changed'?/controlled retained retry target changed/:/Existing-only session/;
-   assert.match((error.cause??error).message,expected);
+   assert.match((error.cause??error).message,expected,inspect(error,{depth:5}));
    assert.equal(commandLaunched,false);
  }
  if(scenario==='retained-postack-changed'||cohortRace)assert.equal(falseAckBeforeFailure,true);
