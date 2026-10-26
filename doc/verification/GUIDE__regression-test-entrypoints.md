@@ -97,3 +97,14 @@ executable bits and leave source bytes/modes intact. Resolve installed fixture
 dependencies through module resolution; a source snapshot need not contain a
 root `node_modules` directory. Never change sealed-source permissions or install
 dependencies to make a review pass.
+
+macOS VM transfer probes create upload/download files in a fresh private
+subdirectory of the canonical project `results/.tmp` output and remove that
+directory on success or failure. Keep these paths inside the owner project:
+the broker correctly refuses transfers outside its project mount. Canonicalizing
+the base preserves existing symlink-path refusals. The source tree stays sealed;
+only the declared output needs write access. Frozen verification supplies workspace package
+links only inside its declared disposable `node_modules` output and includes
+any historical emitted entry it exercises as an explicit artifact. Such an
+artifact tests its recorded bytes; it does not establish that the current
+candidate has been rebuilt.

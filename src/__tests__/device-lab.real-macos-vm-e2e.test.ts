@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toolInputError } from "../../device-lab-mcp/src/tool-arguments.mjs";
 import { realMcpToolRequestTimeoutMs } from "../../scripts/real-tests/device-lab-mcp-client.ts";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { repoRoot } from "../../scripts/real-tests/helpers.ts";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, dirname, join } from "path";
 import {
     macosVmE2ECapability,
     parseTartListImages,
@@ -233,7 +234,7 @@ describe.runIf(level >= 2)("level 2 real macOS VM Tart E2E", () => {
 
 
 describe("macOS E2E returned fixture identity", () => {
-    async function fixtureRun(failClone = false, options: { sshHost?: string | null; bootTimeoutEnv?: string; bootTimeoutMs?: number } = {}) {
+    async function fixtureRun(failClone = false, options: { sshHost?: string | null; bootTimeoutEnv?: string; bootTimeoutMs?: number; failUpload?: boolean } = {}) {
         const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
         const envKeys = ["CCC_REAL_MACOS_VM_SOURCE_IMAGE", "CCC_REAL_MACOS_VM_SSH_USER", "CCC_REAL_MACOS_VM_SSH_HOST", "CCC_REAL_TART_SSH_HOST", "CCC_REAL_MACOS_VM_SSH_KEY_PATH", "CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS"] as const;
         const previous = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
@@ -267,7 +268,14 @@ describe("macOS E2E returned fixture identity", () => {
             if (tool === "stop") { device.status = "stopped"; macosFixture.instances.set(device.providerInstance, "stopped"); return reply({ device }); }
             if (tool === "delete") { devices.delete(args.deviceId); macosFixture.instances.delete(device.providerInstance); return reply({ deleted: args.deviceId, providerDeleted: [device.providerInstance] }); }
             if (tool === "exec") return reply({ stdout: "ccc-macos-vm-e2e-ok" });
-            if (tool === "upload") { transfers.set(args.remotePath, readFileSync(args.localPath, "utf8")); return reply({ provider: "scp", uploaded: { localPath: args.localPath, remotePath: args.remotePath } }); }
+            if (tool === "upload") {
+                expect(dirname(dirname(args.localPath))).toBe(realpathSync(join(repoRoot, "results", ".tmp")));
+                expect(readdirSync(dirname(args.localPath))).toEqual(["upload.txt"]);
+                const contents = readFileSync(args.localPath, "utf8");
+                if (options.failUpload) throw new Error("fixture-upload-failed");
+                transfers.set(args.remotePath, contents);
+                return reply({ provider: "scp", uploaded: { localPath: args.localPath, remotePath: args.remotePath } });
+            }
             if (tool === "list_files") return reply({ entries: [...transfers.keys()].map(path => ({ name: path.split("/").at(-1), type: "file" })) });
             if (tool === "download") { writeFileSync(args.localPath, transfers.get(args.remotePath)!); return reply({ provider: "scp", downloaded: { localPath: args.localPath, remotePath: args.remotePath } }); }
             if (tool === "screenshot") return { content: [{ type: "image", mimeType: "image/png", data: "a".repeat(80) }] };
@@ -314,6 +322,35 @@ describe("macOS E2E returned fixture identity", () => {
         expect(creates[2].args.sourceDeviceId).toBe(ids[0]);
         expect(calls.filter(call => call.tool === "delete").map(call => call.args.deviceId).sort()).toEqual([...ids].sort());
         expect(calls.filter(call => ["exec", "upload", "download", "click", "type", "snapshot"].includes(call.tool)).every(call => call.args.deviceId === ids[0])).toBe(true);
+        const upload = calls.find(call => call.tool === "upload")!.args;
+        const download = calls.find(call => call.tool === "download")!.args;
+        const transferDirectory = dirname(upload.localPath);
+        expect(dirname(transferDirectory)).toBe(realpathSync(join(repoRoot, "results", ".tmp")));
+        expect(dirname(download.localPath)).toBe(transferDirectory);
+        expect(basename(upload.localPath)).toBe("upload.txt");
+        expect(basename(download.localPath)).toBe("download.txt");
+        expect(existsSync(upload.localPath)).toBe(false);
+        expect(existsSync(download.localPath)).toBe(false);
+        expect(existsSync(transferDirectory)).toBe(false);
+        const secondRun = await fixtureRun();
+        const nextTransferDirectory = dirname(secondRun.calls.find(call => call.tool === "upload")!.args.localPath);
+        expect(nextTransferDirectory).not.toBe(transferDirectory);
+        expect(existsSync(nextTransferDirectory)).toBe(false);
+    });
+    it("cleans local transfer directory and the exact returned device when upload fails", async () => {
+        const error = await fixtureRun(false, { failUpload: true }).catch(error => error);
+        expect(error.message).toContain("fixture-upload-failed");
+        const upload = error.calls.find((call: any) => call.tool === "upload").args;
+        expect(dirname(dirname(upload.localPath))).toBe(realpathSync(join(repoRoot, "results", ".tmp")));
+        expect(existsSync(upload.localPath)).toBe(false);
+        expect(existsSync(dirname(upload.localPath))).toBe(false);
+        expect(error.calls.some((call: any) => call.tool === "download")).toBe(false);
+        expect(error.calls.filter((call: any) => call.tool === "stop").map((call: any) => call.args.deviceId)).toEqual([error.ids[0]]);
+        expect(error.calls.filter((call: any) => call.tool === "delete").map((call: any) => call.args.deviceId)).toEqual([error.ids[0]]);
+        expect(error.calls.filter((call: any) => call.tool === "exec" && call.args.command.startsWith("rm -f ")).map((call: any) => call.args)).toEqual([
+            expect.objectContaining({ deviceId: error.ids[0], command: `rm -f '${upload.remotePath}'` }),
+        ]);
+        expect(error.devices.size).toBe(0);
     });
     it("cleans every successfully returned fixture ID when a later clone fails", async () => {
         const error = await fixtureRun(true).catch(error => error);

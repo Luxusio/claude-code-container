@@ -99,9 +99,22 @@ and the private copy assumed directory-copy modes matched source modes. Both
 were corrected; the final affected owners and regressions pass 267 distinct
 cases, with one actual Mac case skipped on Linux. The previous review's private
 copy assumption is fixed without changing sealed source permissions, and fixture
-dependencies resolve from installed modules. Independent frozen execution must
-still confirm that review environment correction. Device Lab and real-test
+dependencies resolve from installed modules. At that checkpoint independent
+frozen execution was still pending. Device Lab and real-test
 typechecks pass. Actual Mac acceptance and remaining iOS/broker causes are pending.
+
+The first frozen execution then runs all 129 broker cases, resolving the old
+111-case setup block. It records 256 passes, 11 environment failures and one
+native skip: nine macOS cases write transfers in the sealed checkout root, one
+broker case resolves a package outside the snapshot, and one lacks its existing
+emitted entry. The follow-up keeps transfer files in an owned private directory
+under canonical project `results/.tmp`, preserving the broker's refusal of
+outside-project transfers and cleanup on upload failure. Frozen runtime setup
+uses only declared disposable workspace-package links and explicitly selected
+historical emitted bytes. Those bytes are regression evidence, not proof of a
+rebuild. The revised local macOS owner passes 16 cases and skips one native
+case; combined distinct portable coverage is 268 passes. Native acceptance is
+still required for actual provider and broker behavior.
 
 ## Known ceiling
 

@@ -1,7 +1,7 @@
 import assert from "assert";
 import { spawnSync } from "child_process";
 import { randomBytes } from "crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { readMacosDevices, writeMacosDevices } from "#device-lab/providers/state/macos-state.mjs";
@@ -9,6 +9,7 @@ import { lifecycleDevice, parseContractToolPayload, parseToolPayload, withDevice
 import { providerMcpSessionOptions } from "./provider-mcp-matrix.ts";
 import { discoverTartSourceImage, inspectTartInstance } from "./providers/tart.ts";
 import { macosVmE2EOptions } from "./typed-options.ts";
+import { realProviderTempRoot } from "./helpers.ts";
 
 export { parseTartListImages, selectAutoTartSourceImage, selectAutoTartSourceImageFromListResults } from "./providers/tart.ts";
 
@@ -255,11 +256,12 @@ export async function runMacosVmE2E(options: any = {}) {
                 }));
                 assert.match(exec.stdout, /ccc-macos-vm-e2e-ok/);
 
-                const uploadLocalPath = join(process.cwd(), `.ccc-macos-vm-e2e-upload-${suffix}.txt`);
-                const downloadLocalPath = join(process.cwd(), `.ccc-macos-vm-e2e-download-${suffix}.txt`);
+                const transferDirectory = mkdtempSync(join(realpathSync(realProviderTempRoot()), "ccc-macos-vm-e2e-transfer-"));
+                const uploadLocalPath = join(transferDirectory, "upload.txt");
+                const downloadLocalPath = join(transferDirectory, "download.txt");
                 const remotePath = `/tmp/ccc-macos-vm-e2e-${suffix}.txt`;
-                writeFileSync(uploadLocalPath, `ccc-macos-vm-e2e-file-${suffix}`);
                 try {
+                    writeFileSync(uploadLocalPath, `ccc-macos-vm-e2e-file-${suffix}`);
                     const upload = parsePayload(await callTool("upload", { detail: true,
                         deviceId,
                         localPath: uploadLocalPath,
@@ -285,8 +287,7 @@ export async function runMacosVmE2E(options: any = {}) {
                     assert.strictEqual(readFileSync(downloadLocalPath, "utf-8"), `ccc-macos-vm-e2e-file-${suffix}`);
                 } finally {
                     try { await callTool("exec", { detail: true, deviceId, command: `rm -f '${remotePath.replace(/'/g, "'\\''")}'`, timeoutMs }); } catch { /* preserve primary failure */ }
-                    rmSync(uploadLocalPath, { force: true });
-                    rmSync(downloadLocalPath, { force: true });
+                    rmSync(transferDirectory, { recursive: true, force: true });
                 }
 
                 const screenshot = await callTool("screenshot", { detail: true, deviceId, timeoutMs });
