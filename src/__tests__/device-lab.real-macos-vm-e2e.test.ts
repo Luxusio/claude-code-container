@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toolInputError } from "../../device-lab-mcp/src/tool-arguments.mjs";
+import { realMcpToolRequestTimeoutMs } from "../../scripts/real-tests/device-lab-mcp-client.ts";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -232,9 +233,9 @@ describe.runIf(level >= 2)("level 2 real macOS VM Tart E2E", () => {
 
 
 describe("macOS E2E returned fixture identity", () => {
-    async function fixtureRun(failClone = false) {
+    async function fixtureRun(failClone = false, options: { sshHost?: string | null; bootTimeoutEnv?: string; bootTimeoutMs?: number } = {}) {
         const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-        const envKeys = ["CCC_REAL_MACOS_VM_SOURCE_IMAGE", "CCC_REAL_MACOS_VM_SSH_USER", "CCC_REAL_MACOS_VM_SSH_HOST", "CCC_REAL_MACOS_VM_SSH_KEY_PATH"] as const;
+        const envKeys = ["CCC_REAL_MACOS_VM_SOURCE_IMAGE", "CCC_REAL_MACOS_VM_SSH_USER", "CCC_REAL_MACOS_VM_SSH_HOST", "CCC_REAL_TART_SSH_HOST", "CCC_REAL_MACOS_VM_SSH_KEY_PATH", "CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS"] as const;
         const previous = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
         const calls: Array<{ tool: string; args: any }> = [];
         const devices = new Map<string, any>();
@@ -289,9 +290,13 @@ describe("macOS E2E returned fixture identity", () => {
             Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
             process.env.CCC_REAL_MACOS_VM_SOURCE_IMAGE = "registry/base";
             process.env.CCC_REAL_MACOS_VM_SSH_USER = "fixture-user";
-            process.env.CCC_REAL_MACOS_VM_SSH_HOST = "fixture-host";
+            if (options.sshHost === null) delete process.env.CCC_REAL_MACOS_VM_SSH_HOST;
+            else process.env.CCC_REAL_MACOS_VM_SSH_HOST = options.sshHost ?? "fixture-host";
+            delete process.env.CCC_REAL_TART_SSH_HOST;
             process.env.CCC_REAL_MACOS_VM_SSH_KEY_PATH = "/fixture/id_ed25519";
-            const result = await runMacosVmE2E({ level: 2, imageTools: true, snapshot: true });
+            if (options.bootTimeoutEnv === undefined) delete process.env.CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS;
+            else process.env.CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS = options.bootTimeoutEnv;
+            const result = await runMacosVmE2E({ level: 2, imageTools: true, snapshot: true, bootTimeoutMs: options.bootTimeoutMs });
             return { result, calls, devices, ids };
         } catch (error) { Object.assign(error as object, { calls, devices, ids }); throw error; }
         finally {
@@ -315,5 +320,25 @@ describe("macOS E2E returned fixture identity", () => {
         expect(error.message).toContain("fixture-clone-failed");
         expect(error.devices.size).toBe(0);
         expect(error.calls.filter((call: any) => call.tool === "delete").map((call: any) => call.args.deviceId).sort()).toEqual(error.ids.slice(0, 2).sort());
+    });
+    it.each([
+        { label: "default allowance", bootTimeoutEnv: undefined, bootTimeoutMs: undefined, expected: 300000 },
+        { label: "configured environment allowance", bootTimeoutEnv: "45000", bootTimeoutMs: undefined, expected: 45000 },
+        { label: "malformed environment fallback", bootTimeoutEnv: "not-a-timeout", bootTimeoutMs: undefined, expected: 300000 },
+        { label: "zero environment fallback", bootTimeoutEnv: "0", bootTimeoutMs: undefined, expected: 300000 },
+        { label: "negative environment fallback", bootTimeoutEnv: "-1000", bootTimeoutMs: undefined, expected: 300000 },
+        { label: "nonfinite environment fallback", bootTimeoutEnv: "Infinity", bootTimeoutMs: undefined, expected: 300000 },
+        { label: "explicit option precedence", bootTimeoutEnv: "90000", bootTimeoutMs: 42000, expected: 42000 },
+    ])("waits for boot with the $label when SSH host is absent", async ({ bootTimeoutEnv, bootTimeoutMs, expected }) => {
+        const { result, calls, devices, ids } = await fixtureRun(false, { sshHost: null, bootTimeoutEnv, bootTimeoutMs });
+        const creates = calls.filter(call => call.tool === "create_macos_vm");
+        expect(creates[0].args.ssh).not.toHaveProperty("host");
+        expect(calls.filter(call => call.tool === "start").map(call => call.args)).toEqual([
+            expect.objectContaining({ deviceId: ids[0], headless: true, waitForBoot: true, bootTimeoutMs: expected }),
+        ]);
+        const startArgs = calls.find(call => call.tool === "start")!.args;
+        expect(realMcpToolRequestTimeoutMs("start", startArgs)).toBe(Math.max(120000, expected + 30000));
+        expect(result.status).toBe("PASS");
+        expect(devices.size).toBe(0);
     });
 });

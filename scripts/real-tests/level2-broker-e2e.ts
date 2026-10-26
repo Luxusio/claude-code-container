@@ -159,7 +159,10 @@ function assertFailureDiagnostic(tool, diagnostic, expectedRoutedBy = "") {
 
 function assertMissingTargetDiagnostic(tool, result, args) {
     assert.strictEqual(result?.isError, true, `${tool} unexpectedly succeeded for missing device ${args.deviceId}`);
-    const diagnostic = parseToolResult(result, { expectedError: true });
+    const diagnostic = parseToolResult(result, {
+        expectedError: true,
+        expectedErrorCodes: ["device-not-found", "device-backend-not-found"],
+    });
     assertFailureDiagnostic(tool, diagnostic);
     assert.ok(["device-not-found", "device-backend-not-found"].includes(diagnostic.error), `${tool} did not reach ownership refusal: ${JSON.stringify(diagnostic)}`);
     assert.strictEqual(diagnostic.deviceId, args.deviceId, `${tool} refused a different device`);

@@ -15,6 +15,11 @@ The following diagnostic choices derive from those missing facts. They do not
 establish an underlying native timeout, changed process, shell or boot failure.
 Preserve failures until actual host evidence establishes their cause.
 
+The next native run reports iOS exit 111 without a timeout, and both Tart
+failures now identify IP-readiness expiry. The packaged public missing-device
+assertion still loses an unexpected broker refusal. Exit 111 alone does not
+establish a missing shell or any specific simulator error.
+
 ## Observable behavior
 
 iOS observation/access command failures retain their existing error text and
@@ -23,6 +28,15 @@ the standard MCP `structuredContent` object. Retain status, signal, timeout and
 closed error/diagnostic codes when present. Do not add raw output, command
 arguments, paths or credentials to that object. Do not change simulator commands,
 ownership admission, retries or time limits as part of this correction.
+For simctl failures, additionally retain at most four observed error domain/code
+pairs from the first 16 KiB of stderr. Domains are limited to
+`NSPOSIXErrorDomain`, `NSCocoaErrorDomain`, and
+`com.apple.CoreSimulator.SimError`; codes must be signed 32-bit integers.
+A fixed `spawn` stage may be recorded only when stderr explicitly describes a
+spawn failure. Unknown domains, free text and exit-code interpretations are
+omitted. Keep this selected `execution.simctl` object through presentation and
+the saved-evidence projection; preserve ordinary nonzero exits without adding
+an inferred simulator cause.
 
 The real-test parser prefers valid structured failure objects and otherwise
 retains its existing JSON-content handling. Saved evidence and short messages
@@ -31,6 +45,10 @@ at `result.execution.command.macosBoot`, alongside existing boot shapes. Keep
 start-process failures distinguishable from IP-readiness failures using observed
 facts; missing evidence stays missing. Internal unexpected broker errors use
 the same diagnostic writer before assertion messages lose their payload.
+Public missing-target probes mark an error expected only after matching
+`device-not-found` or `device-backend-not-found`. Other errors keep their
+selected evidence and remain unexpected in tool coverage. Existing exact
+single-code expectations retain their behavior.
 
 MCP native broker observations use completed command output for ownership
 verification. Preserve fixed executables, full command width, exact entry/PID/

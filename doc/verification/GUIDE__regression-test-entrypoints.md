@@ -80,3 +80,20 @@ The fixture creates a uniquely named, network-disabled container. After successf
 ## Evidence limits
 
 Test existence, ordinary collection, portable execution and native acceptance are different claims. The portable Node fixtures do not prove real NTFS operations. An unrun or skipped UID case does not prove actual Docker ownership migration. macOS Slack clipboard and actual macOS sudo recovery need their native platform evidence; the exact missing-`pngjs` → restore-dependencies → successful-build sequence remains separately unverified. These entry points do not certify every historical failure or the whole architecture migration.
+
+## Native residual verification follow-up
+
+The shared macOS VM E2E runner uses the provider's existing 300,000 ms boot
+allowance when no valid environment or explicit option is supplied. Explicit
+options retain precedence over `CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS`. This replaces
+the E2E runner's inconsistent 10,000 ms fallback; provider polling and admission
+rules are unchanged. The existing client/RPC derivation accommodates the
+selected boot allowance. A successful Tart process launch still requires actual
+IP readiness before the test can pass.
+
+An isolated test launcher may copy sealed source into its own disposable
+directory and modify that copy. Ensure only the owned copy is writable, retain
+executable bits and leave source bytes/modes intact. Resolve installed fixture
+dependencies through module resolution; a source snapshot need not contain a
+root `node_modules` directory. Never change sealed-source permissions or install
+dependencies to make a review pass.

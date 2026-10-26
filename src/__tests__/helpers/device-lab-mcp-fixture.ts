@@ -2,11 +2,26 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { deviceLabTestHomeEnvironment, isolateDeviceLabTestEnvironment } from "./device-lab-test-environment.js";
 import { createHash } from "crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "os";
-import { basename, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import {pathToFileURL} from "node:url";
 import { createBrokerApiClient } from "../../../scripts/real-tests/broker-api-client.js";
+import { copyWritableTestTree } from "./writable-test-copy.js";
+
+const fixtureRequire = createRequire(import.meta.url);
+function installedDependencyRoot(specifier: string, packageName: string): string {
+    let directory = dirname(fixtureRequire.resolve(specifier));
+    while (true) {
+        try {
+            if (JSON.parse(readFileSync(join(directory, "package.json"), "utf8")).name === packageName) return directory;
+        } catch { /* Continue through nested package boundaries. */ }
+        const parent = dirname(directory);
+        if (parent === directory) throw new Error(`Fixture dependency root not found: ${packageName}`);
+        directory = parent;
+    }
+}
 
 const clientBrokerModules = new WeakMap<Client, string>();
 const clientEnvironments = new WeakMap<Client, NodeJS.ProcessEnv>();
@@ -84,15 +99,15 @@ export async function createDeviceLabMcpTestContext(options: DeviceLabMcpTestCon
     if (options.isolatedLauncher) {
         const fixtureRoot = join(homeDir, "adapter");
         const dependencies = join(fixtureRoot, "node_modules");
-        cpSync(join(repoRoot, "device-lab-mcp"), fixtureRoot, {recursive:true,
+        copyWritableTestTree(join(repoRoot, "device-lab-mcp"), fixtureRoot, {recursive:true,
             filter: path => !path.split(/[\\/]/).includes("node_modules") && !path.split(/[\\/]/).includes("dist")});
         const core = join(dependencies, "@ccc/device-lab");
-        cpSync(join(repoRoot, "packages/device-lab"), core, {recursive:true,
+        copyWritableTestTree(join(repoRoot, "packages/device-lab"), core, {recursive:true,
             filter: path => !path.split(/[\\/]/).includes("node_modules")});
-        symlinkSync(join(repoRoot, "node_modules/pngjs"), join(dependencies, "pngjs"), "junction");
+        symlinkSync(installedDependencyRoot("pngjs", "pngjs"), join(dependencies, "pngjs"), "junction");
         symlinkSync(join(repoRoot, "packages/hyper-v"), join(dependencies, "@ccc/hyper-v"), "junction");
         mkdirSync(join(dependencies, "@modelcontextprotocol"), {recursive:true});
-        symlinkSync(join(repoRoot, "node_modules/@modelcontextprotocol/sdk"), join(dependencies, "@modelcontextprotocol/sdk"), "junction");
+        symlinkSync(installedDependencyRoot("@modelcontextprotocol/sdk/server/index.js", "@modelcontextprotocol/sdk"), join(dependencies, "@modelcontextprotocol/sdk"), "junction");
         const entry = join(core, "dist/broker-entry.js");
         writeFileSync(join(core, "dist/real-broker-entry.js"), readFileSync(entry));
         writeFileSync(entry, `import {createRequire} from 'node:module';import {existsSync,readFileSync} from 'node:fs';

@@ -23,8 +23,8 @@ function commandPath(command) {
 }
 
 function bootTimeoutMs() {
-    const value = Number(process.env.CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS || 10000);
-    return Number.isFinite(value) && value > 0 ? value : 10000;
+    const value = Number(process.env.CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS || 300000);
+    return Number.isFinite(value) && value > 0 ? value : 300000;
 }
 
 function optionTimeoutMs(value, fallback) {

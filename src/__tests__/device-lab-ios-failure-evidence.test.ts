@@ -17,8 +17,12 @@ type NativeReceipt = {
     signal?: string | null;
     timedOut?: boolean;
     stdout: string;
-    stderr: string;
+    stderr: string | null;
     error?: { code?: string; message?: string; path?: string; spawnargs?: string[] };
+};
+type SimctlEvidence = {
+    errors?: Array<{ domain: string; code: number }>;
+    stage?: "spawn";
 };
 
 const privateOutput = "private output /Users/private/secret token=fixture-secret";
@@ -32,12 +36,14 @@ describe("iOS observation failure evidence through native and MCP presentation",
     let restoreEnvironment: () => void;
     let receipt: NativeReceipt;
     let native: ReturnType<typeof vi.spyOn>;
+    let commandText: string;
 
     beforeEach(() => {
         home = mkdtempSync(join(tmpdir(), "ccc-ios-failure-evidence-"));
         restoreEnvironment = isolateDeviceLabTestEnvironment(home);
         const device = { id: "ios-evidence", udid: "EVIDENCE-UDID", simulatorName: `ccc-${ownerId()}-evidence` };
         receipt = nativeFailure();
+        commandText = privateCommand;
         vi.spyOn(iosState, "findIosDevice").mockReturnValue(device);
         vi.spyOn(deviceStore, "withOwnerDeviceOperation").mockImplementation((_backend, _id, operation) => operation());
         vi.spyOn(commands, "commandPath").mockReturnValue("/fixture/xcrun");
@@ -47,7 +53,7 @@ describe("iOS observation failure evidence through native and MCP presentation",
                     udid: device.udid, name: device.simulatorName, state: "Booted",
                 }] } }), stderr: "" };
             }
-            expect(args).toEqual(["simctl", "spawn", device.udid, "/bin/sh", "-lc", privateCommand]);
+            expect(args).toEqual(["simctl", "spawn", device.udid, "/bin/sh", "-lc", commandText]);
             return receipt;
         });
     });
@@ -57,6 +63,33 @@ describe("iOS observation failure evidence through native and MCP presentation",
         restoreEnvironment();
         rmSync(home, { recursive: true, force: true });
     });
+
+    async function assertSimctlFailure(stderr: string, simctl?: SimctlEvidence) {
+        receipt = nativeFailure({ status: 111, stderr });
+        const raw = await handleIosTool("device_exec", { deviceId: "ios-evidence", command: commandText });
+        expect(native).toHaveBeenCalledTimes(2);
+        const text = `Error: ${stderr}`;
+        expect(raw).toMatchObject({ isError: true, content: [{ type: "text", text }] });
+        const expected = {
+            ok: false,
+            error: "provider-command-failed",
+            execution: {
+                status: 111, signal: null, timedOut: false, errorCode: null,
+                diagnosticCode: "native-nonzero-exit",
+                ...(simctl ? { simctl } : {}),
+            },
+        };
+        expect(raw?.structuredContent).toEqual(expected);
+        const presented = presentBrokerTool({ ok: true, result: { mcpResult: raw } }, {}, jsonResult);
+        for (const detail of [true, false]) {
+            const result = actionResult("exec", "device_exec", presented, { detail });
+            expect(result.isError).toBe(true);
+            expect(result.structuredContent).toEqual(expected);
+            expect(detail ? result.content[0].text : JSON.parse(result.content[0].text).error).toBe(text);
+            expect(JSON.stringify(result.structuredContent)).not.toContain(privateOutput);
+            expect(JSON.stringify(result.structuredContent)).not.toContain(commandText);
+        }
+    }
 
     const cases = [
         { name: "nonzero exit", receipt: nativeFailure(), execution: { status: 7, signal: null, timedOut: false, errorCode: null, diagnosticCode: "native-nonzero-exit" } },
@@ -104,6 +137,112 @@ describe("iOS observation failure evidence through native and MCP presentation",
             execution: { status: null, signal: null, timedOut: false, errorCode: null, diagnosticCode: "native-unknown" },
         });
         expect(raw?.content).toEqual([{ type: "text", text: "Error: native command refused" }]);
+    });
+
+    it.each([
+        {
+            name: "simctl primary error",
+            stderr: "An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=111):",
+            simctl: { errors: [{ domain: "NSPOSIXErrorDomain", code: 111 }] },
+        },
+        {
+            name: "nested simulator and Cocoa errors",
+            stderr: "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=405):\nUnderlying error (domain=NSCocoaErrorDomain, code=-4):",
+            simctl: { errors: [{ domain: "com.apple.CoreSimulator.SimError", code: 405 }, { domain: "NSCocoaErrorDomain", code: -4 }] },
+        },
+        {
+            name: "Foundation NSError form",
+            stderr: 'Error Domain=NSCocoaErrorDomain Code=260 "fixture file unavailable"',
+            simctl: { errors: [{ domain: "NSCocoaErrorDomain", code: 260 }] },
+        },
+        {
+            name: "signed 32-bit endpoint codes",
+            stderr: "(domain=NSPOSIXErrorDomain, code=-2147483648)\nError Domain=NSCocoaErrorDomain Code=2147483647",
+            simctl: { errors: [{ domain: "NSPOSIXErrorDomain", code: -2147483648 }, { domain: "NSCocoaErrorDomain", code: 2147483647 }] },
+        },
+        {
+            name: "observed zero code",
+            stderr: "(domain=com.apple.CoreSimulator.SimError, code=0)",
+            simctl: { errors: [{ domain: "com.apple.CoreSimulator.SimError", code: 0 }] },
+        },
+    ])("retains only observed domain and code from $name through both presentation modes", async ({ stderr, simctl }) => {
+        await assertSimctlFailure(stderr, simctl);
+    });
+
+    it.each([
+        "Failed to spawn /Users/private/secret/shell: fixture-secret",
+        "posix_spawn failed: fixture-secret",
+        "posix_spawnp failure: fixture-secret",
+    ])("records an explicit spawn failure without exporting its text: %s", async stderr => {
+        await assertSimctlFailure(stderr, { stage: "spawn" });
+    });
+
+    it("preserves the entire shell command and original failure text while selecting simctl facts", async () => {
+        commandText = "printf '%s\\n' 'fixture-secret with spaces'; value=\"$HOME\"\nprintf '%s' \"$value\" | cat";
+        const stderr = `An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=111):\nFailed to spawn /Users/private/secret/shell: token=fixture-secret\n${privateOutput}`;
+        await assertSimctlFailure(stderr, { errors: [{ domain: "NSPOSIXErrorDomain", code: 111 }], stage: "spawn" });
+    });
+
+    it.each([
+        { name: "plain exit 111", stderr: "native command exited with status 111" },
+        { name: "unknown domain", stderr: "(domain=Private.SecretDomain, code=111)" },
+        { name: "allowlisted domain suffix", stderr: "(domain=NSPOSIXErrorDomain.private, code=111)" },
+        { name: "allowlisted domain prefix", stderr: "Error Domain=private.NSCocoaErrorDomain Code=111" },
+        { name: "missing code", stderr: "(domain=com.apple.CoreSimulator.SimError)" },
+        { name: "missing domain", stderr: "(code=111)" },
+        { name: "nonnumeric code", stderr: "(domain=NSPOSIXErrorDomain, code=fixture-secret)" },
+        { name: "decimal fraction", stderr: "(domain=NSPOSIXErrorDomain, code=1.5)" },
+        { name: "exponent notation", stderr: "Error Domain=NSCocoaErrorDomain Code=1e2" },
+        { name: "positive overflow", stderr: "(domain=NSPOSIXErrorDomain, code=2147483648)" },
+        { name: "negative overflow", stderr: "Error Domain=NSCocoaErrorDomain Code=-2147483649" },
+        { name: "numeric prefix before text", stderr: "(domain=NSPOSIXErrorDomain, code=111fixture-secret)" },
+        { name: "mention of spawn without failure", stderr: "The command will spawn a child; it exited with status 111" },
+    ])("omits simctl evidence for $name without interpreting exit 111", async ({ stderr }) => {
+        await assertSimctlFailure(stderr);
+    });
+
+    it("deduplicates domain/code pairs and bounds retained errors to four", async () => {
+        const errors = [
+            { domain: "NSPOSIXErrorDomain", code: 111 },
+            { domain: "NSPOSIXErrorDomain", code: 111 },
+            { domain: "NSCocoaErrorDomain", code: 260 },
+            { domain: "com.apple.CoreSimulator.SimError", code: 405 },
+            { domain: "NSPOSIXErrorDomain", code: 2 },
+            { domain: "NSCocoaErrorDomain", code: 4 },
+        ];
+        const stderr = `${errors.map(({ domain, code }) => `(domain=${domain}, code=${code})`).join("\n")}\nFailed to spawn /Users/private/secret/shell`;
+        await assertSimctlFailure(stderr, { errors: [errors[0], errors[2], errors[3], errors[4]], stage: "spawn" });
+    });
+
+    it("retains a complete error within the 16 KiB prefix", async () => {
+        const marker = "(domain=NSPOSIXErrorDomain, code=111)";
+        const stderr = `${" ".repeat(16 * 1024 - Buffer.byteLength(marker))}${marker}`;
+        await assertSimctlFailure(stderr, { errors: [{ domain: "NSPOSIXErrorDomain", code: 111 }] });
+    });
+
+    it("does not inspect error or spawn text beyond the first 16 KiB of UTF-8 stderr", async () => {
+        const prefix = "é".repeat(8192);
+        expect(Buffer.byteLength(prefix)).toBe(16 * 1024);
+        const stderr = `${prefix}\n(domain=NSPOSIXErrorDomain, code=111)\nFailed to spawn /Users/private/secret/shell`;
+        await assertSimctlFailure(stderr);
+    });
+
+    it.each([
+        { name: "numeric token", prefix: "(domain=NSPOSIXErrorDomain, code=111", suffix: "222)" },
+        { name: "spawn word", prefix: "Failed to spawn", suffix: "ed /Users/private/secret/shell" },
+    ])("does not turn a cut $name at the byte limit into a complete observation", async ({ prefix, suffix }) => {
+        const stderr = `${" ".repeat(16 * 1024 - Buffer.byteLength(prefix))}${prefix}${suffix}`;
+        await assertSimctlFailure(stderr);
+    });
+
+    it("preserves native stdout fallback when stderr is null without adding a simctl cause", async () => {
+        receipt = nativeFailure({ status: 111, stderr: null });
+        const raw = await handleIosTool("device_exec", { deviceId: "ios-evidence", command: commandText });
+        expect(raw).toMatchObject({ isError: true, content: [{ type: "text", text: `Error: ${privateOutput}` }] });
+        expect(raw?.structuredContent).toEqual({
+            ok: false, error: "provider-command-failed",
+            execution: { status: 111, signal: null, timedOut: false, errorCode: null, diagnosticCode: "native-nonzero-exit" },
+        });
     });
 
     it.each([

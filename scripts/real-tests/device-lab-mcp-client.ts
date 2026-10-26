@@ -460,7 +460,7 @@ export function parseToolPayload(result) {
         const tool = knownToolName(result?.__cccToolCallRecord?.name);
         let message = formatBrokerToolFailure(structured, "mcp-tool-failed", tool);
         if (structured?.error === "broker-runtime-process-unverified") {
-            message = "broker-runtime-process-unverified: Broker recovery could not verify the process; automatic restart was refused. Check `node dist/index.js devices broker status --verbose` before retrying.";
+            message = "broker-runtime-process-unverified: Broker identity unverified; automatic restart was refused.";
         }
         const relativePath = `results/device-lab-real/mcp-error-${randomUUID()}.json`;
         try {
@@ -496,6 +496,21 @@ function safeNonNegativeInteger(value: unknown): number | null | undefined {
     return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
 }
 
+function boundedSimctlFailure(value: any) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const errors: Array<{ domain: string; code: number }> = [];
+    if (Array.isArray(value.errors)) for (const error of value.errors.slice(0, 32)) {
+        if (["NSPOSIXErrorDomain", "NSCocoaErrorDomain", "com.apple.CoreSimulator.SimError"].includes(error?.domain)
+            && Number.isInteger(error.code) && error.code >= -2147483648 && error.code <= 2147483647
+            && !errors.some(prior => prior.domain === error.domain && prior.code === error.code)) {
+            errors.push({ domain: error.domain, code: error.code });
+            if (errors.length === 4) break;
+        }
+    }
+    const stage = value.stage === "spawn" ? "spawn" : undefined;
+    return errors.length || stage ? { ...(errors.length ? { errors } : {}), ...(stage ? { stage } : {}) } : undefined;
+}
+
 function boundedNativeExecution(value: any) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
     const status = safeNonNegativeInteger(value.status);
@@ -506,8 +521,9 @@ function boundedNativeExecution(value: any) {
     const diagnosticCode = ["native-timeout", "native-not-found", "native-permission-denied", "native-signal", "native-nonzero-exit", "native-unknown"].includes(value.diagnosticCode)
         ? value.diagnosticCode : undefined;
     const timedOut = typeof value.timedOut === "boolean" ? value.timedOut : undefined;
-    return status !== undefined || signal !== undefined || errorCode || diagnosticCode || timedOut !== undefined
-        ? { status, signal, timedOut, errorCode, diagnosticCode } : undefined;
+    const simctl = boundedSimctlFailure(value.simctl);
+    return status !== undefined || signal !== undefined || errorCode || diagnosticCode || timedOut !== undefined || simctl
+        ? { status, signal, timedOut, errorCode, diagnosticCode, ...(simctl ? { simctl } : {}) } : undefined;
 }
 
 function providerExecution(value: any) {
@@ -1041,8 +1057,15 @@ export function lifecycleDevice(payload: any, operation: string): DeviceRecord {
 
 export function parseToolResult(result, options: any = {}) {
     const payload = jsonContentPayload(resultContent(result));
-    if (options.expectedErrorCode && (payload?.ok !== false || payload?.error !== options.expectedErrorCode)) {
-        return parseToolPayload({ ...result, isError: true });
+    const unexpectedSingleton = options.expectedErrorCode
+        && (payload?.ok !== false || payload?.error !== options.expectedErrorCode);
+    const expectedErrorCodes = options.expectedErrorCodes;
+    const unexpectedSet = expectedErrorCodes !== undefined && (payload?.ok !== false
+        || !Array.isArray(expectedErrorCodes)
+        || !expectedErrorCodes.every(code => typeof code === "string" && code.length > 0)
+        || !expectedErrorCodes.includes(payload?.error));
+    if (unexpectedSingleton || unexpectedSet) {
+        return parseToolPayload({ ...result, isError: true, __cccToolCallRecord: result?.__cccToolCallRecord });
     }
     if (options.expectedError === true && result?.isError === true && result.__cccToolCallRecord) {
         result.__cccToolCallRecord.expectedError = true;

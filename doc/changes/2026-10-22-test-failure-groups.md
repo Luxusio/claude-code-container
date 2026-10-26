@@ -72,6 +72,37 @@ Device Lab and real-test typechecks pass. Native Mac acceptance and the original
 iOS/Tart failure causes remain pending; diagnostic coverage does not turn those
 four saved failures into passes.
 
+The next native run on `9b268e96` records 85 passes, four failures and 15 skips
+in the collector; Vitest adds the coverage-validation skip (16 skips, 105 total).
+The Appium record case passes. Packaged public `stop` instead sees an intermittent
+`broker-runtime-process-unverified` inventory refusal between successful
+missing-device probes. Its helper incorrectly marks every error expected and
+then truncates the payload. Exact expected-code sets now send other failures
+through the existing safe writer, and the short refusal keeps the complete
+artifact reference within the step's 240-character limit. No native timeout or
+retry change is justified by that incomplete refusal evidence.
+
+iOS now records exit 111, no signal and no timeout, after successful boot checks.
+This establishes a native nonzero exit, not shell absence. Preserve its full
+command string and original error text, adding only observed allowlisted simctl
+domain/code pairs and an explicit spawn-failure stage. Both Tart starts now prove
+launch success followed by `macos-tart-ip-timeout`, at about 10.5 seconds. Their
+shared E2E runner uses a 10,000 ms fallback, inconsistent with the provider's
+existing 300,000 ms default. The E2E fallback now matches that contract, retaining
+explicit option/environment precedence and existing transport derivation. The
+saved run does not identify its environment settings or prove eventual readiness.
+
+The four new artifacts and source hashes are preserved in
+`results/tests/level3-failures-2026-10-26T17-22-12/`. Initial portable verification
+found two correction defects: the client limited native pairs before filtering,
+and the private copy assumed directory-copy modes matched source modes. Both
+were corrected; the final affected owners and regressions pass 267 distinct
+cases, with one actual Mac case skipped on Linux. The previous review's private
+copy assumption is fixed without changing sealed source permissions, and fixture
+dependencies resolve from installed modules. Independent frozen execution must
+still confirm that review environment correction. Device Lab and real-test
+typechecks pass. Actual Mac acceptance and remaining iOS/broker causes are pending.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

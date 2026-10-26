@@ -786,6 +786,29 @@ function performSimulatorEffect(xcrun, effect) {
     return /** @type {import('../ports/ios-observation-access.mjs').IosAccessSimulatorResult<Effect>} */ ({ ...command, ok: command.status === 0 });
 }
 
+/** @param {unknown} stderr */
+function simctlFailureObservation(stderr) {
+    if (typeof stderr !== "string") return undefined;
+    const bytes = Buffer.from(stderr.slice(0, 16 * 1024 + 1), "utf8");
+    // A cut token must not become complete at the observation boundary.
+    const prefix = bytes.subarray(0, 16 * 1024).toString("utf8") + (bytes.length > 16 * 1024 ? "_" : "");
+    /** @type {{domain:string,code:number}[]} */
+    const errors = [];
+    const pattern = /\b[Dd]omain\s*=\s*(NSPOSIXErrorDomain|NSCocoaErrorDomain|com\.apple\.CoreSimulator\.SimError)(?:\s*,\s*|\s+)[Cc]ode\s*=\s*([+-]?\d+)(?=[\s,):}"\]]|$)/g;
+    for (const match of prefix.matchAll(pattern)) {
+        const code = Number(match[2]);
+        if (!Number.isInteger(code) || code < -2147483648 || code > 2147483647) continue;
+        const domain = match[1];
+        if (errors.some(error => error.domain === domain && error.code === code)) continue;
+        errors.push({ domain, code });
+        if (errors.length === 4) break;
+    }
+    const spawnFailure = /\b(?:failed\s+to\s+spawn|posix_spawnp?(?:\(\))?(?:\s*:\s*|\s+)(?:failed|failure))\b/i.test(prefix);
+    return errors.length || spawnFailure ? {
+        ...(errors.length ? { errors } : {}), ...(spawnFailure ? { stage: "spawn" } : {}),
+    } : undefined;
+}
+
 /** @param {string|null} [initialXcrun] */
 function createObservationAccess(initialXcrun = null) {
     let xcrun = initialXcrun;
@@ -839,9 +862,10 @@ function createObservationAccess(initialXcrun = null) {
                 : errorCode === "EACCES" || errorCode === "EPERM" ? "native-permission-denied"
                 : signal ? "native-signal"
                 : status !== null && status !== 0 ? "native-nonzero-exit" : "native-unknown";
+            const simctl = simctlFailureObservation(receipt.stderr);
             return { ...fail(command), structuredContent: {
                 ok: false, error: "provider-command-failed",
-                execution: { status, signal, timedOut, errorCode, diagnosticCode },
+                execution: { status, signal, timedOut, errorCode, diagnosticCode, ...(simctl ? { simctl } : {}) },
             } };
         },
         imageResult: data => ({ content: [{ type: "image", data, mimeType: "image/png" }] }),
