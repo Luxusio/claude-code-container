@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createSessionClaims } from "../../application/session-claims.js";
+import { createSessionCleanup } from "../../application/session-cleanup.js";
 import {
     encodeSessionClaim, sessionClaimName, sessionClaimPrefix,
     sessionLockClaimsForContainer, sessionLockClaimsForProjectFamily,
@@ -170,6 +171,33 @@ function fixture(entries: string[] = [], contents: Record<string, string> = {}) 
     const alive = (pid: number, token: string) => observations.set(pid, { status: "found", token });
     return { app, ports, trace, names, records, receipts, snapshots, writes, removals, cleanups, batches,
         observations, attach, install, inGuard, recover, dead, alive, isHeld: () => held };
+}
+
+/** Exercise the real peer-veto and settlement policy while keeping native effects explicit. */
+function policyCleanup(f: ReturnType<typeof fixture>, stopFailure?: Error) {
+    const effects: string[] = [];
+    f.ports.responsibility!.cleanup = snapshot => {
+        effects.push("cleanup");
+        const cleanup = createSessionCleanup({
+            projectId: () => "project", withLifecycleLock: f.ports.withLifecycleLock,
+            peerVetoes: (prefix, ownPath, id) => f.app.peerVetoesInHeldLifecycleLock(prefix, ownPath, id, snapshot.runtimeInvocation),
+            removeClaim: (_path, settlement) => {
+                f.app.retireOwnedClaimInHeldLifecycleLock(snapshot.receipt, snapshot.observation.binding, snapshot.runtimeInvocation, settlement);
+                return undefined;
+            },
+            cleanupDevices: () => { effects.push("devices"); return { stopped: 0, skipped: 0, failed: 0 }; },
+            reportDeviceCleanupFailure: () => { throw new Error("unexpected device cleanup failure"); },
+            stopContainer: readId => {
+                expect(readId()).toBe(fullId); effects.push("stop");
+                if (stopFailure) throw stopFailure;
+                return undefined;
+            },
+        });
+        cleanup.setSession(snapshot.receipt.path, "/project");
+        cleanup.setSessionContainerId(snapshot.observation.ownStarted?.containerId ?? snapshot.observation.lastAcknowledged?.containerId ?? null);
+        cleanup.cleanupSessionInHeldLifecycleLock();
+    };
+    return effects;
 }
 
 describe("session claim domain compatibility", () => {
@@ -704,7 +732,7 @@ describe("obligation transfer retains a responsible successor", () => {
     });
 });
 
-describe("retained pending-only recovery classification", () => {
+describe("retained pending cohort admission", () => {
     function pendingPair() {
         const f = fixture([old, other], {[old]: monitored(7), [other]: monitored(8)});
         const snapshots = [old, other].map((name, index) => f.attach(name, {
@@ -717,34 +745,153 @@ describe("retained pending-only recovery classification", () => {
             stopContainer: () => { throw new Error("pending evidence cannot authorize stop"); }};
         return {f, snapshots, scope};
     }
-    it("reports two qualified same-runtime pending predecessors without changing either obligation", () => {
+    function mixedPair(authority: "ack" | "own-start") {
+        const value = pendingPair();
+        value.snapshots[1] = value.f.attach(other, authority === "ack" ? {
+            recovery: {status: "recovery-needed", diagnostic: "session-cleanup-failed"},
+        } : {lastAcknowledged: null, ownStarted: {generation, containerId: fullId},
+            pending: {kind: "startup", generation, sequence: 2, containerId: fullId, cleanupEnabled: true}});
+        return value;
+    }
+    it("reports two qualified pending predecessors without changing either obligation", () => {
         const {f, snapshots, scope} = pendingPair();
         const before = JSON.stringify(snapshots);
         const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
         expect(result.claims).toEqual([old, other]); expect(result.error).toBeInstanceOf(Error);
-        expect(result.retainedPendingOnly).toBe(true);
+        expect(result.restrictedAdmission?.containerId).toBe(fullId);
         expect(JSON.stringify([f.snapshots.get(old), f.snapshots.get(other)])).toBe(before);
+        f.inGuard(() => result.restrictedAdmission!.revalidate());
         expect(f.cleanups).toEqual([]); expect(f.removals).toEqual([]); expect(f.writes).toEqual([]);
         expect(() => f.recover(scope)).toThrow(/session-cleanup-responsibility-incomplete/);
         expect(JSON.stringify([f.snapshots.get(old), f.snapshots.get(other)])).toBe(before);
     });
-    it.each(["runtime-mismatch", "missing-runtime", "unknown-guardian", "missing-evidence", "replaced-receipt", "mixed-cleanup-failure"] as const)("does not classify %s as the restricted pending-only class", fault => {
-        const {f, snapshots, scope} = pendingPair();
+    it.each(["ack", "own-start"] as const)("the real cleanup policy confirms a pending peer vetoes %s settlement without dispatching stop", authority => {
+        const {f, snapshots} = mixedPair(authority);
+        const effects = policyCleanup(f);
+        expect(() => f.inGuard(() => f.ports.responsibility!.cleanup(snapshots[1]))).toThrow(/blocked and no qualified successor/);
+        expect(effects).toEqual(["cleanup"]); expect(f.removals).toEqual([]);
+        expect(f.snapshots.get(old)).toBe(snapshots[0]); expect(f.snapshots.get(other)).toBe(snapshots[1]);
+    });
+    it.each(["ack", "own-start"] as const)("retains a pending+%s cohort before cleanup, survivor retirement or diagnostic publication", authority => {
+        for (const running of [true, false]) {
+            const {f, snapshots, scope} = mixedPair(authority);
+            scope.inspectContainer = () => ({known: true, containerId: fullId, running});
+            const effects = policyCleanup(f);
+            const before = JSON.stringify(snapshots), receipts = [f.receipts.get(old), f.receipts.get(other)];
+            const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+            expect(result.restrictedAdmission?.containerId).toBe(fullId); expect(result.error).toBeInstanceOf(Error);
+            f.inGuard(() => result.restrictedAdmission!.revalidate());
+            expect(effects).toEqual([]); expect(f.names).toEqual([old, other]);
+            expect([f.receipts.get(old), f.receipts.get(other)]).toEqual(receipts);
+            expect(JSON.stringify([f.snapshots.get(old), f.snapshots.get(other)])).toBe(before);
+            expect(f.removals).toEqual([]); expect(f.writes).toEqual([]);
+        }
+    });
+    it("retains duplicate positive responsibilities beside the pending anchor before choosing a survivor", () => {
+        const {f, scope} = mixedPair("ack"), duplicate = "project--duplicate.lock";
+        f.install(duplicate, monitored(9)); const extra = f.attach(duplicate);
+        f.dead(9); f.dead(extra.observation.guardian.pid);
+        const effects = policyCleanup(f), before = JSON.stringify([...f.snapshots]);
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+        expect(result.restrictedAdmission?.containerId).toBe(fullId);
+        expect(JSON.stringify([...f.snapshots])).toBe(before); expect(effects).toEqual([]); expect(f.removals).toEqual([]);
+    });
+    it.each(["runtime-mismatch", "executable-mismatch", "missing-runtime", "unknown-parent", "unknown-guardian", "missing-evidence", "replaced-receipt", "conflicting-target"] as const)("refuses a mixed cohort with %s before any cleanup", fault => {
+        const {f, snapshots, scope} = mixedPair("ack");
         const selectedScope: SessionClaimRecoveryScope = fault === "runtime-mismatch" ? {...scope, runtimeInvocation: invocation("unix:///another-engine.sock")}
             : fault === "missing-runtime" ? {inspectContainer: scope.inspectContainer, stopContainer: scope.stopContainer} : scope;
+        if (fault === "executable-mismatch") f.attach(other, {}, {...invocation(), executable: "/other/bin/docker"});
+        if (fault === "unknown-parent") f.observations.set(8, {status: "unknown"});
         if (fault === "unknown-guardian") f.observations.set(snapshots[1].observation.guardian.pid, {status: "unknown"});
         if (fault === "missing-evidence") f.snapshots.delete(other);
+        if (fault === "conflicting-target") f.attach(other, {lastAcknowledged: {generation, sequence: 1, containerId: differentId, cleanupEnabled: true}});
         if (fault === "replaced-receipt") {
             const observe = f.ports.observeOwners;
             f.ports.observeOwners = pids => { const result = observe(pids); f.install(other, f.records[other]); return result; };
         }
-        if (fault === "mixed-cleanup-failure") {
-            f.attach(other);
-            f.ports.responsibility!.cleanup = () => { throw new Error("qualified stop failed"); };
-        }
+        const effects = policyCleanup(f);
         const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, selectedScope));
-        expect(result.retainedPendingOnly).not.toBe(true);
-        if (fault !== "unknown-guardian") expect(result.error).toBeInstanceOf(Error);
-        expect(result.claims).toEqual([old, other]); expect(f.removals).toEqual([]);
+        expect(result.restrictedAdmission).toBeUndefined(); expect(result.error).toBeInstanceOf(Error);
+        expect(result.claims).toEqual([old, other]); expect(f.removals).toEqual([]); expect(effects).toEqual([]);
+    });
+    it.each(["same-byte-main", "same-byte-sidecar", "same-byte-own", "new-qualified-claim", "changed-binding", "unknown-guardian", "changed-runtime"] as const)("pins the original cohort across reservation and rejects %s rather than adopting fresh evidence", race => {
+        const {f, scope} = mixedPair("ack");
+        const effects = policyCleanup(f);
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+        expect(result.restrictedAdmission?.containerId).toBe(fullId);
+        f.install(current, monitored()); const own = f.attach(current, {lastAcknowledged: {generation, sequence: 1, containerId: fullId, cleanupEnabled: false}});
+        f.alive(42, "owner-start"); f.alive(own.observation.guardian.pid, "guardian-start");
+        f.inGuard(() => result.restrictedAdmission!.revalidate(`/claims/${current}`));
+        const original = f.snapshots.get(other)!;
+        if (race === "same-byte-main") { f.install(other, f.records[other]); f.attach(other); }
+        if (race === "same-byte-sidecar") f.snapshots.set(other, {...original, observationReceipt: {...original.observationReceipt, inode: "9001"}});
+        if (race === "same-byte-own") { f.install(current, f.records[current]); f.attach(current, {lastAcknowledged: own.observation.lastAcknowledged}); }
+        if (race === "new-qualified-claim") {
+            const added = "project--new-stale.lock"; f.install(added, monitored(9)); const snapshot = f.attach(added);
+            f.dead(9); f.dead(snapshot.observation.guardian.pid);
+        }
+        if (race === "changed-binding") f.snapshots.set(other, {...original, observation: {...original.observation, binding: {...original.observation.binding, projectPath: "/changed-project"}}});
+        if (race === "unknown-guardian") f.observations.set(original.observation.guardian.pid, {status: "unknown"});
+        if (race === "changed-runtime") f.snapshots.set(other, {...original, runtimeInvocation: invocation("unix:///changed.sock")});
+        expect(() => f.inGuard(() => result.restrictedAdmission!.revalidate(`/claims/${current}`))).toThrow(/session-cleanup-responsibility-incomplete/);
+        expect(effects).toEqual([]); expect(f.removals).toEqual([]); expect(f.writes).toEqual([]);
+    });
+    it.each(["replacement", "new-participant"] as const)("a %s during target inspection fails before ordinary cleanup can run", race => {
+        const {f, scope} = mixedPair("ack"), effects = policyCleanup(f);
+        scope.inspectContainer = () => {
+            if (race === "replacement") { f.install(other, f.records[other]); f.attach(other); }
+            else { const added = "project--new-stale.lock"; f.install(added, monitored(9)); const snapshot = f.attach(added); f.dead(9); f.dead(snapshot.observation.guardian.pid); }
+            return {known: true, containerId: fullId, running: true};
+        };
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+        expect(result.restrictedAdmission).toBeUndefined(); expect(result.error).toBeInstanceOf(Error);
+        expect(effects).toEqual([]); expect(f.removals).toEqual([]);
+    });
+    it("keeps a known live, qualified peer protective without settling it", () => {
+        const {f, scope} = mixedPair("ack"), live = "project--live.lock";
+        f.install(live, monitored(9)); const snapshot = f.attach(live);
+        f.alive(9, "owner-start"); f.alive(snapshot.observation.guardian.pid, "guardian-start");
+        const effects = policyCleanup(f), before = JSON.stringify([...f.snapshots]);
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, scope));
+        expect(result.restrictedAdmission?.containerId).toBe(fullId);
+        expect(JSON.stringify([...f.snapshots])).toBe(before); expect(effects).toEqual([]); expect(f.names).toContain(live);
+    });
+    it.each([
+        ["Container shutdown state could not be verified; session cleanup remains incomplete.", "native-state-unverified"],
+        ["Container shutdown state is ambiguous; session cleanup remains incomplete.", "native-state-ambiguous"],
+        ["Container shutdown failed (status=1, signal=none, error=unknown); session cleanup remains incomplete.", "native-stop-failed"],
+    ])("without a pending anchor, actual cleanup failure stays fatal with a bounded diagnostic: %s", (message, code) => {
+        const f = fixture([old], {[old]: monitored(7)}), snapshot = f.attach(old);
+        f.dead(7); f.dead(snapshot.observation.guardian.pid);
+        const cause = new Error(message), effects = policyCleanup(f, cause);
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project", undefined, {
+            runtimeInvocation: invocation(), inspectContainer: () => ({known: true, containerId: fullId, running: true}), stopContainer: () => undefined,
+        }));
+        expect(result.restrictedAdmission).toBeUndefined(); expect(result.error?.message).toContain(`qualified monitored cleanup failed [${code}]`);
+        expect(effects).toEqual(["cleanup", "devices", "stop"]); expect(f.names).toEqual([old]); expect(f.removals).toEqual([]);
+    });
+    it("without a pending anchor, ordinary positive authority still stops and retires through the real cleanup policy", () => {
+        const f = fixture([old], {[old]: monitored(7)}), snapshot = f.attach(old);
+        f.dead(7); f.dead(snapshot.observation.guardian.pid);
+        const effects = policyCleanup(f);
+        expect(f.recover()).toEqual([]);
+        expect(effects).toEqual(["cleanup", "devices", "stop"]); expect(f.removals).toEqual([`/claims/${old}`]);
+        expect(f.snapshots.has(old)).toBe(false);
+    });
+    it.each(["retirement", "publication", "unclassified-stop"] as const)("does not turn a no-anchor %s error into admission or expose arbitrary private detail", fault => {
+        const f = fixture([old], {[old]: monitored(7)}), snapshot = f.attach(old);
+        f.dead(7); f.dead(snapshot.observation.guardian.pid);
+        const failure = new Error("private failure detail must stay in its Error cause");
+        const effects = policyCleanup(f, fault === "retirement" ? undefined : failure);
+        if (fault === "retirement") f.ports.responsibility!.retireClaim = () => { throw failure; };
+        if (fault === "publication") f.ports.responsibility!.observationStore.update = () => { throw new Error("private publication failure"); };
+        const result = f.inGuard(() => f.app.reconcileSessionClaimsInHeldLifecycleLock("project"));
+        expect(result.restrictedAdmission).toBeUndefined(); expect(result.error).toBeInstanceOf(Error);
+        expect(result.error!.message).toMatch(/qualified monitored cleanup failed \[(?:cleanup-error|retirement-incomplete|recovery-publication-failed)\]/);
+        expect(result.error!.message).not.toContain("private");
+        const carriesCause = (error: unknown): boolean => error === failure || error instanceof Error
+            && (carriesCause(error.cause) || error instanceof AggregateError && error.errors.some(carriesCause));
+        expect(carriesCause(result.error)).toBe(true);
+        expect(effects).toEqual(["cleanup", "devices", "stop"]); expect(f.names).toEqual([old]); expect(f.removals).toEqual([]);
     });
 });
