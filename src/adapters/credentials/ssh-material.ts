@@ -10,7 +10,34 @@ export const SSH_CREDENTIAL_COPY_FAILURE_STAGES: Readonly<Partial<Record<number,
     16: "known-hosts",
     17: "completion",
     18: "publication",
+    19: "archive-privilege",
+    20: "archive-changed",
 });
+
+const SSH_ARCHIVE_FAILURE_CLASSIFICATION_SCRIPT = String.raw`
+import sys
+
+try:
+    with open(sys.argv[1], "rb") as stream:
+        evidence = stream.read(8193)
+except OSError:
+    sys.exit(13)
+if not evidence or len(evidence) > 8192 or not evidence.endswith(b"\n") or b"\0" in evidence:
+    sys.exit(13)
+kind = None
+for line in evidence.splitlines():
+    if line in (b"sudo: a password is required", b"sudo: no tty present and no askpass program specified",
+                b"sudo: sorry, you must have a tty to run sudo"):
+        observed = 19
+    elif line.startswith(b"tar: ") and line.endswith(b": file changed as we read it"):
+        observed = 20
+    else:
+        sys.exit(13)
+    if kind is not None and kind != observed:
+        sys.exit(13)
+    kind = observed
+sys.exit(kind if kind is not None else 13)
+`;
 
 export function gitSigningKeyRewriteShell(): string {
     return [
@@ -66,9 +93,18 @@ export function sshCredentialCopyShell(privilegedRead = false): string {
         "mkdir \"$copy_stage\" || fail_copy 11",
         ...(privilegedRead ? [
             "copy_archive=$(mktemp \"$copy_parent/.ccc-ssh-archive.XXXXXX\") || fail_copy 12",
-            "trap 'rm -f -- \"$copy_archive\"' EXIT",
+            "copy_errors=",
+            "trap 'rm -f -- \"$copy_archive\" \"$copy_errors\"' EXIT",
+            "copy_errors=$(mktemp \"$copy_parent/.ccc-ssh-archive.stderr.XXXXXX\") || fail_copy 12",
             // Elevate only source reads. The caller owns the archive and extracts as ccc.
-            "sudo -n tar -C \"$source_ssh_root\" -cf - . > \"$copy_archive\" || fail_copy 13",
+            "if ! LC_ALL=C sudo -n tar -C \"$source_ssh_root\" -cf - . > \"$copy_archive\" 2> \"$copy_errors\"; then",
+            "  copy_failure_status=13",
+            // Only fixed exit statuses leave this private, bounded diagnostic classifier.
+            "  /usr/bin/python3 -I - \"$copy_errors\" >/dev/null 2>&1 <<'CCC_SSH_ARCHIVE_FAILURE' || copy_failure_status=$?",
+            SSH_ARCHIVE_FAILURE_CLASSIFICATION_SCRIPT,
+            "CCC_SSH_ARCHIVE_FAILURE",
+            "  case \"$copy_failure_status\" in 19|20) fail_copy \"$copy_failure_status\";; *) fail_copy 13;; esac",
+            "fi",
             "tar --no-same-owner --no-same-permissions -xf \"$copy_archive\" -C \"$copy_stage\" || fail_copy 14",
         ] : ["cp -R \"$source_ssh_root\"/. \"$copy_stage\"/ || fail_copy 14"]),
         "if ! prepare_copy_directories \"$copy_stage\" || ! find -P \"$copy_stage\" -type f -exec chmod 600 {} + || ! find -P \"$copy_stage\" -type f -name '*.pub' -exec chmod 644 {} +; then",

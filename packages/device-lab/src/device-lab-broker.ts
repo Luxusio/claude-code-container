@@ -1772,6 +1772,7 @@ async function stopIncompatibleHostBroker(
             hostPlatform: statusRuntime.platform,
         };
     }
+    const verification: { failure?: HostBrokerProcessVerificationFailure } = {};
     const portRuntime = hostBrokerRuntimeFromPortProcess(
         ownerId,
         port,
@@ -1781,12 +1782,15 @@ async function stopIncompatibleHostBroker(
         persistedRuntime,
         statusRuntime,
         expectedCliPath,
+        false,
+        verification,
     );
     if (!portRuntime) {
         return {
             stopped: false,
             restartable: false,
             reason: "unverified-broker-port-process",
+            verificationFailure: verification.failure,
             persistedRuntime,
             statusRuntime,
             compatibility,
@@ -1988,6 +1992,12 @@ function hostBrokerRuntimeFromStatus(ownerId: string, port: number, compatibilit
     };
 }
 
+const HOST_BROKER_PROCESS_VERIFICATION_FAILURES = [
+    "listener-unavailable", "status-pid-mismatch", "command-or-entry-unverified", "process-start-unavailable",
+    "process-generation-mismatch", "runtime-metadata-unverified", "process-identity-unavailable",
+] as const;
+type HostBrokerProcessVerificationFailure = typeof HOST_BROKER_PROCESS_VERIFICATION_FAILURES[number];
+
 function hostBrokerRuntimeFromPortProcess(
     ownerId: string,
     port: number,
@@ -1998,11 +2008,16 @@ function hostBrokerRuntimeFromPortProcess(
     statusRuntime: Record<string, unknown> | null,
     expectedCliPath?: string | readonly string[],
     allowParentManagedRuntime = false,
+    verification?: { failure?: HostBrokerProcessVerificationFailure },
 ): Record<string, unknown> | null {
+    const deny = (failure: HostBrokerProcessVerificationFailure) => {
+        if (verification) verification.failure = failure;
+        return null;
+    };
     const record = compatibilityBrokerRecord(compatibility);
     const process = portProcessResolver(port, platform);
-    if (!process || !Number.isInteger(process.pid) || process.pid <= 0) return null;
-    if (statusRuntime && Number(statusRuntime.pid) !== process.pid) return null;
+    if (!process || !Number.isInteger(process.pid) || process.pid <= 0) return deny("listener-unavailable");
+    if (statusRuntime && Number(statusRuntime.pid) !== process.pid) return deny("status-pid-mismatch");
     const commandLine = process.commandLine?.trim() || "";
     const commandLineVerified = isBrokerServeCommandLine(commandLine, port, expectedCliPath);
     const observedStartToken = process.processStartToken
@@ -2056,9 +2071,17 @@ function hostBrokerRuntimeFromPortProcess(
         && persistedRuntime?.managedBy === "ccc-host"
         && persistedContinuity
         && statusIdentityVerified;
-    if (!commandLineTrusted && !metadataVerified) return null;
+    if (!commandLineTrusted && !metadataVerified) {
+        if (commandLine && !commandLineVerified) return deny("command-or-entry-unverified");
+        if (!observedStartToken) return deny("process-start-unavailable");
+        if ((statusMetadataMatches && statusStartToken && observedStartToken !== statusStartToken)
+            || (persistedMetadataMatches && persistedStartToken && observedStartToken !== persistedStartToken)) {
+            return deny("process-generation-mismatch");
+        }
+        return deny("runtime-metadata-unverified");
+    }
     const processIdentity = process.processIdentity || readDeviceRuntimeProcessIdentity(process.pid, { platform });
-    if (!processIdentity && !metadataVerified) return null;
+    if (!processIdentity && !metadataVerified) return deny("process-identity-unavailable");
     return {
         name: DEVICE_BROKER_NAME,
         managedBy: commandLineVerified ? "ccc-host-port" : "ccc-host-port-metadata",
@@ -2245,6 +2268,9 @@ function hostBrokerCompatibilityDiagnostics(attempts: unknown[]): string[] {
             diagnostics.push("existing broker is not restartable from this container because broker runtime metadata is missing");
         } else if (record.reason === "unverified-broker-port-process") {
             diagnostics.push("existing broker port owner could not be verified as the current CCC broker process");
+            if ((HOST_BROKER_PROCESS_VERIFICATION_FAILURES as readonly unknown[]).includes(record.verificationFailure)) {
+                diagnostics.push(`broker process verification: ${record.verificationFailure}`);
+            }
         } else if (record.reason === "runtime-not-current-ccc-host-port") {
             diagnostics.push("existing broker runtime belongs to a different port");
         } else if (record.reason === "runtime-pid-still-alive") {

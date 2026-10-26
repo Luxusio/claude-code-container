@@ -18,7 +18,7 @@ function contracts(ports: HostCredentialRefreshPorts, observation: CredentialCom
         Equal<ReturnType<typeof createNativeHostCredentialRefreshPorts>, HostCredentialRefreshPorts>,
         Equal<keyof SshCredentialCopyObservation, "status" | "failureStage">,
         Equal<typeof sshObservation.failureStage, SshCredentialCopyFailureStage | undefined>,
-        Equal<SshCredentialCopyFailureStage, "staging" | "archive-create" | "archive-read" | "extract" | "permissions" | "known-hosts" | "completion" | "publication">,
+        Equal<SshCredentialCopyFailureStage, "staging" | "archive-create" | "archive-read" | "extract" | "permissions" | "known-hosts" | "completion" | "publication" | "archive-privilege" | "archive-changed">,
         Equal<Parameters<typeof ports.reportSshRefreshFailure>, [stage?: SshCredentialCopyFailureStage]>,
     ] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true];
     void proof;

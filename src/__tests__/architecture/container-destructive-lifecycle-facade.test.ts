@@ -169,9 +169,35 @@ describe("native destructive lifecycle composition", () => {
         let failure: unknown;
         try { f.lifecycle[operation]("input"); } catch (error) { failure = error; }
         expect(failure).toBeInstanceOf(Error);
-        expect((failure as Error).message).toBe('Container for workspace "/full/project" has 2 remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.');
+        expect((failure as Error).message).toContain('Container for workspace "/full/project" has 2 remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.');
+        expect((failure as Error).message).toContain("Remaining records are not necessarily active sessions");
+        expect((failure as Error).message).toContain("--force can interrupt active sessions and clean this project's devices");
+        expect((failure as Error).message).toContain("uncertain predecessor records remain unresolved");
+        expect((failure as Error).message).toContain(`ccc --runtime docker ${operation === "stop" ? "stop" : "rm"} --force`);
         expect(f.order).toEqual(["resolve:input", "project:/full/project", "lock:project-id", "unlock"]);
         expect(native.order).toEqual([]); expect(native.runtime).toHaveBeenCalledTimes(1); expect(native.spawn).not.toHaveBeenCalled();
+    });
+
+    it.each(["stop", "remove"] as const)("%s scopes its force hint to the operation, selected profile and runtime captured before reconciliation", async operation => {
+        const { currentNativeRuntimeInvocation } = await import("../../container-runtime.js");
+        native.runtime.mockReturnValueOnce("podman").mockReturnValue("docker");
+        const observations: unknown[] = [];
+        const f = fixture({ sessionClaims(prefix, path, profile) {
+            observations.push({ prefix, path, profile, runtime: currentNativeRuntimeInvocation()?.runtime });
+            return ["retained-pending-record"];
+        } });
+        let failure: unknown;
+        try { f.lifecycle[operation]("input", "work"); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toContain(`ccc --runtime podman ${operation === "stop" ? "stop" : "rm"} --force`);
+        expect((failure as Error).message).not.toContain("ccc --runtime docker");
+        expect((failure as Error).message).toContain(process.platform === "win32" ? "$env:CCC_PROFILE = 'work'" : "CCC_PROFILE='work'");
+        expect((failure as Error).message).toContain("'/full/project'");
+        expect(observations).toEqual([{ prefix: "project-id--p--work", path: "/full/project", profile: "work", runtime: "podman" }]);
+        expect(f.order).toEqual(["resolve:input", "project:/full/project", "lock:project-id--p--work", "unlock"]);
+        expect(native.runtime).toHaveBeenCalledTimes(1);
+        expect(native.spawn).not.toHaveBeenCalled(); expect(native.cleanup).not.toHaveBeenCalled();
+        expect(native.order).toEqual([]);
     });
 
     it.each(["stop", "remove"] as const)("%s bounds thrown cleanup warnings and continues without exposing helper errors", operation => {

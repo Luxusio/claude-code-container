@@ -3,7 +3,7 @@ export interface CredentialCommandObservation {
 }
 
 export type SshCredentialCopyFailureStage = "staging" | "archive-create" | "archive-read" | "extract"
-    | "permissions" | "known-hosts" | "completion" | "publication";
+    | "permissions" | "known-hosts" | "completion" | "publication" | "archive-privilege" | "archive-changed";
 
 export interface SshCredentialCopyObservation extends CredentialCommandObservation {
     readonly failureStage?: SshCredentialCopyFailureStage;

@@ -39,6 +39,7 @@ import {
 import { deviceLabOwnerFromProjectMountPath, deviceLabOwnerId, deviceLabProjectMountPath } from "@ccc/device-lab/device-lab-owner.js";
 import { HYPER_V_IMAGE_CATALOG } from "@ccc/device-lab/device-lab/hyper-v-images.js";
 import { readDeviceRuntimeProcessStartToken } from "@ccc/device-lab/device-lab-process-identity.js";
+import * as processIdentity from "@ccc/device-lab/device-lab-process-identity.js";
 import { DEVICE_LAB_VERSION } from "@ccc/device-lab/version.js";
 import { cleanupOwner, close, listen, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 import { TOOLS as DEVICE_LAB_MCP_TOOLS } from "../../device-lab-mcp/src/operation-tools.mjs";
@@ -302,6 +303,36 @@ describe("device-lab host broker daemon", () => {
             },
             cliPath,
         )).toBeNull();
+    });
+
+    it.each([
+        ["missing listener", "listener-unavailable"], ["status PID", "status-pid-mismatch"],
+        ["foreign entry", "command-or-entry-unverified"], ["missing start", "process-start-unavailable"],
+        ["status generation", "process-generation-mismatch"], ["persisted generation", "process-generation-mismatch"],
+        ["unknown manager", "runtime-metadata-unverified"], ["missing identity", "process-identity-unavailable"],
+    ] as const)("reports the actual failed broker observation: %s", (fault, reason) => {
+        vi.spyOn(processIdentity, "readDeviceRuntimeProcessStartToken").mockReturnValue(null);
+        vi.spyOn(processIdentity, "readDeviceRuntimeProcessIdentity").mockReturnValue(null);
+        const port = 17373, cliPath = "/trusted/ccc/broker-entry.js", token = "test:listener-birth";
+        const commandLine = `node ${fault === "foreign entry" ? "/private/untrusted-entry.js" : cliPath} devices broker serve --port ${port}`;
+        const listener = {
+            pid: 5212, commandLine, processStartToken: fault === "missing start" ? null : token,
+            processIdentity: fault === "missing start" || fault === "missing identity" ? null
+                : { pid: 5212, startToken: token, commandHash: createHash("sha256").update(commandLine).digest("hex") },
+        };
+        const status = { name: "ccc-device-broker", managedBy: "ccc-host-status", port,
+            pid: fault === "status PID" ? 5213 : listener.pid,
+            processStartToken: fault === "status generation" ? "test:status-successor" : token };
+        const persisted = fault === "persisted generation" || fault === "unknown manager"
+            ? { name: "ccc-device-broker", managedBy: fault === "unknown manager" ? "unknown" : "ccc-host",
+                pid: listener.pid, port, processStartToken: "test:prior-generation" } : null;
+        const verification: NonNullable<Parameters<typeof hostBrokerRuntimeFromPortProcessForTest>[9]> = {};
+        expect(hostBrokerRuntimeFromPortProcessForTest(
+            "1111111111111111", port, {}, "darwin", () => fault === "missing listener" ? null : listener,
+            persisted, status, cliPath, false, verification,
+        )).toBeNull();
+        expect(verification).toEqual({ failure: reason });
+        expect(JSON.stringify(verification)).not.toContain("/private/");
     });
 
     it("parses localized Windows netstat listeners without accepting connected sockets", () => {

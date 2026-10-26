@@ -1,5 +1,6 @@
 import { createContainerDestructiveLifecycle } from "../application/container-destructive-lifecycle.js";
 import { runtimeSpawnSync, getRuntimeInvocation, runWithNativeRuntimeInvocation, type NativeRuntimeInvocation } from "../container-runtime.js";
+import { formatContainerLifecycleCommandHint } from "../container-restart-guidance.js";
 import type {
     ContainerDestructiveCommandObservation,
     ContainerDestructiveLifecycleOutcome,
@@ -24,7 +25,7 @@ function commandObservation(result: unknown): ContainerDestructiveCommandObserva
 export function createNativeContainerDestructiveLifecycle(
     ports: Omit<ContainerDestructiveLifecyclePorts, NativeDestructivePorts>,
 ) {
-    function createLifecycle() {
+    function createLifecycle(operation: "stop" | "rm", profile?: string) {
         let invocation: NativeRuntimeInvocation | undefined;
         function inRuntime<T>(operation: () => T): T {
             invocation ??= getRuntimeInvocation();
@@ -54,7 +55,11 @@ export function createNativeContainerDestructiveLifecycle(
                     : "[ccc] device cleanup unavailable before container stop");
             },
             throwSessionClaims: (count, fullPath) => {
-                throw new Error(`Container for workspace ${JSON.stringify(fullPath)} has ${count} remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.`);
+                throw new Error(`Container for workspace ${JSON.stringify(fullPath)} has ${count} remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.\n`
+                    + "Remaining records are not necessarily active sessions. --force can interrupt active sessions and clean this project's devices; uncertain predecessor records remain unresolved.\n"
+                    + `To explicitly force this operation, run in ${formatContainerLifecycleCommandHint({
+                        workspacePath: fullPath, runtime: invocation!.runtime, profile, operation, force: true,
+                    })}`);
             },
         });
     }
@@ -67,7 +72,7 @@ export function createNativeContainerDestructiveLifecycle(
     }
 
     return {
-        stop: (...args: Parameters<ReturnType<typeof createLifecycle>["stop"]>): undefined => renderOutcome(createLifecycle().stop(...args)),
-        remove: (...args: Parameters<ReturnType<typeof createLifecycle>["remove"]>): undefined => renderOutcome(createLifecycle().remove(...args)),
+        stop: (...args: Parameters<ReturnType<typeof createLifecycle>["stop"]>): undefined => renderOutcome(createLifecycle("stop", args[1]).stop(...args)),
+        remove: (...args: Parameters<ReturnType<typeof createLifecycle>["remove"]>): undefined => renderOutcome(createLifecycle("rm", args[1]).remove(...args)),
     };
 }

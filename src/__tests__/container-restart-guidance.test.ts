@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ContainerRestartRequiredError, formatContainerStartupError } from "../container-restart-guidance.js";
+import { ContainerRestartRequiredError, formatContainerLifecycleCommandHint, formatContainerStartupError } from "../container-restart-guidance.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -149,5 +149,58 @@ describe.runIf(process.platform !== "win32")("copyable POSIX restart command", (
         const { result, events } = f.run(command, "caller-profile");
         expect(result.error).toBeUndefined(); expect(result.status).not.toBe(0);
         expect(events).toEqual([{ kind: "caller", cwd: realpathSync(f.wrongCwd), profile: "caller-profile", argv: [] }]);
+    });
+});
+
+describe("explicit lifecycle force guidance", () => {
+    it("quotes the PowerShell operation, location and profile while retaining caller restoration", () => {
+        const message = formatContainerLifecycleCommandHint({
+            workspacePath: "C:\\Work Space\\repo's $env:USERPROFILE", runtime: "podman",
+            profile: "work's $(Get-Date)", operation: "rm", force: true,
+        }, "win32");
+        expect(message).toContain("PowerShell:");
+        expect(message).toContain("Push-Location -LiteralPath 'C:\\Work Space\\repo''s $env:USERPROFILE' -ErrorAction Stop");
+        expect(message).toContain("try { $env:CCC_PROFILE = 'work''s $(Get-Date)'; ccc --runtime podman rm --force }");
+        expect(message).toContain("finally { if ($cccHadProfile) { $env:CCC_PROFILE = $cccPreviousProfile }");
+        expect(message).toContain("Remove-Item Env:CCC_PROFILE -ErrorAction SilentlyContinue }; Pop-Location");
+    });
+});
+
+describe.runIf(process.platform !== "win32")("copyable POSIX force command", () => {
+    it.each([
+        { runtime: "docker", operation: "stop", profile: undefined, expectedProfile: "default" },
+        { runtime: "podman", operation: "stop", profile: "work", expectedProfile: "work" },
+        { runtime: "docker", operation: "rm", profile: "work", expectedProfile: "work" },
+        { runtime: "podman", operation: "rm", profile: "", expectedProfile: "default" },
+    ] as const)("pins $runtime $operation and $expectedProfile without changing the caller", ({ runtime, operation, profile, expectedProfile }) => {
+        const f = shellFixture("workspace with spaces");
+        const command = posixCommand(formatContainerLifecycleCommandHint({
+            workspacePath: f.workspace, runtime, profile, operation, force: true,
+        }, "linux"));
+        const { result, events } = f.run(command, "caller-profile");
+        expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+        expect(events).toEqual([
+            { kind: "ccc", cwd: realpathSync(f.workspace), profile: expectedProfile, argv: ["--runtime", runtime, operation, "--force"] },
+            { kind: "caller", cwd: realpathSync(f.wrongCwd), profile: "caller-profile", argv: [] },
+        ]);
+    });
+
+    it.each(["stop", "rm"] as const)("passes metacharacters literally in a fenced %s command", operation => {
+        const f = shellFixture("workspace ' ; touch injected-workspace ; $(touch injected-substitution) ``` & $HOME");
+        const profile = "work ' ; touch injected-profile ; $(touch injected-profile-substitution)";
+        const command = posixCommand(formatContainerLifecycleCommandHint({
+            workspacePath: f.workspace, runtime: "podman", profile, operation, force: true,
+        }, "linux"));
+        const { result, events } = f.run(command, "caller-profile");
+        expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+        expect(events).toEqual([
+            { kind: "ccc", cwd: realpathSync(f.workspace), profile, argv: ["--runtime", "podman", operation, "--force"] },
+            { kind: "caller", cwd: realpathSync(f.wrongCwd), profile: "caller-profile", argv: [] },
+        ]);
+        for (const directory of [f.root, f.wrongCwd, f.workspace]) {
+            for (const marker of ["injected-workspace", "injected-substitution", "injected-profile", "injected-profile-substitution"]) {
+                expect(existsSync(join(directory, marker))).toBe(false);
+            }
+        }
     });
 });

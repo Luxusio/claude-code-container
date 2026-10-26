@@ -79,7 +79,7 @@ describe("host CLI protocol reuse", () => {
     });
 
     async function withMcpManagedBroker(
-        fault: "none" | "entry" | "missing-entry" | "listener-pid" | "birth" | "saved-pid" | "saved-port" | "manager",
+        fault: "none" | "entry" | "missing-entry" | "missing-listener" | "listener-pid" | "birth" | "saved-pid" | "saved-port" | "manager",
         test: (fixture: { port: number; runtimeFile: string; runtimeBytes: string; options: HostDeviceBrokerOptions;
             server: ReturnType<typeof createDeviceBrokerServer>; status: { broker: { startedAt: string; process: { pid: number; startToken: string } } };
             spawnImpl: ReturnType<typeof vi.fn>; terminateProcess: ReturnType<typeof vi.fn> }) => Promise<void>,
@@ -122,6 +122,7 @@ describe("host CLI protocol reuse", () => {
                 cwd, port, timeoutMs: 10000, bindHost: "127.0.0.1", probeHost: "127.0.0.1", cliPath,
                 portProcessResolver: requestedPort => {
                     expect(requestedPort).toBe(port);
+                    if (fault === "missing-listener") return null;
                     return { pid: observedPid, commandLine, processStartToken: observedToken,
                         processIdentity: { pid: observedPid, startToken: observedToken, commandHash: createHash("sha256").update(commandLine).digest("hex") } };
                 },
@@ -153,14 +154,24 @@ describe("host CLI protocol reuse", () => {
         });
     });
 
-    it.each(["entry", "missing-entry", "listener-pid", "birth", "saved-pid", "saved-port", "manager"] as const)("MCP interop still refuses %s mismatch without replacing its record", async fault => {
+    it.each([
+        ["entry", "command-or-entry-unverified"], ["missing-entry", "runtime-metadata-unverified"],
+        ["missing-listener", "listener-unavailable"], ["listener-pid", "status-pid-mismatch"],
+        ["birth", "process-generation-mismatch"], ["saved-pid", "runtime-metadata-unverified"],
+        ["saved-port", "runtime-metadata-unverified"], ["manager", "runtime-metadata-unverified"],
+    ] as const)("MCP interop diagnoses %s without replacing its record", async (fault, reason) => {
         await withMcpManagedBroker(fault, async ({ runtimeFile, runtimeBytes, options, spawnImpl, terminateProcess }) => {
-            expect(await ensureHostDeviceBroker(options)).toEqual(expect.objectContaining({
+            const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+            const result = await ensureHostDeviceBroker(options);
+            expect(result).toEqual(expect.objectContaining({
                 ok: false, error: "host-broker-incompatible", launched: false, reused: false,
+                diagnostics: expect.arrayContaining([`broker process verification: ${reason}`]),
             }));
+            expect(JSON.stringify("diagnostics" in result ? result.diagnostics : null)).not.toContain(fixtureHome!);
             expect(readFileSync(runtimeFile, "utf8")).toBe(runtimeBytes);
             expect(spawnImpl).not.toHaveBeenCalled();
             expect(terminateProcess).not.toHaveBeenCalled();
+            expect(kill.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
         });
     });
 

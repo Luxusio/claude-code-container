@@ -257,6 +257,83 @@ describe("container SSH credential copy", () => {
         expect(readdirSync(root).some(name => name.startsWith(".ccc-ssh-archive.") || name.includes(".next."))).toBe(false);
     });
 
+    it.each([
+        { name: "sudo password denial", diagnostic: "sudo: a password is required\n", status: 19 },
+        { name: "sudo tty denial", diagnostic: "sudo: sorry, you must have a tty to run sudo\n", status: 19 },
+        { name: "changed source", diagnostic: "tar: /private/fixture-host/.ssh/private-key-sentinel: file changed as we read it\n", status: 20 },
+        { name: "mixed conditions", diagnostic: "sudo: a password is required\ntar: private-key-sentinel: file changed as we read it\n", status: 13 },
+        { name: "unknown accompanying error", diagnostic: "sudo: a password is required\nprivate-key-sentinel: unrelated error\n", status: 13 },
+        { name: "localized error", diagnostic: "sudo: 암호가 필요합니다 /private/fixture-host/.ssh/private-key-sentinel\n", status: 13 },
+        { name: "unknown error", diagnostic: "tar: private-key-sentinel: Permission denied\n", status: 13 },
+        { name: "unterminated evidence", diagnostic: "sudo: a password is required", status: 13 },
+        { name: "oversized evidence", diagnostic: "sudo: a password is required\n" + "private-key-sentinel".repeat(500) + "\n", status: 13 },
+        { name: "unavailable evidence", diagnostic: "sudo: a password is required\n", status: 13, removeEvidence: true },
+    ])("keeps archive $name diagnostics private and fail-closed", ({ diagnostic, status, removeEvidence }) => {
+        const root = makeRoot();
+        const source = join(root, "source");
+        const copied = join(root, "ssh-copy");
+        const bin = join(root, "bin");
+        const metadata = join(root, "capture-metadata.json");
+        for (const directory of [source, copied, bin]) mkdirSync(directory);
+        writeFileSync(join(source, "id_ed25519"), "source-key-sentinel", { mode: 0o600 });
+        writeFileSync(join(copied, "id_ed25519"), "stale-key-sentinel");
+        writeFileSync(join(copied, ".ccc-copy-complete"), "complete\n");
+        writeFileSync(join(bin, "sudo"), `#!/usr/bin/python3 -I
+import json, os, pathlib, stat, sys
+root = pathlib.Path(os.environ["CCC_SSH_FIXTURE_ROOT"])
+captures = list(root.glob(".ccc-ssh-archive.stderr.*"))
+pathlib.Path(os.environ["CCC_SSH_FIXTURE_METADATA"]).write_text(json.dumps([
+    {"mode": stat.S_IMODE(item.stat().st_mode), "uid": item.stat().st_uid} for item in captures
+]))
+if os.environ["CCC_SSH_FIXTURE_REMOVE_EVIDENCE"] == "yes":
+    for item in captures:
+        item.unlink()
+sys.stderr.write(os.environ["CCC_SSH_FIXTURE_DIAGNOSTIC"])
+sys.stdout.write("partial-key-sentinel")
+sys.exit(42)
+`, { mode: 0o755 });
+
+        const result = runCopy(source, copied, {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            CCC_SSH_FIXTURE_ROOT: root,
+            CCC_SSH_FIXTURE_METADATA: metadata,
+            CCC_SSH_FIXTURE_DIAGNOSTIC: diagnostic,
+            CCC_SSH_FIXTURE_REMOVE_EVIDENCE: removeEvidence ? "yes" : "no",
+        }, true);
+
+        expect(result.status).toBe(status);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toBe("");
+        const captures = JSON.parse(readFileSync(metadata, "utf8")) as { mode: number; uid: number }[];
+        expect(captures).toHaveLength(1);
+        expect(captures[0].mode).toBe(0o600);
+        if (process.getuid) expect(captures[0].uid).toBe(process.getuid());
+        expect(existsSync(copied)).toBe(false);
+        expect(readdirSync(root).filter(name => name.startsWith(".") || name.includes(".next.") || name.includes(".previous."))).toEqual([]);
+        expect(readFileSync(join(source, "id_ed25519"), "utf8")).toBe("source-key-sentinel");
+        expect(statSync(join(source, "id_ed25519")).mode & 0o777).toBe(0o600);
+    });
+
+    it("preserves successful archive creation despite a recognized warning", () => {
+        const root = makeRoot();
+        const source = join(root, "source");
+        const copied = join(root, "ssh-copy");
+        const bin = join(root, "bin");
+        for (const directory of [source, bin]) mkdirSync(directory);
+        writeFileSync(join(source, "id_ed25519"), "source-key-sentinel");
+        writeFileSync(join(bin, "sudo"), '#!/bin/sh\nprintf "%s\\n" "sudo: a password is required" >&2\nshift\nexec "$@"\n', { mode: 0o755 });
+
+        const result = runCopy(source, copied, { ...process.env, PATH: `${bin}:${process.env.PATH}` }, true);
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toBe("");
+        expect(readFileSync(join(copied, "id_ed25519"), "utf8")).toBe("source-key-sentinel");
+        expect(readFileSync(join(copied, ".ccc-copy-complete"), "utf8")).toBe("complete\n");
+        expect(readdirSync(root).filter(name => name.startsWith("."))).toEqual([]);
+    });
+
     it("replaces a copied completion-marker symlink without touching its target", () => {
         const root = makeRoot();
         const source = join(root, "source");
@@ -273,6 +350,7 @@ describe("container SSH credential copy", () => {
     it.each([
         { failure: "staging", status: 11, command: "mkdir", body: 'case "$1" in *.next.*) exit 42;; esac\nexec /bin/mkdir "$@"' },
         { failure: "archive-create", status: 12, command: "mktemp", body: "exit 42" },
+        { failure: "archive-diagnostics-create", status: 12, command: "mktemp", body: `case "$1" in *.stderr.*) exit 42;; esac\nexec ${existsSync("/usr/bin/mktemp") ? "/usr/bin/mktemp" : "/bin/mktemp"} "$@"` },
         { failure: "extract", status: 14, command: "tar", body: `case "$1" in --no-same-owner) exit 42;; esac\nexec ${existsSync("/usr/bin/tar") ? "/usr/bin/tar" : "/bin/tar"} "$@"` },
         { failure: "permissions", status: 15, command: "chmod", body: 'case "$1" in 600) exit 42;; esac\nexec /bin/chmod "$@"' },
         { failure: "completion", status: 17, command: "chmod", body: 'for path do case "$path" in */.ccc-copy-complete) exit 42;; esac; done\nexec /bin/chmod "$@"' },

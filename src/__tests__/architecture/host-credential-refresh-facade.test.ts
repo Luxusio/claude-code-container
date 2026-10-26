@@ -94,6 +94,7 @@ describe("actual native host credential refresh composition", () => {
     it.each([
         [11, "staging"], [12, "archive-create"], [13, "archive-read"], [14, "extract"],
         [15, "permissions"], [16, "known-hosts"], [17, "completion"], [18, "publication"],
+        [19, "archive-privilege"], [20, "archive-changed"],
     ] as const)("maps SSH helper status %s into the finite %s warning without reading native output", (status, stage) => {
         native.spawn.mockImplementation(() => ({
             status,
@@ -108,7 +109,7 @@ describe("actual native host credential refresh composition", () => {
         expect(createHostCredentialRefresh(ports).refreshSsh("id")).toBeUndefined();
         expect(warning).toHaveBeenCalledExactlyOnceWith(`${genericSshWarning} (stage: ${stage})`);
     });
-    it.each([1, 10, 19, -1, null, NaN])("keeps unknown SSH status %s generic without reading native output", status => {
+    it.each([1, 10, 21, -1, null, NaN])("keeps unknown SSH status %s generic without reading native output", status => {
         native.spawn.mockReturnValue({
             status,
             get error() { throw Error("unread native error"); },
