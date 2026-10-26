@@ -28,6 +28,8 @@ Mock the adapter exports currently called by the server. Old facade exports do n
 
 Fake provider fixtures must model their owned process inventory for both synchronous and Worker subprocess paths. Route only the exact inventory command into the fixture; keep PID, birth and command observations native. An unrelated host process listing must not decide a fake-provider result, and truncated or failed inventory must remain a product refusal.
 
+Wait for a fixture marker's complete expected content in one bounded observation. File existence alone can become visible before a creating or truncating write publishes its payload; a later separate assertion can also race repeated writes. Guardian-read markers must contain the exact owned child's PID before the test proceeds. Keep the subsequent identity, claim-retention and cleanup assertions unchanged.
+
 After an authenticated signal, join a fixture's saved process incarnation through the existing bounded native exit observer. An exiting Darwin process can have a changed displayed command; keep full identity and marker/journal/root validation before every signal, and accept removal only from positive exit evidence. Diagnostic exit messages alone do not prove completion.
 
 Fake-timer drivers must allow real asynchronous native observations to complete and continue advancing timers scheduled afterward, within a separate bounded real-time wait. A single `runAllTimersAsync` is insufficient when native `ps` finishes later. For terminal attributes, follow the narrowly defined Darwin kernel-state distinction in [session exit cleanup](../common/REQ__session-exit-cleanup.md#interactive-terminal-restoration); preserve every configured attribute and raw diagnostics without reading or flushing terminal input.
@@ -93,4 +95,4 @@ These commands retain the small Node prelude and save a new per-run log and JSON
 
 ## Known ceiling
 
-Portable Linux evidence does not certify Darwin descriptor operations, native process proof, PTY restoration or process cleanup. The latest Mac comparison accounts for all original 1,085 failures: 1,046 pass, including six mapped names, and 39 are skipped by platform conditions. The preceding three remote-bind failures pass in that run. Host acceptance remains pending for its 23 failures in four files and the current fixture/resume corrections; see the [change evidence limits](../changes/2026-10-22-test-failure-groups.md#known-ceiling).
+Portable Linux evidence does not certify Darwin descriptor operations, native process proof, PTY restoration or process cleanup. The latest Mac comparison accounts for all original 1,085 failures: 1,046 pass, including six mapped names, and 39 are skipped by platform conditions. All preceding 23 failures pass in that run. Host acceptance remains pending for its single guardian marker failure and the current test synchronization correction; see the [change evidence limits](../changes/2026-10-22-test-failure-groups.md#known-ceiling).

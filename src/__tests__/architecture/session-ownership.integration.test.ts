@@ -244,8 +244,7 @@ require('node:module').syncBuiltinESMExports();
         writeFileSync(log + ".release", "release");
         child.disconnect();
         if (kind !== "mismatch") {
-            await eventually(() => existsSync(log + ".guard-read"), "guardian observed valid fixture guard after native identity startup");
-            expect(readFileSync(log + ".guard-read", "utf8")).toBe(String(child.pid));
+            await eventually(() => existsSync(log + ".guard-read") && readFileSync(log + ".guard-read", "utf8") === String(child.pid), "guardian observed valid fixture guard after native identity startup");
             expect(unrelated.exitCode).toBeNull();
             expect(unrelated.signalCode).toBeNull();
             await new Promise(resolve => setTimeout(resolve, 700));
