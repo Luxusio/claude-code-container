@@ -106,7 +106,7 @@ describe("read-only host broker observations", () => {
         });
         const { process: brokerProcess, serviceManager, owners, ...selectedBroker } = broker;
         expect(observed.status).toEqual({
-            ok: true, http: 200, broker: selectedBroker,
+            httpOk: true, http: 200, ok: true, broker: selectedBroker,
             process: { pid: brokerProcess.pid, startToken: brokerProcess.startToken },
             service: { platform: serviceManager.platform, command: serviceManager.command },
         });
@@ -170,16 +170,22 @@ describe("read-only host broker observations", () => {
         expect(JSON.stringify(observed)).not.toContain(secret);
     });
 
-    it("reports HTTP errors and redirects without following them or exporting their bodies", async () => {
+    it("preserves HTTP and application outcomes without following redirects or exporting error bodies", async () => {
         for (const [response, http, code] of [
             [() => new Response(secret, { status: 503 }), 503, "HTTP_STATUS"],
             [() => new Response(secret, { status: 302, headers: { location: `https://example.invalid/${secret}` } }), 302, "HTTP_REDIRECT"],
             [() => { throw new Error(secret); }, null, "HTTP_UNAVAILABLE"],
+            [() => new Response(JSON.stringify({ ok: false, broker: { owners: [{ token: secret }] } })), 200, null],
         ]) {
             const injected = ports({ response });
             const observed = await collect(injected);
-            expect(observed.statusError).toEqual({ code });
-            if (http !== null) expect(observed.status).toEqual({ ok: false, http });
+            if (code === null) {
+                expect(observed.statusError).toBeUndefined();
+                expect(observed.status).toMatchObject({ httpOk: true, http, ok: false });
+            } else {
+                expect(observed.statusError).toEqual({ code });
+                if (http !== null) expect(observed.status).toEqual({ httpOk: false, http });
+            }
             expect(injected.fetchImpl).toHaveBeenCalledExactlyOnceWith("http://127.0.0.1:17373/status", expect.objectContaining({
                 method: "GET", redirect: "manual", signal: expect.any(AbortSignal),
             }));
@@ -215,6 +221,7 @@ describe("read-only host broker observations", () => {
         ]) {
             const observed = await collect(ports({ response }));
             expect(observed.statusError).toEqual({ code: expect.any(String) });
+            expect(observed.status).toEqual({ httpOk: true, http: 200 });
             expect(observed.status?.broker).toBeUndefined();
             expect(JSON.stringify(observed)).not.toContain(secret);
         }

@@ -120,7 +120,7 @@ async function observeStatus(fetchImpl) {
             const response = await fetchImpl(`http://127.0.0.1:${PORT}/status`, {
                 method: "GET", redirect: "manual", signal: controller.signal,
             });
-            status = { ok: response.ok, http: response.status };
+            status = { httpOk: response.ok, http: response.status };
             if (!response.ok) {
                 void response.body?.cancel().catch(() => {});
                 throw observationError(response.status >= 300 && response.status < 400 ? "HTTP_REDIRECT" : "HTTP_STATUS");
@@ -134,6 +134,7 @@ async function observeStatus(fetchImpl) {
             }
             return {
                 ...status,
+                ok: typeof body.ok === "boolean" || body.ok === null ? body.ok : null,
                 broker: selectFields(broker, {
                     name: "string", mode: "string", version: "string", host: "string", port: "number",
                     protocolVersion: "number", startedAt: "string",

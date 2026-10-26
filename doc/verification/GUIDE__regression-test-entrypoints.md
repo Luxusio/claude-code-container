@@ -22,7 +22,7 @@ For port 17373, run the checked-in read-only collector from the Mac checkout roo
 node scripts/real-tests/host-broker-observations.mjs
 ```
 
-It needs no build or project dependencies. Its JSON includes listener observations before and after collection, untruncated commands, separate start times, selected runtime metadata and selected HTTP `/status` fields. Native commands and HTTP reads are bounded; owner authentication files are excluded. It never repairs or restarts the broker. A completed diagnostic is not a readiness verdict: unavailable or changed observations remain visible, and actual Mac output is required to identify the conflict. `--help` describes invocation without collecting host state.
+It needs no build or project dependencies. Its JSON includes listener observations before and after collection, untruncated commands, separate start times, selected runtime metadata and selected HTTP `/status` fields. `httpOk` records HTTP transport success; `ok` preserves the parsed application's result when available. Native commands and HTTP reads are bounded; owner authentication files are excluded. It never repairs or restarts the broker. A completed diagnostic is not a readiness verdict: unavailable or changed observations remain visible, and actual Mac output is required to identify the conflict. `--help` describes invocation without collecting host state.
 
 ## Native UID regression
 
