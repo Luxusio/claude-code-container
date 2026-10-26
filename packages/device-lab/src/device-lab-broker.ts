@@ -75,6 +75,7 @@ import { androidAvdHome, listOwnedAndroidAvdArtifactsAsync, ownedAndroidAvdName,
 import { readAndroidAvdIdentityAsync } from "@ccc/device-lab/providers/state/android-avd-identity.mjs";
 import { androidCreationChoices } from "@ccc/device-lab/providers/backends/android-sdk-inventory.mjs";
 import { DEVICE_BROKER_PROTOCOL_VERSION, isCompatibleBrokerProtocol } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
+import { configuredDeviceBrokerPort, deviceBrokerRuntimeFilename } from "@ccc/device-lab/providers/contracts/broker-endpoint.mjs";
 import { deviceLabOwnerFromProjectMountPath, deviceLabOwnerId as canonicalDeviceLabOwnerId, deviceLabProjectMountPath } from "./device-lab-owner.js";
 import { assertOwnerDeviceStateWritable, ownerDeviceStateErrorCode, readOwnerDeviceStateFile } from "./device-lab-owner-state.js";
 import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePhysicalLease, validateWindowsSandboxLock } from "./device-lab-ownership-state.js";
@@ -638,6 +639,7 @@ export interface DeviceBrokerOptions {
     profile?: string;
     host?: string;
     port?: number;
+    env?: NodeJS.ProcessEnv;
     startedAt?: string;
     ownerId?: string;
     providerPaths?: Record<string, string>;
@@ -659,6 +661,8 @@ type NormalizedBrokerOptions = {
     profile?: string;
     host: string;
     port: number;
+    env: NodeJS.ProcessEnv;
+    runtimeFile: string;
     startedAt: string;
     providerPaths: Record<string, string>;
     commandTimeoutMs: number;
@@ -821,7 +825,6 @@ export interface HostDeviceBrokerOptions extends DeviceBrokerOptions {
     processIdentityReader?: (pid: number, platform: NodeJS.Platform) => DeviceRuntimeProcessIdentity | null;
     processStartTokenReader?: (pid: number, platform: NodeJS.Platform) => string | null;
     terminateProcess?: HostBrokerProcessTerminator;
-    env?: NodeJS.ProcessEnv;
     enabled?: boolean;
 }
 
@@ -844,17 +847,17 @@ function brokerPrivateRoot(): string {
     return join(homedir(), ".ccc/device-broker-private");
 }
 
-function brokerRuntimeFile(): string {
-    return join(brokerRoot(), "broker", "runtime.json");
+function brokerRuntimeFile(env: NodeJS.ProcessEnv): string {
+    return join(brokerRoot(), "broker", deviceBrokerRuntimeFilename(env));
 }
 
-function writeHostBrokerRuntime(runtime: Record<string, unknown>): void {
-    writeJsonFileAtomically(brokerRuntimeFile(), runtime);
+function writeHostBrokerRuntime(file: string, runtime: Record<string, unknown>): void {
+    writeJsonFileAtomically(file, runtime);
 }
 
-function readHostBrokerRuntime(): Record<string, unknown> | null {
+function readHostBrokerRuntime(file: string): Record<string, unknown> | null {
     try {
-        return readDeviceLabStateFile(brokerRuntimeFile(), (parsed) => {
+        return readDeviceLabStateFile(file, (parsed) => {
             if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid-broker-runtime");
             return parsed as Record<string, unknown>;
         }, "broker-runtime", DEVICE_BROKER_RUNTIME_FILE_LIMIT_BYTES);
@@ -863,9 +866,9 @@ function readHostBrokerRuntime(): Record<string, unknown> | null {
     }
 }
 
-function removeHostBrokerRuntime(): void {
+function removeHostBrokerRuntime(file: string): void {
     try {
-        unlinkSync(brokerRuntimeFile());
+        unlinkSync(file);
     } catch {
         // Stale metadata cleanup is best-effort.
     }
@@ -1016,7 +1019,7 @@ function updateBrokerWindowsSandboxLockRuntimeId(ownerId: string, device: unknow
     });
 }
 
-function deviceBrokerPersistence(ownerId: string) {
+function deviceBrokerPersistence(ownerId: string, runtimeFile: string) {
     const root = brokerRoot();
     const ownerRoot = join(root, "owners", ownerId);
     const backendRoots = Object.fromEntries(DEVICE_BROKER_BACKEND_STATE_KEYS.map((stateKey) => [stateKey, join(ownerRoot, stateKey)]));
@@ -1056,7 +1059,7 @@ function deviceBrokerPersistence(ownerId: string) {
             locksRoot: join(root, "broker", "locks"),
             logsRoot: join(root, "broker", "logs"),
             serviceRoot: join(root, "broker", "service"),
-            runtimeFile: join(root, "broker", "runtime.json"),
+            runtimeFile,
         },
         hostToolchains: {
             ownership: "host-owned",
@@ -1386,9 +1389,15 @@ const brokerOwners = createBrokerOwnerApplication({
 });
 
 function normalizeBrokerOptions(options: DeviceBrokerOptions = {}): NormalizedBrokerOptions {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...(options.env || {}) };
+    const configuredPort = configuredDeviceBrokerPort(env);
     const cwd = options.cwd || process.cwd();
     const host = options.host || DEVICE_BROKER_DEFAULT_HOST;
-    const port = Number.isInteger(options.port) ? Number(options.port) : DEVICE_BROKER_DEFAULT_PORT;
+    const port = Number.isInteger(options.port) ? Number(options.port) : configuredPort ?? DEVICE_BROKER_DEFAULT_PORT;
+    // An explicit API port selects its own namespace only in configured mode.
+    // Keep absence explicit so a later status projection cannot inherit a new override.
+    env.CCC_DEVICE_BROKER_PORT = configuredPort === undefined ? undefined : String(port);
+    const runtimeFile = brokerRuntimeFile(env);
     const startedAt = options.startedAt || new Date().toISOString();
     const commandTimeoutMs = Number.isFinite(options.commandTimeoutMs)
         ? Math.min(30000, Math.max(1, Number(options.commandTimeoutMs)))
@@ -1402,6 +1411,8 @@ function normalizeBrokerOptions(options: DeviceBrokerOptions = {}): NormalizedBr
         profile: options.profile,
         host,
         port,
+        env,
+        runtimeFile,
         startedAt,
         providerPaths: options.providerPaths || {},
         commandTimeoutMs,
@@ -1733,6 +1744,7 @@ async function stopIncompatibleHostBroker(
     ownerId: string,
     port: number,
     compatibility: unknown,
+    runtimeFile: string,
     platform: NodeJS.Platform = process.platform,
     portProcessResolver: BrokerPortProcessResolver = discoverBrokerPortProcess,
     expectedCliPath?: string | readonly string[],
@@ -1747,7 +1759,7 @@ async function stopIncompatibleHostBroker(
             compatibility,
         };
     }
-    const persistedRuntime = readHostBrokerRuntime();
+    const persistedRuntime = readHostBrokerRuntime(runtimeFile);
     const statusRuntime = hostBrokerRuntimeFromStatus(ownerId, port, compatibility);
     if (typeof statusRuntime?.platform === "string" && statusRuntime.platform !== platform) {
         return {
@@ -1801,7 +1813,7 @@ async function stopIncompatibleHostBroker(
         };
     }
     if (probeDeviceRuntimeProcessLiveness(pid) === "exited") {
-        removeHostBrokerRuntime();
+        removeHostBrokerRuntime(runtimeFile);
         return { stopped: true, restartable: true, reason: "runtime-pid-not-alive", runtime, compatibility };
     }
     const expectedIdentity = runtime.processIdentity as DeviceRuntimeProcessIdentity | undefined;
@@ -1864,7 +1876,7 @@ async function stopIncompatibleHostBroker(
         if (!stopped.ok) {
             return { stopped: false, restartable: false, reason: "runtime-stop-failed", runtime, compatibility, detail: stopped.error };
         }
-        removeHostBrokerRuntime();
+        removeHostBrokerRuntime(runtimeFile);
         return {
             stopped: true,
             restartable: true,
@@ -1900,7 +1912,7 @@ async function stopIncompatibleHostBroker(
             const killIdentity = revalidatePosixBrokerIdentity();
             if (killIdentity.status !== "match") {
                 if (killIdentity.status === "exited") {
-                    removeHostBrokerRuntime();
+                    removeHostBrokerRuntime(runtimeFile);
                     return { stopped: true, restartable: true, reason: "runtime-pid-gone-after-signal", runtime, compatibility };
                 }
                 return { stopped: false, restartable: false, reason: `runtime-process-identity-${killIdentity.status}`, runtime, compatibility, observation: killIdentity };
@@ -1911,7 +1923,7 @@ async function stopIncompatibleHostBroker(
         if (!killed) {
             return { stopped: false, restartable: false, reason: "runtime-pid-still-alive", runtime, compatibility };
         }
-        removeHostBrokerRuntime();
+        removeHostBrokerRuntime(runtimeFile);
         return {
             stopped: true,
             restartable: true,
@@ -2353,14 +2365,16 @@ async function waitForHostBrokerReady(host: string, port: number, timeoutMs: num
 }
 
 export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = {}) {
-    if (options.enabled === false || process.env.CCC_DEVICE_BROKER_AUTO_START === "0") {
+    const bindHost = options.bindHost || options.host || DEVICE_BROKER_DEFAULT_HOST;
+    const initial = normalizeBrokerOptions({ ...options, host: bindHost });
+    const env = initial.env;
+    const runtimeFile = initial.runtimeFile;
+    if (options.enabled === false || env.CCC_DEVICE_BROKER_AUTO_START === "0") {
         return { ok: true, skipped: true, reason: "disabled" };
     }
 
-    const bindHost = options.bindHost || options.host || DEVICE_BROKER_DEFAULT_HOST;
-    const initial = normalizeBrokerOptions({ ...options, host: bindHost });
     const ownerId = options.ownerId || deviceBrokerOwnerId(initial.cwd, options.profile);
-    const runtime = readHostBrokerRuntime();
+    const runtime = readHostBrokerRuntime(runtimeFile);
     const runtimePort = (runtime?.managedBy === "ccc-host" || runtime?.managedBy === "device-lab-mcp")
         && Number.isInteger(runtime.port)
         ? Number(runtime.port)
@@ -2372,10 +2386,11 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
         || ((runtime?.platform === undefined || runtime?.platform === null) && nativeTokenFamily !== null
             && nativeToken !== null && nativeToken.startsWith(nativeTokenFamily)
             && nativeToken.slice(nativeTokenFamily.length).trim().length > 0);
-    const exitedLocalHint = !Number.isInteger(options.port) && runtimePort !== null && runtimePort !== initial.port
+    const explicitPort = Number.isInteger(options.port) || configuredDeviceBrokerPort(env) !== undefined;
+    const exitedLocalHint = !explicitPort && runtimePort !== null && runtimePort !== initial.port
         && runtimePort > 0 && runtimePort <= 65535 && Number.isInteger(runtime?.pid) && Number(runtime?.pid) > 0 && runtimeIsLocal
         && probeDeviceRuntimeProcessLiveness(runtime?.pid) === "exited";
-    const port = !Number.isInteger(options.port) && runtimePort !== null && !exitedLocalHint ? runtimePort : initial.port;
+    const port = !explicitPort && runtimePort !== null && !exitedLocalHint ? runtimePort : initial.port;
     const normalized = port === initial.port ? initial : { ...initial, port };
     const probeHost = options.probeHost || DEVICE_BROKER_DEFAULT_HOST;
     const probeTimeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Number(options.timeoutMs)) : 250;
@@ -2396,7 +2411,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
     if (before.available) {
         const compatibility = await probeHostBrokerStatus(probeHost, port, probeTimeoutMs, normalized.cwd, ownerId, options.profile);
         prelaunchAttempts.push(compatibility);
-        const runtime = readHostBrokerRuntime();
+        const runtime = readHostBrokerRuntime(runtimeFile);
         const statusRuntime = hostBrokerRuntimeFromStatus(ownerId, port, compatibility);
         const verifiedRuntime = compatibility.compatible
             ? hostBrokerRuntimeFromPortProcess(
@@ -2417,7 +2432,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             || hostBrokerStatusMatchesRequiredBindHost(compatibility, port, bindHost))
             && verifiedRuntime
             && verifiedIdentity?.pid === Number(verifiedRuntime.pid)) {
-            if (runtime?.managedBy !== "device-lab-mcp") writeHostBrokerRuntime({
+            if (runtime?.managedBy !== "device-lab-mcp") writeHostBrokerRuntime(runtimeFile, {
                 ...(runtime || {}),
                 ...(statusRuntime || {}),
                 ...verifiedRuntime,
@@ -2449,7 +2464,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
         const restartReason = compatibility.compatible
             ? { ...(compatibility as Record<string, unknown>), runtimeBindHostMismatch: true, expectedHost: bindHost, runtimeHost: runtime?.host ?? null }
             : compatibility;
-        const stopped = await stopIncompatibleHostBroker(ownerId, port, restartReason, normalized.platform, portProcessResolver, normalized.trustedCliPaths, options.terminateProcess);
+        const stopped = await stopIncompatibleHostBroker(ownerId, port, restartReason, runtimeFile, normalized.platform, portProcessResolver, normalized.trustedCliPaths, options.terminateProcess);
         prelaunchAttempts.push(stopped);
         if (!stopped.restartable) {
             return {
@@ -2472,6 +2487,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                 ownerId,
                 port,
                 { ...before, reason: "unhealthy-broker-port-owner" },
+                runtimeFile,
                 normalized.platform,
                 portProcessResolver,
                 normalized.trustedCliPaths,
@@ -2499,7 +2515,6 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
     const args = [normalized.cliPath, "devices", "broker", "serve", "--host", bindHost, "--port", String(port)];
     let logPath = join(brokerRoot(), "broker", "logs", "host-broker-pending.log");
     const spawnImpl = options.spawnImpl || spawn;
-    const env: NodeJS.ProcessEnv = { ...process.env, ...(options.env || {}) };
     if (options.profile && !env.CCC_PROFILE) env.CCC_PROFILE = options.profile;
 
     let logFd: number | null = null;
@@ -2701,7 +2716,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             startedAt: verifiedIdentity.startedAt,
             processStartToken: verifiedIdentity.processStartToken || listenerStartToken || null,
         };
-        writeHostBrokerRuntime(runtime);
+        writeHostBrokerRuntime(runtimeFile, runtime);
         return {
             ok: true,
             ownerId,
@@ -2881,12 +2896,12 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
     };
 }
 
-const observeBrokerStatus = createBrokerStatus({
+const observeBrokerStatus = (ownerId: string, normalized: NormalizedBrokerOptions) => createBrokerStatus({
     root: () => brokerRoot(),
     service: (normalized: NormalizedBrokerOptions) => deviceBrokerServicePlan(normalized),
     serviceOwner: () => readServiceOwner(),
-    runtimeFile: () => brokerRuntimeFile(),
-    runtime: () => readHostBrokerRuntime(),
+    runtimeFile: () => normalized.runtimeFile,
+    runtime: () => readHostBrokerRuntime(normalized.runtimeFile),
     address: normalized => ({ host: normalized.host, port: normalized.port, url: `http://${normalized.host}:${normalized.port}` }),
     hostId: () => hostname(),
     pid: () => process.pid,
@@ -2894,10 +2909,10 @@ const observeBrokerStatus = createBrokerStatus({
     startedAt: normalized => normalized.startedAt,
     paths: (root, ownerId) => ({ root, ownerRoot: join(root, "owners", ownerId), brokerRoot: join(root, "broker"), locksRoot: join(root, "broker", "locks"), logsRoot: join(root, "broker", "logs") }),
     exists: root => existsSync(root),
-    persistence: ownerId => deviceBrokerPersistence(ownerId),
+    persistence: ownerId => deviceBrokerPersistence(ownerId, normalized.runtimeFile),
     serviceFacts: service => ({ supported: service.supported, platform: service.platform, manager: service.manager, serviceName: service.serviceName, definitionPath: service.definitionPath, command: service.command, diagnostics: service.diagnostics }),
     elevation: () => hyperVElevationGateStatus(),
-});
+})(ownerId, normalized);
 
 function serviceNameForPlatform(platform: NodeJS.Platform): string {
     if (platform === "darwin") return "com.ccc.device-broker";
@@ -11269,7 +11284,8 @@ export function formatDeviceBrokerStatus(options: DeviceBrokerOptions = {}, verb
 
 export function parseBrokerServeArgs(args: string[]): { host: string; port: number } {
     let host = DEVICE_BROKER_DEFAULT_HOST;
-    let port = DEVICE_BROKER_DEFAULT_PORT;
+    const defaultPort = configuredDeviceBrokerPort() ?? DEVICE_BROKER_DEFAULT_PORT;
+    let port = defaultPort;
     for (let i = 0; i < args.length; i += 1) {
         if (args[i] === "--host" && args[i + 1]) {
             host = args[i + 1];
@@ -11279,13 +11295,14 @@ export function parseBrokerServeArgs(args: string[]): { host: string; port: numb
             i += 1;
         }
     }
-    return { host, port: Number.isInteger(port) ? port : DEVICE_BROKER_DEFAULT_PORT };
+    return { host, port: Number.isInteger(port) ? port : defaultPort };
 }
 
 export function parseBrokerServiceArgs(args: string[]): { action: string; host: string; port: number; dryRun: boolean } {
     let action = "status";
     let host = DEVICE_BROKER_DEFAULT_HOST;
-    let port = DEVICE_BROKER_DEFAULT_PORT;
+    const defaultPort = configuredDeviceBrokerPort() ?? DEVICE_BROKER_DEFAULT_PORT;
+    let port = defaultPort;
     let dryRun = false;
     let actionSeen = false;
     for (let i = 0; i < args.length; i += 1) {
@@ -11302,7 +11319,7 @@ export function parseBrokerServiceArgs(args: string[]): { action: string; host: 
             actionSeen = true;
         }
     }
-    return { action, host, port: Number.isInteger(port) ? port : DEVICE_BROKER_DEFAULT_PORT, dryRun };
+    return { action, host, port: Number.isInteger(port) ? port : defaultPort, dryRun };
 }
 
 export function formatDeviceBrokerService(result: ReturnType<typeof deviceBrokerService>): string {
@@ -11354,11 +11371,12 @@ export function startDeviceBrokerServe(
     const startedAt = new Date().toISOString();
     const ownerId = deviceBrokerOwnerId(cwd, profile);
     const cliPath = process.argv[1] || fileURLToPath(new URL("./broker-entry.js", import.meta.url));
+    const { runtimeFile } = normalizeBrokerOptions({ cwd, profile, host, port, startedAt, cliPath });
     const server = factory({ cwd, profile, host, port, startedAt, cliPath });
     deviceBrokerOwnerToken(ownerId);
     server.listen(port, host, () => {
         if (!args.includes("--runtime-managed-by-parent")) {
-            writeHostBrokerRuntime({
+            writeHostBrokerRuntime(runtimeFile, {
                 name: DEVICE_BROKER_NAME,
                 managedBy: "ccc-host",
                 ownerId,

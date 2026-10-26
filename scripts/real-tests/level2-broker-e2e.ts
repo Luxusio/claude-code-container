@@ -295,6 +295,8 @@ export async function runBrokerE2E(options: any = {}) {
         ...process.env,
         HOME: testHome,
         USERPROFILE: testHome,
+        // This private HOME/free-port fixture owns its own legacy runtime.json.
+        CCC_DEVICE_BROKER_PORT: "",
         // Empty values still discover the container's conventional auth mount.
         // Both clients must use the secret created by this isolated test broker.
         CCC_DEVICE_BROKER_AUTH_FILE: join(testHome, ".ccc", "devices", "broker", "auth", `${ownerId()}.json`),

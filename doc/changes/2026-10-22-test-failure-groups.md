@@ -27,6 +27,23 @@ A later pasted diagnostic fails JavaScript parsing before any host observation. 
 
 The subsequent actual Mac collector output at `2026-10-26T04:02:35.661Z` identifies a global installation entry at `/usr/local/bin/ccc-dist/dist/packages/device-lab/dist/broker-entry.js`, while the checkout trusts its own two entries. Native listener PID 38959 remains the same before and after collection, with `f12` records handled correctly. Its native birth token agrees with runtime and HTTP status; their PID, port and start instant also agree. The remote daemon actually reports protocol 8 and version 1.1.90. This confirms the entry-path conflict and native execution of the diagnostic; it does not establish a need to replace that otherwise consistent daemon or certify every ownership gate. Owner resolution and the full native identity hash were not collected. The shared broker was started from `claude-prompt`; no stop, restart or metadata change was performed. Existing code has no supported endpoint-and-metadata isolation option, so changing only the port would also redirect shared routing. Recovery scope is pending the user's choice between preserving the global daemon through separate test routing and a qualified shared-daemon restart. Historical observations cannot authorize a later PID-only signal.
 
+The user subsequently approved preserving the global daemon and separating the
+Level 3 endpoint and runtime metadata. The candidate defaults ordinary
+`npm run test:level3` to loopback port 17374 and `runtime-17374.json`, while normal
+CCC execution retains 17373 and `runtime.json`. Host and MCP share validated
+endpoint selection; the runner propagates that selection and refuses a
+different preflight endpoint. Private-HOME broker fixtures clear the override.
+Actual HOME, owner/authentication state, physical leases and provider locks stay
+shared, with native executable/PID/birth/protocol checks retained. See the
+[isolation contract](../device-lab/REQ__level3-broker-isolation.md). Focused portable
+verification passes 488 cases: 29 shared-contract/host cases, 14 MCP isolation
+cases, four runner cases, one emitted MCP startup case and 440 existing
+broker/recovery/routing/preflight cases. Device Lab and real-test typechecks pass.
+The launcher resolves the current workspace endpoint contract before assembly;
+a direct Node import confirms that bootstrap does not require the newly
+assembled copy. Actual Mac Level 3 acceptance is still pending; the preceding
+unit-suite acceptance remains separate.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

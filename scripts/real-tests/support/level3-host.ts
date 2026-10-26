@@ -2,6 +2,14 @@ import { spawnSync } from "child_process";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { DEVICE_BROKER_PROTOCOL_VERSION, isCompatibleBrokerProtocol } from "#device-lab/providers/contracts/broker-protocol.mjs";
+// This launcher loads before assembly, so resolve the current workspace contract.
+import { configuredDeviceBrokerPort } from "@ccc/device-lab/providers/contracts/broker-endpoint.mjs";
+
+export function level3BrokerEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+    const selected = { ...env, CCC_DEVICE_BROKER_PORT: env.CCC_DEVICE_BROKER_PORT || "17374" };
+    configuredDeviceBrokerPort(selected);
+    return selected;
+}
 
 const HOST_BROKER_STATUS_MAX_BYTES = 256 * 1024;
 const HOST_BROKER_STATUS_TIMEOUT_MS = 5000;
@@ -158,6 +166,8 @@ export async function probeHostBrokerProtocol(port: number, options: any = {}) {
 }
 
 export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
+    const env = options.env || process.env;
+    const expectedPort = configuredDeviceBrokerPort(env);
     const spawn = options.spawn || spawnSync;
     const writeError = options.writeError || ((message: string) => process.stderr.write(message));
     const repairTimeoutMs = Number.isFinite(options.repairTimeoutMs)
@@ -170,7 +180,7 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
         [join(repoRoot, "dist", "index.js"), "devices", "broker", "status", "--verbose"],
         {
             cwd: repoRoot,
-            env: options.env || process.env,
+            env,
             encoding: "utf-8",
             timeout: remainingMs(),
             maxBuffer: HOST_BROKER_STATUS_MAX_BYTES,
@@ -212,6 +222,10 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
             writeError("CCC host broker capability attestation failed; status did not report a valid port\n");
             return 1;
         }
+        if (expectedPort !== undefined && port !== expectedPort) {
+            writeError(`CCC host broker endpoint mismatch; expected 127.0.0.1:${expectedPort}, reported port ${port}.\n`);
+            return 1;
+        }
         const probe = options.probeHostBrokerProtocolImpl || probeHostBrokerProtocol;
         const observed = await probe(port, {
             ...options,
@@ -251,7 +265,7 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
             && confirmed.pid === observed.pid
             && verifiedStartedAt === observed.startedAt
             && confirmed.startedAt === observed.startedAt) {
-            process.stdout.write(`ATTEST Hyper-V broker pid=${observed.pid} startedAt=${observed.startedAt}\n`);
+            process.stdout.write(`ATTEST Hyper-V broker pid=${observed.pid} startedAt=${observed.startedAt} port=${port}\n`);
             // The gate belongs to the process just attested, and within one process it only moves
             // from never-asked to refused, so the confirmation read is the latest word on it. A
             // refused gate outlives the run that caused it: every Hyper-V step that needs

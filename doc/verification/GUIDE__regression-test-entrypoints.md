@@ -12,9 +12,25 @@ The root unit Vitest setup canonicalizes its temporary-directory base before fix
 
 `npm run test:level3` builds its artifacts, then verifies the host broker before starting provider tests. The `CCC host broker repair preflight failed` diagnostic preserves both available output streams from the broker status command, followed by its exit status, signal, spawn error, and configured timeout. Protocol mismatch and later attestation failures have separate diagnostics. `error=none` means the child had no spawn error; `timeoutMs=180000` states the limit and does not mean a timeout occurred.
 
-`host-broker-incompatible` with an unverified port owner can occur even when the broker protocol is compatible. Compare the host's `~/.ccc/devices/broker/runtime.json` process metadata, the actual listening PID and command, the broker's read-only HTTP `/status`, and the current checkout's broker entry paths. A broker from a global installation or another checkout can fail the exact entry-path check. Do not delete metadata or kill an unverified listener to bypass this failure. `ccc devices broker status --verbose` may automatically repair a verified broker; it is not a read-only probe.
+`host-broker-incompatible` with an unverified port owner can occur even when the broker protocol is compatible. Compare the selected runtime's process metadata, the actual listening PID and command, the broker's read-only HTTP `/status`, and the current checkout's broker entry paths. A broker from a global installation or another checkout can fail the exact entry-path check. Do not delete metadata or kill an unverified listener to bypass this failure. `ccc devices broker status --verbose` may automatically repair a verified broker; it is not a read-only probe.
 
-When the native PID and birth agree with runtime and status but the observed entry belongs to a global installation, the differing trusted entry path establishes a conflict even though those identity observations agree. Keep the exact path check. A different port alone does not isolate the current implementation: host and MCP discovery share one runtime file. Separate execution requires both endpoint selection and separate runtime metadata; changing HOME would also change provider state and shared locks. Restarting a shared broker instead affects its existing clients and requires fresh identity proof before signaling.
+When the native PID and birth agree with runtime and status but the observed entry belongs to a global installation, the differing trusted entry path establishes a conflict even though those identity observations agree. Keep the exact path check. Separate execution requires both endpoint selection and separate runtime metadata; changing HOME would also change provider state and shared locks. Restarting a shared broker instead affects its existing clients and requires fresh identity proof before signaling.
+
+`npm run test:level3` defaults to `127.0.0.1:17374` and
+`~/.ccc/devices/broker/runtime-17374.json`. Its preflight and provider MCP clients
+receive the same endpoint configuration. Ordinary CCC execution retains
+`127.0.0.1:17373` and `~/.ccc/devices/broker/runtime.json`; there is no need to stop
+that broker. Actual HOME, owner/authentication state, physical leases and provider
+locks stay shared. This separates broker routing, not physical device access.
+See [the isolation contract](../device-lab/REQ__level3-broker-isolation.md).
+
+For a different dedicated port, set `CCC_DEVICE_BROKER_PORT` to a canonical
+decimal integer from 1 through 65535. Host and MCP use `runtime-<port>.json` for
+nondefault configured ports; 17373 keeps `runtime.json`. Empty/unset values retain
+ordinary behavior outside the Level 3 runner. An occupied dedicated port still
+requires the existing ownership proof; no foreign listener is taken over.
+Internal free-port fixtures with private HOME clear this setting. Preflight
+prints the attested port and refuses a result pointing to a different endpoint.
 
 On macOS, collect listener and process evidence on the Mac with `/usr/sbin/lsof -nP -iTCP:<port> -sTCP:LISTEN -Fp`, `/bin/ps -ww -p <pid> -o command=`, and `/bin/ps -p <pid> -o lstart=`. Read only the runtime's name, managedBy, PID, port, command, args, cwd and process start metadata; owner authentication files are unnecessary. Container PID observations and mocked launcher regressions do not validate native Mac ownership. The portable launcher tests are in `scripts/real-tests/hyper-v.test.ts`; running that file through the regular Vitest config does not run the Level 3 provider suite.
 

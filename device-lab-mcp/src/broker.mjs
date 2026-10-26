@@ -14,12 +14,14 @@ import { delimiter, dirname, join, resolve } from "path";
 import { performance } from "node:perf_hooks";
 import { ownerBasis, ownerId, PACKAGE_ROOT, projectMountPath } from "@ccc/device-lab/providers/context.mjs";
 import { DEVICE_BROKER_PROTOCOL_VERSION, isCompatibleBrokerProtocol } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
+import { configuredDeviceBrokerPort, deviceBrokerRuntimeFilename } from "@ccc/device-lab/providers/contracts/broker-endpoint.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { withSharedMutationLock, writeJsonFileAtomically } from "@ccc/device-lab/providers/state/shared-mutation-lock.mjs";
 import { readDeviceLabStateFile } from "@ccc/device-lab/providers/state/state-file.mjs";
 import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs, terminateWindowsProcessByStartToken } from "@ccc/device-lab/providers/state/windows-system-powershell.mjs";
 
 const brokerOperations = new AsyncLocalStorage();
+const brokerEndpoints = new AsyncLocalStorage();
 const brokerSetupEvidence = new WeakMap();
 const localObservationBudgetExhaustions = new WeakSet();
 
@@ -98,8 +100,12 @@ const brokerSupervision = createBrokerSupervision({
     cleanupLaunchedBrokerRuntime, brokerLogTail, verifiedBrokerProcess, invalidateBrokerSetup,
     verifiedOwnedLegacyBrokerProcess: (runtime, port, status, resolver) => verifiedOwnedLegacyBrokerProcess(runtime, port, status, resolver || discoverBrokerPortProcess),
     currentOperation: () => brokerOperations.getStore(),
-    setupCacheKey: options => JSON.stringify([normalizeLaunchOptions(options), ownerId(), ownerBasis(), projectMountPath(), brokerStateRoot()]),
-    ownedChildrenEntries: () => ownedBrokerChildren.entries(),
+    setupCacheKey: options => JSON.stringify([normalizeLaunchOptions(options), ownerId(), ownerBasis(), projectMountPath(), brokerRuntimeFile()]),
+    ownedChildrenEntries: () => {
+        const endpoint = brokerEndpoints.getStore();
+        return [...ownedBrokerChildren.entries()].filter(([, owned]) => !endpoint
+            || (owned.endpoint.runtimeFilename === endpoint.runtimeFilename && owned.endpoint.port === endpoint.port));
+    },
     deleteOwnedChild: pid => { ownedBrokerChildren.delete(pid); },
     signalChild: (child, signal) => { child.kill?.(signal); },
     cleanupOwner: (runtime, params, timeoutMs, statusBroker, verified) => brokerRpcRequest({
@@ -118,8 +124,24 @@ function brokerStateRoot() {
     return join(homedir(), ".ccc/devices");
 }
 
+function selectedBrokerEndpoint(options = {}) {
+    const inherited = brokerEndpoints.getStore();
+    const configuredPort = inherited ? (inherited.configured ? inherited.port : undefined) : configuredDeviceBrokerPort();
+    const port = Number.isInteger(options.port) ? Number(options.port) : configuredPort ?? 17373;
+    return {
+        configured: configuredPort !== undefined,
+        port,
+        runtimeFilename: deviceBrokerRuntimeFilename(configuredPort === undefined ? {} : { CCC_DEVICE_BROKER_PORT: String(port) }),
+    };
+}
+
+function withBrokerEndpoint(options, callback) {
+    return brokerEndpoints.run(selectedBrokerEndpoint(options), callback);
+}
+
 function brokerRuntimeFile() {
-    return join(brokerStateRoot(), "broker", "runtime.json");
+    const endpoint = brokerEndpoints.getStore() || selectedBrokerEndpoint();
+    return join(brokerStateRoot(), "broker", endpoint.runtimeFilename);
 }
 
 function brokerLogsRoot() {
@@ -218,7 +240,11 @@ async function launchOwnedBroker(owner, launch) {
         descriptor = log.descriptor;
         diagnostics.logPath = log.path;
         assertMacosCreateAllowance();
-        const child = spawn(launch.command, launch.args, { stdio: ["ignore", descriptor, descriptor], detached: false, windowsHide: true });
+        const endpoint = brokerEndpoints.getStore() || selectedBrokerEndpoint();
+        const child = spawn(launch.command, launch.args, {
+            stdio: ["ignore", descriptor, descriptor], detached: false, windowsHide: true,
+            env: { ...process.env, CCC_DEVICE_BROKER_PORT: endpoint.configured ? String(endpoint.port) : undefined },
+        });
         runtime = {
             name: BROKER_NAME,
             ownerId: owner,
@@ -232,7 +258,7 @@ async function launchOwnedBroker(owner, launch) {
             processStartToken: null,
             managedBy: "device-lab-mcp",
         };
-        const owned = { child, processStartToken: /** @type {string|null} */ (null) };
+        const owned = { child, endpoint, processStartToken: /** @type {string|null} */ (null) };
         const pid = runtime.pid;
         if (pid) ownedBrokerChildren.set(pid, owned);
         const retireChild = () => {
@@ -353,9 +379,12 @@ function plainObject(value) {
 }
 
 function readBrokerRuntime() {
+    const endpoint = brokerEndpoints.getStore() || selectedBrokerEndpoint();
+    const runtimeFile = brokerRuntimeFile();
     try {
-        return readDeviceLabStateFile(brokerRuntimeFile(), (parsed) => {
+        return readDeviceLabStateFile(runtimeFile, (parsed) => {
             if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid-broker-runtime");
+            if (endpoint.configured && parsed.port !== endpoint.port) throw new Error("invalid-broker-runtime-port");
             if (typeof parsed.host !== "string"
                 || (!TRUSTED_BROKER_HOSTS.has(parsed.host) && !BROKER_BIND_ANY_HOSTS.has(parsed.host))) {
                 throw new Error("invalid-broker-runtime-host");
@@ -376,6 +405,7 @@ function readBrokerRuntime() {
 }
 
 export function implicitBrokerProbeOptions(options = {}, behavior = {}) {
+    const endpoint = brokerEndpoints.getStore() || selectedBrokerEndpoint(options);
     const allowDefault = behavior?.allowDefault !== false;
     // Public operation args are later merged with this route. Keep their deadline intact.
     const probeTimeout = Number.isFinite(options.brokerProbeTimeoutMs)
@@ -390,7 +420,7 @@ export function implicitBrokerProbeOptions(options = {}, behavior = {}) {
             autolaunch: options.autolaunch === true || (options.autolaunch !== false && autolaunchDefault),
         };
     };
-    if (Array.isArray(options.hostCandidates) || Number.isInteger(options.port)) return defaultProbe(false);
+    if (Array.isArray(options.hostCandidates) || Number.isInteger(options.port) || endpoint.configured) return defaultProbe(false);
     const runtime = readBrokerRuntime();
     if (!runtime) return allowDefault ? defaultProbe() : null;
     const hostCandidates = runtimeHostCandidates(runtime);
@@ -556,10 +586,11 @@ export function brokerLogTail(logPath, limit = 1000) {
 }
 
 function normalizeProbeOptions(options = {}) {
+    const endpoint = brokerEndpoints.getStore() || selectedBrokerEndpoint(options);
     const hostCandidates = Array.isArray(options.hostCandidates) && options.hostCandidates.length > 0
         ? options.hostCandidates.map(String).slice(0, MAX_PROBE_CANDIDATES)
-        : HOST_CANDIDATES;
-    const port = Number.isInteger(options.port) ? Number(options.port) : 17373;
+        : endpoint.configured ? ["127.0.0.1"] : HOST_CANDIDATES;
+    const port = Number.isInteger(options.port) ? Number(options.port) : endpoint.port;
     const probeTimeoutMs = Number.isFinite(options.brokerProbeTimeoutMs) ? options.brokerProbeTimeoutMs : options.timeoutMs;
     const timeoutMs = Number.isFinite(probeTimeoutMs)
         ? Math.min(MAX_PROBE_TIMEOUT_MS, Math.max(1, Number(probeTimeoutMs)))
@@ -876,9 +907,14 @@ async function waitForBrokerHealth({ host, port, timeoutMs }) {
     return { requested: true, available: false, selected: null, attempts };
 }
 
-function cleanupOwnedBrokerChildrenOnExit() { brokerSupervision.cleanupOwnedOnExit(); }
+function cleanupOwnedBrokerChildrenOnExit() { brokerEndpoints.run(null, () => brokerSupervision.cleanupOwnedOnExit()); }
 
-function cleanupOwnedBrokerChildren() { return brokerSupervision.cleanupOwnedChildren(); }
+async function cleanupOwnedBrokerChildren() {
+    const endpoints = new Map([...ownedBrokerChildren.values()].map(owned => [`${owned.endpoint.runtimeFilename}:${owned.endpoint.port}`, owned.endpoint]));
+    for (const endpoint of endpoints.values()) {
+        await brokerEndpoints.run(endpoint, () => brokerSupervision.cleanupOwnedChildren());
+    }
+}
 
 function registerBrokerCleanup() {
     if (cleanupRegistered) return;
@@ -1555,11 +1591,11 @@ export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
 
 
 
-function ensureBroker(options = {}) { return brokerSupervision.ensure(options); }
+function ensureBroker(options = {}) { return withBrokerEndpoint(options, () => brokerSupervision.ensure(options)); }
 
 
 
-export async function brokerShutdown(options = {}) { return brokerSupervision.shutdown(options); }
+export async function brokerShutdown(options = {}) { return withBrokerEndpoint(options, () => brokerSupervision.shutdown(options)); }
 
 function isolatedBrokerAuthFile() {
     const configured = String(process.env.CCC_DEVICE_BROKER_AUTH_FILE || "").trim();
@@ -1750,6 +1786,10 @@ function authenticatedBrokerHeaders(token, owner, runtime, body) {
 export const authenticatedBrokerHeadersForTest = authenticatedBrokerHeaders;
 
 async function brokerRpcRequest(options = {}) {
+    return withBrokerEndpoint(options, () => brokerRpcRequestScoped(options));
+}
+
+async function brokerRpcRequestScoped(options) {
     const macosCreate = options.method === "broker.command.invoke" && isBrokerMacosTartImageCreate(options.params || {});
     const deadline = macosCreate ? performance.now() + brokerMacosTartCreateRpcTimeoutMs(options) : 0;
     try {
@@ -2395,6 +2435,10 @@ export async function brokerAppium(options = {}) {
 }
 
 export async function brokerStatus(options = {}) {
+    return withBrokerEndpoint(options, () => brokerStatusScoped(options));
+}
+
+async function brokerStatusScoped(options) {
     const owner = ownerId();
     const root = brokerStateRoot();
     const hasExplicitTransport = Array.isArray(options.hostCandidates) || Number.isInteger(options.port);

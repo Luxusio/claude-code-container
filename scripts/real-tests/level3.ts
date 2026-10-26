@@ -2,7 +2,7 @@ import { join, resolve } from "path";
 import { repoRoot } from "./helpers.ts";
 import { withExclusiveRealProviderRun } from "./exclusive-real-provider-run.ts";
 import { runSupervisedProcess } from "./supervised-process.ts";
-import { buildLevel3Artifacts, ensureHostBrokerReady } from "./support/level3-host.ts";
+import { buildLevel3Artifacts, ensureHostBrokerReady, level3BrokerEnv } from "./support/level3-host.ts";
 
 const args = process.argv.slice(2);
 const providerConcurrencyIndex = args.indexOf("--provider-concurrency");
@@ -18,7 +18,8 @@ const assertMatrix = join(repoRoot, "scripts", "real-tests", "assert-matrix.ts")
 const hiddenChildProcessPreload = join(repoRoot, "scripts", "real-tests", "hidden-child-processes.cjs");
 
 function hiddenChildProcessEnv() {
-    const baseEnv = providerConcurrency ? { ...process.env, CCC_LEVEL3_PROVIDER_CONCURRENCY: providerConcurrency } : process.env;
+    const brokerEnv = level3BrokerEnv();
+    const baseEnv = providerConcurrency ? { ...brokerEnv, CCC_LEVEL3_PROVIDER_CONCURRENCY: providerConcurrency } : brokerEnv;
     if (process.platform !== "win32") return baseEnv;
     const preload = hiddenChildProcessPreload.replace(/\\/g, "/").replace(/"/g, '\\"');
     const nodeOptions = [baseEnv.NODE_OPTIONS?.trim(), `--require="${preload}"`].filter(Boolean).join(" ");
