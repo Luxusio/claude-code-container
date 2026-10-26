@@ -1106,10 +1106,12 @@ describe("replacement ownership observations", () => {
 
 describe("retained predecessor existing-only execution", () => {
     const id = "a".repeat(64);
-    function restricted() {
+    function restricted(options: {stopped?: boolean; provisional?: boolean} = {}) {
         const f = fixture({running: true});
-        f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: id, existingOnly: true, recoveryWarning: "Old startup requests remain pending."});
-        f.ports.containerStatus = () => ({exists: true, running: true, containerId: id, imageId: "current-image"});
+        f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: id, existingOnly: true, recoveryWarning: "Old startup requests remain pending.",
+            ...(options.provisional ? {requiresLiveVerification: true as const} : {})});
+        f.ports.containerStatus = () => ({exists: true, running: !options.stopped, containerId: id, imageId: "current-image"});
+        f.ports.prepareContainer = vi.fn(() => ({start: (...args: Parameters<ContainerExecPorts<symbol>["startContainer"]>) => f.ports.startContainer(...args), initialize: vi.fn()}));
         f.ports.startContainer = (...args) => { expect(args[8]).toBe(id); args[7](id, {startedByInvocation: false}); return "ccc-repo"; };
         f.ports.containerRunning = () => true;
         return f;
@@ -1135,6 +1137,7 @@ describe("retained predecessor existing-only execution", () => {
         });
         await expect(f.exec("/repo", ["codex"])).resolves.toBe(23);
         expect(f.ports.prepareCodexConfig).toHaveBeenCalledWith(id, undefined);
+        expect(f.ports.prepareContainer).toHaveBeenCalledExactlyOnceWith({existingContainerId: id});
         expect(f.ports.ensureSocketAccess).toHaveBeenCalledWith(id);
         expect(f.ports.prepareCommand).toHaveBeenCalledWith(expect.objectContaining({target: id}));
         expect(f.ports.report).toHaveBeenCalledWith({kind: "recovery-retained", message: "Old startup requests remain pending."});
@@ -1142,12 +1145,45 @@ describe("retained predecessor existing-only execution", () => {
         expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
         expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true); expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
     });
-    it.each(["absent", "stopped", "changed", "invalid-acquired", "provisional"] as const)("refuses %s admission before any startup call", async fault => {
+    it.each([false, true])("prepares the exact stopped target and defers setup until unowned live readiness (provisional=%s)", async provisional => {
+        const f = restricted({stopped: true, provisional}); let ready = false;
+        const initialize = vi.fn(() => { expect(ready).toBe(true); });
+        f.ports.prepareContainer = vi.fn(policy => {
+            expect(policy).toEqual({existingContainerId: id});
+            return {start: (...args: Parameters<ContainerExecPorts<symbol>["startContainer"]>) => {
+                expect(args[8]).toBe(id); expect(args[6](vi.fn())).toBe(false);
+                expect(f.ports.ensureSocketAccess).not.toHaveBeenCalled();
+                ready = true; args[7](id, {startedByInvocation: false}); return "ccc-repo";
+            }, initialize};
+        });
+        await expect(f.exec("/repo", ["codex"])).resolves.toBe(0);
+        expect(initialize).toHaveBeenCalledOnce(); expect(f.ports.prepareCommand).toHaveBeenCalledWith(expect.objectContaining({target: id}));
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith(id, {startedByInvocation: false});
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true); expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+    });
+    it.each(["absent", "state-unknown", "changed", "invalid-acquired"] as const)("refuses %s admission before any startup call", async fault => {
         const f = restricted(), start = vi.fn(f.ports.startContainer); f.ports.startContainer = start;
-        if (fault === "invalid-acquired" || fault === "provisional") f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: fault === "invalid-acquired" ? "short" : id,
-            existingOnly: true, ...(fault === "provisional" ? {requiresLiveVerification: true as const} : {})});
-        else f.ports.containerStatus = () => ({exists: fault !== "absent", running: fault !== "stopped", containerId: fault === "changed" ? "b".repeat(64) : id, imageId: "image"});
+        if (fault === "invalid-acquired") f.ports.acquireOwnership = async () => ({lockFile: "/owned/session.lock", existingId: "short", existingOnly: true});
+        else f.ports.containerStatus = () => ({exists: fault !== "absent", running: fault === "state-unknown" ? undefined as unknown as boolean : true,
+            containerId: fault === "changed" ? "b".repeat(64) : id, imageId: "image"});
         await refused(f); expect(start).not.toHaveBeenCalled();
+    });
+    it.each(["start-timeout", "live-proof"] as const)("a stopped-target %s failure dispatches no setup, generic intent or guessed cleanup", async stage => {
+        const f = restricted({stopped: true, provisional: true}), failure = new Error(stage);
+        const initialize = vi.fn();
+        f.ports.prepareContainer = vi.fn(policy => {
+            expect(policy).toEqual({existingContainerId: id});
+            return {start: (...args: Parameters<ContainerExecPorts<symbol>["startContainer"]>) => { expect(args[8]).toBe(id); throw failure; }, initialize};
+        });
+        await expect(f.exec("/repo", ["codex"])).rejects.toMatchObject({cause: failure});
+        expect(initialize).not.toHaveBeenCalled(); expect(f.ports.ensureSocketAccess).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled(); expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.beginSessionStartupInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.publishSessionReadyInHeldLifecycleLock).not.toHaveBeenCalled();
+        expect(f.ports.setCleanupEnabled).not.toHaveBeenCalledWith(true); expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
     });
     it("denies replacement before proof or peer inspection, preserving the running target", async () => {
         const f = restricted(), replacement = vi.fn();
@@ -1176,6 +1212,7 @@ describe("retained predecessor existing-only execution", () => {
             args[11]?.(); dispatched++; throw new Error("mutation should have been refused");
         };
         await refused(f); expect(starts).toBe(2); expect(dispatched).toBe(0);
+        expect(f.ports.prepareContainer).toHaveBeenCalledExactlyOnceWith({existingContainerId: id});
         expect(f.ports.publishSessionReadyInHeldLifecycleLock).toHaveBeenCalledExactlyOnceWith(id, {startedByInvocation: false});
     });
 });

@@ -100,9 +100,9 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             const sessionLockFile = acquired.lockFile;
             const existingOnly = acquired.existingOnly === true;
             const existingOnlyContainerId = existingOnly ? acquired.existingId : null;
-            const existingOnlyFailure = () => new Error("Existing-only session requires its verified running container; automatic restart, replacement and cleanup are disabled.");
+            const existingOnlyFailure = () => new Error("Existing-only session requires the same identified container; only its verified activation is allowed, with image updates deferred and replacement and automatic cleanup disabled.");
             let requiresLiveVerification = acquired.requiresLiveVerification === true;
-            if (existingOnly && (!existingOnlyContainerId || !/^[a-f0-9]{64}$/i.test(existingOnlyContainerId) || requiresLiveVerification)) {
+            if (existingOnly && (!existingOnlyContainerId || !/^[a-f0-9]{64}$/i.test(existingOnlyContainerId))) {
                 throw existingOnlyFailure();
             }
 
@@ -124,7 +124,8 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             ports.report({ kind: "progress", phase: "checking" });
             const containerStatus = ports.containerStatus(targetContainer);
             if (existingOnly) {
-                if (!containerStatus.exists || !containerStatus.running || containerStatus.containerId !== existingOnlyContainerId) throw existingOnlyFailure();
+                if (!containerStatus.exists || typeof containerStatus.running !== "boolean"
+                    || containerStatus.containerId !== existingOnlyContainerId) throw existingOnlyFailure();
                 ports.report({ kind: "recovery-retained", message: (acquired.recoveryWarning || "Predecessor cleanup remains pending.")
                     .replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 512) });
             }
@@ -229,7 +230,9 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             // commands or configuring the container.
             ports.report({ kind: "progress", phase: "setup" });
             let containerName = await ports.setupLock(sessionContainerPrefix, async () => {
-                startup = ports.prepareContainer();
+                startup = existingOnly
+                    ? ports.prepareContainer({ existingContainerId: existingOnlyContainerId! })
+                    : ports.prepareContainer();
                 let readyContainerName = await startContainer();
                 await ports.confirmOwnership();
                 ports.configLock(() => ports.restoreConfig(readyContainerName, profile), profile);

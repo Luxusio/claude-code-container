@@ -200,9 +200,9 @@ export async function acquireHostSessionOwnership(
     const verifyRetainedTarget = (containerId?: string) => {
         const inspected = recovery.inspectContainer();
         if (!inspected.known || !inspected.containerId || !/^[a-f0-9]{64}$/i.test(inspected.containerId)
-            || inspected.running !== true || inspected.requiresLiveVerification
+            || typeof inspected.running !== "boolean" || inspected.running && inspected.requiresLiveVerification
             || containerId !== undefined && inspected.containerId !== containerId) {
-            throw new Error("Retained predecessor recovery requires the same fully verified running managed container; the existing records were preserved.");
+            throw new Error("Retained predecessor recovery requires the same identified managed container with a known running or stopped state; the existing records were preserved.");
         }
         return inspected.containerId;
     };

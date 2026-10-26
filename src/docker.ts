@@ -73,7 +73,7 @@ import {
     isContainerHostRemote,
     getRuntimeInfo,
 } from "./container-runtime.js";
-import { ensureIdentityImage, getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName, resolveContainerIdentity, type ContainerIdentity as ContainerUserIdentity } from "./container-identity.js";
+import { ensureIdentityImage, normalizeImageId, getIdentityLabels, getIdentityMiseVolumeName, getIdentityCodexPackagesVolumeName, resolveContainerIdentity, type ContainerIdentity as ContainerUserIdentity } from "./container-identity.js";
 import { beginRuntimeBindCreation, recordRuntimeBindAuthority, settleRuntimeBindCreation, withRuntimeBindGuard, withRuntimeBindGuardAsync } from "./adapters/runtime-bind-authority.js";
 import type { RuntimeBindCreationTicket, RuntimeBindGuard } from "./ports/runtime-bind-authority.js";
 import { codexConfigFileAclScript, codexConfigDirectoryAclScript } from "./codex-config-acl.js";
@@ -1337,8 +1337,9 @@ function verifyRequiredContainerMounts(
     policy: MountPresencePolicy,
     allowUnexpected = false,
     bindGuard?: RuntimeBindGuard,
+    currentImageId: () => string | null = getCurrentImageId,
 ): MountVerification {
-    const { native, application } = mountVerification(containerId, requiredMounts, getCurrentImageId, bindGuard);
+    const { native, application } = mountVerification(containerId, requiredMounts, currentImageId, bindGuard);
     return application.verifyExisting(native.decodeObservedMounts(observedMounts), policy, allowUnexpected);
 }
 
@@ -1360,6 +1361,7 @@ function containerRunContract(
     identity: ContainerUserIdentity,
     reportReason: (reason: string) => void,
     bindGuard?: RuntimeBindGuard,
+    currentImageId: () => string | null = getCurrentImageId,
 ) {
     return createContainerRunContract({
         containerId,
@@ -1376,8 +1378,8 @@ function containerRunContract(
         projectPathMatches: projectPathIdentityMatches,
         effectiveUserMatches: currentIdentity => containerExecIdentityMatches(containerId, currentIdentity),
         verifyMounts: (observed, mode) => mode === "stopped-preflight"
-            ? preflightStoppedContainerMounts(containerId, observed, requiredMounts, getCurrentImageId, bindGuard)
-            : verifyRequiredContainerMounts(containerId, observed, requiredMounts, mode, false, bindGuard),
+            ? preflightStoppedContainerMounts(containerId, observed, requiredMounts, currentImageId, bindGuard)
+            : verifyRequiredContainerMounts(containerId, observed, requiredMounts, mode, false, bindGuard, currentImageId),
         report: reportReason,
         debugStrictFailure: reason => {
             if (process.env.DEBUG) console.error(`[ccc:debug] containerMatchesRunContract: ${reason}`);
@@ -1397,9 +1399,10 @@ function containerMatchesRunContract(
     reportMismatch: (reason: string) => void = () => undefined,
     phase: "preflight" | "live" = "live",
     bindGuard?: RuntimeBindGuard,
+    currentImageId: () => string | null = getCurrentImageId,
 ): boolean | null {
     return containerRunContract(containerName, requiredMounts, labRunner, projectPath, identity,
-        reportMismatch, bindGuard).matches(desiredImageId, phase);
+        reportMismatch, bindGuard, currentImageId).matches(desiredImageId, phase);
 }
 
 /** A running container may defer additive updates after current identity and mount proof. */
@@ -1525,20 +1528,38 @@ function containerExecIdentityMatches(containerId: string, identity: ContainerUs
 }
 
 /** Preparation pins the image before any shared mutation guard is acquired. */
-export function prepareProjectContainerStartup() {
+export function prepareProjectContainerStartup(restriction?: { existingContainerId: string }) {
     const invocation = getRuntimeInvocation();
+    const existingContainerId = restriction?.existingContainerId;
     return runWithNativeRuntimeInvocation(invocation, () => {
-        ensureImage();
-        const identity = resolveContainerIdentity();
-        const baseImageId = getCurrentImageId();
-        if (!baseImageId) throw new Error("Cannot resolve the current CCC base image.");
-        const imageId = ensureIdentityImage(baseImageId, identity);
+        let imageId: string;
+        let identity: ContainerUserIdentity;
+        if (existingContainerId !== undefined) {
+            if (!/^[a-f0-9]{64}$/i.test(existingContainerId)) {
+                throw new Error("Retained recovery requires a full existing container ID.");
+            }
+            const inspected = inspectContainerJsonWithRetry(existingContainerId);
+            const labels = (inspected?.Config as { Labels?: Record<string, unknown> } | undefined)?.Labels;
+            if (inspected?.Id !== existingContainerId || typeof inspected.Image !== "string"
+                || typeof (inspected.State as { Running?: unknown } | undefined)?.Running !== "boolean"
+                || labels?.["ccc.managed"] !== "true") {
+                throw new Error("Retained recovery could not verify the existing managed container; it was preserved.");
+            }
+            imageId = normalizeImageId(inspected.Image);
+            identity = Object.freeze({ ...resolveContainerIdentity() });
+        } else {
+            ensureImage();
+            identity = resolveContainerIdentity();
+            const baseImageId = getCurrentImageId();
+            if (!baseImageId) throw new Error("Cannot resolve the current CCC base image.");
+            imageId = ensureIdentityImage(baseImageId, identity);
+        }
         const helpers = new Map<string, Array<() => void>>();
         return {
             start: (...args: Parameters<typeof startProjectContainer>) => runWithNativeRuntimeInvocation(invocation, () => {
                 const startHeld = (guard: RuntimeBindGuard) => {
                     helpers.clear();
-                    return startProjectContainerLocked({ identity, imageId, helpers }, guard, ...args);
+                    return startProjectContainerLocked({ identity, imageId, helpers, existingContainerId }, guard, ...args);
                 };
                 return args[10] ? startHeld(args[10])
                     : withRuntimeBindGuard(cccHome(), startHeld, { waitMs: 0 });
@@ -1611,20 +1632,44 @@ type ProjectContainerStartup = (
 ) => string;
 
 function startProjectContainerLocked(
-    prepared: { identity: ContainerUserIdentity; imageId: string; helpers: Map<string, Array<() => void>> },
+    prepared: { identity: ContainerUserIdentity; imageId: string; helpers: Map<string, Array<() => void>>; existingContainerId?: string },
     bindGuard: RuntimeBindGuard,
     ...args: Parameters<ProjectContainerStartup>
 ): string {
     const [projectPath, ensureDirs, extraMounts, clipboardPortFile, profile, onRecreate, recreateRunningContainer, onContainerReady, initiallyRunningContainerId, onContainerStarted, , onBeforeMutation] = args;
     if (bindGuard.root !== resolve(cccHome())) throw new Error("Container startup requires the current CCC home's bind-publication guard.");
+    const { identity, imageId, existingContainerId } = prepared;
+    const fullPath = resolve(projectPath);
+    const containerName = getContainerName(fullPath, profile);
+    const assertRetainedTarget = (running?: boolean): void => {
+        if (existingContainerId === undefined) return;
+        const currentIdentity = resolveContainerIdentity();
+        const listed = getListedContainerId(containerName);
+        const inspected = listed.known && listed.containerId === existingContainerId
+            ? inspectContainerJsonWithRetry(existingContainerId) : null;
+        const labels = (inspected?.Config as { Labels?: Record<string, unknown> } | undefined)?.Labels;
+        const currentRunning = (inspected?.State as { Running?: unknown } | undefined)?.Running;
+        if (currentIdentity.uid !== identity.uid || currentIdentity.gid !== identity.gid
+            || currentIdentity.mapping !== identity.mapping || currentIdentity.contractVersion !== identity.contractVersion
+            || inspected?.Id !== existingContainerId || typeof inspected.Image !== "string"
+            || normalizeImageId(inspected.Image) !== imageId || typeof currentRunning !== "boolean"
+            || running !== undefined && currentRunning !== running
+            || labels?.["ccc.managed"] !== "true" || typeof labels["ccc.project.path"] !== "string"
+            || !projectPathsEquivalent(labels["ccc.project.path"], fullPath)) {
+            throw new Error("Retained recovery target identity, image or state changed; preserving it without replacement or cleanup.");
+        }
+    };
+    if (existingContainerId !== undefined && initiallyRunningContainerId !== existingContainerId) {
+        throw new Error("Retained recovery startup must remain pinned to its admitted container ID.");
+    }
+    assertRetainedTarget();
     recordRuntimeBindAuthority(bindGuard, getRuntimeInvocation());
     ensureDirs();
     mkdirSync(clipboardFilesDir(), { recursive: true, mode: 0o700 });
-    const { identity, imageId } = prepared;
+    const currentProofImage = existingContainerId === undefined ? getCurrentImageId : () => null;
     const miseVolumeName = getIdentityMiseVolumeName(identity);
     const codexPackagesVolumeName = getIdentityCodexPackagesVolumeName(identity);
 
-    const fullPath = resolve(projectPath);
     const projectMountSourceIdentity = captureBindMountSourceIdentity(fullPath);
     const projectMountIdentity = bindMountSourceIdentityDigest(projectMountSourceIdentity);
     const preparedExtraMounts = (extraMounts ?? []).map((mount) => {
@@ -1638,7 +1683,6 @@ function startProjectContainerLocked(
             assertBindMountSourceIdentity(mount.hostPath, mount.identity);
         }
     };
-    const containerName = getContainerName(fullPath, profile);
     const cli = runtimeCli();
     const requestedDeviceLabStateHostDir = join(homedir(), ".ccc", "devices");
     const currentDeviceLabOwnerId = deviceLabOwnerId(fullPath, profile);
@@ -1792,6 +1836,7 @@ function startProjectContainerLocked(
                 assertPreparedProjectMountSources();
                 assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
                 assertRequiredFilesystemMountSources();
+                assertRetainedTarget(true);
                 const current = getContainerIdentity(id);
                 if (!current?.running || current.containerId !== id) throw new Error("Container identity changed during initialization.");
             };
@@ -1812,6 +1857,9 @@ function startProjectContainerLocked(
     }
     let mutationIntentPublished = false;
     const beforeMutation = () => {
+        if (existingContainerId !== undefined) {
+            throw new Error("Retained recovery forbids container replacement, creation and retained-state migration.");
+        }
         if (mutationIntentPublished) return;
         onBeforeMutation?.();
         mutationIntentPublished = true;
@@ -1850,6 +1898,7 @@ function startProjectContainerLocked(
         onContainerStarted(containerId);
     };
     const finish = (containerId: string, startedByInvocation: boolean): string => {
+        assertRetainedTarget(true);
         if (!containerExecIdentityMatches(containerId, identity)) {
             throw new Error("Container UID/GID validation failed; refusing a session that could change host project ownership.");
         }
@@ -1858,7 +1907,7 @@ function startProjectContainerLocked(
             assertFilesystemSources: () => { assertRequiredFilesystemMountSources(); },
             identity: getContainerIdentity,
         }).run(containerId, containerName, onContainerReady
-            ? (id) => onContainerReady(id, { startedByInvocation })
+            ? (id) => { assertRetainedTarget(true); onContainerReady(id, { startedByInvocation }); }
             : undefined);
     };
     const existingLifecycle = createNativeContainerExistingLifecycle({
@@ -1868,24 +1917,26 @@ function startProjectContainerLocked(
         assertProjectSources: () => { assertPreparedProjectMountSources(); },
         assertDeviceSources: () => { assertPreparedDeviceLabMountSources(preparedDeviceLabSources); },
         assertFilesystemSources: () => { assertRequiredFilesystemMountSources(); },
-        inspectContract: (id, reportReason) => containerMatchesRunContract(
-            id,
-            requiredMounts,
-            labRunner,
-            fullPath,
-            imageId,
-            identity,
-            reportReason,
-            "preflight",
-            bindGuard,
-        ),
+        inspectContract: (id, reportReason) => {
+            assertRetainedTarget();
+            let reason = "container contract changed";
+            const verified = containerMatchesRunContract(
+                id, requiredMounts, labRunner, fullPath, imageId, identity,
+                value => { reason = value; reportReason(value); }, "preflight", bindGuard, currentProofImage,
+            );
+            if (existingContainerId !== undefined && verified !== true) {
+                throw new Error(`Retained recovery container preflight failed (${reason}); preserving it without start or replacement.`);
+            }
+            return verified;
+        },
         verifyBeforeSetup: (id) => {
+            assertRetainedTarget(true);
             assertPreparedProjectMountSources();
             assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
             assertRequiredFilesystemMountSources();
             let reason = "container contract changed";
             const verified = containerMatchesRunContract(id, requiredMounts, labRunner,
-                fullPath, imageId, identity, value => { reason = value; }, "live", bindGuard);
+                fullPath, imageId, identity, value => { reason = value; }, "live", bindGuard, currentProofImage);
             if (verified !== true) {
                 throw new Error(`Existing container live verification failed (${reason}); preserving it without replacement or join.`);
             }
@@ -1896,9 +1947,10 @@ function startProjectContainerLocked(
             assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
             assertRequiredFilesystemMountSources();
         },
-        safeToDefer: (id, reportReason) => containerRunContractIsSafeToDefer(
-            id, requiredMounts, labRunner, fullPath, identity, reportReason, bindGuard,
-        ),
+        safeToDefer: (id, reportReason) => existingContainerId === undefined
+            && containerRunContractIsSafeToDefer(
+                id, requiredMounts, labRunner, fullPath, identity, reportReason, bindGuard,
+            ),
         isRunning: isContainerRunning,
         canExec: canExecContainer,
         canExecAfterBriefRetry: canExecContainerAfterBriefRetry,
@@ -1909,8 +1961,12 @@ function startProjectContainerLocked(
         finish: (id) => { finish(id, restartedByInvocation); },
     }, {
         startCli: cli,
-        beforeStart: prepareRetainedState,
+        beforeStart: existingContainerId === undefined ? prepareRetainedState : () => { assertRetainedTarget(false); },
         afterStart: (id) => {
+            if (existingContainerId !== undefined) {
+                assertRetainedTarget(true);
+                return;
+            }
             restartedByInvocation = true;
             publishStarted(id);
         },
@@ -1923,10 +1979,13 @@ function startProjectContainerLocked(
         debug,
         managedProjectPath: fullPath,
         initiallyRunningContainerId,
-        replacementGuard: recreateRunningContainer,
+        replacementGuard: existingContainerId === undefined ? recreateRunningContainer : () => false,
         onRecreate,
     });
     if (existingLifecycle.kind === "joined") return containerName;
+    if (existingContainerId !== undefined) {
+        throw new Error("Retained recovery target became unavailable; creation and replacement were refused.");
+    }
 
     let creation: RuntimeBindCreationTicket | undefined;
     return createNativeContainerCreateLifecycle({

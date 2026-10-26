@@ -378,7 +378,7 @@ describe("acquisition cancellation checkpoints", () => {
     });
 });
 
-describe("existing-running-only acquisition with retained predecessors", () => {
+describe("existing-target acquisition with retained predecessors", () => {
     const id = "a".repeat(64), warning = "Predecessor startup requests remain pending.";
     function restricted() {
         const f = fixture();
@@ -400,20 +400,42 @@ describe("existing-running-only acquisition with retained predecessors", () => {
             expect([...f.claims]).toEqual([predecessor, own]); expect(f.trace).not.toContain("rollback");
         });
     });
-    it.each(["unknown", "absent", "stopped", "changed", "runtime", "provisional", "short-id"] as const)("refuses %s proof before guardian arm and acknowledgement", fault => {
+    it.each([false, true])("admits the same stopped target without losing its live-verification requirement (provisional=%s)", async provisional => {
+        const f = restricted();
+        f.ports.inspectExisting = () => {
+            f.inGuard("inspect-stopped");
+            return {known: true, containerId: id, runtime: "podman", running: false,
+                ...(provisional ? {requiresLiveVerification: true as const} : {})};
+        };
+        await expect(createSessionAcquisition(f.ports).run(request)).resolves.toEqual({
+            lockFile: own, existingId: id, existingOnly: true, recoveryWarning: warning,
+            ...(provisional ? {requiresLiveVerification: true} : {}),
+        });
+        expect(f.trace.filter(event => event === "inspect-stopped")).toHaveLength(3);
+        expect(f.trace.indexOf("ack")).toBeLessThan(f.trace.indexOf("reconcile-retained"));
+        expect([...f.claims]).toEqual([predecessor, own]); expect(f.trace).not.toContain("rollback");
+    });
+    it("keeps provisional stopped proof latched when a later static inspection omits that requirement", async () => {
+        const f = restricted(); let reads = 0;
+        f.ports.inspectExisting = () => ({known: true, containerId: id, runtime: "podman", running: false,
+            ...(++reads === 1 ? {requiresLiveVerification: true as const} : {})});
+        await expect(createSessionAcquisition(f.ports).run(request)).resolves.toMatchObject({existingOnly: true, existingId: id, requiresLiveVerification: true});
+        expect(reads).toBe(3); expect([...f.claims]).toEqual([predecessor, own]);
+    });
+    it.each(["unknown", "absent", "state-unknown", "changed", "runtime", "provisional-running", "short-id"] as const)("refuses %s proof before guardian arm and acknowledgement", fault => {
         const f = restricted();
         f.ports.inspectExisting = () => ({known: fault !== "unknown", containerId: fault === "absent" ? null : fault === "changed" ? "b".repeat(64) : fault === "short-id" ? "short" : id,
-            runtime: fault === "runtime" ? "docker" : "podman", running: fault !== "stopped",
-            ...(fault === "provisional" ? {requiresLiveVerification: true as const} : {})});
+            runtime: fault === "runtime" ? "docker" : "podman", ...(fault === "state-unknown" ? {} : {running: true}),
+            ...(fault === "provisional-running" ? {requiresLiveVerification: true as const} : {})});
         return expect(createSessionAcquisition(f.ports).run(request)).rejects.toBeInstanceOf(Error).then(() => {
             expect(f.trace).not.toContain("ready"); expect(f.trace).not.toContain("ack");
             expect(f.trace).toContain("rollback"); expect([...f.claims]).toEqual([predecessor]);
         });
     });
-    it.each(["stopped", "changed", "runtime", "unknown"] as const)("retires only its cleanup-disabled claim when %s target changes after reconciliation", fault => {
+    it.each(["state-unknown", "changed", "runtime", "unknown"] as const)("retires only its cleanup-disabled claim when %s target changes after reconciliation", fault => {
         const f = restricted(); let reads = 0;
         f.ports.inspectExisting = () => ({known: ++reads < 3 || fault !== "unknown", containerId: reads === 3 && fault === "changed" ? "b".repeat(64) : id,
-            runtime: reads === 3 && fault === "runtime" ? "docker" : "podman", running: reads < 3 || fault !== "stopped"});
+            runtime: reads === 3 && fault === "runtime" ? "docker" : "podman", ...(reads === 3 && fault === "state-unknown" ? {} : {running: true})});
         return expect(createSessionAcquisition(f.ports).run(request)).rejects.toBeInstanceOf(Error).then(() => {
             expect(reads).toBe(3); expect(f.trace).toContain("ack"); expect(f.trace).toContain("rollback");
             expect([...f.claims]).toEqual([predecessor]);
@@ -432,5 +454,13 @@ describe("existing-running-only acquisition with retained predecessors", () => {
         f.ports.reconcileForeign = () => { f.inGuard("reconcile-failed"); throw failure; };
         await expect(createSessionAcquisition(f.ports).run(request)).rejects.toBe(failure);
         expect([...f.claims]).toEqual([predecessor]); expect(f.trace).toContain("rollback");
+    });
+    it("retires only its stopped-target reservation when the cleanup-disabled acknowledgement fails", async () => {
+        const f = restricted(), failure = new Error("disabled acknowledgement failed");
+        f.ports.inspectExisting = () => ({known: true, containerId: id, runtime: "podman", running: false, requiresLiveVerification: true});
+        f.ports.acknowledge = async () => { f.inGuard("ack-failed"); throw failure; };
+        await expect(createSessionAcquisition(f.ports).run(request)).rejects.toBe(failure);
+        expect(f.trace).not.toContain("reconcile-retained"); expect(f.trace).toContain("rollback");
+        expect([...f.claims]).toEqual([predecessor]);
     });
 });

@@ -90,7 +90,7 @@ export interface ContainerExecPorts<Prepared> {
     sessionClaims(prefix: string, currentLockFile: string): string[];
     lockName(path: string): string;
     prepareDeviceBroker(path: string, profile?: string): Promise<void>;
-    prepareContainer(): { start: ContainerExecPorts<Prepared>["startContainer"]; initialize(id: string): void };
+    prepareContainer(restriction?: { existingContainerId: string }): { start: ContainerExecPorts<Prepared>["startContainer"]; initialize(id: string): void };
     stateLock<T>(operation: (guard: RuntimeBindGuard) => Promise<T> | T): Promise<T>;
     lifecycleLock<T>(prefix: string, operation: () => Promise<T> | T): Promise<T>;
     setupLock<T>(prefix: string, operation: () => Promise<T> | T): Promise<T>;

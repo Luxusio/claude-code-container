@@ -17,12 +17,14 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
             checkCancelled();
             const recovery = await ports.recoverPredecessors(prefix);
             checkCancelled();
+            let requiresLiveVerification = false;
             const verifyRetainedTarget = (inspection: SessionAcquisitionInspection) => {
                 if (recovery && (!inspection.known || !/^[a-f0-9]{64}$/i.test(recovery.containerId)
                     || inspection.containerId !== recovery.containerId || inspection.runtime !== recovery.runtime
-                    || inspection.running !== true || inspection.requiresLiveVerification)) {
-                    throw new Error("Retained predecessor recovery only permits the same verified running container; no lifecycle changes were authorized.");
+                    || typeof inspection.running !== "boolean" || inspection.running && inspection.requiresLiveVerification)) {
+                    throw new Error("Retained predecessor recovery only permits the same identified container with a known running or stopped state; replacement and automatic cleanup remain disabled.");
                 }
+                if (recovery && inspection.requiresLiveVerification) requiresLiveVerification = true;
             };
             const lockFile = ports.reserve(request.projectId, request.profile);
             let existingOwnershipAcknowledged = false;
@@ -55,7 +57,7 @@ export function createSessionAcquisition(ports: SessionAcquisitionPorts) {
                 }
                 return {
                     lockFile, existingId: inspection.containerId,
-                    ...(inspection.requiresLiveVerification ? { requiresLiveVerification: true as const } : {}),
+                    ...(inspection.requiresLiveVerification || requiresLiveVerification ? { requiresLiveVerification: true as const } : {}),
                     ...(recovery ? { existingOnly: true as const, recoveryWarning: recovery.diagnostic } : {}),
                 };
             } catch (error) {

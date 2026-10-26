@@ -2389,6 +2389,241 @@ describe("docker.ts module exports", () => {
             mockExistsSync.mockReturnValue(true);
         });
 
+        describe("retained predecessor exact-target startup", () => {
+            const retainedImage = `sha256:${"3".repeat(64)}`;
+            const successorId = "d".repeat(64);
+
+            function retainedRuntime(running = false) {
+                const contract = JSON.parse(fullCredentialMountsJson());
+                contract.Id = TEST_CONTAINER_ID;
+                contract.Image = retainedImage;
+                contract.State.Running = running;
+                const state = { contract, missing: false, unavailable: false, startFailure: false,
+                    afterStart: () => {} };
+                // A retained target must never resolve or update the ordinary image.
+                // Use actual full IDs at the native boundary, rather than the legacy
+                // short-ID translation used by unrelated fixtures in this file.
+                mockLifecycleImage = false;
+                expandShortContainerIds = false;
+                rejectStoppedExec = true;
+                existingRuntimeRunning = running;
+                spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                    const args = argsValue as string[];
+                    if (["images", "pull", "build", "tag"].includes(args[0])) {
+                        throw new Error(`unexpected image producer/discovery: ${args[0]}`);
+                    }
+                    if (args[0] === "ps") return makeResult(0, state.missing
+                        || args[1] === "-q" && !state.contract.State.Running ? "" : `${state.contract.Id}\n`);
+                    if (args[0] === "inspect") {
+                        if (state.unavailable) return makeResult(1, "", "temporary inspect failure");
+                        if (state.missing) return makeResult(1, "", "No such container");
+                        if (args.includes("{{.Id}}|{{.State.Running}}")) {
+                            return makeResult(0, `${state.contract.Id}|${state.contract.State.Running}\n`);
+                        }
+                        if (args.includes("{{.Image}}")) return makeResult(0, state.contract.Image);
+                        return makeResult(0, JSON.stringify(state.contract));
+                    }
+                    if (args[0] === "start") {
+                        if (state.startFailure) return { ...makeResult(null),
+                            error: Object.assign(new Error("owned fixture start timeout"), { code: "ETIMEDOUT" }) };
+                        state.contract.State.Running = true;
+                        state.afterStart();
+                        return makeResult(0, `${state.contract.Id}\n`);
+                    }
+                    return makeResult(0);
+                });
+                return state;
+            }
+
+            function expectNoRetainedReplacementOrMigration() {
+                expectNoContainerReplacement();
+                expect(mockEnsureIdentityImage).not.toHaveBeenCalled();
+                expect(mockPrepareCodexStateOwnership).not.toHaveBeenCalled();
+                expect(mockPrepareLabStateOwnership).not.toHaveBeenCalled();
+                expect(mockBeginRuntimeBindCreation).not.toHaveBeenCalled();
+                expect(mockSettleRuntimeBindCreation).not.toHaveBeenCalled();
+                expect(spawnSyncMock.mock.calls.some(([, argv]) =>
+                    ["images", "pull", "build", "tag"].includes((argv as string[])[0]))).toBe(false);
+            }
+
+            function startRetained(prepared: ReturnType<typeof prepareProjectContainerStartup>, ready = vi.fn(),
+                expectedId = TEST_CONTAINER_ID) {
+                // Even a caller willing to replace or transfer cleanup authority
+                // cannot override the prepared native restriction.
+                const replacement = vi.fn((replace: () => void) => { replace(); return true; });
+                const started = vi.fn();
+                const beforeMutation = vi.fn();
+                const start = () => prepared.start(projectPath, ensureDirs, undefined, undefined, undefined,
+                    undefined, replacement, ready, expectedId, started, mockRuntimeBindGuard, beforeMutation);
+                return { start, ready, replacement, started, beforeMutation };
+            }
+
+            it.each([false, true])("reuses pinned old image and hands off without cleanup authority (running=%s)", running => {
+                retainedRuntime(running);
+                const prepared = prepareProjectContainerStartup({ existingContainerId: TEST_CONTAINER_ID });
+                expect(spawnSyncMock.mock.calls.every(([, argv]) =>
+                    ["inspect", "ps"].includes((argv as string[])[0]))).toBe(true);
+                expectNoRetainedReplacementOrMigration();
+                const invocation = startRetained(prepared);
+
+                expect(invocation.start()).toBe(getContainerName(projectPath));
+                prepared.initialize(TEST_CONTAINER_ID);
+
+                expect(spawnSyncMock.mock.calls.filter(([, argv]) => (argv as string[])[0] === "start")
+                    .map(([, argv]) => argv)).toEqual(running ? [] : [["start", TEST_CONTAINER_ID]]);
+                expect(invocation.ready).toHaveBeenCalledExactlyOnceWith(TEST_CONTAINER_ID, { startedByInvocation: false });
+                expect(invocation.started).not.toHaveBeenCalled();
+                expect(invocation.beforeMutation).not.toHaveBeenCalled();
+                expect(invocation.replacement).not.toHaveBeenCalled();
+                expect(stoppedExecAttempts).toBe(0);
+                expect(mountChallengeContainerIds).toEqual(new Set([TEST_CONTAINER_ID]));
+                expectNoRetainedReplacementOrMigration();
+            });
+
+            it("refuses queued setup when the ready target's immutable image changes before initialization", () => {
+                const state = retainedRuntime();
+                const prepared = prepareProjectContainerStartup({ existingContainerId: TEST_CONTAINER_ID });
+                const invocation = startRetained(prepared);
+                expect(invocation.start()).toBe(getContainerName(projectPath));
+                expect(spawnSyncMock.mock.calls.some(([, argv]) => (argv as string[])[0] === "cp")).toBe(false);
+                state.contract.Image = TEST_IDENTITY_IMAGE;
+
+                expect(() => prepared.initialize(TEST_CONTAINER_ID)).toThrow();
+
+                expect(spawnSyncMock.mock.calls.some(([, argv]) => (argv as string[])[0] === "cp")).toBe(false);
+                expect(invocation.ready).toHaveBeenCalledExactlyOnceWith(TEST_CONTAINER_ID, { startedByInvocation: false });
+                expect(invocation.started).not.toHaveBeenCalled();
+                expectNoRetainedReplacementOrMigration();
+            });
+
+            it.each(["missing", "unknown", "unmanaged", "unknown state", "invalid image"] as const)(
+                "refuses an unqualified native target without producers: %s", fault => {
+                    const state = retainedRuntime();
+                    if (fault === "missing") state.missing = true;
+                    if (fault === "unknown") state.unavailable = true;
+                    if (fault === "unmanaged") state.contract.Config.Labels["ccc.managed"] = "false";
+                    if (fault === "unknown state") delete state.contract.State.Running;
+                    if (fault === "invalid image") state.contract.Image = "ccc:latest";
+
+                    expect(() => startRetained(prepareProjectContainerStartup({ existingContainerId: TEST_CONTAINER_ID })).start()).toThrow();
+
+                    expect(spawnSyncMock.mock.calls.some(([, argv]) => (argv as string[])[0] === "start")).toBe(false);
+                    expectNoRetainedReplacementOrMigration();
+                });
+
+            it.each(["ID", "image", "expected ID"] as const)("refuses changed pinned %s before native start", fault => {
+                const state = retainedRuntime();
+                const prepared = prepareProjectContainerStartup({ existingContainerId: TEST_CONTAINER_ID });
+                if (fault === "ID") state.contract.Id = successorId;
+                if (fault === "image") state.contract.Image = TEST_IDENTITY_IMAGE;
+                const invocation = startRetained(prepared, vi.fn(), fault === "expected ID" ? successorId : TEST_CONTAINER_ID);
+
+                expect(invocation.start).toThrow();
+
+                expect(spawnSyncMock.mock.calls.some(([, argv]) => (argv as string[])[0] === "start")).toBe(false);
+                expect(invocation.ready).not.toHaveBeenCalled();
+                expect(invocation.started).not.toHaveBeenCalled();
+                expect(invocation.beforeMutation).not.toHaveBeenCalled();
+                expectNoRetainedReplacementOrMigration();
+            });
+
+            it.each(["UID label", "project access", "privilege"] as const)("refuses unsafe %s without weaker running defer", fault => {
+                const state = retainedRuntime(true);
+                if (fault === "UID label") state.contract.Config.Labels["ccc.identity.uid"] = "999";
+                if (fault === "project access") state.contract.Mounts.find(
+                    (mount: { Destination: string }) => mount.Destination.startsWith("/project/")).RW = false;
+                if (fault === "privilege") state.contract.HostConfig.Privileged = true;
+                const ready = vi.fn();
+
+                expect(() => {
+                    const prepared = prepareProjectContainerStartup({ existingContainerId: TEST_CONTAINER_ID });
+                    startRetained(prepared, ready).start();
+                }).toThrow();
+
+                expect(ready).not.toHaveBeenCalled();
+                expectNoRetainedReplacementOrMigration();
+            });
+
+            it("rechecks the pinned image after the last identity observation before exact-ID start", () => {
+                const state = retainedRuntime();
+                const prepared = prepareProjectContainerStartup({ existingContainerId: TEST_CONTAINER_ID });
+                const observe = spawnSyncMock.getMockImplementation()!;
+                let imageChanged = false;
+                spawnSyncMock.mockImplementation((...args) => {
+                    const argv = args[1] as string[];
+                    if (!imageChanged && argv[0] === "inspect" && argv.includes("{{.Id}}|{{.State.Running}}")) {
+                        imageChanged = true;
+                        state.contract.Image = TEST_IDENTITY_IMAGE;
+                    }
+                    return observe(...args);
+                });
+                const invocation = startRetained(prepared);
+
+                expect(invocation.start).toThrow();
+
+                expect(imageChanged).toBe(true);
+                expect(spawnSyncMock.mock.calls.some(([, argv]) => (argv as string[])[0] === "start")).toBe(false);
+                expect(invocation.ready).not.toHaveBeenCalled();
+                expectNoRetainedReplacementOrMigration();
+            });
+
+            it("refuses an opaque stopped bind alias without creating a proof helper", () => {
+                vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+                const state = retainedRuntime();
+                state.contract.Mounts.find((mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude").Source
+                    = `/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu/${"a".repeat(64)}`;
+                const ready = vi.fn();
+
+                expect(() => startRetained(prepareProjectContainerStartup({ existingContainerId: TEST_CONTAINER_ID }), ready).start()).toThrow();
+
+                expect(ready).not.toHaveBeenCalled();
+                expect(spawnSyncMock.mock.calls.some(([, argv]) => (argv as string[])[0] === "start")).toBe(false);
+                expect(mockProveWslBindSourceIdentity).not.toHaveBeenCalled();
+                expectNoRetainedReplacementOrMigration();
+            });
+
+            it("keeps the prepared restriction on a later retry when its original target disappears", () => {
+                const state = retainedRuntime();
+                const prepared = prepareProjectContainerStartup({ existingContainerId: TEST_CONTAINER_ID });
+                const invocation = startRetained(prepared);
+                expect(invocation.start()).toBe(getContainerName(projectPath));
+                state.missing = true;
+
+                expect(invocation.start).toThrow();
+
+                expect(spawnSyncMock.mock.calls.filter(([, argv]) => (argv as string[])[0] === "start")
+                    .map(([, argv]) => argv)).toEqual([["start", TEST_CONTAINER_ID]]);
+                expect(invocation.ready).toHaveBeenCalledExactlyOnceWith(TEST_CONTAINER_ID, { startedByInvocation: false });
+                expect(invocation.started).not.toHaveBeenCalled();
+                expect(invocation.beforeMutation).not.toHaveBeenCalled();
+                expectNoRetainedReplacementOrMigration();
+            });
+
+            it.each(["timeout", "live mount", "live UID", "live ID", "live image"] as const)(
+                "preserves the started target without fallback or cleanup after %s failure", fault => {
+                    const state = retainedRuntime();
+                    state.startFailure = fault === "timeout";
+                    state.afterStart = () => {
+                        if (fault === "live mount") mismatchingMountChallengeContainerIds.add(TEST_CONTAINER_ID);
+                        if (fault === "live UID") effectiveContainerIdentity = "999:999:ccc:/home/ccc";
+                        if (fault === "live ID") state.contract.Id = successorId;
+                        if (fault === "live image") state.contract.Image = TEST_IDENTITY_IMAGE;
+                    };
+                    const prepared = prepareProjectContainerStartup({ existingContainerId: TEST_CONTAINER_ID });
+                    const invocation = startRetained(prepared);
+
+                    expect(invocation.start).toThrow();
+
+                    expect(spawnSyncMock.mock.calls.filter(([, argv]) => (argv as string[])[0] === "start")
+                        .map(([, argv]) => argv)).toEqual([["start", TEST_CONTAINER_ID]]);
+                    expect(invocation.ready).not.toHaveBeenCalled();
+                    expect(invocation.started).not.toHaveBeenCalled();
+                    expect(invocation.beforeMutation).not.toHaveBeenCalled();
+                    expect(spawnSyncMock.mock.calls.some(([, argv]) => (argv as string[])[0] === "cp")).toBe(false);
+                    expectNoRetainedReplacementOrMigration();
+                });
+        });
+
         it("retains the captured authority before a stopped restart or retained Codex-state helper", () => {
             mockReplacementRuntime(makeDriftedRunningContract(() => {}, false), {
                 identityRunning: false, startTransitionsToRunning: true,

@@ -109,7 +109,7 @@ export function presentContainerExecReport(report: ContainerExecReport): void {
             return;
         case "replacement-blocked": console.error(`[ccc] Automatic container replacement blocked: ${presentContainerExecReplacementReason(report.evidence)}.`); return;
         case "recovery-retained": console.warn("[ccc] WARNING: Unresolved predecessor records were retained; these records are not proof of live sessions. "
-            + "Using only the verified running container; automatic restart, replacement and cleanup are disabled. "
+            + "Only the same verified existing container may be activated; image updates are deferred and replacement and automatic cleanup are disabled. "
             + report.message.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 512)); return;
         case "broker-failed": console.warn(`[ccc] WARNING: device broker auto-start failed (${report.cause instanceof Error ? report.cause.message : String(report.cause)}). Host-backed device MCP tools may be unavailable.`); return;
         case "restore-failed": console.warn(`[ccc] Unable to restore Codex config access after command exit: ${report.cause instanceof Error ? report.cause.message : String(report.cause)}`); return;
@@ -289,7 +289,7 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         lifecycleLock: (path, operation) => inRuntime(() => ports.lifecycleLock(path, operation)),
         setupLock: (path, operation) => inRuntime(() => ports.setupLock(path, operation)),
         startContainer: (...args) => inRuntime(() => ports.startContainer(...args)),
-        prepareContainer: () => inRuntime(ports.prepareContainer),
+        prepareContainer: restriction => inRuntime(() => ports.prepareContainer(restriction)),
         stateLock: operation => inRuntime(() => ports.stateLock(operation)),
         beginSessionStartupInHeldLifecycleLock: () => inRuntime(ports.beginSessionStartupInHeldLifecycleLock),
         recordSessionOwnStartInHeldLifecycleLock: id => inRuntime(() => ports.recordSessionOwnStartInHeldLifecycleLock(id)),
