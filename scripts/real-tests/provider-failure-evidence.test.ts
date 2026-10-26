@@ -3,13 +3,14 @@ import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { brokerToolFailureEvidence, formatBrokerToolFailure, parseToolPayload } from "./device-lab-mcp-client.ts";
 import { repoRoot } from "./helpers.ts";
+import { renderBrokerMacosBoot } from "@ccc/device-lab/device-lab/broker/broker-outcomes-codec.js";
 
 const written: string[] = [];
 afterEach(() => { for (const file of written.splice(0)) rmSync(file, { force: true }); });
 
-function savedFailure(message: string, name?: string) {
+function savedFailure(message: string | Record<string, unknown>, name?: string) {
     try {
-        parseToolPayload({ isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false, error: message }) }],
+        parseToolPayload({ isError: true, content: [{ type: "text", text: JSON.stringify(typeof message === "string" ? { ok: false, error: message } : message) }],
             ...(name !== undefined ? { __cccToolCallRecord: { name, arguments: { password: "PRIVATE-ARGUMENT" }, secret: "PRIVATE-RECORD" } } : {}) });
     } catch (caught) {
         const error = caught as Error;
@@ -23,6 +24,47 @@ function savedFailure(message: string, name?: string) {
 }
 
 describe("saved provider failure evidence", () => {
+    it("preserves the actual Tart renderer's nested IP timeout without the instance or command", () => {
+        const macosBoot = renderBrokerMacosBoot({ ok: false, reason: "timed-out", instance: "PRIVATE-INSTANCE", attempts: [] },
+            { mode: "detached", provider: "tart", executable: "/PRIVATE-PATH/tart", args: ["run", "PRIVATE-INSTANCE"] });
+        const value = { ok: false, error: "provider-command-failed", body: { error: "provider-command-failed", result: {
+            execution: { mode: "detached", command: { provider: "tart", status: 0, stdout: "PRIVATE-OUTPUT", macosBoot } },
+        } } };
+        const { message, saved } = savedFailure(value, "start");
+        expect(JSON.parse(saved).failure).toMatchObject({ execution: { status: 0 },
+            macosBoot: { phase: "ip-readiness", ok: false, diagnosticCode: "macos-tart-ip-timeout", attemptCount: 0 } });
+        expect(message).toContain("macos-tart-ip-timeout");
+        expect(message + saved).not.toContain("PRIVATE");
+    });
+
+    it("retains a start process failure separately from IP readiness", () => {
+        const { message, saved } = savedFailure({ ok: false, error: "provider-command-failed", body: {
+            error: "provider-command-failed", result: { execution: { command: {
+                status: 1, signal: null, stderr: "PRIVATE-STDERR", executable: "PRIVATE-PATH", args: ["PRIVATE-ARG"],
+            } } },
+        } }, "start");
+        expect(JSON.parse(saved).failure.execution).toEqual({ status: 1, signal: null });
+        expect(JSON.parse(saved).failure).not.toHaveProperty("macosBoot");
+        expect(message).toContain('execution={"status":1,"signal":null}');
+        expect(message + saved).not.toContain("PRIVATE");
+    });
+
+    it("saves only closed native process refusal observations", () => {
+        const value = { ok: false, error: "broker-runtime-process-unverified", launch: { attempts: [{
+            reason: "broker-reuse-process-unverified", processVerification: { source: "unverified-broker-port-process",
+                observation: { stage: "command", reason: "native-command-failed", status: null, signal: "SIGTERM", code: "ETIMEDOUT",
+                    command: "PRIVATE-COMMAND", stderr: "PRIVATE-STDERR", startToken: "PRIVATE-TOKEN" } },
+        }] } };
+        const { saved } = savedFailure(value);
+        expect(JSON.parse(saved).failure.processObservation).toEqual({
+            stage: "command", reason: "native-command-failed", status: null, signal: "SIGTERM", errorCode: "ETIMEDOUT",
+        });
+        expect(saved).not.toContain("PRIVATE");
+        expect(brokerToolFailureEvidence({ attempts: [{ processVerification: { observation: {
+            stage: "PRIVATE-STAGE", reason: "native-command-failed", status: 1,
+        } } }] })).not.toHaveProperty("processObservation");
+    });
+
     it.each(["absent", "empty", "access-denied", "path-not-found", "script-policy", "parse-error", "other-error", "unreadable", "oversized"])("retains classified helper logs %s without text", bootstrapStderr => {
         const logEvidence = { bootstrapStarted: true, bootstrapReady: false, helperHeartbeat: false, bootstrapStderr, helperStderr: "other-error", raw: "PRIVATE" };
         const evidence = brokerToolFailureEvidence({ readiness: { attempts: 1, lastProbe: "provider-error", helper: { logEvidence } } });

@@ -447,39 +447,125 @@ describe("device-lab MCP", () => {
         )).toBeNull();
     });
 
-    it("uses fixed Darwin observation tools with a private PATH and retains PID/start-token proof", () => {
-        const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    describe("Darwin broker native observations", () => {
         const runtime = { managedBy: "device-lab-mcp", pid: 4321, port: 17373,
-            command: "/owned/node", args: ["/owned/broker-entry.js"],
+            command: "/owned/node", args: [`/Users/owned/${"long-checkout-directory/".repeat(8)}dist/packages/device-lab/dist/broker-entry.js`],
             processStartToken: "ps:Wed Oct 21 15:32:43 2026", startedAt: "2026-10-21T15:32:43.000Z" };
         const status = { name: "ccc-device-broker", mode: "host-broker-daemon", port: runtime.port,
             startedAt: runtime.startedAt, process: { pid: runtime.pid, startToken: runtime.processStartToken } };
-        const observed: Array<{ executable: string; args: readonly string[] }> = [];
-        const native = vi.spyOn(childProcess, "spawnSync").mockImplementation(((executable: string, args: readonly string[]) => {
-            observed.push({ executable, args });
-            const stdout = executable === "/usr/sbin/lsof" ? `p${runtime.pid}\n`
-                : executable === "/bin/ps" && args[3] === "command=" ? "/owned/node /owned/broker-entry.js devices broker serve --port 17373\n"
-                : executable === "/bin/ps" && args[3] === "lstart=" ? "Wed Oct 21 15:32:43 2026\n" : "";
-            if (!stdout) throw new Error("Unexpected native process probe");
-            return { status: 0, stdout, stderr: "", signal: null, pid: 0, output: [null, stdout, ""] };
-        }) as typeof childProcess.spawnSync);
-        const savedPath = process.env.PATH;
-        try {
-            Object.defineProperty(process, "platform", { ...descriptor, value: "darwin" });
-            process.env.PATH = "/private/owned-fixture-bin";
-            expect(verifiedBrokerProcessForTest(runtime, runtime.port, status)).toMatchObject({ pid: runtime.pid, processStartToken: runtime.processStartToken });
-            expect(observed).toEqual([
-                { executable: "/usr/sbin/lsof", args: ["-nP", "-iTCP:17373", "-sTCP:LISTEN", "-Fp"] },
-                { executable: "/bin/ps", args: ["-p", "4321", "-o", "command="] },
-                { executable: "/bin/ps", args: ["-p", "4321", "-o", "lstart="] },
-            ]);
-            expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, process: { ...status.process, pid: 9876 } })).toBeNull();
-            expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, process: { ...status.process, startToken: "ps:successor" } })).toBeNull();
-        } finally {
-            Object.defineProperty(process, "platform", descriptor);
-            if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
-            native.mockRestore();
-        }
+        const commandLine = `${runtime.command} ${runtime.args[0]} devices broker serve --port ${runtime.port}\n`;
+        const startLine = "Wed Oct 21 15:32:43 2026\n";
+
+        it("uses fixed Darwin observation tools with a private PATH and retains PID/start-token proof", () => {
+            const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+            const observed: Array<{ executable: string; args: readonly string[]; timeout?: number }> = [];
+            let nativeCommandLine = commandLine;
+            let nativeStartLine = startLine;
+            const native = vi.spyOn(childProcess, "spawnSync").mockImplementation(((executable: string, args: readonly string[], options: { timeout?: number }) => {
+                observed.push({ executable, args, timeout: options.timeout });
+                const stdout = executable === "/usr/sbin/lsof" ? `p${runtime.pid}\nf12\n`
+                    : executable === "/bin/ps" && args.includes("command=") ? nativeCommandLine
+                    : executable === "/bin/ps" && args.includes("lstart=") ? nativeStartLine : null;
+                if (stdout === null) throw new Error("Unexpected native process probe");
+                return { status: 0, stdout, stderr: "", signal: null, pid: 0, output: [null, stdout, ""] };
+            }) as typeof childProcess.spawnSync);
+            const savedPath = process.env.PATH;
+            try {
+                Object.defineProperty(process, "platform", { ...descriptor, value: "darwin" });
+                process.env.PATH = "/private/owned-fixture-bin";
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, status)).toMatchObject({
+                    pid: runtime.pid, commandLine: commandLine.trim(), processStartToken: runtime.processStartToken,
+                });
+                expect(observed.map(({ executable, args }) => ({ executable, args }))).toEqual([
+                    { executable: "/usr/sbin/lsof", args: ["-nP", "-iTCP:17373", "-sTCP:LISTEN", "-Fp"] },
+                    { executable: "/bin/ps", args: ["-ww", "-p", "4321", "-o", "command="] },
+                    { executable: "/bin/ps", args: ["-p", "4321", "-o", "lstart="] },
+                ]);
+                expect(observed.every(probe => Number(probe.timeout) > 0 && Number(probe.timeout) <= 1000)).toBe(true);
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, process: { ...status.process, pid: 9876 } })).toBeNull();
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, process: { ...status.process, startToken: "ps:successor" } })).toBeNull();
+                nativeStartLine = "Wed Oct 21 15:32:44 2026\n";
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, status)).toBeNull();
+                nativeStartLine = startLine;
+                nativeCommandLine = commandLine.replace(runtime.args[0], "/foreign/broker-entry.js");
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, status)).toBeNull();
+            } finally {
+                Object.defineProperty(process, "platform", descriptor);
+                if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+                native.mockRestore();
+            }
+        });
+
+        it.each([
+            ...(["listener", "command", "start-token"] as const).flatMap(stage => [
+                { stage, completion: "nonzero", nativeStatus: 1, nativeSignal: null, errorCode: null, expectedSignal: null, expectedCode: null },
+                { stage, completion: "error", nativeStatus: 0, nativeSignal: null, errorCode: "ETIMEDOUT", expectedSignal: null, expectedCode: "ETIMEDOUT" },
+                { stage, completion: "signal", nativeStatus: 0, nativeSignal: "SIGTERM", errorCode: null, expectedSignal: "SIGTERM", expectedCode: null },
+            ]),
+            { stage: "command" as const, completion: "unrecognized diagnostics", nativeStatus: null,
+                nativeSignal: "private-observation-secret", errorCode: "private-observation-secret", expectedSignal: null, expectedCode: null },
+        ])("refuses partial $stage output after native $completion without leaking command evidence", ({ stage, nativeStatus, nativeSignal, errorCode, expectedSignal, expectedCode }) => {
+            const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+            const observed: Array<{ stage: string; timeout?: number }> = [];
+            const secret = "private-observation-secret";
+            const native = vi.spyOn(childProcess, "spawnSync").mockImplementation(((executable: string, args: readonly string[], options: { timeout?: number }) => {
+                const currentStage = executable === "/usr/sbin/lsof" ? "listener"
+                    : args.includes("command=") ? "command" : "start-token";
+                observed.push({ stage: currentStage, timeout: options.timeout });
+                const stdout = currentStage === "listener" ? `p${runtime.pid}\nf12\n`
+                    : currentStage === "command" ? commandLine : startLine;
+                const failed = currentStage === stage;
+                return { status: failed ? nativeStatus : 0, stdout, stderr: secret,
+                    signal: failed ? nativeSignal : null, pid: 0, output: [null, stdout, secret],
+                    ...(failed && errorCode ? { error: Object.assign(new Error(secret), { code: errorCode }) } : {}) };
+            }) as typeof childProcess.spawnSync);
+            try {
+                Object.defineProperty(process, "platform", { ...descriptor, value: "darwin" });
+                const verification = reusableBrokerProcessVerificationForTest(runtime, runtime.port, "127.0.0.1", {
+                    nodeEnv: "production", testEscape: "0", containerBoundary: false, statusBroker: status,
+                });
+                expect(verification).toEqual({ ok: false, source: "unverified-broker-port-process", observation: {
+                    stage, reason: "native-command-failed", status: nativeStatus, signal: expectedSignal, code: expectedCode,
+                } });
+                expect(observed.at(-1)?.stage).toBe(stage);
+                expect(observed.length).toBe((["listener", "command", "start-token"] as const).indexOf(stage) + 1);
+                expect(observed.every(probe => Number(probe.timeout) > 0 && Number(probe.timeout) <= 1000)).toBe(true);
+                const diagnostic = JSON.stringify(verification);
+                expect(diagnostic).not.toContain(secret);
+                expect(diagnostic).not.toContain(runtime.args[0]);
+                expect(diagnostic).not.toContain(runtime.processStartToken);
+            } finally {
+                Object.defineProperty(process, "platform", descriptor);
+                native.mockRestore();
+            }
+        });
+
+        it("accepts only a completed empty command for the runtime/status fallback", () => {
+            const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+            let commandStatus: number | null = 0;
+            const native = vi.spyOn(childProcess, "spawnSync").mockImplementation(((executable: string, args: readonly string[]) => {
+                const commandProbe = executable === "/bin/ps" && args.includes("command=");
+                const stdout = executable === "/usr/sbin/lsof" ? `p${runtime.pid}\n` : commandProbe ? "" : startLine;
+                return { status: commandProbe ? commandStatus : 0, stdout, stderr: "", signal: null, pid: 0, output: [null, stdout, ""] };
+            }) as typeof childProcess.spawnSync);
+            try {
+                Object.defineProperty(process, "platform", { ...descriptor, value: "darwin" });
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, status)).toMatchObject({
+                    pid: runtime.pid, commandLine: "", processStartToken: runtime.processStartToken,
+                    source: "port-pid-plus-runtime-and-status",
+                });
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, startedAt: "2026-10-21T15:32:44.000Z" })).toBeNull();
+                expect(verifiedBrokerProcessForTest({ ...runtime, processStartToken: "ps:successor" }, runtime.port, status)).toBeNull();
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, process: { ...status.process, pid: 9876 } })).toBeNull();
+                commandStatus = 1;
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, status)).toBeNull();
+                commandStatus = null;
+                expect(verifiedBrokerProcessForTest(runtime, runtime.port, status)).toBeNull();
+            } finally {
+                Object.defineProperty(process, "platform", descriptor);
+                native.mockRestore();
+            }
+        });
     });
 
     it("terminates a command-line-redacted broker only after status and OS start-token attestation", async () => {

@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { join } from "path";
+import { constants as osConstants } from "os";
 import { DEVICE_LAB_OUTPUT_CONTRACTS, hasDeviceLabOutputContract, validateDeviceLabToolOutput } from "../../device-lab-mcp/src/contracts/tool-contracts.mjs";
 import type { DeviceLabToolOutputMap, DeviceRecord } from "../../device-lab-mcp/src/contracts/tool-contracts.mjs";
 import { repoRoot } from "./helpers.ts";
@@ -451,7 +452,10 @@ export async function withDeviceLabMcp(callback, options: any = {}) {
 export function parseToolPayload(result) {
     const text = result?.content?.[0]?.text || "{}";
     if (result?.isError) {
-        const value = jsonContentPayload(resultContent(result));
+        const structuredContent = result?.structuredContent;
+        const value = structuredContent && typeof structuredContent === "object" && !Array.isArray(structuredContent)
+            && (structuredContent.ok === false || typeof structuredContent.error === "string")
+            ? structuredContent : jsonContentPayload(resultContent(result));
         const structured = value && typeof value === "object" && !Array.isArray(value) ? value : null;
         const tool = knownToolName(result?.__cccToolCallRecord?.name);
         let message = formatBrokerToolFailure(structured, "mcp-tool-failed", tool);
@@ -490,6 +494,48 @@ function boundedDiagnosticText(value: unknown, maxLength = 128): string | undefi
 function safeNonNegativeInteger(value: unknown): number | null | undefined {
     if (value === null) return null;
     return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
+}
+
+function boundedNativeExecution(value: any) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const status = safeNonNegativeInteger(value.status);
+    const signal = value.signal === null ? null
+        : typeof value.signal === "string" && Object.hasOwn(osConstants.signals, value.signal) ? value.signal : undefined;
+    const errorCode = typeof value.errorCode === "string" && Object.hasOwn(osConstants.errno, value.errorCode)
+        ? value.errorCode : undefined;
+    const diagnosticCode = ["native-timeout", "native-not-found", "native-permission-denied", "native-signal", "native-nonzero-exit", "native-unknown"].includes(value.diagnosticCode)
+        ? value.diagnosticCode : undefined;
+    const timedOut = typeof value.timedOut === "boolean" ? value.timedOut : undefined;
+    return status !== undefined || signal !== undefined || errorCode || diagnosticCode || timedOut !== undefined
+        ? { status, signal, timedOut, errorCode, diagnosticCode } : undefined;
+}
+
+function providerExecution(value: any) {
+    const payload = value?.body && typeof value.body === "object" && !Array.isArray(value.body) ? value.body : value;
+    return payload?.execution ?? payload?.result?.execution?.command;
+}
+
+function boundedMacosBoot(value: any) {
+    const boot = providerExecution(value)?.macosBoot;
+    if (!boot || typeof boot !== "object" || Array.isArray(boot) || typeof boot.ok !== "boolean") return undefined;
+    // The renderer's error text includes an instance name. Export only its fixed category.
+    const diagnosticCode = boot.error?.error === "missing-provider-metadata: providerInstance"
+        ? "missing-provider-metadata"
+        : typeof boot.error?.error === "string" && boot.error.error.startsWith("Timed out waiting for Tart IP for ")
+            ? "macos-tart-ip-timeout" : undefined;
+    return { phase: "ip-readiness", ok: boot.ok, diagnosticCode,
+        execution: boundedNativeExecution(boot.error),
+        attemptCount: Array.isArray(boot.attempts) ? Math.min(boot.attempts.length, 10000) : undefined,
+    };
+}
+
+function boundedProcessObservation(value: any) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || !["listener", "command", "start-token", "identity"].includes(value.stage)
+        || !["native-command-failed", "native-output-unavailable", "budget-exhausted", "invalid-runtime", "listener-pid-mismatch", "status-identity-unverified", "runtime-continuity-unverified", "command-line-unverified"].includes(value.reason)) return undefined;
+    return { stage: value.stage, reason: value.reason,
+        ...boundedNativeExecution({ status: value.status, signal: value.signal, errorCode: value.code }),
+    };
 }
 
 function boundedTransportRecoveryAttempt(value: unknown) {
@@ -660,8 +706,14 @@ export function brokerToolFailureEvidence(value: any, callName?: unknown) {
     const readiness = boundedDesktopReadiness(body?.readiness ?? value?.readiness);
     const validation = boundedValidationFailure(value);
     const tool = knownToolName(callName);
+    const execution = boundedNativeExecution(providerExecution(value));
+    const macosBoot = boundedMacosBoot(value);
+    const processObservation = boundedProcessObservation(lastAttempt?.processVerification?.observation);
     const evidence: Record<string, unknown> = {
         ...(tool ? { tool } : {}),
+        ...(execution ? { execution } : {}),
+        ...(macosBoot ? { macosBoot } : {}),
+        ...(processObservation ? { processObservation } : {}),
         ...(validation ? { validation } : {}),
         error: boundedBrokerDiagnosticCode(value?.error),
         bodyError: boundedBrokerDiagnosticCode(body?.error),
@@ -938,11 +990,17 @@ export function formatBrokerToolFailure(value: any, fallback: string, callName?:
     const readiness = boundedDesktopReadiness(body?.readiness ?? value?.readiness);
     const validation = boundedValidationFailure(value);
     const tool = knownToolName(callName);
+    const execution = boundedNativeExecution(providerExecution(value));
+    const macosBoot = boundedMacosBoot(value);
+    const processObservation = boundedProcessObservation(lastAttempt?.processVerification?.observation);
     const parts = [
         ...(validation ? [`validation=${validation.kind}`, `tool=${tool || validation.tool}`, `field=${validation.field}`]
             : tool ? [`tool=${tool}`] : []),
         boundedBrokerDiagnosticCode(value?.error),
         boundedBrokerDiagnosticCode(body?.error),
+        ...(execution ? [`execution=${JSON.stringify(execution)}`] : []),
+        ...(macosBoot ? [`macosBoot=${JSON.stringify(macosBoot)}`] : []),
+        ...(processObservation ? [`observation=${JSON.stringify(processObservation)}`] : []),
         bootDiagnostic ? `boot=${bootDiagnostic}` : "",
         bootDiagnostic ? "" : boundedDetail(value?.detail),
         bootDiagnostic ? "" : boundedDetail(body?.detail),
@@ -982,10 +1040,13 @@ export function lifecycleDevice(payload: any, operation: string): DeviceRecord {
 }
 
 export function parseToolResult(result, options: any = {}) {
+    const payload = jsonContentPayload(resultContent(result));
+    if (options.expectedErrorCode && (payload?.ok !== false || payload?.error !== options.expectedErrorCode)) {
+        return parseToolPayload({ ...result, isError: true });
+    }
     if (options.expectedError === true && result?.isError === true && result.__cccToolCallRecord) {
         result.__cccToolCallRecord.expectedError = true;
     }
-    const payload = jsonContentPayload(resultContent(result));
     if (payload) return payload;
     return JSON.parse(result?.content?.[0]?.text || "{}");
 }

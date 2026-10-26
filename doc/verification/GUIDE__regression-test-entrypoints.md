@@ -42,6 +42,29 @@ node scripts/real-tests/host-broker-observations.mjs
 
 It needs no build or project dependencies. Its JSON includes listener observations before and after collection, untruncated commands, separate start times, selected runtime metadata and selected HTTP `/status` fields. `httpOk` records HTTP 2xx status success; `ok` preserves the parsed application's result when available. Native commands and HTTP reads are bounded; owner authentication files are excluded. It never repairs or restarts the broker. A completed diagnostic is not a readiness verdict: unavailable or changed observations remain visible, and actual Mac output is required to identify the conflict. `--help` describes invocation without collecting host state.
 
+## Provider failure diagnostics
+
+Read the saved `results/device-lab-real/mcp-error-*.json` named by a failure
+before rerunning providers. The iOS observation path retains native status,
+signal, timeout and closed error codes in MCP structured failure content while
+preserving its existing error text. The test parser selects those fields for
+the artifact; plain text is not copied into it. Missing structured evidence
+still falls back to the existing JSON error handling.
+
+Tart boot failures can be nested at `result.execution.command.macosBoot`.
+Artifacts now distinguish that IP-readiness phase from the start process's
+execution status. An IP timeout category is emitted only from the renderer's
+known timeout result. A generic HTTP 502 or elapsed duration alone does not
+establish a boot timeout. The internal Appium missing-device check also saves
+unexpected broker errors before assertion-message truncation.
+
+MCP process-verification refusals can retain the closed native observation
+stage, reason and completion facts. Failed or interrupted native output remains
+unverified; a successful empty command still needs the existing PID/birth/status
+continuity proof. Keep the same time limits and ownership fences. See
+[the failure evidence contract](../device-lab/REQ__provider-failure-evidence.md).
+Portable diagnostic tests do not establish the original Mac failure's cause.
+
 ## Native UID regression
 
 The private-config case in `src/__tests__/codex-harness.test.ts` is opt-in through a nonempty `CCC_TEST_HARNESS_IMAGE`. It requires a POSIX host with UID/GID APIs and an image containing the named `ccc` account and runtime tools required by the existing bootstrap. With no image, or without that host capability, it skips before invoking Docker. An explicitly supplied but unavailable image fails with a diagnostic.

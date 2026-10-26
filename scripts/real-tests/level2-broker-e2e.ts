@@ -616,7 +616,7 @@ export async function runBrokerE2E(options: any = {}) {
                 appiumPort: 4723,
                 automationName: "UiAutomator2",
                 provider: "appium",
-            }), { expectedError: true });
+            }), { expectedError: true, expectedErrorCode: "owner-device-not-found" });
             assert.strictEqual(appiumRecord.ok, false, JSON.stringify(appiumRecord));
             assert.strictEqual(appiumRecord.error, "owner-device-not-found", JSON.stringify(appiumRecord));
             steps.push({ name: "broker Appium record missing-device diagnostic", status: "PASS" });

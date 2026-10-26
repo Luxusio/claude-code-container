@@ -35,4 +35,11 @@ On macOS, native listener and process-start observations use the fixed system `l
 
 Use existing broker owners to exercise native preflight/log/spawn failures, post-spawn bookkeeping failure with captured runtime/tracking, missing-token refusal, no-PID/asynchronous error, actual child logging after parent descriptor release, both publication successor races, and cleanup refusal/throw preserving primary failure with one attempt. Reuse the existing native composition port capture; no production test getter or contract-shape test is required.
 
+The MCP's macOS listener observation also uses unlimited-width command output
+and checks native completion before using it. A spawn error, signal or failed
+command must not be interpreted as successful command redaction and admitted
+through metadata fallback. Retain the existing observation allowances and
+PID/birth/status fences. Selected stage/status codes can explain refusal without
+publishing native command text; see [failure evidence](REQ__provider-failure-evidence.md).
+
 Build and packaged stdio checks must exercise the current source. Portable deterministic observations are separate from current Windows compilation and actual provider acceptance; none establishes macOS, live-engine or global architecture completion.

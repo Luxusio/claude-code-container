@@ -1033,21 +1033,53 @@ function discoverLinuxBrokerPortProcess(port) {
     return null;
 }
 
-function discoverCommandBrokerPortProcess(command, args) {
+function completedBrokerNativeObservation(result, stage, onObservation) {
+    if (result.status === 0 && !result.error && !result.signal) return true;
+    onObservation?.({
+        stage,
+        reason: "native-command-failed",
+        status: Number.isInteger(result.status) ? result.status : null,
+        signal: ["SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGBUS", "SIGFPE", "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGCHLD", "SIGCONT", "SIGSTOP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGWINCH", "SIGBREAK"].includes(result.signal) ? result.signal : null,
+        code: ["ENOENT", "EACCES", "EPERM", "ESRCH", "ETIMEDOUT", "ENOBUFS", "EINVAL", "EIO", "ENOMEM", "E2BIG", "EBADF", "EAGAIN"].includes(result.error?.code) ? result.error.code : null,
+    });
+    return false;
+}
+
+function discoverCommandBrokerPortProcess(command, args, onObservation) {
     let timeout = macosCreateTimeoutMs(1000);
-    if (timeout < 1) return null;
+    if (timeout < 1) {
+        onObservation?.({ stage: "listener", reason: "budget-exhausted" });
+        return null;
+    }
     const result = spawnSync(command, args, { encoding: "utf8", windowsHide: true, timeout });
+    if (!completedBrokerNativeObservation(result, "listener", onObservation)) return null;
     const pid = Number((result.stdout?.match(/^p(\d+)$/m) || [])[1]);
-    if (result.status !== 0 || !Number.isInteger(pid) || pid <= 0) return null;
+    if (!Number.isInteger(pid) || pid <= 0) {
+        onObservation?.({ stage: "listener", reason: "native-output-unavailable" });
+        return null;
+    }
     timeout = macosCreateTimeoutMs(1000);
-    if (timeout < 1) return null;
+    if (timeout < 1) {
+        onObservation?.({ stage: "command", reason: "budget-exhausted" });
+        return null;
+    }
     const psExecutable = process.platform === "darwin" ? "/bin/ps" : "ps";
-    const ps = spawnSync(psExecutable, ["-p", String(pid), "-o", "command="], { encoding: "utf8", windowsHide: true, timeout });
+    const psArgs = process.platform === "darwin" ? ["-ww", "-p", String(pid), "-o", "command="] : ["-p", String(pid), "-o", "command="];
+    const ps = spawnSync(psExecutable, psArgs, { encoding: "utf8", windowsHide: true, timeout });
+    if (!completedBrokerNativeObservation(ps, "command", onObservation)) return null;
     timeout = macosCreateTimeoutMs(1000);
-    if (timeout < 1) return null;
+    if (timeout < 1) {
+        onObservation?.({ stage: "start-token", reason: "budget-exhausted" });
+        return null;
+    }
     const started = spawnSync(psExecutable, ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", windowsHide: true, timeout });
-    const startedAt = started.status === 0 ? String(started.stdout || "").trim() : "";
-    return { pid, commandLine: String(ps.stdout || "").trim(), processStartToken: startedAt ? `ps:${startedAt}` : null };
+    if (!completedBrokerNativeObservation(started, "start-token", onObservation)) return null;
+    const startedAt = String(started.stdout || "").trim();
+    if (!startedAt) {
+        onObservation?.({ stage: "start-token", reason: "native-output-unavailable" });
+        return null;
+    }
+    return { pid, commandLine: String(ps.stdout || "").trim(), processStartToken: `ps:${startedAt}` };
 }
 
 export function parseWindowsNetstatListenerForTest(output, port) {
@@ -1114,9 +1146,9 @@ function discoverWindowsBrokerPortProcess(port) {
     return { ...listener, processStartToken: readBrokerProcessStartToken(listener.pid, "win32") };
 }
 
-function discoverBrokerPortProcess(port) {
+function discoverBrokerPortProcess(port, onObservation) {
     if (process.platform === "linux") return discoverLinuxBrokerPortProcess(port);
-    if (process.platform === "darwin") return discoverCommandBrokerPortProcess("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"]);
+    if (process.platform === "darwin") return discoverCommandBrokerPortProcess("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"], onObservation);
     if (process.platform === "win32") return discoverWindowsBrokerPortProcess(port);
     return null;
 }
@@ -1155,7 +1187,7 @@ function readBrokerProcessStartToken(pid, platform = process.platform) {
         windowsHide: true,
         timeout,
     });
-    const value = result.status === 0 ? String(result.stdout || "").trim() : "";
+    const value = completedBrokerNativeObservation(result, "start-token") ? String(result.stdout || "").trim() : "";
     return value ? `ps:${value}` : null;
 }
 
@@ -1165,17 +1197,25 @@ function verifiedBrokerProcess(
     port = Number(runtime?.port),
     statusBroker = null,
     portProcessResolver = discoverBrokerPortProcess,
+    onObservation,
 ) {
     const pid = Number(runtime?.pid);
     if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port)) return null;
-    const observed = portProcessResolver(port);
-    if (macosCreateTimeoutMs(Infinity) < 1) return null;
+    const observed = portProcessResolver(port, onObservation);
+    if (macosCreateTimeoutMs(Infinity) < 1) {
+        onObservation?.({ stage: "identity", reason: "budget-exhausted" });
+        return null;
+    }
     const command = String(runtime?.command || "").replace(/\\/g, "/");
     const nodeLaunch = /(?:^|\/)node(?:\.exe)?$/i.test(command);
     const expectedCliPath = nodeLaunch && Array.isArray(runtime?.args) && typeof runtime.args[0] === "string"
         ? runtime.args[0]
         : null;
-    if (!observed || observed.pid !== pid) return null;
+    if (!observed) return null;
+    if (observed.pid !== pid) {
+        onObservation?.({ stage: "identity", reason: "listener-pid-mismatch" });
+        return null;
+    }
     const observedStartToken = typeof observed.processStartToken === "string"
         ? observed.processStartToken
         : "";
@@ -1198,17 +1238,22 @@ function verifiedBrokerProcess(
         && statusStartToken.length > 0
         && observedStartToken === statusStartToken
         && statusStartedAt.length > 0;
-    if (!statusProcessVerified) return null;
-    if (isBrokerServeCommandLine(observed.commandLine, port, expectedCliPath)) {
-        return runtimeContinuity
-            ? { ...observed, source: "port-process-plus-runtime-and-status" }
-            : null;
+    if (!statusProcessVerified) {
+        onObservation?.({ stage: "identity", reason: "status-identity-unverified" });
+        return null;
     }
-    return !String(observed.commandLine || "").trim()
+    if (isBrokerServeCommandLine(observed.commandLine, port, expectedCliPath)) {
+        if (runtimeContinuity) return { ...observed, source: "port-process-plus-runtime-and-status" };
+        onObservation?.({ stage: "identity", reason: "runtime-continuity-unverified" });
+        return null;
+    }
+    if (!String(observed.commandLine || "").trim()
         && runtimeContinuity
-        && statusStartedAt === runtimeStartedAt
-        ? { ...observed, source: "port-pid-plus-runtime-and-status" }
-        : null;
+        && statusStartedAt === runtimeStartedAt) {
+        return { ...observed, source: "port-pid-plus-runtime-and-status" };
+    }
+    onObservation?.({ stage: "identity", reason: !String(observed.commandLine || "").trim() ? "runtime-continuity-unverified" : "command-line-unverified" });
+    return null;
 }
 
 export const verifiedBrokerProcessForTest = verifiedBrokerProcess;
@@ -1454,11 +1499,13 @@ function reusableBrokerProcessVerification(runtime, port, host, options = {}) {
         }
         if (forwarded.applicable) localListener = forwarded.listener;
     }
-    const processVerifier = options.processVerifier || verifiedBrokerProcess;
-    const verified = processVerifier(runtime, port, options.statusBroker || null);
+    let observation = null;
+    const verified = options.processVerifier
+        ? options.processVerifier(runtime, port, options.statusBroker || null)
+        : verifiedBrokerProcess(runtime, port, options.statusBroker || null, discoverBrokerPortProcess, detail => { observation ||= detail; });
     return verified
         ? { ok: true, source: verified.source, verified }
-        : { ok: false, source: "unverified-broker-port-process", ...(localListener ? { localListener } : {}) };
+        : { ok: false, source: "unverified-broker-port-process", ...(localListener ? { localListener } : {}), ...(observation ? { observation } : {}) };
 }
 
 export const reusableBrokerProcessVerificationForTest = reusableBrokerProcessVerification;

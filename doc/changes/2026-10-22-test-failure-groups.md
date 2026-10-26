@@ -44,6 +44,34 @@ a direct Node import confirms that bootstrap does not require the newly
 assembled copy. Actual Mac Level 3 acceptance is still pending; the preceding
 unit-suite acceptance remains separate.
 
+The subsequent native Level 3 run reaches provider tests on port 17374. Its
+collector records 84 passes, 16 skips and four failures; Vitest reports 84 passes,
+17 skips and four failures because it also skips coverage-matrix validation when
+provider cases fail. The four failures group into one internal Appium
+process-verification refusal, one iOS exec failure, and two Tart starts returning
+HTTP 502. This confirms progress past the earlier preflight refusal, without
+observing whether the ordinary 17373 listener and metadata stayed unchanged.
+The four original artifacts and their hashes are preserved separately in
+`results/tests/level3-failures-2026-10-26/` before another run can replace the summary.
+
+Saved evidence cannot establish these native causes: the Appium assertion cut
+off its process-verification payload, the iOS file retained only `tool: exec`,
+and Tart's IP-readiness result was nested where the evidence extractor did not
+read it. The roughly 10.6-second Tart failures align with the fixture's 10-second
+boot allowance but do not prove a timeout. The candidate adds bounded iOS native
+failure metadata, captures the actual nested Tart boot shape and preserves
+unexpected internal broker errors before assertion truncation. Separately, MCP
+Darwin command observation now uses unlimited width and rejects failed or
+interrupted probes before reading stdout, preserving successful redaction
+fallback only with the existing identity fences. No timeout increase, retry,
+skip or new process authority is introduced.
+
+Focused portable verification passes 211 cases: 144 broker/iOS native-composition
+cases, 52 saved-evidence/message cases and 15 endpoint/emitted-startup regressions.
+Device Lab and real-test typechecks pass. Native Mac acceptance and the original
+iOS/Tart failure causes remain pending; diagnostic coverage does not turn those
+four saved failures into passes.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

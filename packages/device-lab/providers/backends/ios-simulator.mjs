@@ -16,7 +16,7 @@ import { createWaitBudget } from "../wait-budget.mjs";
 import { spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "fs";
-import { homedir, tmpdir } from "os";
+import { constants, homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, normalize, relative, sep } from "path";
 import { commandPath, localBinPath, run, runWithInput, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
@@ -828,7 +828,22 @@ function createObservationAccess(initialXcrun = null) {
         diagnostic: (text, maximumBytes) => truncateDiagnosticText(text, maximumBytes),
         jsonResult: value => jsonResult(value),
         textResult: (ok, message) => textResult(ok, message),
-        commandFailure: command => fail(command),
+        commandFailure: command => {
+            const receipt = /** @type {import('../ports/ios-observation-access.mjs').IosAccessCommand & {timedOut?:boolean}} */ (command);
+            const status = Number.isSafeInteger(receipt.status) && receipt.status !== null && receipt.status >= 0 ? receipt.status : null;
+            const signal = typeof receipt.signal === "string" && Object.hasOwn(constants.signals, receipt.signal) ? receipt.signal : null;
+            const errorCode = typeof receipt.error?.code === "string" && Object.hasOwn(constants.errno, receipt.error.code) ? receipt.error.code : null;
+            const timedOut = receipt.timedOut === true || errorCode === "ETIMEDOUT";
+            const diagnosticCode = timedOut ? "native-timeout"
+                : errorCode === "ENOENT" ? "native-not-found"
+                : errorCode === "EACCES" || errorCode === "EPERM" ? "native-permission-denied"
+                : signal ? "native-signal"
+                : status !== null && status !== 0 ? "native-nonzero-exit" : "native-unknown";
+            return { ...fail(command), structuredContent: {
+                ok: false, error: "provider-command-failed",
+                execution: { status, signal, timedOut, errorCode, diagnosticCode },
+            } };
+        },
         imageResult: data => ({ content: [{ type: "image", data, mimeType: "image/png" }] }),
         verifyTarget: device => resolveOwnedSimulatorTarget(xcrun, device),
         simulatorEffect: effect => performSimulatorEffect(xcrun, effect),
