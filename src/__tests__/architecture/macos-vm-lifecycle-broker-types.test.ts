@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { createBrokerMacosVmLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.js";
-import { brokerMacosReplacement, type BrokerMacosLifecycleInput, type BrokerMacosLifecycleResponse, type BrokerMacosProviderResult, type BrokerMacosIpObservation, type BrokerMacosPlannedCommand, type BrokerMacosClaim, type BrokerMacosPublication, type BrokerMacosPublicationChange } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
+import { brokerMacosReplacement, type BrokerMacosLifecycleInput, type BrokerMacosLifecycleResponse, type BrokerMacosProviderResult, type BrokerMacosIpObservation, type BrokerMacosPlannedCommand, type BrokerMacosClaim, type BrokerMacosPublication, type BrokerMacosPublicationChange, type BrokerMacosHelperPreparation } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerMacosVmLifecyclePorts, BrokerMacosAuxiliaryCleanup } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/macos-vm-lifecycle.js";
 
 type Effect = { readonly token: unique symbol };
@@ -43,12 +43,23 @@ async function contracts(ports: BrokerMacosVmLifecyclePorts<Effect>, input: Brok
     createBrokerMacosVmLifecycle(withoutIp);
     createBrokerMacosVmLifecycle({ ...ports, observeIp: async () => ({ ok: true, mode: "exec", provider: "tart", resourceMissing: false, address: "192.0.2.4", receipt: null }) });
     createBrokerMacosVmLifecycle({ ...ports, sleep: async () => undefined });
+    const helper: BrokerMacosHelperPreparation = await ports.provisionGuestHelper(input.ownerId, input.expectedDevice,
+        { id: input.parsed.deviceId, ssh: { host: "192.0.2.4", user: "guest" } }, { remainingMs: () => 700, waitForReady: true });
+    const { provisionGuestHelper, ...withoutHelperPreparation } = ports;
+    // @ts-expect-error finite guest preparation is required at the broker composition boundary
+    createBrokerMacosVmLifecycle(withoutHelperPreparation);
+    // @ts-expect-error successful preparation includes finite helper publication facts
+    createBrokerMacosVmLifecycle({ ...ports, provisionGuestHelper: async () => ({ ok: true, skipped: false }) });
+    // @ts-expect-error an absolute Unix deadline cannot substitute for a decreasing duration
+    ports.provisionGuestHelper(input.ownerId, input.expectedDevice, {}, { deadlineAt: Date.now() + 1000, waitForReady: true });
+    createBrokerMacosVmLifecycle({ ...ports, provisionGuestHelper: async () => ({ ok: true, skipped: false, helper: { status: "provisioned" } }) });
     const immediate: BrokerMacosVmLifecyclePorts<Effect> = { ...ports,
         execute: () => ({ ok: true, mode: "exec", provider: "tart", resourceMissing: false, receipt: null }),
         executeMetadata: () => ({ ok: true, mode: "noop", provider: "host-broker-state", resourceMissing: false, receipt: null }),
         observeIp: () => ({ ok: true, mode: "exec", provider: "tart", resourceMissing: false, receipt: null, address: null }),
         sleep: () => undefined,
         cleanupAuxiliary: () => ({ committed: false, device: null, result: { ok: true, changed: false, appium: {}, recording: {}, minimizeWatchdog: {} } }),
+        provisionGuestHelper: () => ({ ok: true, skipped: true, helper: { status: "skipped-missing-ssh" } }),
     };
     const metadata: BrokerMacosProviderResult = await ports.executeMetadata("definition-only", { timeoutMs: 1500, outputLimit: 8192 });
     const auxiliary: BrokerMacosAuxiliaryCleanup = await ports.cleanupAuxiliary(input.ownerId, input.parsed, input.expectedDevice);
@@ -71,7 +82,7 @@ async function contracts(ports: BrokerMacosVmLifecyclePorts<Effect>, input: Brok
     createBrokerMacosVmLifecycle({ ...ports, claimDefinition: async () => ({ ok: true, device: {} }) });
     // @ts-expect-error lifecycle metadata consists of finite scalar identities
     const invalidReservation: BrokerMacosPublicationChange = { kind: "reserve-start", lifecycle: { runtimeId: Promise.resolve("pending"), operation: "start", claimedAt: "now" }, boot: null };
-    void [ip, observeIp];
+    void [ip, observeIp, helper, provisionGuestHelper];
     void [outcomes, deletion, prepareCreate, immediate, metadata, auxiliary, planned, claim, published, runtimeId, invalidReservation];
 }
 void contracts;
@@ -83,5 +94,18 @@ it("publishes a ready macOS SSH host while retaining its credentials", () => {
         lastBootCheck: { ready: true, provider: "tart", ip: "192.0.2.4" },
     });
     expect(device.status).toBe("stopped");
+});
+
+it("publishes helper readiness in the same start replacement without mutating the reserved record", () => {
+    const reserved = { id: "owned", status: "starting", lifecycle: { runtimeId: "owned-launch", operation: "start", claimedAt: "now" },
+        ssh: { user: "guest", keyPath: "/owned/key" }, preferences: { preserved: true } };
+    const helper = { status: "provisioned", provider: "ssh-scp", remoteScriptPath: "/tmp/ccc-owned-guest-helper.sh" };
+    const result = brokerMacosReplacement(reserved, { kind: "start", boot: { ok: true, ready: true, sshHost: "192.0.2.4" }, helper });
+    expect(result).toMatchObject({ status: "running", bootReady: true, helper, preferences: reserved.preferences,
+        ssh: { host: "192.0.2.4", user: "guest", keyPath: "/owned/key" } });
+    expect(result).not.toHaveProperty("lifecycle");
+    expect(reserved).not.toHaveProperty("helper");
+    expect(reserved.status).toBe("starting");
+    expect(reserved.lifecycle.runtimeId).toBe("owned-launch");
 });
 

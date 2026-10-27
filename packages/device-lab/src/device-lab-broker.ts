@@ -48,7 +48,7 @@ import type { BrokerWindowsSandboxLifecyclePorts } from "./device-lab/ports/life
 import { createBrokerIosSimulatorLifecycle, createBrokerIosRecord, rollbackBrokerIosCreate } from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
 import { createBrokerMacosVmLifecycle, createBrokerMacosRecord, rollbackBrokerMacosCreate } from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import { brokerIosReplacement, brokerIosUniqueFields } from "./device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
-import { brokerMacosReplacement, brokerMacosUniqueFields, isBrokerMacosTartImageCreate, BROKER_MACOS_TART_CLONE_TIMEOUT_MS, BROKER_MACOS_TART_CREATE_TIMEOUT_MS, type BrokerMacosMetadataPurpose } from "./device-lab/domain/lifecycle/macos-vm-lifecycle.js";
+import { brokerMacosReplacement, brokerMacosUniqueFields, isBrokerMacosTartImageCreate, BROKER_MACOS_TART_CLONE_TIMEOUT_MS, BROKER_MACOS_TART_CREATE_TIMEOUT_MS, type BrokerMacosMetadataPurpose, type BrokerMacosHelperPreparation } from "./device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerIosSimulatorLifecyclePorts } from "./device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerMacosVmLifecyclePorts } from "./device-lab/ports/lifecycle/macos-vm-lifecycle.js";
 import { allocateBrokerAndroidCreatePort, createBrokerAndroidEmulatorLifecycle, createBrokerAndroidRecord } from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
@@ -668,6 +668,7 @@ type NormalizedBrokerOptions = {
     commandTimeoutMs: number;
     explicitCommandTimeoutMs?: number;
     macosCreateRemainingMs?: () => number;
+    macosStartRemainingMs?: () => number;
     requestBodyTimeoutMs: number;
     hyperVMonotonicNow: () => number;
     commandRunner: ProviderCommandRunner;
@@ -9946,8 +9947,71 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
         stateErrorCode: ownerDeviceStateErrorCode, commandTimeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     };
 }
+async function provisionBrokerMacosGuestHelper(ownerId: string, expected: unknown, device: Record<string, unknown>, options: {remainingMs: () => number; waitForReady: boolean}, normalized: NormalizedBrokerOptions): Promise<BrokerMacosHelperPreparation> {
+    const failed = (error: string): BrokerMacosHelperPreparation => ({ok: false, skipped: false, error, helper: {status: "failed", provisioning: {status: "failed"}}});
+    if (!(options.remainingMs() >= 1)) return failed("macos-helper-readiness-timeout");
+    if (ownerId !== canonicalDeviceLabOwnerId(normalized.cwd, normalized.profile)
+        || typeof device.id !== "string" || (device.ownerId !== undefined && device.ownerId !== ownerId)) return failed("broker-owner-basis-unavailable");
+    const current = withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, "macos"), () =>
+        readOwnerDevices(ownerId, "macos").find(candidate => cleanupRecord(candidate) && candidate.id === device.id), {waitBudget: {remaining: options.remainingMs}});
+    if (!current || !isDeepStrictEqual(current, expected)) return failed("owner-device-state-conflict");
+    const invocation = deviceLabBackendInvocation(normalized, "macos-vm");
+    if (!invocation || !existsSync(invocation.modulePath)) return failed("device-lab-backend-module-missing");
+    const duration = Math.floor(options.remainingMs());
+    if (!(duration >= 1)) return failed("macos-helper-readiness-timeout");
+    const script = [
+        "import { readFileSync } from 'fs';",
+        "import { performance } from 'node:perf_hooks';",
+        "const startedAt = performance.now();",
+        "const payload = JSON.parse(readFileSync(0, 'utf8') || '{}');",
+        "const context = await import(new URL('../context.mjs', payload.moduleUrl));",
+        "if (context.ownerId() !== payload.ownerId) throw new Error('broker-owner-basis-unavailable');",
+        "const backend = await import(payload.moduleUrl);",
+        "const remaining = Math.max(0, payload.allowanceMs - (performance.now() - startedAt));",
+        "const result = await backend.prepareMacosGuestHelper(payload.device, remaining, payload.waitForReady);",
+        "process.stdout.write(JSON.stringify({result}));",
+    ].join("\n");
+    const receipt = await runBrokerBackendChild(script, JSON.stringify({moduleUrl: pathToFileURL(invocation.modulePath).href,
+        ownerId, device, allowanceMs: duration, waitForReady: options.waitForReady}), {
+        cwd: normalized.cwd, env: {...process.env, ...normalized.env, CCC_PROFILE: normalized.profile || ""},
+        timeoutMs: duration, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    });
+    if (receipt.status !== 0 || receipt.error || receipt.signal || receipt.timedOut) {
+        return {...failed(receipt.timedOut ? "macos-helper-readiness-timeout" : "macos-helper-prepare-failed"),
+            execution: {status: receipt.status, signal: receipt.signal, timedOut: receipt.timedOut}};
+    }
+    let value: unknown;
+    try {value = (JSON.parse(receipt.stdout) as {result?: unknown}).result;} catch {return failed("macos-helper-prepare-invalid-result");}
+    if (!cleanupRecord(value) || typeof value.ok !== "boolean" || typeof value.skipped !== "boolean" || !cleanupRecord(value.helper)) return failed("macos-helper-prepare-invalid-result");
+    const helper = value.helper;
+    const expectedStatus = value.ok ? value.skipped ? "skipped-missing-ssh" : "provisioned" : "failed";
+    if (helper.status !== expectedStatus || value.ok && value.skipped) return failed("macos-helper-prepare-invalid-result");
+    const ssh = cleanupRecord(device.ssh) ? device.ssh : {};
+    const nativeProvisioning = cleanupRecord(helper.provisioning) ? helper.provisioning : {};
+    const metadata: Record<string, unknown> = {
+        status: expectedStatus,
+        remoteScriptPath: cleanupRecord(device.helper) && typeof device.helper.remoteScriptPath === "string"
+            ? device.helper.remoteScriptPath : `/tmp/ccc-${device.id}-guest-helper.sh`,
+        ssh: {host: ssh.host, user: ssh.user, port: typeof ssh.port === "number" ? ssh.port : 22},
+        provisioning: {status: expectedStatus,
+            ...(["ssh", "scp", "ssh-scp", "local", "ssh-key-policy"].includes(String(nativeProvisioning.provider)) ? {provider: nativeProvisioning.provider} : {}),
+            updatedAt: new Date().toISOString()},
+    };
+    const allowedErrors = ["macos-helper-readiness-timeout", "macos-helper-write-failed", "macos-helper-scp-failed", "macos-helper-chmod-failed", "macos-helper-prepare-failed"];
+    const execution = cleanupRecord(value.execution) ? value.execution : null;
+    const selectedExecution = execution ? {
+        status: typeof execution.status === "number" && Number.isSafeInteger(execution.status) ? execution.status : null,
+        signal: typeof execution.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(execution.signal) ? execution.signal : null,
+        ...(typeof execution.timedOut === "boolean" ? {timedOut: execution.timedOut} : {}),
+    } : undefined;
+    if (value.ok && !(options.remainingMs() > 0)) return {...failed("macos-helper-readiness-timeout"), ...(selectedExecution ? {execution: selectedExecution} : {})};
+    return {ok: value.ok, skipped: value.skipped, helper: metadata,
+        ...(!value.ok ? {error: allowedErrors.includes(String(value.error)) ? String(value.error) : "macos-helper-prepare-failed"} : {}),
+        ...(selectedExecution ? {execution: selectedExecution} : {})};
+}
+
 function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerMacosVmLifecyclePorts<NativeProviderLifecycleEffect> {
-    const remaining = normalized.macosCreateRemainingMs;
+    const remaining = normalized.macosCreateRemainingMs || normalized.macosStartRemainingMs;
     const claimRepository = remaining ? createBrokerOwnerRepository({...ownerRepositoryPorts,
         withLock: (ownerId, stateKey, operation) => withSharedMutationLock(ownerDevicesMutationLockFile(ownerId, stateKey), operation, {waitBudget: {remaining}}),
     }) : ownerRepository;
@@ -9989,20 +10053,26 @@ function brokerMacosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerM
             const receipt = await runBudgetedProviderCommand(normalized, { mode: "exec", provider: "tart", executable: effect.command.executable, args: resolver === "arp" ? ["ip", "--resolver=arp", instance] : ["ip", instance] }, options);
             return { ...observed(receipt), address: String(receipt.stdout || "").trim() || null };
         },
-        timestamp: () => new Date().toISOString(), runtimeId: randomUUID, now: () => performance.now(), sleep,
+        provisionGuestHelper: (ownerId, expected, device, options) => provisionBrokerMacosGuestHelper(ownerId, expected, device, options, normalized),
+        timestamp: () => new Date().toISOString(), runtimeId: randomUUID, now: normalized.hyperVMonotonicNow, sleep,
         claimDefinition: (owner, parsed, device) => claimRepository.claim(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed), remaining ? () => {assertCleanupDeadline(normalized); return undefined;} : undefined),
         cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntimeAsync(owner, parsed, normalized, expected),
-        publish: (owner, state, id, expected, change) => publishLifecycleDevice(normalized, owner, state, id, expected, candidate => {
-            const replacement = brokerMacosReplacement(candidate, change);
-            if (replacement === null)
-                return null;
-            if (change.kind === "start" && cleanupRecord(replacement.lastBootCheck) && change.boot?.ok && change.boot.result)
-                replacement.lastBootCheck.result = change.boot.result.receipt instanceof NativeBrokerExecutionReceipt ? change.boot.result.receipt.value : change.boot.result;
-            return { ...replacement, updatedAt: new Date().toISOString() };
-        }),
+        publish: (owner, state, id, expected, change) => {
+            const replace = (candidate: Record<string, unknown>) => {
+                assertCleanupDeadline(normalized);
+                const replacement = brokerMacosReplacement(candidate, change);
+                if (replacement === null) return null;
+                if (change.kind === "start" && cleanupRecord(replacement.lastBootCheck) && change.boot?.ok && change.boot.result)
+                    replacement.lastBootCheck.result = change.boot.result.receipt instanceof NativeBrokerExecutionReceipt ? change.boot.result.receipt.value : change.boot.result;
+                return { ...replacement, updatedAt: new Date().toISOString() };
+            };
+            if (!normalized.macosStartRemainingMs) return publishLifecycleDevice(normalized, owner, state, id, expected, replace);
+            assertCleanupDeadline(normalized);
+            return claimRepository.transitionLifecycle(owner, state, id, expected, replace);
+        },
         stateErrorCode: ownerDeviceStateErrorCode, commandTimeoutMs: normalized.commandTimeoutMs,
         createTimeoutMs: Math.min(BROKER_MACOS_TART_CLONE_TIMEOUT_MS, normalized.explicitCommandTimeoutMs ?? BROKER_MACOS_TART_CLONE_TIMEOUT_MS),
-        ...(normalized.macosCreateRemainingMs ? {remainingMs: normalized.macosCreateRemainingMs} : {}),
+        ...(remaining ? {remainingMs: remaining} : {}),
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     };
 }
@@ -10756,6 +10826,13 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
         if ("status" in captured) return captured;
         normalized = captured;
     }
+    const macosStart = parsed.backend === "macos-vm" && parsed.command === "device_start" && !parsed.dryRun;
+    if (macosStart && !normalized.macosStartRemainingMs) {
+        const now = normalized.hyperVMonotonicNow;
+        const allowance = Number.isFinite(parsed.bootTimeoutMs) ? Math.min(600000, Math.max(1000, Number(parsed.bootTimeoutMs))) : 300000;
+        const deadline = Math.min(now() + allowance, normalized.cleanupDeadlineAt ?? Infinity);
+        normalized = {...normalized, cleanupDeadlineAt: deadline, macosStartRemainingMs: () => Math.max(0, deadline - now())};
+    }
     const hyperVCleanupDeadlineAt = isHyperVBackend(parsed.backend) && !parsed.dryRun
         ? normalized.hyperVMonotonicNow() + (parsed.command === "device_create"
             ? DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS
@@ -10766,7 +10843,7 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
         ? { acquisitionOwner: "specialized", workflow: () => lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized) }
         : {
             acquisitionOwner: "broker", stateKey: parsed.stateKey, backend: parsed.backend,
-            waitBudget: macosCreate ? {remaining: normalized.macosCreateRemainingMs!} : isHyperVBackend(parsed.backend) ? { remaining: () => hyperVDeadlineAt - normalized.hyperVMonotonicNow() } : undefined,
+            waitBudget: macosCreate ? {remaining: normalized.macosCreateRemainingMs!} : macosStart ? {remaining: normalized.macosStartRemainingMs!} : isHyperVBackend(parsed.backend) ? { remaining: () => hyperVDeadlineAt - normalized.hyperVMonotonicNow() } : undefined,
             workflow: () => lifecycleCommandInvokeDeviceLocked(ownerId, params, parsed, normalized, hyperVDeadlineAt, hyperVCleanupDeadlineAt),
         };
     if (executor.acquisitionOwner !== "broker") return invokeBrokerExecutor(ownerId, parsed.deviceId, executor);
@@ -10775,6 +10852,9 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
     } catch (error) {
         if (macosCreate && (error instanceof CleanupOperationDeadlineError || isDeviceOperationLockTimeout(error) && !(normalized.macosCreateRemainingMs!() >= 1))) {
             return {status: 504, payload: {ok: false, error: "macos-tart-create-budget-exhausted", ownerId, backend: parsed.backend, deviceId: parsed.deviceId}};
+        }
+        if (macosStart && (error instanceof CleanupOperationDeadlineError || isDeviceOperationLockTimeout(error) && !(normalized.macosStartRemainingMs!() >= 1))) {
+            return {status: 504, payload: {ok: false, error: "macos-start-budget-exhausted", ownerId, backend: parsed.backend, deviceId: parsed.deviceId}};
         }
         if (error instanceof HyperVOperationDeadlineError) {
             return {

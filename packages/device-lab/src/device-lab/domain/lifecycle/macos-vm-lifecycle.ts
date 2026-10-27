@@ -30,6 +30,11 @@ export interface BrokerMacosProviderResult {
 export interface BrokerMacosIpObservation extends BrokerMacosProviderResult {
     address: string | null;
 }
+/** Selected preparation facts; no guest command output or credentials. */
+export interface BrokerMacosHelperPreparation {
+    ok: boolean; skipped: boolean; helper: Record<string, unknown>; error?: string;
+    execution?: {status: number | null; signal?: string | null; timedOut?: boolean};
+}
 export type BrokerMacosMetadataPurpose = "definition-only" | "image-unset" | "stopped-definition-delete";
 export type BrokerMacosPlannedCommand<Effect> =
     {kind: "unavailable"; error: string; missing: string[]} |
@@ -42,7 +47,7 @@ export interface BrokerMacosLifecycleInput<Effect> {
     ownerId: string; parsed: BrokerMacosLifecycleRequest; plan: BrokerMacosLifecyclePlan<Effect> | undefined; expectedDevice: unknown;
 }
 export type BrokerMacosRollback = {attempted: false; ok: boolean; reason: string} | {attempted: true; ok: boolean; result: BrokerMacosProviderResult};
-export type BrokerMacosLifecycleFailure = "execution-threw" | "execution-invalid" | "boot-threw" | "publication-threw" | "auxiliary-threw";
+export type BrokerMacosLifecycleFailure = "execution-threw" | "execution-invalid" | "boot-threw" | "publication-threw" | "auxiliary-threw" | "helper-threw" | "helper-invalid" | "start-budget-exhausted";
 export type BrokerMacosLifecycleResponse<Effect> =
     {kind: "refused"; error: string; missing: string[]; plan: BrokerMacosLifecyclePlan<Effect> | null} |
     {kind: "provider-failed"; error: string; plan: BrokerMacosLifecyclePlan<Effect> | undefined; execution: BrokerMacosProviderResult} |
@@ -50,7 +55,7 @@ export type BrokerMacosLifecycleResponse<Effect> =
     {kind: "rollback-failed"; error: string; stateError: string; rollback: BrokerMacosRollback} |
     {kind: "claim-conflict"; error: string; field: string; value: unknown; existing: Record<string,unknown>; rollback: BrokerMacosRollback} |
     {kind: "auxiliary-failed"; plan: BrokerMacosLifecyclePlan<Effect> | undefined; device: unknown; auxiliary: BrokerMacosAuxiliaryFacts} |
-    {kind: "completed" | "state-conflict" | "operation-failed"; plan: BrokerMacosLifecyclePlan<Effect> | undefined; device: unknown; execution: BrokerMacosProviderResult; success: boolean; invoked: boolean; mutatesHost: boolean; recoveryRequired: boolean; failure?: BrokerMacosLifecycleFailure; stateError?: string; cause?: unknown; publication?: BrokerMacosPublication; auxiliary?: BrokerMacosAuxiliaryFacts; boot?: BrokerMacosBoot | null};
+    {kind: "completed" | "state-conflict" | "operation-failed"; plan: BrokerMacosLifecyclePlan<Effect> | undefined; device: unknown; execution: BrokerMacosProviderResult; success: boolean; invoked: boolean; mutatesHost: boolean; recoveryRequired: boolean; failure?: BrokerMacosLifecycleFailure; stateError?: string; cause?: unknown; publication?: BrokerMacosPublication; auxiliary?: BrokerMacosAuxiliaryFacts; boot?: BrokerMacosBoot | null; helperPreparation?: BrokerMacosHelperPreparation};
 export interface BrokerMacosAuxiliaryFacts {
     ok: boolean; changed: boolean; stateConflict?: boolean; appium: Record<string,unknown>; recording: Record<string,unknown>; minimizeWatchdog: Record<string,unknown>;
 }
@@ -121,7 +126,7 @@ export type BrokerMacosBoot =
     {ok: true; ready: boolean; skipped?: boolean; sshHost?: string; result?: BrokerMacosIpObservation; attempts?: BrokerMacosIpObservation[]} |
     {ok: false; reason: "missing-target" | "timed-out"; instance: string | null; last?: BrokerMacosIpObservation; attempts?: BrokerMacosIpObservation[]};
 export interface BrokerMacosLifecycleMarker {runtimeId: string; operation: "start"; claimedAt: string;}
-export type BrokerMacosPublicationChange = {kind: "start" | "stop" | "delete"; boot: BrokerMacosBoot | null} |
+export type BrokerMacosPublicationChange = {kind: "start" | "stop" | "delete"; boot: BrokerMacosBoot | null; helper?: Record<string, unknown>} |
     {kind: "reserve-start"; lifecycle: BrokerMacosLifecycleMarker; boot: null};
 export function brokerMacosReplacement(candidate: Record<string, unknown>, change: BrokerMacosPublicationChange): Record<string, unknown> | null {
     if (change.kind === "delete") return null;
@@ -129,10 +134,11 @@ export function brokerMacosReplacement(candidate: Record<string, unknown>, chang
     const { lifecycle: _lifecycle, ...settled } = candidate;
     const boot = change.boot;
     return { ...settled, status: change.kind === "start" ? "running" : "stopped",
+        ...(change.kind === "start" && change.helper ? {helper: change.helper} : {}),
         ...(change.kind === "start" && boot?.ok ? {
             bootReady: boot.ready,
             lastBootCheck: { ready: boot.ready, skipped: boot.skipped === true, provider: "tart", ip: boot.sshHost || null, result: boot.result || null },
-            ...(boot.sshHost ? { ssh: { ...((candidate as { ssh?: object }).ssh || {}), host: boot.sshHost } } : {}),
+            ...(boot.sshHost && !(candidate as {ssh?: {host?: unknown}}).ssh?.host ? { ssh: { ...((candidate as { ssh?: object }).ssh || {}), host: boot.sshHost } } : {}),
         } : {}),
     };
 }

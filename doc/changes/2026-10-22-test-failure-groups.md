@@ -116,6 +116,47 @@ rebuild. The revised local macOS owner passes 16 cases and skips one native
 case; combined distinct portable coverage is 268 passes. Native acceptance is
 still required for actual provider and broker behavior.
 
+The Oct27 host run records five failures, 84 passes and 15 skips in the collector;
+Vitest adds the coverage-validation skip (105 total). The source broker echo
+artifact proves a listener observation failed with `SIGTERM`/`ETIMEDOUT` under
+the old 1,000 ms `lsof` cap. Darwin observation now captures a shared 5,000 ms
+allowance, keeps each `ps` cap at 1,000 ms, clips all probes to the caller's
+remaining allowance and refuses late success. Five seconds remains a bounded
+candidate, not a demonstrated sufficient Mac allowance. Per-call authenticated
+refusals retain selected native/status/runtime observations through the existing
+attempts projection; separate failures still need their own evidence.
+
+The iOS module's generic status refusal does not establish whether its earlier
+exit-111 operation was reached or passed. Failed sequential and child-worker
+modules now retain existing MCP calls/sessions before collection of the failure.
+Unexpected command-plan errors also use the normal diagnostic writer. Both
+Tart cases reached desktop-control readiness, with 172 and 168 attempts and a
+final provider error. Closed readiness failure facts and their attempt number
+now survive later unclassified errors; this does not identify every prior probe.
+
+Source inspection separately found that broker Mac start never installed the
+unique helper script executed by cursor probes. The start path now reuses its
+existing installer after IP discovery and before complete-record publication,
+under the broker-local start allowance and owner lock. Failure retains pending
+recovery, while no-SSH and configured one-shot behavior remain explicit. This
+fixes a demonstrated source gap without proving it caused the saved Tart error.
+The collector and four referenced artifacts are preserved with hashes in
+`results/tests/level3-failures-2026-10-27/`; the host run's commit was not reported.
+Actual Mac acceptance remains pending.
+
+Focused portable verification passes 744 distinct cases across eleven owners:
+186 broker cases, 236 runner/readiness/evidence cases, 321 Mac lifecycle/helper
+cases and one current-source MCP startup case. Initial verification found one
+test setup-count error, three privacy assertions matching fixed policy prose,
+and one real native-fact selection defect: a command string shadowed valid
+execution facts. The tests now isolate setup, inspect selected failure fields,
+and the adapter validates each native candidate before fallback. Corrected cases
+pass; repeated and filtered cases are not counted twice. DeviceLab, real-test
+and architecture typechecks, changed TypeScript lint and five syntax checks
+pass. The actual child-process helper tests use a fresh compile of the affected
+DeviceLab package only; no full repository build or native provider was run.
+Independent review and native Mac acceptance remain separate gates.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

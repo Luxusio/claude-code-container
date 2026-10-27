@@ -481,7 +481,8 @@ describe("device-lab MCP", () => {
                     { executable: "/bin/ps", args: ["-ww", "-p", "4321", "-o", "command="] },
                     { executable: "/bin/ps", args: ["-p", "4321", "-o", "lstart="] },
                 ]);
-                expect(observed.every(probe => Number(probe.timeout) > 0 && Number(probe.timeout) <= 1000)).toBe(true);
+                expect(observed.every(probe => Number(probe.timeout) > 0
+                    && Number(probe.timeout) <= (probe.executable === "/usr/sbin/lsof" ? 5000 : 1000))).toBe(true);
                 expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, process: { ...status.process, pid: 9876 } })).toBeNull();
                 expect(verifiedBrokerProcessForTest(runtime, runtime.port, { ...status, process: { ...status.process, startToken: "ps:successor" } })).toBeNull();
                 nativeStartLine = "Wed Oct 21 15:32:44 2026\n";
@@ -529,7 +530,8 @@ describe("device-lab MCP", () => {
                 } });
                 expect(observed.at(-1)?.stage).toBe(stage);
                 expect(observed.length).toBe((["listener", "command", "start-token"] as const).indexOf(stage) + 1);
-                expect(observed.every(probe => Number(probe.timeout) > 0 && Number(probe.timeout) <= 1000)).toBe(true);
+                expect(observed.every(probe => Number(probe.timeout) > 0
+                    && Number(probe.timeout) <= (probe.stage === "listener" ? 5000 : 1000))).toBe(true);
                 const diagnostic = JSON.stringify(verification);
                 expect(diagnostic).not.toContain(secret);
                 expect(diagnostic).not.toContain(runtime.args[0]);

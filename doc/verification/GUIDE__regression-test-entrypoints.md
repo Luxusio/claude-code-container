@@ -61,7 +61,11 @@ unexpected broker errors before assertion-message truncation.
 MCP process-verification refusals can retain the closed native observation
 stage, reason and completion facts. Failed or interrupted native output remains
 unverified; a successful empty command still needs the existing PID/birth/status
-continuity proof. Keep the same time limits and ownership fences. See
+continuity proof. Darwin listener discovery uses a shared monotonic 5,000 ms
+observation allowance: `lsof` may use its remainder, while each `ps` call keeps
+its 1,000 ms cap. The active Tart allowance can shorten every probe. Expired
+dispatch and late successful observations are refused; ownership fences remain.
+See
 [the failure evidence contract](../device-lab/REQ__provider-failure-evidence.md).
 Portable diagnostic tests do not establish the original Mac failure's cause.
 
@@ -108,3 +112,21 @@ links only inside its declared disposable `node_modules` output and includes
 any historical emitted entry it exercises as an explicit artifact. Such an
 artifact tests its recorded bytes; it does not establish that the current
 candidate has been rebuilt.
+
+The Oct27 native run reached desktop-control readiness for both Tart cases.
+Read the retained `readiness.failure` and `failureAttempt` when present: they
+distinguish selected broker-process, broker-transport and provider observations.
+Later unclassified failures do not erase a prior selected observation. These
+fields omit raw output, paths and credentials and do not change readiness rules.
+Failed sequential and worker modules retain their already-recorded MCP calls
+and sessions in the collector, while the scenario still fails. Use that order
+to locate the failing iOS phase; an old exit 111 is not resolved by a later
+generic status refusal.
+
+Broker Mac VM start installs the existing guest helper after IP discovery and
+before publishing the running record. Launch, IP discovery, helper installation
+and final admission share the broker-local start allowance, including operation
+lock wait. A failed installation preserves the pending start recovery record.
+This closes a source-proved gap; native execution must still establish whether
+it explains the observed Tart readiness failure. See
+[the helper contract](../device-lab/REQ__macos-broker-helper-readiness.md).

@@ -1,4 +1,4 @@
-import type {BrokerMacosLifecycleRequest, BrokerMacosProviderResult, BrokerMacosIpObservation, BrokerMacosPlannedCommand, BrokerMacosClaim, BrokerMacosPublication, BrokerMacosPublicationChange, BrokerMacosAuxiliaryFacts, BrokerMacosMetadataPurpose} from "../../domain/lifecycle/macos-vm-lifecycle.js";
+import type {BrokerMacosLifecycleRequest, BrokerMacosProviderResult, BrokerMacosIpObservation, BrokerMacosPlannedCommand, BrokerMacosClaim, BrokerMacosPublication, BrokerMacosPublicationChange, BrokerMacosAuxiliaryFacts, BrokerMacosMetadataPurpose, BrokerMacosHelperPreparation} from "../../domain/lifecycle/macos-vm-lifecycle.js";
 export interface BrokerMacosAuxiliaryCleanup {result: BrokerMacosAuxiliaryFacts; device: unknown; committed: boolean;}
 /** One prepared native effect at a time; eligibility, publication and recovery stay inward. */
 export interface BrokerMacosVmLifecyclePorts<Effect> {
@@ -20,4 +20,5 @@ export interface BrokerMacosVmLifecyclePorts<Effect> {
     readonly now: () => number;
     readonly sleep: (milliseconds: number) => void | Promise<void>;
     readonly observeIp: (effect: Effect, instance: string, resolver: "default" | "arp", options: {timeoutMs: number; outputLimit: number}) => BrokerMacosIpObservation | Promise<BrokerMacosIpObservation>;
+    readonly provisionGuestHelper: (ownerId: string, expected: unknown, device: Record<string, unknown>, options: {remainingMs: () => number; waitForReady: boolean}) => BrokerMacosHelperPreparation | Promise<BrokerMacosHelperPreparation>;
 }

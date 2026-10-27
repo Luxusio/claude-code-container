@@ -50,6 +50,8 @@ async function main() {
             file,
             name,
             error: serializeError(error),
+            toolCalls: consumeDeviceLabMcpToolCalls(),
+            toolSessions: consumeDeviceLabMcpToolSessions(),
         });
         process.exit(1);
     }

@@ -1,5 +1,5 @@
 import {brokerMacosRecord, brokerMacosCommandSucceeded, brokerMacosField, brokerMacosInstance, brokerMacosToleratesMissingDelete, isBrokerMacosTartImageCreate} from "../../domain/lifecycle/macos-vm-lifecycle.js";
-import type {BrokerMacosLifecycleRequest, BrokerMacosLifecycleInput, BrokerMacosLifecycleResponse, BrokerMacosProviderResult, BrokerMacosIpObservation, BrokerMacosPlannedCommand, BrokerMacosRollback , BrokerMacosBoot, BrokerMacosPublication} from "../../domain/lifecycle/macos-vm-lifecycle.js";
+import type {BrokerMacosLifecycleRequest, BrokerMacosLifecycleInput, BrokerMacosLifecycleResponse, BrokerMacosProviderResult, BrokerMacosIpObservation, BrokerMacosPlannedCommand, BrokerMacosRollback , BrokerMacosBoot, BrokerMacosPublication, BrokerMacosHelperPreparation} from "../../domain/lifecycle/macos-vm-lifecycle.js";
 import type {BrokerMacosVmLifecyclePorts} from "../../ports/lifecycle/macos-vm-lifecycle.js";
 
 export async function rollbackBrokerMacosCreate<Effect>(ports: BrokerMacosVmLifecyclePorts<Effect>, device: Record<string,unknown>, existing: Record<string,unknown> | null, command: BrokerMacosPlannedCommand<Effect> | null | undefined): Promise<BrokerMacosRollback> {
@@ -51,20 +51,21 @@ export async function waitForBrokerMacosBoot<Effect>(parsed: BrokerMacosLifecycl
     const instance = brokerMacosField(device,"providerInstance");
     if (!instance) return {ok: false, reason: "missing-target", instance: null};
     const timeout = Number.isFinite(parsed.bootTimeoutMs) ? Math.min(600000,Math.max(1000,Number(parsed.bootTimeoutMs))) : 300000;
-    const deadline = ports.now() + timeout;
+    const deadline = ports.now() + Math.min(timeout, ports.remainingMs ? ports.remainingMs() : Infinity);
+    const remainingMs = () => Math.min(deadline - ports.now(), ports.remainingMs ? ports.remainingMs() : Infinity);
     const attempts: BrokerMacosIpObservation[] = [];
-    while (ports.now() < deadline) {
+    while (remainingMs() > 0) {
         for (const resolver of ["default","arp"] as const) {
-            const remaining = deadline - ports.now();
+            const remaining = remainingMs();
             if (remaining <= 0) break;
             const result = await ports.observeIp(command.effect,instance,resolver,{timeoutMs: Math.min(ports.commandTimeoutMs,remaining),outputLimit: ports.outputLimit});
             if (!providerObservation(result) || !(result.address === null || typeof result.address === "string")) throw new Error("invalid-macos-ip-observation");
             attempts.push(result);
-            if (ports.now() >= deadline) break;
+            if (!(remainingMs() > 0)) break;
             const address = result.address;
             if (brokerMacosCommandSucceeded(result) && address) return {ok: true, ready: true, sshHost: address, result, attempts: attempts.slice(-4)};
         }
-        const remaining = deadline - ports.now();
+        const remaining = remainingMs();
         if (remaining <= 0) break;
         await ports.sleep(Math.min(5000,remaining));
     }
@@ -107,11 +108,14 @@ export function createBrokerMacosVmLifecycle<Effect>(ports: BrokerMacosVmLifecyc
     }
     async function existing(input: BrokerMacosLifecycleInput<Effect>): Promise<BrokerMacosLifecycleResponse<Effect>> {
         const {ownerId,parsed,plan} = input;
+        const starting = parsed.command === "device_start";
+        const startDeadline = starting ? ports.now() + (Number.isFinite(parsed.bootTimeoutMs) ? Math.min(600000, Math.max(1000, Number(parsed.bootTimeoutMs))) : 300000) : Infinity;
+        const remainingMs = () => Math.max(0, Math.min(startDeadline - ports.now(), ports.remainingMs ? ports.remainingMs() : Infinity));
         let expected = input.expectedDevice;
         const command = plan?.providerCommand;
         if (!command || command.kind === "unavailable") return {kind: "refused", error: command?.error || "missing-provider-command", missing: command?.missing || [], plan: plan || null};
-        const starting = parsed.command === "device_start";
         if (starting && pendingStart(expected)) return {kind: "refused", error: "device-start-recovery-required", missing: [], plan: plan || null};
+        if (starting && !(remainingMs() >= 1)) return {kind: "refused", error: "macos-start-budget-exhausted", missing: [], plan: plan || null};
         const noExecution: BrokerMacosProviderResult = {ok: false, mode: command.kind === "ready" ? "exec" : "noop", provider: command.kind === "ready" ? command.provider : "host-broker-state", resourceMissing: false, receipt: null};
         if (starting) {
             let reservation: BrokerMacosPublication;
@@ -130,36 +134,57 @@ export function createBrokerMacosVmLifecycle<Effect>(ports: BrokerMacosVmLifecyc
         }
         if (auxiliary?.committed) expected = structuredClone(auxiliary.device);
         if (auxiliary?.result.ok === false) return {kind: "auxiliary-failed", plan, device: auxiliary.device, auxiliary: auxiliary.result};
+        if (starting && !(remainingMs() >= 1)) return {kind: "operation-failed", plan, device: expected, execution: noExecution, success: false, invoked: false, mutatesHost: true, recoveryRequired: true, failure: "start-budget-exhausted"};
         let execution: BrokerMacosProviderResult;
         try {
+            const timeoutMs = starting ? Math.min(ports.commandTimeoutMs, remainingMs()) : ports.commandTimeoutMs;
             execution = command.kind === "metadata-only"
-                ? await ports.executeMetadata(command.purpose,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit})
-                : await ports.execute(command.effect,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
+                ? await ports.executeMetadata(command.purpose,{timeoutMs, outputLimit: ports.outputLimit})
+                : await ports.execute(command.effect,{timeoutMs, outputLimit: ports.outputLimit, ...(starting ? {remainingMs} : {})});
         } catch {
             return {kind: "operation-failed", plan, device: expected, execution: noExecution, success: false, invoked: true, mutatesHost: true, recoveryRequired: starting || pendingStart(expected), failure: "execution-threw", ...(auxiliary ? {auxiliary: auxiliary.result} : {})};
         }
         if (!providerObservation(execution)) return {kind: "operation-failed", plan, device: expected, execution: noExecution, success: false, invoked: true, mutatesHost: true, recoveryRequired: starting || pendingStart(expected), failure: "execution-invalid", ...(auxiliary ? {auxiliary: auxiliary.result} : {})};
         let success = brokerMacosCommandSucceeded(execution) || brokerMacosToleratesMissingDelete(parsed,execution);
         let boot: BrokerMacosBoot | null = null;
+        let helperPreparation: BrokerMacosHelperPreparation | undefined;
         if (success && starting) {
-            try {boot = await waitForBrokerMacosBoot(parsed,expected,command,ports); if (!boot.ok) success = false;}
+            if (!(remainingMs() >= 1)) return {kind: "operation-failed", plan, device: expected, execution, success: false, invoked: true, mutatesHost: true, recoveryRequired: true, failure: "start-budget-exhausted"};
+            try {boot = await waitForBrokerMacosBoot(parsed,expected,command,{...ports, remainingMs}); if (!boot.ok) success = false;}
             catch {return {kind: "operation-failed", plan, device: expected, execution, success: false, invoked: true, mutatesHost: true, recoveryRequired: true, failure: "boot-threw"};}
+            if (success) {
+                const device = expected && typeof expected === "object" ? {...expected as Record<string, unknown>} : {};
+                const ssh = device.ssh && typeof device.ssh === "object" ? {...device.ssh as Record<string, unknown>} : null;
+                if (ssh && !ssh.host && boot?.ok && boot.sshHost) ssh.host = boot.sshHost;
+                if (ssh) device.ssh = ssh;
+                if (!(remainingMs() >= 1)) return {kind: "operation-failed", plan, device: expected, execution, success: false, invoked: true, mutatesHost: true, recoveryRequired: true, failure: "start-budget-exhausted", boot};
+                if (ssh?.host && ssh.user) {
+                    try {helperPreparation = await ports.provisionGuestHelper(ownerId, expected, device, {remainingMs, waitForReady: parsed.waitForBoot !== false});}
+                    catch {return {kind: "operation-failed", plan, device: expected, execution, success: false, invoked: true, mutatesHost: true, recoveryRequired: true, failure: "helper-threw", boot};}
+                    if (!helperPreparation || typeof helperPreparation.ok !== "boolean" || typeof helperPreparation.skipped !== "boolean" || !helperPreparation.helper || typeof helperPreparation.helper !== "object" || Array.isArray(helperPreparation.helper)) {
+                        return {kind: "operation-failed", plan, device: expected, execution, success: false, invoked: true, mutatesHost: true, recoveryRequired: true, failure: "helper-invalid", boot};
+                    }
+                } else helperPreparation = {ok: true, skipped: true, helper: {status: "skipped-missing-ssh", provisioning: {status: "skipped-missing-ssh"}}};
+                if (helperPreparation.ok && !(remainingMs() > 0)) helperPreparation = {...helperPreparation, ok: false, error: "macos-helper-readiness-timeout", helper: {...helperPreparation.helper, status: "failed"}};
+                success = helperPreparation.ok;
+            }
         }
         let publication: BrokerMacosPublication | undefined;
         if (success) {
             try {
-                publication = ports.publish(ownerId,parsed.stateKey,parsed.deviceId,expected,{kind: starting ? "start" : parsed.command === "device_stop" ? "stop" : "delete", boot});
+                if (starting && !(remainingMs() >= 1)) return {kind: "operation-failed", plan, device: expected, execution, success: false, invoked: true, mutatesHost: true, recoveryRequired: true, failure: "start-budget-exhausted", boot, helperPreparation};
+                publication = ports.publish(ownerId,parsed.stateKey,parsed.deviceId,expected,{kind: starting ? "start" : parsed.command === "device_stop" ? "stop" : "delete", boot, ...(helperPreparation ? {helper: helperPreparation.helper} : {})});
                 if (!publication || typeof publication.matched !== "boolean") throw new Error("invalid-lifecycle-publication");
             }
             catch (cause) {
                 let stateError: string | null = null;
                 try {stateError = ports.stateErrorCode(cause);} catch { /* Preserve the partial-effect outcome if diagnostic classification fails. */ }
-                return {kind: "operation-failed", plan, device: expected, execution, success: false, invoked: true, mutatesHost: true, recoveryRequired: starting || pendingStart(expected), failure: "publication-threw", ...(stateError ? {stateError, cause} : {}), ...(auxiliary ? {auxiliary: auxiliary.result} : {}), boot};
+                return {kind: "operation-failed", plan, device: expected, execution, success: false, invoked: true, mutatesHost: true, recoveryRequired: starting || pendingStart(expected), failure: "publication-threw", ...(stateError ? {stateError, cause} : {}), ...(auxiliary ? {auxiliary: auxiliary.result} : {}), boot, helperPreparation};
             }
         }
         const conflict = publication !== undefined && !publication.matched;
         const device = publication ? publication.device : expected;
-        return {kind: conflict ? "state-conflict" : success ? "completed" : "operation-failed", plan, device, execution, success, invoked: true, mutatesHost: true, recoveryRequired: starting ? !success || conflict : pendingStart(expected) && (!success || conflict), publication, ...(auxiliary ? {auxiliary: auxiliary.result} : {}), boot};
+        return {kind: conflict ? "state-conflict" : success ? "completed" : "operation-failed", plan, device, execution, success, invoked: true, mutatesHost: true, recoveryRequired: starting ? !success || conflict : pendingStart(expected) && (!success || conflict), publication, ...(auxiliary ? {auxiliary: auxiliary.result} : {}), boot, ...(helperPreparation ? {helperPreparation} : {})};
     }
     return {create, start: existing, stop: existing, delete: existing, createRecord, planCreate, planExisting};
 }

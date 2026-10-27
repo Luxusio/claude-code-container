@@ -32,11 +32,15 @@ export async function waitForStartReadiness(deadline, { probe, now, sleep }) {
         const currentHelper = observation?.helper;
         const helper = currentHelper || readiness.helper;
         const helperAttempt = currentHelper ? attempts : readiness.helperAttempt;
+        const currentFailure = observation?.failure;
+        const failure = currentFailure || readiness.failure;
+        const failureAttempt = currentFailure ? attempts : readiness.failureAttempt;
         readiness = {
             attempts,
             lastProbe: transportException ? "transport-exception" : observation?.failed ? "provider-error"
                 : now() > deadline ? "late-response" : "missing-cursor",
             ...(helper ? { helper, helperAttempt } : {}),
+            ...(failure ? { failure, failureAttempt } : {}),
         };
         if (now() >= deadline) break;
         await sleep(Math.min(500, deadline - now()));

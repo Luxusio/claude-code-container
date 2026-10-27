@@ -625,6 +625,51 @@ describe("device-lab host broker lifecycle commands", () => {
         originalHomeRestore?.();
     });
 
+    it.each([false, true])("captures the Mac start allowance before waiting for its owner operation lock (expired=%s)", { timeout: 20000 }, async expired => {
+        const cwd = join(fixtureHome!, `macos-start-lock-${expired}`);
+        mkdirSync(cwd);
+        const ownerId = deviceLabOwnerId(cwd), deviceId = "macos-lock-budget";
+        const root = writeBrokerDevices(ownerId, "macos", [{id: deviceId, ownerId, backend: "macos-vm", provider: "tart",
+            providerInstance: `ccc-${ownerId}-${deviceId}`, status: "stopped", preferences: {keep: "before-lock"}}]);
+        const stateFile = join(root, "devices.json"), originalState = readFileSync(stateFile);
+        let clock = 17.25;
+        const monotonicNow = vi.fn(() => clock);
+        const native = vi.fn<FixtureCommandRunner>((command) => ({...command, status: 0, stdout: "", stderr: ""}));
+        const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0, platform: "darwin",
+            hyperVMonotonicNow: monotonicNow, providerPaths: {tart: "/owned/fake-tart"}, commandRunner: native});
+        const endpoint = ownerRpcEndpoint(await listen(server), ownerId), headers = ownerRpcHeaders(ownerId);
+        let holder: Awaited<ReturnType<typeof holdDeviceOperationInChild>> | undefined, pending: Promise<Response> | undefined;
+        try {
+            holder = await holdDeviceOperationInChild(cwd, "macos", deviceId);
+            const observationsBefore = monotonicNow.mock.calls.length;
+            let settled = false;
+            pending = fetch(endpoint, {method: "POST", headers, body: JSON.stringify({method: "broker.command.invoke", params: {
+                backend: "macos-vm", command: "device_start", deviceId, waitForBoot: false, bootTimeoutMs: 1000,
+            }})}).finally(() => { settled = true; });
+            void pending.catch(() => undefined);
+            await vi.waitFor(() => expect(monotonicNow.mock.calls.length).toBeGreaterThan(observationsBefore));
+            expect(settled).toBe(false);
+            expect(native).not.toHaveBeenCalled();
+            clock += expired ? 1000.5 : 875;
+            await holder.release();
+            const response = await pending, body = await response.json();
+            expect(response.status, JSON.stringify(body)).toBe(expired ? 504 : 200);
+            if (expired) {
+                expect(body).toMatchObject({ok: false, error: "macos-start-budget-exhausted"});
+                expect(native).not.toHaveBeenCalled();
+                expect(readFileSync(stateFile)).toEqual(originalState);
+            } else {
+                expect(body).toMatchObject({ok: true, result: {device: {id: deviceId, status: "running", helper: {status: "skipped-missing-ssh"}}}});
+                expect(native).toHaveBeenCalledTimes(1);
+                expect(native.mock.calls[0][1].timeoutMs).toBeGreaterThan(0);
+                expect(native.mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(125);
+            }
+        } finally {
+            try {await holder?.release(); if (pending) await pending.catch(() => undefined);}
+            finally {await close(server); cleanupOwner(ownerId);}
+        }
+    });
+
     it("recognizes localized Windows taskkill failures when the process is already gone", () => {
         expect(windowsProcessTreeOutcome(128, "Windows localized process-not-found message", false)).toEqual({
             ok: true,
@@ -11668,7 +11713,7 @@ vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import
 
 // The controller lives outside the broker process. A synchronous native wait cannot
 // delay this controller's deadline or release the gate before responsiveness is proved.
-type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup" | "macos-spawn-error" | "macos-status" | "macos-status-failure";
+type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup" | "macos-spawn-error" | "macos-status" | "macos-status-failure" | "macos-helper" | "macos-helper-failure";
 type AndroidHttpFixtureReply = { status: number; body: Record<string, any> };
 type AndroidHttpFixtureReady = { baseUrl: string; owners: Array<{ id: string; token: string; file: string }>; initial: Record<string, unknown> };
 
@@ -11680,10 +11725,10 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const active = serial => file('active-' + serial);
 const liveFile = file('native-' + process.pid + '.json');
 fs.writeFileSync(liveFile, JSON.stringify({pid: process.pid, tool, args}));
-fs.appendFileSync(file('native.log'), JSON.stringify({pid: process.pid, tool, args}) + '\n');
+fs.appendFileSync(file('native.log'), JSON.stringify({pid: process.pid, tool, args, cwd: process.cwd()}) + '\n');
 async function gate(name) {
     if (process.env.CCC_ANDROID_HTTP_PHASE !== name) return;
-    fs.writeFileSync(file('entered-' + name), JSON.stringify({pid: process.pid, tool, args}));
+    fs.writeFileSync(file('entered-' + name), JSON.stringify({pid: process.pid, tool, args, cwd: process.cwd()}));
     const deadline = Date.now() + 20000;
     while (!has('release-' + name) && !has('shutdown')) {
         if (Date.now() > deadline) throw Error('owned native fixture gate expired: ' + name);
@@ -11695,6 +11740,40 @@ async function main() {
         if (args.length !== 2 || args[0] !== '-eo' || args[1] !== 'args=') throw Error('unallocated process inventory operation');
         if (has('emulator-process')) console.log(fs.readFileSync(file('emulator-process'), 'utf8'));
         return;
+    }
+    if (tool === 'scp') {
+        await gate('macos-helper');
+        await gate('macos-helper-failure');
+        if (process.env.CCC_ANDROID_HTTP_PHASE === 'macos-helper-failure') {
+            process.stderr.write('owned fixture copy denied\n');
+            process.exitCode = 23;
+            return;
+        }
+        const target = args.at(-1), source = args.at(-2);
+        const remote = typeof target === 'string' ? target.match(/^guest@192\.0\.2\.20:(\/tmp\/ccc-[a-z0-9-]+-guest-helper\.sh)$/) : null;
+        if (!remote || !source || !fs.readFileSync(source, 'utf8').includes('cursor_position)')) throw Error('unallocated helper transfer');
+        fs.mkdirSync(file('guest'), {recursive: true});
+        fs.copyFileSync(source, path.join(file('guest'), path.basename(remote[1])));
+        return;
+    }
+    if (tool === 'ssh') {
+        const command = args.at(-1) || '', remote = command.match(/\/tmp\/ccc-[a-z0-9-]+-guest-helper\.sh/);
+        if (!remote) throw Error('unallocated helper SSH operation');
+        const script = path.join(file('guest'), path.basename(remote[0]));
+        if (!fs.existsSync(script)) {
+            process.stderr.write('owned guest helper is absent\n');
+            process.exitCode = 127;
+            return;
+        }
+        if (command.startsWith('chmod 700 ') && command.endsWith(' status')) {
+            console.log(JSON.stringify({ok: true, helper: 'ccc-macos-guest-helper'}));
+            return;
+        }
+        if (command.endsWith(' cursor_position')) {
+            console.log(JSON.stringify({ok: true, provider: 'macos-helper', cursor: {x: 101, y: 202}}));
+            return;
+        }
+        throw Error('unallocated installed helper command');
     }
     if (tool === 'tart') {
         if (args[0] === 'run') {
@@ -11830,7 +11909,7 @@ const deadline = setTimeout(() => { console.error('owned broker fixture deadline
         initial.appium = {authority: 'host-broker', processOwner: 'host-broker', startedBy: 'broker.appium.start',
             runtimeId: 'owned-auxiliary-appium', serverPid: appiumChild.pid, processIdentity};
     }
-    if (settings.phase !== 'create') {
+    if (settings.phase !== 'create' && !settings.phase.startsWith('macos-helper')) {
         fs.mkdirSync(path.dirname(owners[0].file), {recursive: true});
         fs.writeFileSync(owners[0].file, JSON.stringify({devices: [initial]}));
         if (macos) {
@@ -11894,7 +11973,7 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
     writeFileSync(join(root, 'package.json'), JSON.stringify({type: 'commonjs'}));
     const brokerModule = import.meta.resolve('@ccc/device-lab/device-lab-broker.js');
     expect(new URL(brokerModule).pathname, 'current emitted broker is required').toMatch(/\/dist\/device-lab-broker\.js$/);
-    for (const tool of ['adb', 'emulator', 'avdmanager', 'tart', 'process-inventory']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
+    for (const tool of ['adb', 'emulator', 'avdmanager', 'tart', 'process-inventory', 'ssh', 'scp']) writeFileSync(join(bin, tool), '#!/usr/bin/env node\nconst tool = ' + JSON.stringify(tool) + ';\n' + androidHttpFixtureNative, {mode: 0o700});
     if (phase === 'macos-spawn-error') {
         // An existing executable reaches the real POSIX spawn boundary, whose
         // missing interpreter yields an error event without assigning a PID.
@@ -11912,6 +11991,16 @@ cp.spawn = function(command, args = [], options = {}) {
 };
 require('node:module').syncBuiltinESMExports();
 `);
+    if (phase.startsWith('macos-helper')) {
+        writeFileSync(preload, readFileSync(preload, 'utf8') + `
+// Guest capacity is a fixture fact, independent of the coordinator host.
+const os = require('node:os');
+os.totalmem = () => 64 * 1024 ** 3;
+os.freemem = () => 48 * 1024 ** 3;
+require('node:module').syncBuiltinESMExports();
+`);
+        for (const project of ['project-a', 'project-b']) mkdirSync(join(root, project));
+    }
     writeFileSync(worker, androidHttpFixtureBroker);
     writeFileSync(appiumFixture, androidHttpFixtureAppium);
     writeFileSync(settings, JSON.stringify({brokerModule, ownerModule: import.meta.resolve('@ccc/device-lab/device-lab-owner.js'),
@@ -11922,6 +12011,8 @@ require('node:module').syncBuiltinESMExports();
     Object.assign(env, {ANDROID_AVD_HOME: join(home, '.android', 'avd'), CCC_ANDROID_HTTP_PHASE: phase, FAKE_ANDROID_LOG: join(home, 'launcher.log')});
     delete env.NODE_OPTIONS;
     delete env.NODE_PATH;
+    // The real backend helper child must use the same owned fake native leaves.
+    if (phase.startsWith('macos-helper')) env.NODE_OPTIONS = '--require=' + JSON.stringify(preload);
     const child = spawn(process.execPath, ['--require', preload, worker, settings], {cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc']});
     let diagnostics = '', spawnError: Error | undefined;
     child.stdout!.on('data', chunk => {diagnostics += chunk;});
@@ -11930,7 +12021,7 @@ require('node:module').syncBuiltinESMExports();
     const exited = new Promise<void>((resolveExit, reject) => child.once('close', code => code === 0 ? resolveExit() : reject(spawnError || new Error('owned broker exited ' + code + ': ' + diagnostics))));
     void exited.catch(() => undefined);
     const requests: Promise<AndroidHttpFixtureReply>[] = [];
-    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup', 'auxiliary-stopped', 'auxiliary-no-stop', 'macos-boot', 'macos-owner-cleanup', 'macos-status', 'macos-status-failure']) writeFileSync(join(home, 'release-' + name), '');};
+    const release = () => {for (const name of ['create', 'boot', 'stop-inventory', 'owner-cleanup', 'auxiliary-stopped', 'auxiliary-no-stop', 'macos-boot', 'macos-owner-cleanup', 'macos-status', 'macos-status-failure', 'macos-helper', 'macos-helper-failure']) writeFileSync(join(home, 'release-' + name), '');};
     const dispose = async () => {
         release();
         writeFileSync(join(home, 'shutdown'), '');
@@ -11988,7 +12079,7 @@ require('node:module').syncBuiltinESMExports();
             expect(pending.settled(), 'responsiveness is proved before native release').toBe(false);
         };
         const records = (ownerIndex = 0): Record<string, any>[] => existsSync(ready.owners[ownerIndex].file) ? JSON.parse(readFileSync(ready.owners[ownerIndex].file, 'utf8')).devices : [];
-        const nativeCalls = (): Array<{pid: number; tool: string; args: string[]}> => existsSync(join(home, 'native.log')) ? readFileSync(join(home, 'native.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+        const nativeCalls = (): Array<{pid: number; tool: string; args: string[]; cwd: string}> => existsSync(join(home, 'native.log')) ? readFileSync(join(home, 'native.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
         return {...ready, home, rpc, waitForGate, assertResponsive, records, nativeCalls, release, dispose};
     } catch (error) {await dispose(); throw error;}
 }
@@ -12120,6 +12211,115 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
 });
 
 describe('emitted default-runner macOS HTTP responsiveness', () => {
+    it('creates a fresh owner ID and installs its actual helper before cursor readiness', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('macos-helper');
+        try {
+            expect(fixture.records()).toEqual([]);
+            const create = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_create',
+                name: 'Fresh helper Mac', provider: 'tart', sshUser: 'guest', sshHost: '192.0.2.20'}).result;
+            expect(create).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped', ssh: {user: 'guest'}}}}});
+            const id = create.body.result.device.id as string;
+            expect(id).toMatch(/^macos-/);
+            expect(create.body.result.device).not.toHaveProperty('helper');
+            expect(fixture.records()[0]).not.toHaveProperty('helper');
+            const missing = await fixture.rpc(0, 'broker.device.tool.invoke', {backend: 'macos-vm', tool: 'device_cursor_position', deviceId: id}).result;
+            expect(missing.body.result.mcpResult.isError, 'a fresh guest cannot report cursor readiness before installation').toBe(true);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'ssh' && call.args.at(-1)?.endsWith(' cursor_position'))).toHaveLength(1);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'scp')).toEqual([]);
+
+            const start = fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: id, waitForBoot: true, bootTimeoutMs: 10000});
+            await fixture.waitForGate(start);
+            const copy = fixture.nativeCalls().find(call => call.tool === 'scp')!;
+            expect(copy.cwd).toBe(join(dirname(fixture.home), 'project-a'));
+            expect(copy.args.at(-1)).toBe(`guest@192.0.2.20:/tmp/ccc-${id}-guest-helper.sh`);
+            expect(readFileSync(copy.args.at(-2)!, 'utf8')).toContain('cursor_position)');
+            expect(existsSync(join(fixture.home, 'guest', `ccc-${id}-guest-helper.sh`))).toBe(false);
+            expect(fixture.records()).toEqual([expect.objectContaining({id, status: 'starting', lifecycle: {
+                runtimeId: expect.any(String), operation: 'start', claimedAt: expect.any(String)}, bootReady: false})]);
+            expect(fixture.records()[0]).not.toHaveProperty('helper');
+
+            await fixture.assertResponsive(start);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'tart' && call.args[0] === 'stop')).toEqual([]);
+            fixture.release();
+            const started = await androidHttpFixtureBounded(start.result, 5000, 'helper installation did not settle after release');
+            expect(started).toMatchObject({status: 200, body: {ok: true, result: {device: {id, status: 'running', bootReady: true,
+                helper: {status: 'provisioned', remoteScriptPath: `/tmp/ccc-${id}-guest-helper.sh`, provisioning: {provider: 'ssh-scp'}}},
+                boot: {ready: true, skipped: false, provider: 'tart', ip: '192.0.2.20'}, helper: {status: 'provisioned', provider: 'ssh-scp'},
+                execution: {mutatesHost: true}}}});
+            expect(started.body.result.device).not.toHaveProperty('lifecycle');
+
+            const cursor = await fixture.rpc(0, 'broker.device.tool.invoke', {backend: 'macos-vm', tool: 'device_cursor_position', deviceId: id}).result;
+            expect(cursor).toMatchObject({status: 200, body: {ok: true, result: {mcpResult: {content: expect.any(Array)}}}});
+            expect(cursor.body.result.mcpResult.isError).not.toBe(true);
+            const payload = JSON.parse(cursor.body.result.mcpResult.content.find((item: {type: string}) => item.type === 'text').text);
+            expect(payload.cursor).toEqual({x: 101, y: 202});
+            expect(existsSync(join(fixture.home, 'active-macos'))).toBe(true);
+            const calls = fixture.nativeCalls();
+            const copiedAt = calls.findIndex(call => call.tool === 'scp');
+            const permissionAt = calls.findIndex(call => call.tool === 'ssh' && call.args.at(-1)?.startsWith('chmod 700 '));
+            const cursorAt = calls.findLastIndex(call => call.tool === 'ssh' && call.args.at(-1)?.endsWith(' cursor_position'));
+            expect(copiedAt).toBeGreaterThan(calls.findIndex(call => call.tool === 'tart' && call.args[0] === 'ip'));
+            expect(permissionAt).toBeGreaterThan(copiedAt);
+            expect(cursorAt).toBeGreaterThan(permissionAt);
+            expect(calls.filter(call => call.tool === 'tart' && call.args[0] === 'run')).toHaveLength(1);
+            expect(calls.filter(call => call.tool === 'scp')).toHaveLength(1);
+            expect(fixture.records()[0]).toMatchObject({id, helper: {status: 'provisioned'}});
+        } finally {await fixture.dispose();}
+    });
+
+    it('holds the same-device operation lock through native helper installation while serving health and another owner', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('macos-helper');
+        try {
+            const create = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_create',
+                name: 'Locked helper Mac', provider: 'tart', sshUser: 'guest'}).result;
+            expect(create).toMatchObject({status: 200, body: {ok: true}});
+            const id = create.body.result.device.id as string;
+            const start = fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: id, waitForBoot: true, bootTimeoutMs: 10000});
+            await fixture.waitForGate(start);
+            const stop = fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_stop', deviceId: id});
+            await fixture.assertResponsive(start);
+            expect(stop.settled(), 'same-device stop waits for installation and publication').toBe(false);
+            expect(fixture.records()[0]).toMatchObject({id, status: 'starting', lifecycle: {operation: 'start'}});
+            expect(fixture.records()[0]).not.toHaveProperty('helper');
+            expect(fixture.nativeCalls().filter(call => call.tool === 'tart' && call.args[0] === 'stop')).toEqual([]);
+            fixture.release();
+            expect(await start.result).toMatchObject({status: 200, body: {ok: true, result: {device: {id, status: 'running', helper: {status: 'provisioned'}}}}});
+            expect(await stop.result).toMatchObject({status: 200, body: {ok: true, result: {device: {id, status: 'stopped'}}}});
+            const calls = fixture.nativeCalls();
+            expect(calls.findIndex(call => call.tool === 'tart' && call.args[0] === 'stop'))
+                .toBeGreaterThan(calls.findIndex(call => call.tool === 'ssh' && call.args.at(-1)?.startsWith('chmod 700 ')));
+            expect(calls.filter(call => call.tool === 'tart' && call.args[0] === 'run')).toHaveLength(1);
+            expect(calls.filter(call => call.tool === 'scp')).toHaveLength(1);
+            expect(fixture.records()[0]).not.toHaveProperty('lifecycle');
+        } finally {await fixture.dispose();}
+    });
+
+    it('retains the fresh start recovery record after actual SCP failure and refuses a second launch', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('macos-helper-failure');
+        try {
+            const create = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_create',
+                name: 'Failed helper Mac', provider: 'tart', sshUser: 'guest'}).result;
+            expect(create).toMatchObject({status: 200, body: {ok: true}});
+            const id = create.body.result.device.id as string;
+            const start = fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: id, waitForBoot: true, bootTimeoutMs: 10000});
+            await fixture.waitForGate(start);
+            await fixture.assertResponsive(start);
+            fixture.release();
+            const failed = await androidHttpFixtureBounded(start.result, 5000, 'failing helper installation did not settle');
+            expect(failed.status).toBeGreaterThanOrEqual(400);
+            expect(failed.body).toMatchObject({ok: false, result: {device: {id, status: 'starting', lifecycle: {operation: 'start'}}, execution: {mutatesHost: true}}});
+            expect(fixture.records()[0]).toMatchObject({id, status: 'starting', lifecycle: {operation: 'start'}});
+            expect(fixture.records()[0].helper?.status).not.toBe('provisioned');
+            expect(existsSync(join(fixture.home, 'guest', `ccc-${id}-guest-helper.sh`))).toBe(false);
+            const again = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: id, waitForBoot: true, bootTimeoutMs: 10000}).result;
+            expect(again).toMatchObject({status: 409, body: {ok: false}});
+            const calls = fixture.nativeCalls();
+            expect(calls.filter(call => call.tool === 'tart' && call.args[0] === 'run')).toHaveLength(1);
+            expect(calls.filter(call => call.tool === 'scp')).toHaveLength(1);
+            expect(calls.filter(call => call.tool === 'ssh' || call.tool === 'tart' && ['stop', 'delete'].includes(call.args[0]))).toEqual([]);
+        } finally {await fixture.dispose();}
+    });
+
     it.each(['macos-status', 'macos-status-failure'] as const)(
         'yields during %s native observation without changing either owner record', {timeout: 30000}, async phase => {
         const fixture = await createAndroidHttpFixture(phase);

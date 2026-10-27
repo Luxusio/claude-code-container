@@ -948,6 +948,38 @@ export async function waitForMacosGuestHelper(device, deadlineAt, {
     return waitForMacosGuestHelperWithinBudget({remainingMs:() => deadlineAt - now()},() => provision(device,{deadlineAt}),delay);
 }
 
+/** Internal broker leaf: relative allowance, no device lock or state publication.
+ * @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice} device
+ * @param {number} allowanceMs
+ * @param {boolean} [waitForReady]
+ * @returns {Promise<{ok:boolean,skipped:boolean,helper:Record<string,unknown>,error?:string,execution?:{status:number|null,signal?:string|null,timedOut?:boolean}}>} */
+export async function prepareMacosGuestHelper(device, allowanceMs, waitForReady = true) {
+    const startedAt = performance.now();
+    const duration = Number.isFinite(allowanceMs) && allowanceMs > 0 ? Math.min(600000, allowanceMs) : 0;
+    const budget = { remainingMs: () => Math.max(0, duration - Math.max(0, performance.now() - startedAt)) };
+    /** @type {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmProvision} */
+    const provision = budget.remainingMs() >= 1
+        ? waitForReady
+            ? await waitForMacosGuestHelperWithinBudget(budget, () => provisionMacosGuestHelper(device, { startBudget: budget }), sleep, true)
+            : provisionMacosGuestHelper(device, { startBudget: budget })
+        : { ok: false, error: "macos-helper-readiness-timeout" };
+    const ok = provision.ok === true && budget.remainingMs() > 0;
+    const source = /** @type {Record<string, unknown>} */ (provision.provisioning && typeof provision.provisioning === "object" ? provision.provisioning : {});
+    const status = ok ? provision.skipped ? "skipped-missing-ssh" : "provisioned" : "failed";
+    const provisioning = { status, ...(typeof source.provider === "string" ? { provider: source.provider } : {}),
+        updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : new Date().toISOString() };
+    const helper = { status, provisioning, remoteScriptPath: device.helper?.remoteScriptPath || `/tmp/ccc-${device.id}-guest-helper.sh`,
+        ssh: device.ssh ? { host: device.ssh.host || null, user: device.ssh.user || null, port: device.ssh.port || 22 } : null };
+    const error = typeof provision.error === "string" && ["macos-helper-readiness-timeout", "macos-helper-write-failed", "macos-helper-scp-failed", "macos-helper-chmod-failed"].includes(provision.error)
+        ? provision.error : "macos-helper-prepare-failed";
+    const command = provision.command;
+    return { ok, skipped: ok && provision.skipped === true, helper,
+        ...(!ok ? { error: provision.ok ? "macos-helper-readiness-timeout" : error } : {}),
+        ...(command ? { execution: { status: Number.isInteger(command.status) ? command.status : null,
+            signal: typeof command.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(command.signal) ? command.signal : null,
+            timedOut: command.error?.code === "ETIMEDOUT" } } : {}) };
+}
+
 async function waitForMacosGuestHelperWithinBudget(budget, provision, delay = sleep, preserveLateFailure = false) {
     const outcome = await waitForMacosGuestHelperReadiness({
         remainingMs: () => budget.remainingMs(),

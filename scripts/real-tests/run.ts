@@ -395,13 +395,13 @@ async function executeModule(file: string) {
             toolSessions: consumeDeviceLabMcpToolSessions(),
         };
     } catch (error) {
-        consumeDeviceLabMcpToolCalls();
-        consumeDeviceLabMcpToolSessions();
         return {
             ok: false,
             file,
             name,
             error: { message: error?.message || String(error), stack: error?.stack },
+            toolCalls: consumeDeviceLabMcpToolCalls(),
+            toolSessions: consumeDeviceLabMcpToolSessions(),
         };
     }
 }
@@ -552,7 +552,6 @@ function collectExecution(execution) {
     const file = execution.file;
     const currentTestName = execution.name || file;
     try {
-        if (!execution.ok) throw Object.assign(new Error(execution.error?.message || "provider worker failed"), execution.error || {});
         const result = execution.result;
         const moduleToolCalls = Array.isArray(execution.toolCalls) ? execution.toolCalls : [];
         const moduleToolSessions = Array.isArray(execution.toolSessions) ? execution.toolSessions : [];
@@ -608,6 +607,7 @@ function collectExecution(execution) {
                 envOverrides: Array.isArray(session.envOverrides) ? session.envOverrides : [],
             });
         }
+        if (!execution.ok) throw Object.assign(new Error(execution.error?.message || "provider worker failed"), execution.error || {});
         for (const tool of explicitScriptedTools) {
             scriptedRecords.push({ file, test: moduleName, tool, source: "declared-scripted-result" });
         }

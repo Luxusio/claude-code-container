@@ -171,3 +171,154 @@ describe("start waits for configured desktop control transport", () => {
         expect(JSON.parse(observed.content[0].text).detail).toBe("missing-start-backend");
     });
 });
+
+describe("desktop readiness retains classified probe failures", () => {
+    it.each([
+        ["broker-process", { ok: false, error: "broker-runtime-process-unverified", launch: { attempts: [{
+            processVerification: { observation: { stage: "listener", reason: "native-command-failed", status: null,
+                signal: "SIGTERM", code: "ETIMEDOUT", command: "PRIVATE-COMMAND", stderr: "PRIVATE-STDERR" } },
+        }] } }, { stage: "broker-process", error: "broker-runtime-process-unverified", processObservation: {
+            stage: "listener", reason: "native-command-failed", status: null, signal: "SIGTERM", errorCode: "ETIMEDOUT",
+        } }],
+        ["broker-transport", { ok: false, error: "broker-rpc-unavailable", attempts: [{
+            transportCode: "connection-refused", status: 502, error: "PRIVATE-TRANSPORT", url: "PRIVATE-ENDPOINT",
+        }] }, { stage: "broker-transport", error: "broker-rpc-unavailable" }],
+        ["provider", { ok: false, error: "provider-command-failed", execution: { command: {
+            status: 17, signal: null, errorCode: "EACCES", stdout: "PRIVATE-OUTPUT", executable: "PRIVATE-PATH", args: ["PRIVATE-ARG"],
+        } } }, { stage: "provider", error: "provider-command-failed", execution: { status: 17, signal: null, errorCode: "EACCES" } }],
+    ])("preserves %s evidence and its attempt across a later unclassified response", async (_stage, failedProbe, failure) => {
+        let clock = 0;
+        const invoke = vi.fn().mockResolvedValueOnce(result(failedProbe))
+            .mockResolvedValueOnce(result({ ok: false, error: "PRIVATE-LATER-ERROR" }));
+        const observed = await finishStartReadiness(start(), args, 0, invoke, {
+            now: () => clock, sleep: async (ms: number) => { clock += ms; },
+        });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({
+            attempts: 2, lastProbe: "provider-error", failure, failureAttempt: 1,
+        });
+        expect(invoke).toHaveBeenCalledTimes(2);
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it("retains observed native failure facts without publishing an unknown error code", async () => {
+        let clock = 500;
+        const observed = await finishStartReadiness(start(), args, 0, async () => result({
+            ok: false, error: "PRIVATE-NATIVE-ERROR", execution: {
+                status: 1, signal: null, errorCode: "ENOENT", stderr: "PRIVATE-OUTPUT", command: "PRIVATE-COMMAND",
+            },
+        }), { now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 1, lastProbe: "provider-error",
+            failure: { stage: "provider", execution: { status: 1, signal: null, errorCode: "ENOENT" } }, failureAttempt: 1 });
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it("classifies an observed closed transport code without publishing transport error text", async () => {
+        let clock = 500;
+        const observed = await finishStartReadiness(start(), args, 0, async () => result({
+            ok: false, attempts: [{ transportCode: "connection-refused", error: "PRIVATE-HOST-AND-CREDENTIAL" }],
+        }), { now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 1, lastProbe: "provider-error",
+            failure: { stage: "broker-transport", error: "connection-refused" }, failureAttempt: 1 });
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it("retains the broker backend-child failure's direct native status", async () => {
+        let clock = 500;
+        const observed = await finishStartReadiness(start(), args, 0, async () => result({
+            ok: false, error: "device-lab-backend-tool-failed", status: 9, signal: "SIGKILL", stderr: "PRIVATE-OUTPUT",
+        }), { now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 1, lastProbe: "provider-error",
+            failure: { stage: "provider", error: "device-lab-backend-tool-failed", execution: { status: 9, signal: "SIGKILL" } },
+            failureAttempt: 1 });
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it("retains native backend status from the broker body instead of its HTTP status", async () => {
+        let clock = 500;
+        const observed = await finishStartReadiness(start(), args, 0, async () => result({
+            ok: false, error: "device-lab-backend-tool-failed", status: 502,
+            body: { error: "device-lab-backend-tool-failed", status: 9, signal: "SIGKILL", stderr: "PRIVATE-OUTPUT" },
+        }), { now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 1, lastProbe: "provider-error",
+            failure: { stage: "provider", error: "device-lab-backend-tool-failed", execution: { status: 9, signal: "SIGKILL" } },
+            failureAttempt: 1 });
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it("reads standard structured failure content before reporting an unavailable control transport", async () => {
+        let clock = 500;
+        const observed = await finishStartReadiness(start(), args, 0, async () => ({
+            isError: true,
+            content: [{ type: "text", text: "PRIVATE-PLAIN-ERROR" }],
+            structuredContent: { ok: false, error: "provider-command-failed", execution: {
+                status: 111, signal: null, errorCode: "EIO", stderr: "PRIVATE-STDERR",
+            } },
+        }), { now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 1, lastProbe: "provider-error",
+            failure: { stage: "provider", error: "provider-command-failed", execution: { status: 111, signal: null, errorCode: "EIO" } },
+            failureAttempt: 1 });
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it.each([
+        { isError: true, content: [{ type: "text", text: "PRIVATE-ERROR" }] },
+        result({ ok: false, error: "private-provider-error", status: 1, signal: "SIGTERM" }),
+        result({ ok: false, error: "PRIVATE-ERROR", execution: {
+            status: "1", signal: "PRIVATE-SIGNAL", errorCode: "PRIVATE-CODE", stdout: "PRIVATE-OUTPUT",
+        } }),
+        result({ ok: false, error: "PRIVATE-ERROR", execution: { status: 0, signal: null } }),
+        result({ ok: false, error: "PRIVATE-ERROR", execution: { status: null, signal: null } }),
+    ])("does not invent a classified failure from unknown or malformed observations", async failedProbe => {
+        let clock = 500;
+        const observed = await finishStartReadiness(start(), args, 0, async () => failedProbe, {
+            now: () => clock, sleep: async (ms: number) => { clock += ms; },
+        });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 1, lastProbe: "provider-error" });
+        expect(JSON.stringify(observed)).not.toMatch(/PRIVATE|private-provider/);
+    });
+
+    it("replaces an earlier classified failure with the latest classified observation", async () => {
+        let clock = 0;
+        const invoke = vi.fn().mockResolvedValueOnce(result({ ok: false, error: "broker-runtime-process-unverified" }))
+            .mockResolvedValueOnce(result({ ok: false, error: "provider-command-failed", execution: { status: 1 } }));
+        const observed = await finishStartReadiness(start(), args, 0, invoke, {
+            now: () => clock, sleep: async (ms: number) => { clock += ms; },
+        });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 2, lastProbe: "provider-error",
+            failure: { stage: "provider", error: "provider-command-failed", execution: { status: 1 } }, failureAttempt: 2 });
+    });
+
+    it("keeps earlier classified failure facts when the last transport probe throws", async () => {
+        let clock = 0;
+        const invoke = vi.fn().mockResolvedValueOnce(result({ ok: false, error: "broker-rpc-unavailable" }))
+            .mockRejectedValueOnce(new Error("PRIVATE-PATH password=PRIVATE-CREDENTIAL"));
+        const observed = await finishStartReadiness(start(), args, 0, invoke, {
+            now: () => clock, sleep: async (ms: number) => { clock += ms; },
+        });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 2, lastProbe: "transport-exception",
+            failure: { stage: "broker-transport", error: "broker-rpc-unavailable" }, failureAttempt: 1 });
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it("still returns the original start after a classified failure followed by a cursor observation", async () => {
+        let clock = 0;
+        const invoke = vi.fn().mockResolvedValueOnce(result({ ok: false, error: "provider-command-failed" }))
+            .mockResolvedValueOnce(cursor);
+        const original = start();
+        expect(await finishStartReadiness(original, args, 0, invoke, {
+            now: () => clock, sleep: async (ms: number) => { clock += ms; },
+        })).toBe(original);
+        expect(invoke).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not let a historical launch refusal veto a current cursor observation", async () => {
+        const original = start();
+        const invoke = vi.fn(async () => result({ ok: true, cursor: { x: 10, y: 20 }, launch: { attempts: [{
+            error: "broker-runtime-process-unverified", processVerification: {
+                observation: { stage: "listener", reason: "native-command-failed", status: null, signal: "SIGTERM", code: "ETIMEDOUT" },
+            },
+        }] } }));
+        expect(await finishStartReadiness(original, args, 0, invoke, { now: () => 100 })).toBe(original);
+        expect(invoke).toHaveBeenCalledTimes(1);
+    });
+});

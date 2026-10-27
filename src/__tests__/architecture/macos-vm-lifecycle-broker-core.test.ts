@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isDeepStrictEqual } from "node:util";
 import { createBrokerMacosVmLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/macos-vm-lifecycle.js";
-import { brokerMacosReplacement, type BrokerMacosLifecycleInput, type BrokerMacosLifecycleRequest, type BrokerMacosProviderResult, type BrokerMacosIpObservation, type BrokerMacosPublicationChange } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
+import { brokerMacosReplacement, type BrokerMacosLifecycleInput, type BrokerMacosLifecycleRequest, type BrokerMacosProviderResult, type BrokerMacosIpObservation, type BrokerMacosPublicationChange, type BrokerMacosHelperPreparation } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerMacosVmLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/macos-vm-lifecycle.js";
 
 type Effect = { operation: string; target: string };
@@ -33,6 +33,7 @@ function fixture(initial: Record<string, unknown> | null = device()) {
         execute: effect => { trace.push(`execute:${effect.operation}`); return native(); },
         executeMetadata: purpose => { trace.push(`metadata:${purpose}`); return { ...native(), mode: "noop", provider: "host-broker-state" }; },
         observeIp: (_effect, target, resolver) => { trace.push(`probe:${target}:${resolver}`); return ip(); },
+        provisionGuestHelper: () => ({ ok: true, skipped: false, helper: { status: "provisioned" } }),
         sleep: ms => { trace.push(`sleep:${ms}`); clock += ms; return undefined; },
         now: () => clock,
         commandTimeoutMs: 15000,
@@ -291,6 +292,153 @@ describe("broker macOS finite boot effects", () => {
         expect(probes).toBe(1);
         expect(f.trace.some(step => step.startsWith("sleep:"))).toBe(false);
         expectPending(f.current());
+    });
+});
+
+describe("broker macOS guest helper admission", () => {
+    const installed = (): BrokerMacosHelperPreparation => ({ ok: true, skipped: false,
+        helper: { status: "provisioned", provider: "ssh-scp", remoteScriptPath: "/tmp/ccc-unit-guest-helper.sh" } });
+
+    it("installs against the reserved record with the discovered host before publishing running", async () => {
+        const original = device(), f = fixture(original), preparation = installed();
+        f.ports.provisionGuestHelper = (owner, expected, candidate, options) => {
+            f.trace.push("install-helper");
+            expect(owner).toBe("owner");
+            expect(expected).toEqual(f.publications[0].device);
+            expectPending(expected);
+            expect(candidate).toMatchObject({ ...original, status: "starting", ssh: { host: "192.0.2.24", user: "guest", keyPath: "/owned/key" } });
+            expect(candidate).not.toHaveProperty("helper");
+            expect(original.ssh).toEqual({ user: "guest", keyPath: "/owned/key" });
+            expect(options.waitForReady).toBe(true);
+            expect(options.remainingMs()).toBeGreaterThan(0);
+            expect(f.current()?.status).toBe("starting");
+            expect(f.publications).toHaveLength(1);
+            return preparation;
+        };
+        const result = await createBrokerMacosVmLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }));
+        expect(result).toMatchObject({ kind: "completed", success: true, recoveryRequired: false,
+            device: { status: "running", helper: preparation.helper, ssh: { host: "192.0.2.24", user: "guest", keyPath: "/owned/key" } } });
+        expect(f.trace).toEqual(["publish:reserve-start", "execute:device_start", "probe:owned-unit:default", "install-helper", "publish:start"]);
+        expect(f.publications[1].expected).toEqual(f.publications[0].device);
+        expect(f.publications[1].change).toMatchObject({ kind: "start", helper: preparation.helper });
+        expect(f.current()).not.toHaveProperty("lifecycle");
+    });
+
+    it("keeps its pending reservation until the finite installer settles", async () => {
+        const f = fixture(), installer = deferred<BrokerMacosHelperPreparation>();
+        let settled = false;
+        f.ports.provisionGuestHelper = () => { f.trace.push("install-held"); return installer.promise; };
+        const pending = createBrokerMacosVmLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }))
+            .then(result => { settled = true; return result; });
+        void pending.catch(() => undefined);
+        try {
+            await turn();
+            expect(settled).toBe(false);
+            expectPending(f.current());
+            expect(f.current()).not.toHaveProperty("helper");
+            expect(f.publications).toHaveLength(1);
+            installer.resolve(installed());
+            expect(await pending).toMatchObject({ kind: "completed", device: { status: "running", helper: { status: "provisioned" } } });
+        } finally { installer.resolve(installed()); await pending.catch(() => undefined); }
+    });
+
+    it("shares decreasing admission time across launch, IP, helper and final publication", async () => {
+        const f = fixture(), observed: Array<{ stage: string; allowance: number }> = [];
+        const admittedAt = f.ports.now();
+        f.ports.remainingMs = () => 1000 - (f.ports.now() - admittedAt);
+        f.advance(125); // Time already spent waiting for the outer device-operation lock.
+        f.ports.execute = (_effect, options) => {
+            observed.push({ stage: "launch", allowance: options.timeoutMs });
+            expect(options.remainingMs?.()).toBe(875);
+            f.advance(200);
+            return native();
+        };
+        f.ports.observeIp = (_effect, _instance, _resolver, options) => {
+            observed.push({ stage: "ip", allowance: options.timeoutMs });
+            f.advance(175);
+            return ip();
+        };
+        f.ports.provisionGuestHelper = (_owner, _expected, _candidate, options) => {
+            observed.push({ stage: "helper", allowance: options.remainingMs() });
+            f.advance(100);
+            expect(options.remainingMs()).toBe(400);
+            return installed();
+        };
+        expect(await createBrokerMacosVmLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true })))
+            .toMatchObject({ kind: "completed", device: { status: "running" } });
+        expect(observed).toEqual([{ stage: "launch", allowance: 875 }, { stage: "ip", allowance: 675 }, { stage: "helper", allowance: 500 }]);
+        expect(f.ports.remainingMs()).toBe(400);
+    });
+
+    it.each([0, 0.5])("dispatches no native work when the captured allowance is %sms", async remaining => {
+        const f = fixture();
+        f.ports.remainingMs = () => remaining;
+        f.ports.provisionGuestHelper = () => { throw Error("expired installer must not run"); };
+        const result = await createBrokerMacosVmLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }));
+        expect(result.kind).not.toBe("completed");
+        expect(f.trace.filter(step => /^(execute|probe|sleep)/.test(step))).toEqual([]);
+        expect(f.current()?.status).not.toBe("running");
+    });
+
+    it.each(["nonzero", "throw", "malformed"])("retains recovery after a %s installer result without restart or cleanup", async failure => {
+        const f = fixture();
+        f.ports.provisionGuestHelper = () => {
+            f.trace.push("install-helper");
+            if (failure === "throw") throw Error("private-installer-output");
+            return (failure === "malformed" ? { ok: true } : { ok: false, skipped: false,
+                helper: { status: "failed", provider: "scp" }, error: "macos-helper-scp-failed", execution: { status: 255, signal: null, timedOut: false } }) as BrokerMacosHelperPreparation;
+        };
+        const result = await createBrokerMacosVmLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }));
+        expect(result).toMatchObject({ kind: "operation-failed", success: false, invoked: true, mutatesHost: true, recoveryRequired: true });
+        expectPending(f.current());
+        expect(f.current()).not.toHaveProperty("helper");
+        expect(f.publications).toHaveLength(1);
+        expect(f.trace.filter(step => step.startsWith("execute:"))).toEqual(["execute:device_start"]);
+        expect(f.trace).not.toContain("prepare-delete");
+        expect(JSON.stringify(result)).not.toContain("private-installer-output");
+    });
+
+    it.each([1000, 1001])("refuses successful helper preparation settled at the %sms boundary", async completion => {
+        const f = fixture();
+        f.ports.provisionGuestHelper = () => { f.setNow(completion); return installed(); };
+        const result = await createBrokerMacosVmLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }));
+        expect(result).toMatchObject({ kind: "operation-failed", success: false, recoveryRequired: true });
+        expectPending(f.current());
+        expect(f.publications).toHaveLength(1);
+        expect(f.trace).not.toContain("prepare-delete");
+    });
+
+    it("preserves a same-target successor that appears while helper installation is held", async () => {
+        const f = fixture(), held = deferred<BrokerMacosHelperPreparation>();
+        const successor = { ...device(), status: "running", helper: { status: "provisioned", remoteScriptPath: "/tmp/successor-helper.sh" }, successor: true };
+        f.ports.provisionGuestHelper = () => held.promise;
+        const pending = createBrokerMacosVmLifecycle(f.ports).start(f.input("device_start", { waitForBoot: true }));
+        void pending.catch(() => undefined);
+        try {
+            await turn();
+            expectPending(f.current());
+            f.replace(successor);
+            held.resolve(installed());
+            expect(await pending).toMatchObject({ kind: "state-conflict", success: true, recoveryRequired: true });
+            expect(f.current()).toBe(successor);
+            expect(f.trace.filter(step => step.startsWith("execute:"))).toEqual(["execute:device_start"]);
+            expect(f.trace).not.toContain("prepare-delete");
+        } finally { held.resolve(installed()); await pending.catch(() => undefined); }
+    });
+
+    it("requests exactly one preparation and no boot polling when waitForBoot is false", async () => {
+        const f = fixture({ ...device(), ssh: { host: "192.0.2.80", user: "guest", keyPath: "/owned/key" } });
+        let preparations = 0;
+        f.ports.provisionGuestHelper = (_owner, _expected, candidate, options) => {
+            preparations++;
+            expect(options.waitForReady).toBe(false);
+            expect(candidate.ssh).toEqual({ host: "192.0.2.80", user: "guest", keyPath: "/owned/key" });
+            return installed();
+        };
+        expect(await createBrokerMacosVmLifecycle(f.ports).start(f.input("device_start", { waitForBoot: false })))
+            .toMatchObject({ kind: "completed", device: { status: "running", helper: { status: "provisioned" } }, boot: { skipped: true } });
+        expect(preparations).toBe(1);
+        expect(f.trace.filter(step => /^(probe|sleep)/.test(step))).toEqual([]);
     });
 });
 

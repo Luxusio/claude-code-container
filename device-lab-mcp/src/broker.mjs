@@ -1046,7 +1046,12 @@ function completedBrokerNativeObservation(result, stage, onObservation) {
 }
 
 function discoverCommandBrokerPortProcess(command, args, onObservation) {
-    let timeout = macosCreateTimeoutMs(1000);
+    let deadline = performance.now() + macosCreateTimeoutMs(5000);
+    const observationTimeoutMs = maximum => {
+        deadline = Math.min(deadline, performance.now() + macosCreateTimeoutMs(5000));
+        return Math.max(0, Math.floor(Math.min(maximum, deadline - performance.now())));
+    };
+    let timeout = observationTimeoutMs(5000);
     if (timeout < 1) {
         onObservation?.({ stage: "listener", reason: "budget-exhausted" });
         return null;
@@ -1058,7 +1063,7 @@ function discoverCommandBrokerPortProcess(command, args, onObservation) {
         onObservation?.({ stage: "listener", reason: "native-output-unavailable" });
         return null;
     }
-    timeout = macosCreateTimeoutMs(1000);
+    timeout = observationTimeoutMs(1000);
     if (timeout < 1) {
         onObservation?.({ stage: "command", reason: "budget-exhausted" });
         return null;
@@ -1067,19 +1072,24 @@ function discoverCommandBrokerPortProcess(command, args, onObservation) {
     const psArgs = process.platform === "darwin" ? ["-ww", "-p", String(pid), "-o", "command="] : ["-p", String(pid), "-o", "command="];
     const ps = spawnSync(psExecutable, psArgs, { encoding: "utf8", windowsHide: true, timeout });
     if (!completedBrokerNativeObservation(ps, "command", onObservation)) return null;
-    timeout = macosCreateTimeoutMs(1000);
+    timeout = observationTimeoutMs(1000);
     if (timeout < 1) {
         onObservation?.({ stage: "start-token", reason: "budget-exhausted" });
         return null;
     }
     const started = spawnSync(psExecutable, ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", windowsHide: true, timeout });
     if (!completedBrokerNativeObservation(started, "start-token", onObservation)) return null;
+    const commandLine = String(ps.stdout || "").trim();
     const startedAt = String(started.stdout || "").trim();
     if (!startedAt) {
         onObservation?.({ stage: "start-token", reason: "native-output-unavailable" });
         return null;
     }
-    return { pid, commandLine: String(ps.stdout || "").trim(), processStartToken: `ps:${startedAt}` };
+    if (observationTimeoutMs(1000) < 1) {
+        onObservation?.({ stage: "start-token", reason: "budget-exhausted" });
+        return null;
+    }
+    return { pid, commandLine, processStartToken: `ps:${startedAt}` };
 }
 
 export function parseWindowsNetstatListenerForTest(output, port) {
@@ -1768,7 +1778,7 @@ export async function brokerRpc(options = {}) {
 
 // `boundaryOptions` is deliberately separate from `options`: the latter carries caller-supplied RPC
 // options, which must never be able to assert a container boundary or inject a listener inspector.
-async function verifyAuthenticatedBrokerGeneration(host, port, launch, options, boundaryOptions = {}) {
+async function verifyAuthenticatedBrokerGeneration(host, port, launch, options, boundaryOptions = {}, onObservation) {
     if (typeof options.verifyBeforeAuthenticatedRequest === "function"
         && options.verifyBeforeAuthenticatedRequest() !== true) {
         return null;
@@ -1786,20 +1796,33 @@ async function verifyAuthenticatedBrokerGeneration(host, port, launch, options, 
     const brokerPid = Number(broker?.process?.pid);
     const brokerStartToken = typeof broker?.process?.startToken === "string" ? broker.process.startToken : "";
     const brokerStartedAt = typeof broker?.startedAt === "string" ? broker.startedAt : "";
-    if (!attestation.ok || !Number.isInteger(brokerPid) || brokerPid <= 0 || !brokerStartToken || !brokerStartedAt) return null;
+    if (!attestation.ok || !Number.isInteger(brokerPid) || brokerPid <= 0 || !brokerStartToken || !brokerStartedAt) {
+        onObservation?.({ stage: "identity", reason: "status-identity-unverified" });
+        return null;
+    }
     const runtime = launch?.runtime || readBrokerRuntime();
-    if (!runtime || (
+    if (!runtime) {
+        onObservation?.({ stage: "identity", reason: "invalid-runtime" });
+        return null;
+    }
+    if (
         Number(runtime.port) !== Number(port)
         || Number(runtime.pid) !== brokerPid
         || runtime.processStartToken !== brokerStartToken
         || runtime.startedAt !== brokerStartedAt
-    )) return null;
+    ) {
+        onObservation?.({ stage: "identity", reason: "runtime-continuity-unverified" });
+        return null;
+    }
     if (!isLoopbackBrokerHost(host)) return runtime;
     // The generation match above already bound this runtime to the answering broker's identity; a
     // loopback endpoint forwarded out of the container cannot additionally be port-verified here.
     if (loopbackForwardedContainerBoundary(runtime, port, boundaryOptions).ok) return runtime;
-    const processVerifier = boundaryOptions.processVerifier || verifiedBrokerProcess;
-    return processVerifier(runtime, Number(port), broker) ? runtime : null;
+    const processVerifier = boundaryOptions.processVerifier;
+    const verified = processVerifier
+        ? processVerifier(runtime, Number(port), broker)
+        : verifiedBrokerProcess(runtime, Number(port), broker, discoverBrokerPortProcess, onObservation);
+    return verified ? runtime : null;
 }
 
 export const verifyAuthenticatedBrokerGenerationForTest = verifyAuthenticatedBrokerGeneration;
@@ -1908,7 +1931,8 @@ async function brokerRpcRequestUncached(options = {}) {
     let launch = null;
     if (options.autolaunch === true) {
         launch = await ensureBroker(options);
-        if (macosCreateRemainingMs) assertMacosCreateAllowance();
+        const processObservation = launch.attempts?.at(-1)?.processVerification?.observation;
+        if (macosCreateRemainingMs && processObservation?.reason !== "native-command-failed") assertMacosCreateAllowance();
         if (!launch.ok) {
             return {
                 ok: false,
@@ -2015,9 +2039,14 @@ async function brokerRpcRequestUncached(options = {}) {
         const endpoint = `http://${host}:${probeOptions.port}${rpcPath}`;
         const startedAt = Date.now();
         try {
-            const verifiedRuntime = await verifyAuthenticatedBrokerGeneration(host, probeOptions.port, launch, waitBudget ? { ...options, brokerProbeTimeoutMs: waitBudget.requestTimeout(5000), timeoutMs: waitBudget.requestTimeout(5000) } : options);
-            if (macosCreateRemainingMs) assertMacosCreateAllowance();
+            let processObservation = null;
+            const verifiedRuntime = await verifyAuthenticatedBrokerGeneration(host, probeOptions.port, launch, waitBudget ? { ...options, brokerProbeTimeoutMs: waitBudget.requestTimeout(5000), timeoutMs: waitBudget.requestTimeout(5000) } : options, undefined, detail => { processObservation ||= detail; });
+            if (macosCreateRemainingMs && processObservation?.reason !== "native-command-failed") assertMacosCreateAllowance();
             if (!verifiedRuntime) {
+                attempts.push({ reason: "broker-runtime-process-unverified", processVerification: {
+                    ok: false, source: "unverified-broker-port-process",
+                    ...(processObservation ? { observation: processObservation } : {}),
+                } });
                 return {
                     ok: false,
                     ownerId: owner,

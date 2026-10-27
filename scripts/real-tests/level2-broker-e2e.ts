@@ -677,13 +677,16 @@ export async function runBrokerE2E(options: any = {}) {
         }
 
             try {
-            const plannedCommand = parseToolResult(await callInternal("brokerCommand", {
+            const plannedCommandResponse = await callInternal("brokerCommand", {
                 ...route,
                 action: "plan",
                 backend: "android-emulator",
                 command: "device_status",
                 deviceId: "level2-broker-e2e-command-plan",
-            }), { expectedError: true });
+            });
+            const plannedCommand = plannedCommandResponse.isError
+                ? parseToolResult(plannedCommandResponse, { expectedError: true, expectedErrorCode: "owner-device-not-found" })
+                : parseToolPayload(plannedCommandResponse);
             assert.ok(plannedCommand.result || plannedCommand.error === "owner-device-not-found", JSON.stringify(plannedCommand));
             assert.strictEqual(plannedCommand.method, "broker.command.plan", JSON.stringify(plannedCommand));
             steps.push({ name: "broker lifecycle command plan", status: "PASS", detail: plannedCommand.ok === false ? plannedCommand.error : "ok" });
@@ -693,14 +696,16 @@ export async function runBrokerE2E(options: any = {}) {
 
             try {
             for (const command of ["device_create", "device_status", "device_start", "device_stop", "device_delete"]) {
-                const planned = parseToolResult(await callInternal("brokerCommand", {
+                const plannedResponse = await callInternal("brokerCommand", {
                     ...route,
                     action: "plan",
                     backend: "android-emulator",
                     command,
                     deviceId: `level2-broker-e2e-command-${command}`,
                     name: `level2-broker-e2e-command-${command}`,
-                }), { expectedError: true });
+                });
+                const planned = command === "device_create" ? parseToolPayload(plannedResponse)
+                    : parseToolResult(plannedResponse, { expectedError: true, expectedErrorCode: "owner-device-not-found" });
                 assert.strictEqual(planned.method, "broker.command.plan", JSON.stringify(planned));
                 if (command === "device_create") {
                     assert.strictEqual(planned.ok, true, JSON.stringify(planned));

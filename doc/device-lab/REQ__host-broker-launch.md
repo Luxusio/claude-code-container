@@ -31,15 +31,25 @@ This extraction does not change CLI syntax, provider lifecycle, storage schema o
 
 ## Verification
 
-On macOS, native listener and process-start observations use the fixed system `lsof` and `ps` executables so an isolated provider PATH does not hide or substitute them. Keep the existing observation deadlines, exact PID/port/command/start-token checks, and refusal when proof is missing. A working command lookup does not itself authorize broker reuse, termination or replacement.
+On macOS, native listener and process-start observations use the fixed system `lsof` and `ps` executables so an isolated provider PATH does not hide or substitute them. Keep exact PID/port/command/start-token checks and refusal when proof is missing. A working command lookup does not itself authorize broker reuse, termination or replacement.
 
 Use existing broker owners to exercise native preflight/log/spawn failures, post-spawn bookkeeping failure with captured runtime/tracking, missing-token refusal, no-PID/asynchronous error, actual child logging after parent descriptor release, both publication successor races, and cleanup refusal/throw preserving primary failure with one attempt. Reuse the existing native composition port capture; no production test getter or contract-shape test is required.
 
 The MCP's macOS listener observation also uses unlimited-width command output
 and checks native completion before using it. A spawn error, signal or failed
 command must not be interpreted as successful command redaction and admitted
-through metadata fallback. Retain the existing observation allowances and
-PID/birth/status fences. Selected stage/status codes can explain refusal without
+through metadata fallback. The Oct27 native listener observation actually timed
+out under the former one-second limit. Capture one monotonic 5,000 ms allowance
+for this Darwin resolver: listener cap 5,000 ms, each `ps` cap 1,000 ms, all
+shortened by the remaining allowance and active Tart caller budget. Do not
+dispatch after expiry or accept a late positive result. Preserve a genuine
+failed-command observation even when it also exhausts the allowance. This does
+not change Windows/Linux or standalone token-polling limits, add a retry, or
+establish that five seconds suffices on every Mac.
+Keep PID/birth/status fences. Authenticated generation refusals retain their
+per-call selected observation through the existing failure-attempt envelope;
+an earlier setup observation cannot substitute for fresh attestation.
+Selected stage/status codes can explain refusal without
 publishing native command text; see [failure evidence](REQ__provider-failure-evidence.md).
 
 Build and packaged stdio checks must exercise the current source. Portable deterministic observations are separate from current Windows compilation and actual provider acceptance; none establishes macOS, live-engine or global architecture completion.

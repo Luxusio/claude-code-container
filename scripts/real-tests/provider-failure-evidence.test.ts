@@ -152,4 +152,81 @@ describe("saved provider failure evidence", () => {
         expect(JSON.stringify(evidence)).not.toContain("secret");
         expect(brokerToolFailureEvidence({ readiness: { attempts: 2, lastProbe: "private-token" } })).not.toHaveProperty("readiness");
     });
+
+    it.each([
+        { stage: "broker-process", error: "broker-runtime-process-unverified", processObservation: {
+            stage: "listener", reason: "native-command-failed", status: null, signal: "SIGTERM", errorCode: "ETIMEDOUT",
+        } },
+        { stage: "broker-transport", error: "broker-rpc-unavailable" },
+        { stage: "provider", error: "provider-command-failed", execution: { status: 111, signal: null, errorCode: "EIO" } },
+    ])("saves the closed readiness failure at stage $stage and its original attempt", failure => {
+        const readiness = { attempts: 3, lastProbe: "transport-exception", failureAttempt: 1,
+            failure: { ...failure, message: "PRIVATE-MESSAGE", stderr: "PRIVATE-OUTPUT", path: "PRIVATE-PATH", credentials: "PRIVATE-CREDENTIAL" } };
+        const { message, saved } = savedFailure({ ok: false, error: "device-start-not-ready", readiness }, "start");
+        expect(JSON.parse(saved).failure.readiness).toEqual({ attempts: 3, lastProbe: "transport-exception", failure, failureAttempt: 1 });
+        expect(brokerToolFailureEvidence({ readiness }).readiness).toEqual({ attempts: 3, lastProbe: "transport-exception", failure, failureAttempt: 1 });
+        expect(message).toContain(`"stage":"${failure.stage}"`);
+        expect(message).toContain('"failureAttempt":1');
+        expect(message.length).toBeLessThanOrEqual(511);
+        expect(message + saved).not.toContain("PRIVATE");
+        expect(JSON.stringify(JSON.parse(saved).failure)).not.toMatch(/credentials|stderr|path|message/);
+    });
+
+    it("independently reselects nested native readiness observations without output or identity fields", () => {
+        const failure = { stage: "broker-process", error: "broker-runtime-process-unverified", processObservation: {
+            stage: "command", reason: "native-command-failed", status: 1, signal: null, errorCode: "ENOENT",
+            executable: "PRIVATE-COMMAND", stderr: "PRIVATE-STDERR", pid: 12345, startToken: "PRIVATE-TOKEN",
+        }, execution: { status: 2, signal: "SIGTERM", errorCode: "EACCES", timedOut: true,
+            diagnosticCode: "PRIVATE-DIAGNOSTIC", args: ["PRIVATE-ARG"], stdout: "PRIVATE-STDOUT" } };
+        const evidence = brokerToolFailureEvidence({ readiness: { attempts: 2, lastProbe: "provider-error", failure, failureAttempt: 2 } });
+        expect(evidence.readiness).toEqual({ attempts: 2, lastProbe: "provider-error", failureAttempt: 2, failure: {
+            stage: "broker-process", error: "broker-runtime-process-unverified", processObservation: {
+                stage: "command", reason: "native-command-failed", status: 1, signal: null, errorCode: "ENOENT",
+            }, execution: { status: 2, signal: "SIGTERM", errorCode: "EACCES" },
+        } });
+        expect(JSON.stringify(evidence)).not.toMatch(/PRIVATE|timedOut|pid|startToken|stdout|stderr|args/);
+    });
+
+    it("keeps selected native failure facts when no public error code was observed", () => {
+        const failure = { stage: "provider", execution: { status: 1, signal: null, errorCode: "ENOENT" } };
+        const readiness = { attempts: 1, lastProbe: "provider-error", failure, failureAttempt: 1 };
+        expect(brokerToolFailureEvidence({ body: { readiness } }).readiness).toEqual(readiness);
+        expect(formatBrokerToolFailure({ body: { readiness } }, "failed")).toContain('"errorCode":"ENOENT"');
+    });
+
+    it.each([
+        { stage: "PRIVATE-STAGE", error: "PRIVATE-ERROR", execution: { status: "1" } },
+        { stage: "provider", error: "private-provider-error", execution: {
+            status: -1, signal: "PRIVATE-SIGNAL", errorCode: "PRIVATE-CODE", stdout: "PRIVATE-OUTPUT",
+        } },
+        { stage: "broker-process", processObservation: { stage: "PRIVATE-STAGE", reason: "PRIVATE-REASON", status: 1 } },
+        { stage: "broker-transport" },
+        ["PRIVATE-ARRAY"],
+    ])("omits readiness failures without a classified code or valid native observation", failure => {
+        const readiness = { attempts: 1, lastProbe: "provider-error", failure, failureAttempt: 1 };
+        const evidence = brokerToolFailureEvidence({ readiness });
+        expect(evidence.readiness).toEqual({ attempts: 1, lastProbe: "provider-error" });
+        expect(formatBrokerToolFailure({ readiness }, "failed")).not.toMatch(/failureAttempt|PRIVATE|private-provider/);
+    });
+
+    it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1"])("omits invalid readiness native status %s without discarding the known failure", status => {
+        const readiness = { attempts: 1, lastProbe: "provider-error", failureAttempt: 1,
+            failure: { stage: "provider", error: "provider-command-failed", execution: {
+                status, signal: "PRIVATE-SIGNAL", errorCode: "PRIVATE-CODE", stderr: "PRIVATE-STDERR",
+            } } };
+        expect(brokerToolFailureEvidence({ readiness }).readiness).toEqual({ attempts: 1, lastProbe: "provider-error", failureAttempt: 1,
+            failure: { stage: "provider", error: "provider-command-failed" } });
+    });
+
+    it.each([0, -1, 4, 1.5, "1"])("omits invalid readiness failure attempt %s while retaining the classified failure", failureAttempt => {
+        const failure = { stage: "provider", error: "provider-command-failed" };
+        const readiness = { attempts: 3, lastProbe: "transport-exception", failure, failureAttempt };
+        expect(brokerToolFailureEvidence({ readiness }).readiness).toEqual({ attempts: 3, lastProbe: "transport-exception", failure });
+    });
+
+    it("retains helper and failure evidence with their independent original attempt numbers", () => {
+        const readiness = { attempts: 3, lastProbe: "provider-error", helperAttempt: 1, helper: { requestOk: false },
+            failureAttempt: 2, failure: { stage: "provider", error: "provider-command-failed" } };
+        expect(brokerToolFailureEvidence({ readiness }).readiness).toEqual(readiness);
+    });
 });

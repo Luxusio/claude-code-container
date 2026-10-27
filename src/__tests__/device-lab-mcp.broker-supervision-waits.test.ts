@@ -6,6 +6,7 @@ import * as os from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrokerSupervisionPorts } from "../../device-lab-mcp/src/ports/broker-supervision.mjs";
+import { DEVICE_BROKER_PROTOCOL_VERSION } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
 
 const captured = vi.hoisted(() => ({ ports: undefined as BrokerSupervisionPorts | undefined }));
 vi.mock("child_process", async importOriginal => ({
@@ -27,7 +28,7 @@ vi.mock("../../device-lab-mcp/src/application/broker-supervision.mjs", async imp
         },
     };
 });
-import "../../device-lab-mcp/src/broker.mjs";
+import { brokerRpc, verifyAuthenticatedBrokerGenerationForTest, withBrokerOperation } from "../../device-lab-mcp/src/broker.mjs";
 
 const host = "127.0.0.1";
 const port = 17373;
@@ -347,6 +348,227 @@ describe("native broker process-exit phase", () => {
         const kill = pidProbe(() => false);
         expect(await finish(native().waitForProcessExit(syntheticPid, 0))).toBe(false);
         expect(kill).not.toHaveBeenCalled();
+    });
+});
+
+describe("Darwin broker resolver allowance", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const runtime = {
+        ownerId, managedBy: "device-lab-mcp", pid: syntheticPid, host, port,
+        command: "/owned/node", args: ["/private/owned/dist/packages/device-lab/dist/broker-entry.js"],
+        startedAt: "2026-10-27T00:00:00.000Z", processStartToken: "ps:Tue Oct 27 00:00:00 2026",
+    };
+    const status = {
+        name: "ccc-device-broker", mode: "host-broker-daemon", port,
+        protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION,
+        startedAt: runtime.startedAt, process: { pid: syntheticPid, startToken: runtime.processStartToken },
+    };
+    type Stage = "listener" | "command" | "start-token";
+
+    beforeEach(() => {
+        Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+        vi.stubEnv("NODE_ENV", "production");
+        vi.stubEnv("CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER", "0");
+    });
+    afterEach(() => {
+        Object.defineProperty(process, "platform", platform);
+        vi.unstubAllEnvs();
+    });
+
+    function resolverFixture(costs: number[], completion?: (stage: Stage) => Partial<childProcess.SpawnSyncReturns<string>>) {
+        const clock = clockFixture();
+        const observations: Array<{ stage: Stage; timeout: number | undefined }> = [];
+        const spawn = vi.spyOn(childProcess, "spawnSync").mockImplementation(((executable: string, args: readonly string[], options: { timeout?: number }) => {
+            const stage: Stage = executable === "/usr/sbin/lsof" ? "listener" : args.includes("command=") ? "command" : "start-token";
+            const index = observations.length;
+            observations.push({ stage, timeout: options.timeout });
+            clock.advance(costs[index] ?? 0);
+            const stdout = stage === "listener" ? `p${syntheticPid}\nf12\n`
+                : stage === "command" ? `${runtime.command} ${runtime.args[0]} devices broker serve --port ${port}\n`
+                : "Tue Oct 27 00:00:00 2026\n";
+            return { pid: syntheticPid, output: [null, stdout, ""], stdout, stderr: "", status: 0, signal: null, ...completion?.(stage) };
+        }) as typeof childProcess.spawnSync);
+        const verify = () => native().reusableBrokerProcessVerification(runtime, port, host, { statusBroker: status });
+        return { clock, observations, spawn, verify };
+    }
+
+    it.each([-100_000, 100_000])("accepts a listener taking more than one second despite a %d ms wall-clock jump", jump => {
+        const f = resolverFixture([1200, 100, 100], () => { f.clock.wall += jump; return {}; });
+        expect(f.verify()).toEqual(expect.objectContaining({ ok: true, verified: expect.objectContaining({
+            pid: syntheticPid, processStartToken: runtime.processStartToken,
+        }) }));
+        expect(f.observations).toEqual([
+            { stage: "listener", timeout: 5000 }, { stage: "command", timeout: 1000 }, { stage: "start-token", timeout: 1000 },
+        ]);
+        expect(f.clock.elapsed).toBe(1400);
+    });
+
+    it("charges the listener and first ps against one captured resolver allowance", () => {
+        const f = resolverFixture([4200, 500, 200]);
+        expect(f.verify().ok).toBe(true);
+        expect(f.observations).toEqual([
+            { stage: "listener", timeout: 5000 }, { stage: "command", timeout: 800 }, { stage: "start-token", timeout: 300 },
+        ]);
+        expect(f.clock.elapsed).toBe(4900);
+    });
+
+    it.each([4999.5, 5000, 5001])("does not dispatch ps after listener observation consumes %d ms", cost => {
+        const f = resolverFixture([cost]);
+        expect(f.verify()).toEqual({ ok: false, source: "unverified-broker-port-process", observation: {
+            stage: "command", reason: "budget-exhausted",
+        } });
+        expect(f.observations).toEqual([{ stage: "listener", timeout: 5000 }]);
+    });
+
+    it.each([1000, 1001])("refuses a final positive start-token observation completing in %d ms at the allowance boundary", finalCost => {
+        const f = resolverFixture([3500, 500, finalCost]);
+        expect(f.verify()).toEqual({ ok: false, source: "unverified-broker-port-process", observation: {
+            stage: "start-token", reason: "budget-exhausted",
+        } });
+        expect(f.observations).toEqual([
+            { stage: "listener", timeout: 5000 }, { stage: "command", timeout: 1000 }, { stage: "start-token", timeout: 1000 },
+        ]);
+    });
+
+    it("retains a genuine timed-out native failure when it also exhausts the allowance", () => {
+        const secret = "private-native-output-and-command";
+        const f = resolverFixture([5001], () => ({
+            status: null, signal: "SIGTERM", stdout: secret, stderr: secret,
+            error: Object.assign(new Error(secret), { code: "ETIMEDOUT" }),
+        }));
+        const verification = f.verify();
+        expect(verification).toEqual({ ok: false, source: "unverified-broker-port-process", observation: {
+            stage: "listener", reason: "native-command-failed", status: null, signal: "SIGTERM", code: "ETIMEDOUT",
+        } });
+        expect(f.spawn).toHaveBeenCalledOnce();
+        expect(JSON.stringify(verification)).not.toContain(secret);
+    });
+
+    it.each([0, 0.75])("does not dispatch a listener with an active Tart remainder of %d ms", async remaining => {
+        const f = resolverFixture([]);
+        const verification = await withBrokerOperation(async () => {
+            const operation = native().currentOperation() as { macosCreateRemainingMs?: () => number };
+            operation.macosCreateRemainingMs = () => remaining;
+            return f.verify();
+        });
+        expect(verification).toEqual({ ok: false, source: "unverified-broker-port-process", observation: {
+            stage: "listener", reason: "budget-exhausted",
+        } });
+        expect(f.spawn).not.toHaveBeenCalled();
+    });
+
+    it("clips every native cap to the active Tart caller's decreasing remainder", async () => {
+        const f = resolverFixture([1000, 300, 100]);
+        const verification = await withBrokerOperation(async () => {
+            const operation = native().currentOperation() as { macosCreateRemainingMs?: () => number };
+            operation.macosCreateRemainingMs = () => 1500 - f.clock.elapsed;
+            return f.verify();
+        });
+        expect(verification.ok).toBe(true);
+        expect(f.observations).toEqual([
+            { stage: "listener", timeout: 1500 }, { stage: "command", timeout: 500 }, { stage: "start-token", timeout: 200 },
+        ]);
+    });
+
+    it("keeps the parent allowance captured at admission when a later callback reports more time", async () => {
+        let remaining = 1500;
+        const f = resolverFixture([1000, 500], () => { remaining = 100_000; return {}; });
+        const verification = await withBrokerOperation(async () => {
+            const operation = native().currentOperation() as { macosCreateRemainingMs?: () => number };
+            operation.macosCreateRemainingMs = () => remaining;
+            return f.verify();
+        });
+        expect(verification).toEqual({ ok: false, source: "unverified-broker-port-process", observation: {
+            stage: "start-token", reason: "budget-exhausted",
+        } });
+        expect(f.observations).toEqual([{ stage: "listener", timeout: 1500 }, { stage: "command", timeout: 500 }]);
+    });
+
+    it("keeps authenticated generation's injected verifier at exactly three arguments", async () => {
+        clockFixture();
+        vi.stubGlobal("fetch", vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ ok: true, broker: status })));
+        const verifier = vi.fn(() => ({ pid: syntheticPid }));
+        const observation = vi.fn();
+        expect(await verifyAuthenticatedBrokerGenerationForTest(host, port, { runtime }, {}, {
+            containerBoundary: false, processVerifier: verifier,
+        }, observation)).toEqual(runtime);
+        expect(verifier.mock.calls).toEqual([[runtime, port, status]]);
+        expect(observation).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { label: "missing status identity", broker: { ...status, process: {} }, admittedRuntime: runtime, reason: "status-identity-unverified" },
+        { label: "runtime generation changed", broker: status, admittedRuntime: { ...runtime, processStartToken: "ps:successor-private-token" }, reason: "runtime-continuity-unverified" },
+        { label: "missing runtime", broker: status, admittedRuntime: null, reason: "invalid-runtime" },
+    ])("retains selected per-call refusal facts for $label without dispatching a native probe", async ({ broker, admittedRuntime, reason }) => {
+        const root = fs.mkdtempSync(join(os.tmpdir(), "ccc-broker-generation-refusal-"));
+        const f = resolverFixture([]);
+        vi.spyOn(os, "homedir").mockReturnValue(root);
+        vi.stubEnv("CCC_DEVICE_BROKER_PORT", "");
+        vi.stubGlobal("fetch", vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ ok: true, broker })));
+        const observation = vi.fn();
+        try {
+            expect(await verifyAuthenticatedBrokerGenerationForTest(host, port, { runtime: admittedRuntime }, {}, {
+                containerBoundary: false,
+            }, observation)).toBeNull();
+            expect(observation.mock.calls).toEqual([[{ stage: "identity", reason }]]);
+            expect(f.spawn).not.toHaveBeenCalled();
+            const saved = JSON.stringify(observation.mock.calls);
+            expect(saved).not.toContain(runtime.args[0]);
+            expect(saved).not.toContain(runtime.processStartToken);
+            expect(saved).not.toContain("successor-private-token");
+        } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    it("carries a fresh authenticated native refusal into RPC attempts instead of losing it after setup", async () => {
+        const root = fs.mkdtempSync(join(os.tmpdir(), "ccc-broker-auth-observation-"));
+        const authFile = join(root, "owner.json");
+        const nativeSecret = "private-native-stderr";
+        const secret = "b".repeat(64);
+        const f = resolverFixture([1500], () => ({
+            status: null, signal: "SIGTERM", stdout: "", stderr: nativeSecret,
+            error: Object.assign(new Error(nativeSecret), { code: "ETIMEDOUT" }),
+        }));
+        vi.spyOn(os, "homedir").mockReturnValue(root);
+        vi.stubEnv("CCC_DEVICE_BROKER_AUTH_FILE", authFile);
+        vi.stubEnv("CCC_DEVICE_BROKER_PORT", "");
+        fs.writeFileSync(authFile, JSON.stringify({ ownerId, secret, version: 1 }), { mode: 0o600 });
+        const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async url => {
+            if (String(url).endsWith("/v1/owner/resolve")) return response(resolved);
+            if (String(url).endsWith("/status")) return response({ ok: true, broker: status });
+            throw new Error("RPC dispatch is forbidden after native identity refusal");
+        });
+        vi.stubGlobal("fetch", fetch);
+        try {
+            expect(native().writeBrokerRuntime(runtime, null)).toBe(true);
+            // Publishing the private fixture observes the mutation-lock owner first.
+            // Measure the subsequent authenticated generation probe independently.
+            f.spawn.mockClear();
+            f.observations.length = 0;
+            f.clock.elapsed = 0;
+            f.clock.wall = 1_800_000_000_000;
+            const result = await brokerRpc({ method: "broker.echo", params: { value: 1 }, hostCandidates: [host], port, autolaunch: false });
+            expect(result).toMatchObject({ ok: false, error: "broker-runtime-process-unverified", attempts: [
+                expect.objectContaining({ processVerification: {
+                    ok: false, source: "unverified-broker-port-process", observation: {
+                        stage: "listener", reason: "native-command-failed", status: null, signal: "SIGTERM", code: "ETIMEDOUT",
+                    },
+                } }),
+            ] });
+            expect(f.spawn).toHaveBeenCalledOnce();
+            expect(f.spawn).toHaveBeenCalledWith("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"],
+                expect.objectContaining({ timeout: 5000 }));
+            expect(f.observations).toEqual([{ stage: "listener", timeout: 5000 }]);
+            expect(f.clock.elapsed).toBe(1500);
+            expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
+                `http://${host}:${port}/v1/owner/resolve`, `http://${host}:${port}/status`,
+            ]);
+            const attempts = JSON.stringify(result.attempts);
+            for (const sensitive of [secret, nativeSecret, runtime.args[0], runtime.processStartToken, root]) {
+                expect(attempts).not.toContain(sensitive);
+            }
+            expect(JSON.parse(fs.readFileSync(join(root, ".ccc", "devices", "broker", "runtime.json"), "utf8"))).toEqual(runtime);
+        } finally { fs.rmSync(root, { recursive: true, force: true }); }
     });
 });
 

@@ -966,6 +966,130 @@ describe("test level runner", () => {
         }
     }, 40_000);
 
+    it.each([
+        { mode: "sequential", fileName: "failed-evidence.mjs", args: [] },
+        { mode: "provider worker", fileName: "level2-ios-e2e.ts", args: ["--provider-concurrency", "2"] },
+    ])("retains ordered MCP evidence when a $mode module throws", ({ mode, fileName, args }) => {
+        const tempDir = mkdtempSync(join(tmpdir(), "ccc-failed-module-evidence-"));
+        const fixtureFile = join(tempDir, fileName);
+        const serverFile = join(tempDir, "fixture-server.mjs");
+        const requestsFile = join(tempDir, "requests.jsonl");
+        const modulePidFile = join(tempDir, "module.pid");
+        const summaryFile = join(tempDir, "summary.json");
+        const moduleName = `failed ${mode} evidence`;
+        const clientUrl = pathToFileURL(join(repoRoot, "scripts", "real-tests", "device-lab-mcp-client.ts")).href;
+        const toolsUrl = pathToFileURL(join(repoRoot, "device-lab-mcp", "src", "tools.mjs")).href;
+        const sensitiveOutput = "fixture-private-output-must-not-enter-proof";
+        writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
+        writeFileSync(serverFile, [
+            'import { appendFileSync } from "fs";',
+            'import { createInterface } from "readline";',
+            `import { TOOLS } from ${JSON.stringify(toolsUrl)};`,
+            'createInterface({ input: process.stdin }).on("line", (line) => {',
+            '  const request = JSON.parse(line);',
+            '  if (request.id === undefined) return;',
+            '  let result;',
+            '  if (request.method === "initialize") {',
+            '    result = { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "failed-module-fixture", version: "1" } };',
+            '  } else if (request.method === "tools/list") {',
+            '    result = { tools: TOOLS };',
+            '  } else if (request.method === "tools/call") {',
+            `    appendFileSync(${JSON.stringify(requestsFile)}, JSON.stringify(request.params.name) + "\\n");`,
+            '    const isError = request.params.name === "exec";',
+            '    const payload = isError',
+            `      ? { ok: false, error: "provider-command-failed", stderr: ${JSON.stringify(sensitiveOutput)} }`,
+            '      : { ok: true, backend: "ios-simulator", devices: [{ deviceId: "retained-device", backend: "ios-simulator" }], device: { deviceId: "retained-device", backend: "ios-simulator" } };',
+            '    result = { isError, content: [{ type: "text", text: JSON.stringify(payload) }] };',
+            '  } else {',
+            '    throw new Error("Unexpected fixture request: " + request.method);',
+            '  }',
+            '  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");',
+            '});',
+        ].join("\n"));
+        writeFileSync(fixtureFile, [
+            'import { writeFileSync } from "fs";',
+            `import { withDeviceLabMcp } from ${JSON.stringify(clientUrl)};`,
+            `export const name = ${JSON.stringify(moduleName)};`,
+            'export async function run() {',
+            `  writeFileSync(${JSON.stringify(modulePidFile)}, String(process.pid));`,
+            '  await withDeviceLabMcp(async ({ callTool }) => {',
+            '    await callTool("devices", { backend: "ios-simulator" });',
+            '    await callTool("status", { deviceId: "retained-device" });',
+            '    await callTool("exec", { deviceId: "retained-device", command: "fixture-command" });',
+            '    await callTool("status", { deviceId: "retained-device", unsupportedFixtureField: true });',
+            `  }, { serverPath: ${JSON.stringify(serverFile)}, name: "retained-fixture-session" });`,
+            '  throw new Error("intentional failure after MCP observations");',
+            '}',
+        ].join("\n"));
+        try {
+            const result = spawnSync(process.execPath, [
+                "--import", repoLoader,
+                join(repoRoot, "scripts", "real-tests", "run.ts"),
+                "--compact",
+                ...args,
+                "--fail-on-coverage-gap",
+                "--json-summary",
+                "--json-summary-file", summaryFile,
+                fixtureFile,
+            ], { cwd: repoRoot, encoding: "utf-8", timeout: 30_000 });
+            expect(result.status, result.stderr || result.stdout).toBe(1);
+            expect(result.error).toBeUndefined();
+            const summary = JSON.parse(readFileSync(summaryFile, "utf-8"));
+            expect(summary).toEqual(expect.objectContaining({ total: 1, pass: 0, skip: 0, fail: 1 }));
+            expect(summary.records).toEqual([{
+                file: fixtureFile,
+                test: moduleName,
+                status: "FAIL",
+                reason: "intentional failure after MCP observations",
+            }]);
+            expect(result.stderr).toContain(`FAIL ${moduleName} - intentional failure after MCP observations`);
+            const modulePid = Number(readFileSync(modulePidFile, "utf-8"));
+            if (mode === "sequential") expect(modulePid).toBe(result.pid);
+            else expect(modulePid).not.toBe(result.pid);
+
+            expect(summary.mcpSessions).toEqual([expect.objectContaining({
+                file: fixtureFile,
+                test: moduleName,
+                id: "mcp-session-1",
+                name: "retained-fixture-session",
+                serverPath: serverFile,
+                serverSource: "source",
+                serverFile: expect.objectContaining({ exists: true, size: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+                advertisedToolSurface: canonicalDeviceLabToolSurface(),
+                envOverrides: [],
+            })]);
+            const calls = summary.toolCoverage.calls;
+            const observedRequests = readFileSync(requestsFile, "utf-8").trim().split("\n").map(line => JSON.parse(line));
+            expect(observedRequests).toEqual(["devices", "status", "exec", "status"]);
+            expect(calls.map((call: any) => call.tool)).toEqual(observedRequests);
+            expect(calls.map((call: any) => call.mcpSessionId)).toEqual(Array(4).fill(summary.mcpSessions[0].id));
+            expect(calls.map((call: any) => call.outcome)).toEqual(["ok", "ok", "error-result", "ok"]);
+            expect(calls.map((call: any) => call.schemaValid)).toEqual([true, true, true, false]);
+            expect(calls[1]).toEqual(expect.objectContaining({ observedBackend: "ios-simulator", facets: ["status:backend=ios-simulator"] }));
+            expect(summary.toolCoverage.calledArgumentFacets).toEqual(expect.arrayContaining([
+                "devices:backend=ios-simulator", "status:backend=ios-simulator",
+            ]));
+            expect(summary.toolCoverage.argumentSchemaFailureRecords).toEqual([expect.objectContaining({
+                test: moduleName,
+                tool: "status",
+                schemaErrors: ["status does not support unsupportedFixtureField"],
+            })]);
+            expect(summary.toolCoverage.unexpectedErrorResultRecords).toEqual([expect.objectContaining({
+                test: moduleName,
+                tool: "exec",
+                errorCode: "provider-command-failed",
+            })]);
+            expect(summary.toolCoverage.expectedErrorResultRecords).toEqual([]);
+            expect(result.stdout).toMatch(/strictCoverageFailures=[1-9]\d*/);
+            expect(result.stdout).toMatch(/strictOutcomeFailures=[1-9]\d*/);
+            const summaryLine = result.stdout.split(/\r?\n/).find(line => line.startsWith("JSON_SUMMARY "));
+            expect(JSON.parse(summaryLine!.slice("JSON_SUMMARY ".length))).toEqual(summary);
+            expect(JSON.stringify(summary)).not.toContain(sensitiveOutput);
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
+    }, 40_000);
+
     it("terminates active provider workers when the collector is interrupted", async () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-worker-signal-"));
         writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));

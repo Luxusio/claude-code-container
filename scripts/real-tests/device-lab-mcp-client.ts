@@ -672,9 +672,45 @@ function boundedDesktopReadiness(value: any) {
     }
     const helperAttempt = Number.isSafeInteger(value.helperAttempt) && value.helperAttempt > 0 && value.helperAttempt <= attempts
         ? value.helperAttempt as number : undefined;
+    const failure = boundedReadinessFailure(value.failure);
+    const failureAttempt = Number.isSafeInteger(value.failureAttempt) && value.failureAttempt > 0 && value.failureAttempt <= attempts
+        ? value.failureAttempt as number : undefined;
     return { attempts, lastProbe: value.lastProbe,
+        ...(failure ? { failure, ...(failureAttempt !== undefined ? { failureAttempt } : {}) } : {}),
         ...(Object.keys(helper).length || stage || Object.keys(logEvidence).length ? { helper: { ...helper, ...(stage ? { stage } : {}), ...(Object.keys(logEvidence).length ? { logEvidence } : {}) },
             ...(helperAttempt !== undefined ? { helperAttempt } : {}) } : {}) };
+}
+
+// Revalidate readiness evidence at the saved-artifact boundary independently of
+// the MCP adapter. Pattern-shaped or private error text is never a known code.
+const READINESS_FAILURE_ERRORS: Record<string, readonly string[]> = {
+    "broker-process": ["broker-runtime-process-unverified", "broker-runtime-generation-changed", "broker-incompatible-process-still-running", "broker-launch-failed"],
+    "broker-transport": ["broker-rpc-unavailable", "broker-rpc-failed", "broker-owner-resolve-unavailable", "broker-owner-resolve-failed", "broker-owner-resolve-readiness-timeout", "broker-owner-auth-unavailable", "broker-launch-owner-resolve-timeout", "broker-launch-health-timeout", "host-broker-incompatible", "broker-response-too-large", "invalid-broker-json", "invalid-broker-content-length", "broker-redirect-disallowed", "broker-observation-budget-exhausted-before-rpc", "timeout", "connection-reset", "connection-refused", "broken-pipe", "response-aborted", "transport-error"],
+    provider: ["provider-command-failed", "device-lab-backend-tool-failed", "device-lab-backend-tool-invalid-json", "device-lab-backend-module-missing", "windows-sandbox-helper-timeout", "windows-sandbox-helper-failed", "windows-sandbox-helper-response-rejected", "owner-device-not-found", "device-not-found", "device-backend-not-found", "owner-device-state-conflict", "device-tool-unsupported", "broker-device-tool-backend-not-supported", "broker-device-tool-not-supported"],
+};
+
+function boundedReadinessExecution(value: any) {
+    const native = boundedNativeExecution(value);
+    if (!native) return undefined;
+    const { status, signal, errorCode } = native;
+    return status !== undefined || signal !== undefined || errorCode
+        ? { ...(status !== undefined ? { status } : {}), ...(signal !== undefined ? { signal } : {}), ...(errorCode ? { errorCode } : {}) }
+        : undefined;
+}
+
+function boundedReadinessFailure(value: any) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || !["broker-process", "broker-transport", "provider"].includes(value.stage)) return undefined;
+    const error = READINESS_FAILURE_ERRORS[value.stage].includes(value.error) ? value.error as string : undefined;
+    const observation = value.stage === "broker-process" && value.processObservation
+        ? boundedProcessObservation({ ...value.processObservation, code: value.processObservation.errorCode }) : undefined;
+    const processObservation = observation ? { stage: observation.stage, reason: observation.reason,
+        ...boundedReadinessExecution(observation) } : undefined;
+    const execution = boundedReadinessExecution(value.execution);
+    const nativeFailure = execution && ((typeof execution.status === "number" && execution.status !== 0) || execution.signal || execution.errorCode);
+    if (!error && !processObservation && !(value.stage === "provider" && nativeFailure)) return undefined;
+    return { stage: value.stage, ...(error ? { error } : {}),
+        ...(processObservation ? { processObservation } : {}), ...(execution ? { execution } : {}) };
 }
 
 function boundedBrokerLifecycleFailure(value: any) {

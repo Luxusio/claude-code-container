@@ -63,6 +63,25 @@ four observed failures into passes without a demonstrated correction.
 
 ## Verification
 
+The Oct27 run demonstrates a listener observation timeout and two desktop
+control readiness failures whose provider causes were discarded. Preserve the
+last observed, allowlisted readiness failure with its attempt number across
+later unclassified errors or exceptions. Distinguish broker-process,
+broker-transport and provider stages only from known error codes or selected
+native facts. Retain bounded native status/signal/error codes and process
+observation fields; omit arbitrary messages, paths, output and credentials.
+The normalized process observation uses `errorCode`; raw native `code` is
+translated at the adapter and independently selected again by the artifact
+writer. Diagnostic history must not change the current probe's success rules.
+Reapply the same closed projection when saving real-test diagnostics. Deadlines,
+probe cadence and readiness success rules stay unchanged.
+
+A module that throws retains its already-recorded MCP calls and sessions in
+both sequential and child-worker execution. The collector ingests those facts
+before recording the module failure. Preserve call order/backend/session and
+existing validation, bounded worker transport and privacy behavior. A recorded
+call is not a successful scenario; failed modules still fail and return nonzero.
+
 Use private native-command and MCP fixtures to prove complete observation
 requirements, structured iOS transport, actual nested Tart boot shapes, internal
 assertion evidence and sensitive-field omission. Keep process start failure,
