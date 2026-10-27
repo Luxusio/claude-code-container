@@ -153,3 +153,13 @@ lock wait. A failed installation preserves the pending start recovery record.
 This closes a source-proved gap; native execution must still establish whether
 it explains the observed Tart readiness failure. See
 [the helper contract](../device-lab/REQ__macos-broker-helper-readiness.md).
+
+The Oct27 15:09:55 run used the current MCP bundle while its isolated broker
+runtime retained a process started on Oct26, before the helper and argv fixes.
+Rebuilding an entry file does not reload a running broker. Protocol 9 requires
+those fixes and replaces protocol 8 through the existing verified repair path.
+The launcher reads its protocol from the workspace before assembly, so an old
+assembled contract cannot remain cached during preflight. Use ordinary
+`npm run test:level3` on the Mac to rebuild and verify this transition. The
+installed broker on port 17373 remains separate. See
+[the recovery contract](../device-lab/REQ__host-broker-automatic-recovery.md).

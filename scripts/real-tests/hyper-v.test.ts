@@ -1,10 +1,11 @@
 import { DEVICE_BROKER_PROTOCOL_VERSION } from "#device-lab/providers/contracts/broker-protocol.mjs";
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { pathToFileURL } from "url";
+import ts from "typescript";
 import { ensureWindowsServerEvaluationLicense, hyperVTestFiles, PRIVILEGE_PROBE_DEFAULTS, runHyperVLevel3, runHyperVTests, warnIfSetupDiagnosticsWillLackPrivilege } from "./hyper-v.ts";
 import { repoRoot } from "./helpers.ts";
 import {
@@ -27,6 +28,70 @@ function brokerStatusOutput(protocolVersion = DEVICE_BROKER_PROTOCOL_VERSION) {
 }
 
 describe("Level 3 artifact preparation", () => {
+    it("binds pre-assembly protocol checks to workspace 9 while assembled protocol 8 stays cached", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-level3-protocol-binding-"));
+        try {
+            const packageRoot = join(root, "node_modules", "@ccc", "device-lab");
+            const workspaceContracts = join(packageRoot, "providers", "contracts");
+            const assembledContracts = join(root, "dist", "packages", "device-lab", "providers", "contracts");
+            for (const directory of [workspaceContracts, assembledContracts]) mkdirSync(directory, { recursive: true });
+            writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module", imports: {
+                "#device-lab/providers/*": "./dist/packages/device-lab/providers/*",
+            } }));
+            writeFileSync(join(packageRoot, "package.json"), readFileSync(join(repoRoot, "packages", "device-lab", "package.json")));
+            for (const name of ["broker-protocol.mjs", "broker-endpoint.mjs"])
+                writeFileSync(join(workspaceContracts, name), readFileSync(join(repoRoot, "packages", "device-lab", "providers", "contracts", name)));
+            const assembledProtocol = join(assembledContracts, "broker-protocol.mjs");
+            writeFileSync(assembledProtocol, "export const DEVICE_BROKER_PROTOCOL_VERSION = 8;\nexport function isCompatibleBrokerProtocol(value) { return value === DEVICE_BROKER_PROTOCOL_VERSION; }\n");
+            // Strip only TypeScript syntax from the actual helper. Keep its package
+            // imports for normal Node resolution; Vitest's aliases mask this fault.
+            const transformed = ts.transpileModule(readFileSync(join(repoRoot, "scripts", "real-tests", "support", "level3-host.ts"), "utf8"), {
+                fileName: "level3-host.ts", reportDiagnostics: true,
+                compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
+            });
+            expect(transformed.diagnostics).toEqual([]);
+            writeFileSync(join(root, "level3-host.mjs"), transformed.outputText);
+            const entry = join(root, "probe.mjs");
+            writeFileSync(entry, String.raw`
+import {createServer} from 'node:http';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {pathToFileURL} from 'node:url';
+import {DEVICE_BROKER_PROTOCOL_VERSION as cachedBefore} from '#device-lab/providers/contracts/broker-protocol.mjs';
+import {DEVICE_BROKER_PROTOCOL_VERSION as workspace} from '@ccc/device-lab/providers/contracts/broker-protocol.mjs';
+import {probeHostBrokerProtocol} from './level3-host.mjs';
+let protocolVersion=9;const requests=[];
+const server=createServer((req,res)=>{
+ requests.push({url:req.url,protocolVersion});res.setHeader('content-type','application/json');
+ res.end(JSON.stringify({ok:true,broker:{protocolVersion,process:{pid:4321},startedAt:'2026-07-28T00:00:00.000Z'}}));
+});
+await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
+try{
+ const port=server.address().port;
+ const probePair=async()=>{const results=[];for(const version of [9,8]){protocolVersion=version;results.push(await probeHostBrokerProtocol(port,{timeoutMs:1000}));}return results;};
+ const before=await probePair();
+ // Assembly replaces the file after the launcher has already loaded. The old
+ // import remains cached, while a distinct URL proves the new disk bytes are 9.
+ writeFileSync(${JSON.stringify(assembledProtocol)},readFileSync(${JSON.stringify(join(workspaceContracts, "broker-protocol.mjs"))}));
+ const cachedAfter=(await import('#device-lab/providers/contracts/broker-protocol.mjs')).DEVICE_BROKER_PROTOCOL_VERSION;
+ const assembled=(await import(pathToFileURL(${JSON.stringify(assembledProtocol)}).href+'?after-assembly')).DEVICE_BROKER_PROTOCOL_VERSION;
+ const after=await probePair();
+ console.log(JSON.stringify({workspace,cachedBefore,cachedAfter,assembled,before,after,requests}));
+}finally{await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
+`);
+            const output = spawnSync(process.execPath, [entry], { cwd: root, encoding: "utf8", timeout: 10000,
+                env: { ...process.env, NODE_OPTIONS: "" } });
+            expect(output.error).toBeUndefined();
+            expect(output.status, output.stderr || output.stdout).toBe(0);
+            const result = JSON.parse(output.stdout.trim());
+            expect(result).toMatchObject({ workspace: 9, cachedBefore: 8, cachedAfter: 8, assembled: 9 });
+            const expected = [{ ok: true, protocolVersion: 9, pid: verifiedBrokerPid, startedAt: verifiedBrokerStartedAt,
+                elevationGate: { state: "unreported" } }, { ok: false, error: "invalid-status-response", protocolVersion: null }];
+            expect(result.before).toEqual(expected);
+            expect(result.after).toEqual(expected);
+            expect(result.requests).toEqual([9, 8, 9, 8].map(protocolVersion => ({ url: "/status", protocolVersion })));
+        } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
     const workspaceBuild = join("/repo", "scripts", "workspace-build.mjs");
     const tsc = join("/repo", "node_modules", "typescript", "bin", "tsc");
     const esbuild = join("/repo", "node_modules", "esbuild-wasm", "bin", "esbuild");

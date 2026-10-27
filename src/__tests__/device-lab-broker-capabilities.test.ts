@@ -22,7 +22,7 @@ describe("one broker protocol", () => {
     it.each([undefined, null, String(DEVICE_BROKER_PROTOCOL_VERSION), true, 0, DEVICE_BROKER_PROTOCOL_VERSION - 1, DEVICE_BROKER_PROTOCOL_VERSION + 1, NaN, {}, []])("rejects absent, malformed or different protocol %s", (value) => {
         expect(isCompatibleBrokerProtocol(value)).toBe(false);
     });
-    it.each([undefined, 0, 1, 2, 5, 6, 7, DEVICE_BROKER_PROTOCOL_VERSION, "1"])("checks protocol over actual HTTP: %s", async (protocolVersion) => {
+    it.each([undefined, 0, 1, 2, 5, 6, 7, 8, 9, "1"])("checks protocol over actual HTTP: %s", async (protocolVersion) => {
         const server = createServer((_req, res) => {
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ok: true, broker: {protocolVersion, version: "999.0.0"}}));
@@ -30,8 +30,8 @@ describe("one broker protocol", () => {
         const url = await listen(server);
         try {
             const result = await probeCccHostBrokerProtocolForTest("127.0.0.1", Number(new URL(url).port), 3000);
-            expect(result.ok).toBe(protocolVersion === DEVICE_BROKER_PROTOCOL_VERSION);
-            expect(result.expectedProtocolVersion).toBe(DEVICE_BROKER_PROTOCOL_VERSION);
+            expect(result.ok).toBe(protocolVersion === 9);
+            expect(result.expectedProtocolVersion).toBe(9);
             expect(result).not.toHaveProperty("missingCapabilities");
         } finally { await close(server); }
     });

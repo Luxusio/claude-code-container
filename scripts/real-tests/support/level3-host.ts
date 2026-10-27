@@ -1,8 +1,8 @@
 import { spawnSync } from "child_process";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { DEVICE_BROKER_PROTOCOL_VERSION, isCompatibleBrokerProtocol } from "#device-lab/providers/contracts/broker-protocol.mjs";
-// This launcher loads before assembly, so resolve the current workspace contract.
+// This launcher loads before assembly, so resolve the current workspace contracts.
+import { DEVICE_BROKER_PROTOCOL_VERSION, isCompatibleBrokerProtocol } from "@ccc/device-lab/providers/contracts/broker-protocol.mjs";
 import { configuredDeviceBrokerPort } from "@ccc/device-lab/providers/contracts/broker-endpoint.mjs";
 
 export function level3BrokerEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {

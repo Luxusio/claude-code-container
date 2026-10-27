@@ -231,6 +231,34 @@ also records the actual successful fields and RPC 400/501 outcomes. Fresh
 review of these corrections and candidate Mac provider acceptance are separate
 from the earlier review and native-primitive observations.
 
+## Loaded broker generation follow-up
+
+The Oct27 15:09:55 Level 3 run still failed three provider scenarios, with
+86 passing and 16 skipped wrapper tests. Its MCP bundle matched the current
+checkout. The isolated port-17374 runtime, updated at that run's start, retained
+PID 13894 and an Oct26 start time preceding both the Mac helper and Simulator
+argv fixes. Rebuilding the same entry file had left the older implementation
+loaded. Protocol 9 now requires those fixes and uses the existing verified
+replacement path for protocol 8; process identity, ownership, confirmed exit
+and newer-protocol protections remain in force. The launcher also resolves the
+workspace protocol before assembly, avoiding a cached previous dist contract.
+
+Five relevant portable test files pass 138 cases. They include a raw public
+MCP argv call through authenticated HTTP and the real provider child, protocol
+8 refusal and 9 acceptance, and a normal-Node launcher regression across
+assembly replacing a cached protocol-8 file. The real-test typecheck and changed
+contract syntax check pass. Resolving the SDK through module resolution also
+passes the affected case again; that repeat and three filtered cases add no
+coverage credit. No full build or full unit suite was run. The unchanged
+current DeviceLab emit remains the previously compiled package; root dist
+artifacts retain their historical bytes.
+
+Known ceiling: fresh Mac Level 3 acceptance of protocol-9 replacement and the
+three provider scenarios remains pending. The retained runtime proves reuse of
+an older process at preflight; it does not identify the exact final Tart
+transport failure or recover the iOS error text omitted from the saved artifact.
+Run ordinary `npm run test:level3` on the Mac for current native evidence.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.
