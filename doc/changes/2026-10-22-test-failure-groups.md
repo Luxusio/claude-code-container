@@ -259,6 +259,42 @@ an older process at preflight; it does not identify the exact final Tart
 transport failure or recover the iOS error text omitted from the saved artifact.
 Run ordinary `npm run test:level3` on the Mac for current native evidence.
 
+## Shared-owner scheduling and helper failure follow-up
+
+The next Mac run starts a new port-17374 broker at 17:25:47. Its three provider
+failures change: iOS start exhausts its 195-second RPC allowance, while both
+Tart starts return helper-readiness errors after about 300 seconds. The iOS
+request starts approximately 0.78 seconds after the first Tart start, according
+to artifact write times minus recorded durations. This overlap corroborates
+owner-queue contention; it is not a recorded queue-entry trace.
+
+Provider workers share one broker owner, and the broker serializes its mutations.
+The real-test scheduler now declares that shared resource for all nine known
+provider modules. It also retains their native resources, result order, failure
+propagation and process cleanup. The Linux VM module cannot be exempted because
+its initial creation can auto-select broker Hyper-V. Generic independent-resource
+concurrency remains supported; operation allowances and broker locks are unchanged.
+
+Saved Tart failures previously retained launch status zero while discarding the
+separate helper preparation result. Artifacts and short messages now select the
+helper's known error, provider and native execution independently. A polling
+timeout preserves bounded facts from its last native receipt, with empty output
+fields; existing observed-failure behavior remains unchanged. Source inspection
+caught a raw-output propagation path in the initial implementation before commit,
+and the bounded timeout projection closes it.
+
+Three relevant portable owners pass 206 distinct tests: runner 105, failure
+evidence 79 and Mac readiness 22. After the timeout projection refinement, only
+the latter two owners reran: 101 passes, including one new boundary case, with
+overlaps counted once. Real-test typechecking, changed MJS syntax and diff checks
+pass; no full build, full unit suite or native provider run was performed here.
+
+Known ceiling: fresh Mac acceptance is pending for the scheduling correction.
+The underlying Tart helper/SSH cause remains unproved; retained launch status
+zero does not prove SSH or helper readiness, and the previous artifact omitted
+the separate helper receipt. Native guest SSH setup and current helper evidence
+are required before declaring those two failures resolved.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

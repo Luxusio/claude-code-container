@@ -163,3 +163,18 @@ assembled contract cannot remain cached during preflight. Use ordinary
 `npm run test:level3` on the Mac to rebuild and verify this transition. The
 installed broker on port 17373 remains separate. See
 [the recovery contract](../device-lab/REQ__host-broker-automatic-recovery.md).
+
+Real-provider suites in one collector share the selected broker owner mutation
+queue. All nine known provider modules therefore share a scheduler resource:
+an iOS RPC must not spend its timeout queued behind a five-minute Mac start.
+Even the Linux VM suite can auto-select broker Hyper-V during creation, so its
+whole module cannot be assumed independent. Generic disjoint-resource scheduling
+still supports concurrency. See
+[the scheduling contract](REQ__provider-owner-scheduling.md).
+
+For helper start failures, read `helperPreparation` separately from the VM launch
+`execution`. A zero Tart launch status does not establish helper readiness. The
+saved preparation fields select its known error, provider and native execution
+facts; raw SSH output and credentials remain omitted. A polling timeout retains
+only bounded facts from its last observed native receipt. These diagnostics do
+not establish SSH configuration or a guest failure without host evidence.

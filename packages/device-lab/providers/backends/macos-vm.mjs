@@ -993,7 +993,14 @@ async function waitForMacosGuestHelperWithinBudget(budget, provision, delay = sl
         delay,
     }, preserveLateFailure);
     if (outcome.kind === 'observed') return outcome.result;
-    return { ok: false, error: "macos-helper-readiness-timeout", provisioning: { ...outcome.last?.provisioning, status: "failed", updatedAt: new Date().toISOString() } };
+    const lastCommand = outcome.last?.command;
+    const command = lastCommand ? {
+        status: Number.isSafeInteger(lastCommand.status) && Number(lastCommand.status) >= 0 ? lastCommand.status : null,
+        signal: typeof lastCommand.signal === "string" && Object.hasOwn(osConstants.signals, lastCommand.signal) ? lastCommand.signal : null,
+        stdout: "", stderr: "",
+        ...(lastCommand.error?.code === "ETIMEDOUT" ? { error: { code: "ETIMEDOUT" } } : {}),
+    } : undefined;
+    return { ok: false, error: "macos-helper-readiness-timeout", ...(command ? { command } : {}), provisioning: { ...outcome.last?.provisioning, status: "failed", updatedAt: new Date().toISOString() } };
 }
 
 /** @returns {{target:string, discovery:ReturnType<typeof sshDiscovery>, error?:undefined}|{error:ReturnType<typeof textResult>, target?:undefined, discovery?:undefined}} */

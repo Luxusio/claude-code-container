@@ -72,6 +72,27 @@ Public missing-target probes mark an error expected only after matching
 selected evidence and remain unexpected in tool coverage. Existing exact
 single-code expectations retain their behavior.
 
+The helper preparation result is distinct from the VM launch execution. Derived
+from the existing broker's `result.helperPreparation` response, saved evidence
+and short messages retain a separate `helperPreparation` object: a known helper
+preparation error, an observed provider from `ssh`, `scp`, `ssh-scp`, `local` or
+`ssh-key-policy`, and existing bounded native execution fields when present.
+Select only the actual `body.result.helperPreparation` or
+`result.helperPreparation` envelope. Never copy helper SSH metadata, paths,
+timestamps, raw output or arbitrary codes. A successful Tart launch must not
+replace the failed helper's execution facts. See the
+[helper response contract](REQ__macos-broker-helper-readiness.md).
+
+When helper polling expires after an observed native command, preserve that
+last receipt internally so the existing preparation boundary can select its
+execution metadata. The synthesized timeout receipt contains only native status,
+a known OS signal and an observed `ETIMEDOUT` code; required stdout/stderr fields
+are empty. Direct lifecycle presentation must not expose newly retained raw
+output through this timeout result. Existing observed-failure behavior is
+unchanged. Keep the timeout error, retry rules, cadence and late-result
+admission unchanged. Missing native observations remain missing; these facts do
+not establish the underlying SSH or guest failure.
+
 MCP native broker observations use completed command output for ownership
 verification. Preserve fixed executables, full command width, exact entry/PID/
 birth/status checks, and existing allowances. Failed, interrupted or incomplete

@@ -802,9 +802,41 @@ describe("test level runner", () => {
         const partitioned = partitionProviderFiles(files);
         expect(partitioned.serial).toEqual([files[0]]);
         expect(partitioned.providers).toEqual([
-            { file: files[1], resources: ["hyper-v", "host-virtualization"] },
-            { file: files[2], resources: ["android-emulator", "macos-vm", "host-virtualization"] },
+            { file: files[1], resources: ["hyper-v", "host-virtualization", "selected-broker-owner"] },
+            { file: files[2], resources: ["android-emulator", "macos-vm", "host-virtualization", "selected-broker-owner"] },
         ]);
+    });
+
+    it("serializes actual iOS, macOS, and destructive suites sharing the selected broker owner", async () => {
+        const files = [
+            "level2-ios-e2e.ts",
+            "level2-macos-vm-e2e.ts",
+            "level3-real-destructive.ts",
+        ].map((file) => join(repoRoot, "scripts", "real-tests", file));
+        const events: string[] = [];
+        const executions = files.map((file, index) => ({
+            file,
+            result: index === 1
+                ? { status: "FAIL", reason: "intentional provider failure" }
+                : { status: "PASS" },
+        }));
+        let releaseFirst!: () => void;
+        const firstGate = new Promise<void>((resolvePromise) => { releaseFirst = resolvePromise; });
+        const running = runResourceAware(partitionProviderFiles(files).providers, 2, async (file) => {
+            events.push(`start:${file}`);
+            if (file === files[0]) await firstGate;
+            events.push(`end:${file}`);
+            return executions[files.indexOf(file)];
+        });
+
+        await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
+        const eventsBeforeRelease = [...events];
+        releaseFirst();
+        const results = await running;
+
+        expect(eventsBeforeRelease).toEqual([`start:${files[0]}`]);
+        expect(events).toEqual(files.flatMap((file) => [`start:${file}`, `end:${file}`]));
+        expect(results).toEqual(executions);
     });
 
     it("runs independent providers concurrently while serializing shared resources", async () => {
@@ -869,30 +901,37 @@ describe("test level runner", () => {
         expect(events).toContain("end:finishing");
     });
 
-    it("executes provider modules in isolated child processes and keeps summary order", () => {
+    it("executes shared-owner provider modules in isolated child processes and keeps summary order", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-workers-"));
         writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
-        const windowsFile = join(tempDir, "level2-android-device-e2e.ts");
-        const linuxFile = join(tempDir, "level2-windows-sandbox.ts");
-        const windowsStarted = join(tempDir, "windows.started");
-        const linuxStarted = join(tempDir, "linux.started");
+        const iosFile = join(tempDir, "level2-ios-e2e.ts");
+        const macosFile = join(tempDir, "level2-macos-vm-e2e.ts");
+        const iosStarted = join(tempDir, "ios.started");
+        const iosFinished = join(tempDir, "ios.finished");
+        const macosStarted = join(tempDir, "macos.started");
         const summaryFile = join(tempDir, "summary.json");
-        const moduleText = (name: string, ownMarker: string, peerMarker: string) => `
+        writeFileSync(iosFile, `
             import { existsSync, writeFileSync } from "fs";
-            export const name = ${JSON.stringify(name)};
+            export const name = "iOS worker";
             export async function run() {
-                writeFileSync(${JSON.stringify(ownMarker)}, String(process.pid));
-                const deadline = Date.now() + 20_000;
-                while (!existsSync(${JSON.stringify(peerMarker)}) && Date.now() < deadline) {
-                    await new Promise((resolve) => setTimeout(resolve, 20));
+                writeFileSync(${JSON.stringify(iosStarted)}, String(process.pid));
+                if (existsSync(${JSON.stringify(macosStarted)})) {
+                    return { status: "FAIL", reason: "shared-owner peer started before release" };
                 }
-                return existsSync(${JSON.stringify(peerMarker)})
-                    ? { status: "PASS" }
-                    : { status: "FAIL", reason: "peer provider did not start concurrently" };
+                writeFileSync(${JSON.stringify(iosFinished)}, String(process.pid));
+                return { status: "PASS" };
             }
-        `;
-        writeFileSync(windowsFile, moduleText("windows worker", windowsStarted, linuxStarted));
-        writeFileSync(linuxFile, moduleText("sandbox worker", linuxStarted, windowsStarted));
+        `);
+        writeFileSync(macosFile, `
+            import { existsSync, writeFileSync } from "fs";
+            export const name = "macOS worker";
+            export async function run() {
+                writeFileSync(${JSON.stringify(macosStarted)}, String(process.pid));
+                return existsSync(${JSON.stringify(iosFinished)})
+                    ? { status: "PASS" }
+                    : { status: "FAIL", reason: "shared-owner predecessor did not finish" };
+            }
+        `);
         try {
             const result = spawnSync(process.execPath, [
                 "--import", repoLoader,
@@ -902,8 +941,8 @@ describe("test level runner", () => {
                 "2",
                 "--json-summary-file",
                 summaryFile,
-                windowsFile,
-                linuxFile,
+                iosFile,
+                macosFile,
             ], {
                 cwd: repoRoot,
                 encoding: "utf-8",
@@ -914,11 +953,19 @@ describe("test level runner", () => {
                 records: Array<{ test: string; status: string }>;
             };
             expect(summary.records).toEqual([
-                expect.objectContaining({ test: "windows worker", status: "PASS" }),
-                expect.objectContaining({ test: "sandbox worker", status: "PASS" }),
+                expect.objectContaining({ test: "iOS worker", status: "PASS" }),
+                expect.objectContaining({ test: "macOS worker", status: "PASS" }),
             ]);
-            expect(readFileSync(windowsStarted, "utf-8")).not.toBe(String(process.pid));
-            expect(readFileSync(linuxStarted, "utf-8")).not.toBe(String(process.pid));
+            const iosPid = Number(readFileSync(iosStarted, "utf-8"));
+            const macosPid = Number(readFileSync(macosStarted, "utf-8"));
+            for (const pid of [iosPid, macosPid]) {
+                expect(Number.isSafeInteger(pid)).toBe(true);
+                expect(pid).toBeGreaterThan(0);
+                expect(pid).not.toBe(process.pid);
+                expect(pid).not.toBe(result.pid);
+            }
+            expect(iosPid).not.toBe(macosPid);
+            expect(readFileSync(iosFinished, "utf-8")).toBe(String(iosPid));
         } finally {
             rmSync(tempDir, { recursive: true, force: true });
         }

@@ -49,6 +49,70 @@ describe("saved provider failure evidence", () => {
         expect(message + saved).not.toContain("PRIVATE");
     });
 
+    it.each([
+        { envelope: "body.result", wrapped: true, error: "macos-helper-scp-failed", provider: "scp",
+            execution: { status: 255, signal: null, timedOut: false, errorCode: "ECONNREFUSED", diagnosticCode: "native-nonzero-exit" } },
+        { envelope: "result", wrapped: false, error: "macos-helper-readiness-timeout", provider: "ssh",
+            execution: { status: null, signal: "SIGTERM", timedOut: true, errorCode: "ETIMEDOUT", diagnosticCode: "native-timeout" } },
+    ])("saves the distinct helper failure from $envelope alongside the successful Tart launch", ({ wrapped, error, provider, execution }) => {
+        const result = {
+            execution: { mode: "detached", command: { provider: "tart", status: 0, signal: null, stdout: "PRIVATE-LAUNCH-OUTPUT" } },
+            helperPreparation: { ok: false, skipped: false, error,
+                helper: { status: "failed", ssh: { host: "PRIVATE-HOST", user: "PRIVATE-USER", password: "PRIVATE-PASSWORD" },
+                    remoteScriptPath: "/PRIVATE-GUEST-PATH", provisioning: { status: "failed", provider, updatedAt: "PRIVATE-TIMESTAMP", localScriptPath: "/PRIVATE-HOST-PATH" } },
+                execution: { ...execution, command: "PRIVATE-COMMAND", args: ["PRIVATE-ARG"], stdout: "PRIVATE-STDOUT", stderr: "PRIVATE-STDERR" },
+            },
+        };
+        const value = { ok: false, error: "provider-command-failed", ...(wrapped ? { body: { error: "provider-command-failed", result } } : { result }) };
+        const { saved, message } = savedFailure(value, "start");
+        const failure = JSON.parse(saved).failure;
+        const helperPreparation = { error, provider, execution };
+        expect(failure.execution).toEqual({ status: 0, signal: null });
+        expect(failure.helperPreparation).toEqual(helperPreparation);
+        const formatted = formatBrokerToolFailure(value, "failed", "start");
+        expect(formatted).toContain('execution={"status":0,"signal":null}');
+        expect(formatted).toContain(`helperPreparation=${JSON.stringify(helperPreparation)}`);
+        expect(message).toContain(formatted);
+        expect(formatted.length).toBeLessThanOrEqual(511);
+        expect(saved + message).not.toMatch(/PRIVATE|password|remoteScriptPath|localScriptPath|updatedAt|stdout|stderr|args/);
+    });
+
+    it("retains a known helper error while omitting unknown provider and malformed execution fields", () => {
+        const { saved, message } = savedFailure({ ok: false, error: "provider-command-failed", result: {
+            helperPreparation: { error: "macos-helper-chmod-failed", provider: "ssh", helper: { provisioning: { provider: "PRIVATE-PROVIDER" } },
+                execution: { status: -1, signal: "PRIVATE-SIGNAL", timedOut: "true", errorCode: "PRIVATE-CODE", diagnosticCode: "PRIVATE-DIAGNOSTIC", stderr: "PRIVATE-OUTPUT" } },
+        } }, "start");
+        expect(JSON.parse(saved).failure.helperPreparation).toEqual({ error: "macos-helper-chmod-failed" });
+        expect(message).toContain('helperPreparation={"error":"macos-helper-chmod-failed"}');
+        expect(saved + message).not.toMatch(/PRIVATE|"provider"|"execution"/);
+    });
+
+    it("keeps ordinary provider evidence unchanged when helper preparation is absent or entirely unknown", () => {
+        const result = { execution: { command: { status: 7, signal: null } } };
+        const baseline = { ok: false, error: "provider-command-failed", result };
+        const value = { ...baseline, result: { ...result, helperPreparation: { error: "PRIVATE-ERROR",
+            helper: { provisioning: { provider: "PRIVATE-PROVIDER" } }, execution: ["PRIVATE-EXECUTION"] } } };
+        const { saved, message } = savedFailure(value, "start");
+        expect(JSON.parse(saved).failure).toEqual({ tool: "start", error: "provider-command-failed", execution: { status: 7, signal: null } });
+        expect(brokerToolFailureEvidence(value)).toEqual(brokerToolFailureEvidence(baseline));
+        expect(formatBrokerToolFailure(value, "failed")).toBe(formatBrokerToolFailure(baseline, "failed"));
+        expect(message + saved).not.toMatch(/PRIVATE|helperPreparation/);
+    });
+
+    it("ignores helper-shaped fields outside the two exact result envelopes and malformed preparation objects", () => {
+        const helperPreparation = { error: "macos-helper-scp-failed", helper: { provisioning: { provider: "scp" } }, execution: { status: 255 } };
+        for (const value of [
+            { helperPreparation },
+            { body: { helperPreparation } },
+            { result: { execution: { helperPreparation } } },
+            { body: { result: { helperPreparation: [helperPreparation] } } },
+        ]) {
+            const { saved, message } = savedFailure({ ok: false, error: "provider-command-failed", ...value }, "start");
+            expect(JSON.parse(saved).failure).toEqual({ tool: "start", error: "provider-command-failed" });
+            expect(saved + message).not.toContain("helperPreparation");
+        }
+    });
+
     it("saves only closed native process refusal observations", () => {
         const value = { ok: false, error: "broker-runtime-process-unverified", launch: { attempts: [{
             reason: "broker-reuse-process-unverified", processVerification: { source: "unverified-broker-port-process",

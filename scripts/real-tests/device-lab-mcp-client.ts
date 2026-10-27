@@ -531,6 +531,20 @@ function providerExecution(value: any) {
     return payload?.execution ?? payload?.result?.execution?.command;
 }
 
+function boundedMacosHelperPreparation(value: any) {
+    const payload = value?.body && typeof value.body === "object" && !Array.isArray(value.body) ? value.body : value;
+    const result = payload?.result;
+    if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+    const preparation = result.helperPreparation;
+    if (!preparation || typeof preparation !== "object" || Array.isArray(preparation)) return undefined;
+    const error = ["macos-helper-readiness-timeout", "macos-helper-write-failed", "macos-helper-scp-failed", "macos-helper-chmod-failed", "macos-helper-prepare-failed"].includes(preparation.error)
+        ? preparation.error as string : undefined;
+    const provider = ["ssh", "scp", "ssh-scp", "local", "ssh-key-policy"].includes(preparation.helper?.provisioning?.provider)
+        ? preparation.helper.provisioning.provider as string : undefined;
+    const execution = boundedNativeExecution(preparation.execution);
+    return error || provider || execution ? { ...(error ? { error } : {}), ...(provider ? { provider } : {}), ...(execution ? { execution } : {}) } : undefined;
+}
+
 function boundedMacosBoot(value: any) {
     const boot = providerExecution(value)?.macosBoot;
     if (!boot || typeof boot !== "object" || Array.isArray(boot) || typeof boot.ok !== "boolean") return undefined;
@@ -760,11 +774,13 @@ export function brokerToolFailureEvidence(value: any, callName?: unknown) {
     const validation = boundedValidationFailure(value);
     const tool = knownToolName(callName);
     const execution = boundedNativeExecution(providerExecution(value));
+    const helperPreparation = boundedMacosHelperPreparation(value);
     const macosBoot = boundedMacosBoot(value);
     const processObservation = boundedProcessObservation(lastAttempt?.processVerification?.observation);
     const evidence: Record<string, unknown> = {
         ...(tool ? { tool } : {}),
         ...(execution ? { execution } : {}),
+        ...(helperPreparation ? { helperPreparation } : {}),
         ...(macosBoot ? { macosBoot } : {}),
         ...(processObservation ? { processObservation } : {}),
         ...(validation ? { validation } : {}),
@@ -1044,6 +1060,7 @@ export function formatBrokerToolFailure(value: any, fallback: string, callName?:
     const validation = boundedValidationFailure(value);
     const tool = knownToolName(callName);
     const execution = boundedNativeExecution(providerExecution(value));
+    const helperPreparation = boundedMacosHelperPreparation(value);
     const macosBoot = boundedMacosBoot(value);
     const processObservation = boundedProcessObservation(lastAttempt?.processVerification?.observation);
     const parts = [
@@ -1052,6 +1069,7 @@ export function formatBrokerToolFailure(value: any, fallback: string, callName?:
         boundedBrokerDiagnosticCode(value?.error),
         boundedBrokerDiagnosticCode(body?.error),
         ...(execution ? [`execution=${JSON.stringify(execution)}`] : []),
+        ...(helperPreparation ? [`helperPreparation=${JSON.stringify(helperPreparation)}`] : []),
         ...(macosBoot ? [`macosBoot=${JSON.stringify(macosBoot)}`] : []),
         ...(processObservation ? [`observation=${JSON.stringify(processObservation)}`] : []),
         bootDiagnostic ? `boot=${bootDiagnostic}` : "",

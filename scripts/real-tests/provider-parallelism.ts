@@ -22,7 +22,9 @@ export function normalizeProviderConcurrency(value: unknown, fallback = 1) {
 }
 
 export function providerResources(file: string) {
-    return PROVIDER_RESOURCES.get(basename(file)) || null;
+    const resources = PROVIDER_RESOURCES.get(basename(file));
+    // These workers share the selected broker owner, whose mutations are serialized.
+    return resources ? [...resources, "selected-broker-owner"] : null;
 }
 
 export function partitionProviderFiles(files: string[]) {

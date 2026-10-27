@@ -28,22 +28,39 @@ describe("macOS start helper provisioning", () => {
         const provision = vi.fn();
         const observed = await waitForMacosGuestHelper({}, 2000, { provision, now: () => 2000 });
         expect(observed.error).toBe("macos-helper-readiness-timeout");
+        expect(observed).not.toHaveProperty("command");
         expect(provision).not.toHaveBeenCalled();
     });
     it("bounds repeated connection failures by the remaining boot budget", async () => {
         let clock = 700;
-        const native = { ...refused, provisioning: { status: "pending", updatedAt: "2020-01-01T00:00:00.000Z", workspaceDir: "/guest/owned-helper", attempt: 3 } };
+        const native = { ...refused, command: { status: 255, signal: null, stdout: "PRIVATE-STDOUT", stderr: "Connection refused PRIVATE-STDERR",
+            executable: "/PRIVATE-PATH", args: ["PRIVATE-ARG"], error: { code: "PRIVATE-CODE", message: "PRIVATE-ERROR", path: "/PRIVATE-ERROR-PATH" } },
+            provisioning: { status: "pending", updatedAt: "2020-01-01T00:00:00.000Z", workspaceDir: "/guest/owned-helper", attempt: 3 } };
         const provision = vi.fn(() => native), before = Date.now();
         const observed = await waitForMacosGuestHelper({}, 1000, {
             provision, now: () => clock, delay: async (ms: number) => { clock += ms; },
         });
         expect(observed.error).toBe("macos-helper-readiness-timeout");
+        expect(observed.command).toEqual({ status: 255, signal: null, stdout: "", stderr: "" });
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
         expect(observed.provisioning).toMatchObject({ status: "failed", workspaceDir: "/guest/owned-helper", attempt: 3 });
         const updatedAt = Date.parse(String(observed.provisioning?.updatedAt));
         expect(updatedAt).toBeGreaterThanOrEqual(before);
         expect(updatedAt).toBeLessThanOrEqual(Date.now());
         expect(provision).toHaveBeenCalledTimes(1);
         expect(clock).toBe(1000);
+    });
+    it("omits malformed native metadata and raw output from a synthesized timeout receipt", async () => {
+        let clock = 0;
+        const native = { ...refused, command: { status: -1, signal: "PRIVATE-SIGNAL", stdout: "PRIVATE-STDOUT", stderr: "Connection refused PRIVATE-STDERR",
+            error: { code: "PRIVATE-CODE", message: "PRIVATE-ERROR" }, output: [null, "PRIVATE-OUTPUT"], args: ["PRIVATE-ARG"] } };
+        const provision = vi.fn(() => native);
+        const result = await waitForMacosGuestHelper({}, 100, { provision, now: () => clock, delay: async (ms: number) => { clock += ms; } });
+        expect(result).toMatchObject({ ok: false, error: "macos-helper-readiness-timeout" });
+        expect(result.command).toEqual({ status: null, signal: null, stdout: "", stderr: "" });
+        expect(JSON.stringify(result)).not.toContain("PRIVATE");
+        expect(provision).toHaveBeenCalledTimes(1);
+        expect(clock).toBe(100);
     });
     it("does not retry an unrelated failure stage even when its diagnostics look like a transient network failure", async () => {
         const native = { ...refused, error: "macos-helper-invalid-key" }, provision = vi.fn(() => native), delay = vi.fn();
@@ -89,10 +106,13 @@ describe("macOS start helper provisioning", () => {
         const unix = Date.parse("2026-10-17T12:00:00.000Z"), device = { id: "legacy-expiry" };
         let clock = unix;
         const native = { ok: false, error: stage === "scp" ? "macos-helper-scp-failed" : "macos-helper-chmod-failed",
-            command: { status: 255, stderr: "Connection refused" } };
+            command: { status: 255, signal: "SIGTERM", stdout: "PRIVATE-STDOUT", stderr: "Connection refused PRIVATE-STDERR",
+                error: { code: "ETIMEDOUT", message: "PRIVATE-ERROR", path: "/PRIVATE-PATH", args: ["PRIVATE-ARG"] } } };
         const provision = vi.fn(() => { clock = unix + 1001; return native; }), delay = vi.fn();
         const result = await waitForMacosGuestHelper(device, unix + 1000, { now: () => clock, provision, delay });
         expect(result).toMatchObject({ ok: false, error: "macos-helper-readiness-timeout" });
+        expect(result.command).toEqual({ status: 255, signal: "SIGTERM", stdout: "", stderr: "", error: { code: "ETIMEDOUT" } });
+        expect(JSON.stringify(result)).not.toContain("PRIVATE");
         expect(result).not.toBe(native);
         expect(provision.mock.calls).toEqual([[device, { deadlineAt: unix + 1000 }]]);
         expect(delay).not.toHaveBeenCalled();
@@ -155,5 +175,41 @@ describe("broker relative macOS guest helper adapter", () => {
             expect(native.mock.calls[0][2]).toBeLessThanOrEqual(1000);
             expect(pacing).not.toHaveBeenCalled();
         } finally { pacing.mockRestore(); discovery.mockRestore(); native.mockRestore(); restoreEnvironment(); rmSync(home, { recursive: true, force: true }); }
+    });
+
+    it("retains the last native receipt when transient helper polling exhausts the original relative budget", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-macos-expired-helper-")), restoreEnvironment = isolateDeviceLabTestEnvironment(home);
+        let monotonic = 0;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+        const discovery = vi.spyOn(commands, "commandPath").mockImplementation(tool => `/owned/${tool}`);
+        const native = vi.spyOn(commands, "runWithTimeout").mockImplementation(() => {
+            monotonic += native.mock.calls.length === 1 ? 100 : 50;
+            return native.mock.calls.length === 1
+                ? { status: 255, signal: null, pid: 0, output: [null, "", "Connection refused"], stdout: "", stderr: "Connection refused" }
+                : { status: null, signal: "SIGTERM", pid: 0, output: [null, "PRIVATE-NATIVE-STDOUT", "PRIVATE-NATIVE-STDERR"],
+                    stdout: "PRIVATE-NATIVE-STDOUT", stderr: "PRIVATE-NATIVE-STDERR", executable: "/PRIVATE-NATIVE-PATH", args: ["PRIVATE-NATIVE-ARG"],
+                    error: Object.assign(new Error("PRIVATE-NATIVE-ERROR"), { code: "ETIMEDOUT", path: "/PRIVATE-NATIVE-ERROR-PATH", spawnargs: ["PRIVATE-NATIVE-ERROR-ARG"] }) };
+        });
+        const pacing = vi.spyOn(globalThis, "setTimeout");
+        try {
+            const pending = prepareMacosGuestHelper({ id: "expires-after-retry", ssh: { host: "192.0.2.4", user: "guest", password: "PRIVATE-PASSWORD" } }, 700);
+            expect(native).toHaveBeenCalledTimes(1);
+            monotonic = 600;
+            await vi.advanceTimersByTimeAsync(500);
+            expect(native).toHaveBeenCalledTimes(2);
+            monotonic = 700;
+            await vi.advanceTimersByTimeAsync(50);
+            const result = await pending;
+            expect(result).toMatchObject({ ok: false, skipped: false, error: "macos-helper-readiness-timeout",
+                helper: { status: "failed", provisioning: { status: "failed", provider: "scp" } } });
+            expect(result.execution).toEqual({ status: null, signal: "SIGTERM", timedOut: true });
+            expect(native.mock.calls.map(call => [call[0], call[2]])).toEqual([["/owned/scp", 700], ["/owned/scp", 100]]);
+            expect(pacing.mock.calls.map(call => call[1])).toEqual([500, 50]);
+            expect(JSON.stringify(result)).not.toMatch(/PRIVATE-NATIVE|PRIVATE-PASSWORD/);
+        } finally {
+            pacing.mockRestore(); clock.mockRestore(); discovery.mockRestore(); native.mockRestore(); vi.useRealTimers();
+            restoreEnvironment(); rmSync(home, { recursive: true, force: true });
+        }
     });
 });
