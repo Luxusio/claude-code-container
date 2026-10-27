@@ -1,4 +1,4 @@
-import { iosAccessErrorMessage, iosAccessErrorCode, iosAccessUnsupported } from "../domain/ios-observation-access.mjs";
+import { iosAccessErrorMessage, iosAccessErrorCode, iosAccessUnsupported, iosExecInputError } from "../domain/ios-observation-access.mjs";
 
 /** @template {import('../ports/ios-observation-access.mjs').IosAccessDevice} Device
  * @template Result
@@ -212,11 +212,14 @@ export function createIosObservationAccess(ports) {
         if (name === "mobile_session_status") return ports.jsonResult(automationStatus(device));
         if (name === "device_exec") {
             if (ports.kind === "physical") return ports.textResult(false, iosAccessUnsupported("physical", name));
+            const error = iosExecInputError(args);
+            if (error) return ports.textResult(false, error);
             const discovery = ports.discovery();
             if (!discovery.available) return ports.missingPrerequisites(discovery);
             const target = ports.verifyTarget(device);
             if (target.error !== undefined) return ports.textResult(false, target.error);
-            const command = ports.simulatorEffect({ kind: "exec", target: target.target, command: args.command });
+            const command = ports.simulatorEffect({ kind: "exec", target: target.target,
+                ...(args.argv ? { argv: args.argv } : { command: args.command }) });
             return command.ok ? ports.jsonResult({ stdout: command.stdout, stderr: command.stderr, status: command.status }) : ports.commandFailure(command);
         }
         if (name === "device_screenshot" && ports.kind === "simulator") {

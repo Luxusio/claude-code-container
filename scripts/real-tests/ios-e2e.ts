@@ -174,9 +174,12 @@ export async function runIosSimulatorE2E(options: any = {}) {
 
             const exec = parsePayload(await callTool("exec", { detail: true,
                 deviceId,
-                command: "echo ccc-ios-simulator-e2e-ok",
+                argv: ["launchctl", "managerpid"],
             }));
-            assert.match(exec.stdout, /ccc-ios-simulator-e2e-ok/);
+            assert.strictEqual(exec.status, 0);
+            const simulatorManagerPid = String(exec.stdout).trim();
+            assert.match(simulatorManagerPid, /^[1-9][0-9]*$/);
+            assert.ok(Number.isSafeInteger(Number(simulatorManagerPid)) && Number(simulatorManagerPid) > 0);
 
             const session = parseContractToolPayload("status", await callTool("status", { detail: true, deviceId }));
             assert.ok("device" in session && session.device && typeof session.device === "object");

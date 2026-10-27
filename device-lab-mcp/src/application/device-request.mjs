@@ -47,9 +47,14 @@ import {
     activeAppMatches,
     selectMobileEffects
 } from "../domain/device-request.mjs";
+import { iosExecInputError } from "@ccc/device-lab/providers/domain/ios-observation-access.mjs";
 /** @template Result
  * @param {import("../ports/device-request.mjs").DeviceRequestPorts<Result>} ports */
 export function createDeviceRequest(ports) {
+    /** @param {string} backend */
+    function execArgvUnsupported(backend) {
+        return ports.jsonResult({ ok: false, error: "device-exec-argv-unsupported", backend });
+    }
     /** @param {Args} args */
     function brokerLifecycleExecutionTimeout(args) {
         const macosTartCreateRpcTimeoutMs = ports.macosTartCreateRpcTimeoutMs(args);
@@ -597,6 +602,9 @@ export function createDeviceRequest(ports) {
 
     /** @param {string} name @param {Args} args @returns {Promise<Result>} */
     async function handleBrokerDeviceTool(name, args) {
+        if (name === "device_exec" && Object.hasOwn(args, "argv") && args.backend && args.backend !== "ios-simulator") {
+            return execArgvUnsupported(args.backend);
+        }
         if (MOBILE_COMMON_OPERATIONS.has(name) || (args?.deviceId && !args?.backend)) {
             // The shared operation needs the same owner inventory validation as implicit calls.
             return /** @type {Result} */ (await maybeHandleImplicitBrokerDeviceTool(name, { ...args, implicitBroker: true, broker: true, viaBroker: true }));
@@ -652,6 +660,9 @@ export function createDeviceRequest(ports) {
                 });
             }
             brokerBackend = inventoryBackend.backend;
+        }
+        if (name === "device_exec" && Object.hasOwn(args, "argv") && brokerBackend !== "ios-simulator") {
+            return execArgvUnsupported(brokerBackend);
         }
         if (isCursorMove(name, args) && !["windows-vm", "linux-vm", "windows-sandbox", "macos-vm"].includes(brokerBackend)) {
             return ports.jsonResult({ ok: false, error: "device-cursor-move-backend-unsupported" });
@@ -1013,6 +1024,11 @@ export function createDeviceRequest(ports) {
     async function dispatchDeviceTool(name, rawArgs, options = {}) {
         const { detail = false } = options;
         const args = { ...ports.normalizeToolArgs(rawArgs, name), ...(name === "device_status" && detail ? { detail: true } : {}) };
+        if (name === "device_exec" && Object.hasOwn(args, "argv")) {
+            const error = iosExecInputError(args);
+            if (error) return ports.jsonResult({ ok: false, error: "device-exec-input-invalid", detail: error });
+            if (args.deviceId === undefined) return ports.jsonResult({ ok: false, error: "missing-device-id" });
+        }
         if (name === "device_list") return handleDeviceList(args);
         if (name === "device_inventory" && args.backend === undefined) {
             return ports.availableDevices(backend => dispatchDeviceTool(name, { ...args, backend }, { detail }), { detail });
@@ -1052,6 +1068,7 @@ export function createDeviceRequest(ports) {
         if (name === "device_list_files" && args.deviceId === CURRENT_DISPLAY_DEVICE_ID) return ports.jsonResult({ ok: false, error: "list-files-unsupported", detail: "Current-display targets do not provide a filesystem adapter." });
         if (wantsCurrentDisplayDevice(name, args) || (args.deviceId === CURRENT_DISPLAY_DEVICE_ID && DEVICE_REQUIRED_TOOLS.has(name))) {
             if (args.backend !== undefined && args.backend !== CURRENT_DISPLAY_DEVICE_ID) return ports.jsonResult({ ok: false, error: "device-backend-mismatch", actualBackend: CURRENT_DISPLAY_DEVICE_ID });
+            if (name === "device_exec" && Object.hasOwn(args, "argv")) return execArgvUnsupported(CURRENT_DISPLAY_DEVICE_ID);
             const common = commonOperation(name, CURRENT_DISPLAY_DEVICE_ID, args);
             if (common.error) return ports.textResult(false, common.error);
             const displayResult = await handleCurrentDisplayDeviceTool(name, args);
@@ -1063,6 +1080,14 @@ export function createDeviceRequest(ports) {
         if (wantsBrokerDeviceTool(name, args)) return handleBrokerDeviceTool(name, args);
         if (wantsBrokerMobile(name, args)) return handleBrokerMobileTool(name, args);
         if (wantsBrokerPhysical(name, args)) return handleBrokerPhysicalTool(name, args);
+        if (name === "device_exec" && Object.hasOwn(args, "argv")) {
+            if (!optsOutOfImplicitBroker(args)) return handleBrokerDeviceTool(name, args);
+            const target = inferLifecycleBackend(args.deviceId);
+            if (!target.ok) return ports.jsonResult(target);
+            if (target.backend !== "ios-simulator") return execArgvUnsupported(target.backend);
+            return await ports.handleIosTool(name, args)
+                || ports.jsonResult({ ok: false, error: "device-not-found", deviceId: args.deviceId });
+        }
         if (args.backend === "linux-vm" && args.provider === "hyper-v") {
             const explicitHyperV = await maybeHandleHyperVLinuxVmTool(name, args);
             if (explicitHyperV) return explicitHyperV;

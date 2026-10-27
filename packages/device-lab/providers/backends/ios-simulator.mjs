@@ -773,7 +773,7 @@ function performSimulatorEffect(xcrun, effect) {
             ...(present ? { pid: processProbe ? command.stdout.trim() : null, ...(!processProbe ? { observedBy: `launchctl-${domain}` } : {}) } : {}) };
         return /** @type {import('../ports/ios-observation-access.mjs').IosAccessSimulatorResult<Effect>} */ (result);
     }
-    const args = effect.kind === "exec" ? ["simctl", "spawn", target, "/bin/sh", "-lc", effect.command]
+    const args = effect.kind === "exec" ? ["simctl", "spawn", target, ...(effect.argv ?? ["/bin/sh", "-lc", effect.command])]
         : effect.kind === "screenshot" ? ["simctl", "io", target, "screenshot", effect.path]
         : effect.kind === "erase" ? ["simctl", "erase", target]
         : ["simctl", "get_app_container", target, effect.bundleId, effect.containerType];
@@ -794,7 +794,7 @@ function simctlFailureObservation(stderr) {
     const prefix = bytes.subarray(0, 16 * 1024).toString("utf8") + (bytes.length > 16 * 1024 ? "_" : "");
     /** @type {{domain:string,code:number}[]} */
     const errors = [];
-    const pattern = /\b[Dd]omain\s*=\s*(NSPOSIXErrorDomain|NSCocoaErrorDomain|com\.apple\.CoreSimulator\.SimError)(?:\s*,\s*|\s+)[Cc]ode\s*=\s*([+-]?\d+)(?=[\s,):}"\]]|$)/g;
+    const pattern = /\b[Dd]omain\s*=\s*(NSPOSIXErrorDomain|NSCocoaErrorDomain|com\.apple\.CoreSimulator\.SimError|com\.apple\.CoreSimulator\.LaunchdSimError|SimXPCErrorDomain)(?:\s*,\s*|\s+)[Cc]ode\s*=\s*([+-]?\d+)(?=[\s,):}"\]]|$)/g;
     for (const match of prefix.matchAll(pattern)) {
         const code = Number(match[2]);
         if (!Number.isInteger(code) || code < -2147483648 || code > 2147483647) continue;
@@ -803,7 +803,8 @@ function simctlFailureObservation(stderr) {
         errors.push({ domain, code });
         if (errors.length === 4) break;
     }
-    const spawnFailure = /\b(?:failed\s+to\s+spawn|posix_spawnp?(?:\(\))?(?:\s*:\s*|\s+)(?:failed|failure))\b/i.test(prefix);
+    const spawnFailure = /\b(?:failed\s+to\s+spawn|posix_spawnp?(?:\(\))?(?:\s*:\s*|\s+)(?:failed|failure))\b/i.test(prefix)
+        || /(?:^|\n)Process spawn via launchd failed\.(?=\r?\n|$)/.test(prefix);
     return errors.length || spawnFailure ? {
         ...(errors.length ? { errors } : {}), ...(spawnFailure ? { stage: "spawn" } : {}),
     } : undefined;

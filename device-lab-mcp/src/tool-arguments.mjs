@@ -4,6 +4,7 @@ import { createInputError, normalizeCreateArgs, CREATE_TOOL_BACKENDS } from "./c
 import { TOOLS, SINGLE_BACKEND_TOOL_DEFAULTS, GROUP_OPERATIONS, DISCOVERY_OPERATIONS, toolOperation } from "./tools.mjs";
 import { SINGLE_BACKEND_TOOL_DEFAULTS as OPERATION_DEFAULTS } from "./operation-tools.mjs";
 import { sharedFlowTarget } from "@ccc/device-lab/providers/domain/device-flow.mjs";
+import { iosExecInputError } from "@ccc/device-lab/providers/domain/ios-observation-access.mjs";
 
 const DEVICE_TARGET_PROPERTIES = new Map(TOOLS
     .filter((tool) => tool.inputSchema?.required?.includes("deviceId"))
@@ -47,6 +48,10 @@ export function toolInputError(name, args = {}) {
     }
     if ((DEVICE_TARGET_PROPERTIES.has(name) || name === "run_flow") && Object.hasOwn(args, "backend")) {
         return "deviceId determines the backend; omit backend";
+    }
+    if (name === "exec") {
+        const error = iosExecInputError(args);
+        if (error) return error;
     }
     if (["devices", "set_network"].includes(name)) {
         const unknown = Object.keys(args).find(key => !Object.hasOwn(schema.properties, key) && !TRANSPORT_FIELDS.has(key));

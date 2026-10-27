@@ -27,6 +27,7 @@ export interface IosAccessDevice {
 export interface IosAccessArgs {
     deviceId?: string;
     command?: string;
+    argv?: string[];
     bundleId?: string;
     path?: string;
     limit?: number;
@@ -62,7 +63,7 @@ export type IosAccessAppiumResult<Effect extends IosAccessAppiumEffect> =
     Effect extends { kind: "source" | "screenshot" | "active-app" } ? { source: unknown } | { data: unknown } | { bundleIds: readonly string[]; activeApp: unknown } : undefined;
 export type IosAccessProbe = "bundle-process" | "name-process" | "user-services" | "gui-services" | "system-services";
 export type IosAccessSimulatorEffect =
-    | { kind: "exec"; target: string; command: string | undefined }
+    | ({ kind: "exec"; target: string } & ({ command: string | undefined; argv?: never } | { argv: string[]; command?: never }))
     | { kind: "screenshot"; target: string; path: string }
     | { kind: "erase"; target: string }
     | { kind: "app-container"; target: string; bundleId: string; containerType: string }

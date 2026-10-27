@@ -21,6 +21,12 @@ const invalid: Array<[string, Record<string, unknown>, RegExp]> = [
     ["wait_for_text", { text: [] }, /wait_for_text requires text/],
     ["key", { options: { key: "" } }, /Use flat tool arguments/],
     ["wait_for_text", { options: { text: "" } }, /Use flat tool arguments/],
+    ["exec", {}, /exec/],
+    ["exec", { command: "echo unchanged", argv: ["launchctl", "managerpid"] }, /exec/],
+    ["exec", { argv: [] }, /exec/],
+    ["exec", { argv: ["/bin/launchctl", "managerpid"] }, /exec/],
+    ["exec", { argv: ["launchctl", "bad\0argument"] }, /exec/],
+    ["exec", { argv: ["launchctl", "x".repeat(4088)] }, /exec/],
 ];
 
 describe("mobile input preflight over public MCP", () => {
@@ -81,6 +87,20 @@ require('module').syncBuiltinESMExports();`);
             const wait = ajv.compile(catalog.tools.find((tool) => tool.name === "wait_for_text")!.inputSchema);
             expect(wait({ deviceId: "android-test", text: " " })).toBe(true);
             for (const args of [{}, { text: "" }, { text: 7 }]) expect(wait({ deviceId: "android-test", ...args })).toBe(false);
+
+            const execSchema = catalog.tools.find((tool) => tool.name === "exec")!.inputSchema;
+            expect(execSchema.required).toEqual(["deviceId"]);
+            expect(execSchema.oneOf).toEqual([{ required: ["command"] }, { required: ["argv"] }]);
+            const exec = ajv.compile(execSchema);
+            for (const args of [{ command: "printf '%s' '$HOME; value'" }, { argv: ["launchctl", "managerpid"] },
+                { argv: ["Program-1.2_+", "", " \t\n", "$(touch private); 'quoted'"] }]) {
+                expect(exec({ deviceId: "ios-test", ...args }), JSON.stringify(args)).toBe(true);
+            }
+            for (const args of [{}, { command: "echo old", argv: ["launchctl"] }, { argv: [] },
+                { argv: "launchctl" }, { argv: [1] },
+                { argv: ["launchctl", "x".repeat(4097)] }, { argv: Array(65).fill("x") }]) {
+                expect(exec({ deviceId: "ios-test", ...args }), JSON.stringify(args)).toBe(false);
+            }
         } finally { await cleanupDeviceLabMcpTestContext(context); }
     });
 

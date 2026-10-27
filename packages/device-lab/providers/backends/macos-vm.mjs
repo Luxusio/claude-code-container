@@ -41,7 +41,7 @@ import {
     writeFileSync,
     writeSync,
 } from "fs";
-import { homedir, tmpdir } from "os";
+import { constants as osConstants, homedir, tmpdir } from "os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 
 const PROVIDERS = [
@@ -1165,7 +1165,22 @@ function macosDesktopPrimaryResult(outcome) {
     const evidence = /** @type {MacosDesktopEvidence} */ (outcome.evidence);
     if (evidence.kind === "native") return evidence.value;
     const result = evidence.kind === "command" ? evidence.result : evidence.helper.result;
-    if (outcome.kind === "failed") return fail(result);
+    if (outcome.kind === "failed") {
+        const receipt = /** @type {ReturnType<typeof runHelperCommand> & {timedOut?:boolean,error?:NodeJS.ErrnoException}} */ (result);
+        const status = Number.isSafeInteger(receipt.status) && receipt.status !== null && receipt.status >= 0 ? receipt.status : null;
+        const signal = typeof receipt.signal === "string" && Object.hasOwn(osConstants.signals, receipt.signal) ? receipt.signal : null;
+        const errorCode = typeof receipt.error?.code === "string" && Object.hasOwn(osConstants.errno, receipt.error.code) ? receipt.error.code : null;
+        const timedOut = receipt.timedOut === true || errorCode === "ETIMEDOUT";
+        const diagnosticCode = timedOut ? "native-timeout"
+            : errorCode === "ENOENT" ? "native-not-found"
+            : errorCode === "EACCES" || errorCode === "EPERM" ? "native-permission-denied"
+            : signal ? "native-signal"
+            : status !== null && status !== 0 ? "native-nonzero-exit" : "native-unknown";
+        return { ...fail(result), structuredContent: {
+            ok: false, error: "provider-command-failed",
+            execution: { status, signal, timedOut, errorCode, diagnosticCode },
+        } };
+    }
     const { name, args } = outcome;
     if (name === "device_upload" || name === "device_download") {
         const paths = name === "device_upload" ? { uploaded: { localPath: args.localPath, remotePath: args.remotePath } } : { downloaded: { remotePath: args.remotePath, localPath: args.localPath } };

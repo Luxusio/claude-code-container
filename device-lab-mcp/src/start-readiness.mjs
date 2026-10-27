@@ -16,6 +16,8 @@ function nativeExecution(value) {
     if (value.status === null || (Number.isSafeInteger(value.status) && value.status >= 0)) evidence.status = value.status;
     if (value.signal === null || (typeof value.signal === "string" && Object.hasOwn(osConstants.signals, value.signal))) evidence.signal = value.signal;
     if (typeof value.errorCode === "string" && Object.hasOwn(osConstants.errno, value.errorCode)) evidence.errorCode = value.errorCode;
+    if (typeof value.timedOut === "boolean") evidence.timedOut = value.timedOut;
+    if (["native-timeout", "native-not-found", "native-permission-denied", "native-signal", "native-nonzero-exit", "native-unknown"].includes(value.diagnosticCode)) evidence.diagnosticCode = value.diagnosticCode;
     return Object.keys(evidence).length ? evidence : undefined;
 }
 
@@ -29,7 +31,7 @@ function processObservation(value) {
 }
 
 function failedExecution(value) {
-    return value && ((typeof value.status === "number" && value.status !== 0) || value.signal || value.errorCode);
+    return value && ((typeof value.status === "number" && value.status !== 0) || value.signal || value.errorCode || value.timedOut === true);
 }
 
 /** @returns {import('@ccc/device-lab/providers/domain/readiness.mjs').ReadinessFailure|undefined} */

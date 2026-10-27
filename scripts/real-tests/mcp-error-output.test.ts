@@ -87,6 +87,87 @@ describe("MCP error output", () => {
         }
     });
 
+    it.each([
+        {
+            name: "the two observed launchd spawn domains with duplicate and private fields",
+            simctl: { stage: "spawn", errors: [
+                { domain: "com.apple.CoreSimulator.LaunchdSimError", code: 111, detail: "PRIVATE-DETAIL" },
+                { domain: "SimXPCErrorDomain", code: 111 },
+                { domain: "com.apple.CoreSimulator.LaunchdSimError", code: 111 },
+                { domain: "SimXPCErrorDomain", code: 111 },
+            ], stderr: "PRIVATE-STDERR", command: "PRIVATE-COMMAND", path: "PRIVATE-PATH" },
+            expected: { errors: [{ domain: "com.apple.CoreSimulator.LaunchdSimError", code: 111 }, { domain: "SimXPCErrorDomain", code: 111 }], stage: "spawn" },
+        },
+        {
+            name: "signed 32-bit limits for both newly observed domains",
+            simctl: { errors: [
+                { domain: "com.apple.CoreSimulator.LaunchdSimError", code: -2147483648 },
+                { domain: "SimXPCErrorDomain", code: 2147483647 },
+            ] },
+            expected: { errors: [{ domain: "com.apple.CoreSimulator.LaunchdSimError", code: -2147483648 }, { domain: "SimXPCErrorDomain", code: 2147483647 }] },
+        },
+        {
+            name: "four distinct errors after new-domain duplicates",
+            simctl: { errors: [
+                { domain: "com.apple.CoreSimulator.LaunchdSimError", code: 111 },
+                { domain: "com.apple.CoreSimulator.LaunchdSimError", code: 111 },
+                { domain: "SimXPCErrorDomain", code: 111 },
+                { domain: "SimXPCErrorDomain", code: 111 },
+                { domain: "NSPOSIXErrorDomain", code: 2 },
+                { domain: "NSCocoaErrorDomain", code: 260 },
+                { domain: "com.apple.CoreSimulator.SimError", code: 405 },
+            ] },
+            expected: { errors: [
+                { domain: "com.apple.CoreSimulator.LaunchdSimError", code: 111 },
+                { domain: "SimXPCErrorDomain", code: 111 },
+                { domain: "NSPOSIXErrorDomain", code: 2 },
+                { domain: "NSCocoaErrorDomain", code: 260 },
+            ] },
+        },
+        {
+            name: "private, prefixed and suffixed domains without accepting arbitrary spawn text",
+            simctl: { stage: "Process spawn via launchd failed.", errors: [
+                { domain: "PRIVATE-DOMAIN", code: 111 },
+                { domain: "PRIVATE.com.apple.CoreSimulator.LaunchdSimError", code: 111 },
+                { domain: "com.apple.CoreSimulator.LaunchdSimError.PRIVATE", code: 111 },
+                { domain: "PRIVATE.SimXPCErrorDomain", code: 111 },
+                { domain: "SimXPCErrorDomain.PRIVATE", code: 111 },
+            ] },
+            expected: undefined,
+        },
+        {
+            name: "new-domain codes outside int32 or with nonnumeric JSON types",
+            simctl: { errors: [
+                { domain: "com.apple.CoreSimulator.LaunchdSimError", code: 2147483648 },
+                { domain: "SimXPCErrorDomain", code: -2147483649 },
+                { domain: "com.apple.CoreSimulator.LaunchdSimError", code: "111" },
+                { domain: "SimXPCErrorDomain", code: 1.5 },
+            ] },
+            expected: undefined,
+        },
+    ])("independently selects $name when saving a real MCP error artifact", ({ simctl, expected }) => {
+        const result = { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "Error: PRIVATE-RAW-OUTPUT" }) }],
+            structuredContent: { ok: false, error: "provider-command-failed", execution: {
+                status: 111, signal: null, timedOut: false, diagnosticCode: "native-nonzero-exit", simctl,
+            } }, __cccToolCallRecord: { name: "exec" } };
+
+        let error: any;
+        try { parseToolPayload(result); }
+        catch (caught) { error = caught; }
+
+        expect(error).toBeInstanceOf(Error);
+        expect(error.message).toContain("provider-command-failed");
+        const file = error.message.split("Diagnostics: ")[1];
+        written.push(file);
+        const saved = fs.readFileSync(file, "utf8");
+        const execution = JSON.parse(saved).failure.execution;
+        expect(execution.status).toBe(111);
+        if (expected) expect(execution.simctl).toEqual(expected);
+        else expect(execution).not.toHaveProperty("simctl");
+        expect(error.message + saved).not.toContain("PRIVATE");
+        expect(error.message + saved).not.toContain("Process spawn via launchd failed.");
+    });
+
     it.each([null, [], {}, "PRIVATE"])("uses JSON content when structured failure metadata is invalid: %s", structuredContent => {
         let caught: any;
         try { parseToolPayload({ isError: true, content: [{ type: "text", text: '{"ok":false,"error":"device-not-found"}' }], structuredContent }); }

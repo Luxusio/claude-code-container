@@ -182,9 +182,57 @@ describe("saved provider failure evidence", () => {
         expect(evidence.readiness).toEqual({ attempts: 2, lastProbe: "provider-error", failureAttempt: 2, failure: {
             stage: "broker-process", error: "broker-runtime-process-unverified", processObservation: {
                 stage: "command", reason: "native-command-failed", status: 1, signal: null, errorCode: "ENOENT",
-            }, execution: { status: 2, signal: "SIGTERM", errorCode: "EACCES" },
+            }, execution: { status: 2, signal: "SIGTERM", errorCode: "EACCES", timedOut: true },
         } });
-        expect(JSON.stringify(evidence)).not.toMatch(/PRIVATE|timedOut|pid|startToken|stdout|stderr|args/);
+        expect(JSON.stringify(evidence)).not.toMatch(/PRIVATE|pid|startToken|stdout|stderr|args/);
+    });
+
+    it.each(["native-timeout", "native-not-found", "native-permission-denied", "native-signal", "native-nonzero-exit", "native-unknown"])("independently preserves the closed readiness classification %s in the saved artifact", diagnosticCode => {
+        const execution = { status: 1, signal: null, timedOut: false, diagnosticCode };
+        const readiness = { attempts: 3, lastProbe: "provider-error", failureAttempt: 2,
+            failure: { stage: "provider", error: "provider-command-failed", execution: {
+                ...execution, command: "PRIVATE-COMMAND", executable: "/PRIVATE-PATH", args: ["PRIVATE-ARG"],
+                stdout: "PRIVATE-STDOUT", stderr: "PRIVATE-STDERR", credentials: "PRIVATE-CREDENTIAL",
+            } } };
+        const { saved, message } = savedFailure({ ok: false, error: "device-start-not-ready", readiness }, "start");
+        const selected = { attempts: 3, lastProbe: "provider-error", failureAttempt: 2,
+            failure: { stage: "provider", error: "provider-command-failed", execution } };
+        expect(JSON.parse(saved).failure.readiness).toEqual(selected);
+        expect(brokerToolFailureEvidence({ readiness }).readiness).toEqual(selected);
+        expect(message).toContain(`"diagnosticCode":"${diagnosticCode}"`);
+        expect(message).toContain('"timedOut":false');
+        expect(message.length).toBeLessThanOrEqual(511);
+        expect(JSON.stringify(JSON.parse(saved).failure) + message).not.toContain("PRIVATE");
+    });
+
+    it("saves a native timeout alone without inventing a public error or an earlier probe number", () => {
+        const readiness = { attempts: 192, lastProbe: "provider-error", failureAttempt: 191,
+            failure: { stage: "provider", execution: { timedOut: true, diagnosticCode: "native-timeout" } } };
+        const { saved, message } = savedFailure({ ok: false, error: "device-start-not-ready", readiness }, "start");
+        expect(JSON.parse(saved).failure.readiness).toEqual(readiness);
+        expect(message).toContain('"failureAttempt":191');
+        expect(message).toContain('"timedOut":true');
+    });
+
+    it.each([
+        { timedOut: false },
+        { timedOut: "true", diagnosticCode: "PRIVATE-CODE" },
+        { timedOut: false, diagnosticCode: "native-timeout" },
+        { diagnosticCode: "native-nonzero-exit" },
+        { status: 0, signal: null, timedOut: false, diagnosticCode: "PRIVATE-CODE" },
+    ])("does not save a classified failure from false, malformed or diagnostic-only execution %j", execution => {
+        const readiness = { attempts: 1, lastProbe: "provider-error", failureAttempt: 1, failure: { stage: "provider", execution } };
+        const { saved, message } = savedFailure({ ok: false, error: "device-start-not-ready", readiness }, "start");
+        expect(JSON.parse(saved).failure.readiness).toEqual({ attempts: 1, lastProbe: "provider-error" });
+        expect(message).not.toMatch(/failureAttempt|PRIVATE|diagnosticCode|timedOut/);
+    });
+
+    it("does not extend process observations with the native execution timeout fields", () => {
+        const processObservation = { stage: "listener", reason: "native-command-failed", status: null, signal: "SIGTERM", errorCode: "ETIMEDOUT" };
+        const evidence = brokerToolFailureEvidence({ readiness: { attempts: 1, lastProbe: "provider-error", failureAttempt: 1,
+            failure: { stage: "broker-process", processObservation: { ...processObservation, timedOut: true, diagnosticCode: "native-timeout" } } } });
+        expect(evidence.readiness).toEqual({ attempts: 1, lastProbe: "provider-error", failureAttempt: 1,
+            failure: { stage: "broker-process", processObservation } });
     });
 
     it("keeps selected native failure facts when no public error code was observed", () => {

@@ -8,6 +8,14 @@ function consumedCapabilities(simulator: IosSimulatorAccessPorts<IosAccessDevice
     const session: Promise<IosAccessSessionOutcome<IosAccessDevice>> = createIosObservationAccess(physical).ensureSession("phone");
     simulator.spawnServer(4723);
     simulator.verifyTarget({ id: "owned", udid: "OWNED-UDID" });
+    simulator.simulatorEffect({ kind: "exec", target: "OWNED-UDID", argv: ["launchctl", "managerpid"] });
+    simulator.simulatorEffect({ kind: "exec", target: "OWNED-UDID", command: "printf '%s' '$HOME'" });
+    // @ts-expect-error Exec effects choose exactly one explicit program or legacy shell string.
+    const mixedExec: IosAccessSimulatorEffect = { kind: "exec", target: "OWNED-UDID", command: "echo old", argv: ["launchctl"] };
+    // @ts-expect-error Exec effects cannot omit both execution forms.
+    const missingExec: IosAccessSimulatorEffect = { kind: "exec", target: "OWNED-UDID" };
+    // @ts-expect-error Program arguments remain strings at the inward native boundary.
+    const numericExec: IosAccessSimulatorEffect = { kind: "exec", target: "OWNED-UDID", argv: ["launchctl", 1] };
     // @ts-expect-error Server allocation accepts a semantic port, not an executable path.
     simulator.spawnServer("/usr/bin/appium", 4723);
     // @ts-expect-error Target admission accepts the owned device, not an executable path.
@@ -39,7 +47,7 @@ function consumedCapabilities(simulator: IosSimulatorAccessPorts<IosAccessDevice
     createIosObservationAccess({ ...physical, checkObservation: async () => undefined });
     // @ts-expect-error Allocated screenshot cleanup settles before the response is returned.
     createIosObservationAccess({ ...simulator, stageScreenshot: () => ({ path: "/stage/screenshot.png", dispose: async () => undefined }) });
-    void [screenshot, session, publishAppium, verifyTarget, refreshLease, malformedProbe];
+    void [screenshot, session, publishAppium, verifyTarget, refreshLease, malformedProbe, mixedExec, missingExec, numericExec];
 }
 void consumedCapabilities;
 

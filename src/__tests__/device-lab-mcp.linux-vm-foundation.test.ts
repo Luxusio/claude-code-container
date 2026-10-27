@@ -98,9 +98,11 @@ describe("device-lab Linux VM foundation", () => {
         }));
         const guestExecTool = result.tools.find((tool) => tool.name === "exec");
         expect(guestExecTool?.inputSchema).toEqual(expect.objectContaining({
-            required: ["deviceId", "command"],
+            required: ["deviceId"],
+            oneOf: [{ required: ["command"] }, { required: ["argv"] }],
             properties: expect.objectContaining({
                 command: expect.objectContaining({ maxLength: 4096 }),
+                argv: expect.objectContaining({ type: "array", minItems: 1, maxItems: 64 }),
                 timeoutMs: expect.objectContaining({ minimum: 1, maximum: 600000 }),
             }),
         }));

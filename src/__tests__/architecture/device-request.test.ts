@@ -116,6 +116,63 @@ function requestPorts(operation: string, normalized: DeviceArguments = {}): Devi
 }
 
 describe("shared device request admission", () => {
+    function execPorts(args: DeviceArguments, backend: string) {
+        const ports = requestPorts("device_exec", args);
+        const device = { id: String(args.deviceId), backend };
+        ports.OPERATION_TOOLS = [{ name: "device_exec", inputSchema: { required: ["deviceId"] } }];
+        ports.listAndroidDevices = () => backend === "android-emulator" ? [device] : [];
+        ports.listAndroidRealDevices = () => backend === "android-device" ? [device] : [];
+        ports.listIosDevices = () => backend === "ios-simulator" ? [device] : [];
+        ports.listIosRealDevices = () => backend === "ios-device" ? [device] : [];
+        ports.listMacosDevices = () => backend === "macos-vm" ? [device] : [];
+        ports.listLinuxVmDevices = () => backend === "linux-vm" ? [device] : [];
+        ports.listWindowsDevices = () => backend === "windows-sandbox" ? [device] : [];
+        ports.listWindowsVmDevices = () => backend === "windows-vm" ? [device] : [];
+        ports.implicitBrokerProbeOptions = () => ({ hostCandidates: ["127.0.0.1"], port: 43210, autolaunch: false });
+        const stateKey = ({ "android-emulator": "android", "android-device": "android-device", "ios-simulator": "ios", "ios-device": "ios-device", "macos-vm": "macos", "windows-sandbox": "windows" } as Record<string, string>)[backend] || backend;
+        ports.observeBrokerInventory = vi.fn(async () => ({ ok: true, backends: [{ stateKey, devices: [device] }], devices: [device], payloadReceipt: {}, receipt: { ok: true } }));
+        return ports;
+    }
+
+    it.each(["android-emulator", "android-device", "ios-device", "macos-vm", "linux-vm", "windows-sandbox", "windows-vm", "x11-current-display"])(
+        "refuses argv for selected %s across direct, explicit and inferred broker routes before provider execution", async backend => {
+            for (const route of ["direct", "explicit", "inferred"] as const) {
+                const args = { deviceId: backend === "x11-current-display" ? backend : "owned-exec", argv: ["launchctl", "managerpid"],
+                    ...(route === "direct" ? { implicitBroker: false } : route === "explicit" ? { backend, broker: true } : {}) };
+                const ports = execPorts(args, backend);
+                ports.OWNER_DEVICE_ID_PATTERN = /^[a-z][a-z0-9-]*$/;
+                const result = await createDeviceRequest(ports).dispatch("device_exec", args);
+                const body = result.selection === "text" ? JSON.parse(String(result.value)) : result.value;
+                expect(body, `${backend}/${route}`).toMatchObject({ ok: false, error: "device-exec-argv-unsupported", backend });
+                expect(ports.handleAndroidTool).not.toHaveBeenCalled();
+                expect(ports.invokeBrokerLifecycle).not.toHaveBeenCalled();
+            }
+        },
+    );
+
+    it("preserves explicit argv when the direct owner inventory selects iOS Simulator", async () => {
+        const argv = ["launchctl", "", " managerpid ", "$(touch private); 'quoted'", "한글\n"];
+        const args = { deviceId: "owned-exec", argv, implicitBroker: false };
+        const ports = execPorts(args, "ios-simulator");
+        ports.handleLinuxVmManagementTool = vi.fn(() => null); ports.handleLinuxVmTool = vi.fn(() => null);
+        ports.handleAndroidTool = vi.fn(() => null); ports.handleAndroidRealTool = vi.fn(() => null);
+        ports.handleIosTool = vi.fn(async () => jsonReply({ stdout: "42\n", stderr: "", status: 0 }));
+        await expect(createDeviceRequest(ports).dispatch("device_exec", args)).resolves.toEqual(jsonReply({ stdout: "42\n", stderr: "", status: 0 }));
+        expect(ports.handleIosTool).toHaveBeenCalledExactlyOnceWith("device_exec", args);
+        expect(ports.handleLinuxVmManagementTool).not.toHaveBeenCalled(); expect(ports.handleLinuxVmTool).not.toHaveBeenCalled();
+        expect(ports.handleAndroidTool).not.toHaveBeenCalled(); expect(ports.handleAndroidRealTool).not.toHaveBeenCalled();
+        expect(argv).toEqual(["launchctl", "", " managerpid ", "$(touch private); 'quoted'", "한글\n"]);
+    });
+
+    it("preserves argv in the selected iOS broker request", async () => {
+        const args = { deviceId: "owned-exec", backend: "ios-simulator", broker: true, argv: ["launchctl", "managerpid"] };
+        const ports = execPorts(args, "ios-simulator");
+        ports.brokerDeviceTool = vi.fn(async () => ({ ok: true, receipt: { ok: true, result: { mcpResult: nativeJson({ stdout: "42\n", stderr: "", status: 0 }) } } }));
+        await expect(createDeviceRequest(ports).dispatch("device_exec", args)).resolves.toMatchObject({ selection: "json", value: { stdout: "42\n", status: 0 } });
+        expect(ports.brokerDeviceTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ backend: "ios-simulator", deviceId: "owned-exec", tool: "device_exec", argv: args.argv }));
+        expect(ports.handleAndroidTool).not.toHaveBeenCalled();
+    });
+
     it.each(["device_exec", "device_accessibility_snapshot"])("regression: current-display %s refuses locally before default, direct or explicit broker discovery", async operation => {
         for (const route of [{}, { implicitBroker: false }, { broker: true }, { viaBroker: true }, { autolaunch: true }]) {
             const args = { deviceId: "x11-current-display", ...route };

@@ -500,7 +500,7 @@ function boundedSimctlFailure(value: any) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
     const errors: Array<{ domain: string; code: number }> = [];
     if (Array.isArray(value.errors)) for (const error of value.errors.slice(0, 32)) {
-        if (["NSPOSIXErrorDomain", "NSCocoaErrorDomain", "com.apple.CoreSimulator.SimError"].includes(error?.domain)
+        if (["NSPOSIXErrorDomain", "NSCocoaErrorDomain", "com.apple.CoreSimulator.SimError", "com.apple.CoreSimulator.LaunchdSimError", "SimXPCErrorDomain"].includes(error?.domain)
             && Number.isInteger(error.code) && error.code >= -2147483648 && error.code <= 2147483647
             && !errors.some(prior => prior.domain === error.domain && prior.code === error.code)) {
             errors.push({ domain: error.domain, code: error.code });
@@ -692,9 +692,10 @@ const READINESS_FAILURE_ERRORS: Record<string, readonly string[]> = {
 function boundedReadinessExecution(value: any) {
     const native = boundedNativeExecution(value);
     if (!native) return undefined;
-    const { status, signal, errorCode } = native;
-    return status !== undefined || signal !== undefined || errorCode
-        ? { ...(status !== undefined ? { status } : {}), ...(signal !== undefined ? { signal } : {}), ...(errorCode ? { errorCode } : {}) }
+    const { status, signal, errorCode, timedOut, diagnosticCode } = native;
+    return status !== undefined || signal !== undefined || errorCode || timedOut !== undefined || diagnosticCode
+        ? { ...(status !== undefined ? { status } : {}), ...(signal !== undefined ? { signal } : {}), ...(errorCode ? { errorCode } : {}),
+            ...(timedOut !== undefined ? { timedOut } : {}), ...(diagnosticCode ? { diagnosticCode } : {}) }
         : undefined;
 }
 
@@ -707,7 +708,7 @@ function boundedReadinessFailure(value: any) {
     const processObservation = observation ? { stage: observation.stage, reason: observation.reason,
         ...boundedReadinessExecution(observation) } : undefined;
     const execution = boundedReadinessExecution(value.execution);
-    const nativeFailure = execution && ((typeof execution.status === "number" && execution.status !== 0) || execution.signal || execution.errorCode);
+    const nativeFailure = execution && ((typeof execution.status === "number" && execution.status !== 0) || execution.signal || execution.errorCode || execution.timedOut === true);
     if (!error && !processObservation && !(value.stage === "provider" && nativeFailure)) return undefined;
     return { stage: value.stage, ...(error ? { error } : {}),
         ...(processObservation ? { processObservation } : {}), ...(execution ? { execution } : {}) };

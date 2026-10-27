@@ -2,6 +2,7 @@ import { waitForExpectedRuntimeExitSync, waitForExpectedRuntimeExitAsync } from 
 import { readBrokerOwnerSecret } from "@ccc/device-lab/providers/state/broker-owner-secret.mjs";
 import {planBrokerAndroidCreate, planBrokerAndroidExisting} from "./device-lab/application/lifecycle/android-emulator-lifecycle.js";
 import {planBrokerIosCreateCommand as semanticIosCreate, planBrokerIosExistingCommand as semanticIosExisting} from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
+import { iosExecInputError } from "@ccc/device-lab/providers/domain/ios-observation-access.mjs";
 import {planBrokerMacosCreateCommand as semanticMacosCreate, planBrokerMacosExistingCommand as semanticMacosExisting} from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
 import type {BrokerAndroidPreparationPorts} from "./device-lab/ports/lifecycle/android-emulator-lifecycle.js";
 import {NativeProviderLifecycleEffect, renderBrokerAndroidLifecycle, renderBrokerIosMacosLifecycle, renderBrokerSandboxLifecycle, renderBrokerProviderRollback} from "./device-lab/broker/broker-outcomes-codec.js";
@@ -710,7 +711,7 @@ type AppiumListParamSuccess = {
     stateKey: string;
 };
 
-type DeviceToolParamError = { ok: false; status: number; error: string; allowed?: string[]; supported?: string[] };
+type DeviceToolParamError = { ok: false; status: number; error: string; detail?: string; allowed?: string[]; supported?: string[] };
 type DeviceToolParamSuccess = {
     ok: true;
     tool: string;
@@ -3494,6 +3495,10 @@ function validateDeviceToolParams(params: unknown): DeviceToolParamError | Devic
     if (!DEVICE_BROKER_TOOL_METHODS.has(tool)) {
         return { ok: false, status: 501, error: "broker-device-tool-not-supported", supported: [...DEVICE_BROKER_TOOL_METHODS] };
     }
+    if (tool === "device_exec") {
+        const error = iosExecInputError(record);
+        if (error) return { ok: false, status: 400, error: "device-exec-input-invalid", detail: error };
+    }
     const backend = typeof record.backend === "string" && record.backend ? record.backend : null;
     const stateKey = backend ? DEVICE_BROKER_COMMAND_BACKENDS.get(backend) : null;
     if (backend && !stateKey) {
@@ -4243,6 +4248,9 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
 async function invokeBackendDeviceTool(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions, snapshotAllowance?: SnapshotAllowance): Promise<BrokerRpcResult> {
     const match = findOwnerDeviceForTool(ownerId, parsed);
     if ("status" in match) return match;
+    if (parsed.tool === "device_exec" && Object.hasOwn(parsed.params, "argv") && match.backend !== "ios-simulator") {
+        return { status: 501, payload: { ok: false, error: "device-exec-argv-unsupported", backend: match.backend } };
+    }
     if (!brokerDeviceToolSupportedByBackend(match.backend, parsed.tool)) {
         return {
             status: 501,
@@ -4280,6 +4288,13 @@ async function invokeBrokerExecutor(ownerId: string, deviceId: string, executor:
 }
 
 function deviceToolExecutor(ownerId: string, parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): BrokerExecutorDescriptor | BrokerRpcResult {
+    if (parsed.tool === "device_exec" && Object.hasOwn(parsed.params, "argv")) {
+        const match = findOwnerDeviceForTool(ownerId, parsed);
+        if ("status" in match) return match;
+        if (match.backend !== "ios-simulator") {
+            return { status: 501, payload: { ok: false, error: "device-exec-argv-unsupported", backend: match.backend } };
+        }
+    }
     let snapshotAllowance: SnapshotAllowance | undefined;
     const backendWorkflow = () => invokeBackendDeviceTool(ownerId, parsed, normalized, snapshotAllowance);
     const hyperVExecutor = (stateKey: string, backend: string, nestedStateKey?: string): BrokerExecutorDescriptor => {
@@ -8257,6 +8272,7 @@ function deviceLabBackendToolArgs(parsed: DeviceToolParamSuccess): Record<string
         "connect",
         "deviceId",
         "command",
+        "argv",
         "localPath",
         "remotePath",
         "path",

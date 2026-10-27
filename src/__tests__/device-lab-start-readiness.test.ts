@@ -260,6 +260,75 @@ describe("desktop readiness retains classified probe failures", () => {
         expect(JSON.stringify(observed)).not.toContain("PRIVATE");
     });
 
+    it.each(["native-timeout", "native-not-found", "native-permission-denied", "native-signal", "native-nonzero-exit", "native-unknown"])("retains the closed native classification %s and explicit timeout state", async diagnosticCode => {
+        let clock = 500;
+        const observed = await finishStartReadiness(start(), args, 0, async () => ({
+            isError: true, content: [{ type: "text", text: "PRIVATE-ERROR" }],
+            structuredContent: { ok: false, error: "provider-command-failed", execution: {
+                status: null, signal: null, timedOut: false, diagnosticCode, stderr: "PRIVATE-STDERR",
+            } },
+        }), { now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 1, lastProbe: "provider-error", failureAttempt: 1,
+            failure: { stage: "provider", error: "provider-command-failed", execution: { status: null, signal: null, timedOut: false, diagnosticCode } } });
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it("recognizes an observed timeout alone and replaces earlier transport evidence at its actual attempt", async () => {
+        let clock = 0;
+        const invoke = vi.fn().mockResolvedValueOnce(result({ ok: false, error: "broker-rpc-unavailable" }))
+            .mockResolvedValueOnce(result({ ok: false, error: "PRIVATE-ERROR", execution: {
+                timedOut: true, diagnosticCode: "native-timeout", args: ["PRIVATE-ARG"], stderr: "PRIVATE-STDERR",
+            } }))
+            .mockResolvedValueOnce(result({ ok: false, error: "PRIVATE-LATER-ERROR" }));
+        const observed = await finishStartReadiness(start(), { ...args, bootTimeoutMs: 1500 }, 0, invoke, {
+            now: () => clock, sleep: async (ms: number) => { clock += ms; },
+        });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 3, lastProbe: "provider-error", failureAttempt: 2,
+            failure: { stage: "provider", execution: { timedOut: true, diagnosticCode: "native-timeout" } } });
+        expect(invoke).toHaveBeenCalledTimes(3);
+        expect(invoke.mock.calls.map(call => call[1].helperTimeoutMs)).toEqual([1500, 1000, 500]);
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it.each([
+        { timedOut: false },
+        { timedOut: "true", diagnosticCode: "PRIVATE-CODE" },
+        { timedOut: false, diagnosticCode: "native-timeout" },
+        { diagnosticCode: "native-nonzero-exit" },
+        { status: 0, signal: null, timedOut: false, diagnosticCode: "PRIVATE-CODE" },
+    ])("does not infer a native failure from false, malformed or diagnostic-only execution %j", async execution => {
+        let clock = 500;
+        const observed = await finishStartReadiness(start(), args, 0, async () => result({
+            ok: false, error: "PRIVATE-ERROR", execution,
+        }), { now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 1, lastProbe: "provider-error" });
+        expect(JSON.stringify(observed)).not.toContain("PRIVATE");
+    });
+
+    it("keeps process verification's separate shape closed when timeout fields are present", async () => {
+        let clock = 500;
+        const observed = await finishStartReadiness(start(), args, 0, async () => result({
+            ok: false, error: "broker-runtime-process-unverified", attempts: [{ processVerification: { observation: {
+                stage: "listener", reason: "native-command-failed", status: null, signal: "SIGTERM", code: "ETIMEDOUT",
+                timedOut: true, diagnosticCode: "native-timeout",
+            } } }],
+        }), { now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+        expect(JSON.parse(observed.content[0].text).readiness.failure).toEqual({ stage: "broker-process", error: "broker-runtime-process-unverified",
+            processObservation: { stage: "listener", reason: "native-command-failed", status: null, signal: "SIGTERM", errorCode: "ETIMEDOUT" } });
+    });
+
+    it("does not accept a late cursor response after retaining a native timeout", async () => {
+        let clock = 0;
+        const invoke = vi.fn().mockResolvedValueOnce(result({ ok: false, execution: { timedOut: true } }))
+            .mockImplementationOnce(async () => { clock = 1001; return cursor; });
+        const observed = await finishStartReadiness(start(), args, 0, invoke, {
+            now: () => clock, sleep: async (ms: number) => { clock += ms; },
+        });
+        expect(JSON.parse(observed.content[0].text).readiness).toEqual({ attempts: 2, lastProbe: "late-response", failureAttempt: 1,
+            failure: { stage: "provider", execution: { timedOut: true } } });
+        expect(invoke.mock.calls.map(call => call[1].rpcTimeoutMs)).toEqual([1000, 500]);
+    });
+
     it.each([
         { isError: true, content: [{ type: "text", text: "PRIVATE-ERROR" }] },
         result({ ok: false, error: "private-provider-error", status: 1, signal: "SIGTERM" }),

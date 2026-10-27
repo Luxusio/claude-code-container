@@ -157,6 +157,67 @@ pass. The actual child-process helper tests use a fresh compile of the affected
 DeviceLab package only; no full repository build or native provider was run.
 Independent review and native Mac acceptance remain separate gates.
 
+## Latest provider evidence and explicit Simulator execution
+
+The next user-reported Mac Level 3 run has 86 passes, three failures and 16
+skips across 105 wrapper cases. The collector has 15 skips across 104 records;
+the additional wrapper case is blocked coverage validation. Both previously
+failing broker assertions pass in this run. The retained calls identify iOS
+Simulator creation, start and status followed by its first exec failure and
+successful cleanup. The iOS error is native exit 111; both Tart failures reach
+desktop-control readiness. One retains transport failure from attempt 22 of
+192, and the other ends after 197 attempts without selected native failure
+facts. Neither artifact establishes the final guest failure's cause.
+
+The collector and three errors are preserved with hashes under
+`results/tests/level3-failures-2026-10-27T11-50-50/`. Its packaged MCP hash matches
+the inspected local artifact; an old package is not established as the cause.
+The run's exact date and commit were not explicitly supplied. The directory
+date partitions this session's evidence rather than supplying those missing
+facts.
+
+Mac desktop failures previously discarded their SSH receipt when converted
+to plain MCP error text. They now additionally retain closed native facts;
+readiness and saved evidence preserve explicit timeout and a known native
+diagnostic code. The observed CoreSimulator launchd and SimXPC domain/code
+pairs also survive the existing bounded selection. These corrections explain
+missing diagnostics, rather than proving the native failures are resolved.
+Portable verification of those diagnostic changes passes 243 distinct cases.
+Two author fixture mistakes were corrected; affected cases alone were rerun,
+and repeats or filtered skips receive no additional credit.
+
+Bounded probes through the connected Mac's existing global broker reproduce
+the legacy echo failure on separate owned iOS 27.0 and 26.5 Simulators. Native
+shutdown and deletion succeed for both, and the owned inventory returns empty.
+The user confirms both runtimes lack `bin/sh` and have `bin/launchctl`.
+Installed help says absolute executable paths use the host root while bare
+names use the device PATH. These facts invalidate the test's universal shell
+assumption without establishing the complete cause of error 111.
+
+An explicit, bounded argv form supports device-PATH programs on owned iOS
+Simulators while preserving legacy string commands. Unsupported backends
+refuse it before native execution; executable paths and shell fallback are
+not admitted. A third uniquely owned iOS 27.0 fixture passed native bootstatus
+and direct `launchctl managerpid`, returning `32253`. The E2E now checks that
+operation through public argv, requiring status zero and a positive decimal
+safe integer. Native shutdown/delete succeeded and owned inventory is empty.
+The installed global broker and direct primitive observations do not certify
+the current isolated candidate MCP/broker on port 17374.
+
+The nine changed execution owners pass 273 cases, including authenticated HTTP
+through the actual emitted broker and backend child, with only a private SDK
+leaf replaced. Together with the earlier diagnostic checks this is 450 distinct
+portable passes; the 66 overlapping iOS cases are counted once. A sparse-array
+admission defect found during source inspection was fixed before verification.
+The package-only compile needed a missing declaration companion. Its successful
+compile emits the identical tested broker bytes; no full build was run.
+The sparse-array negative test needed an explicit malformed-input cast for
+strict typechecking. No product types were weakened. DeviceLab compilation,
+architecture and real-test typechecks, ten changed-module syntax checks and
+configured broker lint pass. Other selected lint paths are ignored by the
+repository configuration and receive no lint credit. Native acceptance of the
+three provider scenarios remains pending.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

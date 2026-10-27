@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createIosObservationAccess } from "../../../packages/device-lab/providers/application/ios-observation-access.mjs";
-import type { IosAccessDevice, IosSimulatorAccessPorts, IosPhysicalAccessPorts, IosAccessAppiumEffect, IosAccessAppiumResult, IosAccessSimulatorResult } from "../../../packages/device-lab/providers/ports/ios-observation-access.mjs";
+import type { IosAccessArgs, IosAccessDevice, IosSimulatorAccessPorts, IosPhysicalAccessPorts, IosAccessAppiumEffect, IosAccessAppiumResult, IosAccessSimulatorResult } from "../../../packages/device-lab/providers/ports/ios-observation-access.mjs";
 
 function simulatorPorts(device: IosAccessDevice): IosSimulatorAccessPorts<IosAccessDevice, object> {
     return {
@@ -33,6 +33,62 @@ function simulatorPorts(device: IosAccessDevice): IosSimulatorAccessPorts<IosAcc
 }
 
 describe("iOS observation and access", () => {
+    it("passes explicit program arguments unchanged to the currently admitted simulator target", async () => {
+        const device = { id: "owned", udid: "RECORDED-UDID" };
+        const ports = simulatorPorts(device);
+        const argv = ["launchctl", "", " managerpid ", "$(touch private); 'quoted'", "한글\n"];
+        const before = [...argv];
+        ports.verifyTarget = owned => {
+            expect(owned).toBe(device);
+            return { target: "VERIFIED-UDID" };
+        };
+        const effect = vi.fn((_request: unknown) => ({ ok: true, status: 0, stdout: "42\n", stderr: "" }));
+        ports.simulatorEffect = effect as typeof ports.simulatorEffect;
+        expect(await createIosObservationAccess(ports).request("device_exec", { deviceId: "owned", argv }))
+            .toEqual({ stdout: "42\n", stderr: "", status: 0 });
+        expect(effect).toHaveBeenCalledExactlyOnceWith({ kind: "exec", target: "VERIFIED-UDID", argv });
+        expect(argv).toEqual(before);
+    });
+
+    it("retains the entire legacy shell string in its typed simulator effect", async () => {
+        const ports = simulatorPorts({ id: "owned" });
+        const command = "printf '%s\\n' '$HOME'; value='a b'\nprintf '%s' \"$value\"";
+        const effect = vi.fn((_request: unknown) => ({ ok: true, status: 0, stdout: "done", stderr: "" }));
+        ports.simulatorEffect = effect as typeof ports.simulatorEffect;
+        expect(await createIosObservationAccess(ports).request("device_exec", { deviceId: "owned", command }))
+            .toEqual({ stdout: "done", stderr: "", status: 0 });
+        expect(effect).toHaveBeenCalledExactlyOnceWith({ kind: "exec", target: "OWNED-UDID", command });
+    });
+
+    it("refuses malformed direct-provider exec forms before discovery or any native effect", async () => {
+        const ports = simulatorPorts({ id: "owned" });
+        const discovery = vi.fn(ports.discovery), verify = vi.fn(ports.verifyTarget);
+        const effect = vi.fn(() => { throw new Error("malformed exec reached native effects"); });
+        ports.discovery = discovery; ports.verifyTarget = verify; ports.simulatorEffect = effect;
+        for (const malformed of [{}, { command: "echo old", argv: ["launchctl"] }, { argv: ["/bin/launchctl"] },
+            { argv: [] }, { argv: ["launchctl", "bad\0argument"] }, { argv: ["launchctl", "x".repeat(4088)] },
+            { argv: ["launchctl", ,] }]) {
+            // Deliberately cross the typed boundary with malformed runtime input,
+            // including a sparse array that JSON transport would turn into null.
+            const args = { deviceId: "owned", ...malformed } as unknown as IosAccessArgs;
+            const result = await createIosObservationAccess(ports).request("device_exec", args);
+            expect(result).toMatchObject({ ok: false });
+        }
+        expect(discovery).not.toHaveBeenCalled(); expect(verify).not.toHaveBeenCalled(); expect(effect).not.toHaveBeenCalled();
+    });
+
+    it.each(["missing", "foreign"])("never executes argv for a %s simulator target", async mode => {
+        const ports = simulatorPorts({ id: "owned", udid: "RECORDED-UDID" });
+        if (mode === "missing") ports.findDevice = () => null;
+        else ports.verifyTarget = () => ({ error: "owned target not verified" });
+        const effect = vi.fn(() => { throw new Error("unverified target reached native effects"); });
+        ports.simulatorEffect = effect;
+        const result = await createIosObservationAccess(ports).request("device_exec", { deviceId: "owned", argv: ["launchctl", "managerpid"] });
+        if (mode === "missing") expect(result).toBeUndefined();
+        else expect(result).toEqual({ ok: false, message: "owned target not verified" });
+        expect(effect).not.toHaveBeenCalled();
+    });
+
     it("starts a session for the admitted owned target on the selected port", async () => {
         const device = { id: "owned", udid: "OWNED-UDID", appiumPort: 4823 };
         const ports = simulatorPorts(device);

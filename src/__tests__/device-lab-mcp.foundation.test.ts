@@ -516,9 +516,11 @@ describe("device-lab MCP foundation and definitions", () => {
         expectRoutingProperties(accessibilityProperties);
         const desktopExecTool = result.tools.find((tool) => tool.name === "exec");
         const desktopExecProperties = toolProperties(desktopExecTool);
-        expect(desktopExecTool?.inputSchema).toEqual(expect.objectContaining({ required: ["deviceId", "command"] }));
+        expect(desktopExecTool?.inputSchema).toEqual(expect.objectContaining({ required: ["deviceId"],
+            oneOf: [{ required: ["command"] }, { required: ["argv"] }] }));
         expect(desktopExecProperties).toEqual(expect.objectContaining({
             deviceId: expect.objectContaining({ type: "string" }),
+            argv: expect.objectContaining({ type: "array", minItems: 1, maxItems: 64 }),
             timeoutMs: expect.objectContaining({ type: "number" }),
         }));
         expectRoutingProperties(desktopExecProperties);

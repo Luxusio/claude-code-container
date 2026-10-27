@@ -31,12 +31,34 @@ ownership admission, retries or time limits as part of this correction.
 For simctl failures, additionally retain at most four observed error domain/code
 pairs from the first 16 KiB of stderr. Domains are limited to
 `NSPOSIXErrorDomain`, `NSCocoaErrorDomain`, and
-`com.apple.CoreSimulator.SimError`; codes must be signed 32-bit integers.
+`com.apple.CoreSimulator.SimError`, `com.apple.CoreSimulator.LaunchdSimError`,
+and `SimXPCErrorDomain`; codes must be signed 32-bit integers. The latter two
+were observed in a direct host reproduction of the saved exit-111 failure.
 A fixed `spawn` stage may be recorded only when stderr explicitly describes a
 spawn failure. Unknown domains, free text and exit-code interpretations are
 omitted. Keep this selected `execution.simctl` object through presentation and
 the saved-evidence projection; preserve ordinary nonzero exits without adding
 an inferred simulator cause.
+
+The observed sentence `Process spawn via launchd failed.` also establishes the
+fixed `spawn` stage. It does not by itself establish a missing shell or identify
+why launchd rejected its program arguments. Do not change execution behavior
+based only on exit 111 or on a simulator's `Booted` label.
+
+Mac desktop command failures use the same structured native observation shape
+while preserving their existing error text and `isError`. Select status, known
+OS signal/errno, boolean timeout and the existing closed native diagnostic code
+from the actual SSH/SCP receipt. Missing bridge prerequisites without a native
+receipt remain unclassified; do not manufacture a command failure observation.
+Keep commands, success criteria, permissions, retries and deadlines unchanged.
+
+Desktop readiness and its independent saved-evidence projection also retain
+`execution.timedOut` and a known `execution.diagnosticCode`. Explicit timeout
+alone is an observed native failure; false timeout or an unknown diagnostic code
+is not. A later native provider observation replaces an older retained broker
+transport observation with the later attempt number. Do not interpret an older
+transport observation as the final cause. Preserve the separate existing process
+observation shape and omit raw output, host paths and credentials throughout.
 
 The real-test parser prefers valid structured failure objects and otherwise
 retains its existing JSON-content handling. Saved evidence and short messages

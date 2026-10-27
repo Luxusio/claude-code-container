@@ -51,6 +51,14 @@ preserving its existing error text. The test parser selects those fields for
 the artifact; plain text is not copied into it. Missing structured evidence
 still falls back to the existing JSON error handling.
 
+Mac desktop SSH/SCP command failures retain the same selected native facts.
+Readiness retains boolean timeout and a known native diagnostic code as well.
+A selected failure from an earlier attempt describes that attempt, rather than
+every later unclassified probe. For example, the latest saved Tart case keeps
+`broker-rpc-unavailable` from attempt 22 of 192; it does not prove the final
+probe failed at the transport layer. Missing bridge prerequisites without a
+native receipt remain unclassified.
+
 Tart boot failures can be nested at `result.execution.command.macosBoot`.
 Artifacts now distinguish that IP-readiness phase from the start process's
 execution status. An IP timeout category is emitted only from the renderer's
@@ -68,6 +76,21 @@ dispatch and late successful observations are refused; ownership fences remain.
 See
 [the failure evidence contract](../device-lab/REQ__provider-failure-evidence.md).
 Portable diagnostic tests do not establish the original Mac failure's cause.
+
+## iOS Simulator execution
+
+Use the explicit `exec` argv form for programs supplied by the Simulator:
+`{deviceId, argv:["launchctl", "managerpid"]}`. This form accepts a program
+basename and literal arguments, only for owned iOS Simulators. It does not
+interpret shell syntax. The existing command-string form retains its shell
+behavior; an unavailable or rejected shell remains a failure.
+
+The observed 26.5 and 27.0 runtimes contain `launchctl` and lack `bin/sh`.
+Installed `xcrun simctl help spawn` distinguishes device-PATH lookup for bare
+names from host-root lookup for absolute executable paths. Do not infer that
+an absolute `/bin/sh` was resolved inside the runtime, or work around a failure
+by running the command in a host shell or deprecated standalone mode. See
+[the execution contract](../device-lab/REQ__ios-simulator-exec.md).
 
 ## Native UID regression
 
