@@ -32,6 +32,23 @@ positive remaining duration to the new relative internal adapter. This shares
 the allowance inside the broker request, not a new client-to-host aggregate
 deadline guarantee.
 
+The wire response reports admission or operation-lock budget exhaustion as HTTP
+504 with `macos-start-budget-exhausted`. A partial start or failed helper
+preparation reports HTTP 502: ordinary partial failures use
+`provider-command-failed`, while helper failures use their selected preparation
+code, falling back to `macos-helper-prepare-failed`. The result retains
+`recoveryRequired`; a failed preparation also includes selected
+`helperPreparation` facts. Neither response permits relaunch or cleanup of a
+successor record.
+
+Successful `result.boot` contains `ready`, `skipped`, provider `tart` and the
+observed `ip` (or null). `result.helper` contains provisioning status such as
+`provisioned` or `skipped-missing-ssh`, with selected provider/timestamp metadata.
+The published device's helper metadata may include its script path and SSH
+host/user/port, but never passwords, keys or raw command output. These fields
+describe completed preparation; subsequent control readiness still requires a
+successful cursor probe.
+
 Verify a fresh owned ID without seeded helper metadata: fake SSH refuses its
 missing script until fake SCP installs it. Cover lock retention and HTTP
 responsiveness during installation, decreasing remainder, failed/late results,
