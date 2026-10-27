@@ -218,6 +218,19 @@ configured broker lint pass. Other selected lint paths are ignored by the
 repository configuration and receive no lint credit. Native acceptance of the
 three provider scenarios remains pending.
 
+Independent review of `905ef5f4` found a direct internal argv route that skipped
+the existing explicit backend mismatch refusal. The security sweep separately
+found that the MCP RPC projection omitted argv, although the backend-child
+projection retained it. The route now applies the original refusal, and the
+actual MCP-to-broker allowlist retains argv. Two new regressions pass: one
+checks the mismatch payload with no provider execution, and one captures the
+real authenticated TCP request for literal argv and legacy strings. This adds
+two distinct passes, for 452 total; 188 filtered cases receive no credit.
+The architecture typecheck and both affected MJS syntax checks pass. The REQ
+also records the actual successful fields and RPC 400/501 outcomes. Fresh
+review of these corrections and candidate Mac provider acceptance are separate
+from the earlier review and native-primitive observations.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

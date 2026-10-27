@@ -164,6 +164,21 @@ describe("shared device request admission", () => {
         expect(argv).toEqual(["launchctl", "", " managerpid ", "$(touch private); 'quoted'", "한글\n"]);
     });
 
+    it("preserves the explicit backend mismatch refusal for direct iOS argv before every provider", async () => {
+        const args = { deviceId: "owned-exec", backend: "android-emulator", implicitBroker: false,
+            argv: ["launchctl", "managerpid"] };
+        const ports = execPorts(args, "ios-simulator");
+        const providers = ["handleAndroidTool", "handleAndroidRealTool", "handleIosTool", "handleIosRealTool",
+            "handleMacosTool", "handleLinuxVmManagementTool", "handleLinuxVmTool", "handleWindowsTool", "handleDisplayTool"] as const;
+        for (const name of providers) ports[name] = vi.fn(() => null);
+        await expect(createDeviceRequest(ports).dispatch("device_exec", args)).resolves.toEqual(jsonReply({
+            ok: false, error: "device-backend-mismatch", deviceId: "owned-exec", requestedBackend: "android-emulator",
+            actualBackend: "ios-simulator", routedBy: "direct-backend-hint",
+        }));
+        for (const name of providers) expect(ports[name], name).not.toHaveBeenCalled();
+        expect(ports.invokeBrokerLifecycle).not.toHaveBeenCalled();
+    });
+
     it("preserves argv in the selected iOS broker request", async () => {
         const args = { deviceId: "owned-exec", backend: "ios-simulator", broker: true, argv: ["launchctl", "managerpid"] };
         const ports = execPorts(args, "ios-simulator");

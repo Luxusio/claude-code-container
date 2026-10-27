@@ -1113,6 +1113,64 @@ describe("device-lab MCP", () => {
         }
     });
 
+    it("preserves explicit iOS argv and legacy commands in the actual authenticated brokerDeviceTool RPC", async () => {
+        const ownerId = "adadadadadadadad";
+        provisionTestOwnerSecret(ownerId);
+        const received: Array<{ method: string | undefined; url: string | undefined; token: string | string[] | undefined;
+            body: { method: string; params: Record<string, unknown> } }> = [];
+        const server = createServer((req, res) => {
+            res.setHeader("content-type", "application/json");
+            if (req.url === "/health") {
+                res.end(JSON.stringify({ ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" }));
+                return;
+            }
+            if (sendCurrentBrokerStatus(req, res)) return;
+            if (req.method === "POST" && req.url === "/v1/owner/resolve") {
+                res.end(JSON.stringify({ ok: true, result: { ownerId } }));
+                return;
+            }
+            const chunks: Buffer[] = [];
+            req.on("data", chunk => chunks.push(Buffer.from(chunk)));
+            req.on("end", () => {
+                received.push({ method: req.method, url: req.url, token: req.headers["x-ccc-device-token"],
+                    body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
+                res.end(JSON.stringify({ ok: true, result: { completed: true } }));
+            });
+        });
+        await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+        const argv = ["launchctl", "", " managerpid ", "$(touch private); 'quoted'", "한글\n"];
+        const command = "printf '%s\\n' '$HOME'; value='a b'\nprintf '%s' \"$value\"";
+        const forms = [{ argv }, { command }];
+        try {
+            for (const form of forms) {
+                const result = await withUnverifiedBrokerFixture(() => brokerDeviceTool({
+                    backend: "ios-simulator", deviceId: "wire-ios", tool: "device_exec", ...form,
+                    hostCandidates: ["127.0.0.1"], port, timeoutMs: 1000, rpcTimeoutMs: 1000, autolaunch: false,
+                    irrelevantPrivateValue: "must not reach the broker",
+                }));
+                expect(result, JSON.stringify(result)).toMatchObject({ ok: true, ownerId, result: { completed: true } });
+            }
+            expect(received).toHaveLength(2);
+            const token = createHash("sha256").update(`ccc-device-broker:owner:${ownerId}:secret:${"b".repeat(64)}`).digest("hex");
+            for (const [index, request] of received.entries()) {
+                expect(request).toMatchObject({ method: "POST", url: `/v1/owners/${ownerId}/rpc`, token,
+                    body: { method: "broker.device.tool.invoke", params: {
+                        backend: "ios-simulator", deviceId: "wire-ios", tool: "device_exec", ...forms[index],
+                    } } });
+                for (const key of ["irrelevantPrivateValue", "hostCandidates", "autolaunch", "rpcTimeoutMs"])
+                    expect(request.body.params).not.toHaveProperty(key);
+            }
+            expect(received[0].body.params.argv).toEqual(["launchctl", "", " managerpid ", "$(touch private); 'quoted'", "한글\n"]);
+            expect(received[0].body.params).not.toHaveProperty("command");
+            expect(received[1].body.params.command).toBe(command);
+            expect(received[1].body.params).not.toHaveProperty("argv");
+            expect(argv).toEqual(["launchctl", "", " managerpid ", "$(touch private); 'quoted'", "한글\n"]);
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        }
+    });
+
     it("rejects a screenshot RPC above its image-specific response limit", async () => {
         const ownerId = "bcbcbcbcbcbcbcbc";
         provisionTestOwnerSecret(ownerId);

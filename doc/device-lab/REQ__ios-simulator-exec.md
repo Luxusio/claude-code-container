@@ -39,6 +39,22 @@ Keep malformed arrays, both/neither forms, foreign/missing targets and unsupport
 backends as failures. No shell or host fallback, retry, timeout extension or
 skip may turn an unsuccessful execution into a pass.
 
+The MCP-to-broker RPC projection retains the argv array without rewriting it;
+backend-child transport retains the same array. An internal direct call with
+a contradictory explicit backend hint preserves the existing
+`device-backend-mismatch` refusal before invoking any provider.
+
+## Results
+
+Successful execution retains the existing `stdout`, `stderr` and `status`
+result. Broker RPC rejects invalid execution forms with HTTP 400,
+`error:"device-exec-input-invalid"` and a fixed validation `detail`. A valid
+argv form targeting another backend returns HTTP 501,
+`error:"device-exec-argv-unsupported"` and the selected `backend`. These error
+payloads have `ok:false`; validation detail does not echo rejected arguments.
+Public preflight still rejects invalid arguments before RPC, and existing
+HTTP 401 authentication and HTTP 404 owner/target refusals remain intact.
+
 ## Verification and limits
 
 Cover schema and actual validation, typed application effects, exact native

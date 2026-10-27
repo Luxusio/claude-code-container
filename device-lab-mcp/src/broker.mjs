@@ -2359,6 +2359,7 @@ export const BROKER_DEVICE_TOOL_PARAM_KEYS = [
     "deviceId",
     "detail",
     "command",
+    "argv",
     "localPath",
     "remotePath",
     "path",

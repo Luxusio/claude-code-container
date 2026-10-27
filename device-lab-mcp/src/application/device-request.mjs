@@ -1082,6 +1082,8 @@ export function createDeviceRequest(ports) {
         if (wantsBrokerPhysical(name, args)) return handleBrokerPhysicalTool(name, args);
         if (name === "device_exec" && Object.hasOwn(args, "argv")) {
             if (!optsOutOfImplicitBroker(args)) return handleBrokerDeviceTool(name, args);
+            const explicitMismatch = explicitBackendMismatchResult(name, args);
+            if (explicitMismatch) return explicitMismatch;
             const target = inferLifecycleBackend(args.deviceId);
             if (!target.ok) return ports.jsonResult(target);
             if (target.backend !== "ios-simulator") return execArgvUnsupported(target.backend);
