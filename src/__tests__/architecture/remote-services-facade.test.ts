@@ -51,6 +51,28 @@ function terminalFixture(input = true, output = true) {
     native.writeSync.mockImplementation((_fd: number, data: string | NodeJS.ArrayBufferView) => typeof data === "string" ? Buffer.byteLength(data) : data.byteLength);
     return { write: native.writeSync, output: () => native.writeSync.mock.calls.map(call => String(call[1])).join("") };
 }
+// The active alternate screen and the returning shell have independent flags.
+function keyboardAfter(output: string) {
+    const flags = { main: 11, alternate: 11 };
+    let screen: "main" | "alternate" = "alternate";
+    let modifiedKeys = 2;
+    for (const match of output.matchAll(/\u001b\[([?=>]?)([\d;]*)([a-z])/g)) {
+        const parameters = match[2].split(";").map(Number);
+        if (match[1] === "?" && parameters.some(mode => [47, 1047, 1049].includes(mode))) {
+            if (match[3] === "h") screen = "alternate";
+            if (match[3] === "l") screen = "main";
+        }
+        if (match[1] === "=" && match[3] === "u") {
+            const value = parameters[0], mode = parameters[1] ?? 1;
+            if (mode === 1) flags[screen] = value;
+            if (mode === 2) flags[screen] |= value;
+            if (mode === 3) flags[screen] &= ~value;
+        }
+        if (match[1] === ">" && match[3] === "m" && parameters[0] === 4) modifiedKeys = parameters[1] ?? 0;
+    }
+    return { flags, screen, modifiedKeys, release: flags[screen] & 2 ? "\u001b[97;1:3u" : "",
+        text: flags[screen] & 8 ? "\u001b[97u" : "a" };
+}
 function expectTerminalRestored(output: string): void {
     const modes = new Map<number, boolean>();
     for (const match of output.matchAll(/\u001b\[\?([\d;]+)([hl])/g)) {
@@ -58,6 +80,9 @@ function expectTerminalRestored(output: string): void {
     }
     for (const mode of [1000, 1002, 1003, 1006, 1004, 2004, 1049]) expect(modes.get(mode)).toBe(false);
     expect(modes.get(25)).toBe(true);
+    expect(keyboardAfter("").release).toBe("\u001b[97;1:3u");
+    expect(keyboardAfter(output)).toEqual({ flags: { main: 0, alternate: 0 }, screen: "main", modifiedKeys: 0, release: "", text: "a" });
+    expect(output).not.toMatch(/\u001b\[(?:\?u|<\d*u)/);
     expect(output).not.toContain("\u001bc");
     expect(output).not.toMatch(/\u001b\[[23]J/);
 }
@@ -736,6 +761,20 @@ describe("remote native observations and effects", () => {
 });
 
 describe("remote inherited terminal lifetime", () => {
+    it("returns ordinary shell keyboard input before the remote normal-close callback", () => {
+        const terminal = terminalFixture();
+        const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
+        native.spawn.mockReturnValue(child);
+        const channel = preparedPorts().startInteractiveSession(interactiveRequest);
+        expect(keyboardAfter("").release).toBe("\u001b[97;1:3u");
+        const callback = vi.fn(() => expectTerminalRestored(terminal.output()));
+        channel.onClose(callback);
+        child.emit("close", 0, null);
+        expect(callback).toHaveBeenCalledExactlyOnceWith(0);
+        expect(child.kill).not.toHaveBeenCalled();
+        for (const event of lifecycleEvents) expect(lifecycleListeners(event)).toEqual(baseline.get(event));
+    });
+
     it.each(["close", "error"] as const)("restores before the caller's %s callback without adding parent signal policy", event => {
         const terminal = terminalFixture();
         const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });

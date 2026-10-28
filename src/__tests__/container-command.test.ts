@@ -84,6 +84,29 @@ function terminalFixture(input = true, output = true) {
     return { write: native.writeSync, output: () => native.writeSync.mock.calls.map(call => String(call[1])).join("") };
 }
 
+// Model only the keyboard protocol state relevant to the inherited shell.
+function keyboardAfter(output: string, initialScreen: "main" | "alternate" = "alternate") {
+    const flags = { main: 11, alternate: initialScreen === "alternate" ? 11 : 0 };
+    let screen = initialScreen;
+    let modifiedKeys = 2;
+    for (const match of output.matchAll(/\u001b\[([?=>]?)([\d;]*)([a-z])/g)) {
+        const parameters = match[2].split(";").map(Number);
+        if (match[1] === "?" && parameters.some(mode => [47, 1047, 1049].includes(mode))) {
+            if (match[3] === "h") screen = "alternate";
+            if (match[3] === "l") screen = "main";
+        }
+        if (match[1] === "=" && match[3] === "u") {
+            const value = parameters[0], mode = parameters[1] ?? 1;
+            if (mode === 1) flags[screen] = value;
+            if (mode === 2) flags[screen] |= value;
+            if (mode === 3) flags[screen] &= ~value;
+        }
+        if (match[1] === ">" && match[3] === "m" && parameters[0] === 4) modifiedKeys = parameters[1] ?? 0;
+    }
+    return { flags, screen, modifiedKeys, release: flags[screen] & 2 ? "\u001b[97;1:3u" : "",
+        text: flags[screen] & 8 ? "\u001b[97u" : "a" };
+}
+
 function expectTerminalRestored(output: string): void {
     const modes = new Map<number, boolean>();
     for (const match of output.matchAll(/\u001b\[\?([\d;]+)([hl])/g)) {
@@ -91,6 +114,9 @@ function expectTerminalRestored(output: string): void {
     }
     for (const mode of [1000, 1002, 1003, 1006, 1004, 2004, 1049]) expect(modes.get(mode)).toBe(false);
     expect(modes.get(25)).toBe(true);
+    expect(keyboardAfter("").release).toBe("\u001b[97;1:3u");
+    expect(keyboardAfter(output)).toEqual({ flags: { main: 0, alternate: 0 }, screen: "main", modifiedKeys: 0, release: "", text: "a" });
+    expect(output).not.toMatch(/\u001b\[(?:\?u|<\d*u)/);
     expect(output).not.toContain("\u001bc");
     expect(output).not.toMatch(/\u001b\[[23]J/);
 }
@@ -213,6 +239,18 @@ describe("container command asynchronous native boundary", () => {
 });
 
 describe("inherited interactive terminal lifetime", () => {
+    it.each(["main", "alternate"] as const)("returns ordinary shell keyboard input after a Codex update exits normally from the %s screen", async initialScreen => {
+        const terminal = terminalFixture();
+        const pending = runContainerCommand("docker", args, true);
+        expect(keyboardAfter("", initialScreen).release).toBe("\u001b[97;1:3u");
+        child.emit("close", 0, null);
+        expect(await pending).toBe(0);
+        expect(keyboardAfter(terminal.output(), initialScreen)).toEqual({ flags: { main: 0, alternate: 0 }, screen: "main", modifiedKeys: 0, release: "", text: "a" });
+        expectTerminalRestored(terminal.output());
+        expect(child.kill).not.toHaveBeenCalled();
+        clean();
+    });
+
     it.each(["close", "error"] as const)("restores TTY modes synchronously on %s and disposes only its listeners once", async event => {
         const terminal = terminalFixture();
         const unrelatedExit = vi.fn();
@@ -379,13 +417,14 @@ describe.skipIf(process.platform === "win32")("real inherited POSIX terminal res
         const parentPath = join(directory, "owned-parent.mjs");
         const startPath = join(directory, "allow-client-start");
         const releasePath = join(directory, "allow-client-death");
-        const helperUrl = new URL("../../dist/container-command.js", import.meta.url).href;
+        const helperUrl = new URL("../container-command.ts", import.meta.url).href;
+        const loaderUrl = new URL("../../scripts/real-tests/typescript-source-loader.mjs", import.meta.url).href;
         writeFileSync(clientPath, [
             "import {existsSync} from 'node:fs';",
             "import {spawnSync} from 'node:child_process';",
             "const changed=spawnSync('stty',['-icanon','-echo','-isig'],{stdio:['inherit','pipe','pipe'],timeout:1000});",
             "if(changed.status!==0)throw Error('owned client could not change its inherited terminal');",
-            `process.stdout.write(${JSON.stringify("\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1004h\u001b[?2004h\u001b[?1049h\u001b[?25lCCC_CLIENT_RAW\n")});`,
+            `process.stdout.write(${JSON.stringify("\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1004h\u001b[?2004h\u001b[=11u\u001b[>4;2m\u001b[?1049h\u001b[=11u\u001b[?25lCCC_CLIENT_RAW\n")});`,
             `const ready=setInterval(()=>{if(existsSync(${JSON.stringify(releasePath)})){clearInterval(ready);process.kill(process.pid,'SIGKILL')}},10);`,
             "setTimeout(()=>process.kill(process.pid,'SIGKILL'),7000);",
         ].join("\n"));
@@ -429,7 +468,7 @@ try:
     initial = termios.tcgetattr(slave)
     initial[3] |= termios.ICANON | termios.ECHO | termios.ISIG
     termios.tcsetattr(slave, termios.TCSANOW, initial)
-    parent = subprocess.Popen([sys.argv[1], sys.argv[2]], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+    parent = subprocess.Popen([sys.argv[1], '--import', sys.argv[5], sys.argv[2]], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
     # Observe the boundary owned by runContainerCommand after Node initializes its TTY streams.
     read_until(lambda data: b'CCC_PARENT_READY' in data)
     before = termios.tcgetattr(slave)
@@ -462,7 +501,7 @@ finally:
 print(json.dumps(result))
 `;
         try {
-            const run = spawnSync("python3", ["-c", controller, process.execPath, parentPath, releasePath, startPath], { encoding: "utf8", timeout: 11000, killSignal: "SIGKILL" });
+            const run = spawnSync("python3", ["-c", controller, process.execPath, parentPath, releasePath, startPath, loaderUrl], { encoding: "utf8", timeout: 11000, killSignal: "SIGKILL" });
             expect(run.error, run.stderr).toBeUndefined();
             expect(run.status, run.stderr).toBe(0);
             const result = JSON.parse(run.stdout) as {

@@ -402,6 +402,32 @@ other 57 launcher cases were filtered, not executed. Package-only compilation,
 architecture and real-test typechecks, configured lint and protocol syntax
 checks pass. No full build or full test suite was repeated.
 
+## Oct28 broker preflight and keyboard reporting follow-up
+
+The three-provider collector stopped before creation because broker identity
+attestation failed. The focused recipe had omitted the host CLI preflight used
+by normal Level 3. The Mac then confirmed verified replacement with protocol 11
+on port 17374. This accepts the replacement step, not the provider scenarios;
+their next focused results remain pending.
+
+The user also reports shell input flooding on key release after `ccc codex`
+self-update exits automatically. That normal closure already reaches the shared
+terminal cleanup, which omitted enhanced keyboard modes. The helper now clears
+Kitty keyboard flags and xterm `modifyOtherKeys` before leaving alternate screens
+and after returning to the main screen. It retains existing terminal attributes,
+mouse/focus/paste/cursor restoration, once-only cleanup and child exit status.
+No input reader, input flush, unknown stack-pop count or full reset is added.
+Actual Codex-update terminal acceptance remains pending.
+
+Focused terminal verification passes 25 relevant cases. The first run passed 24
+and exposed a misplaced loader variable in the changed PTY fixture; that test
+alone passed after correcting its scope. The PTY now executes current source
+through the existing loader instead of a historical emitted helper. It checks
+real shared termios and cleanup output before handoff; the protocol-state cases
+check release reporting and ordinary text for main and alternate screens.
+Strict helper typechecking and configured lint pass. No full suite, real Codex
+update or shared host terminal manipulation was performed.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

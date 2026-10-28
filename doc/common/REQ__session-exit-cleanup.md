@@ -29,6 +29,16 @@ the existing ownership and child-signal policies.
 Disable child-enabled mouse reporting, including DEC modes 1000, 1002, 1003
 and 1006, along with transient focus/paste, alternate-screen and hidden-cursor
 state. Do not clear the terminal history or invoke a destructive full reset.
+After a Codex self-update closes the interactive client, subsequent key release
+events must not be encoded into the host shell. Reset Kitty progressive keyboard
+flags with `CSI = 0 u` on the active screen before leaving alternate screens and
+again after returning to the main screen. Disable xterm `modifyOtherKeys` with
+`CSI > 4 ; 0 m`. Main and alternate screens hold independent keyboard state;
+do not pop an unknown number of stack entries or query the terminal for flags.
+These choices follow the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/#progressive-enhancement)
+and [xterm modifier controls](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html).
+The same shared cleanup covers local and remote interactive clients, including
+normal zero-status closure. Do not consume or flush pending input.
 On POSIX, snapshot actual terminal attributes before launch and restore that
 captured state with bounded, shell-free native commands. Node's `stdin.isRaw`
 does not observe mode changes made by the separate runtime client and is not
@@ -38,6 +48,10 @@ their bytes and existing behavior; no competing stdin reader is introduced.
 
 Verify the ordinary, failed, signalled and interrupted child paths, once-only
 cleanup, exit fallback, spawn failure and remote callback ordering. An owned
+protocol-state fixture must distinguish main and alternate screen keyboard
+flags, show release reporting enabled before exit, and confirm conventional
+shell keyboard input after cleanup. It supplements native PTY evidence; it does
+not certify a real terminal emulator or a Codex update on the host. An owned
 POSIX PTY fixture must simulate a client enabling raw input and SGR mouse
 reporting before abrupt death, then compare actual input attributes and observe
 the disabling bytes before CCC hands control back. No real engine is needed.

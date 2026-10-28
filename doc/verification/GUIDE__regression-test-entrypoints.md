@@ -226,3 +226,27 @@ unique owned `Shutdown` within the same command allowance before publication;
 the existing strict native assertion remains unchanged. Protocol 11 requires
 this in-memory implementation through verified repair. See
 [the shutdown contract](../device-lab/REQ__ios-broker-shutdown.md).
+
+A focused collector invocation with `CCC_DEVICE_BROKER_PORT=17374` must first
+run the same host broker preflight as the normal Level 3 launcher. The explicit
+endpoint disables MCP autolaunch; building files alone does not replace an
+already running broker. After the required build/assembly, run:
+
+```sh
+CCC_DEVICE_BROKER_PORT=17374 node dist/index.js devices broker status --verbose
+```
+
+Continue the selected provider scenarios only after readiness and the current
+verified protocol are reported. This uses existing identity-checked replacement;
+an unverified process remains a refusal. The earlier observation script targets
+17373 and must not be used unchanged to diagnose this isolated endpoint.
+
+For keyboard events leaking after an interactive client exits, use the existing
+`container-command.test.ts` and `architecture/remote-services-facade.test.ts`
+owners. Check normal zero-status closure as well as failure/signal cleanup, and
+interpret keyboard flags separately for main and alternate screens. The shared
+cleanup disables Kitty progressive flags and xterm `modifyOtherKeys` on the
+active screen and after alternate-screen exit. Preserve pending input and
+non-TTY bytes. Protocol-state fixtures and a private POSIX PTY do not replace a
+real terminal check after Codex self-update. See
+[the session exit contract](../common/REQ__session-exit-cleanup.md).

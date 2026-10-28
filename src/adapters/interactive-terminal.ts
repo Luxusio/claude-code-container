@@ -1,7 +1,10 @@
 import { spawnSync } from "child_process";
 import { writeSync } from "fs";
 
-const terminalCleanup = "\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1004l\x1b[?2004l\x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[?25h\x1b[0 q\x1b[0m";
+const keyboardCleanup = "\x1b[=0u\x1b[>4;0m";
+// Main and alternate screens can retain independent keyboard reporting state.
+const terminalCleanup = "\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1004l\x1b[?2004l"
+    + keyboardCleanup + "\x1b[?1049l\x1b[?1047l\x1b[?47l" + keyboardCleanup + "\x1b[?25h\x1b[0 q\x1b[0m";
 
 /** Own only the inherited terminal's lifetime, without reading its input. */
 export function captureInteractiveTerminal(): () => void {
