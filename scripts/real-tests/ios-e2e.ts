@@ -421,11 +421,36 @@ export async function runIosSimulatorE2E(options: any = {}) {
             assert.strictEqual(screenshot?.content?.[0]?.type, "image");
             assert.ok(String(screenshot.content[0].data || "").length > 64);
 
-            const stop = parseContractToolPayload("stop", await callTool("stop", { detail: true, deviceId }));
+            const stopResult = await callTool("stop", { detail: true, deviceId });
+            const stop = parseContractToolPayload("stop", stopResult);
+            const stopDetails = parsePayload(stopResult);
             stopped = true;
             assert.strictEqual(stop.device.status, "stopped");
             const stoppedSimulator = findSimctlDevice(cap.discovery.xcrun, (device) => device?.udid === createdUdid);
-            assert.strictEqual(stoppedSimulator?.state, "Shutdown", JSON.stringify(stoppedSimulator));
+            const shutdownReceipt = stopDetails.execution?.command;
+            const shutdownArgs = ["simctl", "shutdown", createdUdid];
+            assert.strictEqual(stoppedSimulator?.state, "Shutdown", JSON.stringify({
+                phase: "stop-native-state",
+                nativeState: ["Booted", "Shutdown", "Shutting Down"].includes(stoppedSimulator?.state) ? stoppedSimulator.state : "unknown",
+                commandIsStop: stopDetails.command === "device_stop",
+                invoked: stopDetails.invoked === true,
+                dryRun: stopDetails.dryRun === true,
+                preparedTargetMatches: JSON.stringify(stopDetails.providerCommand?.args) === JSON.stringify(shutdownArgs),
+                executedTargetMatches: JSON.stringify(shutdownReceipt?.args) === JSON.stringify(shutdownArgs),
+                returnedTargetMatches: stop.device?.udid === createdUdid,
+                native: {
+                    receiptPresent: Boolean(shutdownReceipt),
+                    executed: stopDetails.execution?.providerExecution === "executed",
+                    modeIsExec: shutdownReceipt?.mode === "exec",
+                    providerIsXcrun: shutdownReceipt?.provider === "xcrun",
+                    status: Number.isSafeInteger(shutdownReceipt?.status) && shutdownReceipt.status >= 0 ? shutdownReceipt.status : null,
+                    signal: ["SIGINT", "SIGTERM", "SIGKILL"].includes(shutdownReceipt?.signal) ? shutdownReceipt.signal : null,
+                    timedOut: typeof shutdownReceipt?.timedOut === "boolean" ? shutdownReceipt.timedOut : null,
+                    errorPresent: Boolean(shutdownReceipt?.error),
+                },
+                recordingPresent: Boolean(stop.device?.recording),
+                recordingActive: stopDetails.device?.recording?.active === true,
+            }));
 
             const erased = parsePayload(await callTool("reset", { detail: true, deviceId, confirmDestructive: true }));
             assert.deepStrictEqual(erased.reset, { eraseSimulator: true });

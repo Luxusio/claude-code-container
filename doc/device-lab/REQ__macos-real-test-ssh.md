@@ -5,8 +5,8 @@ Status: derived repair contract, 2026-10-28.
 The standing request is to repair saved Mac provider failures using focused
 verification. The product already defines SSH defaults for recognized Tart
 images in its [lifecycle policy](../../packages/device-lab/providers/domain/lifecycle/macos-vm-lifecycle.mjs).
-The real E2E instead always supplies a project-derived user and a newly generated
-host-local key, without installing that key in the guest. The following choice
+Previously, the real E2E's default path supplied a project-derived user and a
+host-local key, generating the key if missing without installing it in the guest. The following choice
 aligns the real test with the existing product behavior; it does not introduce
 new guest credentials or establish the saved connection failure's cause.
 

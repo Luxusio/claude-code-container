@@ -203,6 +203,10 @@ despite a returned stopped record; reset was not reached. Subsequent exact-owned
 standalone stop cycles through both the installed broker and the checkout's
 isolated broker report native `Shutdown`. Those cycles do not reproduce or
 explain the full scenario's failure. The diagnostic fixture was then deleted.
+The focused iOS collector reproduces the same mismatch. Its failure assertion
+selects the stop receipt's native exit facts and exact-target equality, without
+raw output, arguments, environment or paths. Keep this distinct from the stored
+stopped record; do not infer successful native shutdown from that record alone.
 
 For recognized Tart images without explicit real-test SSH settings, retain the
 existing product SSH defaults instead of supplying an unrelated generated host
