@@ -428,6 +428,36 @@ check release reporting and ordinary text for main and alternate screens.
 Strict helper typechecking and configured lint pass. No full suite, real Codex
 update or shared host terminal manipulation was performed.
 
+## Oct28 18:14:15 native provider follow-up
+
+The fresh Mac run has 86 passed, three failed and 16 skipped Vitest cases.
+Broker identity attestation succeeds. iOS reaches stop, which returns native
+status 0 but refuses publication because shutdown was not confirmed. Both Tart
+scenarios pass create, start, status and exec, then fail at upload. Their cleanup
+stop and delete calls succeed. The saved upload errors contain no structured
+native execution; they do not establish an SCP failure.
+
+A private portable reproduction establishes a shared staging defect: a canonical
+input path is refused when the default temporary directory is a symlink alias.
+The helper allocates its own stage through that alias, then its strict file
+policy rejects the stage's ancestor. Owned stages now resolve only the default
+temporary parent. Caller path checks and explicit stage parents retain their
+existing policy. This reproduction does not establish the discarded native
+upload error's exact cause.
+
+The saved iOS error also omitted the broker's existing shutdown facts. The
+collector now retains its closed completion, reason, attempt count and last
+state separately from the native receipt. Plain transfer policy refusals retain
+only explicitly allowlisted code prefixes, with all path suffixes discarded.
+No native command, ownership rule or timeout changes in this follow-up. Native
+acceptance of the three provider scenarios remains pending.
+
+Focused portable verification passes 51 relevant cases. The first run passes
+50 and exposes an unrealistic native-receipt envelope in the new evidence
+fixture; that case passes after matching the existing broker envelope. The
+real-test typecheck and transfer-module syntax check pass. No full build or full
+test suite was repeated.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

@@ -25,6 +25,17 @@ function captureToolResultFailure(result: unknown, options: Record<string, unkno
     }
     throw new Error("expected tool result failure");
 }
+function savedPayloadFailure(result: unknown) {
+    let error: any;
+    try { parseToolPayload(result); }
+    catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error);
+    const file = error.message.split("Diagnostics: ")[1];
+    expect(file).toBeTruthy();
+    written.push(file);
+    const saved = fs.readFileSync(file, "utf8");
+    return { error, saved, failure: JSON.parse(saved).failure };
+}
 describe("MCP error output", () => {
     it("saves native structured evidence while excluding the original plain error text", () => {
         let caught: any;
@@ -43,6 +54,143 @@ describe("MCP error output", () => {
             errorCode: "ETIMEDOUT", diagnosticCode: "native-timeout" });
         expect(caught.message).toContain("native-timeout");
         expect(caught.message + saved).not.toContain("PRIVATE");
+    });
+
+    describe("shutdown settlement evidence", () => {
+        it.each(["body.result", "result"])("keeps %s settlement facts separate from a successful native shutdown receipt", envelope => {
+            for (const shutdown of [
+                { ok: false, reason: "timed-out", attempts: 0, lastState: null },
+                { ok: false, reason: "timed-out", attempts: 7, lastState: "Booted" },
+                { ok: false, reason: "timed-out", attempts: 1, lastState: "Shutdown" },
+                { ok: false, reason: "observation-failed", attempts: 1, lastState: "Shutting Down" },
+                { ok: true, attempts: 1, lastState: "Shutdown" },
+            ]) {
+                const native = { status: 0, signal: null, timedOut: false };
+                const result = {
+                    shutdown: { ...shutdown, udid: "PRIVATE-UDID", inventory: "PRIVATE-INVENTORY", args: ["PRIVATE-ARG"] },
+                    ...(envelope === "body.result" ? { execution: { mode: "exec", providerExecution: "executed", mutatesHost: true,
+                        command: { mode: "exec", provider: "xcrun", ...native } } } : {}),
+                };
+                const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                    content: [{ type: "text", text: "PRIVATE-NATIVE-OUTPUT" }],
+                    structuredContent: { ok: false, error: "ios-simulator-shutdown-not-confirmed",
+                        ...(envelope === "body.result" ? { body: { result } } : { execution: native, result }),
+                    }, __cccToolCallRecord: { name: "stop" } });
+
+                expect(failure.shutdown).toEqual(shutdown);
+                expect(failure.execution).toEqual({ status: 0, signal: null, timedOut: false });
+                expect(error.message).toContain("shutdown=");
+                expect(error.message).toContain(`"ok":${shutdown.ok}`);
+                expect(error.message).toContain(`"attempts":${shutdown.attempts}`);
+                expect(error.message).toContain(`"lastState":${JSON.stringify(shutdown.lastState)}`);
+                if ("reason" in shutdown) expect(error.message).toContain(shutdown.reason);
+                expect(error.message + saved).not.toContain("PRIVATE");
+            }
+        });
+
+        it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1", null])("omits invalid attempt counts and arbitrary shutdown values: %s", attempts => {
+            const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                content: [{ type: "text", text: "PRIVATE-OUTPUT" }],
+                structuredContent: { ok: false, error: "ios-simulator-shutdown-not-confirmed", result: {
+                    shutdown: { ok: false, attempts, reason: "PRIVATE-REASON", lastState: "PRIVATE-STATE", path: "PRIVATE-PATH" },
+                } }, __cccToolCallRecord: { name: "stop" } });
+
+            expect(failure.shutdown).toEqual({ ok: false });
+            expect(error.message).not.toContain('"attempts":');
+            expect(error.message + saved).not.toContain("PRIVATE");
+        });
+
+        it("selects valid fields independently without coercing booleans or inventing missing facts", () => {
+            const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                content: [{ type: "text", text: "PRIVATE-OUTPUT" }],
+                structuredContent: { ok: false, error: "ios-simulator-shutdown-not-confirmed", result: {
+                    shutdown: { ok: "false", attempts: 0, lastState: null, reason: "PRIVATE" },
+                } }, __cccToolCallRecord: { name: "stop" } });
+
+            expect(failure.shutdown).toEqual({ attempts: 0, lastState: null });
+            expect(error.message).not.toContain('"ok":');
+            expect(error.message).not.toContain('"reason":');
+            expect(error.message + saved).not.toContain("PRIVATE");
+        });
+
+        it("does not invent settlement evidence from missing, malformed or unrelated envelopes", () => {
+            for (const extra of [
+                {},
+                { shutdown: { ok: false, attempts: 3, lastState: "Booted" } },
+                { body: { shutdown: { ok: false, attempts: 3, lastState: "Booted" } } },
+                { result: { shutdown: null } },
+                { result: { shutdown: [] } },
+                { result: { shutdown: { ok: 0, attempts: -1, reason: "PRIVATE", lastState: "ShuttingDown" } } },
+            ]) {
+                const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                    content: [{ type: "text", text: "PRIVATE-OUTPUT" }],
+                    structuredContent: { ok: false, error: "provider-command-failed", ...extra },
+                    __cccToolCallRecord: { name: "stop" } });
+
+                expect(failure).not.toHaveProperty("shutdown");
+                expect(error.message).not.toContain("shutdown=");
+                expect(error.message + saved).not.toContain("PRIVATE");
+            }
+        });
+    });
+
+    describe("plain transfer policy refusals", () => {
+        it.each(["upload", "download"])("saves only an allowlisted %s code without classifying a native command", tool => {
+            const code = `${tool}-local-path-symlink-ancestor-rejected`;
+            for (const text of [code, `${code}: /PRIVATE-HOST-PATH`, `${code}: C:\\PRIVATE-PATH\nPRIVATE-OUTPUT`]) {
+                const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                    content: [{ type: "text", text }], __cccToolCallRecord: { name: tool } });
+
+                expect(failure.tool).toBe(tool);
+                expect(failure.error).toBe(code);
+                expect(error.message).toContain(code);
+                expect(failure).not.toHaveProperty("execution");
+                expect(error.message + saved).not.toContain("PRIVATE");
+                expect(error.message + saved).not.toContain("provider-command-failed");
+            }
+        });
+
+        it("leaves unknown text, near-match codes and wrong tool namespaces unclassified", () => {
+            const code = "upload-local-path-symlink-ancestor-rejected";
+            for (const [tool, text] of [
+                ["upload", `PRIVATE-PREFIX ${code}: PRIVATE-PATH`],
+                ["upload", `${code}-PRIVATE: PRIVATE-PATH`],
+                ["upload", `${code}:PRIVATE-PATH`],
+                ["upload", `${code}:\tPRIVATE-PATH`],
+                ["upload", `${code} PRIVATE-PATH`],
+                ["upload", "upload-local-path-PRIVATE: PRIVATE-PATH"],
+                ["upload", "EACCES: PRIVATE-PATH"],
+                ["upload", "download-local-path-symlink-ancestor-rejected: PRIVATE-PATH"],
+                ["download", `${code}: PRIVATE-PATH`],
+                ["exec", `${code}: PRIVATE-PATH`],
+            ]) {
+                const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                    content: [{ type: "text", text }], __cccToolCallRecord: { name: tool } });
+
+                expect(failure).not.toHaveProperty("error");
+                expect(failure).not.toHaveProperty("execution");
+                expect(error.message).not.toContain(code);
+                expect(error.message + saved).not.toContain("PRIVATE");
+            }
+        });
+
+        it("keeps structured and JSON failures ahead of plain-text policy classification", () => {
+            const code = "upload-local-path-symlink-ancestor-rejected";
+            for (const result of [
+                { content: [{ type: "text", text: `${code}: PRIVATE-PATH` }],
+                    structuredContent: { ok: false, error: "device-not-found", path: "PRIVATE-PATH" } },
+                { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "device-not-found", ignored: `${code}: PRIVATE-PATH` }) }],
+                    structuredContent: {} },
+            ]) {
+                const { error, saved, failure } = savedPayloadFailure({ ...result, isError: true, __cccToolCallRecord: { name: "upload" } });
+
+                expect(failure.error).toBe("device-not-found");
+                expect(failure).not.toHaveProperty("execution");
+                expect(error.message).toContain("device-not-found");
+                expect(error.message + saved).not.toContain(code);
+                expect(error.message + saved).not.toContain("PRIVATE");
+            }
+        });
     });
 
     it("projects only bounded simctl failure facts into real artifacts and short errors", () => {

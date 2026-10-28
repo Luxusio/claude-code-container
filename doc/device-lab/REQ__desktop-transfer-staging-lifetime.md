@@ -35,6 +35,15 @@ framing produce failure, followed by owned-stage finalization. Byte limits,
 staging validation and destination publication policy remain in the application;
 native encoding and decoding belong to adapters.
 
+The default system temporary directory may be an operating-system symlink alias.
+Resolve that default parent before allocating owned input and output stages, and
+use the same parent representation for output-stage restoration and discard.
+Canonical caller paths must work with an aliased temporary directory. This does
+not authorize resolving caller source or destination symlinks past existing
+policy checks, or change explicit `stageParent` semantics, byte limits, secret
+checks, publication fences or owned cleanup. A failed default-parent resolution
+must remain a failure rather than selecting another location.
+
 Resolved iOS app-container paths use the host's native path semantics. An owned
 descendant remains valid on Windows and POSIX; sibling, ancestor and resolved
 link escapes must be rejected before transferring bytes.

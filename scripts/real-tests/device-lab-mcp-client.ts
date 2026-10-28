@@ -456,8 +456,9 @@ export function parseToolPayload(result) {
         const value = structuredContent && typeof structuredContent === "object" && !Array.isArray(structuredContent)
             && (structuredContent.ok === false || typeof structuredContent.error === "string")
             ? structuredContent : jsonContentPayload(resultContent(result));
-        const structured = value && typeof value === "object" && !Array.isArray(value) ? value : null;
         const tool = knownToolName(result?.__cccToolCallRecord?.name);
+        const structured = value && typeof value === "object" && !Array.isArray(value)
+            ? value : value == null ? plainTransferPolicyFailure(text, tool) : null;
         let message = formatBrokerToolFailure(structured, "mcp-tool-failed", tool);
         if (structured?.error === "broker-runtime-process-unverified") {
             message = "broker-runtime-process-unverified: Broker identity unverified; automatic restart was refused.";
@@ -481,6 +482,21 @@ export function parseToolPayload(result) {
     const payload = jsonContentPayload(resultContent(result));
     if (payload) return payload;
     return JSON.parse(text);
+}
+
+function plainTransferPolicyFailure(text: unknown, tool: string | undefined) {
+    if (typeof text !== "string" || (tool !== "upload" && tool !== "download")) return null;
+    const codes = tool === "upload" ? [
+        "upload-local-path-symlink-ancestor-rejected", "upload-local-path-symlink-rejected",
+        "upload-local-path-state-invalid",
+    ] : [
+        "download-local-path-symlink-ancestor-rejected", "download-local-path-symlink-rejected",
+        "download-local-path-state-invalid", "download-local-path-stage-symlink-ancestor-rejected",
+        "download-local-path-stage-symlink-rejected",
+        "download-local-path-stage-file-too-large",
+    ];
+    const error = codes.find(code => text === code || text.startsWith(`${code}: `));
+    return error ? { ok: false, error } : null;
 }
 
 function boundedDiagnosticText(value: unknown, maxLength = 128): string | undefined {
@@ -757,6 +773,21 @@ function boundedBrokerLifecycleFailure(value: any) {
     };
 }
 
+function boundedIosShutdown(value: any) {
+    const body = value?.body && typeof value.body === "object" && !Array.isArray(value.body) ? value.body : null;
+    const shutdown = body?.result?.shutdown ?? value?.result?.shutdown;
+    if (!shutdown || typeof shutdown !== "object" || Array.isArray(shutdown)) return undefined;
+    const ok = typeof shutdown.ok === "boolean" ? shutdown.ok : undefined;
+    const reason = ["timed-out", "observation-failed"].includes(shutdown.reason) ? shutdown.reason : undefined;
+    const attempts = Number.isSafeInteger(shutdown.attempts) && shutdown.attempts >= 0 ? shutdown.attempts : undefined;
+    const lastState = shutdown.lastState === null || ["Shutdown", "Booted", "Shutting Down"].includes(shutdown.lastState)
+        ? shutdown.lastState : undefined;
+    return ok !== undefined || reason !== undefined || attempts !== undefined || lastState !== undefined
+        ? { ...(ok !== undefined ? { ok } : {}), ...(reason !== undefined ? { reason } : {}),
+            ...(attempts !== undefined ? { attempts } : {}), ...(lastState !== undefined ? { lastState } : {}) }
+        : undefined;
+}
+
 export function brokerToolFailureEvidence(value: any, callName?: unknown) {
     const body = value?.body && typeof value.body === "object" && !Array.isArray(value.body) ? value.body : null;
     const attempts = Array.isArray(value?.attempts)
@@ -789,12 +820,14 @@ export function brokerToolFailureEvidence(value: any, callName?: unknown) {
     const execution = boundedNativeExecution(providerExecution(value));
     const helperPreparation = boundedMacosHelperPreparation(value);
     const macosBoot = boundedMacosBoot(value);
+    const shutdown = boundedIosShutdown(value);
     const processObservation = boundedProcessObservation(lastAttempt?.processVerification?.observation);
     const evidence: Record<string, unknown> = {
         ...(tool ? { tool } : {}),
         ...(execution ? { execution } : {}),
         ...(helperPreparation ? { helperPreparation } : {}),
         ...(macosBoot ? { macosBoot } : {}),
+        ...(shutdown ? { shutdown } : {}),
         ...(processObservation ? { processObservation } : {}),
         ...(validation ? { validation } : {}),
         error: boundedBrokerDiagnosticCode(value?.error),
@@ -1075,6 +1108,7 @@ export function formatBrokerToolFailure(value: any, fallback: string, callName?:
     const execution = boundedNativeExecution(providerExecution(value));
     const helperPreparation = boundedMacosHelperPreparation(value);
     const macosBoot = boundedMacosBoot(value);
+    const shutdown = boundedIosShutdown(value);
     const processObservation = boundedProcessObservation(lastAttempt?.processVerification?.observation);
     const parts = [
         ...(validation ? [`validation=${validation.kind}`, `tool=${tool || validation.tool}`, `field=${validation.field}`]
@@ -1084,6 +1118,7 @@ export function formatBrokerToolFailure(value: any, fallback: string, callName?:
         ...(execution ? [`execution=${JSON.stringify(execution)}`] : []),
         ...(helperPreparation ? [`helperPreparation=${JSON.stringify(helperPreparation)}`] : []),
         ...(macosBoot ? [`macosBoot=${JSON.stringify(macosBoot)}`] : []),
+        ...(shutdown ? [`shutdown=${JSON.stringify(shutdown)}`] : []),
         ...(processObservation ? [`observation=${JSON.stringify(processObservation)}`] : []),
         bootDiagnostic ? `boot=${bootDiagnostic}` : "",
         bootDiagnostic ? "" : boundedDetail(value?.detail),

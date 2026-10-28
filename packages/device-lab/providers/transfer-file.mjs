@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
 import { validateLocalInputPath, validateLocalOutputPath } from "./policy/files.mjs";
@@ -48,7 +48,7 @@ export function stageLocalInputFile(value, options = {}) {
 
     let root;
     try {
-        root = mkdtempSync(join(tmpdir(), "ccc-device-upload-"));
+        root = mkdtempSync(join(realpathSync(tmpdir()), "ccc-device-upload-"));
     } catch (error) {
         return transferFailure(error, `${label}-stage-create-failed`);
     }
@@ -100,10 +100,10 @@ export function createLocalOutputStage(value, options = {}) {
     const label = options.label || "download-local-path";
     const policy = validateLocalOutputPath(value, { label });
     if (!policy.ok) return policy;
-    const stageParent = resolve(options.stageParent || tmpdir());
     const stagePrefix = options.stagePrefix || "ccc-device-download-";
     let root;
     try {
+        const stageParent = options.stageParent ? resolve(options.stageParent) : realpathSync(tmpdir());
         mkdirSync(stageParent, { recursive: true, mode: 0o700 });
         root = mkdtempSync(join(stageParent, stagePrefix));
     } catch (error) {
@@ -126,7 +126,12 @@ export function restoreLocalOutputStage(value, stagedPath, options = {}) {
     if (typeof stagedPath !== "string" || stagedPath.length === 0) {
         return transferFailure(null, `${label}-stage-path-missing`);
     }
-    const stageParent = resolve(options.stageParent || tmpdir());
+    let stageParent;
+    try {
+        stageParent = options.stageParent ? resolve(options.stageParent) : realpathSync(tmpdir());
+    } catch (error) {
+        return transferFailure(error, `${label}-stage-path-invalid`);
+    }
     const stagePrefix = options.stagePrefix || "ccc-device-download-";
     const resolvedStagePath = resolve(stagedPath);
     const root = dirname(resolvedStagePath);
@@ -148,7 +153,12 @@ export function discardLocalOutputStage(stagedPath, options = {}) {
     if (typeof stagedPath !== "string" || stagedPath.length === 0) {
         return transferFailure(null, `${label}-stage-path-missing`);
     }
-    const stageParent = resolve(options.stageParent || tmpdir());
+    let stageParent;
+    try {
+        stageParent = options.stageParent ? resolve(options.stageParent) : realpathSync(tmpdir());
+    } catch (error) {
+        return transferFailure(error, `${label}-stage-path-invalid`);
+    }
     const stagePrefix = options.stagePrefix || "ccc-device-download-";
     const resolvedStagePath = resolve(stagedPath);
     const root = dirname(resolvedStagePath);

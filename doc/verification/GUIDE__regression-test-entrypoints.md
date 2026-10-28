@@ -250,3 +250,19 @@ active screen and after alternate-screen exit. Preserve pending input and
 non-TTY bytes. Protocol-state fixtures and a private POSIX PTY do not replace a
 real terminal check after Codex self-update. See
 [the session exit contract](../common/REQ__session-exit-cleanup.md).
+
+The Oct28 18:14:15 Mac run passes broker identity checks and reaches a shutdown
+confirmation refusal plus two upload refusals. Read `shutdown` separately from
+the native shutdown `execution`: its closed reason, attempts and last state
+describe confirmation, while native status 0 describes only the command.
+The broker command allowance and MCP transport timeout are separate limits;
+transport duration alone does not identify the failed confirmation step.
+
+For transfer staging, use `device-lab-transfer-file.test.ts` with its private
+aliased-temporary-directory subprocess. Canonical caller paths must work while
+caller links remain refused. For saved shutdown facts and plain transfer policy
+codes, use `scripts/real-tests/mcp-error-output.test.ts`. Unknown plain text stays
+unclassified and no native SCP failure is inferred without a receipt. These
+portable checks do not replace the remaining actual Mac provider scenarios;
+see [staging lifetime](../device-lab/REQ__desktop-transfer-staging-lifetime.md)
+and [failure evidence](../device-lab/REQ__provider-failure-evidence.md).

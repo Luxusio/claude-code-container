@@ -1,4 +1,4 @@
-import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -35,6 +35,94 @@ describe("device-lab transfer file boundaries", () => {
         expect(readFileSync(staged.stagedPath, "utf8")).toBe("before");
         staged.cleanup();
         expect(existsSync(staged.stagedPath)).toBe(false);
+    });
+
+    it("supports owned transfer stages under an aliased system temporary directory without accepting caller aliases", (context) => {
+        const root = realpathSync(tempRoot());
+        const actual = join(root, "actual");
+        const alias = join(root, "temporary-alias");
+        mkdirSync(actual);
+        try { symlinkSync(actual, alias, "junction"); }
+        catch (error) {
+            if (process.platform === "win32" && ["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code || "")) {
+                context.skip(true, "Windows directory links require privilege"); return;
+            }
+            throw error;
+        }
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { dirname, join } from 'node:path';
+const { stageLocalInputFile, createLocalOutputStage, populateLocalOutputStage, commitLocalOutputStage,
+    restoreLocalOutputStage, discardLocalOutputStage } = await import(process.argv[1]);
+const actual = process.argv[2], alias = process.argv[3];
+const source = join(actual, 'source.txt'), destination = join(actual, 'destination.bin');
+fs.writeFileSync(source, 'before');
+const input = stageLocalInputFile(source);
+assert.equal(input.ok, true);
+assert.equal(input.stagedPath, fs.realpathSync(input.stagedPath));
+fs.writeFileSync(source, 'after');
+assert.equal(fs.readFileSync(input.stagedPath, 'utf8'), 'before');
+input.cleanup();
+assert.equal(fs.existsSync(input.stagedPath), false);
+
+const output = createLocalOutputStage(destination);
+assert.equal(output.ok, true);
+assert.equal(output.stageRoot, fs.realpathSync(output.stageRoot));
+assert.equal(populateLocalOutputStage(source, output).ok, true);
+const restored = restoreLocalOutputStage(destination, output.stagedPath);
+assert.equal(restored.ok, true);
+assert.equal(commitLocalOutputStage(restored).ok, true);
+assert.equal(fs.readFileSync(destination, 'utf8'), 'after');
+assert.equal(discardLocalOutputStage(restored.stagedPath).ok, true);
+assert.equal(fs.existsSync(restored.stageRoot), false);
+assert.equal(fs.readFileSync(destination, 'utf8'), 'after');
+
+assert.equal(stageLocalInputFile(join(alias, 'source.txt')).error, 'upload-local-path-symlink-ancestor-rejected');
+assert.equal(createLocalOutputStage(join(alias, 'caller-output.bin')).error, 'download-local-path-symlink-ancestor-rejected');
+const explicitOptions = { stageParent: alias, stagePrefix: '.explicit-stage-' };
+const explicit = createLocalOutputStage(destination, explicitOptions);
+assert.equal(explicit.ok, true);
+assert.equal(dirname(explicit.stageRoot), alias);
+fs.writeFileSync(explicit.stagedPath, 'unpublished');
+assert.equal(restoreLocalOutputStage(destination, explicit.stagedPath, explicitOptions).ok, true);
+assert.equal(commitLocalOutputStage(explicit).error, 'download-local-path-stage-symlink-ancestor-rejected');
+assert.equal(discardLocalOutputStage(explicit.stagedPath, explicitOptions).ok, true);
+assert.equal(fs.existsSync(explicit.stageRoot), false);
+assert.equal(fs.readFileSync(destination, 'utf8'), 'after');
+console.log(JSON.stringify({ completed: true }));
+`, new URL("../../packages/device-lab/providers/transfer-file.mjs", import.meta.url).href, actual, alias], {
+            encoding: "utf8", timeout: 15000,
+            env: {...process.env, HOME: root, USERPROFILE: root, TMPDIR: alias, TMP: alias, TEMP: alias},
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({completed: true});
+    });
+
+    it("fails without creating a missing default temporary parent or publishing a destination", () => {
+        const root = realpathSync(tempRoot());
+        const missing = join(root, "missing-temporary-parent");
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import fs from 'node:fs';
+import { join } from 'node:path';
+const { stageLocalInputFile, createLocalOutputStage, restoreLocalOutputStage,
+    discardLocalOutputStage } = await import(process.argv[1]);
+const root = process.argv[2], missing = process.argv[3];
+const source = join(root, 'source.txt'), destination = join(root, 'destination.bin');
+fs.writeFileSync(source, 'safe source');
+fs.writeFileSync(destination, 'original destination');
+const unallocatedPayload = join(missing, 'ccc-device-download-unallocated', 'payload');
+const results = [stageLocalInputFile(source), createLocalOutputStage(destination),
+    restoreLocalOutputStage(destination, unallocatedPayload), discardLocalOutputStage(unallocatedPayload)];
+console.log(JSON.stringify({ ok: results.map(result => result.ok), parentCreated: fs.existsSync(missing),
+    source: fs.readFileSync(source, 'utf8'), destination: fs.readFileSync(destination, 'utf8') }));
+`, new URL("../../packages/device-lab/providers/transfer-file.mjs", import.meta.url).href, root, missing], {
+            encoding: "utf8", timeout: 15000,
+            env: {...process.env, HOME: root, USERPROFILE: root, TMPDIR: missing, TMP: missing, TEMP: missing},
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({ok: [false, false, false, false], parentCreated: false,
+            source: "safe source", destination: "original destination"});
     });
 
     it("regression: native transfer cleanup reports a failed owned removal", () => {

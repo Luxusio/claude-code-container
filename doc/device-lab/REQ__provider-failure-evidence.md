@@ -52,6 +52,20 @@ fixed `spawn` stage. It does not by itself establish a missing shell or identify
 why launchd rejected its program arguments. Do not change execution behavior
 based only on exit 111 or on a simulator's `Booted` label.
 
+For an unconfirmed broker shutdown, the saved artifact and short message also
+retain the existing `body.result.shutdown` or `result.shutdown` facts separately
+from the native shutdown receipt: boolean `ok`, nonnegative safe-integer
+`attempts`, `reason` limited to `timed-out` or `observation-failed`, and `lastState`
+limited to `Shutdown`, `Booted`, `Shutting Down` or null. Omit unknown fields and
+invalid values. These facts distinguish allowance exhaustion from rejected
+observation; they do not establish its native cause or change the stop policy.
+
+When upload or download returns only a plain policy refusal, the collector may
+retain an explicitly allowlisted existing file-policy code at the beginning of
+that text, followed by its exact delimiter or end of text. Discard the entire
+path/text suffix. Unknown text remains unclassified. A policy refusal without a
+native execution receipt must not be presented as an SSH or SCP command failure.
+
 Mac desktop command failures use the same structured native observation shape
 while preserving their existing error text and `isError`. Select status, known
 OS signal/errno, boolean timeout and the existing closed native diagnostic code
