@@ -560,7 +560,28 @@ and 72 broker protocol/replacement cases. Device-lab type checking, protocol
 module syntax and documentation references also pass. These checks do not
 replace native Tart qualification.
 
+The Oct28 23:09 UTC Mac result qualifies this correction on the host. The
+packaged macOS destructive scenario passes snapshot creation, restoration and
+deletion, then image creation, source-device cloning and cleanup. All 33 MCP
+calls succeed with the existing snapshot identity, Tart existence/state and
+final absence assertions retained. The user's separate preflight confirms a
+new protocol-12 broker; that protocol/PID observation is not a JSON field.
+
+The saved result is one macOS PASS, one Android SKIP (`missing avdmanager`) and
+zero failures. Its packaged MCP fingerprint is
+`442fa153778e15401a7df45e55b03ae95b68d39fed246db1c7e8d939783ea7a1`.
+The positive JSON is preserved with its hash before another host overwrite.
+This accepts the previously pending Tart snapshot scenario while retaining the
+earlier macOS Level 2 and iOS qualification. No additional provider execution
+is needed for this correction. Source-MCP, Android, other-platform and complete
+Level 3 acceptance are not implied; exact stage timings and native receipt
+values were not stored.
+
 ## Known ceiling
+
+The positive packaged Mac destructive result above supersedes the following
+pending Tart snapshot acceptance limit for that scenario. The row is retained
+as historical context; separate platform and terminal limits remain unchanged.
 
 Known ceiling: Actual Tart snapshot acceptance remains pending — verify the focused destructive scenario on the Mac host.
 

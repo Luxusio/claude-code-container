@@ -317,3 +317,17 @@ the MCP bundle, then run the port-17374 host preflight. Its existing verified
 replacement must deliver the new in-memory handler. Repeat only
 `scripts/real-tests/level3-real-destructive.ts`; retain the successful Level 2
 and iOS evidence. Native snapshot acceptance remains pending that focused run.
+
+The Oct28 23:09 UTC focused host result accepts the packaged macOS destructive
+scenario: snapshot create/restore/delete, image creation, source-device cloning
+and native cleanup pass. All 33 recorded MCP calls succeed; the strict snapshot
+identity, Tart state/existence and final absence assertions remain in place.
+The host preflight separately confirms replacement by a protocol-12 broker.
+The JSON records one macOS PASS and one Android SKIP (`missing avdmanager`),
+with zero failures. That skip does not describe the macOS snapshot step.
+
+Retain this result alongside the earlier macOS Level 2 and iOS Simulator
+qualification. No further provider run or rebuild is needed for this snapshot
+correction. The focused packaged result does not establish source-MCP, Android,
+other-platform or complete Level 3 coverage; exact per-stage timings and native
+receipt values were not saved.
