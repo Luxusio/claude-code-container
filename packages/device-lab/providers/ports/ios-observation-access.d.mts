@@ -62,7 +62,7 @@ export type IosAccessAppiumResult<Effect extends IosAccessAppiumEffect> =
     Effect extends { kind: "screenshot" } ? { data: unknown } :
     Effect extends { kind: "active-app" } ? { bundleIds: readonly string[]; activeApp: unknown } :
     Effect extends { kind: "source" | "screenshot" | "active-app" } ? { source: unknown } | { data: unknown } | { bundleIds: readonly string[]; activeApp: unknown } : undefined;
-export type IosAccessProbe = "bundle-process" | "name-process" | "user-services" | "gui-services" | "system-services";
+export type IosAccessProbe = "bootstrap-services" | "bundle-process" | "name-process" | "user-services" | "gui-services" | "system-services";
 export type IosAccessSimulatorEffect =
     | ({ kind: "exec"; target: string } & ({ command: string | undefined; argv?: never } | { argv: string[]; command?: never }))
     | { kind: "screenshot"; target: string; path: string }

@@ -38,6 +38,9 @@ const bundleId = "com.apple.mobilesafari";
 const result = (status: number | null, stdout = "", stderr = "", extra = {}) => ({ status, stdout, stderr, ...extra });
 const failed = () => result(2, "", "simulator unavailable");
 const isPgrep = (args: string[]) => args[3] === "pgrep";
+const isBootstrapList = (args: string[]) => args[3] === "launchctl" && args[4] === "list";
+const launchctlList = (...rows: string[]) => ["PID\tStatus\tLabel", ...rows].join("\n") + "\n";
+const runningSafariRow = "30323\t0\tUIKitApplication:com.apple.mobilesafari[244c][rb-legacy]";
 async function finish<T>(pending: Promise<T>) {
     let settled = false;
     void pending.then(() => { settled = true; }, () => { settled = true; });
@@ -68,7 +71,7 @@ afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("iOS Simulator app observation", () => {
     it("rejects a native PID observed at the deadline and starts no further command", async () => {
-        fixture.observe = () => { vi.setSystemTime(Date.now() + 10); return result(0, "123\n"); };
+        fixture.observe = () => { vi.setSystemTime(Date.now() + 10); return result(0, launchctlList(runningSafariRow)); };
         expect(await wait(10)).toMatchObject({ running: false, timeoutMs: 10 });
         expect(fixture.calls).toHaveLength(1);
         expect(fixture.allowances).toEqual([10]);
@@ -93,14 +96,66 @@ describe("iOS Simulator app observation", () => {
         fixture.observe = () => { vi.setSystemTime(Date.now() + 2); return result(1); };
         const timer = vi.spyOn(globalThis, "setTimeout");
         expect(await wait(20)).toMatchObject({ running: false });
-        expect(fixture.calls).toHaveLength(5);
-        expect(timer).toHaveBeenCalledWith(expect.any(Function), 10);
+        expect(fixture.calls).toHaveLength(6);
+        expect(timer).toHaveBeenCalledWith(expect.any(Function), 8);
     });
 
     it("retains pgrep positive observations and stops querying immediately", async () => {
-        fixture.observe = () => result(0, "123\n", "warning");
+        fixture.observe = (argv) => isBootstrapList(argv) ? failed() : result(0, "123\n", "warning");
         expect(await wait()).toMatchObject({ running: true, pid: "123", status: 0, stderr: "warning" });
+        expect(fixture.calls.map((argv) => argv.slice(3))).toEqual([
+            ["launchctl", "list"], ["pgrep", "-f", bundleId],
+        ]);
+    });
+
+    it("treats clean bootstrap absence as authoritative despite legacy bundle matches", async () => {
+        fixture.observe = (argv) => isBootstrapList(argv)
+            ? result(0, launchctlList("45\t0\tUIKitApplication:com.other.app[other][rb-legacy]"))
+            : result(0, `123 ${bundleId}`);
+        expect(await wait()).toMatchObject({ running: false, status: 0, stdout: "", stderr: "", observedBy: "launchctl-list" });
+        expect(fixture.calls).toEqual([["simctl", "spawn", "SIM-UDID", "launchctl", "list"]]);
+    });
+
+    it("continues polling authoritative bootstrap absence until the app appears", async () => {
+        fixture.observe = (argv) => {
+            if (!isBootstrapList(argv)) throw new Error("clean bootstrap list must not query legacy observations");
+            return result(0, fixture.calls.length === 1 ? launchctlList() : launchctlList(runningSafariRow));
+        };
+        expect(await wait(51)).toMatchObject({ running: true, pid: "30323", observedBy: "launchctl-list", stdout: "", stderr: "" });
+        expect(fixture.calls).toEqual([
+            ["simctl", "spawn", "SIM-UDID", "launchctl", "list"],
+            ["simctl", "spawn", "SIM-UDID", "launchctl", "list"],
+        ]);
+    });
+
+    it.each(["-", "0"])("does not treat the bootstrap job PID %s as a running app", async (pid) => {
+        fixture.observe = () => result(0, launchctlList(`${pid}\t0\tUIKitApplication:${bundleId}[244c][rb-legacy]`));
+        expect(await wait()).toMatchObject({ running: false, observedBy: "launchctl-list", stdout: "", stderr: "" });
         expect(fixture.calls).toHaveLength(1);
+    });
+
+    it.each([
+        "UIKitApplication:com.apple.mobilesafari.extension[244c][rb-legacy]",
+        "UIKitApplication:prefix.com.apple.mobilesafari[244c][rb-legacy]",
+        "UIKitApplication:comXappleXmobilesafari[244c][rb-legacy]",
+        "UIKitApplication:com.apple.mobilesafari",
+    ])("does not match a neighboring bootstrap label %s", async (label) => {
+        fixture.observe = () => result(0, launchctlList(`30323\t0\t${label}`));
+        expect(await wait()).toMatchObject({ running: false, observedBy: "launchctl-list" });
+        expect(fixture.calls).toHaveLength(1);
+    });
+
+    it.each([
+        { name: "wrong header", stdout: `PID\tExit\tLabel\n${runningSafariRow}\n` },
+        { name: "overflow PID", stdout: launchctlList(`9007199254740992\t0\tUIKitApplication:${bundleId}[244c][rb-legacy]`) },
+        { name: "missing label column", stdout: launchctlList("30323\t0") },
+        { name: "malformed row after a matching app", stdout: launchctlList(runningSafariRow, "malformed native row") },
+    ])("falls back when the bootstrap list has a $name", async ({ stdout }) => {
+        fixture.observe = (argv) => isBootstrapList(argv) ? result(0, stdout) : result(0, "321\n");
+        expect(await wait()).toMatchObject({ running: true, pid: "321" });
+        expect(fixture.calls.map((argv) => argv.slice(3))).toEqual([
+            ["launchctl", "list"], ["pgrep", "-f", bundleId],
+        ]);
     });
 
     it("falls back in domain order when the guest has no pgrep", async () => {
@@ -108,6 +163,7 @@ describe("iOS Simulator app observation", () => {
             ? result(0, `UIKitApplication:${bundleId}[1234]`) : result(2, "", "No such file or directory");
         expect(await wait()).toMatchObject({ running: true, observedBy: "launchctl-gui/501", status: 0 });
         expect(fixture.calls.map((argv) => argv.slice(3))).toEqual([
+            ["launchctl", "list"],
             ["pgrep", "-f", bundleId], ["pgrep", "-i", "-f", "mobilesafari"],
             ["launchctl", "print", "user/501"], ["launchctl", "print", "gui/501"],
         ]);
@@ -154,11 +210,11 @@ describe("iOS Simulator app observation", () => {
 
     it.each([true, false])("uses only the final sweep's trust (first clean=%s)", async (firstClean) => {
         fixture.observe = (argv) => {
-            const clean = Date.now() === 0 ? firstClean : !firstClean;
+            const clean = fixture.calls.length <= 6 ? firstClean : !firstClean;
             return clean && isPgrep(argv) ? result(1) : failed();
         };
         const observed = await wait(51);
-        expect(fixture.calls).toHaveLength(10);
+        expect(fixture.calls).toHaveLength(12);
         if (firstClean) expect(observed.error.stderr).toContain("simulator unavailable");
         else expect(observed).toMatchObject({ running: false, status: 0, nativeStatus: 1, stderr: "" });
     });
@@ -173,6 +229,27 @@ describe("iOS Simulator app observation", () => {
 });
 
 describe("public iOS wait and flow errors", () => {
+    it("recognizes the captured Safari bootstrap row through public MCP without exporting the service table", async () => {
+        const nativeTable = launchctlList("-\t0\tcom.private.fixture-service", runningSafariRow);
+        fixture.observe = (argv) => {
+            if (!isBootstrapList(argv)) throw new Error("captured bootstrap row must not need pgrep or fixed user domains");
+            return result(0, nativeTable);
+        };
+        for (const detail of [true, false]) {
+            fixture.calls.length = 0;
+            const observed = await call("wait_for_app", { ...args, detail });
+            expect(observed.isError).toBe(false);
+            const body = JSON.parse(observed.content[0].text);
+            expect(body).toMatchObject({ matched: true, appId: bundleId, provider: "simctl", pid: "30323", observedBy: "launchctl-list" });
+            expect(body.stdout || "").toBe("");
+            expect(body.stderr || "").toBe("");
+            expect(JSON.stringify(observed)).not.toContain("com.private.fixture-service");
+            expect(JSON.stringify(observed)).not.toContain("UIKitApplication:");
+            expect(fixture.calls.filter((argv) => argv[1] === "spawn"))
+                .toEqual([["simctl", "spawn", "SIM-UDID", "launchctl", "list"]]);
+        }
+    });
+
     it.each([false, true])("returns an MCP observation error with the cause (detail=%s)", async (detail) => {
         const observed = await call("wait_for_app", { ...args, detail });
         expect(observed.isError).toBe(true);
@@ -192,7 +269,7 @@ describe("public iOS wait and flow errors", () => {
             signal: "SIGTERM", timedOut,
             error: { code: errorCode, message: privateMessage, path: "/Users/private/executable", spawnargs: privateArgs },
         });
-        fixture.observe = (argv) => fixture.calls.filter((call) => call[1] === "spawn").length === 10 && argv.at(-1) === "system"
+        fixture.observe = (argv) => fixture.calls.filter((call) => call[1] === "spawn").length === 12 && argv.at(-1) === "system"
             ? finalReceipt : result(7, "earlier native output", "earlier observation failed", {
                 signal: "SIGINT", error: { code: "EACCES" },
             });
@@ -207,7 +284,7 @@ describe("public iOS wait and flow errors", () => {
             vi.setSystemTime(0);
             fixture.calls.length = 0;
             const observed = await call("wait_for_app", { ...args, timeoutMs: 51, detail });
-            expect(fixture.calls.filter((argv) => argv[1] === "spawn")).toHaveLength(10);
+            expect(fixture.calls.filter((argv) => argv[1] === "spawn")).toHaveLength(12);
             expect(observed.isError).toBe(true);
             expect(observed.structuredContent).toEqual(expected);
             const evidence = JSON.stringify(observed.structuredContent);

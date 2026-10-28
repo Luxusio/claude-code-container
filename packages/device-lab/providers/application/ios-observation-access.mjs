@@ -163,20 +163,26 @@ export function createIosObservationAccess(ports) {
         const budget = ports.waitBudget(timeoutMs, intervalMs);
         /** @type {Command|null} */ let last = null;
         /** @type {Command|null} */ let observation = null;
+        let observedBy = "pgrep-and-launchctl";
         while (budget.remaining() > 0) {
             observation = null;
-            for (const probe of /** @type {const} */ (["bundle-process", "name-process", "user-services", "gui-services", "system-services"])) {
+            observedBy = "pgrep-and-launchctl";
+            for (const probe of /** @type {const} */ (["bootstrap-services", "bundle-process", "name-process", "user-services", "gui-services", "system-services"])) {
                 const allowance = budget.requestTimeout();
                 if (!allowance) break;
                 const result = ports.simulatorEffect({ kind: "app-probe", target, bundleId, probe, timeoutMs: allowance });
                 last = result.receipt;
-                if (result.kind !== "failed") observation = result.receipt;
+                if (result.kind !== "failed") {
+                    observation = result.receipt;
+                    observedBy = result.observedBy || "pgrep-and-launchctl";
+                }
                 if (budget.remaining() <= 0) break;
                 if (result.kind === "present") return {
                     running: true, pid: result.pid ?? null, stdout: result.receipt.stdout,
                     stderr: result.receipt.stderr, status: result.receipt.status,
                     ...(result.observedBy ? { observedBy: result.observedBy } : {}),
                 };
+                if (probe === "bootstrap-services" && result.kind === "absent") break;
             }
             await budget.pause();
         }
@@ -189,7 +195,7 @@ export function createIosObservationAccess(ports) {
                 ...(typeof last?.timedOut === "boolean" ? { timedOut: last.timedOut } : {}),
             } };
         }
-        return { running: false, timeoutMs: budget.timeoutMs, stdout: String(observation.stdout || "").slice(-512), stderr: String(observation.stderr || "").slice(-512), status: 0, nativeStatus: observation.status, observedBy: "pgrep-and-launchctl" };
+        return { running: false, timeoutMs: budget.timeoutMs, stdout: String(observation.stdout || "").slice(-512), stderr: String(observation.stderr || "").slice(-512), status: 0, nativeStatus: observation.status, observedBy };
     }
     /** @param {Device} device @param {import('../ports/ios-observation-access.mjs').IosAccessDiscovery} [discovery] */
     function automationStatus(device, discovery) {

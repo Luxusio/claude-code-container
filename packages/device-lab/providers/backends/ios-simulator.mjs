@@ -753,6 +753,23 @@ function spawnObservationAppium(executable, port) {
     };
 }
 
+/** @param {string} stdout @param {string} bundleId
+ * @returns {{valid:false}|{valid:true,pid:string|null}} */
+function simulatorBootstrapAppPid(stdout, bundleId) {
+    const lines = stdout.trim().split(/\r?\n/);
+    if (!/^PID[\t ]+Status[\t ]+Label$/.test(lines[0])) return { valid: false };
+    const prefix = `UIKitApplication:${bundleId}`;
+    /** @type {string|null} */
+    let pid = null;
+    for (const line of lines.slice(1)) {
+        const row = /^[\t ]*(-|\d+)[\t ]+(-?\d+)[\t ]+([^\s]+)[\t ]*$/.exec(line);
+        if (!row || !Number.isSafeInteger(Number(row[2])) || (row[1] !== "-" && !Number.isSafeInteger(Number(row[1])))) return { valid: false };
+        if (row[1] === "-" || Number(row[1]) <= 0 || !row[3].startsWith(prefix)) continue;
+        if (/^(?:\[[^\[\]\s]+\])+$/.test(row[3].slice(prefix.length))) pid = row[1];
+    }
+    return { valid: true, pid };
+}
+
 /** @template {import('../ports/ios-observation-access.mjs').IosAccessSimulatorEffect} Effect
  * @param {string|null} xcrun @param {Effect} effect
  * @returns {import('../ports/ios-observation-access.mjs').IosAccessSimulatorResult<Effect>} */
@@ -760,12 +777,27 @@ function performSimulatorEffect(xcrun, effect) {
     const target = effect.target;
     let command;
     if (effect.kind === "app-probe") {
+        const bootstrapProbe = effect.probe === "bootstrap-services";
         const processProbe = effect.probe === "bundle-process" || effect.probe === "name-process";
         const domain = effect.probe === "user-services" ? "user/501" : effect.probe === "gui-services" ? "gui/501" : "system";
         const hint = String(effect.bundleId).split(".").filter(Boolean).at(-1) || String(effect.bundleId);
-        const args = processProbe ? ["simctl", "spawn", target, "pgrep", ...(effect.probe === "name-process" ? ["-i"] : []), "-f", effect.probe === "name-process" ? hint : effect.bundleId]
+        const args = bootstrapProbe ? ["simctl", "spawn", target, "launchctl", "list"]
+            : processProbe ? ["simctl", "spawn", target, "pgrep", ...(effect.probe === "name-process" ? ["-i"] : []), "-f", effect.probe === "name-process" ? hint : effect.bundleId]
             : ["simctl", "spawn", target, "launchctl", "print", domain];
         command = run(xcrun, args, { timeout: effect.timeoutMs });
+        if (bootstrapProbe) {
+            const clean = !command.error && !command.signal && command.status === 0;
+            const table = clean ? simulatorBootstrapAppPid(command.stdout, effect.bundleId) : null;
+            if (table?.valid) return /** @type {import('../ports/ios-observation-access.mjs').IosAccessSimulatorResult<Effect>} */ ({
+                kind: table.pid ? "present" : "absent", receipt: { ...command, stdout: "", stderr: "" },
+                ...(table.pid ? { pid: table.pid } : {}), observedBy: "launchctl-list",
+            });
+            const cause = clean ? "Malformed iOS Simulator launchctl list response"
+                : [command.error?.code, command.error?.message, command.signal ? `signal ${command.signal}` : "", command.status != null ? `exit ${command.status}` : "", command.stderr || command.stdout].filter(Boolean).join(": ");
+            return /** @type {import('../ports/ios-observation-access.mjs').IosAccessSimulatorResult<Effect>} */ ({
+                kind: "failed", receipt: { ...command, stdout: "", stderr: cause || "command failed" },
+            });
+        }
         const clean = !command.error && !command.signal && (command.status === 0 || (processProbe && command.status === 1 && !command.stdout && !command.stderr));
         const present = clean && command.status === 0 && (processProbe ? Boolean(command.stdout.trim()) : String(command.stdout || "").toLowerCase().includes(String(effect.bundleId).toLowerCase()));
         const cause = [command.error?.code, command.error?.message, command.signal ? `signal ${command.signal}` : "", command.status != null ? `exit ${command.status}` : "", command.stderr || command.stdout].filter(Boolean).join(": ");

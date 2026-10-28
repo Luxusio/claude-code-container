@@ -182,8 +182,12 @@ not establish SSH configuration or a guest failure without host evidence.
 The Oct28 run reaches iOS `wait_for_app` after successful start, literal exec,
 screenshot and URL opening. Total probe failure must preserve the last native
 status, signal, errno and explicit timeout through public MCP presentation.
-The focused Mac reproduction timed out in `xcrun`; it does not identify the
-failing probe or certify Safari readiness.
+The focused Mac reproduction timed out in `xcrun`. A subsequent exact-fixture
+native `launchctl list` identifies Safari PID 30323. The provider first parses
+that default-bootstrap list, accepts only a matching UIKit application row with
+a positive safe PID, and treats a clean no-match as authoritative for the sweep.
+Only a failed or malformed list falls back to the legacy probes. Native candidate
+MCP acceptance remains separate from this direct host observation.
 
 For a terminated helper child, `helperPreparation.firstFailure` describes its
 first completed failed SSH/SCP command; `helperPreparation.execution` describes

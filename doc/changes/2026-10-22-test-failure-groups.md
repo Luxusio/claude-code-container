@@ -310,8 +310,12 @@ error from text and status, discarding those fields before the existing MCP
 projection. It now retains the final receipt's signal, errno and explicit
 timeout without copying raw native fields. Probe order, success rules and the
 ten-second wait remain unchanged. The diagnostic Simulator was stopped and
-deleted. A second owned fixture awaits a requested native `launchctl list`
-observation; the failing probe and Safari correction remain unproved.
+deleted. On a second owned fixture, the user's native `launchctl list` output
+identifies Safari PID 30323 with label
+`UIKitApplication:com.apple.mobilesafari[244c][rb-legacy]`. That fixture was also
+stopped and deleted. The default bootstrap query therefore provides a working
+native observation without guest `pgrep` or a hardcoded user domain; the precise
+old probe that exhausted the wait remains untraced.
 
 The helper child's old relative clock began after Node startup. It could run
 past the parent's deadline and lose its final native receipt. It now inherits
@@ -323,13 +327,21 @@ reported as the final cause or as success evidence. Both broker and artifact
 writer independently select the closed fields. Protocol 10 requires the new
 in-memory broker implementation through the existing verified replacement path.
 
-Focused portable verification passes 310 distinct cases: iOS observation and
-failure evidence 92, helper readiness 33, saved evidence 103, broker capability
+Simulator waits now query the default bootstrap list first. A fully valid table
+with the exact UIKit bundle label and positive safe PID proves running; a clean
+absence ends that sweep without legacy substring matches. Only failed or
+malformed lists fall back. Clean table output is omitted, and late results still
+fail the existing deadline check.
+
+Focused portable verification passes 353 distinct cases: iOS observation,
+failure evidence and application composition 135, helper readiness 33, saved evidence 103, broker capability
 checks 71, and 11 selected broker helper cases. The latter use the actual emitted
 Node broker and backend child with private native executables, including startup
 pressure, deadline termination, malformed progress and recovery. Two new iOS
 fixture cases and two new privacy assertions needed test-only corrections; only
-those affected cases reran, with no overlapping pass credit. Package-only emit,
+those affected cases reran, with no overlapping pass credit. After the native
+list observation, only the affected three iOS owners reran; their 135 passes
+replace overlapping earlier iOS evidence in this total. Package-only emit,
 architecture and real-test typechecks, changed MJS syntax and configured broker
 lint pass. The real-test client is outside the configured lint scope.
 
