@@ -21,8 +21,10 @@ prove completion. Late success also fails admission.
 Keep the original shutdown execution receipt, including status 0, separate from
 selected settlement diagnostics. An unconfirmed stop fails without publishing
 `stopped`; it neither erases nor reboots nor automatically deletes the target.
-The broker returns HTTP 502 with `ios-simulator-shutdown-not-confirmed` and,
-after native execution, `recoveryRequired:true`. An allowance exhausted before
+After a successful native shutdown whose settlement remains unconfirmed, the
+broker returns HTTP 502 with `ios-simulator-shutdown-not-confirmed` and
+`recoveryRequired:true`. A native shutdown command failure retains the existing
+`provider-command-failed` response without settlement facts. An allowance exhausted before
 execution reports `invoked:false` without claiming a new partial native effect.
 The separate `shutdown` facts contain completion,
 attempt count, the last allowlisted state and timeout/observation-failure reason;
