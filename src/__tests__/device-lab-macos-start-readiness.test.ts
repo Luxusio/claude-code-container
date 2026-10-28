@@ -7,6 +7,11 @@ import { prepareMacosGuestHelper, waitForMacosGuestHelper } from "@ccc/device-la
 import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 
 const refused = { ok: false, error: "macos-helper-scp-failed", command: { status: 255, stderr: "ssh: connect to host 10.0.0.2 port 22: Connection refused" } };
+const authenticationClosureCases = [
+    { name: "SCP authentication refusal before its closed-connection suffix", stdout: "", stderr: "PRIVATE-USER@PRIVATE-HOST: Permission denied (publickey,password).\r\nscp: Connection closed\r\n", timedOut: false },
+    { name: "stdout authentication refusal with a stderr closed-connection suffix", stdout: "Permission denied (publickey,password). PRIVATE-AUTH-DETAIL", stderr: "scp: Connection closed\r\n", timedOut: false },
+    { name: "authentication refusal accompanied by a native timeout", stdout: "", stderr: "Permission denied (publickey,password).\r\nscp: Connection closed\r\n", timedOut: true },
+];
 describe("macOS start helper provisioning", () => {
     it.each([
         ["SSH connection refusal", refused],
@@ -75,6 +80,18 @@ describe("macOS start helper provisioning", () => {
             expect(provision).toHaveBeenCalledTimes(1);
         }
     });
+    it.each(authenticationClosureCases)("preserves legacy $name without retry or sleep", async ({ stdout, stderr, timedOut }) => {
+        let clock = 0;
+        const failure = { ok: false, error: "macos-helper-scp-failed", command: { status: 255, signal: null, stdout, stderr,
+            ...(timedOut ? { error: { code: "ETIMEDOUT" } } : {}) } };
+        const provision = vi.fn(() => failure), delay = vi.fn(async (milliseconds: number) => { clock += milliseconds; });
+        const device = { id: "legacy-authentication-closed" };
+        const result = await waitForMacosGuestHelper(device, 1000, { provision, now: () => clock, delay });
+        expect(result).toBe(failure);
+        expect(provision.mock.calls).toEqual([[device, { deadlineAt: 1000 }]]);
+        expect(delay).not.toHaveBeenCalled();
+        expect(clock).toBe(0);
+    });
     it("rejects provisioning success that arrives after its deadline", async () => {
         let clock = 0;
         const observed = await waitForMacosGuestHelper({}, 1000, {
@@ -120,6 +137,57 @@ describe("macOS start helper provisioning", () => {
 });
 
 describe("broker relative macOS guest helper adapter", () => {
+    it.each(authenticationClosureCases)("reports $name as authentication after one native attempt with readiness enabled", async ({ stdout, stderr, timedOut }) => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-macos-authentication-closed-")), restoreEnvironment = isolateDeviceLabTestEnvironment(home);
+        let monotonic = 0;
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+        const discovery = vi.spyOn(commands, "commandPath").mockImplementation(tool => `/owned/${tool}`);
+        const native = vi.spyOn(commands, "runWithTimeout").mockReturnValue({ status: 255, signal: null, stdout, stderr, pid: 0,
+            output: [null, stdout, stderr], ...(timedOut ? { error: Object.assign(new Error("PRIVATE-NATIVE-ERROR"), { code: "ETIMEDOUT" }) } : {}) });
+        const onFirstFailure = vi.fn();
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const pacing = vi.spyOn(globalThis, "setTimeout");
+        try {
+            const pending = prepareMacosGuestHelper({ id: "native-authentication-closed", ssh: { host: "192.0.2.4", user: "guest", password: "PRIVATE-PASSWORD" } }, 1000, true,
+                { onFirstFailure });
+            // Advance the original budget before draining a mistakenly scheduled retry.
+            // A permanent refusal must already have completed without using this timer.
+            monotonic = 1000;
+            await vi.runAllTimersAsync();
+            const result = await pending;
+            expect(result).toMatchObject({ ok: false, error: "macos-helper-scp-failed", execution: { status: 255, signal: null, timedOut }, helper: { status: "failed" } });
+            expect(native).toHaveBeenCalledTimes(1);
+            expect(native.mock.calls[0][0]).toBe("/owned/scp");
+            expect(pacing).not.toHaveBeenCalled();
+            expect(onFirstFailure.mock.calls).toEqual([[{ provider: "scp", execution: { status: 255, signal: null, timedOut }, connection: "authentication" }]]);
+            expect(JSON.stringify(result) + JSON.stringify(onFirstFailure.mock.calls)).not.toContain("PRIVATE");
+        } finally {
+            pacing.mockRestore(); vi.useRealTimers(); clock.mockRestore(); discovery.mockRestore(); native.mockRestore();
+            restoreEnvironment(); rmSync(home, { recursive: true, force: true });
+        }
+    });
+
+    it.each([
+        { provider: "scp", stderr: 'scp: dest open "/tmp/PRIVATE-PATH": Permission denied', status: 1 },
+        { provider: "ssh", stderr: "chmod: /tmp/PRIVATE-PATH: Permission denied", status: 1 },
+    ])("keeps plain remote $provider filesystem permission denial distinct from SSH authentication", async ({ provider, stderr, status }) => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-macos-filesystem-denied-")), restoreEnvironment = isolateDeviceLabTestEnvironment(home);
+        const discovery = vi.spyOn(commands, "commandPath").mockImplementation(tool => `/owned/${tool}`);
+        const native = vi.spyOn(commands, "runWithTimeout").mockImplementation(executable => ({ status: executable.endsWith(`/${provider}`) ? status : 0,
+            signal: null, stdout: "", stderr: executable.endsWith(`/${provider}`) ? stderr : "", pid: 0, output: [] }));
+        const onFirstFailure = vi.fn(), pacing = vi.spyOn(globalThis, "setTimeout");
+        try {
+            const result = await prepareMacosGuestHelper({ id: "filesystem-permission-denied", ssh: { host: "192.0.2.4", user: "guest" } }, 1000, true, { onFirstFailure });
+            expect(result).toMatchObject({ ok: false, error: provider === "scp" ? "macos-helper-scp-failed" : "macos-helper-chmod-failed" });
+            expect(native).toHaveBeenCalledTimes(provider === "scp" ? 1 : 2);
+            expect(pacing).not.toHaveBeenCalled();
+            expect(onFirstFailure.mock.calls).toEqual([[{ provider, execution: { status, signal: null, timedOut: false }, connection: "other" }]]);
+            expect(JSON.stringify(result) + JSON.stringify(onFirstFailure.mock.calls)).not.toContain("PRIVATE");
+        } finally {
+            pacing.mockRestore(); discovery.mockRestore(); native.mockRestore(); restoreEnvironment(); rmSync(home, { recursive: true, force: true });
+        }
+    });
+
     it.each(["0", "-1", "1.5", "PRIVATE-DEADLINE", "1".repeat(25), 1000])("refuses invalid or expired inherited deadline %s before native admission", async deadlineNs => {
         const discovery = vi.spyOn(commands, "commandPath").mockImplementation(() => { throw Error("expired discovery"); });
         const native = vi.spyOn(commands, "runWithTimeout").mockImplementation(() => { throw Error("expired native call"); });

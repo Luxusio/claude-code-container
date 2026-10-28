@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { toolInputError } from "../../device-lab-mcp/src/tool-arguments.mjs";
 import { realMcpToolRequestTimeoutMs } from "../../scripts/real-tests/device-lab-mcp-client.ts";
 import { repoRoot } from "../../scripts/real-tests/helpers.ts";
+import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
@@ -15,11 +16,14 @@ import {
     sourceImage,
 } from "../../scripts/real-tests/macos-vm-e2e.ts";
 
-const macosFixture = vi.hoisted(() => ({ active: false, callTool: null as any, instances: new Map<string, string>(), stateWrites: [] as any[] }));
+const macosFixture = vi.hoisted(() => ({ active: false, callTool: null as any, instances: new Map<string, string>(), stateWrites: [] as any[], commandCalls: [] as any[][] }));
 vi.mock("child_process", async (original) => {
     const actual = await original<typeof import("child_process")>();
-    return { ...actual, spawnSync: (...args: any[]) => macosFixture.active
-        ? { status: 0, stdout: "/fixture/tart\n", stderr: "" } : actual.spawnSync.apply(null, args as any) };
+    return { ...actual, spawnSync: (...args: any[]) => {
+        if (!macosFixture.active) return actual.spawnSync.apply(null, args as any);
+        macosFixture.commandCalls.push(args);
+        return { status: 0, stdout: "/fixture/tart\n", stderr: "" };
+    } };
 });
 vi.mock("../../scripts/real-tests/device-lab-mcp-client.ts", async (original) => {
     const actual = await original<typeof import("../../scripts/real-tests/device-lab-mcp-client.ts")>();
@@ -37,7 +41,7 @@ vi.mock("#device-lab/providers/state/macos-state.mjs", async (original) => {
     return { ...actual, readMacosDevices: () => macosFixture.active ? [] : actual.readMacosDevices(),
         writeMacosDevices: (devices: any) => macosFixture.active ? macosFixture.stateWrites.push(devices) : actual.writeMacosDevices(devices) };
 });
-afterEach(() => { macosFixture.active = false; macosFixture.callTool = null; macosFixture.instances.clear(); macosFixture.stateWrites.length = 0; });
+afterEach(() => { macosFixture.active = false; macosFixture.callTool = null; macosFixture.instances.clear(); macosFixture.stateWrites.length = 0; macosFixture.commandCalls.length = 0; });
 
 const level = Number(process.env.CCC_TEST_LEVEL || "0");
 const cap = macosVmE2ECapability(level);
@@ -45,6 +49,32 @@ const destructiveMacosE2EWillRun = level >= 3 && cap.available;
 const title = cap.available
     ? `creates, boots, observes, stops, and deletes a real macOS VM through device-lab MCP Tart backend (${cap.source})`
     : `skips macOS VM Tart E2E (${cap.reason})`;
+
+function withPrivateSshEnvironment<T>(environment: Record<string, string>, operation: (home: string) => T): T {
+    const home = mkdtempSync(join(tmpdir(), "ccc-macos-e2e-ssh-home-"));
+    const restoreEnvironment = isolateDeviceLabTestEnvironment(home);
+    const previousPath = process.env.PATH;
+    try {
+        const sshKeygen = join(home, "ssh-keygen");
+        writeFileSync(sshKeygen, `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-f" ]; then shift; key="$1"; fi
+  shift
+done
+printf 'private-key' > "$key"
+printf 'public-key' > "$key.pub"
+`);
+        chmodSync(sshKeygen, 0o700);
+        process.env.PATH = home;
+        Object.assign(process.env, environment);
+        return operation(home);
+    } finally {
+        restoreEnvironment();
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        rmSync(home, { recursive: true, force: true });
+    }
+}
 
 describe("macOS VM Tart E2E source image auto-selection", () => {
     it("parses Tart list output variants and selects a single safe base image", () => {
@@ -148,33 +178,8 @@ describe("macOS VM Tart E2E source image auto-selection", () => {
     });
 
     it.skipIf(process.platform === "win32")("uses the project name as the default SSH user and generates an owner-scoped key", () => {
-        const previousHome = process.env.HOME;
-        const previousPath = process.env.PATH;
-        const previousUser = process.env.CCC_REAL_MACOS_VM_SSH_USER;
-        const previousKey = process.env.CCC_REAL_MACOS_VM_SSH_KEY_PATH;
-        const previousCompatKey = process.env.CCC_REAL_TART_SSH_KEY_PATH;
-        const homeDir = mkdtempSync(join(tmpdir(), "ccc-macos-e2e-home-"));
-        const binDir = mkdtempSync(join(tmpdir(), "ccc-macos-e2e-bin-"));
-        const sshKeygen = join(binDir, "ssh-keygen");
-        try {
-            writeFileSync(sshKeygen, `#!/bin/sh
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-f" ]; then shift; key="$1"; fi
-  shift
-done
-printf 'private-key' > "$key"
-printf 'public-key' > "$key.pub"
-exit 0
-`);
-            chmodSync(sshKeygen, 0o700);
-            process.env.HOME = homeDir;
-            process.env.PATH = binDir;
-            delete process.env.CCC_REAL_MACOS_VM_SSH_USER;
-            delete process.env.CCC_REAL_MACOS_VM_SSH_KEY_PATH;
-            delete process.env.CCC_REAL_TART_SSH_KEY_PATH;
-
+        withPrivateSshEnvironment({}, () => {
             const ssh = sshConfig();
-
             expect(ssh).toEqual(expect.objectContaining({
                 available: true,
                 sshUser: "claudecodecontainer",
@@ -183,20 +188,78 @@ exit 0
             expect(ssh.sshKeyPath).toContain(join(".ccc", "devices", "real-tests", "macos-vm-ssh", "id_ed25519"));
             expect(readFileSync(ssh.sshKeyPath, "utf-8")).toBe("private-key");
             expect(readFileSync(`${ssh.sshKeyPath}.pub`, "utf-8")).toBe("public-key");
-        } finally {
-            if (previousHome === undefined) delete process.env.HOME;
-            else process.env.HOME = previousHome;
-            if (previousPath === undefined) delete process.env.PATH;
-            else process.env.PATH = previousPath;
-            if (previousUser === undefined) delete process.env.CCC_REAL_MACOS_VM_SSH_USER;
-            else process.env.CCC_REAL_MACOS_VM_SSH_USER = previousUser;
-            if (previousKey === undefined) delete process.env.CCC_REAL_MACOS_VM_SSH_KEY_PATH;
-            else process.env.CCC_REAL_MACOS_VM_SSH_KEY_PATH = previousKey;
-            if (previousCompatKey === undefined) delete process.env.CCC_REAL_TART_SSH_KEY_PATH;
-            else process.env.CCC_REAL_TART_SSH_KEY_PATH = previousCompatKey;
-            rmSync(homeDir, { recursive: true, force: true });
-            rmSync(binDir, { recursive: true, force: true });
-        }
+        });
+    });
+});
+
+describe.skipIf(process.platform === "win32")("macOS E2E SSH image policy", () => {
+    it.each([
+        "ccc-macos-base",
+        "ghcr.io/cirruslabs/macos-sonoma-base:latest",
+        "ghcr.io/cirruslabs/macos-tahoe-base@sha256:fixture",
+        "macos-sonoma-base",
+    ])("keeps the existing image user without generating a host key for %s", (image) => {
+        withPrivateSshEnvironment({}, (home) => {
+            const ssh = sshConfig(image);
+            expect(ssh).toEqual(expect.objectContaining({ available: true, sshUser: "admin", sshPort: 22 }));
+            for (const key of ["sshKeyPath", "generatedSshKeyPath", "generatedSshPublicKeyPath", "sshKeyGenerationError", "sshPassword", "password"]) {
+                expect(ssh).not.toHaveProperty(key);
+            }
+            expect(existsSync(join(home, ".ccc"))).toBe(false);
+        });
+    });
+
+    it.each([
+        { label: "primary SSH settings before compatibility settings", environment: {
+            CCC_REAL_MACOS_VM_SSH_USER: "primary-user", CCC_REAL_TART_SSH_USER: "compat-user",
+            CCC_REAL_MACOS_VM_SSH_HOST: "primary-host", CCC_REAL_TART_SSH_HOST: "compat-host",
+            CCC_REAL_MACOS_VM_SSH_PORT: "2201", CCC_REAL_TART_SSH_PORT: "2202",
+            CCC_REAL_MACOS_VM_SSH_KEY_PATH: "/fixture/primary-key", CCC_REAL_TART_SSH_KEY_PATH: "/fixture/compat-key",
+            CCC_REAL_MACOS_VM_DEFAULT_SSH_USER: "default-user",
+        }, expected: { sshUser: "primary-user", sshHost: "primary-host", sshPort: 2201, sshKeyPath: "/fixture/primary-key" } },
+        { label: "compatibility SSH settings before the default user", environment: {
+            CCC_REAL_TART_SSH_USER: "compat-user", CCC_REAL_TART_SSH_HOST: "compat-host",
+            CCC_REAL_TART_SSH_PORT: "2202", CCC_REAL_TART_SSH_KEY_PATH: "/fixture/compat-key",
+            CCC_REAL_MACOS_VM_DEFAULT_SSH_USER: "default-user",
+        }, expected: { sshUser: "compat-user", sshHost: "compat-host", sshPort: 2202, sshKeyPath: "/fixture/compat-key" } },
+    ])("preserves $label on a recognized image", ({ environment, expected }) => {
+        withPrivateSshEnvironment(environment as Record<string, string>, (home) => {
+            expect(sshConfig("ccc-macos-base")).toEqual(expect.objectContaining({ available: true, ...expected }));
+            expect(existsSync(join(home, ".ccc"))).toBe(false);
+        });
+    });
+
+    it.each([
+        ["CCC_REAL_MACOS_VM_SSH_USER", "selected-user", { sshUser: "selected-user" }],
+        ["CCC_REAL_TART_SSH_USER", "compat-user", { sshUser: "compat-user" }],
+        ["CCC_REAL_MACOS_VM_SSH_HOST", "selected-host", { sshHost: "selected-host", sshUser: "claudecodecontainer" }],
+        ["CCC_REAL_TART_SSH_HOST", "compat-host", { sshHost: "compat-host", sshUser: "claudecodecontainer" }],
+        ["CCC_REAL_MACOS_VM_SSH_PORT", "2201", { sshPort: 2201, sshUser: "claudecodecontainer" }],
+        ["CCC_REAL_TART_SSH_PORT", "2202", { sshPort: 2202, sshUser: "claudecodecontainer" }],
+        ["CCC_REAL_MACOS_VM_DEFAULT_SSH_USER", "default-user", { sshUser: "default-user" }],
+    ] as const)("retains the explicit %s override and legacy key generation", (key, value, expected) => {
+        withPrivateSshEnvironment({ [key]: value }, () => {
+            const ssh = sshConfig("ccc-macos-base");
+            expect(ssh).toEqual(expect.objectContaining({ available: true, generatedSshKey: true, ...expected }));
+            expect(readFileSync(ssh.sshKeyPath, "utf8")).toBe("private-key");
+        });
+    });
+
+    it.each(["CCC_REAL_MACOS_VM_SSH_KEY_PATH", "CCC_REAL_TART_SSH_KEY_PATH"])("retains an explicit %s without generating another key", (key) => {
+        withPrivateSshEnvironment({ [key]: "/fixture/configured-key" }, (home) => {
+            expect(sshConfig("ccc-macos-base")).toEqual(expect.objectContaining({
+                available: true, sshUser: "claudecodecontainer", sshKeyPath: "/fixture/configured-key",
+            }));
+            expect(existsSync(join(home, ".ccc"))).toBe(false);
+        });
+    });
+
+    it("keeps the project user and generated key for an unrecognized custom image", () => {
+        withPrivateSshEnvironment({}, () => {
+            const ssh = sshConfig("custom-private-macos-image");
+            expect(ssh).toEqual(expect.objectContaining({ available: true, sshUser: "claudecodecontainer", generatedSshKey: true }));
+            expect(readFileSync(ssh.sshKeyPath, "utf8")).toBe("private-key");
+        });
     });
 });
 
@@ -234,10 +297,10 @@ describe.runIf(level >= 2)("level 2 real macOS VM Tart E2E", () => {
 
 
 describe("macOS E2E returned fixture identity", () => {
-    async function fixtureRun(failClone = false, options: { sshHost?: string | null; bootTimeoutEnv?: string; bootTimeoutMs?: number; failUpload?: boolean } = {}) {
+    async function fixtureRun(failClone = false, options: { sshHost?: string | null; bootTimeoutEnv?: string; bootTimeoutMs?: number; failUpload?: boolean; imageDefaults?: boolean; helperUser?: string } = {}) {
         const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-        const envKeys = ["CCC_REAL_MACOS_VM_SOURCE_IMAGE", "CCC_REAL_MACOS_VM_SSH_USER", "CCC_REAL_MACOS_VM_SSH_HOST", "CCC_REAL_TART_SSH_HOST", "CCC_REAL_MACOS_VM_SSH_KEY_PATH", "CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS"] as const;
-        const previous = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+        const home = mkdtempSync(join(tmpdir(), "ccc-macos-e2e-run-home-"));
+        const restoreEnvironment = isolateDeviceLabTestEnvironment(home);
         const calls: Array<{ tool: string; args: any }> = [];
         const devices = new Map<string, any>();
         const transfers = new Map<string, string>();
@@ -253,7 +316,7 @@ describe("macOS E2E returned fixture identity", () => {
                 expect(args).not.toHaveProperty("deviceId");
                 const id = ids[createCount++];
                 if (failClone && args.sourceDeviceId) throw new Error("fixture-clone-failed");
-                const device = { deviceId: id, name: args.name, status: "stopped", provider: "tart", providerInstance: `native-${id}`, helper: { ssh: { host: "fixture-host", user: "fixture-user" } } };
+                const device = { deviceId: id, name: args.name, status: "stopped", provider: "tart", providerInstance: `native-${id}`, helper: { ssh: { host: "fixture-host", user: options.helperUser || (options.imageDefaults ? "admin" : "fixture-user") } } };
                 devices.set(id, device); macosFixture.instances.set(device.providerInstance, "stopped");
                 return reply({ ok: true, operation: args.sourceDeviceId ? "base-image-clone" : "create", device });
             }
@@ -296,23 +359,45 @@ describe("macOS E2E returned fixture identity", () => {
         };
         try {
             Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
-            process.env.CCC_REAL_MACOS_VM_SOURCE_IMAGE = "registry/base";
-            process.env.CCC_REAL_MACOS_VM_SSH_USER = "fixture-user";
-            if (options.sshHost === null) delete process.env.CCC_REAL_MACOS_VM_SSH_HOST;
-            else process.env.CCC_REAL_MACOS_VM_SSH_HOST = options.sshHost ?? "fixture-host";
-            delete process.env.CCC_REAL_TART_SSH_HOST;
-            process.env.CCC_REAL_MACOS_VM_SSH_KEY_PATH = "/fixture/id_ed25519";
+            process.env.CCC_REAL_MACOS_VM_SOURCE_IMAGE = options.imageDefaults ? "ccc-macos-base" : "registry/base";
+            if (!options.imageDefaults) {
+                process.env.CCC_REAL_MACOS_VM_SSH_USER = "fixture-user";
+                if (options.sshHost !== null) process.env.CCC_REAL_MACOS_VM_SSH_HOST = options.sshHost ?? "fixture-host";
+                process.env.CCC_REAL_MACOS_VM_SSH_KEY_PATH = "/fixture/id_ed25519";
+            }
             if (options.bootTimeoutEnv === undefined) delete process.env.CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS;
             else process.env.CCC_REAL_MACOS_VM_BOOT_TIMEOUT_MS = options.bootTimeoutEnv;
             const result = await runMacosVmE2E({ level: 2, imageTools: true, snapshot: true, bootTimeoutMs: options.bootTimeoutMs });
-            return { result, calls, devices, ids };
+            return { result, calls, devices, ids, generatedKeyDirectoryExists: existsSync(join(home, ".ccc", "devices", "real-tests", "macos-vm-ssh")) };
         } catch (error) { Object.assign(error as object, { calls, devices, ids }); throw error; }
         finally {
             Object.defineProperty(process, "platform", platform);
-            for (const key of envKeys) if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+            restoreEnvironment();
+            rmSync(home, { recursive: true, force: true });
             macosFixture.active = false;
         }
     }
+    it("omits recognized-image SSH overrides while exercising guest controls with the policy user", async () => {
+        const { result, calls, devices, generatedKeyDirectoryExists } = await fixtureRun(false, { imageDefaults: true });
+        const create = calls.find(call => call.tool === "create_macos_vm")!.args;
+        expect(create.image).toBe("ccc-macos-base");
+        expect(create).not.toHaveProperty("ssh");
+        expect(result).toMatchObject({ status: "PASS", guest: { exercised: true, sshUser: "admin", sshKeyPath: null, generatedSshPublicKeyPath: null, uploadDownloaded: true } });
+        expect(calls.find(call => call.tool === "start")!.args.waitForBoot).toBe(true);
+        for (const tool of ["exec", "upload", "download", "screenshot", "click", "key", "type", "scroll", "window_list", "cursor_position", "ui", "record_video"]) {
+            expect(calls.some(call => call.tool === tool), `${tool} guest control remains enabled`).toBe(true);
+        }
+        expect(macosFixture.commandCalls.some(call => call[0] === "ssh-keygen" || call[1]?.includes("command -v ssh-keygen"))).toBe(false);
+        expect(generatedKeyDirectoryExists).toBe(false);
+        expect(devices.size).toBe(0);
+    });
+    it("still rejects a guest reporting a different user from the recognized image policy", async () => {
+        const error = await fixtureRun(false, { imageDefaults: true, helperUser: "unexpected-guest-user" }).catch(error => error);
+        expect(error).toMatchObject({ actual: "unexpected-guest-user", expected: "admin" });
+        expect(error.calls.filter((call: any) => call.tool === "stop").map((call: any) => call.args.deviceId)).toEqual([error.ids[0]]);
+        expect(error.calls.filter((call: any) => call.tool === "delete").map((call: any) => call.args.deviceId)).toEqual([error.ids[0]]);
+        expect(error.devices.size).toBe(0);
+    });
     it("uses returned IDs for guest controls, snapshots, image create, clone and deletion", async () => {
         const { result, calls, devices, ids } = await fixtureRun();
         expect(result.deviceId).toBe(ids[0]);

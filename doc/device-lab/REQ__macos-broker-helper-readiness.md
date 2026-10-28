@@ -53,6 +53,14 @@ Retain the available observation on failed preparation whether the child was
 terminated, returned a failed result normally, or completed too late for final
 admission. Successful admitted preparation omits earlier `firstFailure` data.
 
+Derived retry correction: explicit SSH authentication failures take precedence
+over generic connection-closure text in the same native receipt. OpenSSH SCP
+may append `Connection closed` after an authentication denial. Classify that
+mixed result as `authentication` and do not retry it as a transient connection
+failure. A bare remote filesystem permission error is not sufficient to infer
+authentication. Preserve existing deadlines, command arguments and other retry
+rules; this correction does not establish the saved Mac failure's credentials.
+
 The wire response reports admission or operation-lock budget exhaustion as HTTP
 504 with `macos-start-budget-exhausted`. A partial start or failed helper
 preparation reports HTTP 502: ordinary partial failures use

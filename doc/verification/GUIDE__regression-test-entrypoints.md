@@ -196,3 +196,19 @@ deadline charges child startup and imports within the existing allowance.
 Protocol 10 requires this in-memory broker correction and the bounded progress
 observation; it uses the existing verified replacement path. Portable tests
 cannot certify actual guest SSH, helper readiness or the isolated Mac broker.
+
+The Oct28 11:34:40 saved run passes Safari observation and reaches stop after
+recording and the final screenshot. Its native inventory still reports `Booted`
+despite a returned stopped record; reset was not reached. Subsequent exact-owned
+standalone stop cycles through both the installed broker and the checkout's
+isolated broker report native `Shutdown`. Those cycles do not reproduce or
+explain the full scenario's failure. The diagnostic fixture was then deleted.
+
+For recognized Tart images without explicit real-test SSH settings, retain the
+existing product SSH defaults instead of supplying an unrelated generated host
+key. Keep guest checks enabled. Explicit overrides and custom images preserve
+their existing behavior; see [the real-test SSH contract](../device-lab/REQ__macos-real-test-ssh.md).
+An explicit SSH authentication denial takes precedence over trailing SCP
+`Connection closed` text and is not transient. A saved `closed` category alone
+does not establish authentication failure. Parent child-timeout execution facts
+also do not establish the final native SCP/SSH result.

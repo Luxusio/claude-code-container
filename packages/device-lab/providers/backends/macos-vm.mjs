@@ -948,6 +948,11 @@ export async function waitForMacosGuestHelper(device, deadlineAt, {
     return waitForMacosGuestHelperWithinBudget({remainingMs:() => deadlineAt - now()},() => provision(device,{deadlineAt}),delay);
 }
 
+/** @param {string} diagnostic */
+function macosSshAuthenticationFailed(diagnostic) {
+    return /permission denied\s*\([^\r\n)]*(?:publickey|password|keyboard-interactive)|authentication failed|too many authentication failures|no supported authentication methods/i.test(diagnostic);
+}
+
 /** @typedef {{provider:"ssh"|"scp",execution:{status:number|null,signal:string|null,timedOut:boolean},connection:"refused"|"reset"|"closed"|"timeout"|"unreachable"|"authentication"|"other"}} MacosHelperFirstFailure */
 
 /** Internal broker leaf: inherited or relative allowance, no device lock or state publication.
@@ -976,12 +981,12 @@ export async function prepareMacosGuestHelper(device, allowanceMs, waitForReady 
             const diagnostic = `${typeof command.stderr === "string" ? command.stderr : ""}\n${typeof command.stdout === "string" ? command.stdout : ""}`;
             const timedOut = command.error?.code === "ETIMEDOUT";
             /** @type {MacosHelperFirstFailure["connection"]} */
-            const connection = timedOut || /connection timed out|operation timed out/i.test(diagnostic) ? "timeout"
-                : /connection refused/i.test(diagnostic) ? "refused"
-                    : /connection reset/i.test(diagnostic) ? "reset"
-                        : /connection closed/i.test(diagnostic) ? "closed"
-                            : /no route to host|network is unreachable/i.test(diagnostic) ? "unreachable"
-                                : /permission denied\s*\([^\r\n)]*(?:publickey|password|keyboard-interactive)|authentication failed|too many authentication failures|no supported authentication methods/i.test(diagnostic) ? "authentication" : "other";
+            const connection = macosSshAuthenticationFailed(diagnostic) ? "authentication"
+                : timedOut || /connection timed out|operation timed out/i.test(diagnostic) ? "timeout"
+                    : /connection refused/i.test(diagnostic) ? "refused"
+                        : /connection reset/i.test(diagnostic) ? "reset"
+                            : /connection closed/i.test(diagnostic) ? "closed"
+                                : /no route to host|network is unreachable/i.test(diagnostic) ? "unreachable" : "other";
             try {
                 options.onFirstFailure({ provider: result.error === "macos-helper-scp-failed" ? "scp" : "ssh",
                     execution: { status: Number.isSafeInteger(command.status) && Number(command.status) >= 0 ? command.status : null,
@@ -1020,9 +1025,11 @@ async function waitForMacosGuestHelperWithinBudget(budget, provision, delay = sl
         provision,
         retryable: (result) => {
             const command = result.command;
+            const diagnostic = `${command?.stderr || ""}\n${command?.stdout || ""}`;
             return ["macos-helper-scp-failed", "macos-helper-chmod-failed"].includes(result.error)
+                && !macosSshAuthenticationFailed(diagnostic)
                 && (command?.error?.code === "ETIMEDOUT"
-                    || /connection (?:refused|reset|closed)|connection timed out|operation timed out|no route to host|network is unreachable/i.test(`${command?.stderr || ""}\n${command?.stdout || ""}`));
+                    || /connection (?:refused|reset|closed)|connection timed out|operation timed out|no route to host|network is unreachable/i.test(diagnostic));
         },
         delay,
     }, preserveLateFailure);

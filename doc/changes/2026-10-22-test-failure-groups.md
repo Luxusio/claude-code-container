@@ -357,6 +357,28 @@ Actual candidate Safari observation and guest SSH/helper acceptance remain pendi
 No full build, full unit suite, full Level 3 rerun, global broker replacement or
 guest credential change was performed by the coordinator.
 
+## Oct28 11:34:40 native follow-up
+
+The saved collector has 86 passes and three failures. Safari observation now
+passes. The iOS scenario fails its native `Shutdown` assertion immediately after
+stop, before reset. Two subsequent exact-owned standalone stop cycles, including
+the checkout broker on port 17374, return native `Shutdown`; the fixture was
+deleted afterward. The full scenario remains unresolved.
+
+Both Tart failures time out during helper preparation and retain an initial SCP
+connection closure. Source inspection identifies two independent corrections:
+explicit authentication denial now wins over trailing closure text and stops
+transient retries; recognized images now retain their existing product SSH
+defaults instead of receiving a project user and uninstalled local key. Explicit
+real-test overrides and custom-image behavior remain unchanged. Guest checks
+stay enabled. Neither correction establishes the historical guest's credentials
+or proves native guest acceptance.
+
+Focused portable checks pass 75 cases across the two affected owners, with one
+native-only case skipped. Real-test TypeScript and changed backend syntax pass.
+No full build, unit suite or Level 3 run was repeated by the coordinator. The
+current iOS scenario alone was requested on the host using the existing build.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

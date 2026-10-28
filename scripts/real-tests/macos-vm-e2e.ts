@@ -4,6 +4,7 @@ import { randomBytes } from "crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { macosSshConfig } from "#device-lab/providers/domain/lifecycle/macos-vm-lifecycle.mjs";
 import { readMacosDevices, writeMacosDevices } from "#device-lab/providers/state/macos-state.mjs";
 import { lifecycleDevice, parseContractToolPayload, parseToolPayload, withDeviceLabMcp } from "./device-lab-mcp-client.ts";
 import { providerMcpSessionOptions } from "./provider-mcp-matrix.ts";
@@ -116,16 +117,21 @@ function defaultSshUser() {
     return "ccc";
 }
 
-export function sshConfig() {
+export function sshConfig(image?: string) {
     const explicitSshUser = ((process.env.CCC_REAL_MACOS_VM_SSH_USER || "").trim() || (process.env.CCC_REAL_TART_SSH_USER || "").trim());
     const sshHost = ((process.env.CCC_REAL_MACOS_VM_SSH_HOST || "").trim() || (process.env.CCC_REAL_TART_SSH_HOST || "").trim());
     const sshPort = Number(process.env.CCC_REAL_MACOS_VM_SSH_PORT || process.env.CCC_REAL_TART_SSH_PORT || 22);
     const configuredSshKeyPath = ((process.env.CCC_REAL_MACOS_VM_SSH_KEY_PATH || "").trim() || (process.env.CCC_REAL_TART_SSH_KEY_PATH || "").trim());
-    const sshUser = explicitSshUser || defaultSshUser();
-    const autoKey = !configuredSshKeyPath ? ensureAutoSshKey() : null;
+    const explicitSshConfig = explicitSshUser || sshHost || configuredSshKeyPath ||
+        process.env.CCC_REAL_MACOS_VM_SSH_PORT || process.env.CCC_REAL_TART_SSH_PORT ||
+        (process.env.CCC_REAL_MACOS_VM_DEFAULT_SSH_USER || "").trim();
+    const imageSshDefaults = !explicitSshConfig ? macosSshConfig({ provider: "tart", image }) : null;
+    const sshUser = imageSshDefaults?.user || explicitSshUser || defaultSshUser();
+    const autoKey = !imageSshDefaults && !configuredSshKeyPath ? ensureAutoSshKey() : null;
     const sshKeyPath = configuredSshKeyPath || autoKey?.keyPath || "";
     return {
         available: true,
+        ...(imageSshDefaults ? { imageDefaults: true } : {}),
         sshUser,
         ...(sshHost ? { sshHost } : {}),
         sshPort: Number.isFinite(sshPort) && sshPort > 0 ? sshPort : 22,
@@ -179,7 +185,7 @@ export async function runMacosVmE2E(options: any = {}) {
     let created = false;
     let stopped = false;
     let deleted = false;
-    const ssh = sshConfig();
+    const ssh = sshConfig(cap.source);
     const managedProviderInstances = [];
     const disposableDeviceIds = [];
     const timings = {};
@@ -191,7 +197,7 @@ export async function runMacosVmE2E(options: any = {}) {
                 name,
                 image: cap.source,
                 provider: "tart",
-                ...(ssh.available ? {
+                ...(ssh.available && !ssh.imageDefaults ? {
                     ssh: {
                         user: ssh.sshUser,
                         port: ssh.sshPort,
