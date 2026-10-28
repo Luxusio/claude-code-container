@@ -181,7 +181,13 @@ export function createIosObservationAccess(ports) {
             await budget.pause();
         }
         if (!observation) {
-            return { error: { stderr: ports.diagnostic(`Unable to observe iOS Simulator app: ${last?.stderr || "No simulator app observation completed"}`, 4096), status: last?.status ?? null } };
+            return { error: {
+                stderr: ports.diagnostic(`Unable to observe iOS Simulator app: ${last?.stderr || "No simulator app observation completed"}`, 4096),
+                status: last?.status ?? null,
+                ...(last?.signal !== undefined ? { signal: last.signal } : {}),
+                ...(last?.error?.code !== undefined ? { error: { code: last.error.code } } : {}),
+                ...(typeof last?.timedOut === "boolean" ? { timedOut: last.timedOut } : {}),
+            } };
         }
         return { running: false, timeoutMs: budget.timeoutMs, stdout: String(observation.stdout || "").slice(-512), stderr: String(observation.stderr || "").slice(-512), status: 0, nativeStatus: observation.status, observedBy: "pgrep-and-launchctl" };
     }

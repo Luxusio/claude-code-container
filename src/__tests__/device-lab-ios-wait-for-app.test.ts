@@ -181,6 +181,44 @@ describe("public iOS wait and flow errors", () => {
         expect(fixture.calls.some((argv) => argv[1] === "list")).toBe(true);
     });
 
+    it.each([
+        { name: "native timeout errno", errorCode: "ETIMEDOUT", timedOut: false, selectedCode: "ETIMEDOUT" },
+        { name: "explicit native timeout", errorCode: "PRIVATE_SECRET", timedOut: true, selectedCode: null },
+    ])("retains the final observation's $name through public MCP presentation", async ({ errorCode, timedOut, selectedCode }) => {
+        const privateOutput = "private native output /Users/private/secret token=fixture-secret";
+        const privateMessage = "private spawn message fixture-message-secret";
+        const privateArgs = ["private-spawn-argument"];
+        const finalReceipt = result(null, privateOutput, privateOutput, {
+            signal: "SIGTERM", timedOut,
+            error: { code: errorCode, message: privateMessage, path: "/Users/private/executable", spawnargs: privateArgs },
+        });
+        fixture.observe = (argv) => fixture.calls.filter((call) => call[1] === "spawn").length === 10 && argv.at(-1) === "system"
+            ? finalReceipt : result(7, "earlier native output", "earlier observation failed", {
+                signal: "SIGINT", error: { code: "EACCES" },
+            });
+        const expected = {
+            ok: false, error: "provider-command-failed",
+            execution: {
+                status: null, signal: "SIGTERM", timedOut: true, errorCode: selectedCode,
+                diagnosticCode: "native-timeout",
+            },
+        };
+        for (const detail of [true, false]) {
+            vi.setSystemTime(0);
+            fixture.calls.length = 0;
+            const observed = await call("wait_for_app", { ...args, timeoutMs: 51, detail });
+            expect(fixture.calls.filter((argv) => argv[1] === "spawn")).toHaveLength(10);
+            expect(observed.isError).toBe(true);
+            expect(observed.structuredContent).toEqual(expected);
+            const evidence = JSON.stringify(observed.structuredContent);
+            for (const privateValue of [privateOutput, privateMessage, privateArgs[0], "/Users/private/executable"]) {
+                expect(evidence).not.toContain(privateValue);
+            }
+            expect(evidence).not.toContain("EACCES");
+            expect(evidence).not.toContain("SIGINT");
+        }
+    });
+
     it("keeps standalone clean absence successful and includes provider and bundle in detail mode", async () => {
         fixture.observe = (argv) => isPgrep(argv) ? result(1) : failed();
         const observed = await call("wait_for_app", { ...args, detail: true });

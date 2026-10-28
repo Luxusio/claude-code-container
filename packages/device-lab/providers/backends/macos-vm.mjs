@@ -948,20 +948,54 @@ export async function waitForMacosGuestHelper(device, deadlineAt, {
     return waitForMacosGuestHelperWithinBudget({remainingMs:() => deadlineAt - now()},() => provision(device,{deadlineAt}),delay);
 }
 
-/** Internal broker leaf: relative allowance, no device lock or state publication.
+/** @typedef {{provider:"ssh"|"scp",execution:{status:number|null,signal:string|null,timedOut:boolean},connection:"refused"|"reset"|"closed"|"timeout"|"unreachable"|"authentication"|"other"}} MacosHelperFirstFailure */
+
+/** Internal broker leaf: inherited or relative allowance, no device lock or state publication.
  * @param {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmDevice} device
  * @param {number} allowanceMs
  * @param {boolean} [waitForReady]
+ * @param {{deadlineNs?:string,onFirstFailure?:(failure:MacosHelperFirstFailure)=>void}} [options]
  * @returns {Promise<{ok:boolean,skipped:boolean,helper:Record<string,unknown>,error?:string,execution?:{status:number|null,signal?:string|null,timedOut?:boolean}}>} */
-export async function prepareMacosGuestHelper(device, allowanceMs, waitForReady = true) {
+export async function prepareMacosGuestHelper(device, allowanceMs, waitForReady = true, options = {}) {
     const startedAt = performance.now();
     const duration = Number.isFinite(allowanceMs) && allowanceMs > 0 ? Math.min(600000, allowanceMs) : 0;
-    const budget = { remainingMs: () => Math.max(0, duration - Math.max(0, performance.now() - startedAt)) };
+    const inheritedDeadline = options.deadlineNs === undefined ? null
+        : typeof options.deadlineNs === "string" && /^[0-9]{1,24}$/.test(options.deadlineNs) ? BigInt(options.deadlineNs) : 0n;
+    const budget = { remainingMs: () => Math.max(0, Math.min(
+        duration - Math.max(0, performance.now() - startedAt),
+        inheritedDeadline === null ? Infinity : Number(inheritedDeadline - process.hrtime.bigint()) / 1e6,
+    )) };
+    let reportedFirstFailure = false;
+    const provisionAttempt = () => {
+        /** @type {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmProvision} */
+        const result = provisionMacosGuestHelper(device, { startBudget: budget });
+        const command = result.command;
+        if (!reportedFirstFailure && typeof options.onFirstFailure === "function" && !result.ok && command
+            && (result.error === "macos-helper-scp-failed" || result.error === "macos-helper-chmod-failed")) {
+            reportedFirstFailure = true;
+            const diagnostic = `${typeof command.stderr === "string" ? command.stderr : ""}\n${typeof command.stdout === "string" ? command.stdout : ""}`;
+            const timedOut = command.error?.code === "ETIMEDOUT";
+            /** @type {MacosHelperFirstFailure["connection"]} */
+            const connection = timedOut || /connection timed out|operation timed out/i.test(diagnostic) ? "timeout"
+                : /connection refused/i.test(diagnostic) ? "refused"
+                    : /connection reset/i.test(diagnostic) ? "reset"
+                        : /connection closed/i.test(diagnostic) ? "closed"
+                            : /no route to host|network is unreachable/i.test(diagnostic) ? "unreachable"
+                                : /permission denied\s*\([^\r\n)]*(?:publickey|password|keyboard-interactive)|authentication failed|too many authentication failures|no supported authentication methods/i.test(diagnostic) ? "authentication" : "other";
+            try {
+                options.onFirstFailure({ provider: result.error === "macos-helper-scp-failed" ? "scp" : "ssh",
+                    execution: { status: Number.isSafeInteger(command.status) && Number(command.status) >= 0 ? command.status : null,
+                        signal: typeof command.signal === "string" && Object.hasOwn(osConstants.signals, command.signal) ? command.signal : null,
+                        timedOut }, connection });
+            } catch { /* Progress observations cannot change preparation or retry policy. */ }
+        }
+        return result;
+    };
     /** @type {import('../ports/lifecycle/macos-vm-lifecycle.mjs').MacosVmProvision} */
     const provision = budget.remainingMs() >= 1
         ? waitForReady
-            ? await waitForMacosGuestHelperWithinBudget(budget, () => provisionMacosGuestHelper(device, { startBudget: budget }), sleep, true)
-            : provisionMacosGuestHelper(device, { startBudget: budget })
+            ? await waitForMacosGuestHelperWithinBudget(budget, provisionAttempt, sleep, true)
+            : provisionAttempt()
         : { ok: false, error: "macos-helper-readiness-timeout" };
     const ok = provision.ok === true && budget.remainingMs() > 0;
     const source = /** @type {Record<string, unknown>} */ (provision.provisioning && typeof provision.provisioning === "object" ? provision.provisioning : {});

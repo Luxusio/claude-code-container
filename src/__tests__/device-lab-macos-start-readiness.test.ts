@@ -120,6 +120,94 @@ describe("macOS start helper provisioning", () => {
 });
 
 describe("broker relative macOS guest helper adapter", () => {
+    it.each(["0", "-1", "1.5", "PRIVATE-DEADLINE", "1".repeat(25), 1000])("refuses invalid or expired inherited deadline %s before native admission", async deadlineNs => {
+        const discovery = vi.spyOn(commands, "commandPath").mockImplementation(() => { throw Error("expired discovery"); });
+        const native = vi.spyOn(commands, "runWithTimeout").mockImplementation(() => { throw Error("expired native call"); });
+        const onFirstFailure = vi.fn();
+        try {
+            const result = await prepareMacosGuestHelper({ id: "expired-parent", ssh: { host: "192.0.2.4", user: "guest" } }, 1000, true,
+                { deadlineNs: deadlineNs as string, onFirstFailure });
+            expect(result).toMatchObject({ ok: false, error: "macos-helper-readiness-timeout" });
+            expect(discovery).not.toHaveBeenCalled();
+            expect(native).not.toHaveBeenCalled();
+            expect(onFirstFailure).not.toHaveBeenCalled();
+        } finally { discovery.mockRestore(); native.mockRestore(); }
+    });
+
+    it.each([250, 1000])("caps every native command by both the inherited and local %sms allowance", async allowanceMs => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-macos-inherited-helper-")), restoreEnvironment = isolateDeviceLabTestEnvironment(home);
+        let monotonic = 50, nanoseconds = 1_000_000_000_000n;
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+        const sharedClock = vi.spyOn(process.hrtime, "bigint").mockImplementation(() => nanoseconds);
+        const discovery = vi.spyOn(commands, "commandPath").mockImplementation(tool => `/owned/${tool}`);
+        const native = vi.spyOn(commands, "runWithTimeout").mockImplementation(() => {
+            monotonic += 100; nanoseconds += 100_000_000n;
+            return { status: 0, signal: null, stdout: "PRIVATE-OUTPUT", stderr: "", pid: 0, output: [null, "PRIVATE-OUTPUT", ""] };
+        });
+        try {
+            const result = await prepareMacosGuestHelper({ id: "two-clocks", ssh: { host: "192.0.2.4", user: "guest" } }, allowanceMs, false,
+                { deadlineNs: String(nanoseconds + 700_000_000n) });
+            expect(result.ok).toBe(true);
+            expect(native.mock.calls.map(call => call[2])).toEqual([Math.min(allowanceMs, 700), Math.min(allowanceMs - 100, 600)]);
+            expect(JSON.stringify(result)).not.toContain("PRIVATE");
+        } finally {
+            sharedClock.mockRestore(); clock.mockRestore(); discovery.mockRestore(); native.mockRestore();
+            restoreEnvironment(); rmSync(home, { recursive: true, force: true });
+        }
+    });
+
+    it("reports the first completed native failure once before retry sleep while retaining later success", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-macos-first-failure-")), restoreEnvironment = isolateDeviceLabTestEnvironment(home);
+        const discovery = vi.spyOn(commands, "commandPath").mockImplementation(tool => `/owned/${tool}`);
+        const events: string[] = [], onFirstFailure = vi.fn(value => { events.push("first-failure"); expect(value).toEqual({
+            provider: "scp", execution: { status: 255, signal: null, timedOut: false }, connection: "refused",
+        }); });
+        const native = vi.spyOn(commands, "runWithTimeout").mockImplementation(() => {
+            events.push("native");
+            return native.mock.calls.length < 3
+                ? { status: 255, signal: null, stdout: "PRIVATE-STDOUT", stderr: "Connection refused PRIVATE-STDERR", pid: 0,
+                    output: [null, "PRIVATE-STDOUT", "Connection refused PRIVATE-STDERR"] }
+                : { status: 0, signal: null, stdout: "", stderr: "", pid: 0, output: [null, "", ""] };
+        });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const pacing = vi.spyOn(globalThis, "setTimeout");
+        try {
+            const pending = prepareMacosGuestHelper({ id: "retry-then-ready", ssh: { host: "192.0.2.4", user: "guest", password: "PRIVATE-PASSWORD" } }, 5000, true,
+                { onFirstFailure });
+            expect(events).toEqual(["native", "first-failure"]);
+            expect(pacing).toHaveBeenCalledTimes(1);
+            expect(pacing.mock.invocationCallOrder[0]).toBeGreaterThan(onFirstFailure.mock.invocationCallOrder[0]);
+            await vi.advanceTimersByTimeAsync(1000);
+            const result = await pending;
+            expect(result).toMatchObject({ ok: true, helper: { status: "provisioned" } });
+            expect(onFirstFailure).toHaveBeenCalledTimes(1);
+            expect(native).toHaveBeenCalledTimes(4);
+            expect(result).not.toHaveProperty("firstFailure");
+            expect(JSON.stringify(result)).not.toContain("PRIVATE");
+        } finally {
+            pacing.mockRestore(); vi.useRealTimers(); discovery.mockRestore(); native.mockRestore();
+            restoreEnvironment(); rmSync(home, { recursive: true, force: true });
+        }
+    });
+
+    it.each([
+        ["scp", "Permission denied (publickey,password). PRIVATE-DETAIL", "authentication"],
+        ["ssh", "No route to host PRIVATE-HOST", "unreachable"],
+    ])("keeps the bounded first %s failure when the callback throws", async (provider, stderr, connection) => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-macos-first-failure-once-")), restoreEnvironment = isolateDeviceLabTestEnvironment(home);
+        const discovery = vi.spyOn(commands, "commandPath").mockImplementation(tool => `/owned/${tool}`);
+        const native = vi.spyOn(commands, "runWithTimeout").mockImplementation(executable => ({
+            status: executable.endsWith(`/${provider}`) ? 255 : 0, signal: null, stdout: "", stderr: executable.endsWith(`/${provider}`) ? stderr : "", pid: 0, output: [],
+        }));
+        const onFirstFailure = vi.fn(() => { throw Error("PRIVATE-CALLBACK-ERROR"); });
+        try {
+            const result = await prepareMacosGuestHelper({ id: "callback-error", ssh: { host: "192.0.2.4", user: "guest" } }, 1000, false, { onFirstFailure });
+            expect(result).toMatchObject({ ok: false, error: provider === "scp" ? "macos-helper-scp-failed" : "macos-helper-chmod-failed" });
+            expect(onFirstFailure.mock.calls).toEqual([[{ provider, execution: { status: 255, signal: null, timedOut: false }, connection }]]);
+            expect(JSON.stringify(result) + JSON.stringify(onFirstFailure.mock.calls)).not.toContain("PRIVATE");
+        } finally { discovery.mockRestore(); native.mockRestore(); restoreEnvironment(); rmSync(home, { recursive: true, force: true }); }
+    });
+
     it("preserves missing SSH as a skip without discovery or native SSH/SCP", async () => {
         const discovery = vi.spyOn(commands, "commandPath").mockImplementation(() => { throw Error("no-SSH must not discover commands"); });
         const native = vi.spyOn(commands, "runWithTimeout").mockImplementation(() => { throw Error("no-SSH must not dispatch commands"); });

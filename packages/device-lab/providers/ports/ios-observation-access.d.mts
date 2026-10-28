@@ -48,6 +48,7 @@ export interface IosAccessCommand {
     stderr: string;
     signal?: string | null;
     error?: { code?: unknown; message?: string };
+    timedOut?: boolean;
 }
 export type IosAccessAppiumEffect =
     | { kind: "server-status"; serverUrl: string; timeoutMs?: number }

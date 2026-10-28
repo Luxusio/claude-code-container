@@ -28,6 +28,13 @@ the standard MCP `structuredContent` object. Retain status, signal, timeout and
 closed error/diagnostic codes when present. Do not add raw output, command
 arguments, paths or credentials to that object. Do not change simulator commands,
 ownership admission, retries or time limits as part of this correction.
+When every Simulator app-wait probe fails, preserve the final receipt's status,
+signal, error code and explicit timeout flag through the application boundary
+into that existing selected projection. Do not spread the native receipt or
+Error object. A direct Oct28 Mac reproduction returned `ETIMEDOUT` and
+`SIGTERM`; rebuilding the error from text and status alone had incorrectly
+reported `native-unknown` with a false timeout. This corrects evidence loss;
+it does not establish which probe timed out or make Safari observation pass.
 For simctl failures, additionally retain at most four observed error domain/code
 pairs from the first 16 KiB of stderr. Domains are limited to
 `NSPOSIXErrorDomain`, `NSCocoaErrorDomain`, and
@@ -92,6 +99,15 @@ output through this timeout result. Existing observed-failure behavior is
 unchanged. Keep the timeout error, retry rules, cadence and late-result
 admission unchanged. Missing native observations remain missing; these facts do
 not establish the underlying SSH or guest failure.
+
+When a helper child is terminated before returning its final result, preserve
+an observed `helperPreparation.firstFailure` from its one bounded progress
+frame. Independently select only `ssh`/`scp`, bounded native execution facts
+and the closed connection categories defined in the
+[helper readiness contract](REQ__macos-broker-helper-readiness.md). Keep this
+first failure separate from parent termination and VM launch execution in
+saved evidence and short messages. Unknown fields and categories are omitted;
+raw SSH output, targets, commands and credentials must never be copied.
 
 MCP native broker observations use completed command output for ownership
 verification. Preserve fixed executables, full command width, exact entry/PID/

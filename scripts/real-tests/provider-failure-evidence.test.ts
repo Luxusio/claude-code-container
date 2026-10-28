@@ -87,6 +87,74 @@ describe("saved provider failure evidence", () => {
         expect(saved + message).not.toMatch(/PRIVATE|"provider"|"execution"/);
     });
 
+    it.each([false, true])("keeps the first closed helper failure distinct from the killed helper child, wrapped=%s", wrapped => {
+        const firstFailure = { provider: "scp", execution: { status: 255, signal: null, timedOut: false }, connection: "refused" };
+        const result = { execution: { command: { status: 0 } }, helperPreparation: { error: "macos-helper-readiness-timeout",
+            execution: { status: null, signal: "SIGKILL", timedOut: true }, firstFailure: { ...firstFailure,
+                stdout: "PRIVATE-STDOUT", stderr: "PRIVATE-STDERR", host: "PRIVATE-HOST", password: "PRIVATE-PASSWORD", args: ["PRIVATE-ARG"],
+                execution: { ...firstFailure.execution, error: "PRIVATE-ERROR", command: "PRIVATE-COMMAND" } } } };
+        const value = { ok: false, error: "macos-helper-readiness-timeout", ...(wrapped ? { body: { result } } : { result }) };
+        const { saved, message } = savedFailure(value, "start");
+        const preparation = JSON.parse(saved).failure.helperPreparation;
+        expect(preparation).toEqual({ error: "macos-helper-readiness-timeout", execution: { status: null, signal: "SIGKILL", timedOut: true }, firstFailure });
+        expect(JSON.parse(saved).failure.execution).toEqual({ status: 0 });
+        expect(message).toContain('"firstFailure":{"provider":"scp"');
+        expect(message).toContain('"connection":"refused"');
+        expect(formatBrokerToolFailure(value, "failed", "start").length).toBeLessThanOrEqual(511);
+        expect(saved + message).not.toMatch(/PRIVATE|"(?:password|stdout|stderr|command|args)"\s*:/);
+    });
+
+    it.each(["refused", "reset", "closed", "timeout", "unreachable", "authentication", "other"])("selects first helper connection category %s without raw diagnostics", connection => {
+        const firstFailure = { provider: "ssh", execution: { status: null, signal: "SIGTERM", timedOut: true }, connection };
+        const value = { result: { helperPreparation: { firstFailure: { ...firstFailure, stderr: "PRIVATE-DETAIL" } } } };
+        expect(brokerToolFailureEvidence(value).helperPreparation).toEqual({ firstFailure });
+        expect(formatBrokerToolFailure(value, "failed")).not.toContain("PRIVATE");
+    });
+
+    it.each([
+        { provider: "PRIVATE-PROVIDER", connection: "PRIVATE-CONNECTION", execution: { status: -1, signal: "PRIVATE-SIGNAL", timedOut: "true" } },
+        ["PRIVATE-FRAME"],
+        null,
+    ])("omits wholly unclassified first helper failure %j", firstFailure => {
+        const value = { result: { helperPreparation: { error: "macos-helper-readiness-timeout", firstFailure } } };
+        expect(brokerToolFailureEvidence(value).helperPreparation).toEqual({ error: "macos-helper-readiness-timeout" });
+        expect(formatBrokerToolFailure(value, "failed")).not.toMatch(/PRIVATE|firstFailure/);
+    });
+
+    it.each([
+        { provider: ["scp"] },
+        { connection: ["refused"] },
+        { provider: "PRIVATE-PROVIDER" },
+        { connection: "PRIVATE-CONNECTION" },
+        { execution: { status: "255", signal: null, timedOut: false } },
+        { execution: { status: -1, signal: null, timedOut: false } },
+        { execution: { status: Number.MAX_SAFE_INTEGER + 1, signal: null, timedOut: false } },
+        { execution: { status: 255, signal: "PRIVATE-SIGNAL", timedOut: false } },
+        { execution: { status: 255, signal: null, timedOut: "false" } },
+        { execution: { status: 255, signal: null } },
+    ])("rejects the entire first helper observation when a required field is invalid: %j", invalid => {
+        const firstFailure = { provider: "scp", execution: { status: 255, signal: null, timedOut: false }, connection: "refused", ...invalid };
+        const value = { result: { helperPreparation: { error: "macos-helper-readiness-timeout", firstFailure } } };
+        expect(brokerToolFailureEvidence(value).helperPreparation).toEqual({ error: "macos-helper-readiness-timeout" });
+        expect(formatBrokerToolFailure(value, "failed")).not.toMatch(/PRIVATE|firstFailure/);
+    });
+
+    it("does not report an earlier first failure as current helper success evidence", () => {
+        const firstFailure = { provider: "scp", execution: { status: 255, signal: null, timedOut: false }, connection: "refused" };
+        const value = { result: { helperPreparation: { ok: true, firstFailure } } };
+        expect(brokerToolFailureEvidence(value)).not.toHaveProperty("helperPreparation");
+        expect(formatBrokerToolFailure(value, "failed")).not.toContain("firstFailure");
+    });
+
+    it("ignores first helper failure outside the exact helper preparation envelope", () => {
+        const firstFailure = { provider: "scp", execution: { status: 255, signal: null, timedOut: false }, connection: "refused" };
+        for (const value of [{ firstFailure }, { result: { firstFailure } }, { result: { helperPreparation: [firstFailure] } },
+            { result: { helperPreparation: { helper: { provisioning: { firstFailure } } } } }]) {
+            expect(brokerToolFailureEvidence(value)).not.toHaveProperty("helperPreparation");
+            expect(formatBrokerToolFailure(value, "failed")).not.toContain("firstFailure");
+        }
+    });
+
     it("keeps ordinary provider evidence unchanged when helper preparation is absent or entirely unknown", () => {
         const result = { execution: { command: { status: 7, signal: null } } };
         const baseline = { ok: false, error: "provider-command-failed", result };

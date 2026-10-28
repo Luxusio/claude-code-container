@@ -67,7 +67,7 @@ import { desktopGuestCommand, desktopRemoteReadCommand, desktopRemoteReadOutputL
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
-import { homedir, hostname, uptime } from "os";
+import { constants as osConstants, homedir, hostname, uptime } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { isDeepStrictEqual } from "util";
@@ -9963,6 +9963,19 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
         stateErrorCode: ownerDeviceStateErrorCode, commandTimeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     };
 }
+function brokerMacosHelperFirstFailure(value: unknown): BrokerMacosHelperPreparation["firstFailure"] {
+    if (!cleanupRecord(value) || typeof value.provider !== "string" || !["ssh", "scp"].includes(value.provider)
+        || typeof value.connection !== "string" || !["refused", "reset", "closed", "timeout", "unreachable", "authentication", "other"].includes(value.connection)
+        || !cleanupRecord(value.execution)) return undefined;
+    const execution = value.execution;
+    if (!(execution.status === null || typeof execution.status === "number" && Number.isSafeInteger(execution.status) && execution.status >= 0)
+        || !(execution.signal === null || typeof execution.signal === "string" && Object.hasOwn(osConstants.signals, execution.signal))
+        || typeof execution.timedOut !== "boolean") return undefined;
+    return {provider: value.provider as "ssh" | "scp",
+        execution: {status: execution.status as number | null, signal: execution.signal as string | null, timedOut: execution.timedOut},
+        connection: value.connection as NonNullable<BrokerMacosHelperPreparation["firstFailure"]>["connection"]};
+}
+
 async function provisionBrokerMacosGuestHelper(ownerId: string, expected: unknown, device: Record<string, unknown>, options: {remainingMs: () => number; waitForReady: boolean}, normalized: NormalizedBrokerOptions): Promise<BrokerMacosHelperPreparation> {
     const failed = (error: string): BrokerMacosHelperPreparation => ({ok: false, skipped: false, error, helper: {status: "failed", provisioning: {status: "failed"}}});
     if (!(options.remainingMs() >= 1)) return failed("macos-helper-readiness-timeout");
@@ -9973,31 +9986,48 @@ async function provisionBrokerMacosGuestHelper(ownerId: string, expected: unknow
     if (!current || !isDeepStrictEqual(current, expected)) return failed("owner-device-state-conflict");
     const invocation = deviceLabBackendInvocation(normalized, "macos-vm");
     if (!invocation || !existsSync(invocation.modulePath)) return failed("device-lab-backend-module-missing");
+    const capturedNs = process.hrtime.bigint();
     const duration = Math.floor(options.remainingMs());
-    if (!(duration >= 1)) return failed("macos-helper-readiness-timeout");
+    if (!(Number.isFinite(duration) && duration >= 1)) return failed("macos-helper-readiness-timeout");
+    const deadlineNs = (capturedNs + BigInt(duration) * 1000000n).toString();
     const script = [
-        "import { readFileSync } from 'fs';",
-        "import { performance } from 'node:perf_hooks';",
-        "const startedAt = performance.now();",
+        "import { readFileSync, writeSync } from 'fs';",
         "const payload = JSON.parse(readFileSync(0, 'utf8') || '{}');",
         "const context = await import(new URL('../context.mjs', payload.moduleUrl));",
         "if (context.ownerId() !== payload.ownerId) throw new Error('broker-owner-basis-unavailable');",
         "const backend = await import(payload.moduleUrl);",
-        "const remaining = Math.max(0, payload.allowanceMs - (performance.now() - startedAt));",
-        "const result = await backend.prepareMacosGuestHelper(payload.device, remaining, payload.waitForReady);",
-        "process.stdout.write(JSON.stringify({result}));",
+        "let reportedFirstFailure = false;",
+        "const onFirstFailure = firstFailure => {",
+        "  if (reportedFirstFailure) return;",
+        "  reportedFirstFailure = true;",
+        "  const line = JSON.stringify({firstFailure}) + '\\n';",
+        "  if (Buffer.byteLength(line) <= 512) writeSync(1, line);",
+        "};",
+        "const result = await backend.prepareMacosGuestHelper(payload.device, payload.allowanceMs, payload.waitForReady, {deadlineNs: payload.deadlineNs, onFirstFailure});",
+        "writeSync(1, JSON.stringify({result}) + '\\n');",
     ].join("\n");
     const receipt = await runBrokerBackendChild(script, JSON.stringify({moduleUrl: pathToFileURL(invocation.modulePath).href,
-        ownerId, device, allowanceMs: duration, waitForReady: options.waitForReady}), {
+        ownerId, device, allowanceMs: duration, deadlineNs, waitForReady: options.waitForReady}), {
         cwd: normalized.cwd, env: {...process.env, ...normalized.env, CCC_PROFILE: normalized.profile || ""},
         timeoutMs: duration, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     });
+    let finalOutput = receipt.stdout;
+    let firstFailure: BrokerMacosHelperPreparation["firstFailure"];
+    const firstLineEnd = receipt.stdout.indexOf("\n");
+    if (firstLineEnd >= 0 && Buffer.byteLength(receipt.stdout.slice(0, firstLineEnd + 1)) <= 512) {
+        let frame: unknown;
+        try {frame = JSON.parse(receipt.stdout.slice(0, firstLineEnd));} catch { /* An incomplete or malformed progress frame carries no observation. */ }
+        if (cleanupRecord(frame) && Object.keys(frame).length === 1 && Object.hasOwn(frame, "firstFailure")) {
+            firstFailure = brokerMacosHelperFirstFailure(frame.firstFailure);
+            if (firstFailure) finalOutput = receipt.stdout.slice(firstLineEnd + 1);
+        }
+    }
     if (receipt.status !== 0 || receipt.error || receipt.signal || receipt.timedOut) {
         return {...failed(receipt.timedOut ? "macos-helper-readiness-timeout" : "macos-helper-prepare-failed"),
-            execution: {status: receipt.status, signal: receipt.signal, timedOut: receipt.timedOut}};
+            execution: {status: receipt.status, signal: receipt.signal, timedOut: receipt.timedOut}, ...(firstFailure ? {firstFailure} : {})};
     }
     let value: unknown;
-    try {value = (JSON.parse(receipt.stdout) as {result?: unknown}).result;} catch {return failed("macos-helper-prepare-invalid-result");}
+    try {value = (JSON.parse(finalOutput) as {result?: unknown}).result;} catch {return failed("macos-helper-prepare-invalid-result");}
     if (!cleanupRecord(value) || typeof value.ok !== "boolean" || typeof value.skipped !== "boolean" || !cleanupRecord(value.helper)) return failed("macos-helper-prepare-invalid-result");
     const helper = value.helper;
     const expectedStatus = value.ok ? value.skipped ? "skipped-missing-ssh" : "provisioned" : "failed";
@@ -10020,9 +10050,9 @@ async function provisionBrokerMacosGuestHelper(ownerId: string, expected: unknow
         signal: typeof execution.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(execution.signal) ? execution.signal : null,
         ...(typeof execution.timedOut === "boolean" ? {timedOut: execution.timedOut} : {}),
     } : undefined;
-    if (value.ok && !(options.remainingMs() > 0)) return {...failed("macos-helper-readiness-timeout"), ...(selectedExecution ? {execution: selectedExecution} : {})};
+    if (value.ok && !(options.remainingMs() > 0)) return {...failed("macos-helper-readiness-timeout"), ...(selectedExecution ? {execution: selectedExecution} : {}), ...(firstFailure ? {firstFailure} : {})};
     return {ok: value.ok, skipped: value.skipped, helper: metadata,
-        ...(!value.ok ? {error: allowedErrors.includes(String(value.error)) ? String(value.error) : "macos-helper-prepare-failed"} : {}),
+        ...(!value.ok ? {error: allowedErrors.includes(String(value.error)) ? String(value.error) : "macos-helper-prepare-failed", ...(firstFailure ? {firstFailure} : {})} : {}),
         ...(selectedExecution ? {execution: selectedExecution} : {})};
 }
 

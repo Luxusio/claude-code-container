@@ -34,6 +34,11 @@ export interface BrokerMacosIpObservation extends BrokerMacosProviderResult {
 export interface BrokerMacosHelperPreparation {
     ok: boolean; skipped: boolean; helper: Record<string, unknown>; error?: string;
     execution?: {status: number | null; signal?: string | null; timedOut?: boolean};
+    firstFailure?: {
+        provider: "ssh" | "scp";
+        execution: {status: number | null; signal: string | null; timedOut: boolean};
+        connection: "refused" | "reset" | "closed" | "timeout" | "unreachable" | "authentication" | "other";
+    };
 }
 export type BrokerMacosMetadataPurpose = "definition-only" | "image-unset" | "stopped-definition-delete";
 export type BrokerMacosPlannedCommand<Effect> =

@@ -295,6 +295,48 @@ zero does not prove SSH or helper readiness, and the previous artifact omitted
 the separate helper receipt. Native guest SSH setup and current helper evidence
 are required before declaring those two failures resolved.
 
+## Oct28: app-wait timeout evidence and helper child deadline
+
+The Mac run starting 10:14:20 reports three failures, 86 passes and 16 skips.
+Its retained iOS calls pass start, literal exec, screenshot and URL opening;
+Safari `wait_for_app` then fails. Both Tart cases reach helper preparation and
+retain child `SIGKILL` with a timeout, separately from successful VM launch.
+The original collector and three error artifacts were copied with hashes before
+further native observations.
+
+A focused Mac reproduction through the installed broker also fails Safari
+observation with `ETIMEDOUT` and `SIGTERM`. The app-wait application rebuilt its
+error from text and status, discarding those fields before the existing MCP
+projection. It now retains the final receipt's signal, errno and explicit
+timeout without copying raw native fields. Probe order, success rules and the
+ten-second wait remain unchanged. The diagnostic Simulator was stopped and
+deleted. A second owned fixture awaits a requested native `launchctl list`
+observation; the failing probe and Safari correction remain unproved.
+
+The helper child's old relative clock began after Node startup. It could run
+past the parent's deadline and lose its final native receipt. It now inherits
+the same-host monotonic deadline throughout startup, imports and preparation,
+without extending the parent's timeout. One bounded first native SCP/SSH
+failure is synchronously reported before retry sleep. A killed child's result
+retains that `firstFailure` separately from termination execution; it is never
+reported as the final cause or as success evidence. Both broker and artifact
+writer independently select the closed fields. Protocol 10 requires the new
+in-memory broker implementation through the existing verified replacement path.
+
+Focused portable verification passes 310 distinct cases: iOS observation and
+failure evidence 92, helper readiness 33, saved evidence 103, broker capability
+checks 71, and 11 selected broker helper cases. The latter use the actual emitted
+Node broker and backend child with private native executables, including startup
+pressure, deadline termination, malformed progress and recovery. Two new iOS
+fixture cases and two new privacy assertions needed test-only corrections; only
+those affected cases reran, with no overlapping pass credit. Package-only emit,
+architecture and real-test typechecks, changed MJS syntax and configured broker
+lint pass. The real-test client is outside the configured lint scope.
+
+Actual Safari observation and guest SSH/helper acceptance remain pending.
+No full build, full unit suite, full Level 3 rerun, global broker replacement or
+guest credential change was performed by the coordinator.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

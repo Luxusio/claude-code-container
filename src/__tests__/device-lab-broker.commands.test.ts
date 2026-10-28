@@ -11713,7 +11713,7 @@ vi.mock("fs", async (importOriginal) => ({ ...await importOriginal<typeof import
 
 // The controller lives outside the broker process. A synchronous native wait cannot
 // delay this controller's deadline or release the gate before responsiveness is proved.
-type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup" | "macos-spawn-error" | "macos-status" | "macos-status-failure" | "macos-helper" | "macos-helper-failure";
+type AndroidHttpFixturePhase = "create" | "boot" | "stop-inventory" | "owner-cleanup" | "auxiliary-stopped" | "auxiliary-no-stop" | "macos-boot" | "macos-owner-cleanup" | "macos-spawn-error" | "macos-status" | "macos-status-failure" | "macos-helper" | "macos-helper-failure" | "macos-helper-deadline" | "macos-helper-killed" | "macos-helper-invalid-frame" | "macos-helper-recovered";
 type AndroidHttpFixtureReply = { status: number; body: Record<string, any> };
 type AndroidHttpFixtureReady = { baseUrl: string; owners: Array<{ id: string; token: string; file: string }>; initial: Record<string, unknown> };
 
@@ -11747,6 +11747,13 @@ async function main() {
         if (process.env.CCC_ANDROID_HTTP_PHASE === 'macos-helper-failure') {
             process.stderr.write('owned fixture copy denied\n');
             process.exitCode = 23;
+            return;
+        }
+        if (['macos-helper-killed', 'macos-helper-invalid-frame', 'macos-helper-recovered'].includes(process.env.CCC_ANDROID_HTTP_PHASE) && !has('scp-refused')) {
+            fs.writeFileSync(file('scp-refused'), '');
+            process.stdout.write('PRIVATE-HELPER-STDOUT\n');
+            process.stderr.write('ssh: connect to host PRIVATE-HOST port 22: Connection refused PRIVATE-HELPER-STDERR\n');
+            process.exitCode = 255;
             return;
         }
         const target = args.at(-1), source = args.at(-2);
@@ -11964,7 +11971,7 @@ function androidHttpFixtureProcessRunning(pid: number): boolean {
     }
 }
 
-async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase) {
+async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase, helperOptions: { startupMs?: number; progressMode?: "invalid" | "partial-final" } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'ccc-emitted-android-http-'));
     const home = join(root, 'home'), bin = join(root, 'bin'), temporary = join(root, 'tmp');
     for (const directory of [home, bin, temporary]) mkdirSync(directory);
@@ -11998,6 +12005,53 @@ const os = require('node:os');
 os.totalmem = () => 64 * 1024 ** 3;
 os.freemem = () => 48 * 1024 ** 3;
 require('node:module').syncBuiltinESMExports();
+`);
+        writeFileSync(preload, readFileSync(preload, 'utf8') + `
+// Only the actual helper subprocess receives this private scheduling pressure.
+// The emitted broker and backend modules themselves remain unmodified.
+if (process.execArgv.some(argument => argument.includes('backend.prepareMacosGuestHelper'))) {
+    fs.writeFileSync(path.join(${JSON.stringify(home)}, 'helper-child'), JSON.stringify({pid: process.pid}));
+    const startupMs = ${JSON.stringify(helperOptions.startupMs || 0)};
+    if (startupMs) {
+        fs.writeFileSync(path.join(${JSON.stringify(home)}, 'helper-startup'), JSON.stringify({pid: process.pid, startupMs}));
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, startupMs);
+    }
+    const helperNativeSpawn = cp.spawnSync;
+    cp.spawnSync = function(command, args = [], options = {}) {
+        if (command === path.join(root, 'scp') || command === path.join(root, 'ssh')) {
+            fs.appendFileSync(path.join(${JSON.stringify(home)}, 'helper-native-timeouts'), JSON.stringify({tool: path.basename(command), timeoutMs: options.timeout}) + '\\n');
+        }
+        return helperNativeSpawn.call(this, command, args, options);
+    };
+    const write = fs.writeSync;
+    fs.writeSync = function(fd, value, ...rest) {
+        if (fd === 1 && typeof value === 'string' && value.startsWith('{"firstFailure":')) {
+            const frame = JSON.parse(value);
+            frame.firstFailure.stdout = 'PRIVATE-PROGRESS-STDOUT';
+            frame.firstFailure.stderr = 'PRIVATE-PROGRESS-STDERR';
+            frame.firstFailure.password = 'PRIVATE-PASSWORD';
+            frame.firstFailure.execution.args = ['PRIVATE-ARG'];
+            if (${JSON.stringify(helperOptions.progressMode === "invalid")}) frame.firstFailure.provider = ['scp'];
+            const selected = JSON.stringify(frame) + '\\n';
+            const written = write.call(this, fd, selected, ...rest);
+            fs.writeFileSync(path.join(${JSON.stringify(home)}, 'helper-progress-written'), JSON.stringify({bytes: Buffer.byteLength(selected)}));
+            if (${JSON.stringify(helperOptions.progressMode === "partial-final")}) write.call(this, fd, '{"result":{"PRIVATE-PARTIAL":');
+            return written;
+        }
+        return write.call(this, fd, value, ...rest);
+    };
+    if (['macos-helper-killed', 'macos-helper-invalid-frame'].includes(${JSON.stringify(phase)})) {
+        const nativeSetTimeout = globalThis.setTimeout;
+        globalThis.setTimeout = function(callback, milliseconds, ...args) {
+            if (milliseconds === 500) {
+                fs.writeFileSync(path.join(${JSON.stringify(home)}, 'helper-retry-held'), '');
+                return nativeSetTimeout(callback, 20000, ...args);
+            }
+            return nativeSetTimeout(callback, milliseconds, ...args);
+        };
+    }
+    require('node:module').syncBuiltinESMExports();
+}
 `);
         for (const project of ['project-a', 'project-b']) mkdirSync(join(root, project));
     }
@@ -12211,6 +12265,80 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
 });
 
 describe('emitted default-runner macOS HTTP responsiveness', () => {
+    it('charges helper child startup and module loading to the original start deadline', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('macos-helper-deadline', {startupMs: 2000});
+        try {
+            const create = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_create',
+                name: 'Original deadline helper Mac', provider: 'tart', sshUser: 'guest'}).result;
+            expect(create).toMatchObject({status: 200, body: {ok: true}});
+            const id = create.body.result.device.id as string;
+            const start = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: id,
+                waitForBoot: true, bootTimeoutMs: 6000}).result;
+            expect(start, JSON.stringify(start)).toMatchObject({status: 200, body: {ok: true, result: {device: {id, status: 'running', bootReady: true}}}});
+            expect(JSON.parse(readFileSync(join(fixture.home, 'helper-startup'), 'utf8'))).toMatchObject({startupMs: 2000});
+            const native = readFileSync(join(fixture.home, 'helper-native-timeouts'), 'utf8').trim().split('\n')
+                .map(line => JSON.parse(line) as {tool: string; timeoutMs: number});
+            expect(native.map(call => call.tool)).toEqual(['scp', 'ssh']);
+            expect(native[0].timeoutMs, 'the 2 s before child script execution consumes the same 6 s start budget').toBeLessThanOrEqual(4000);
+            expect(native[0].timeoutMs).toBeGreaterThan(0);
+            expect(native[1].timeoutMs).toBeLessThan(native[0].timeoutMs);
+            expect(start.body.result).not.toHaveProperty('helperPreparation.firstFailure');
+            expect(fixture.nativeCalls().filter(call => call.tool === 'tart' && call.args[0] === 'run')).toHaveLength(1);
+        } finally {await fixture.dispose();}
+    });
+
+    it.each(['complete', 'partial-final', 'invalid'] as const)('keeps only the first closed native failure after helper child deadline termination, frame=%s', {timeout: 30000}, async mode => {
+        const phase = mode === 'invalid' ? 'macos-helper-invalid-frame' : 'macos-helper-killed';
+        const fixture = await createAndroidHttpFixture(phase, {progressMode: mode === 'complete' ? undefined : mode});
+        try {
+            const create = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_create',
+                name: 'Killed helper Mac', provider: 'tart', sshUser: 'guest'}).result;
+            expect(create).toMatchObject({status: 200, body: {ok: true}});
+            const id = create.body.result.device.id as string;
+            const start = fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: id,
+                waitForBoot: true, bootTimeoutMs: 4000});
+            await vi.waitFor(() => {
+                expect(existsSync(join(fixture.home, 'helper-progress-written'))).toBe(true);
+                expect(existsSync(join(fixture.home, 'helper-retry-held'))).toBe(true);
+            }, {timeout: 3000, interval: 10});
+            expect(JSON.parse(readFileSync(join(fixture.home, 'helper-progress-written'), 'utf8')).bytes).toBeLessThanOrEqual(512);
+            await fixture.assertResponsive(start);
+            const {pid} = JSON.parse(readFileSync(join(fixture.home, 'helper-child'), 'utf8')) as {pid: number};
+            const failed = await androidHttpFixtureBounded(start.result, 6000, 'parent helper deadline did not settle');
+            expect(failed).toMatchObject({status: 502, body: {ok: false, error: 'macos-helper-readiness-timeout', result: {
+                helperPreparation: {error: 'macos-helper-readiness-timeout', execution: {status: null, signal: 'SIGKILL', timedOut: true}},
+            }}});
+            if (mode === 'invalid') expect(failed.body.result.helperPreparation).not.toHaveProperty('firstFailure');
+            else expect(failed.body.result.helperPreparation.firstFailure).toEqual({provider: 'scp',
+                execution: {status: 255, signal: null, timedOut: false}, connection: 'refused'});
+            expect(JSON.stringify(failed)).not.toContain('PRIVATE');
+            expect(androidHttpFixtureProcessRunning(pid), 'the actual helper child is gone before failure publication').toBe(false);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'scp')).toHaveLength(1);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'ssh')).toEqual([]);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'tart' && call.args[0] === 'run')).toHaveLength(1);
+            expect(fixture.records()[0]).toMatchObject({id, status: 'starting', lifecycle: {operation: 'start'}});
+            expect(fixture.records()[0].helper?.status).not.toBe('provisioned');
+        } finally {await fixture.dispose();}
+    });
+
+    it('does not credit an earlier native refusal after the same helper child succeeds', {timeout: 30000}, async () => {
+        const fixture = await createAndroidHttpFixture('macos-helper-recovered');
+        try {
+            const create = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_create',
+                name: 'Recovered helper Mac', provider: 'tart', sshUser: 'guest'}).result;
+            expect(create).toMatchObject({status: 200, body: {ok: true}});
+            const id = create.body.result.device.id as string;
+            const start = await fixture.rpc(0, 'broker.command.invoke', {backend: 'macos-vm', command: 'device_start', deviceId: id,
+                waitForBoot: true, bootTimeoutMs: 6000}).result;
+            expect(start, JSON.stringify(start)).toMatchObject({status: 200, body: {ok: true, result: {device: {id, status: 'running', helper: {status: 'provisioned'}}}}});
+            expect(existsSync(join(fixture.home, 'helper-progress-written'))).toBe(true);
+            expect(JSON.stringify(start)).not.toMatch(/PRIVATE|firstFailure/);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'scp')).toHaveLength(2);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'ssh')).toHaveLength(1);
+            expect(fixture.nativeCalls().filter(call => call.tool === 'tart' && call.args[0] === 'run')).toHaveLength(1);
+        } finally {await fixture.dispose();}
+    });
+
     it('creates a fresh owner ID and installs its actual helper before cursor readiness', {timeout: 30000}, async () => {
         const fixture = await createAndroidHttpFixture('macos-helper');
         try {

@@ -178,3 +178,17 @@ saved preparation fields select its known error, provider and native execution
 facts; raw SSH output and credentials remain omitted. A polling timeout retains
 only bounded facts from its last observed native receipt. These diagnostics do
 not establish SSH configuration or a guest failure without host evidence.
+
+The Oct28 run reaches iOS `wait_for_app` after successful start, literal exec,
+screenshot and URL opening. Total probe failure must preserve the last native
+status, signal, errno and explicit timeout through public MCP presentation.
+The focused Mac reproduction timed out in `xcrun`; it does not identify the
+failing probe or certify Safari readiness.
+
+For a terminated helper child, `helperPreparation.firstFailure` describes its
+first completed failed SSH/SCP command; `helperPreparation.execution` describes
+the child termination. Read those independently. The inherited monotonic
+deadline charges child startup and imports within the existing allowance.
+Protocol 10 requires this in-memory broker correction and the bounded progress
+observation; it uses the existing verified replacement path. Portable tests
+cannot certify actual guest SSH, helper readiness or the isolated Mac broker.

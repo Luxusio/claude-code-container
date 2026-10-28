@@ -531,6 +531,18 @@ function providerExecution(value: any) {
     return payload?.execution ?? payload?.result?.execution?.command;
 }
 
+function boundedMacosHelperFirstFailure(value: any) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || !["ssh", "scp"].includes(value.provider)
+        || !["refused", "reset", "closed", "timeout", "unreachable", "authentication", "other"].includes(value.connection)
+        || !value.execution || typeof value.execution !== "object" || Array.isArray(value.execution)) return undefined;
+    const execution = value.execution;
+    if (!(execution.status === null || typeof execution.status === "number" && Number.isSafeInteger(execution.status) && execution.status >= 0)
+        || !(execution.signal === null || typeof execution.signal === "string" && Object.hasOwn(osConstants.signals, execution.signal))
+        || typeof execution.timedOut !== "boolean") return undefined;
+    return {provider: value.provider, execution: {status: execution.status, signal: execution.signal, timedOut: execution.timedOut}, connection: value.connection};
+}
+
 function boundedMacosHelperPreparation(value: any) {
     const payload = value?.body && typeof value.body === "object" && !Array.isArray(value.body) ? value.body : value;
     const result = payload?.result;
@@ -542,7 +554,8 @@ function boundedMacosHelperPreparation(value: any) {
     const provider = ["ssh", "scp", "ssh-scp", "local", "ssh-key-policy"].includes(preparation.helper?.provisioning?.provider)
         ? preparation.helper.provisioning.provider as string : undefined;
     const execution = boundedNativeExecution(preparation.execution);
-    return error || provider || execution ? { ...(error ? { error } : {}), ...(provider ? { provider } : {}), ...(execution ? { execution } : {}) } : undefined;
+    const firstFailure = preparation.ok === true ? undefined : boundedMacosHelperFirstFailure(preparation.firstFailure);
+    return error || provider || execution || firstFailure ? { ...(error ? { error } : {}), ...(provider ? { provider } : {}), ...(execution ? { execution } : {}), ...(firstFailure ? { firstFailure } : {}) } : undefined;
 }
 
 function boundedMacosBoot(value: any) {

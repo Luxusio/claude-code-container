@@ -32,6 +32,24 @@ positive remaining duration to the new relative internal adapter. This shares
 the allowance inside the broker request, not a new client-to-host aggregate
 deadline guarantee.
 
+The internal broker child also inherits a cross-process monotonic deadline.
+Charge Node startup, imports and the handoff to helper preparation against the
+same remainder throughout the helper operation. Keep the parent's existing
+hard timeout and process-identity signaling protections unchanged.
+The same-host clock basis is supported by the host's
+[Node 22.22.1 hrtime binding](https://github.com/nodejs/node/blob/v22.22.1/src/node_process_methods.cc#L640)
+and its [Darwin libuv clock](https://github.com/nodejs/node/blob/v22.22.1/deps/uv/src/unix/darwin.c#L56).
+
+Before retrying, the child may synchronously emit one bounded observation of
+its first completed failed native SCP/SSH command. If the parent terminates
+the child, retain this `firstFailure` separately from the child's termination
+execution. Select only provider, native status/signal/timeout, and a closed
+connection category (`refused`, `reset`, `closed`, `timeout`, `unreachable`,
+`authentication` or `other`). Emit at most one frame, at most 512 bytes; keep
+the existing child output bound. Missing or invalid observations stay missing.
+This is the first observed failure, not a claim about the final cause. It must
+not alter retries, success admission, publication or ownership.
+
 The wire response reports admission or operation-lock budget exhaustion as HTTP
 504 with `macos-start-budget-exhausted`. A partial start or failed helper
 preparation reports HTTP 502: ordinary partial failures use
