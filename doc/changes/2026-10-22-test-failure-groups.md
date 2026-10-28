@@ -379,6 +379,29 @@ native-only case skipped. Real-test TypeScript and changed backend syntax pass.
 No full build, unit suite or Level 3 run was repeated by the coordinator. The
 current iOS scenario alone was requested on the host using the existing build.
 
+## Oct28 native shutdown receipt follow-up
+
+The focused Mac result updated at 04:36:29 UTC confirms that the exact prepared,
+executed and returned Simulator targets agree. Native shutdown returns status 0
+without a timeout/error and recording metadata is cleared, while immediate
+inventory still reports `Booted`. This proves the execution/completion gap; it
+does not establish its CoreSimulator timing cause.
+
+Broker iOS stop therefore confirms a unique exact-owned `Shutdown` before
+publishing `stopped`. Shutdown, readbacks, polling and publication admission share
+the existing command allowance. Unconfirmed completion retains the original
+native receipt and returns separate selected settlement facts. No repeated
+shutdown, reboot or automatic deletion follows. Complete-record comparison
+continues to protect successors. Protocol 11 requires the corrected in-memory
+broker through existing verified replacement. Actual Mac acceptance remains
+pending; the strict native test assertion is retained.
+
+Focused portable verification passes 100 cases: 27 lifecycle/HTTP cases, 72
+broker capability cases and one pre-assembly protocol-cache regression. The
+other 57 launcher cases were filtered, not executed. Package-only compilation,
+architecture and real-test typechecks, configured lint and protocol syntax
+checks pass. No full build or full test suite was repeated.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

@@ -28,7 +28,7 @@ function brokerStatusOutput(protocolVersion = DEVICE_BROKER_PROTOCOL_VERSION) {
 }
 
 describe("Level 3 artifact preparation", () => {
-    it("binds pre-assembly protocol checks to workspace 9 while assembled protocol 8 stays cached", () => {
+    it("binds pre-assembly protocol checks to the current workspace while assembled protocol 8 stays cached", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-level3-protocol-binding-"));
         try {
             const packageRoot = join(root, "node_modules", "@ccc", "device-lab");
@@ -59,7 +59,7 @@ import {pathToFileURL} from 'node:url';
 import {DEVICE_BROKER_PROTOCOL_VERSION as cachedBefore} from '#device-lab/providers/contracts/broker-protocol.mjs';
 import {DEVICE_BROKER_PROTOCOL_VERSION as workspace} from '@ccc/device-lab/providers/contracts/broker-protocol.mjs';
 import {probeHostBrokerProtocol} from './level3-host.mjs';
-let protocolVersion=9;const requests=[];
+let protocolVersion=workspace;const requests=[];
 const server=createServer((req,res)=>{
  requests.push({url:req.url,protocolVersion});res.setHeader('content-type','application/json');
  res.end(JSON.stringify({ok:true,broker:{protocolVersion,process:{pid:4321},startedAt:'2026-07-28T00:00:00.000Z'}}));
@@ -67,10 +67,10 @@ const server=createServer((req,res)=>{
 await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
 try{
  const port=server.address().port;
- const probePair=async()=>{const results=[];for(const version of [9,8]){protocolVersion=version;results.push(await probeHostBrokerProtocol(port,{timeoutMs:1000}));}return results;};
+ const probePair=async()=>{const results=[];for(const version of [workspace,8]){protocolVersion=version;results.push(await probeHostBrokerProtocol(port,{timeoutMs:1000}));}return results;};
  const before=await probePair();
  // Assembly replaces the file after the launcher has already loaded. The old
- // import remains cached, while a distinct URL proves the new disk bytes are 9.
+ // import remains cached, while a distinct URL proves the current disk bytes.
  writeFileSync(${JSON.stringify(assembledProtocol)},readFileSync(${JSON.stringify(join(workspaceContracts, "broker-protocol.mjs"))}));
  const cachedAfter=(await import('#device-lab/providers/contracts/broker-protocol.mjs')).DEVICE_BROKER_PROTOCOL_VERSION;
  const assembled=(await import(pathToFileURL(${JSON.stringify(assembledProtocol)}).href+'?after-assembly')).DEVICE_BROKER_PROTOCOL_VERSION;
@@ -83,12 +83,12 @@ try{
             expect(output.error).toBeUndefined();
             expect(output.status, output.stderr || output.stdout).toBe(0);
             const result = JSON.parse(output.stdout.trim());
-            expect(result).toMatchObject({ workspace: 9, cachedBefore: 8, cachedAfter: 8, assembled: 9 });
-            const expected = [{ ok: true, protocolVersion: 9, pid: verifiedBrokerPid, startedAt: verifiedBrokerStartedAt,
+            expect(result).toMatchObject({ workspace: DEVICE_BROKER_PROTOCOL_VERSION, cachedBefore: 8, cachedAfter: 8, assembled: DEVICE_BROKER_PROTOCOL_VERSION });
+            const expected = [{ ok: true, protocolVersion: DEVICE_BROKER_PROTOCOL_VERSION, pid: verifiedBrokerPid, startedAt: verifiedBrokerStartedAt,
                 elevationGate: { state: "unreported" } }, { ok: false, error: "invalid-status-response", protocolVersion: null }];
             expect(result.before).toEqual(expected);
             expect(result.after).toEqual(expected);
-            expect(result.requests).toEqual([9, 8, 9, 8].map(protocolVersion => ({ url: "/status", protocolVersion })));
+            expect(result.requests).toEqual([DEVICE_BROKER_PROTOCOL_VERSION, 8, DEVICE_BROKER_PROTOCOL_VERSION, 8].map(protocolVersion => ({ url: "/status", protocolVersion })));
         } finally { rmSync(root, { recursive: true, force: true }); }
     });
 

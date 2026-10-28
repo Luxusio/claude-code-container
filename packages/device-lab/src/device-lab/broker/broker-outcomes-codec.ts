@@ -368,15 +368,18 @@ export function renderBrokerIosMacosLifecycle(outcome: BrokerIosLifecycleRespons
             const boot = "boot" in outcome && outcome.boot && context.plan && cleanupCommand(context.plan.providerCommand) ? renderBrokerMacosBoot(outcome.boot, context.plan.providerCommand) : undefined;
             const helperPreparation = "helperPreparation" in outcome ? outcome.helperPreparation : undefined;
             const helperError = helperPreparation?.ok === false ? helperPreparation.error || "macos-helper-prepare-failed" : undefined;
-            const invoked = "invoked" in outcome ? outcome.invoked : true;
-            const mutatesHost = "mutatesHost" in outcome ? outcome.mutatesHost : outcome.success;
+            const shutdown = "shutdown" in outcome ? outcome.shutdown : undefined;
+            const shutdownError = shutdown?.ok === false ? "ios-simulator-shutdown-not-confirmed" : undefined;
+            const invoked = "invoked" in outcome ? outcome.invoked !== false : true;
+            const mutatesHost = "mutatesHost" in outcome ? outcome.mutatesHost === true : outcome.success;
             const failure = "stateError" in outcome && outcome.stateError && outcome.cause !== undefined
                 ? stateFailure(outcome.cause, { backend: context.backend, stateKey: context.stateKey }) : undefined;
             return { status: failure?.status ?? (outcome.kind === "state-conflict" ? 409 : outcome.success ? 200 : 502), payload: { ok: outcome.success && outcome.kind !== "state-conflict",
-                    ...(failure ? failure.payload : outcome.kind === "state-conflict" ? { error: "owner-device-state-conflict", ...base, found: outcome.publication?.found } : !outcome.success ? { error: helperError || "provider-command-failed" } : {}),
-                    ...(!outcome.success && outcome.kind !== "state-conflict" ? { detail: helperError || ("failure" in outcome && outcome.failure ? outcome.failure : failureDetail(renderBrokerLifecycleObservation(outcome.execution))) } : {}),
+                    ...(failure ? failure.payload : outcome.kind === "state-conflict" ? { error: "owner-device-state-conflict", ...base, found: outcome.publication?.found } : !outcome.success ? { error: shutdownError || helperError || "provider-command-failed" } : {}),
+                    ...(!outcome.success && outcome.kind !== "state-conflict" ? { detail: shutdownError || helperError || ("failure" in outcome && outcome.failure ? outcome.failure : failureDetail(renderBrokerLifecycleObservation(outcome.execution))) } : {}),
                     ...("stateError" in outcome && outcome.stateError ? { stateError: outcome.stateError } : {}),
                     result: { ...lifecycleResult(context, redactDevice(outcome.device), outcome.execution, invoked, mutatesHost),
+                        ...(shutdown ? {shutdown} : {}),
                         ...(boot?.ok ? {boot: {ready: boot.ready, skipped: boot.skipped === true, provider: "tart", ip: boot.sshHost || null}} : {}),
                         ...(helperPreparation ? {helper: helperPreparation.helper.provisioning || helperPreparation.helper,
                             ...(!helperPreparation.ok ? {helperPreparation} : {})} : {}),

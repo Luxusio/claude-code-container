@@ -203,8 +203,8 @@ despite a returned stopped record; reset was not reached. Subsequent exact-owned
 standalone stop cycles through both the installed broker and the checkout's
 isolated broker report native `Shutdown`. Those cycles do not reproduce or
 explain the full scenario's failure. The diagnostic fixture was then deleted.
-The focused iOS collector reproduces the same mismatch. Its failure assertion
-selects the stop receipt's native exit facts and exact-target equality, without
+The focused iOS collector reproduces the same mismatch. The current scenario's
+failure assertion selects the stop receipt's native exit facts and exact-target equality, without
 raw output, arguments, environment or paths. Keep this distinct from the stored
 stopped record; do not infer successful native shutdown from that record alone.
 
@@ -216,3 +216,13 @@ An explicit SSH authentication denial takes precedence over trailing SCP
 `Connection closed` text and is not transient. A saved `closed` category alone
 does not establish authentication failure. Parent child-timeout execution facts
 also do not establish the final native SCP/SSH result.
+
+The later Oct28 04:36:29 UTC focused result includes those selected diagnostics:
+exact prepared, executed and returned targets match, shutdown executes with
+status 0 and no timeout/error, and recording metadata is absent. Native inventory
+still reports `Booted`. This establishes the need for completion confirmation,
+without establishing its platform timing cause. Broker stop now waits for a
+unique owned `Shutdown` within the same command allowance before publication;
+the existing strict native assertion remains unchanged. Protocol 11 requires
+this in-memory implementation through verified repair. See
+[the shutdown contract](../device-lab/REQ__ios-broker-shutdown.md).

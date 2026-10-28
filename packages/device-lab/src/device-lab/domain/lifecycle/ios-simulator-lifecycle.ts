@@ -12,6 +12,11 @@ export interface BrokerIosProviderResult {
 export interface BrokerIosCreateResult extends BrokerIosProviderResult {
     createdUdid: string | null;
 }
+export type BrokerIosShutdownState = "Shutdown" | "Booted" | "Shutting Down" | null;
+export interface BrokerIosShutdownObservation { ok: boolean; state: BrokerIosShutdownState; }
+export type BrokerIosShutdownSettlement =
+    {ok: true; attempts: number; lastState: "Shutdown"} |
+    {ok: false; reason: "timed-out" | "observation-failed"; attempts: number; lastState: BrokerIosShutdownState};
 export type BrokerIosPlannedCommand<Effect> =
     {kind: "unavailable"; error: string; missing: string[]} |
     {kind: "metadata-only"} |
@@ -30,11 +35,11 @@ export type BrokerIosLifecycleResponse<Effect> =
     {kind: "rollback-failed"; error: string; stateError: string; rollback: BrokerIosRollback} |
     {kind: "claim-conflict"; error: string; field: string; value: unknown; existing: Record<string,unknown>; rollback: BrokerIosRollback} |
     {kind: "auxiliary-failed"; plan: BrokerIosLifecyclePlan<Effect> | undefined; device: unknown; auxiliary: BrokerIosAuxiliaryFacts} |
-    {kind: "completed" | "state-conflict" | "operation-failed"; plan: BrokerIosLifecyclePlan<Effect> | undefined; device: unknown; execution: BrokerIosProviderResult; success: boolean; publication?: BrokerIosPublication; auxiliary?: BrokerIosAuxiliaryFacts};
+    {kind: "completed" | "state-conflict" | "operation-failed"; plan: BrokerIosLifecyclePlan<Effect> | undefined; device: unknown; execution: BrokerIosProviderResult; success: boolean; publication?: BrokerIosPublication; auxiliary?: BrokerIosAuxiliaryFacts; shutdown?: BrokerIosShutdownSettlement; invoked?: boolean; mutatesHost?: boolean; recoveryRequired?: boolean};
 export interface BrokerIosAuxiliaryFacts {
     ok: boolean; changed: boolean; stateConflict?: boolean; appium: Record<string,unknown>; recording: Record<string,unknown>; minimizeWatchdog: Record<string,unknown>;
 }
-export type BrokerIosPublication = { found: boolean; matched: boolean; device: unknown };
+export type BrokerIosPublication = { found: boolean; matched: boolean; device: unknown; deadlineExpired?: boolean };
 export type BrokerIosClaim = { ok: true; device: Record<string, unknown> } |
     { ok: false; error: string; field: string; value: unknown; existing: Record<string, unknown> };
 export function brokerIosField(device: unknown, name: string): string | null {

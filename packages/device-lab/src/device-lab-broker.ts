@@ -7602,7 +7602,7 @@ function brokerIosSimulatorPrefix(ownerId: string): string {
     return `ccc-${ownerId}-`;
 }
 
-function resolveBrokerOwnedIosSimulatorTarget(ownerId: string, device: unknown, normalized: NormalizedBrokerOptions) {
+function resolveBrokerOwnedIosSimulatorTarget(ownerId: string, device: unknown, normalized: NormalizedBrokerOptions, options?: {timeoutMs: number; outputLimit: number}) {
     const simulatorName = field(device, "simulatorName");
     const recordedUdid = field(device, "udid");
     if (!simulatorName || !simulatorName.startsWith(brokerIosSimulatorPrefix(ownerId))) {
@@ -7615,8 +7615,8 @@ function resolveBrokerOwnedIosSimulatorTarget(ownerId: string, device: unknown, 
         executable,
         args: ["simctl", "list", "devices", "-j"],
     }, {
-        timeoutMs: Math.min(normalized.commandTimeoutMs, 30000),
-        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        timeoutMs: Math.min(normalized.commandTimeoutMs, 30000, options?.timeoutMs ?? Infinity),
+        outputLimit: Math.min(DEVICE_BROKER_COMMAND_OUTPUT_LIMIT, options?.outputLimit ?? Infinity),
     });
     if (!commandSucceeded(inventory)) {
         return { ok: false as const, error: "ios-simulator-owner-inventory-unavailable", missing: ["readable simctl device inventory"], inventory };
@@ -7645,7 +7645,7 @@ function resolveBrokerOwnedIosSimulatorTarget(ownerId: string, device: unknown, 
     if (hostName !== simulatorName || !hostName.startsWith(brokerIosSimulatorPrefix(ownerId)) || !hostUdid) {
         return { ok: false as const, error: "ios-simulator-owner-identity-mismatch", missing: ["matching owner-prefixed host simulator name and UDID"], hostName, hostUdid, inventory };
     }
-    return { ok: true as const, target: hostUdid, simulatorName: hostName, inventory };
+    return { ok: true as const, target: hostUdid, simulatorName: hostName, state: field(matches[0], "state"), inventory };
 }
 
 function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device: unknown, normalized: NormalizedBrokerOptions): ProviderCommand | { error: string; missing: string[] } {
@@ -9938,6 +9938,17 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
                 createdUdid: commandSucceeded(receipt) && receipt.mode !== "noop" ? iosSimulatorCreatedUdid(receipt.stdout) : null,
             };
         },
+        observeShutdown: (effect, owner, device, options) => {
+            const command = effect.command;
+            const target = command.args?.[2];
+            if (command.mode !== "exec" || command.provider !== "xcrun" || command.args?.length !== 3
+                || command.args[0] !== "simctl" || command.args[1] !== "shutdown" || !target) return {ok: false, state: null};
+            const observed = resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized, options);
+            if (!observed.ok || observed.target !== target) return {ok: false, state: null};
+            const state = observed.state;
+            return state === "Shutdown" || state === "Booted" || state === "Shutting Down"
+                ? {ok: true, state} : {ok: false, state: null};
+        },
         prepareCreate: input => {
             const executable = executableFor("xcrun", normalized);
             const command: NativeLifecycleCommand = iosSimulatorCreateCommand({ ...input, executable });
@@ -9956,11 +9967,31 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
         verifyOwnedTarget: (owner, device) => resolveBrokerOwnedIosSimulatorTarget(owner, device, normalized),
         claimDefinition: (owner, parsed, device) => claimOwnerDevice(owner, parsed.stateKey, device, createOwnerDeviceUniqueFields(parsed)),
         cleanupAuxiliary: (owner, parsed, expected) => cleanupLifecycleAuxiliaryRuntime(owner, parsed, normalized, expected),
-        publish: (owner, state, id, expected, change) => publishLifecycleDevice(normalized, owner, state, id, expected, candidate => {
-            const replacement = brokerIosReplacement(candidate, change);
-            return replacement === null ? null : { ...replacement, updatedAt: new Date().toISOString() };
-        }),
-        stateErrorCode: ownerDeviceStateErrorCode, commandTimeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        publish: (owner, state, id, expected, change, options) => {
+            const replacement = (candidate: Record<string, unknown>) => {
+                const next = brokerIosReplacement(candidate, change);
+                return next === null ? null : { ...next, updatedAt: new Date().toISOString() };
+            };
+            if (!options) return publishLifecycleDevice(normalized, owner, state, id, expected, replacement);
+            const expired = Symbol("ios-shutdown-publication-deadline");
+            let current: Record<string, unknown> | undefined;
+            try {
+                const publication = transitionOwnerLifecycleDevice(owner, state, id, expected, candidate => {
+                    if (!(options.remainingMs() > 0)) { current = candidate; throw expired; }
+                    return replacement(candidate);
+                });
+                if (normalized.cleanupObservation && publication.matched) normalized.cleanupObservation.changed = true;
+                return publication;
+            } catch (cause) {
+                if (cause !== expired) throw cause;
+                return {found: true, matched: true, device: current, deadlineExpired: true};
+            }
+        },
+        now: normalized.hyperVMonotonicNow,
+        sleep,
+        stateErrorCode: ownerDeviceStateErrorCode,
+        get commandTimeoutMs() { return cleanupExitBudget(normalized, normalized.commandTimeoutMs); },
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     };
 }
 function brokerMacosHelperFirstFailure(value: unknown): BrokerMacosHelperPreparation["firstFailure"] {

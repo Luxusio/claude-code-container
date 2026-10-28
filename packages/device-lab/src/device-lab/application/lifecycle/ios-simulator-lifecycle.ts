@@ -1,5 +1,5 @@
 import {brokerIosRecord, brokerIosCommandSucceeded, brokerIosCreateCommand} from "../../domain/lifecycle/ios-simulator-lifecycle.js";
-import type {BrokerIosLifecycleRequest, BrokerIosLifecycleInput, BrokerIosLifecycleResponse, BrokerIosProviderResult, BrokerIosPlannedCommand, BrokerIosRollback } from "../../domain/lifecycle/ios-simulator-lifecycle.js";
+import type {BrokerIosLifecycleRequest, BrokerIosLifecycleInput, BrokerIosLifecycleResponse, BrokerIosProviderResult, BrokerIosPlannedCommand, BrokerIosRollback, BrokerIosShutdownSettlement, BrokerIosShutdownState } from "../../domain/lifecycle/ios-simulator-lifecycle.js";
 import type {BrokerIosSimulatorLifecyclePorts} from "../../ports/lifecycle/ios-simulator-lifecycle.js";
 
 export async function rollbackBrokerIosCreate<Effect>(ports: BrokerIosSimulatorLifecyclePorts<Effect>, device: Record<string,unknown>, existing: Record<string,unknown> | null, command: BrokerIosPlannedCommand<Effect> | null | undefined): Promise<BrokerIosRollback> {
@@ -68,14 +68,48 @@ export function createBrokerIosSimulatorLifecycle<Effect>(ports: BrokerIosSimula
         const auxiliary = parsed.command === "device_stop" || parsed.command === "device_delete" ? ports.cleanupAuxiliary(ownerId,parsed,expected) : null;
         if (auxiliary?.committed) expected = structuredClone(auxiliary.device);
         if (auxiliary?.result.ok === false) return {kind: "auxiliary-failed", plan, device: auxiliary.device, auxiliary: auxiliary.result};
+        const stopping = parsed.command === "device_stop" && command.kind === "ready";
+        const deadline = stopping ? ports.now() + ports.commandTimeoutMs : Infinity;
+        const remainingMs = () => Math.max(0, deadline - ports.now());
+        const commandAllowance = stopping ? Math.floor(remainingMs()) : ports.commandTimeoutMs;
+        if (stopping && !(commandAllowance >= 1)) return {kind: "operation-failed", plan, device: expected,
+            execution: {ok: false, mode: "exec", provider: command.provider, receipt: null}, success: false,
+            shutdown: {ok: false, reason: "timed-out", attempts: 0, lastState: null}, invoked: false,
+            mutatesHost: Boolean(auxiliary && (auxiliary.result.changed || auxiliary.result.appium.cleared === true || auxiliary.result.recording.cleared === true || auxiliary.result.minimizeWatchdog.cleared === true)), recoveryRequired: false,
+            ...(auxiliary ? {auxiliary: auxiliary.result} : {})};
         const execution: BrokerIosProviderResult = command.kind === "metadata-only"
             ? {ok: true, mode: "noop", provider: "host-broker-state", receipt: null}
-            : ports.execute(command.effect,{timeoutMs: ports.commandTimeoutMs, outputLimit: ports.outputLimit});
-        let success = brokerIosCommandSucceeded(execution) ;
+            : ports.execute(command.effect,{timeoutMs: commandAllowance, outputLimit: ports.outputLimit});
+        let success = brokerIosCommandSucceeded(execution);
+        let shutdown: BrokerIosShutdownSettlement | undefined;
+        if (success && stopping) {
+            let attempts = 0;
+            let lastState: BrokerIosShutdownState = null;
+            shutdown = {ok: false, reason: "timed-out", attempts, lastState};
+            while (true) {
+                const timeoutMs = Math.floor(remainingMs());
+                if (!(timeoutMs >= 1)) break;
+                let observation;
+                try { observation = ports.observeShutdown(command.effect, ownerId, expected, {timeoutMs, outputLimit: ports.outputLimit}); }
+                catch { shutdown = {ok: false, reason: "observation-failed", attempts: attempts + 1, lastState}; break; }
+                attempts++;
+                lastState = observation.state;
+                if (!(remainingMs() > 0)) { shutdown = {ok: false, reason: "timed-out", attempts, lastState}; break; }
+                if (!observation.ok || !["Shutdown", "Booted", "Shutting Down"].includes(lastState || "")) {
+                    shutdown = {ok: false, reason: "observation-failed", attempts, lastState}; break;
+                }
+                if (lastState === "Shutdown") { shutdown = {ok: true, attempts, lastState}; break; }
+                await ports.sleep(Math.min(100, remainingMs()));
+                shutdown = {ok: false, reason: "timed-out", attempts, lastState};
+            }
+            success = shutdown.ok;
+        }
 
-        const publication = success ? ports.publish(ownerId,parsed.stateKey,parsed.deviceId,expected,{kind: parsed.command === "device_start" ? "start" : parsed.command === "device_stop" ? "stop" : "delete" }) : undefined;
-        const device = success ? publication?.device : plan?.device;
-        return {kind: publication && !publication.matched ? "state-conflict" : success ? "completed" : "operation-failed", plan, device, execution, success, publication, ...(auxiliary ? {auxiliary: auxiliary.result} : {}) };
+        if (shutdown?.ok && !(remainingMs() > 0)) { shutdown = {...shutdown, ok: false, reason: "timed-out"}; success = false; }
+        const publication = success ? ports.publish(ownerId,parsed.stateKey,parsed.deviceId,expected,{kind: parsed.command === "device_start" ? "start" : parsed.command === "device_stop" ? "stop" : "delete" }, stopping ? {remainingMs} : undefined) : undefined;
+        if (shutdown?.ok && publication?.deadlineExpired) { shutdown = {...shutdown, ok: false, reason: "timed-out"}; success = false; }
+        const device = success ? publication?.device : shutdown ? expected : plan?.device;
+        return {kind: publication && !publication.matched ? "state-conflict" : success ? "completed" : "operation-failed", plan, device, execution, success, publication, ...(auxiliary ? {auxiliary: auxiliary.result} : {}), ...(shutdown ? {shutdown, mutatesHost: true, recoveryRequired: !shutdown.ok} : {}) };
     }
     return {create, start: existing, stop: existing, delete: existing, createRecord, planCreate, planExisting};
 }
