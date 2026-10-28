@@ -275,3 +275,14 @@ remains diagnostic evidence; the original stop and scenario still fail. The
 existing `device-lab.real-ios-e2e.test.ts` owner checks this read-only failure
 tail portably while retaining its separate native platform/level gates. This
 collector-only change needs no build for the focused host iOS entrypoint.
+
+The Oct28 10:52 UTC focused Mac result passes Simulator stop, the strict native
+`Shutdown` assertion, reset and deletion. Its separate physical-device step
+skips because no device is visible to `xctrace`. This accepts one positive native
+run; the unchanged packaged MCP fingerprint and unused failure-only tail do not
+establish the earlier failure's cause or remove the intermittent-risk limit.
+Retain that evidence and move focused validation to the two remaining macOS
+upload scenarios. Assemble the runtime packages and rebuild the MCP bundle to
+deliver the existing MJS transfer fix, then use the host preflight and selected
+collector entrypoints. No TypeScript rebuild or iOS repeat is required for that
+qualification.
