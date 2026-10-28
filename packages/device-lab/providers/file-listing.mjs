@@ -28,6 +28,7 @@ export function buildListFilesCommand(backend, args) {
         const stat = backend === "macos-vm" ? 'stat -f %z "$f"' : 'stat -c %s -- "$f"';
         command = `LC_ALL=C;export LC_ALL;p=${shellQuote(args.path)};case "$p" in /*) ;; *) p=./$p;; esac;CDPATH= cd -P "$p" || exit 1;[ -r . ] && [ -x . ] || { printf '%s\\n' 'list-files-permission-denied' >&2;exit 1; };printf 'CCC-LIST-V1\\000';c=0;b=32;tr=0;for f in ./* ./.[!.]* ./..?*;do [ -e "$f" ] || [ -L "$f" ] || continue;if [ "$c" -ge ${limit} ];then tr=1;break;fi;n=\${f#./};s=;if [ -L "$f" ];then t=symlink;elif [ -d "$f" ];then t=directory;elif [ -f "$f" ];then t=file;s=$(${stat} 2>/dev/null) || s=;case "$s" in *[!0-9]*) s=;;esac;else t=other;fi;z=$((\${#n}+\${#s}+\${#t}+3));if [ $((b+z)) -gt ${LIST_FILES_OUTPUT_LIMIT_BYTES} ];then tr=1;break;fi;printf '%s\\000%s\\000%s\\000' "$t" "$s" "$n";b=$((b+z));c=$((c+1));done;printf 'END\\000%s\\000' "$tr"`;
     } else throw new Error("list-files-unsupported-backend");
+    if (backend === "macos-vm") command = `/bin/sh -c ${shellQuote(command)}`;
     if (command.length > LIST_FILES_COMMAND_LIMIT_CHARS) throw new Error("list-files-path-exceeds-command-budget");
     return command;
 }

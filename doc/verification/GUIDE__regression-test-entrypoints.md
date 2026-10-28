@@ -286,3 +286,16 @@ upload scenarios. Assemble the runtime packages and rebuild the MCP bundle to
 deliver the existing MJS transfer fix, then use the host preflight and selected
 collector entrypoints. No TypeScript rebuild or iOS repeat is required for that
 qualification.
+
+The Oct28 11:10 UTC two-case Mac result passes upload and fails listing with
+status 1. The shared command generator previously depended on the SSH login
+shell accepting unmatched glob patterns. macOS listings now select `/bin/sh`
+explicitly, quoting the complete program before enforcing the final command
+budget. Use the existing `device-lab-list-files.test.ts` strict outer-shell
+cases and `device-lab-list-files-routing.test.ts` owner; keep native BSD size
+qualification separate from portable command tests. See
+[the listing contract](../device-lab/REQ__file-listing.md).
+For this follow-up, rebuild the MCP bundle, run the host broker preflight and
+repeat only the two Mac provider scenarios. The prior transfer assembly is
+already qualified by their successful uploads; no TypeScript rebuild or iOS
+repeat is needed for the listing change.

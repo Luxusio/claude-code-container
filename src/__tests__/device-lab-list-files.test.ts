@@ -2,9 +2,9 @@ import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildListFilesCommand, listContainedDirectory, parseListFilesOutput, validateListFilesArgs, LIST_FILES_OUTPUT_LIMIT_BYTES } from "@ccc/device-lab/providers/file-listing.mjs";
+import { buildListFilesCommand, listContainedDirectory, parseListFilesOutput, validateListFilesArgs, LIST_FILES_COMMAND_LIMIT_CHARS, LIST_FILES_OUTPUT_LIMIT_BYTES } from "@ccc/device-lab/providers/file-listing.mjs";
 
 const roots: string[] = [];
 function directory() { const root = mkdtempSync(join(tmpdir(), "ccc-list-files-")); roots.push(root); return root; }
@@ -86,8 +86,75 @@ describe("bounded device directory commands", () => {
             expect(command).toMatch(/LiteralPath/);
         }
     });
+    it("applies the macOS command budget after quoting the complete listing program", () => {
+        expect(buildListFilesCommand("macos-vm", { path: "/tmp" }).length).toBeLessThanOrEqual(LIST_FILES_COMMAND_LIMIT_CHARS);
+        expect(() => buildListFilesCommand("macos-vm", { path: "'".repeat(300) }))
+            .toThrow("list-files-path-exceeds-command-budget");
+    });
 });
 
+const strictBashAvailable = process.platform !== "win32" && existsSync("/bin/bash");
+describe.skipIf(!strictBashAvailable)("macOS listings through a strict outer shell (requires POSIX /bin/bash)", () => {
+    function executeFromLoginShell(path: string, extra = {}) {
+        const command = buildListFilesCommand("macos-vm", { path, ...extra });
+        const env = { ...process.env };
+        for (const name of ["BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS"]) delete env[name];
+        return spawnSync("/bin/bash", ["--noprofile", "--norc", "-O", "failglob", "-c", command], {
+            cwd: dirname(path), encoding: "utf8", env, timeout: 5000, maxBuffer: 64 * 1024,
+        });
+    }
+
+    it("returns an empty listing even when unmatched outer-shell patterns are errors", () => {
+        const result = executeFromLoginShell(directory());
+        expect(result.status, result.stderr || String(result.error || "")).toBe(0);
+        expect(parseListFilesOutput(result.stdout)).toEqual({ entries: [] });
+    });
+
+    it("keeps directory paths and literal entry names as data through both shell layers", () => {
+        const root = directory();
+        const path = join(root, "x'; touch PWN; printf '");
+        mkdirSync(path);
+        const names = ["ordinary.txt", ".hidden", "한글 🎈", "quote'\";$(echo nope)", "line\nbreak\tname"];
+        for (const name of names) writeFileSync(join(path, name), "abc");
+        mkdirSync(join(path, "folder"));
+        writeFileSync(join(path, "folder", "nested.txt"), "not listed");
+        symlinkSync("absent", join(path, "broken-link"));
+        symlinkSync("folder", join(path, "directory-link"));
+
+        const result = executeFromLoginShell(path);
+        expect(result.status, result.stderr || String(result.error || "")).toBe(0);
+        const listing = parseListFilesOutput(result.stdout);
+        expect(listing.entries).toHaveLength(names.length + 3);
+        for (const name of names) {
+            const entry = listing.entries.find(item => item.name === name);
+            expect(entry).toEqual(expect.objectContaining({ name, type: "file" }));
+            // Linux does not qualify BSD stat; the existing platform-native cases check exact sizes.
+            if (entry?.size !== undefined) expect(entry.size).toBe(3);
+        }
+        expect(listing.entries).toContainEqual({ name: "folder", type: "directory" });
+        expect(listing.entries).toContainEqual({ name: "broken-link", type: "symlink" });
+        expect(listing.entries).toContainEqual({ name: "directory-link", type: "symlink" });
+        expect(JSON.stringify(listing)).not.toContain("nested.txt");
+        expect(existsSync(join(root, "PWN"))).toBe(false);
+        expect(existsSync(join(path, "PWN"))).toBe(false);
+    });
+
+    it("preserves truncation and native directory errors through the selected interpreter", () => {
+        const root = directory();
+        for (const name of ["a", "b", "c"]) writeFileSync(join(root, name), "");
+        const complete = executeFromLoginShell(root, { limit: 3 });
+        expect(complete.status, complete.stderr).toBe(0);
+        const completeListing = parseListFilesOutput(complete.stdout);
+        expect(completeListing.entries).toHaveLength(3);
+        expect(completeListing.truncated).toBeUndefined();
+        const limited = executeFromLoginShell(root, { limit: 2 });
+        expect(limited.status, limited.stderr).toBe(0);
+        expect(parseListFilesOutput(limited.stdout)).toMatchObject({ entries: [expect.any(Object), expect.any(Object)], truncated: true });
+        for (const path of [join(root, "missing"), join(root, "a")]) {
+            expect(executeFromLoginShell(path).status).not.toBe(0);
+        }
+    });
+});
 
 describe("simulator app-container directory boundary", () => {
     it("lists only immediate app entries, preserves hidden names and never follows entry links", () => {

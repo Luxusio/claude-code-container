@@ -503,6 +503,35 @@ observations for comparison if it recurs. The remaining requested host checks
 are the two macOS upload scenarios after assembling and bundling the existing
 transfer fix; no additional iOS rerun or TypeScript rebuild is needed now.
 
+## Oct28 11:10 UTC macOS listing follow-up
+
+After runtime assembly and MCP bundling, both Mac scenarios pass upload. Their
+new packaged MCP fingerprint differs from the previous failing upload build.
+Both now fail at `list_files` with native status 1; create, start, status, exec
+and cleanup stop/delete succeed. This qualifies the preceding transfer fix's
+upload path, while download and later controls remain unreached.
+
+The listing generator builds a POSIX glob loop, but the SSH backend sends it to
+the guest login shell without selecting an interpreter. A private reproduction
+under Bash `failglob` exits 1 on an empty directory after printing the protocol
+header. The existing tests forced `/bin/sh` and missed that shell-option case.
+The macOS-generated listing now quotes the complete program for explicit
+`/bin/sh -c`, then applies the existing final command-length guard. General exec,
+other backend commands, listing limits and failure handling remain unchanged.
+The saved native errors omit guest shell/stderr, so the portable defect is
+confirmed while its exact causal match and actual Mac qualification remain
+pending.
+
+This macOS listing command is generated in the MCP server before broker exec;
+the native backend receives it as command data. Rebuilding the MCP bundle alone
+delivers this follow-up after the preceding transfer assembly. No TypeScript
+rebuild, new broker protocol or iOS repeat is required for these two Mac cases.
+
+The two existing listing owners pass all 40 portable cases, including strict
+outer-shell enumeration, path/name quoting, final command-budget refusal and
+unchanged routing. Module syntax and whitespace checks pass. No compiler, full
+test suite or build was repeated; actual Mac qualification remains pending.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.
