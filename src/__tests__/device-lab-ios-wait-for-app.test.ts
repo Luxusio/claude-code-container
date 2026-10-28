@@ -1,6 +1,10 @@
 import { spawnSync } from "child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 
 const fixture = vi.hoisted(() => ({
     handlers: [] as Array<(request: any) => Promise<any>>,
@@ -56,9 +60,13 @@ const wait = (timeoutMs = 1) => finish(waitForIosApp("/fixture/xcrun", "SIM-UDID
 const call = (name: string, args: Record<string, unknown>) => finish(readFile(new URL(import.meta.url))
     .then(() => fixture.handlers[1]({ params: { name, arguments: args } })));
 const args = { deviceId: "ios-observation-fixture", appId: bundleId, timeoutMs: 1, intervalMs: 50, implicitBroker: false };
+let home: string;
+let restoreEnvironment: () => void;
 
 beforeAll(async () => { await startServer(); });
 beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "ccc-ios-wait-for-app-"));
+    restoreEnvironment = isolateDeviceLabTestEnvironment(home);
     vi.useFakeTimers();
     vi.setSystemTime(0);
     vi.spyOn(performance, "now").mockImplementation(() => Date.now());
@@ -67,7 +75,12 @@ beforeEach(() => {
     fixture.observe = failed;
     fixture.device = { id: args.deviceId, udid: "SIM-UDID", simulatorName: `ccc-${ownerId()}-observation` };
 });
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    restoreEnvironment();
+    rmSync(home, { recursive: true, force: true });
+});
 
 describe("iOS Simulator app observation", () => {
     it("rejects a native PID observed at the deadline and starts no further command", async () => {

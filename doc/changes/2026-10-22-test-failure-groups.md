@@ -345,7 +345,15 @@ replace overlapping earlier iOS evidence in this total. Package-only emit,
 architecture and real-test typechecks, changed MJS syntax and configured broker
 lint pass. The real-test client is outside the configured lint scope.
 
-Actual Safari observation and guest SSH/helper acceptance remain pending.
+The first independent frozen run exposed seven public iOS test failures before
+native probes: the fixture used the real home for owner-operation locks, and a
+new checkout required an unwritable state directory. The fixture now uses the
+existing canonical private home/environment helper and keeps the real lock path.
+Only that 36-case owner reran after correction and passed. Documentation review
+also clarified the derived bootstrap policy, public `launchctl-list` source and
+first-failure eligibility; production code did not change during this remediation.
+
+Actual candidate Safari observation and guest SSH/helper acceptance remain pending.
 No full build, full unit suite, full Level 3 rerun, global broker replacement or
 guest credential change was performed by the coordinator.
 

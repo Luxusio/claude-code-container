@@ -2,7 +2,7 @@
 
 Status: derived correction, 2026-10-27.
 
-The user requests fixes from saved native failures. The latest Tart failures
+The user requests fixes from saved native failures. Earlier Oct27 Tart failures
 reach desktop control readiness but retain only `provider-error`; their exact
 guest or broker cause is not established. Source inspection independently finds
 that broker create/start never installs the helper script that cursor operations
@@ -49,6 +49,9 @@ connection category (`refused`, `reset`, `closed`, `timeout`, `unreachable`,
 the existing child output bound. Missing or invalid observations stay missing.
 This is the first observed failure, not a claim about the final cause. It must
 not alter retries, success admission, publication or ownership.
+Retain the available observation on failed preparation whether the child was
+terminated, returned a failed result normally, or completed too late for final
+admission. Successful admitted preparation omits earlier `firstFailure` data.
 
 The wire response reports admission or operation-lock budget exhaustion as HTTP
 504 with `macos-start-budget-exhausted`. A partial start or failed helper

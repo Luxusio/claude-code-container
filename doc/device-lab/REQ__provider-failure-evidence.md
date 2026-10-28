@@ -108,6 +108,9 @@ and the closed connection categories defined in the
 first failure separate from parent termination and VM launch execution in
 saved evidence and short messages. Unknown fields and categories are omitted;
 raw SSH output, targets, commands and credentials must never be copied.
+The same first observation may accompany a normally returned failed preparation
+or a late-result refusal. Omit it on successful admitted preparation; it never
+overrides the final helper outcome.
 
 MCP native broker observations use completed command output for ownership
 verification. Preserve fixed executables, full command width, exact entry/PID/

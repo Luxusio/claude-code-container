@@ -11,6 +11,9 @@ diagnostics. Native observation failure remains distinct from a clean no-match.
 Keep existing timeout bounds, polling defaults, ownership checks and public
 result fields.
 
+The following is a derived repair policy for the standing request to fix saved
+Mac failures, based on the existing bounded observation contract above and the
+Oct28 native result. It adds no separate user acceptance requirement.
 First query `simctl spawn <verified-owned-target> launchctl list` in the
 Simulator's default bootstrap namespace. The Oct28 native host observation
 returned Safari as `30323 0 UIKitApplication:com.apple.mobilesafari[244c][rb-legacy]`.
@@ -19,6 +22,11 @@ with the exact requested UIKit application bundle label and bracket suffix.
 Registered services with `-` or zero PID, neighboring bundle names and malformed
 tables do not prove the application is running. Omit the table's raw output
 from clean observation results.
+
+A clean list result reports `observedBy: "launchctl-list"`, empty `stdout` and
+`stderr`, and native status zero. A matched running result includes the observed
+PID as a string. An expired clean no-match reports `running:false`, retaining
+the existing wait timeout and native-status fields with that observation source.
 
 A clean list with no matching running row is an authoritative no-match for
 that sweep. Pause within the same budget; do not let legacy service-description
