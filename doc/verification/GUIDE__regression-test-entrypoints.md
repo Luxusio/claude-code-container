@@ -299,3 +299,21 @@ For this follow-up, rebuild the MCP bundle, run the host broker preflight and
 repeat only the two Mac provider scenarios. The prior transfer assembly is
 already qualified by their successful uploads; no TypeScript rebuild or iOS
 repeat is needed for the listing change.
+
+The Oct28 11:30 UTC host result qualifies the listing correction: the complete
+macOS Level 2 scenario passes, and both scenarios pass upload, listing and
+download. The destructive scenario proceeds to snapshot creation and receives
+`broker-device-tool-backend-not-supported` (HTTP 501). Its broker advertises
+snapshot create/restore/delete but omitted them from the backend allowlist.
+The focused broker command owner now covers these three methods through the
+actual backend child, literal confirmation before restore/delete effects and
+preserved owner/provider refusals. Keep the existing global base-image refusals
+and unsupported snapshot-list assertion. See
+[the broker snapshot requirement](../device-lab/REQ__macos-broker-snapshots.md).
+
+This admission correction changes the compiled broker and requires protocol 12.
+Build only the device-lab workspace, assemble the runtime packages and rebuild
+the MCP bundle, then run the port-17374 host preflight. Its existing verified
+replacement must deliver the new in-memory handler. Repeat only
+`scripts/real-tests/level3-real-destructive.ts`; retain the successful Level 2
+and iOS evidence. Native snapshot acceptance remains pending that focused run.

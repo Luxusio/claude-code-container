@@ -10,7 +10,19 @@ Restore publishes a prepared candidate before deleting the primary instance. Mat
 
 The domain owns eligibility, provider refusal, snapshot selection, recovery matching and the shared device definition. Native adapters retain actual Tart discovery/execution, process and resource identity, state CAS, guarded SSH/files and operation locks. Public results still use the current redacted device presentation. Portable ordinary tests and genuine emitted package checks verify wiring and policy; actual macOS/Tart acceptance remains separate.
 
-Direct public base-image creation/cloning and snapshot workflows are supported. The five advertised broker image/snapshot bindings remain `advertised-blocked-current-contract`, a tracked advertised-contract discrepancy rather than an unsupported exclusion: the native broker returns 501 for global base-image actions and backend-gates snapshots without invoking the provider child.
+Direct public base-image creation/cloning and snapshot workflows are supported.
+The broker also routes macOS snapshot create/restore/delete through that same
+backend facade and its operation lock. Restore and delete require literal
+`confirmDestructive: true` before backend execution, including raw authenticated
+broker calls with an inferred backend. See
+[the broker snapshot requirement](REQ__macos-broker-snapshots.md).
+
+Snapshot listing remains unsupported. The two advertised global broker
+base-image bindings remain `advertised-blocked-current-contract`; the broker
+returns 501 without invoking their provider child. The Level 3 image-based
+`create_macos_vm` call uses the existing lifecycle `device_create` route, while
+its source-device clone uses the direct facade. These calls do not require
+opening the two global broker bindings.
 
 The image core consumes native success facts and opaque evidence rather than
 Tart argv, raw status/output or MCP publishers. Backend presentation renders

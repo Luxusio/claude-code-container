@@ -1356,6 +1356,16 @@ try {
             const privateTools = ["android-emulator", "android-device"].includes(backend.backend) ? ["device_reset"] : [];
             expect(backend.supportedTools.filter((tool) => !backend.capabilities.includes(tool))).toEqual(privateTools);
         }
+        const macos = contract.backends.find((backend) => backend.backend === "macos-vm");
+        const sandbox = contract.backends.find((backend) => backend.backend === "windows-sandbox");
+        for (const tool of ["device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete"]) {
+            expect(macos?.capabilities).toContain(tool);
+            expect(macos?.supportedTools).toContain(tool);
+            expect(sandbox?.supportedTools).not.toContain(tool);
+        }
+        for (const tool of ["device_snapshot_list", "device_base_image_create", "device_base_image_clone"]) {
+            expect(macos?.supportedTools).not.toContain(tool);
+        }
         const androidDevice = contract.backends.find((backend) => backend.backend === "android-device");
         expect(androidDevice?.capabilities).toEqual(expect.arrayContaining([
             "device_record_video_status",

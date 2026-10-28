@@ -3816,7 +3816,11 @@ function brokerDeviceToolSupportedMethods(backend: string | null): Set<string> {
     if (isHyperVBackend(backend)) {
         return new Set(["device_exec", "device_upload", "device_download", "device_screenshot", "device_click", "device_double_click", "device_drag", "device_focus_window", "device_key", "device_type", "device_scroll", "device_cursor_position", "device_window_list", "device_snapshot_list", "device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete"]);
     }
-    if (backend === "windows-sandbox" || backend === "macos-vm") {
+    if (backend === "macos-vm") {
+        return new Set([...DEVICE_BROKER_DESKTOP_TOOL_METHODS, ...DEVICE_BROKER_DESKTOP_FILE_TOOL_METHODS, ...recordingTools,
+            "device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete"]);
+    }
+    if (backend === "windows-sandbox") {
         return new Set([...DEVICE_BROKER_DESKTOP_TOOL_METHODS, ...DEVICE_BROKER_DESKTOP_FILE_TOOL_METHODS, ...recordingTools]);
     }
     if (backend === "android-emulator") return new Set([...DEVICE_BROKER_ANDROID_TOOL_METHODS, ...recordingTools]);
@@ -4264,6 +4268,12 @@ async function invokeBackendDeviceTool(ownerId: string, parsed: DeviceToolParamS
                 supportedBackends: DEVICE_BROKER_BACKEND_TOOL_RUNNER_BACKENDS,
             },
         };
+    }
+    if (match.backend === "macos-vm"
+        && (parsed.tool === "device_snapshot_restore" || parsed.tool === "device_snapshot_delete")
+        && parsed.params.confirmDestructive !== true) {
+        return { status: 400, payload: { ok: false, error: "destructive-confirmation-required", ownerId,
+            backend: match.backend, deviceId: parsed.deviceId, tool: parsed.tool } };
     }
     const leaseFailure = refreshPhysicalDeviceLeaseForOperation(ownerId, match, String(parsed.deviceId));
     if (leaseFailure) return leaseFailure;

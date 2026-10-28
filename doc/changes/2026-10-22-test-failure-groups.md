@@ -532,7 +532,37 @@ outer-shell enumeration, path/name quoting, final command-budget refusal and
 unchanged routing. Module syntax and whitespace checks pass. No compiler, full
 test suite or build was repeated; actual Mac qualification remains pending.
 
+The Oct28 11:30 UTC host report accepts the listing correction: the complete
+macOS Level 2 scenario passes, and both scenarios pass upload, listing, download
+and desktop checks. The destructive scenario reaches snapshot creation and
+fails with HTTP 501 `broker-device-tool-backend-not-supported`. This qualifies
+the corrected command without establishing which guest shell caused the
+historical status-1 failures.
+
+The broker advertised macOS snapshot create/restore/delete while excluding
+them from its execution allowlist. The correction connects only those three
+methods to the existing backend and requires literal destructive confirmation
+before restore/delete child execution. Backend operation locks, owner identity,
+Tart eligibility, stopped-or-force checks and generation protection remain in
+their existing owners. Snapshot listing and global broker base-image methods
+retain their refusals. The existing Level 3 image calls use lifecycle creation
+and direct cloning, so this scenario needs no broader image admission.
+
+Protocol 12 identifies this corrected in-memory broker behavior. Necessary host
+delivery is the device-lab workspace build, runtime assembly, MCP bundling and
+verified port-17374 preflight, followed by the destructive Mac scenario only.
+Native snapshot acceptance remains pending; prior iOS and macOS Level 2
+qualification is retained.
+
+Focused portable verification passes 75 relevant cases: the authenticated
+backend snapshot journey, pre-effect refusal coverage, the capability contract
+and 72 broker protocol/replacement cases. Device-lab type checking, protocol
+module syntax and documentation references also pass. These checks do not
+replace native Tart qualification.
+
 ## Known ceiling
+
+Known ceiling: Actual Tart snapshot acceptance remains pending — verify the focused destructive scenario on the Mac host.
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.
 

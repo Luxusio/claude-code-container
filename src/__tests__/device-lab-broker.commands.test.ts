@@ -11635,9 +11635,10 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
             cleanupOwner(ownerId);
         }
     });
-    it("preserves authenticated macOS image and snapshot broker refusals without native effects", async () => {
+    it("preserves authenticated macOS snapshot broker pre-effect guards and image refusals", async () => {
         const native = createFakeMacosMcpContext();
         const originalNodeOptions = process.env.NODE_OPTIONS;
+        let foreignOwnerId: string | undefined;
         let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
         try {
             const project = join(native.homeDir, "macos-refusal-project");
@@ -11680,10 +11681,9 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 expect(existsSync(childStarted)).toBe(false);
                 expect(readFileSync(native.logPath, "utf8")).toBe("");
             }
-            for (const tool of ["device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete"]) {
+            for (const tool of ["device_snapshot_list"]) {
                 const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({
-                    method: "broker.device.tool.invoke", params: { tool, backend: "macos-vm", deviceId, snapshotName: "Before",
-                        ...(tool === "device_snapshot_create" ? {} : { confirmDestructive: true }) },
+                    method: "broker.device.tool.invoke", params: { tool, backend: "macos-vm", deviceId },
                 }) });
                 expect(response.status).toBe(501);
                 const body = await response.json() as { supportedTools: string[] };
@@ -11695,9 +11695,151 @@ fs.copyFileSync(${JSON.stringify(guestArtifact)}, stage);
                 expect(existsSync(childStarted)).toBe(false);
                 expect(readFileSync(native.logPath, "utf8")).toBe("");
             }
+            for (const tool of ["device_snapshot_restore", "device_snapshot_delete"]) {
+                for (const backend of [undefined, "macos-vm"]) {
+                    for (const confirmDestructive of [undefined, false, "true"]) {
+                        const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({
+                            method: "broker.device.tool.invoke", params: { tool, backend, deviceId, snapshotName: "Before",
+                                force: true, confirmDestructive },
+                        }) });
+                        expect(response.status).toBe(400);
+                        expect(await response.json()).toMatchObject({ ok: false, error: "destructive-confirmation-required" });
+                        expect(readFileSync(statePath, "utf8")).toBe(originalState);
+                        expect(existsSync(childStarted)).toBe(false);
+                        expect(readFileSync(native.logPath, "utf8")).toBe("");
+                    }
+                }
+            }
+            const unauthorized = await fetch(endpoint, { method: "POST",
+                headers: { ...headers, "x-ccc-device-token": "invalid-snapshot-token" },
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: {
+                    tool: "device_snapshot_create", deviceId, snapshotName: "Unauthorized",
+                } }),
+            });
+            expect(unauthorized.status).toBe(401);
+            expect(await unauthorized.json()).toMatchObject({ ok: false, error: "invalid-owner-token" });
+            foreignOwnerId = deviceLabOwnerId(join(native.homeDir, "foreign-snapshot-project"));
+            const foreignRoot = writeBrokerDevices(foreignOwnerId, "macos", [{
+                id: "foreign-macos-snapshot-device", ownerId: foreignOwnerId, backend: "macos-vm", status: "stopped",
+                provider: "tart", providerInstance: `ccc-${foreignOwnerId}-foreign-snapshot-device`,
+            }]);
+            const foreignStatePath = join(foreignRoot, "devices.json"), foreignState = readFileSync(foreignStatePath, "utf8");
+            for (const target of ["missing-macos-snapshot-device", "foreign-macos-snapshot-device"]) {
+                const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({
+                    method: "broker.device.tool.invoke", params: {
+                        tool: "device_snapshot_delete", deviceId: target, snapshotName: "Before", confirmDestructive: true,
+                    },
+                }) });
+                expect(response.status).toBe(404);
+                expect(await response.json()).toMatchObject({ ok: false, error: "owner-device-not-found", deviceId: target });
+            }
+            expect(readFileSync(statePath, "utf8")).toBe(originalState);
+            expect(readFileSync(foreignStatePath, "utf8")).toBe(foreignState);
+            expect(existsSync(childStarted)).toBe(false);
+            expect(readFileSync(native.logPath, "utf8")).toBe("");
             expect(readdirSync(resources).sort()).toEqual([primary, snapshotInstance].sort());
             expect(readFileSync(join(resources, primary))).toEqual(primaryBytes);
             expect(readFileSync(join(resources, snapshotInstance))).toEqual(snapshotBytes);
+        } finally {
+            try { if (server) await close(server); }
+            finally {
+                if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+                else process.env.NODE_OPTIONS = originalNodeOptions;
+                if (foreignOwnerId) cleanupOwner(foreignOwnerId);
+                cleanupFakeMacosMcpContext(native);
+            }
+        }
+    });
+    it("routes authenticated macOS snapshots through the backend child and retains provider guards", async () => {
+        const native = createFakeMacosMcpContext();
+        const originalNodeOptions = process.env.NODE_OPTIONS;
+        let server: ReturnType<typeof createRawDeviceBrokerServer> | undefined;
+        try {
+            const project = join(native.homeDir, "macos-snapshot-project");
+            mkdirSync(project);
+            writeFileSync(native.logPath, "");
+            const ownerId = deviceLabOwnerId(project), deviceId = "macos-broker-snapshot-source";
+            const primary = `ccc-${ownerId}-${deviceId}`;
+            const original = { id: deviceId, ownerId, backend: "macos-vm", name: "Broker Snapshot Source",
+                status: "stopped", provider: "tart", providerInstance: primary, providerResourceManaged: true, snapshots: [] };
+            const root = writeBrokerDevices(ownerId, "macos", [original]);
+            const statePath = join(root, "devices.json");
+            const preload = join(native.homeDir, "macos-snapshot-routing.cjs");
+            writeFileSync(preload, nodeProviderFixturePreloadSource(native.binDir)
+                + "Object.defineProperty(process, 'platform', {value:'darwin'});\n");
+            process.env.NODE_OPTIONS = `${originalNodeOptions || ""} --require=${JSON.stringify(preload)}`.trim();
+            server = createRawDeviceBrokerServer({ cwd: project, host: "127.0.0.1", port: 0 });
+            const endpoint = ownerRpcEndpoint(await listen(server), ownerId), headers = ownerRpcHeaders(ownerId);
+            const invoke = async (tool: string, params: Record<string, unknown>) => {
+                const response = await fetch(endpoint, { method: "POST", headers,
+                    body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, deviceId, ...params } }),
+                });
+                const body = await response.json() as { ok: boolean; result: { provider: string; mcpResult: { isError?: boolean; content: Array<{ text: string }> } } };
+                expect(response.status, JSON.stringify(body)).toBe(200);
+                expect(body).toMatchObject({ ok: true, result: { ownerId, backend: "macos-vm", deviceId,
+                    provider: "device-lab-backend-child", tool } });
+                return body.result.mcpResult;
+            };
+            for (const refusal of [
+                { state: { ...original, status: "running" }, tool: "device_snapshot_create",
+                    params: { snapshotName: "Running Refusal" }, message: "stop it first or pass force=true" },
+                { state: original, tool: "device_snapshot_restore",
+                    params: { snapshotId: "snapshot-absent", confirmDestructive: true }, message: "Unknown snapshot" },
+                { state: { ...original, provider: "vz" }, tool: "device_snapshot_create",
+                    params: { snapshotName: "Provider Refusal" }, message: "Tart is currently required" },
+            ]) {
+                writeBrokerDevices(ownerId, "macos", [refusal.state]);
+                const before = readFileSync(statePath, "utf8"), beforeLog = readFileSync(native.logPath, "utf8");
+                const result = await invoke(refusal.tool, refusal.params);
+                expect(result.isError).toBe(true);
+                expect(result.content[0].text).toContain(refusal.message);
+                expect(readFileSync(statePath, "utf8")).toBe(before);
+                expect(readFileSync(native.logPath, "utf8").slice(beforeLog.length)).not.toMatch(/tart (?:clone|delete|stop) /);
+            }
+            writeBrokerDevices(ownerId, "macos", [original]);
+            writeFileSync(native.logPath, "");
+            const createdResult = await invoke("device_snapshot_create", { snapshotName: "Broker Snapshot" });
+            expect(createdResult.isError, createdResult.content[0].text).not.toBe(true);
+            const created = JSON.parse(createdResult.content[0].text) as {
+                snapshot: { id: string; name: string; providerInstance: string };
+            };
+            expect(created).toMatchObject({ snapshot: { id: "snapshot-broker-snapshot", name: "Broker Snapshot", provider: "tart",
+                sourceProviderInstance: primary, providerInstance: `${primary}-snapshot-broker-snapshot` } });
+            const stored = () => (JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, unknown>> }).devices;
+            expect(stored()).toEqual([expect.objectContaining({ id: deviceId, ownerId, status: "stopped", snapshots: [created.snapshot] })]);
+            expect(stored()[0]).not.toHaveProperty("lifecycle");
+            const restoredResult = await invoke("device_snapshot_restore", {
+                backend: "macos-vm", snapshotId: created.snapshot.id, confirmDestructive: true,
+            });
+            expect(restoredResult.isError, restoredResult.content[0].text).not.toBe(true);
+            expect(JSON.parse(restoredResult.content[0].text)).toMatchObject({ device: {
+                id: deviceId, ownerId, status: "stopped", restoreRecovery: null,
+                restoredFrom: { id: created.snapshot.id, name: created.snapshot.name, providerInstance: created.snapshot.providerInstance },
+            } });
+            const deletedResult = await invoke("device_snapshot_delete", { snapshotName: created.snapshot.name, confirmDestructive: true });
+            expect(deletedResult.isError, deletedResult.content[0].text).not.toBe(true);
+            expect(JSON.parse(deletedResult.content[0].text)).toMatchObject({ deleted: created.snapshot.id,
+                device: { id: deviceId, ownerId, status: "stopped", snapshots: [] } });
+            expect(stored()).toEqual([expect.objectContaining({ id: deviceId, ownerId, providerInstance: primary,
+                status: "stopped", snapshots: [], restoreRecovery: null })]);
+            expect(stored()[0]).not.toHaveProperty("lifecycle");
+            const log = readFileSync(native.logPath, "utf8");
+            expect(log).toContain(`tart clone ${primary} ${created.snapshot.providerInstance}\n`);
+            const candidatePrefix = `tart clone ${created.snapshot.providerInstance} `;
+            const candidate = log.split("\n").find(line => line.startsWith(candidatePrefix))?.slice(candidatePrefix.length);
+            expect(candidate).toContain(`${primary}-restore-${created.snapshot.id}-`);
+            expect(log).toContain(`tart delete ${primary}\n`);
+            expect(log).toContain(`tart clone ${candidate} ${primary}\n`);
+            expect(log).toContain(`tart delete ${candidate}\n`);
+            expect(log).toContain(`tart delete ${created.snapshot.providerInstance}\n`);
+            expect(log.split("\n").filter(line => /^tart (?:clone|delete|stop) /.test(line))).toEqual([
+                `tart clone ${primary} ${created.snapshot.providerInstance}`,
+                `tart clone ${created.snapshot.providerInstance} ${candidate}`,
+                `tart delete ${primary}`,
+                `tart clone ${candidate} ${primary}`,
+                `tart delete ${candidate}`,
+                `tart delete ${created.snapshot.providerInstance}`,
+            ]);
         } finally {
             try { if (server) await close(server); }
             finally {
