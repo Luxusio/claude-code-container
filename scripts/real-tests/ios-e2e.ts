@@ -52,6 +52,60 @@ function run(command, args, timeoutMs = 30000) {
     });
 }
 
+export async function parseIosSimulatorStopWithObservation(result, xcrun: string, udid: string, simulatorName: string) {
+    try { return parseContractToolPayload("stop", result); }
+    catch (error) {
+        try {
+            type State = "Booted" | "Shutdown" | "Shutting Down" | "missing" | "identity-mismatch" | "invalid" | "unavailable" | "unknown";
+            const startedAt = performance.now();
+            const deadline = startedAt + 10000;
+            const changes: Array<{ elapsedMs: number; state: State }> = [];
+            let attempts = 0;
+            let firstState: State | null = null;
+            let lastState: State | null = null;
+            let native: { status: number | null; signal: string | null; timedOut: boolean } | null = null;
+            while (attempts < 24) {
+                const remaining = Math.floor(deadline - performance.now());
+                if (remaining < 1) break;
+                const observation = run(xcrun, ["simctl", "list", "devices", udid, "-j"], remaining);
+                attempts++;
+                native = {
+                    status: Number.isSafeInteger(observation.status) && observation.status >= 0 ? observation.status : null,
+                    signal: ["SIGINT", "SIGTERM", "SIGKILL"].includes(observation.signal) ? observation.signal : null,
+                    timedOut: (observation.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
+                };
+                let state: State = "unavailable";
+                if (!observation.error && !observation.signal && observation.status === 0) {
+                    state = "invalid";
+                    try {
+                        const inventory = JSON.parse(observation.stdout || "{}");
+                        const groups = inventory?.devices;
+                        if (groups && typeof groups === "object" && !Array.isArray(groups)
+                            && Object.values(groups).every(Array.isArray)) {
+                            const devices = Object.values(groups).flat();
+                            if (devices.every(device => device && typeof device === "object" && !Array.isArray(device))) {
+                                const matches = devices.filter(device => (device as Record<string, unknown>).udid === udid) as Array<Record<string, unknown>>;
+                                state = matches.length === 0 ? "missing"
+                                    : matches.length !== 1 || matches[0].name !== simulatorName ? "identity-mismatch"
+                                        : typeof matches[0].state === "string" && ["Booted", "Shutdown", "Shutting Down"].includes(matches[0].state) ? matches[0].state as State : "unknown";
+                            }
+                        }
+                    } catch { /* Keep malformed inventory distinct from unavailable execution. */ }
+                }
+                if (firstState === null) firstState = state;
+                if (state !== lastState) changes.push({ elapsedMs: Math.max(0, Math.floor(performance.now() - startedAt)), state });
+                lastState = state;
+                const pauseMs = Math.min(500, deadline - performance.now());
+                if (state === "Shutdown" || pauseMs <= 0) break;
+                await new Promise(resolve => setTimeout(resolve, pauseMs));
+            }
+            const afterStop = { attempts, elapsedMs: Math.max(0, Math.floor(performance.now() - startedAt)), firstState, lastState, changes, native };
+            if (error instanceof Error) error.message += ` afterStop=${JSON.stringify(afterStop)}`;
+        } catch { /* Observation must never replace the original failed stop. */ }
+        throw error;
+    }
+}
+
 function cleanupSimulator(xcrun, udid) {
     if (!xcrun || !udid) return;
     run(xcrun, ["simctl", "shutdown", udid], 30000);
@@ -422,7 +476,7 @@ export async function runIosSimulatorE2E(options: any = {}) {
             assert.ok(String(screenshot.content[0].data || "").length > 64);
 
             const stopResult = await callTool("stop", { detail: true, deviceId });
-            const stop = parseContractToolPayload("stop", stopResult);
+            const stop = await parseIosSimulatorStopWithObservation(stopResult, cap.discovery.xcrun, createdUdid, createdSimulator.name);
             const stopDetails = parsePayload(stopResult);
             stopped = true;
             assert.strictEqual(stop.device.status, "stopped");

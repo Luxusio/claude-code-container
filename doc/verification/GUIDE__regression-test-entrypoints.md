@@ -266,3 +266,12 @@ unclassified and no native SCP failure is inferred without a receipt. These
 portable checks do not replace the remaining actual Mac provider scenarios;
 see [staging lifetime](../device-lab/REQ__desktop-transfer-staging-lifetime.md)
 and [failure evidence](../device-lab/REQ__provider-failure-evidence.md).
+
+For the later three-attempt iOS timeout, inspect the scenario's `afterStop`
+summary before attributing cleanup's second stop to the first request. It
+observes the exact created Simulator for at most a ten-second command window
+before cleanup, using closed states and elapsed times. A later `Shutdown`
+remains diagnostic evidence; the original stop and scenario still fail. The
+existing `device-lab.real-ios-e2e.test.ts` owner checks this read-only failure
+tail portably while retaining its separate native platform/level gates. This
+collector-only change needs no build for the focused host iOS entrypoint.

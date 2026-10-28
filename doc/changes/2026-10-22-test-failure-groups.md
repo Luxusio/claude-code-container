@@ -458,6 +458,35 @@ fixture; that case passes after matching the existing broker envelope. The
 real-test typecheck and transfer-module syntax check pass. No full build or full
 test suite was repeated.
 
+## Oct28 10:04 UTC focused shutdown observation
+
+The next Mac iOS-only run confirms that shutdown settlement exhausts its
+allowance: the native command exits 0, then three observations end with
+`reason: timed-out` and `lastState: null`. The loop permits another attempt only
+after a timely owned `Booted` or `Shutting Down` observation, so the first two
+were pending states. The final unavailable observation replaced that earlier
+state in the diagnostic. No inventory cache, no-op execution or automatic boot
+was found in the source trace. These facts do not establish a CoreSimulator
+cause or justify increasing the product deadline.
+
+The existing failure cleanup sends another stop before deleting the fixture.
+Its successful second stop masks whether the first request would finish
+naturally. The iOS scenario now adds a bounded read-only state tail before that
+cleanup when the first stop fails. It admits only the exact created identity,
+retains closed state changes, elapsed time and native exit facts, and preserves
+the original failure even if `Shutdown` appears later. Successful stop adds no
+native calls. Broker commands, ownership and timeouts remain unchanged; actual
+Mac timing evidence and the iOS repair remain pending.
+
+Seven portable cases pass, with the two actual native cases skipped by their
+existing level gates. The initial deadline fixture mixed two fake-clock
+advancement methods; correcting that fixture passes the same shrinking-budget
+assertions. A native errno type annotation was corrected, and the real-test
+typecheck passes. Independent review then exposed persistent native-spy call
+history when the whole owner ran together; per-test clearing restores seven
+passes and two native skips in that complete owner. No build or full test suite
+was repeated.
+
 ## Known ceiling
 
 The rows below preserve limits reported at successive checkpoints. The 170-case Mac result supersedes the pending PTY, lifetime, Worker-cleanup and timer observations for those unchanged owners at the tested commit. The 103-failure run replaced the earlier unknown exit74 diagnosis with descriptor-identity stages and contained no earlier Bash parser failure. The four-failure run verifies descriptor metadata, Android exit qualification, QEMU stop and socket corrections at the tested source. The one-failure run verifies the write-fault and smoke teardown corrections and passes the prior SIGHUP case. The three-failure run passes the broker and trace cases without establishing the earlier refusal's cause. The 23-failure run passes those metadata and nested cancellation cases, then identifies seven outdated Docker fixtures, fifteen retained-predecessor fixtures and one standalone cancellation failure. The latest one-failure run accepts all 23 corrections, including standalone cancellation, then fails the guardian marker observation. The latest zero-failure unit run accepts that complete-content wait as well. Native unit acceptance supersedes those pending unit limits. Later Mac collection accepts the diagnostic itself and identifies the global/check-out entry conflict, while separate Level 3 broker/provider acceptance remains pending and historical interleavings remain untraced. Retaining an earlier row does not make its superseded limitation current again.

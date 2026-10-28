@@ -66,6 +66,22 @@ that text, followed by its exact delimiter or end of text. Discard the entire
 path/text suffix. Unknown text remains unclassified. A policy refusal without a
 native execution receipt must not be presented as an SSH or SCP command failure.
 
+When the real iOS scenario's first stop fails, observe only that created
+Simulator before cleanup sends another stop. Use the exact created UDID and
+recorded native name to admit each inventory observation. Bound this read-only
+tail to ten seconds, with each native call capped by the remainder and at most
+24 samples separated by pauses of at most 500 ms. Stop when `Shutdown` is
+observed or the window expires. Keep only elapsed time, attempt count, closed
+states and their changes, and bounded native exit facts. Missing, ambiguous,
+renamed, malformed or unsupported observations stay distinguishable without
+exporting identity fields, raw inventory, paths or command text.
+The tail issues no lifecycle mutations, does not turn the failed stop into a
+pass, and leaves the original error authoritative if observation itself fails.
+Normal successful stop adds no calls. Existing cleanup still follows the tail;
+its later successful shutdown must not be mistaken for natural completion of
+the first request. This is diagnostic timing evidence, not a larger product
+allowance or a native shutdown repair.
+
 Mac desktop command failures use the same structured native observation shape
 while preserving their existing error text and `isError`. Select status, known
 OS signal/errno, boolean timeout and the existing closed native diagnostic code
