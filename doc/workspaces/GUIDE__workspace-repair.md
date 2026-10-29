@@ -54,6 +54,30 @@ strict core types check the application ports. Genuine emitted CLI checks and a
 combined affected-owner suite qualify current integration separately. Native
 Windows/macOS acceptance and global migration completion remain separate.
 
+Startup workspace detection also uses the recorded-path reachability policy.
+A nested gitfile whose recorded Git directory is absent, including a directory
+path beneath another `.git` file (`ENOTDIR`), is omitted with the existing
+escaped, deduplicated notice. The shared metadata classifier marks only those
+recorded-path absence failures, and direct nested classification handles that
+marker. A missing `commondir` inside an existing Git directory retains normal
+gitlink classification.
+
+This is observation rather than Git repair: detection preserves operator files,
+registrations and healthy sibling repositories. An unreachable workspace root,
+a still-registered unusable child, valid mixed layouts and other metadata or
+ownership failures retain their refusals. The ordinary-root and rootless scans
+do not acquire managed-workspace authority from skipping an orphan. See
+[the startup detection requirement](../common/REQ__workspace-detection-unreachable-gitdir.md).
+
+For a source checkout, `npm run install:global -- --skip-image` builds the CLI
+and installs the new executable without building a container image. Use the
+installed `ccc codex` from the affected checkout for host confirmation. The
+unchanged package version alone cannot identify which source build is installed.
+
+Real-Git fixtures must not require a developer's signing key. A command-local
+`commit.gpgsign=false` override can isolate inherited signing configuration
+without changing the developer's global Git configuration.
+
 ## Known ceiling
 
 If a native addition changes Git state but throws before returning a registration

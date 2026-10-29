@@ -1390,6 +1390,226 @@ describe("assertWorkspaceBranch", () => {
         return { workspace, healthy, orphan, sources, removedRegistration, capture, git };
     }
 
+    describe("startup detection with unreachable immediate child metadata", () => {
+        it.each([
+            ["ENOTDIR", "isWorktreeWorkspace", isWorktreeWorkspace, false],
+            ["ENOTDIR", "detectWorktreeWorkspaceBranch", detectWorktreeWorkspaceBranch, null],
+            ["ENOENT", "isWorktreeWorkspace", isWorktreeWorkspace, false],
+            ["ENOENT", "detectWorktreeWorkspaceBranch", detectWorktreeWorkspaceBranch, null],
+        ] as const)("skips an immediate %s child during startup detection with %s", (kind, _name, detect, expected) => {
+            const holder = getWorkspacePath(repoPath, "recorded-gitdir-holder");
+            branchWorkspaces.push(holder);
+            const added = spawnSync("git", ["worktree", "add", "-b", "recorded-gitdir-holder", holder], {
+                cwd: repoPath, encoding: "utf-8", stdio: "pipe",
+            });
+            expect(added.status, added.stderr).toBe(0);
+            expect(lstatSync(join(holder, ".git")).isFile()).toBe(true);
+
+            const orphan = join(repoPath, "orphan");
+            mkdirSync(orphan);
+            const recorded = kind === "ENOTDIR"
+                ? join(holder, ".git", "worktrees", "orphan")
+                : join(repoPath, "missing-administration", "orphan\u001b[31m\u202e");
+            writeFileSync(join(orphan, ".git"), `gitdir: ${recorded}\n`);
+            writeFileSync(join(orphan, "untracked.txt"), "orphan operator work");
+            writeFileSync(join(repoPath, "init.txt"), "uncommitted root work");
+            const sibling = join(repoPath, "sibling");
+            mkdirSync(sibling);
+            writeFileSync(join(sibling, "untracked.txt"), "sibling operator work");
+            const files = [
+                join(repoPath, "init.txt"),
+                join(repoPath, ".git", "HEAD"),
+                join(repoPath, ".git", "index"),
+                join(repoPath, ".git", "config"),
+                join(holder, ".git"),
+                join(orphan, ".git"),
+                join(orphan, "untracked.txt"),
+                join(sibling, "untracked.txt"),
+            ];
+            const holderRegistration = resolve(holder, readFileSync(join(holder, ".git"), "utf-8")
+                .replace(/^gitdir: /, "").trim());
+            files.push(...["HEAD", "index", "gitdir", "commondir"].map((name) => join(holderRegistration, name)));
+            const before = files.map((file) => readFileSync(file));
+            const stderr: string[] = [];
+            const originalWrite = process.stderr.write;
+            process.stderr.write = ((chunk: unknown) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+            try {
+                expect(detect(repoPath), "an ordinary root stays usable when only its child metadata is unreachable")
+                    .toBe(expected);
+                expect(detect(repoPath)).toBe(expected);
+            } finally {
+                process.stderr.write = originalWrite;
+            }
+            expect(files.map((file) => readFileSync(file)), "startup detection preserves Git metadata and operator files")
+                .toEqual(before);
+            const notice = stderr.join("");
+            expect(notice).toContain("Skipping nested Git repository");
+            expect(notice).toContain(orphan);
+            if (kind === "ENOTDIR") {
+                expect(notice).toContain(recorded);
+            } else {
+                expect(notice).toContain(join(repoPath, "missing-administration"));
+                expect(notice).toContain("\\u001b");
+                expect(notice).toContain("\\u202e");
+                expect(notice).not.toContain("\u001b");
+                expect(notice).not.toContain("\u202e");
+            }
+            expect(notice.split("Skipping nested Git repository").length - 1).toBe(1);
+        });
+
+        function rootlessStartupWorkspace(branch: string) {
+            const source = join(repoPath, `source-${branch}`);
+            mkdirSync(source);
+            const sources = [join(source, "healthy"), join(source, "orphan")];
+            for (const repository of sources) initRepo(repository);
+            const { workspacePath: workspace } = createWorkspace(source, branch);
+            branchWorkspaces.push(workspace);
+            const healthy = join(workspace, "healthy");
+            const orphan = join(workspace, "orphan");
+            const administration = [healthy, orphan].map((repository) => (
+                resolve(repository, readFileSync(join(repository, ".git"), "utf-8")
+                    .replace(/^gitdir: /, "").trim())
+            ));
+            const git = (cwd: string, args: string[]): string => {
+                const result = spawnSync("git", args, { cwd, encoding: "utf-8", stdio: "pipe" });
+                expect(result.status, result.stderr).toBe(0);
+                return result.stdout;
+            };
+            const sibling = join(workspace, "ordinary-sibling");
+            mkdirSync(sibling);
+            writeFileSync(join(sibling, "untracked.txt"), "uncommitted sibling work");
+            const files = [join(sibling, "untracked.txt")];
+            for (const repository of [healthy, orphan]) {
+                writeFileSync(join(repository, "init.txt"), `dirty ${basename(repository)}`);
+                writeFileSync(join(repository, "untracked.txt"), `untracked ${basename(repository)}`);
+                files.push(...[".git", "init.txt", "untracked.txt"].map((name) => join(repository, name)));
+            }
+            writeFileSync(join(healthy, "staged.txt"), "staged healthy work");
+            git(healthy, ["add", "staged.txt"]);
+            files.push(join(healthy, "staged.txt"));
+            for (const repository of [repoPath, ...sources]) {
+                files.push(...["HEAD", "index", "config"].map((name) => join(repository, ".git", name)));
+            }
+            for (const directory of administration) {
+                files.push(...["HEAD", "index", "gitdir", "commondir"].map((name) => join(directory, name)));
+            }
+            const capture = () => ({
+                files: files.filter((file) => existsSync(file)).map((file) => {
+                    const observed = lstatSync(file);
+                    const { ino, uid, gid, mode } = observed;
+                    const contents = observed.isDirectory() ? readdirSync(file) : readFileSync(file);
+                    return { file, contents, ino, uid, gid, mode };
+                }),
+                refs: sources.map((repository) => git(repository, ["for-each-ref", "--format=%(refname) %(objectname)"])),
+                registrations: sources.map((repository) => git(repository, ["worktree", "list", "--porcelain"])),
+            });
+            return { workspace, healthy, orphan, administration, capture, git };
+        }
+
+        it.each(["ENOENT", "ENOTDIR"] as const)("keeps a healthy collection usable beside an immediate %s orphan", (kind) => {
+            const branch = `startup-${kind.toLowerCase()}`;
+            const { workspace, healthy, orphan, administration, capture, git } = rootlessStartupWorkspace(branch);
+            rmSync(administration[1], { recursive: true });
+            const recorded = kind === "ENOTDIR"
+                ? join(healthy, ".git", "worktrees", "orphan")
+                : join(workspace, "missing-administration", "orphan");
+            expect(lstatSync(join(healthy, ".git")).isFile()).toBe(true);
+            writeFileSync(join(orphan, ".git"), `gitdir: ${recorded}\n`);
+            const before = capture();
+            const stderr: string[] = [];
+            const originalWrite = process.stderr.write;
+            process.stderr.write = ((chunk: unknown) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+            try {
+                expect(isWorktreeWorkspace(workspace)).toBe(true);
+                expect(detectWorktreeWorkspaceBranch(workspace)).toBe(branch);
+                expect(detectWorktreeWorkspaceBranch(workspace)).toBe(branch);
+            } finally {
+                process.stderr.write = originalWrite;
+            }
+            expect(capture(), "detection preserves files, indexes, refs and registrations").toEqual(before);
+            expect(existsSync(administration[1]), "detection does not recreate the orphan registration").toBe(false);
+            expect(git(healthy, ["status", "--short"])).toContain("A  staged.txt");
+            expect(git(healthy, ["status", "--short"])).toContain(" M init.txt");
+            const notice = stderr.join("");
+            expect(notice).toContain("Skipping nested Git repository");
+            expect(notice).toContain(orphan);
+            expect(notice).toContain(recorded);
+            expect(notice).not.toContain(JSON.stringify(healthy));
+            expect(notice.split("Skipping nested Git repository").length - 1).toBe(1);
+        });
+
+        it.each(["ENOENT", "ENOTDIR"] as const)("still refuses a collection when a source registers its immediate %s orphan", (kind) => {
+            const { workspace, healthy, orphan, capture } = rootlessStartupWorkspace(`registered-${kind.toLowerCase()}`);
+            const recorded = kind === "ENOTDIR"
+                ? join(healthy, ".git", "worktrees", "orphan")
+                : join(workspace, "missing-administration", "orphan");
+            writeFileSync(join(orphan, ".git"), `gitdir: ${recorded}\n`);
+            const before = capture();
+            for (const detect of [isWorktreeWorkspace, detectWorktreeWorkspaceBranch]) {
+                expect(() => detect(workspace)).toThrow(DamagedWorkspaceMetadataError);
+            }
+            expect(capture(), "a source registration is neither hidden nor changed by skipping its child").toEqual(before);
+        });
+
+        it.each(["ENOENT", "ENOTDIR"] as const)("refuses an unreachable %s root instead of treating it as an ordinary directory", (kind) => {
+            const { workspacePath: workspace } = createWorkspace(repoPath, `unreachable-root-${kind.toLowerCase()}`);
+            branchWorkspaces.push(workspace);
+            const rootGit = join(workspace, ".git");
+            const registration = resolve(workspace, readFileSync(rootGit, "utf-8").replace(/^gitdir: /, "").trim());
+            const recorded = kind === "ENOTDIR"
+                ? join(workspace, ".git", "worktrees", "root")
+                : join(workspace, "missing-administration", "root");
+            writeFileSync(rootGit, `gitdir: ${recorded}\n`);
+            writeFileSync(join(workspace, "init.txt"), "uncommitted root work");
+            const files = [rootGit, join(workspace, "init.txt"), ...["HEAD", "index", "gitdir", "commondir"].map((name) => join(registration, name))];
+            const before = files.map((file) => readFileSync(file));
+            const stderr: string[] = [];
+            const originalWrite = process.stderr.write;
+            process.stderr.write = ((chunk: unknown) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+            try {
+                expect(() => isWorktreeWorkspace(workspace)).toThrow();
+                expect(() => detectWorktreeWorkspaceBranch(workspace)).toThrow();
+            } finally {
+                process.stderr.write = originalWrite;
+            }
+            expect(files.map((file) => readFileSync(file))).toEqual(before);
+            expect(stderr.join(""), "required root metadata is never reported as a skipped child")
+                .not.toContain("Skipping nested Git repository");
+        });
+
+        it("still refuses healthy worktree and ordinary repository children in one collection", () => {
+            const { workspace, orphan, administration, capture } = rootlessStartupWorkspace("valid-mixed-children");
+            rmSync(administration[1], { recursive: true });
+            rmSync(join(orphan, ".git"));
+            initRepo(orphan);
+            const before = capture();
+            const metadata = ["HEAD", "index", "config"].map((name) => join(orphan, ".git", name));
+            const beforeMetadata = metadata.map((file) => readFileSync(file));
+            expect(() => isWorktreeWorkspace(workspace)).toThrow("mixture of worktrees and regular repositories");
+            expect(() => detectWorktreeWorkspaceBranch(workspace)).toThrow("mixture of worktrees and regular repositories");
+            expect(capture()).toEqual(before);
+            expect(metadata.map((file) => readFileSync(file))).toEqual(beforeMetadata);
+        });
+
+        it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("still refuses an immediate child with unreadable reachable metadata", () => {
+            const child = join(repoPath, "unreadable-child");
+            initRepo(child);
+            const gitMetadata = join(child, ".git");
+            const savedMetadata = `${gitMetadata}.saved`;
+            renameSync(gitMetadata, savedMetadata);
+            writeFileSync(gitMetadata, `gitdir: ${savedMetadata}\n`);
+            const metadata = readFileSync(gitMetadata);
+            chmodSync(gitMetadata, 0o000);
+            try {
+                expect(() => isWorktreeWorkspace(repoPath)).toThrow();
+                expect(() => detectWorktreeWorkspaceBranch(repoPath)).toThrow();
+            } finally {
+                chmodSync(gitMetadata, 0o644);
+            }
+            expect(readFileSync(gitMetadata)).toEqual(metadata);
+        });
+    });
+
     describe("existing workspace readiness with independent branches", () => {
         it("classifies an ordinary source repository separately from worktree workspaces", () => {
             expect(isWorktreeWorkspace(repoPath)).toBe(false);

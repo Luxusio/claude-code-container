@@ -577,6 +577,33 @@ is needed for this correction. Source-MCP, Android, other-platform and complete
 Level 3 acceptance are not implied; exact stage timings and native receipt
 values were not stored.
 
+The Oct29 full Level 3 run passes macOS Level 2 and destructive snapshots, but
+the iOS shutdown confirmation failure recurs. Its original command exits zero;
+the later failure-only observer sees eight `Booted` observations before the
+last inventory call exhausts its remaining allowance. The ten-second duration
+belongs to the whole observation tail, not necessarily its last query. Cleanup's
+subsequent stop succeeds without changing the original failure. The earlier
+focused Simulator PASS remains a positive run, not proof that intermittency
+was eliminated. The native cause remains unresolved.
+
+A separate reported `ccc codex` startup fails when a nested gitfile names a
+Git directory beneath another `.git` file. Existing nested discovery handles
+that orphan, but direct startup classification bypassed it and threw `ENOTDIR`
+while opening `commondir`. The correction marks only missing recorded-directory
+failures in the shared classifier and applies the existing skip notice in the
+direct nested scans. It preserves normal gitlinks, healthy siblings, operator
+files, root refusal, source registrations, layout checks and ownership guards.
+It performs no repair, deletion or pruning of the user's checkout. Installed
+Mac acceptance remains separate from the portable real-Git regression proof.
+
+Both direct startup regressions first reproduced the reported `ENOTDIR` on the
+unchanged source. The corrected whole worktree owner passes 369 tests with nine
+platform/permission skips; root TypeScript checking also passes. Fixture Git
+commands use a process-local signing override because some existing setup loops
+otherwise inherit an unavailable developer key. Global Git configuration stays
+unchanged. The existing pointer-normalization race still fails closed with an
+explicit invalid-metadata diagnosis.
+
 ## Known ceiling
 
 The positive packaged Mac destructive result above supersedes the following

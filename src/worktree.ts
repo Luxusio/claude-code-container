@@ -1080,6 +1080,20 @@ function gitLinkKind(gitPath: string): GitLinkKind {
     const match = content.match(/^gitdir:\s*(.+)$/);
     if (!match) throw new Error(`Invalid worktree metadata '${gitPath}'.`);
     const gitDir = resolve(dirname(gitPath), match[1].trim());
+    // An absent recorded directory is different from an existing submodule gitdir with no
+    // commondir. Mark it before classification so every nested scan can apply the same skip
+    // policy, while the workspace's own root remains a refusal.
+    try {
+        lstatSync(gitDir);
+    } catch (error) {
+        if (UNREACHABLE_PATH_CODES.includes((error as NodeJS.ErrnoException).code ?? "")) {
+            throw Object.assign(
+                new Error(`Worktree metadata is invalid '${gitPath}': its recorded Git directory does not exist here.`, { cause: error }),
+                { recordedGitPath: gitDir },
+            );
+        }
+        throw new Error(`Unable to inspect worktree Git directory '${gitPath}'.`, { cause: error });
+    }
     let commonDir: string;
     try {
         commonDir = readFileSync(join(gitDir, "commondir"), "utf-8").trim();
@@ -2410,26 +2424,32 @@ function observeWorktreeWorkspaceBranches(
 ): Array<{ name: string; path: string; branch: string }> | null {
     if (!pathExistsStrict(workspacePath)) return null;
     const rootGit = join(workspacePath, ".git");
+    const rootKind = pathExistsStrict(rootGit) ? gitLinkKind(rootGit) : null;
     let repositories: Array<{ name: string; path: string }>;
-    if (pathExistsStrict(rootGit)) {
-        if (gitLinkKind(rootGit) !== "worktree") {
-            const nestedKinds = scanDirectory(workspacePath, { strict: true })
-                .filter((entry) => entry.isGitRepo)
-                .map((entry) => gitLinkKind(join(entry.path, ".git")));
-            if (nestedKinds.some((kind) => kind === "worktree")
-                || siblingSourceRegistersWorkspace(workspacePath)) {
+    if (rootKind === "worktree") {
+        repositories = branchRepositories(workspacePath, "root", options);
+    } else {
+        const kinds = scanDirectory(workspacePath, { strict: true })
+            .filter((entry) => entry.isGitRepo)
+            .flatMap((entry) => {
+                try {
+                    return [{ entry, kind: gitLinkKind(join(entry.path, ".git")) }];
+                } catch (error) {
+                    const recorded = unreachableRecordedGitPath(error);
+                    if (recorded === null) throw error;
+                    // This pass also classifies ordinary repositories, so it has not
+                    // established the managed root-worktree layout's repair/delete authority.
+                    warnUnreachableNestedRepository(entry.path, recorded, false);
+                    return [];
+                }
+            });
+        const worktrees = kinds.filter(({ kind }) => kind === "worktree");
+        if (rootKind !== null) {
+            if (worktrees.length > 0 || siblingSourceRegistersWorkspace(workspacePath)) {
                 throw new Error("Workspace contains a mixture of a root repository and child worktrees.");
             }
             return null;
         }
-        repositories = branchRepositories(workspacePath, "root", options);
-    } else {
-        const candidates = scanDirectory(workspacePath, { strict: true }).filter((entry) => entry.isGitRepo);
-        const kinds = candidates.map((entry) => ({
-            entry,
-            kind: gitLinkKind(join(entry.path, ".git")),
-        }));
-        const worktrees = kinds.filter(({ kind }) => kind === "worktree");
         if (worktrees.length === 0) {
             if (siblingSourceRegistersWorkspace(workspacePath)) {
                 throw damagedWorkspaceMetadataError(
@@ -2616,9 +2636,9 @@ function relativePathEscapesRoot(relativePath: string): boolean {
  * side is wrong about its own path; the file is simply not portable across the
  * mount boundary.
  *
- * TWO conditions, because either alone is too wide. The marker is attached at
- * exactly one site — resolving the registration back-pointer — so it says the
- * failure is about a recorded path rather than about anything else `gitLinkKind`
+ * TWO conditions, because either alone is too wide. The marker is attached only
+ * when resolving a recorded Git directory or registration back-pointer, so it says
+ * the failure is about a recorded path rather than about anything else `gitLinkKind`
  * touches. Keying on the errno alone was much wider than the portability case it
  * was written for: `gitLinkKind` raises unwrapped errnos from seven places
  * inside its ownership block, some of them BEFORE the judgement they precede can
@@ -2705,36 +2725,6 @@ function nestedRepositoryCandidateIsSafe(
         }
         if (gitMetadata.isDirectory()) return true;
         if (!gitMetadata.isFile()) return false;
-        // A nested checkout whose Git directory was deleted out from under it — `git worktree
-        // remove` run elsewhere, a pruned source, a cleanup that swept `.git/worktrees/`, a
-        // deleted `.git/modules/<name>` — leaves a gitfile naming a path that is simply gone.
-        // This is asked BEFORE `gitLinkKind`, which cannot answer it: a missing worktree
-        // administrative directory it reports as a gitlink (a submodule's gitdir is the other
-        // thing with no `commondir`), and a gitdir under a `.git` FILE fails ENOTDIR rather
-        // than ENOENT and it throws. Two different fatal endings for one condition, which is
-        // why the reachability of the recorded path is tested first and directly.
-        // This matters because the refusal is fatal to the WHOLE workspace: one orphaned
-        // checkout among healthy siblings aborted every `ccc @<branch>` with a message that
-        // named the wrong cause and offered no remedy. The recorded-path skip below already
-        // handles "metadata names somewhere that is not here", warns with the path, and
-        // points at `ccc @<branch>` — which is in fact what re-creates the worktree. Route
-        // orphans into it rather than inventing a second diagnosis.
-        const recordedGitDirectory = gitFileRecordedDirectory(join(candidatePath, ".git"));
-        if (recordedGitDirectory !== null && !existsSync(recordedGitDirectory)) {
-            // `code` is deliberately left off this error and carried only by the cause: the
-            // catch below returns silently for a top-level errno, and silence is what this
-            // fix exists to remove.
-            throw Object.assign(
-                // The message deliberately does not begin with "Nested Git repository ":
-                // the catch rethrows that prefix verbatim under `strict`, which is the
-                // fatal path this is routing around.
-                new Error(
-                    `Orphaned Git worktree metadata names a Git directory that does not exist: ${candidatePath}`,
-                    { cause: Object.assign(new Error("recorded Git directory is absent"), { code: "ENOENT" }) },
-                ),
-                { recordedGitPath: recordedGitDirectory },
-            );
-        }
         const kind = gitLinkKind(join(candidatePath, ".git"));
         if (kind === "worktree" && allowRegisteredWorktrees) return true;
         if (kind === "gitlink"
