@@ -2,7 +2,8 @@
 
 Use saved GitHub job/check annotations to identify the failing assertions before
 running focused local checks. Preserve the CI commit, job identities and original
-results. Local passes qualify the candidate; a new GitHub Actions execution is
+results. Check annotations can truncate failures; read the complete failed job
+logs before treating the list as exhaustive. Local passes qualify the candidate; a new GitHub Actions execution is
 separate evidence. Do not exclude failures or loosen production guards to make
 the suite pass.
 
@@ -38,6 +39,26 @@ than hash the mount again as if it were a host checkout. Keep the existing
 host-path calculation for other paths and assert canonical expectations with
 literal values. Ownership assertions must remain independent of the production
 function that supplies the actual result.
+
+Migration fixtures must choose a previous account distinct from the real
+desired UID/GID. A fixed previous identity can equal the CI runner's account
+and correctly skip migration, bypassing the dispatch the test intended to
+observe. Preserve zero as a valid account ID, and retain separate same-identity
+tests proving that production performs no unnecessary migration.
+
+Match native tools as well as Node. Ubuntu 26.04's uutils `stat` can report a
+synthetic link's metadata for an unlinked standard-input descriptor unless GNU
+format calls explicitly dereference it with `-L`. Observe the retained descriptor,
+preserving all identity, ownership, type, mode, link-count and size checks;
+never fall back to reopening the original path. See
+[descriptor portability](../remote/REQ__descriptor-root-portability.md).
+
+Modern Git repair can rewrite sibling worktree links. Quarantine removal must
+publish and compensate only its captured target metadata under the original
+source and successor fences. See
+[quarantine metadata ownership](../workspaces/REQ__quarantined-worktree-metadata.md).
+Keep application validation pure through the required canonical validator port;
+check the independent MCP package build as well as the architecture owner.
 
 See [failure grouping](GUIDE__test-failure-groups.md) and
 [regression entrypoints](GUIDE__regression-test-entrypoints.md) for saved reports,

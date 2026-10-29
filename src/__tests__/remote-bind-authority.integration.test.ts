@@ -647,6 +647,85 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         expect(existsSync(f.lock)).toBe(false);
     });
 
+    it.each(["standalone", "nested"] as const)("uses the held %s file metadata when unlinked stdin exposes a uutils descriptor-link identity", kind => {
+        const f = fixture(); const home = f.prepare(); const name = "ccc-uutils-stdin-stat";
+        const lifecycle = join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`);
+        const nativeStat = spawnSync("/bin/sh", ["-c", "command -v stat"], { encoding: "utf8" }).stdout.trim();
+        const gnuStat = spawnSync(nativeStat, ["-c", "%d:%i", "-"], { input: "", encoding: "utf8" }).status === 0;
+        const program = join(f.bin, "stdin-stat.cjs");
+        const metadataLog = join(f.home, "stdin-file-metadata"); const proofLog = join(f.home, "unlinked-file-proofs");
+        writeFileSync(program, [
+            'const fs = require("node:fs"); const { spawnSync } = require("node:child_process");',
+            `const nativeStat = ${JSON.stringify(nativeStat)}; const gnuStat = ${JSON.stringify(gnuStat)};`,
+            `const metadataLog = ${JSON.stringify(metadataLog)}; const proofLog = ${JSON.stringify(proofLog)};`,
+            'const args = process.argv.slice(2); const follow = args[0] === "-L"; const offset = follow ? 1 : 0;',
+            'const format = args[offset + 1]; const stdin = args[offset] === "-c" && args.length === offset + 3 && args[offset + 2] === "-";',
+            'let held;',
+            'if (stdin) {',
+            ' held = fs.fstatSync(0);',
+            ' if (held.isFile()) fs.appendFileSync(metadataLog, JSON.stringify({ identity: `${held.dev}:${held.ino}`, mode: held.mode & 0o777, links: held.nlink, size: held.size }) + "\\n");',
+            '}',
+            // uutils 0.10.0 reports a descriptor-link vnode only for this unlinked, undereferenced operand.
+            'if (stdin && held.isFile() && held.nlink === 0 && !follow) {',
+            ' const synthetic = { "%d:%i": `${held.dev}:${held.ino + 1}`, "%a": "777", "%s": "15", "%a:%h:%s": "777:1:15", "%d:%i:%a:%h:%s": `${held.dev}:${held.ino + 1}:777:1:15` };',
+            ' if (!(format in synthetic)) process.exit(96);',
+            ' process.stdout.write(synthetic[format] + "\\n"); process.exit(0);',
+            '}',
+            'let nativeArgs = args;',
+            'if (!gnuStat && args[offset] === "-c") {',
+            ' const formats = { "%d:%i": "%d:%i", "%a": "%Lp", "%s": "%z", "%a:%h:%s": "%Lp:%l:%z", "%d:%i:%a:%h:%s": "%d:%i:%Lp:%l:%z" };',
+            ' if (!(format in formats)) process.exit(96);',
+            ' nativeArgs = [...(follow ? ["-L"] : []), "-f", formats[format], ...args.slice(offset + 2).filter(arg => arg !== "-")];',
+            '}',
+            'const result = spawnSync(nativeStat, nativeArgs, { encoding: "utf8", stdio: ["inherit", "pipe", "inherit"] });',
+            'if (stdin && held.isFile() && held.nlink === 0 && format === "%d:%i:%a:%h:%s") fs.appendFileSync(proofLog, JSON.stringify({ identity: `${held.dev}:${held.ino}`, observed: result.stdout.trim() }) + "\\n");',
+            'process.stdout.write(result.stdout ?? "", () => process.exit(result.status ?? 96));',
+        ].join("\n"), { mode: 0o600 });
+        writeFileSync(join(f.bin, "stat"), `#!/bin/sh\nexec ${shellEscapeArg(process.execPath)} ${shellEscapeArg(program)} "$@"\n`, { mode: 0o700 });
+        const body = [
+            'cat "$HOME/.ccc/codex-state.lock" > "$HOME/claim-snapshot"',
+            ...(kind === "nested" ? [`cat ${shellEscapeArg(lifecycle)} > "$HOME/lifecycle-snapshot"`] : []),
+            'IFS= read -r value; printf "%s" "$value"',
+        ].join("; ");
+        const global = remoteRuntimeBindAuthorityShell(body, kind === "nested");
+        const result = spawnSync("/bin/sh", ["-c", kind === "nested" ? remoteLifecycleShell(name, global) : global], {
+            env: f.env, input: "original-input\n", encoding: "utf8", timeout: 10000, killSignal: "SIGKILL",
+        });
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("original-input");
+        expect(JSON.parse(readFileSync(join(f.home, "claim-snapshot"), "utf8"))).toEqual({
+            token: expect.stringMatching(/^[a-f0-9]{32}$/), pid: result.pid,
+            host: hostname(), processIdentityStatus: "unavailable",
+        });
+        if (kind === "nested") expect(readFileSync(join(f.home, "lifecycle-snapshot"), "utf8"))
+            .toMatch(new RegExp(`^${result.pid} [a-f0-9]{32}\\n$`));
+        const metadata = readFileSync(metadataLog, "utf8").trim().split("\n").map(line => JSON.parse(line) as {
+            identity: string; mode: number; links: number; size: number;
+        });
+        const linked = new Set(metadata.filter(row => row.links === 1).map(row => row.identity));
+        const unlinked = metadata.filter(row => row.links === 0);
+        expect(unlinked.length).toBeGreaterThan(0);
+        for (const row of unlinked) {
+            expect(linked.has(row.identity)).toBe(true);
+            expect(row).toMatchObject({ mode: 0o600, links: 0, size: 0 });
+        }
+        const proofs = readFileSync(proofLog, "utf8").trim().split("\n").map(line => JSON.parse(line) as {
+            identity: string; observed: string;
+        });
+        expect(proofs.length).toBeGreaterThan(0);
+        for (const proof of proofs) expect(proof.observed).toBe(`${proof.identity}:600:0:0`);
+        expect(existsSync(f.lock)).toBe(false);
+        expect(existsSync(lifecycle)).toBe(false);
+        for (const root of [f.root, ...(kind === "nested" ? [join(f.root, "remote-runtime")] : [])])
+            expect(readdirSync(root).some(entry => entry.startsWith(".scope-"))).toBe(false);
+        expect(readFileSync(f.marker, "utf8")).toBe("ccc-runtime-bind-authority:remote-incomplete:v1\n");
+        expect(statSync(f.marker).mode & 0o777).toBe(0o600);
+        withRuntimeBindGuard(home, guard => expect(readRuntimeBindAuthority(guard)).toMatchObject({
+            coverage: "incomplete", reason: "receiving-host-incomplete",
+        }));
+    });
+
     it.each(["standalone", "nested"] as const)("uses %s BSD stdin metadata when descriptor paths expose synthetic identities", kind => {
         const f = fixture(); f.prepare(); const name = "ccc-bsd-stdin-stat";
         const lifecycle = join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`);
@@ -748,7 +827,7 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         const nativeStat = spawnSync("/bin/sh", ["-c", "command -v stat"], { encoding: "utf8" }).stdout.trim();
         writeFileSync(join(f.bin, "stat"), [
             "#!/bin/sh",
-            'case "$*" in "-c %d:%i -"|"-f %d:%i")',
+            'case "$*" in "-c %d:%i -"|"-L -c %d:%i -"|"-f %d:%i")',
             ' if [ ! -e "$HOME/channel-replaced" ]; then',
             `  channel_identity=$(${shellEscapeArg(nativeStat)} -c %d:%i - 2>/dev/null || ${shellEscapeArg(nativeStat)} -f %d:%i 2>/dev/null) || exit 96`,
             '  for channel in "$HOME/.ccc"/.scope-* "$HOME/.ccc/remote-runtime"/.scope-*; do',

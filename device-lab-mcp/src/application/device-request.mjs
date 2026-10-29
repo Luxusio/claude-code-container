@@ -47,7 +47,6 @@ import {
     activeAppMatches,
     selectMobileEffects
 } from "../domain/device-request.mjs";
-import { iosExecInputError } from "@ccc/device-lab/providers/domain/ios-observation-access.mjs";
 /** @template Result
  * @param {import("../ports/device-request.mjs").DeviceRequestPorts<Result>} ports */
 export function createDeviceRequest(ports) {
@@ -1025,7 +1024,7 @@ export function createDeviceRequest(ports) {
         const { detail = false } = options;
         const args = { ...ports.normalizeToolArgs(rawArgs, name), ...(name === "device_status" && detail ? { detail: true } : {}) };
         if (name === "device_exec" && Object.hasOwn(args, "argv")) {
-            const error = iosExecInputError(args);
+            const error = ports.execInputError(args);
             if (error) return ports.jsonResult({ ok: false, error: "device-exec-input-invalid", detail: error });
             if (args.deviceId === undefined) return ports.jsonResult({ ok: false, error: "missing-device-id" });
         }

@@ -703,6 +703,40 @@ typecheck passes. Earlier failing reports remain archived. These results
 qualify the local candidate; a newly published Actions execution remains
 separate evidence.
 
+### Complete Linux job logs and native-tool corrections
+
+The authenticated full logs reveal 114 failures in each Linux job, with 115
+distinct failures across both; the eleven annotation-visible failures above
+were only the initial subset. The additional 104 failures comprise 100 remote
+descriptor admission cases, two bind-publication migration fixtures, one pure
+application boundary case and one chained-worktree removal case. Original full
+logs, baseline reproductions and corrected results are retained in
+`results/tests/level3-failures-2026-10-28T11-34-40/ci-failures-2026-10-29/`.
+
+An isolated Ubuntu 26.04 container reproduces the descriptor refusal with
+uutils coreutils 0.10.0: bare GNU-format `stat` observes a synthetic link after
+unlink, while `stat -L -c` observes the retained inode. Production now explicitly
+dereferences only this descriptor observation; BSD fallback and all refusal
+checks remain. The full remote owner run and corrected fault shim checks
+establish 155 distinct current passes incrementally. The CI log identifies
+Ubuntu 26.04, but does not itself record the container's stat implementation.
+
+Git 2.56 repair sweeps registered siblings and can normalize their relative
+links. Quarantine removal now publishes only the captured target links and
+restores only its own unchanged publications. Source identities and successor
+refusals stay intact. With Git 2.56 and Node 24, three affected worktree owners
+pass 425 tests with seven existing skips, including target restoration,
+same-byte metadata successors, occupied original paths and unchanged siblings.
+
+MCP composition supplies the existing iOS exec validator through a required
+application port. Architecture checks retain their original purity rule and
+the isolated MCP build still works outside the repository. Migration fixtures
+select previous IDs different from the actual desired account; the same-ID
+production shortcut remains covered. These focused groups pass 95 and 12
+assertions respectively; the isolated MCP build case, source/architecture
+typechecks and affected-source lint also pass. This adds to the earlier fixture
+checks; it does not yet assert a new GitHub Actions PASS.
+
 ## Known ceiling
 
 The positive packaged Mac destructive result above supersedes the following

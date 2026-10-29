@@ -664,77 +664,142 @@ function removeRegisteredWorktree(
     quarantinedContentGuard?: (quarantinedPath: string) => void,
 ): void {
     mutationGuard?.();
-    const expectedBranch = registrationFence?.expectedRef.replace(/^refs\/heads\//, "");
-    if (registrationFence && (
-        !expectedBranch
-        || !worktreeRegistrationOwnershipMatches(
-            sourceRepository,
-            worktreePath,
-            registrationFence,
-        )
-    )) {
+    const sourceIdentity = captureNestedRepositoryIdentity(sourceRepository);
+    const environment = sourceEnvironment ?? pinnedNestedRepositoryEnvironment(sourceIdentity);
+    const registration = requireWorktreeRegistrationFence(registrationFence ?? null, worktreePath);
+    const expectedBranch = registration.expectedRef.replace(/^refs\/heads\//, "");
+    let currentPath = worktreePath;
+    let currentIdentity = expectedIdentity;
+    let currentRegistration = registration;
+    const assertSource = (): void => {
+        mutationGuard?.();
+        assertNestedRepositoryIdentity(sourceRepository, sourceIdentity);
+    };
+    const ownershipMatches = (): boolean => withSanitizedGitRepositoryEnvironment(
+        () => worktreeRegistrationOwnershipMatches(
+            sourceRepository, currentPath, currentRegistration,
+        ),
+    );
+    if (!expectedBranch || !ownershipMatches()) {
         throw new Error(`Worktree registration ownership changed before deletion: ${worktreePath}`);
     }
-    mutationGuard?.();
+    assertSource();
+    const managementDirectory = registration.managementIdentity.realpath;
+    const managementRoot = captureDirectoryIdentity(dirname(managementDirectory));
     const parentIdentity = captureDirectoryIdentity(dirname(worktreePath));
-    mutationGuard?.();
+    const managementGitdir = join(managementDirectory, "gitdir");
+    const managementHead = join(managementDirectory, "HEAD");
+    const commonDirectoryFile = join(managementDirectory, "commondir");
+    const originalGitFile = captureWorktreeMetadata(join(worktreePath, ".git"));
+    const originalGitdir = captureWorktreeMetadata(managementGitdir);
+    const originalHead = captureWorktreeMetadata(managementHead);
+    const originalCommonDirectory = captureWorktreeMetadata(commonDirectoryFile);
+    let currentGitFile = originalGitFile;
+    let currentGitdir = originalGitdir;
+    let gitFilePublication: WorktreeMetadataPublication | null = null;
+    let gitdirPublication: WorktreeMetadataPublication | null = null;
+    let quarantine: QuarantineLocation | null = null;
+    const assertTargetGeneration = (): void => {
+        assertSource();
+        assertDirectoryIdentity(dirname(worktreePath), parentIdentity);
+        assertDirectoryIdentity(dirname(managementDirectory), managementRoot);
+        if (!isSourceWorktreeManagementRoot(
+            dirname(managementDirectory), sourceIdentity.commonDirectory.realpath,
+        )) {
+            throw new Error(`Worktree registration ownership changed before deletion: ${worktreePath}`);
+        }
+        if (quarantine && currentPath === quarantine.path) {
+            assertDirectoryIdentity(quarantine.directory, quarantine.directoryIdentity);
+        }
+        assertDirectoryIdentity(currentPath, currentIdentity);
+        assertWorktreeRegistrationFenceFileIdentities(currentPath, currentRegistration);
+        for (const [path, snapshot] of [
+            [join(currentPath, ".git"), currentGitFile],
+            [managementGitdir, currentGitdir],
+            [managementHead, originalHead],
+            [commonDirectoryFile, originalCommonDirectory],
+        ] as const) {
+            if (!worktreeMetadataMatches(path, snapshot)) {
+                throw new Error(`Worktree metadata changed before deletion: ${path}`);
+            }
+        }
+        assertDirectoryIdentity(
+            resolve(managementDirectory, originalCommonDirectory.content.toString("utf-8").trim()),
+            sourceIdentity.commonDirectory,
+        );
+    };
+    const relocateTargetIdentity = (path: string): void => {
+        if (quarantine && path === quarantine.path) {
+            assertDirectoryIdentity(quarantine.directory, quarantine.directoryIdentity);
+        }
+        assertDirectoryIdentity(dirname(worktreePath), parentIdentity);
+        assertQuarantinedIdentity(path, expectedIdentity, "directory");
+        currentPath = path;
+        currentIdentity = { ...expectedIdentity, realpath: observedRealpath(path) };
+        currentGitFile = {
+            ...currentGitFile,
+            identity: {
+                ...currentGitFile.identity,
+                realpath: observedRealpath(join(path, ".git")),
+            },
+        };
+        currentRegistration = { ...currentRegistration, destinationIdentity: currentIdentity };
+        assertTargetGeneration();
+    };
+    assertTargetGeneration();
+    if (!ownershipMatches()) {
+        throw new Error(`Worktree registration ownership changed before deletion: ${worktreePath}`);
+    }
+    assertTargetGeneration();
+    assertSource();
     assertDirectoryIdentity(worktreePath, expectedIdentity);
     assertDirectoryIdentity(dirname(worktreePath), parentIdentity);
-    const quarantine = createPrivateQuarantine(worktreePath, quarantineBase);
+    quarantine = createPrivateQuarantine(worktreePath, quarantineBase);
     try {
-        mutationGuard?.();
+        assertTargetGeneration();
         assertDirectoryIdentity(worktreePath, expectedIdentity);
         assertDirectoryIdentity(dirname(worktreePath), parentIdentity);
         renameSync(worktreePath, quarantine.path);
-        mutationGuard?.();
+        assertSource();
         assertDirectoryIdentity(quarantine.directory, quarantine.directoryIdentity);
-        assertQuarantinedIdentity(quarantine.path, expectedIdentity, "directory");
-        if (registrationFence) {
-            assertWorktreeRegistrationFenceFileIdentities(
-                quarantine.path,
-                registrationFence,
-            );
-        }
-        const repaired = spawnSync(
-            "git",
-            ["worktree", "repair", quarantine.path],
-            {
-                cwd: sourceRepository,
-                encoding: "utf-8",
-                stdio: ["pipe", "pipe", "pipe"],
-                env: sourceEnvironment,
-            },
+        relocateTargetIdentity(quarantine.path);
+        // Git's repair command also rewrites unrelated linked worktrees. Publish only the
+        // two admitted target links, retaining the exact generations for rollback.
+        gitFilePublication = normalizeWorktreeMetadataFile(
+            join(currentPath, ".git"),
+            `gitdir: ${portableWorktreeGitDirectory(currentIdentity.realpath, managementDirectory)}\n`,
+            currentGitFile.identity,
+            currentGitFile.content,
         );
-        mutationGuard?.();
-        if (repaired.error || repaired.status !== 0
-            || !isValidWorktree(quarantine.path, sourceRepository)) {
-            throw new Error((repaired.stderr ?? "").trim() || "git worktree repair failed");
-        }
-        if (registrationFence) {
-            const quarantineIdentity = captureDirectoryIdentity(quarantine.path);
-            assertQuarantinedIdentity(
-                quarantine.path,
-                registrationFence.destinationIdentity,
-                "directory",
+        currentGitFile = gitFilePublication;
+        currentRegistration = {
+            ...currentRegistration,
+            worktreeGitFileIdentity: gitFilePublication.identity,
+        };
+        assertTargetGeneration();
+        gitdirPublication = normalizeWorktreeMetadataFile(
+            managementGitdir,
+            `${portableWorktreeBackpointer(join(currentIdentity.realpath, ".git"))}\n`,
+            currentGitdir.identity,
+            currentGitdir.content,
+        );
+        currentGitdir = gitdirPublication;
+        currentRegistration = {
+            ...currentRegistration,
+            managementGitdirIdentity: gitdirPublication.identity,
+        };
+        assertTargetGeneration();
+        if (!isValidWorktree(currentPath, sourceRepository) || !ownershipMatches()) {
+            throw new Error(
+                `Worktree registration ownership changed after quarantine: ${worktreePath}`,
             );
-            assertDirectoryIdentity(
-                registrationFence.managementIdentity.realpath,
-                registrationFence.managementIdentity,
-            );
-            if (!expectedBranch || !worktreeRegistrationOwnershipMatches(
-                sourceRepository,
-                quarantine.path,
-                {
-                    ...registrationFence,
-                    destinationIdentity: quarantineIdentity,
-                },
-            )) {
-                throw new Error(
-                    `Worktree registration ownership changed after quarantine: ${worktreePath}`,
-                );
-            }
         }
         quarantinedContentGuard?.(quarantine.path);
+        assertTargetGeneration();
+        if (!ownershipMatches()) {
+            throw new Error(`Worktree registration ownership changed before deletion: ${worktreePath}`);
+        }
+        assertTargetGeneration();
         const args = ["worktree", "remove", quarantine.path];
         if (force) args.push("--force");
         const removed = spawnSync(
@@ -744,10 +809,10 @@ function removeRegisteredWorktree(
                 cwd: sourceRepository,
                 encoding: "utf-8",
                 stdio: ["pipe", "pipe", "pipe"],
-                env: sourceEnvironment,
+                env: environment,
             },
         );
-        mutationGuard?.();
+        assertSource();
         if (removed.error || removed.status !== 0) {
             throw new Error((removed.stderr ?? "").trim() || "git worktree remove failed");
         }
@@ -760,30 +825,50 @@ function removeRegisteredWorktree(
         removePrivateQuarantine(quarantine);
     } catch (error) {
         try {
-            if (rollbackQuarantinedPath(
+            if (pathExistsStrict(quarantine.path)) {
+                assertTargetGeneration();
+            }
+            const restored = rollbackQuarantinedPath(
                 worktreePath,
                 quarantine,
                 expectedIdentity,
                 parentIdentity,
                 "directory",
-            )) {
-                if (registrationFence) {
-                    assertWorktreeRegistrationFenceFileIdentities(
-                        worktreePath,
-                        registrationFence,
+            );
+            if (restored) {
+                relocateTargetIdentity(worktreePath);
+                if (gitdirPublication) {
+                    currentGitdir = normalizeWorktreeMetadataFile(
+                        managementGitdir,
+                        originalGitdir.content,
+                        currentGitdir.identity,
+                        gitdirPublication.content,
                     );
+                    currentRegistration = {
+                        ...currentRegistration,
+                        managementGitdirIdentity: currentGitdir.identity,
+                    };
+                    assertTargetGeneration();
                 }
-                const repaired = spawnSync(
-                    "git",
-                    ["worktree", "repair", worktreePath],
-                    { cwd: sourceRepository, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-                );
-                if (repaired.error || repaired.status !== 0
-                    || !isValidWorktree(worktreePath, sourceRepository)) {
-                    throw new Error(
-                        (repaired.stderr ?? "").trim() || "git worktree rollback repair failed",
+                if (gitFilePublication) {
+                    currentGitFile = normalizeWorktreeMetadataFile(
+                        join(worktreePath, ".git"),
+                        originalGitFile.content,
+                        currentGitFile.identity,
+                        gitFilePublication.content,
                     );
+                    currentRegistration = {
+                        ...currentRegistration,
+                        worktreeGitFileIdentity: currentGitFile.identity,
+                    };
+                    assertTargetGeneration();
                 }
+                if (!isValidWorktree(worktreePath, sourceRepository) || !ownershipMatches()) {
+                    throw new Error("worktree registration could not be verified after rollback");
+                }
+                assertTargetGeneration();
+            } else if (pathExistsStrict(quarantine.path)) {
+                throw new Error("Worktree path was recreated; original content remains in its private quarantine");
             }
         } catch (rollbackError) {
             throw new Error(

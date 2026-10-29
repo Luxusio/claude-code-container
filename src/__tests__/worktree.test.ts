@@ -3602,6 +3602,285 @@ describe("createWorkspace (unified mode)", () => {
         expect(existsSync(first.workspacePath)).toBe(false);
     });
 
+    it.skipIf(process.platform === "win32")(
+        "removes chained workspaces without normalizing source or sibling Git links", () => {
+            initRepo(tmpDir);
+            const nestedSource = join(tmpDir, "nested");
+            initRepo(nestedSource);
+            const first = createWorkspace(tmpDir, "preserved-first");
+            const second = createWorkspace(first.workspacePath, "removed-second");
+            const sibling = createWorkspace(tmpDir, "preserved-sibling");
+            const realGit = spawnSync("sh", ["-c", "command -v git"], {
+                encoding: "utf-8", stdio: "pipe",
+            }).stdout.trim();
+            const preserved = [first.workspacePath, sibling.workspacePath].flatMap((workspace) =>
+                [workspace, join(workspace, "nested")].map((worktree) => {
+                    const gitFile = join(worktree, ".git");
+                    const forward = readFileSync(gitFile, "utf-8");
+                    expect(forward).not.toMatch(/^gitdir: (?:[/\\]|[A-Za-z]:)/);
+                    const management = resolve(worktree, forward.trim().replace(/^gitdir:\s*/, ""));
+                    const source = worktree === join(workspace, "nested") ? nestedSource : tmpDir;
+                    return {
+                        worktree, gitFile, management, forward,
+                        common: join(source, ".git"),
+                        backpointer: readFileSync(join(management, "gitdir"), "utf-8"),
+                        head: readFileSync(join(management, "HEAD"), "utf-8"),
+                    };
+                }));
+            const refs = [tmpDir, nestedSource].map((source) => ({
+                source,
+                head: readFileSync(join(source, ".git", "HEAD"), "utf-8"),
+                before: spawnSync(realGit, ["show-ref", "--heads"], {
+                    cwd: source, encoding: "utf-8", stdio: "pipe",
+                }).stdout.split("\n"),
+            }));
+            const wrapperDirectory = join(tmpDir, "repair-normalization-wrapper");
+            mkdirSync(wrapperDirectory);
+            const trace = join(wrapperDirectory, "repairs");
+            // Git 2.48+ repairs every registered worktree and defaults to absolute links.
+            // Model that boundary on older Git using only this fixture's real registrations.
+            writeFileSync(join(wrapperDirectory, "git"), [
+                "#!/usr/bin/env node",
+                "const fs = require('fs');",
+                "const path = require('path');",
+                "const { spawnSync } = require('child_process');",
+                `const git = ${JSON.stringify(realGit)};`,
+                `const links = ${JSON.stringify(preserved)};`,
+                "const args = process.argv.slice(2);",
+                "const result = spawnSync(git, args, { stdio: 'inherit' });",
+                "if (result.status === 0 && args[0] === 'worktree' && args[1] === 'repair') {",
+                "  const common = spawnSync(git, ['rev-parse', '--git-common-dir'], { encoding: 'utf8' });",
+                "  const listed = spawnSync(git, ['worktree', 'list', '--porcelain', '-z'], { encoding: 'utf8' });",
+                "  if (common.status !== 0 || listed.status !== 0) process.exit(91);",
+                "  const directory = path.resolve(common.stdout.trim());",
+                "  const registered = new Set(listed.stdout.split('\\0').filter(x => x.startsWith('worktree ')).map(x => x.slice(9)));",
+                "  let normalized = 0;",
+                "  for (const link of links) {",
+                "    if (link.common !== directory || !registered.has(link.worktree) || !fs.existsSync(link.gitFile)) continue;",
+                "    if (fs.readFileSync(link.gitFile, 'utf8') !== link.forward) continue;",
+                "    fs.writeFileSync(link.gitFile, 'gitdir: ' + link.management + '\\n');",
+                "    normalized++;",
+                "  }",
+                `  fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify({ normalized }) + '\\n');`,
+                "}",
+                "process.exit(result.status ?? 92);",
+                "",
+            ].join("\n"));
+            chmodSync(join(wrapperDirectory, "git"), 0o755);
+            const previousPath = process.env.PATH;
+            process.env.PATH = `${wrapperDirectory}:${previousPath ?? ""}`;
+            const assertPreserved = (links: typeof preserved) => {
+                for (const link of links) {
+                    expect(readFileSync(link.gitFile, "utf-8")).toBe(link.forward);
+                    expect(readFileSync(join(link.management, "gitdir"), "utf-8")).toBe(link.backpointer);
+                    expect(readFileSync(join(link.management, "HEAD"), "utf-8")).toBe(link.head);
+                    expect(isValidWorktree(link.worktree, dirname(link.common))).toBe(true);
+                }
+            };
+            try {
+                const secondRemoval = removeWorkspace(first.workspacePath, "removed-second");
+                const repairs = existsSync(trace) ? readFileSync(trace, "utf-8") : "no repository-wide repair";
+                expect(secondRemoval.errors, repairs).toEqual([]);
+                expect(existsSync(second.workspacePath)).toBe(false);
+                assertPreserved(preserved);
+                expect(() => assertWorkspaceRootOwnership(first.workspacePath, tmpDir)).not.toThrow();
+                for (const { source, head, before } of refs) {
+                    expect(readFileSync(join(source, ".git", "HEAD"), "utf-8")).toBe(head);
+                    expect(spawnSync(realGit, ["show-ref", "--heads"], {
+                        cwd: source, encoding: "utf-8", stdio: "pipe",
+                    }).stdout.split("\n")).toEqual(before);
+                    const listed = spawnSync(realGit, ["worktree", "list", "--porcelain"], {
+                        cwd: source, encoding: "utf-8", stdio: "pipe",
+                    });
+                    expect(listed.status, listed.stderr).toBe(0);
+                    expect(listed.stdout).not.toContain("prunable");
+                    expect(listed.stdout).not.toContain("refs/heads/removed-second");
+                }
+                const firstRemoval = removeWorkspace(tmpDir, "preserved-first");
+                expect(firstRemoval.errors).toEqual([]);
+                expect(existsSync(first.workspacePath)).toBe(false);
+                assertPreserved(preserved.filter(({ worktree }) => worktree.startsWith(sibling.workspacePath)));
+                expect(() => assertWorkspaceRootOwnership(sibling.workspacePath, tmpDir)).not.toThrow();
+                for (const { source, head, before } of refs) {
+                    expect(readFileSync(join(source, ".git", "HEAD"), "utf-8")).toBe(head);
+                    expect(spawnSync(realGit, ["show-ref", "--heads"], {
+                        cwd: source, encoding: "utf-8", stdio: "pipe",
+                    }).stdout.split("\n")).toEqual(before);
+                    const listed = spawnSync(realGit, ["worktree", "list", "--porcelain"], {
+                        cwd: source, encoding: "utf-8", stdio: "pipe",
+                    });
+                    expect(listed.status, listed.stderr).toBe(0);
+                    expect(listed.stdout).not.toContain("prunable");
+                    expect(listed.stdout).not.toContain("refs/heads/preserved-first");
+                    expect(listed.stdout).not.toContain("refs/heads/removed-second");
+                }
+            } finally {
+                if (previousPath === undefined) delete process.env.PATH;
+                else process.env.PATH = previousPath;
+                for (const workspace of [second.workspacePath, first.workspacePath, sibling.workspacePath]) {
+                    rmSync(workspace, { recursive: true, force: true });
+                }
+            }
+        },
+    );
+
+    it.skipIf(process.platform === "win32").each([
+        "unchanged", "forward-change", "forward-successor",
+        "backpointer-change", "backpointer-successor", "path-successor",
+    ] as const)("preserves chained worktree metadata after native removal fails: %s", (mutation) => {
+        initRepo(tmpDir);
+        const nestedSource = join(tmpDir, "nested");
+        initRepo(nestedSource);
+        const first = createWorkspace(tmpDir, "rollback-first");
+        const second = createWorkspace(first.workspacePath, "rollback-second");
+        const sibling = createWorkspace(tmpDir, "rollback-sibling");
+        const target = join(second.workspacePath, "nested");
+        const realGit = spawnSync("sh", ["-c", "command -v git"], {
+            encoding: "utf-8", stdio: "pipe",
+        }).stdout.trim();
+        const git = (source: string, ...args: string[]): string => {
+            const result = spawnSync(realGit, args, { cwd: source, encoding: "utf-8", stdio: "pipe" });
+            expect(result.status, result.stderr).toBe(0);
+            return result.stdout;
+        };
+        const metadata = (worktree: string) => {
+            const gitFile = join(worktree, ".git");
+            const forward = readFileSync(gitFile, "utf-8");
+            const management = resolve(worktree, forward.trim().replace(/^gitdir:\s*/, ""));
+            return {
+                worktree, gitFile, management, forward,
+                backpointer: readFileSync(join(management, "gitdir"), "utf-8"),
+                head: readFileSync(join(management, "HEAD"), "utf-8"),
+            };
+        };
+        const preserved = [first.workspacePath, sibling.workspacePath].flatMap((workspace) =>
+            [metadata(workspace), metadata(join(workspace, "nested"))]);
+        const targetBefore = metadata(target);
+        const rootBefore = metadata(second.workspacePath);
+        const repositories = [tmpDir, nestedSource].map((source) => ({
+            source,
+            head: readFileSync(join(source, ".git", "HEAD"), "utf-8"),
+            refs: git(source, "show-ref", "--heads"),
+            registrations: git(source, "worktree", "list", "--porcelain"),
+        }));
+        const wrapperDirectory = join(tmpDir, "remove-failure-wrapper");
+        mkdirSync(wrapperDirectory);
+        const trace = join(wrapperDirectory, "removed-target.json");
+        writeFileSync(join(wrapperDirectory, "git"), [
+            "#!/usr/bin/env node",
+            "const fs = require('fs');",
+            "const path = require('path');",
+            "const { spawnSync } = require('child_process');",
+            "const args = process.argv.slice(2);",
+            `const git = ${JSON.stringify(realGit)};`,
+            `const mutation = ${JSON.stringify(mutation)};`,
+            "if (args[0] === 'worktree' && args[1] === 'remove' && path.basename(args[2]) === 'nested') {",
+            "  const target = args[2];",
+            "  const forwardFile = path.join(target, '.git');",
+            "  const forward = fs.readFileSync(forwardFile, 'utf8');",
+            "  const management = path.resolve(target, forward.trim().replace(/^gitdir:\\s*/, ''));",
+            "  const backpointerFile = path.join(management, 'gitdir');",
+            "  const backpointer = fs.readFileSync(backpointerFile, 'utf8');",
+            // Native removal must retain the source environment. Only this independent
+            // target identity probe needs Git to discover the quarantined checkout.
+            "  const targetEnvironment = { ...process.env };",
+            "  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete targetEnvironment[key];",
+            "  const current = spawnSync(git, ['rev-parse', '--absolute-git-dir'], { cwd: target, encoding: 'utf8', env: targetEnvironment });",
+            "  if (current.status !== 0 || path.resolve(current.stdout.trim()) !== management) process.exit(91);",
+            "  let changedFile; let contents; let inode;",
+            "  if (mutation === 'path-successor') {",
+            `    fs.mkdirSync(${JSON.stringify(target)});`,
+            `    fs.writeFileSync(${JSON.stringify(join(target, "successor.txt"))}, 'concurrent successor\\n');`,
+            "  } else if (mutation !== 'unchanged') {",
+            "    changedFile = mutation.startsWith('forward') ? forwardFile : backpointerFile;",
+            "    contents = fs.readFileSync(changedFile, 'utf8');",
+            "    if (mutation.endsWith('successor')) {",
+            `      fs.renameSync(changedFile, ${JSON.stringify(join(wrapperDirectory, "retired-metadata"))});`,
+            "    } else {",
+            "      contents = mutation.startsWith('forward') ? 'gitdir: /ccc-concurrent-successor\\n' : '/ccc-concurrent-successor/.git\\n';",
+            "    }",
+            "    fs.writeFileSync(changedFile, contents);",
+            "    inode = fs.lstatSync(changedFile).ino;",
+            "  }",
+            `  fs.writeFileSync(${JSON.stringify(trace)}, JSON.stringify({ target, forwardFile, backpointerFile, forward, backpointer, changedFile, contents, inode }));`,
+            "  process.stderr.write('fatal: injected native removal failure\\n');",
+            "  process.exit(73);",
+            "}",
+            "const result = spawnSync(git, args, { stdio: 'inherit' });",
+            "process.exit(result.status ?? 92);",
+            "",
+        ].join("\n"));
+        chmodSync(join(wrapperDirectory, "git"), 0o755);
+        const previousPath = process.env.PATH;
+        process.env.PATH = `${wrapperDirectory}:${previousPath ?? ""}`;
+        try {
+            const result = removeWorkspace(first.workspacePath, "rollback-second");
+            expect(existsSync(trace),
+                `native remove must observe the published target metadata: ${JSON.stringify(result.errors)}`,
+            ).toBe(true);
+            const attempted = JSON.parse(readFileSync(trace, "utf-8")) as {
+                target: string; forwardFile: string; backpointerFile: string;
+                forward: string; backpointer: string; changedFile?: string; contents?: string; inode?: number;
+            };
+            expect(result.removed).toEqual([]);
+            expect(result.errors.join("; ")).toContain("injected native removal failure");
+            expect(readFileSync(rootBefore.gitFile, "utf-8")).toBe(rootBefore.forward);
+            expect(readFileSync(join(rootBefore.management, "gitdir"), "utf-8")).toBe(rootBefore.backpointer);
+            for (const link of preserved) {
+                expect(readFileSync(link.gitFile, "utf-8")).toBe(link.forward);
+                expect(readFileSync(join(link.management, "gitdir"), "utf-8")).toBe(link.backpointer);
+                expect(readFileSync(join(link.management, "HEAD"), "utf-8")).toBe(link.head);
+            }
+            for (const repository of repositories) {
+                expect(readFileSync(join(repository.source, ".git", "HEAD"), "utf-8")).toBe(repository.head);
+                expect(git(repository.source, "show-ref", "--heads")).toBe(repository.refs);
+                const listed = git(repository.source, "worktree", "list", "--porcelain");
+                for (const record of repository.registrations.trim().split("\n\n")) {
+                    if (!record.startsWith(`worktree ${target}\n`)) expect(listed).toContain(`${record}\n`);
+                }
+                if (mutation === "unchanged") expect(listed).toBe(repository.registrations);
+            }
+            expect(() => assertWorkspaceRootOwnership(first.workspacePath, tmpDir)).not.toThrow();
+            expect(() => assertWorkspaceRootOwnership(sibling.workspacePath, tmpDir)).not.toThrow();
+            if (mutation === "unchanged") {
+                expect(result.errors.join("; ")).not.toContain("quarantine rollback failed");
+                expect(metadata(target)).toEqual(targetBefore);
+                expect(existsSync(dirname(attempted.target))).toBe(false);
+                expect(isValidWorktree(target, nestedSource)).toBe(true);
+            } else {
+                expect(result.errors.join("; ")).toContain("quarantine rollback failed");
+                expect(readFileSync(join(attempted.target, "init.txt"), "utf-8")).toBe("init");
+                if (mutation === "path-successor") {
+                    expect(readFileSync(join(target, "successor.txt"), "utf-8")).toBe("concurrent successor\n");
+                    expect(readFileSync(attempted.forwardFile, "utf-8")).toBe(attempted.forward);
+                    expect(readFileSync(attempted.backpointerFile, "utf-8")).toBe(attempted.backpointer);
+                } else {
+                    expect(existsSync(target)).toBe(false);
+                    expect(readFileSync(attempted.changedFile!, "utf-8")).toBe(attempted.contents);
+                    expect(lstatSync(attempted.changedFile!).ino).toBe(attempted.inode);
+                    if (mutation.endsWith("successor")) {
+                        const expected = mutation.startsWith("forward") ? attempted.forward : attempted.backpointer;
+                        expect(readFileSync(join(wrapperDirectory, "retired-metadata"), "utf-8")).toBe(expected);
+                        expect(lstatSync(join(wrapperDirectory, "retired-metadata")).ino).not.toBe(attempted.inode);
+                    }
+                }
+            }
+        } finally {
+            if (previousPath === undefined) delete process.env.PATH;
+            else process.env.PATH = previousPath;
+            if (existsSync(trace)) {
+                const attempted = JSON.parse(readFileSync(trace, "utf-8")) as { target: string };
+                const quarantine = dirname(attempted.target);
+                if (basename(quarantine).startsWith(".ccc-worktree-quarantine-")) {
+                    rmSync(quarantine, { recursive: true, force: true });
+                }
+            }
+            for (const workspace of [second.workspacePath, first.workspacePath, sibling.workspacePath]) {
+                rmSync(workspace, { recursive: true, force: true });
+            }
+        }
+    });
+
     it("creates and removes a linked worktree for a tracked submodule", () => {
         initRepo(join(tmpDir, "repo-a"));
         mkdirSync(join(tmpDir, ".claude"));
@@ -5041,8 +5320,9 @@ describe("isValidWorktree", () => {
     const relativeWorktreeHelp = spawnSync("git", ["worktree", "repair", "-h"], {
         encoding: "utf-8", stdio: "pipe",
     });
-    const supportsRelativeWorktrees = `${relativeWorktreeHelp.stdout ?? ""}${relativeWorktreeHelp.stderr ?? ""}`
-        .includes("--relative-paths");
+    const supportsRelativeWorktrees = /--(?:\[no-\])?relative-paths/.test(
+        `${relativeWorktreeHelp.stdout ?? ""}${relativeWorktreeHelp.stderr ?? ""}`,
+    );
     let tmpDir: string;
 
     beforeEach(() => {

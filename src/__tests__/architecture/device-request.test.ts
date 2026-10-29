@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDeviceRequest } from "../../../device-lab-mcp/src/application/device-request.mjs";
 import type { DeviceArguments, DeviceRequestPorts, MobileEffect } from "../../../device-lab-mcp/src/ports/device-request.d.mts";
 import { isBrokerMacosTartImageCreate, brokerMacosTartCreateRpcTimeoutMs } from "@ccc/device-lab/device-lab/domain/lifecycle/macos-vm-lifecycle.js";
+import { iosExecInputError } from "@ccc/device-lab/providers/domain/ios-observation-access.mjs";
 
 import { presentBrokerTool, presentBackendCatalog, presentMobileObservation, presentSourceWait, imageResult, presentActiveAppWait } from "../../../device-lab-mcp/src/device-request-presenter.mjs";
 type OpaqueResult = { selection: "json" | "text" | "image"; value: unknown };
@@ -77,6 +78,7 @@ function requestPorts(operation: string, normalized: DeviceArguments = {}): Devi
         normalizeToolArgs: () => normalized,
         normalizePublicToolArgs: () => normalized,
         toolInputError: () => null,
+        execInputError: iosExecInputError,
         toolOperation: () => operation,
         flowOperationAllowed: () => true,
         flowStepArguments: (_tool, _flow, step) => step,

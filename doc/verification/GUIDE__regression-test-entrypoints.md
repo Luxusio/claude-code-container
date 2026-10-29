@@ -382,13 +382,21 @@ CoreSimulator cause, eliminate intermittency or certify complete Level 3 and
 physical-device coverage.
 
 For the Oct28 GitHub Actions run `40785228840`, inspect the saved check
-annotations before repeating the suite. Its two failing Linux jobs share five
-fixture causes: session clocks/dispatch, iOS launchctl output, valid lease-test
+annotations and complete job logs before repeating the suite. The annotations
+expose five fixture causes: session clocks/dispatch, iOS launchctl output, valid lease-test
 input, complete stop guidance and native process identity under a fake provider
 platform. Use [CI fixture isolation](GUIDE__ci-fixture-isolation.md) to preserve
 the production deadlines, validation and ownership refusals while correcting
 the fixtures. The shared macOS identity fixture has five importing owners;
 verify those consumers after changing its import-time delegate.
+
+The complete logs contain 114 failures per Linux job, 115 distinct failures
+across both jobs. The additional groups are anonymous-descriptor metadata on
+Ubuntu 26.04, modern Git's sibling-link repair, a direct provider import across
+the pure MCP application boundary, and migration fixtures whose previous IDs
+can equal the runner's IDs. Exercise retained-descriptor refusal controls,
+target-only quarantine rollback and same-ID migration guards. Use Git 2.56 for
+worktree verification; an older Git alone does not reproduce the sibling sweep.
 
 Match the workflow's Node 24 major and check both ordinary routing and
 `CCC_RUNTIME=podman` for the original failures. Keep targeted-filter omissions

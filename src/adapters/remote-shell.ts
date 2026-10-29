@@ -17,7 +17,7 @@ const remoteScopeShell = `_ccc_admission_failure() {
     printf 'CCC remote descriptor admission failed: %s\\n' "$1" >&2 || true
 }
 _ccc_fd_stat() {
-    stat -c "$1" - 2>/dev/null || stat -f "$2" 2>/dev/null
+    stat -L -c "$1" - 2>/dev/null || stat -f "$2" 2>/dev/null
 }
 _ccc_refusal_stat() {
     [ -n "\${_ccc_refusal_descriptor:-}" ] && [ -f "$_ccc_refusal_descriptor" ] && [ -O "$_ccc_refusal_descriptor" ] || return 1

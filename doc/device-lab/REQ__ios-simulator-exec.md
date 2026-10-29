@@ -35,6 +35,12 @@ projection, existing command deadlines, and lifecycle/cleanup protections.
 Validate public inputs before dispatch. Validate broker RPC inputs as well,
 and refuse argv for every non-Simulator backend before any native executor is
 selected. A direct provider call also validates argv before invoking its leaf.
+The MCP application admits normalized execution inputs through an explicit
+validation port. Server composition binds that port to the existing canonical
+validator; the application must not import a provider package directly or
+duplicate its validation policy. Keep the validation location, order and
+returned details unchanged. Repository factory fixtures supply the same
+capability explicitly; external custom factory constructors need that port.
 Keep malformed arrays, both/neither forms, foreign/missing targets and unsupported
 backends as failures. No shell or host fallback, retry, timeout extension or
 skip may turn an unsuccessful execution into a pass.

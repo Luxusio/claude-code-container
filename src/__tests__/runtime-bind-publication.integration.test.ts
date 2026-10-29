@@ -57,7 +57,8 @@ import {appendFileSync, existsSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 const root = ${JSON.stringify(root)}, home = ${JSON.stringify(home)}, id = ${JSON.stringify(exactId)};
 const image = ${JSON.stringify(image)}, oldImage = ${JSON.stringify(oldImage)};
-const uid = process.getuid?.() || 1000, gid = process.getgid?.() || 1000;
+const uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000;
+const previousUid = process.geteuid() === 1001 ? 1002 : 1001, previousGid = process.getegid() === 1001 ? 1002 : 1001;
 const raw = process.argv.slice(2);
 const commands = ['images', 'image', 'inspect', 'info', 'ps', 'run', 'start', 'rm', 'stop', 'exec', 'cp', 'tag', 'volume', 'build'];
 const start = raw.findIndex(arg => commands.includes(arg));
@@ -102,7 +103,7 @@ else if (command === 'inspect') {
     else if (format === '{{.Id}}') output(id);
     else output({Id: id, Image: image, State: {Running: true}, Mounts: [], Config: {Labels: {}}, HostConfig: {}});
 } else if (command === 'ps') output('');
-else if (command === 'run') output(args.includes(oldImage) ? '1001:1001' : uid + ':' + gid + ':/home/ccc:ccc');
+else if (command === 'run') output(args.includes(oldImage) ? previousUid + ':' + previousGid : uid + ':' + gid + ':/home/ccc:ccc');
 else if (command === 'info') output(args.includes('{{.ID}}') ? 'inert-daemon' : '');
 else if (command === 'rm') { try { (await import('node:fs')).unlinkSync(join(root, 'materialized')); } catch {} }
 else if (command === 'exec' && args.at(-1)?.includes('printf "%s:%s:%s:%s"')) output(uid + ':' + gid + ':ccc:/home/ccc');

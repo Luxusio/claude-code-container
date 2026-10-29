@@ -103,6 +103,7 @@ export interface DeviceRequestPorts<Result> {
  normalizeToolArgs(args: unknown, name: string): DeviceArguments;
  normalizePublicToolArgs(name: string, args: unknown): DeviceArguments;
  toolInputError(name: string, args: unknown): string|null;
+ execInputError(args: unknown): string|null;
  toolOperation(name: string, args: unknown): string;
  flowOperationAllowed(name: string, args?: unknown): boolean;
  flowStepArguments(tool: string, flowArgs: DeviceArguments, stepArgs: DeviceArguments): DeviceArguments;

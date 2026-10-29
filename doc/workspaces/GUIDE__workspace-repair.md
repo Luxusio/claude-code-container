@@ -78,6 +78,15 @@ Real-Git fixtures must not require a developer's signing key. A command-local
 `commit.gpgsign=false` override can isolate inherited signing configuration
 without changing the developer's global Git configuration.
 
+Removal quarantines publish only the captured target's `.git` and management
+`gitdir` links. Running repository-wide `git worktree repair` at this point can
+normalize sibling links on newer Git versions and invalidate a nested source's
+original identity. Source and sibling metadata therefore remain unchanged.
+Rollback restores only the transaction's exact publications. A replacement at
+either metadata file or the original checkout path is preserved; incomplete
+restoration retains the original content in its private quarantine and reports
+the failure. See [quarantine metadata ownership](REQ__quarantined-worktree-metadata.md).
+
 ## Known ceiling
 
 If a native addition changes Git state but throws before returning a registration

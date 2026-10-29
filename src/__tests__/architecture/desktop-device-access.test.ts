@@ -56,6 +56,7 @@ function publicScreenshotRequest(macos:ProviderRequest<Reply>,display:ProviderRe
         normalizeToolArgs: (args:unknown) => args as DeviceArguments,
         normalizePublicToolArgs: (_name:string,args:unknown) => args as DeviceArguments,
         toolInputError: () => null, toolOperation: (name:string) => name,
+        execInputError: unexpected,
         flowOperationAllowed: unexpected, flowStepArguments: unexpected, evaluateDestructivePolicy: () => ({ ok: true }),
         presentBrokerReceipt: unexpected, presentBrokerTool: unexpected, presentBrokerLifecycle: unexpected,
         presentBackendCatalog: unexpected, presentMobileObservation: unexpected, presentSourceWait: unexpected,
