@@ -1,6 +1,7 @@
 import { chmodSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { describe, expect, it, vi } from "vitest";
+import { cleanupFakeMacosMcpContext, createFakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
 import * as commands from "@ccc/device-lab/providers/commands.mjs";
 import { handleAndroidTool, appiumDiscovery } from "@ccc/device-lab/providers/backends/android.mjs";
 import { handleMacosTool, listMacosDevices } from "@ccc/device-lab/providers/backends/macos-vm.mjs";
@@ -8,7 +9,6 @@ import { handleIosTool, listIosDevices } from "@ccc/device-lab/providers/backend
 import { handleIosRealTool } from "@ccc/device-lab/providers/backends/ios-device.mjs";
 import { cleanupDeviceLabMcpTestContext, createDeviceLabMcpTestContext } from "./helpers/device-lab-mcp-fixture.js";
 import { freePort } from "./helpers/fake-broker-mcp-fixture.js";
-import { cleanupFakeMacosMcpContext, createFakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
 
 function json(result: any) { return JSON.parse(result.content[0].text); }
 

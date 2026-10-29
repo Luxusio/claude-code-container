@@ -290,6 +290,7 @@ describe("Hyper-V Windows PowerShell session", () => {
         // Treating that as evidence the child is wedged killed a process every other concurrent flow
         // was using, failed them all with an error that is deliberately not retryable, and made the
         // next primitive pay the PowerShell start and module load this whole slice exists to remove.
+        vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
         const children: FakeChild[] = [];
         const session = createHyperVWindowsPowerShellSession({
             operationAsset: ASSET,
@@ -302,25 +303,35 @@ describe("Hyper-V Windows PowerShell session", () => {
             },
         });
 
-        const starved = await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 1 });
-        expect(starved.error).toBe("hyper-v-windows-session-timeout");
-        expect(children[0]!.killed()).toBe(false);
+        try {
+            await expect(session.start()).resolves.toBe(true);
+            const starved = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 1 });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(children[0]!.written).toHaveLength(2);
+            await vi.advanceTimersByTimeAsync(1);
+            expect((await starved).error).toBe("hyper-v-windows-session-timeout");
+            expect(children[0]!.killed()).toBe(false);
 
-        // Issued while the abandoned request is still unanswered — the ordering that matters. One
-        // stdin and one stdout carry one request at a time, and a caller giving up does not change
-        // that, so nothing may be written until the child answers or the health floor fires.
-        const queued = session.execute(REQUEST, CONTEXT);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(children[0]!.written).toHaveLength(2);
+            // Issued while the abandoned request is still unanswered — the ordering that matters. One
+            // stdin and one stdout carry one request at a time, and a caller giving up does not change
+            // that, so nothing may be written until the child answers or the health floor fires.
+            const queued = session.execute(REQUEST, CONTEXT);
+            await vi.advanceTimersByTimeAsync(20);
+            expect(children[0]!.written).toHaveLength(2);
 
-        // The late answer frees the pipe, and the same child serves the caller that was waiting.
-        children[0]!.reply(children[0]!.written[1]!, "late but correlated");
-        await vi.waitFor(() => expect(children[0]!.written.length).toBe(3));
-        children[0]!.reply(children[0]!.written[2]!, "served");
+            // The late answer frees the pipe, and the same child serves the caller that was waiting.
+            children[0]!.reply(children[0]!.written[1]!, "late but correlated");
+            await vi.advanceTimersByTimeAsync(0);
+            expect(children[0]!.written).toHaveLength(3);
+            children[0]!.reply(children[0]!.written[2]!, "served");
 
-        expect((await queued).stdout).toBe("served");
-        expect(children).toHaveLength(1);
-        expect(session.starts()).toBe(1);
+            expect((await queued).stdout).toBe("served");
+            expect(children).toHaveLength(1);
+            expect(session.starts()).toBe(1);
+        } finally {
+            session.close();
+            vi.useRealTimers();
+        }
     });
 
     it.each([-3_600_000, 3_600_000])("retains queue and delivered-work budgets across a %i ms wall jump", async (wallJump) => {
@@ -444,6 +455,7 @@ describe("Hyper-V Windows PowerShell session", () => {
         // head of the queue. Timing it from inside the write meant a queued caller had no deadline
         // at all and waited out the health floor — up to 120s for a primitive the broker budgeted at
         // seconds, which is the failure the deadline clamp exists to prevent, one layer up.
+        vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
         const children: FakeChild[] = [];
         const session = createHyperVWindowsPowerShellSession({
             operationAsset: ASSET,
@@ -456,19 +468,29 @@ describe("Hyper-V Windows PowerShell session", () => {
             },
         });
 
-        expect((await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 1 })).error)
-            .toBe("hyper-v-windows-session-timeout");
-        const started = Date.now();
-        const queued = await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 40 });
+        try {
+            await expect(session.start()).resolves.toBe(true);
+            const starved = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 1 });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(children[0]!.written).toHaveLength(2);
+            await vi.advanceTimersByTimeAsync(1);
+            expect((await starved).error).toBe("hyper-v-windows-session-timeout");
+            const started = performance.now();
+            const queued = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 40 });
+            await vi.advanceTimersToNextTimerAsync();
 
-        // Proportional to its own 40ms budget, not merely "less than the 60s floor" — a bound loose
-        // enough to pass at 4.9s would let a partial stall back in unnoticed.
-        expect(Date.now() - started).toBeLessThan(1000);
-        // A distinct code, because its frame was never written: one request reached the child, and
-        // this one provably did not. Only that distinction makes it safe for the broker to re-issue
-        // it through the one-shot transport instead of failing it outright.
-        expect(queued.error).toBe("hyper-v-windows-session-queue-timeout");
-        expect(children[0]!.written).toHaveLength(2);
+            // Proportional to its own 40ms budget, not merely "less than the 60s floor" — a bound loose
+            // enough to pass at 4.9s would let a partial stall back in unnoticed.
+            expect(performance.now() - started).toBeLessThan(1000);
+            // A distinct code, because its frame was never written: one request reached the child, and
+            // this one provably did not. Only that distinction makes it safe for the broker to re-issue
+            // it through the one-shot transport instead of failing it outright.
+            expect((await queued).error).toBe("hyper-v-windows-session-queue-timeout");
+            expect(children[0]!.written).toHaveLength(2);
+        } finally {
+            session.close();
+            vi.useRealTimers();
+        }
     });
 
     it("gives a queued caller back most of its budget instead of spending it waiting", async () => {
@@ -676,9 +698,9 @@ describe("Hyper-V Windows PowerShell session", () => {
         // counter — without expiry the budget is an absorbing state. Three stalls spread over a
         // broker's lifetime would then leave a perfectly healthy host on the one-shot transport
         // permanently, which is the same class of defect the lifetime counter had.
-        // Request timers use real elapsed time. The local offset ages the start window explicitly,
+        // Request timers and elapsed time advance together. The local offset ages the start window explicitly,
         // while Date can move independently of the session's elapsed clock.
-        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
         try {
             const startedAt = Date.now();
             const elapsedStartedAt = performance.now();
@@ -702,7 +724,13 @@ describe("Hyper-V Windows PowerShell session", () => {
             // The health floor is never shorter than the caller's own budget, so both are small here.
             const stalling = { ...CONTEXT, timeoutMilliseconds: 5 };
             for (let stall = 0; stall < 2; stall += 1) {
-                expect((await session.execute(REQUEST, stalling)).error).toBe("hyper-v-windows-session-timeout");
+                await expect(session.start()).resolves.toBe(true);
+                const inFlight = session.execute(REQUEST, stalling);
+                await vi.advanceTimersByTimeAsync(0);
+                expect(session.outstanding().pendingRequests).toBe(1);
+                await vi.advanceTimersByTimeAsync(5);
+                expect((await inFlight).error).toBe("hyper-v-windows-session-timeout");
+                expect(session.outstanding()).toEqual({ pendingRequests: 0, queueDepth: 0 });
             }
             expect((await session.execute(REQUEST, stalling)).error).toBe("hyper-v-windows-session-unavailable");
             expect(spawns).toBe(2);

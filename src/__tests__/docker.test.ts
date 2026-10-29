@@ -7593,13 +7593,16 @@ describe("docker.ts module exports", () => {
         });
 
         it("refuses to stop a container with any session ownership claim unless forced", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
             mockGetSessionLockClaimsForContainer.mockReturnValue(["active.lock"]);
 
             let failure: unknown;
             try { stopProjectContainer(projectPath); } catch (error) { failure = error; }
             expect(failure).toBeInstanceOf(Error);
             expect((failure as Error).message).toBe(
-                `Container for workspace ${JSON.stringify(resolve(projectPath))} has 1 remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.`,
+                `Container for workspace ${JSON.stringify(resolve(projectPath))} has 1 remaining session ownership claim(s) after reconciliation; active or unobservable sessions and incomplete cleanup records are preserved.\n`
+                + "Remaining records are not necessarily active sessions. --force can interrupt active sessions and clean this project's devices; uncertain predecessor records remain unresolved.\n"
+                + `To explicitly force this operation, run in a POSIX shell:\n\`\`\`\n(cd '${resolve(projectPath).replace(/'/g, "'\\''")}' && CCC_PROFILE='default' ccc --runtime docker stop --force)\n\`\`\``,
             );
             expect(spawnSyncMock).not.toHaveBeenCalled();
 

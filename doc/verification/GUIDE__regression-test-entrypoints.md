@@ -380,3 +380,18 @@ this positive run and the prior macOS passes; no further provider repeat or
 rebuild is needed for this qualification. It does not establish the historical
 CoreSimulator cause, eliminate intermittency or certify complete Level 3 and
 physical-device coverage.
+
+For the Oct28 GitHub Actions run `40785228840`, inspect the saved check
+annotations before repeating the suite. Its two failing Linux jobs share five
+fixture causes: session clocks/dispatch, iOS launchctl output, valid lease-test
+input, complete stop guidance and native process identity under a fake provider
+platform. Use [CI fixture isolation](GUIDE__ci-fixture-isolation.md) to preserve
+the production deadlines, validation and ownership refusals while correcting
+the fixtures. The shared macOS identity fixture has five importing owners;
+verify those consumers after changing its import-time delegate.
+
+Match the workflow's Node 24 major and check both ordinary routing and
+`CCC_RUNTIME=podman` for the original failures. Keep targeted-filter omissions
+separate from provider prerequisite skips. Preserve the first failing reports,
+the corrected owner reports and the exact candidate identity. Local acceptance
+and a newly published GitHub Actions result are separate facts.

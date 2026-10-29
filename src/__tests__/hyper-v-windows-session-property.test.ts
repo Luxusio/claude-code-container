@@ -1,6 +1,6 @@
 import { readFileSync } from "fs";
 import { join } from "path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
     createHyperVWindowsPowerShellSession,
@@ -91,7 +91,10 @@ function flakyChild(next: () => number, dropRate: number, maxDelayMs: number): R
 }
 
 describe("Hyper-V Windows session transport properties", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
     it("holds its invariants across randomised concurrent interleavings", async () => {
+        vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
         const seed = 20260903;
         const next = random(seed);
         const rounds = 120;
@@ -120,11 +123,19 @@ describe("Hyper-V Windows session transport properties", () => {
                 },
             });
 
+            await expect(session.start()).resolves.toBe(true);
             const budgets = Array.from({ length: callersPerRound }, () => 1 + Math.floor(next() * 24));
-            const results = await Promise.all(budgets.map((timeoutMilliseconds) => session.execute(REQUEST, {
+            const settled = Promise.all(budgets.map((timeoutMilliseconds) => session.execute(REQUEST, {
                 timeoutMilliseconds,
                 maximumOutputBytes: 64 * 1024,
             })));
+            // Dispatch at the original clock instant before any tiny caller budget can expire.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(children[0]!.frames()).toBeGreaterThan(0);
+            // Settle both caller deadlines and the health work that still owns an abandoned pipe.
+            await vi.runAllTimersAsync();
+            const results = await settled;
+            expect(session.outstanding()).toEqual({ pendingRequests: 0, queueDepth: 0 });
 
             // 1. Every caller settles. A caller that never settles is the deadlock class.
             expect(results).toHaveLength(callersPerRound);

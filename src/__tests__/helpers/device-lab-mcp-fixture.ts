@@ -41,7 +41,8 @@ export function expectedDeviceLabMcpOwnerBasis(cwd = repoRoot, profile?: string)
     const resolved = resolve(cwd);
     const name = basename(resolved).toLowerCase().replace(/[^a-z0-9-]/g, "-");
     const hash = createHash("sha256").update(resolved).digest("hex").slice(0, 12);
-    const projectId = `${name}-${hash}`;
+    const projectId = /^\/project\/[a-z0-9-]{0,255}-[a-f0-9]{12}$/.test(cwd)
+        ? cwd.slice("/project/".length) : `${name}-${hash}`;
     const containerName = profile ? `ccc-${projectId}--p--${profile}` : `ccc-${projectId}`;
     return `${containerName}:/project/${projectId}`;
 }

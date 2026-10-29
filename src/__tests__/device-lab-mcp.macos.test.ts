@@ -3,14 +3,28 @@ import { syncBuiltinESMExports } from "node:module";
 import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { cleanupFakeMacosMcpContext, createFakeMacosMcpContext, type FakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
 import { handleMacosTool, listMacosDevices } from "@ccc/device-lab/providers/backends/macos-vm.mjs";
 import { withOwnerDeviceOperation } from "@ccc/device-lab/providers/state/device-store.mjs";
 import { updateMacosDevice, writeMacosDevices } from "@ccc/device-lab/providers/state/macos-state.mjs";
-import { cleanupFakeMacosMcpContext, createFakeMacosMcpContext, type FakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
+import { readProcessIdentity, readProcessIdentityAsync } from "@ccc/device-lab/providers/state/process-identity.mjs";
 import { cleanupDeviceLabMcpTestContext, createDeviceLabMcpTestContext, expectedDeviceLabMcpOwnerBasis, type DeviceLabMcpTestContext } from "./helpers/device-lab-mcp-fixture.js";
 import { nodeProviderFixturePreloadSource } from "./helpers/node-provider-fixture.js";
 import { createHash } from "node:crypto";
+
+const snapshotContention = vi.hoisted(() => ({ paused: undefined as (() => void) | undefined }));
+
+vi.mock("node:timers/promises", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:timers/promises")>();
+    return {
+        ...actual,
+        setTimeout: (...args: Parameters<typeof actual.setTimeout>) => {
+            if (args[0] === 10) snapshotContention.paused?.();
+            return actual.setTimeout(...args);
+        },
+    };
+});
 
 function createdMacosDeviceId(result: Awaited<ReturnType<typeof handleMacosTool>>): string {
     expect(result?.isError, result?.content?.[0]?.text).not.toBe(true);
@@ -32,6 +46,16 @@ describe("macOS VM backend with fake Tart provider", () => {
 
     afterAll(() => {
         cleanupFakeMacosMcpContext(context);
+    });
+
+    it("keeps synchronous and asynchronous process identities native under the fake Darwin provider", async () => {
+        expect(process.platform).toBe("darwin");
+        const synchronous = readProcessIdentity(process.pid);
+        const asynchronous = await readProcessIdentityAsync(process.pid);
+        expect(synchronous).not.toBeNull();
+        expect(asynchronous).not.toBeNull();
+        expect(synchronous).toMatchObject({ pid: process.pid });
+        expect(asynchronous).toEqual(synchronous);
     });
 
     it("lists empty and identity-only owner records without probing native providers", () => {
@@ -498,25 +522,35 @@ describe("macOS VM backend with fake Tart provider", () => {
             entered();
             await gate;
         });
-        await enteredLock;
-
         let settled = false;
-        const snapshot = handleMacosTool("device_snapshot_create", {
-            deviceId,
-            snapshotName: "serialized-snapshot",
-        }).then((result) => {
-            settled = true;
-            return result;
-        });
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        expect(settled).toBe(false);
+        let snapshot: ReturnType<typeof handleMacosTool> | undefined;
+        try {
+            await Promise.race([enteredLock, holder]);
+            const contended = new Promise<void>((resolve) => { snapshotContention.paused = resolve; });
+            snapshot = handleMacosTool("device_snapshot_create", {
+                deviceId,
+                snapshotName: "serialized-snapshot",
+            }).then((result) => {
+                settled = true;
+                return result;
+            });
+            expect(await Promise.race([
+                contended.then(() => "contended"),
+                snapshot.then(() => "settled"),
+            ])).toBe("contended");
+            expect(settled).toBe(false);
 
-        release();
-        await holder;
-        const result = await snapshot;
-        expect(result?.isError).not.toBe(true);
-        const deleted = await handleMacosTool("device_delete", { deviceId });
-        expect(deleted?.isError).not.toBe(true);
+            release();
+            await holder;
+            const result = await snapshot;
+            expect(result?.isError).not.toBe(true);
+        } finally {
+            release();
+            snapshotContention.paused = undefined;
+            await Promise.allSettled([holder, ...(snapshot ? [snapshot] : [])]);
+            const deleted = await handleMacosTool("device_delete", { deviceId });
+            expect(deleted?.isError).not.toBe(true);
+        }
     });
 
     it("fences direct lifecycle generations and preserves exact same-id successors", async () => {

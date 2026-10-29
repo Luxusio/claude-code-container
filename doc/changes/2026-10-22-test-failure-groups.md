@@ -664,6 +664,45 @@ the accepted macOS scenarios. No further provider run is needed for this
 qualification. The historical CoreSimulator cause, intermittent-risk limit,
 physical-device and complete Level 3 coverage remain distinct from this PASS.
 
+## Oct29 GitHub Actions fixture corrections
+
+The latest inspected CI run, `40785228840` at `6e514530`, fails the ordinary
+and Podman-forced Linux test jobs. Windows static/ownership/package checks,
+Chrome integration and Podman E2E pass. Saved annotations identify eleven
+distinct failures in five groups: session timing, iOS observation fixtures,
+lease-test input validation, complete stop guidance and fake macOS process
+identity. Annotations do not certify that no unannotated failures exist.
+
+Session fixtures now establish startup and dispatch with a controlled monotonic
+clock before advancing their original tiny deadlines. The seeded concurrency
+test retains its random draw order and drains abandoned-request health work.
+iOS fixtures emit the launchctl table and explicitly exercise the pgrep
+nonmatch fallback while allowance remains. The physical lease case supplies a
+valid exec command before asserting the exact lease refusal. The stop warning
+expectation includes the full warning and scoped POSIX remediation command.
+
+Fake macOS identity previously reported a Linux birth token synchronously and
+a `ps` token asynchronously for the same real process. Its stable early async
+delegate now retains the native host observation; all affected provider imports
+load the fixture before the lock captures that delegate. Snapshot contention
+waits for the real retry boundary and always releases and joins its holder.
+No runtime guard, deadline, workflow exclusion or provider behavior changes.
+
+Expanded local verification also exposed a canonical-mount expected-owner
+fixture error. The fixture now preserves an existing `/project/<project-id>`
+and selected profile, with literal regressions; ordinary host hashing stays
+unchanged. The real public stdio journey retains its exact ownership assertions.
+See [CI fixture isolation](../verification/GUIDE__ci-fixture-isolation.md).
+
+On Node 24.22.2, the final affected-owner checks pass 837 distinct assertions:
+799 across eight owners plus the unchanged 38 session cases in the earlier
+Node 24 run. Podman-forced regression checks pass 68 selected assertions,
+including the public stdio journey and canonical-owner cases; other cases in
+that filtered invocation are unselected, not provider skips. The scoped session
+typecheck passes. Earlier failing reports remain archived. These results
+qualify the local candidate; a newly published Actions execution remains
+separate evidence.
+
 ## Known ceiling
 
 The positive packaged Mac destructive result above supersedes the following

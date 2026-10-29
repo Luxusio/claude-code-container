@@ -15,6 +15,30 @@ import { tmpdir } from "node:os";
 import { basename, join, relative, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { copyWritableTestTree } from "./helpers/writable-test-copy.js";
+import { expectedDeviceLabMcpOwnerBasis } from "./helpers/device-lab-mcp-fixture.js";
+
+describe("MCP fixture owner basis", () => {
+    it("preserves an already canonical project mount", () => {
+        expect(expectedDeviceLabMcpOwnerBasis("/project/example-0123456789ab"))
+            .toBe("ccc-example-0123456789ab:/project/example-0123456789ab");
+    });
+
+    it("preserves the selected profile for a canonical project mount", () => {
+        expect(expectedDeviceLabMcpOwnerBasis("/project/example-0123456789ab", "work"))
+            .toBe("ccc-example-0123456789ab--p--work:/project/example-0123456789ab");
+    });
+
+    it.each([
+        ["/project/Example-0123456789ab", "ccc-Example-0123456789ab:/project/Example-0123456789ab"],
+        ["/project/example-0123456789a", "ccc-example-0123456789a:/project/example-0123456789a"],
+        ["/project/example-0123456789abc", "ccc-example-0123456789abc:/project/example-0123456789abc"],
+        ["/project/example-0123456789ab/", "ccc-example-0123456789ab:/project/example-0123456789ab"],
+        ["/project/parent/example-0123456789ab", "ccc-example-0123456789ab:/project/example-0123456789ab"],
+        ["/project/parent/../example-0123456789ab", "ccc-example-0123456789ab:/project/example-0123456789ab"],
+    ])("treats the noncanonical path %s as a host checkout", (cwd, canonicalBasis) => {
+        expect(expectedDeviceLabMcpOwnerBasis(cwd)).not.toBe(canonicalBasis);
+    });
+});
 
 type TreeEntry = { mode: number; bytes?: string };
 

@@ -4848,7 +4848,9 @@ describe("device-lab host broker lifecycle commands", () => {
             const currentLease = JSON.parse(readFileSync(leaseFile, "utf8")) as Record<string, unknown>;
             writeFileSync(leaseFile, JSON.stringify({ ...currentLease, claimNonce: "successor-tool-nonce" }));
 
-            const exec = await invoke("device_exec");
+            const exec = await invokeRpc("broker.device.tool.invoke", {
+                tool: "device_exec", backend: "android-device", deviceId, command: "true",
+            });
             expect(exec.status).toBe(409);
             expect(await exec.json()).toEqual(expect.objectContaining({
                 ok: false,

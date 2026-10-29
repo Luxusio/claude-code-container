@@ -18,18 +18,26 @@ afterEach(() => vi.restoreAllMocks());
 
 for (const backend of ["android", "ios"] as const) {
     describe(`${backend} provider observation to public wait contract`, () => {
-        async function observe(result: Record<string, unknown>) {
+        async function observe(result: Record<string, unknown>, fallbackFromLaunchctl = false) {
             const run = vi.spyOn(commands, backend === "android" ? "runWithTimeout" : "run")
                 .mockImplementation(() => { time = result.status === 0 && result.stdout ? 99 : 100; return { stdout: "", stderr: "", ...result }; });
+            if (fallbackFromLaunchctl) run.mockImplementationOnce(() => {
+                time = 1;
+                return { status: 1, stdout: "", stderr: "launchctl list unavailable" };
+            });
             const value = backend === "android"
                 ? await waitForAndroidApp("adb", ["-s", "serial"], "com.fixture.app", 100, 50)
                 : await waitForIosApp("xcrun", "udid", "com.fixture.app", 100, 50);
-            expect(run).toHaveBeenCalledTimes(1);
+            expect(run).toHaveBeenCalledTimes(fallbackFromLaunchctl ? 2 : 1);
+            if (backend === "ios") {
+                expect(run).toHaveBeenNthCalledWith(1, "xcrun", ["simctl", "spawn", "udid", "launchctl", "list"], { timeout: 100 });
+                if (fallbackFromLaunchctl) expect(run).toHaveBeenNthCalledWith(2, "xcrun", ["simctl", "spawn", "udid", "pgrep", "-f", "com.fixture.app"], { timeout: 99 });
+            }
             return value;
         }
 
         it.each([false, true])("clean native exit 1 is a successful nonmatch (detail=%s)", async (detail) => {
-            const observation = await observe({ status: 1 });
+            const observation = await observe({ status: 1 }, backend === "ios");
             expect(observation).toMatchObject({ running: false, status: 0, nativeStatus: 1 });
             const { response, value } = present("wait_for_app", observation, detail);
             expect(response.isError).toBe(false);
@@ -42,7 +50,7 @@ for (const backend of ["android", "ios"] as const) {
         });
 
         it.each([false, true])("positive native observation matches (detail=%s)", async (detail) => {
-            const observation = await observe({ status: 0, stdout: "123\n" });
+            const observation = await observe({ status: 0, stdout: backend === "ios" ? "PID\tStatus\tLabel\n123\t0\tUIKitApplication:com.fixture.app[fixture]\n" : "123\n" });
             const { response, value } = present("wait_for_app", observation, detail);
             expect(response.isError).toBe(false);
             expect(value).toMatchObject({ matched: true, pid: "123" });

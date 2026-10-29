@@ -7,6 +7,20 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { vi } from "vitest";
 
+const nativeIdentity = vi.hoisted(() => ({ call: undefined as (<T>(call: () => T) => T) | undefined }));
+
+// Locks capture this delegate at import time, before a fixture selects Darwin.
+vi.mock("@ccc/device-lab/providers/state/process-identity.mjs", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("@ccc/device-lab/providers/state/process-identity.mjs")>();
+    return {
+        ...actual,
+        readProcessIdentityAsync: (...args: Parameters<typeof actual.readProcessIdentityAsync>) => {
+            const read = () => actual.readProcessIdentityAsync(...args);
+            return nativeIdentity.call ? nativeIdentity.call(read) : read();
+        },
+    };
+});
+
 export interface FakeMacosMcpContext {
     homeDir: string;
     binDir: string;
@@ -112,6 +126,7 @@ fs.writeFileSync(last, "fakepng");
         platformSpy.mockReturnValue(nativePlatform);
         try { return call(); } finally { platformSpy.mockReturnValue(previousPlatform); }
     };
+    nativeIdentity.call = nativeCall;
     const readIdentity = processIdentity.readProcessIdentity;
     const inspectIdentity = processIdentity.inspectProcessIdentity;
     const signalRuntime = processIdentity.signalOwnedRuntimeProcess;
@@ -122,7 +137,10 @@ fs.writeFileSync(last, "fakepng");
         vi.spyOn(processIdentity, "signalOwnedRuntimeProcess").mockImplementation((...args) => nativeCall(() => signalRuntime(...args))),
         vi.spyOn(brokerOwnerSecret, "readBrokerOwnerSecret").mockImplementation((...args) => nativeCall(() => readSecret(...args))),
     ];
-    const restoreNativeIdentity = () => identitySpies.forEach(spy => spy.mockRestore());
+    const restoreNativeIdentity = () => {
+        nativeIdentity.call = undefined;
+        identitySpies.forEach(spy => spy.mockRestore());
+    };
 
     return { homeDir, binDir, logPath, oldHome, oldPath, platformSpy, restoreEnvironment, restoreNodeRouting, restoreNativeIdentity };
 }

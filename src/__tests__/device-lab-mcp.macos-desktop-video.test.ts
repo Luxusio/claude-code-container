@@ -2,8 +2,8 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { handleMacosTool } from "@ccc/device-lab/providers/backends/macos-vm.mjs";
 import { cleanupFakeMacosMcpContext, createFakeMacosMcpContext, type FakeMacosMcpContext } from "./helpers/fake-macos-mcp-fixture.js";
+import { handleMacosTool } from "@ccc/device-lab/providers/backends/macos-vm.mjs";
 
 describe("macOS VM desktop helper and video tools with fake Tart provider", () => {
     let context: FakeMacosMcpContext;
