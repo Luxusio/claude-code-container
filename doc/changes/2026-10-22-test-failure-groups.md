@@ -639,6 +639,31 @@ the cleaned record and the existing publication timestamp; production code
 was unchanged during those corrections. Package, architecture and real-test type checking,
 configured lint, protocol syntax, local references and diff checks pass.
 
+## Oct29 02:25 UTC native iOS acceptance
+
+The focused Mac result now passes the complete packaged iOS Simulator
+scenario. Stop passes its strict native `Shutdown` assertion, then reset,
+destructive deletion and final native/owned-list absence pass. All 22 recorded
+MCP calls succeed. The two summary records are one Simulator PASS and one
+physical-device SKIP (`no physical iOS device visible to xctrace`), with zero
+failures. This accepts the focused native scenario for the bounded recovery.
+
+The separate user-console preflight confirms a newly launched, ready
+protocol-13 broker on port 17374 (PID 4845, started
+`2026-10-29T02:23:26.483Z`); these are not fields in the saved summary.
+The JSON identifies Darwin arm64, Node 22.22.1 and packaged MCP bundle SHA-256
+`8247cee09b1289778651139cb6f5da89b6418e46d722960460ed5d2549331777`.
+Its stop response shape includes `shutdown` and `retryExecution`, but their
+values, native execution status, exact attempt count and per-stage times are
+not saved. Field presence must not be reported as those missing receipt facts.
+
+The unchanged strict assertions and original failure-only observer remain;
+successful cleanup cannot turn an original stop failure into this PASS.
+Retain the original recurrence archive alongside this positive result and
+the accepted macOS scenarios. No further provider run is needed for this
+qualification. The historical CoreSimulator cause, intermittent-risk limit,
+physical-device and complete Level 3 coverage remain distinct from this PASS.
+
 ## Known ceiling
 
 The positive packaged Mac destructive result above supersedes the following

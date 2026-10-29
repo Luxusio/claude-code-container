@@ -364,3 +364,19 @@ Continue only when preflight reports the current verified protocol and readiness
 Retain the already accepted macOS scenarios. Native acceptance of this bounded
 recovery remains pending; portable fixtures do not prove the CoreSimulator
 cause or eliminate intermittency.
+
+The subsequent Oct29 02:25 UTC focused Mac result accepts the packaged iOS
+Simulator scenario on the protocol-13 broker. Stop passes the strict native
+`Shutdown` readback, followed by reset, deletion and final native/owned-list
+absence. All 22 recorded MCP calls succeed. The separate physical-device step
+skips because no physical iOS device is visible to `xctrace`; the Simulator
+step is not skipped.
+
+The stop response shape includes `shutdown` and `retryExecution`. The summary
+stores their presence, not their values: do not infer the native retry status,
+exact attempt count or per-stage timing from it. The protocol/PID/start facts
+come from the user's preflight console, separately from the saved JSON. Retain
+this positive run and the prior macOS passes; no further provider repeat or
+rebuild is needed for this qualification. It does not establish the historical
+CoreSimulator cause, eliminate intermittency or certify complete Level 3 and
+physical-device coverage.
