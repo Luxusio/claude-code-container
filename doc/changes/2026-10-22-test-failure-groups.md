@@ -666,7 +666,7 @@ physical-device and complete Level 3 coverage remain distinct from this PASS.
 
 ## Oct29 GitHub Actions fixture corrections
 
-The latest inspected CI run, `40785228840` at `6e514530`, fails the ordinary
+The initially inspected CI run, `40785228840` at `6e514530`, fails the ordinary
 and Podman-forced Linux test jobs. Windows static/ownership/package checks,
 Chrome integration and Podman E2E pass. Saved annotations identify eleven
 distinct failures in five groups: session timing, iOS observation fixtures,
@@ -736,6 +736,15 @@ production shortcut remains covered. These focused groups pass 95 and 12
 assertions respectively; the isolated MCP build case, source/architecture
 typechecks and affected-source lint also pass. This adds to the earlier fixture
 checks; it does not yet assert a new GitHub Actions PASS.
+
+The later run `40810701259` at `2d7395f8` was also checked in full before
+publishing these fixes: ordinary Linux has 112 failures, Podman has 111,
+and their union has 112 distinct failed tests. Every title is already in the
+earlier 115-failure union; three timing failures did not recur. Both jobs fail
+only their Test step, while Windows static/ownership/package, Chrome and Podman
+E2E still pass. This comparison establishes no new failure group, rather than
+treating absent timing failures as a fix. Its full logs and comparison remain
+under the same archive's `latest-40810701259/` directory.
 
 ## Known ceiling
 
