@@ -48,7 +48,7 @@ import { brokerWindowsSandboxReplacement } from "./device-lab/domain/lifecycle/w
 import type { BrokerWindowsSandboxLifecyclePorts } from "./device-lab/ports/lifecycle/windows-sandbox-lifecycle.js";
 import { createBrokerIosSimulatorLifecycle, createBrokerIosRecord, rollbackBrokerIosCreate } from "./device-lab/application/lifecycle/ios-simulator-lifecycle.js";
 import { createBrokerMacosVmLifecycle, createBrokerMacosRecord, rollbackBrokerMacosCreate } from "./device-lab/application/lifecycle/macos-vm-lifecycle.js";
-import { brokerIosReplacement, brokerIosUniqueFields } from "./device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
+import { brokerIosReplacement, brokerIosUniqueFields, type BrokerIosConditionalShutdownExecution } from "./device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
 import { brokerMacosReplacement, brokerMacosUniqueFields, isBrokerMacosTartImageCreate, BROKER_MACOS_TART_CLONE_TIMEOUT_MS, BROKER_MACOS_TART_CREATE_TIMEOUT_MS, type BrokerMacosMetadataPurpose, type BrokerMacosHelperPreparation } from "./device-lab/domain/lifecycle/macos-vm-lifecycle.js";
 import type { BrokerIosSimulatorLifecyclePorts } from "./device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerMacosVmLifecyclePorts } from "./device-lab/ports/lifecycle/macos-vm-lifecycle.js";
@@ -9942,6 +9942,22 @@ function nativeLifecycleObservation(receipt: ProviderCommandResult, preparedComm
 function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIosSimulatorLifecyclePorts<NativeProviderLifecycleEffect> {
     return {
         execute: (effect, options) => nativeLifecycleObservation(runLifecycleEffect(normalized, effect.command, options)),
+        executeShutdownIfCurrent: (owner, parsed, expected, effect, options) => {
+            const waitMs = Math.floor(options.remainingMs());
+            if (!(waitMs >= 1)) return {kind: "timed-out"};
+            try {
+                return withSharedMutationLock<BrokerIosConditionalShutdownExecution>(ownerDevicesMutationLockFile(owner, parsed.stateKey), () => {
+                    const device = readOwnerDevices(owner, parsed.stateKey).find(candidate => cleanupRecord(candidate) && candidate.id === parsed.deviceId);
+                    if (!device || !isDeepStrictEqual(device, expected)) return {kind: "state-conflict", found: Boolean(device), device: device || null};
+                    const timeoutMs = Math.floor(options.remainingMs());
+                    if (!(timeoutMs >= 1)) return {kind: "timed-out"};
+                    return {kind: "executed", execution: nativeLifecycleObservation(runLifecycleEffect(normalized, effect.command, {timeoutMs, outputLimit: options.outputLimit}))};
+                }, {waitMs, waitBudget: {remaining: options.remainingMs}});
+            } catch (cause) {
+                if (isDeviceOperationLockTimeout(cause) && !(Math.floor(options.remainingMs()) >= 1)) return {kind: "timed-out"};
+                throw cause;
+            }
+        },
         executeCreate: (effect, options) => {
             const receipt = normalized.commandRunner(effect.command, options);
             return { ...nativeLifecycleObservation(receipt),
@@ -9987,7 +10003,7 @@ function brokerIosLifecyclePorts(normalized: NormalizedBrokerOptions): BrokerIos
             let current: Record<string, unknown> | undefined;
             try {
                 const publication = transitionOwnerLifecycleDevice(owner, state, id, expected, candidate => {
-                    if (!(options.remainingMs() > 0)) { current = candidate; throw expired; }
+                    if (!(Math.floor(options.remainingMs()) >= 1)) { current = candidate; throw expired; }
                     return replacement(candidate);
                 });
                 if (normalized.cleanupObservation && publication.matched) normalized.cleanupObservation.changed = true;

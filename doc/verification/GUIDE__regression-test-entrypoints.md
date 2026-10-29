@@ -331,3 +331,36 @@ qualification. No further provider run or rebuild is needed for this snapshot
 correction. The focused packaged result does not establish source-MCP, Android,
 other-platform or complete Level 3 coverage; exact per-stage timings and native
 receipt values were not saved.
+
+The Oct29 full run preserves those macOS passes but reproduces the iOS stop
+failure. Exit zero is still not completion: the failure-only observer sees
+`Booted`, and cleanup's subsequent successful stop does not pass the original
+request. The bounded recovery now permits one reissue of the same shutdown
+effect after a timely, identity-verified `Booted`. It compares the complete
+expected record under the owner inventory mutation lock, whose acquisition and
+native execution consume the original remaining allowance. There is no
+reissue for `Shutting Down`, failed or late observations, changed records or
+exhausted allowance. Native `Shutdown` and final comparison remain mandatory.
+
+Use the existing iOS lifecycle type/HTTP owners and `mcp-error-output.test.ts`
+for the finite command cap, shrinking budgets, lock contention, successor
+preservation and separate sanitized retry receipt. Preserve the last valid
+state when a later observation is unavailable. See
+[shutdown confirmation](../device-lab/REQ__ios-broker-shutdown.md).
+
+This change requires protocol 13, so building files alone is insufficient.
+Deliver only the device-lab workspace, assembled packages and MCP bundle, then
+run the verified port-17374 preflight and only the iOS collector:
+
+```sh
+npm run build --workspace @ccc/device-lab &&
+npm run assemble:packages &&
+npm run build:device-lab-mcp &&
+CCC_DEVICE_BROKER_PORT=17374 node dist/index.js devices broker status --verbose &&
+CCC_TEST_LEVEL=3 CCC_DEVICE_BROKER_PORT=17374 node scripts/real-tests/run.ts --compact --json-summary-file results/device-lab-ios-focused.json scripts/real-tests/level2-ios-e2e.ts
+```
+
+Continue only when preflight reports the current verified protocol and readiness.
+Retain the already accepted macOS scenarios. Native acceptance of this bounded
+recovery remains pending; portable fixtures do not prove the CoreSimulator
+cause or eliminate intermittency.

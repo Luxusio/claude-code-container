@@ -369,6 +369,7 @@ export function renderBrokerIosMacosLifecycle(outcome: BrokerIosLifecycleRespons
             const helperPreparation = "helperPreparation" in outcome ? outcome.helperPreparation : undefined;
             const helperError = helperPreparation?.ok === false ? helperPreparation.error || "macos-helper-prepare-failed" : undefined;
             const shutdown = "shutdown" in outcome ? outcome.shutdown : undefined;
+            const retryExecution = "retryExecution" in outcome ? outcome.retryExecution : undefined;
             const shutdownError = shutdown?.ok === false ? "ios-simulator-shutdown-not-confirmed" : undefined;
             const invoked = "invoked" in outcome ? outcome.invoked !== false : true;
             const mutatesHost = "mutatesHost" in outcome ? outcome.mutatesHost === true : outcome.success;
@@ -380,6 +381,7 @@ export function renderBrokerIosMacosLifecycle(outcome: BrokerIosLifecycleRespons
                     ...("stateError" in outcome && outcome.stateError ? { stateError: outcome.stateError } : {}),
                     result: { ...lifecycleResult(context, redactDevice(outcome.device), outcome.execution, invoked, mutatesHost),
                         ...(shutdown ? {shutdown} : {}),
+                        ...(retryExecution ? {retryExecution: renderBrokerLifecycleObservation(retryExecution)} : {}),
                         ...(boot?.ok ? {boot: {ready: boot.ready, skipped: boot.skipped === true, provider: "tart", ip: boot.sshHost || null}} : {}),
                         ...(helperPreparation ? {helper: helperPreparation.helper.provisioning || helperPreparation.helper,
                             ...(!helperPreparation.ok ? {helperPreparation} : {})} : {}),

@@ -775,16 +775,20 @@ function boundedBrokerLifecycleFailure(value: any) {
 
 function boundedIosShutdown(value: any) {
     const body = value?.body && typeof value.body === "object" && !Array.isArray(value.body) ? value.body : null;
-    const shutdown = body?.result?.shutdown ?? value?.result?.shutdown;
+    const result = body?.result?.shutdown == null ? value?.result : body.result;
+    const shutdown = result?.shutdown;
     if (!shutdown || typeof shutdown !== "object" || Array.isArray(shutdown)) return undefined;
     const ok = typeof shutdown.ok === "boolean" ? shutdown.ok : undefined;
     const reason = ["timed-out", "observation-failed"].includes(shutdown.reason) ? shutdown.reason : undefined;
     const attempts = Number.isSafeInteger(shutdown.attempts) && shutdown.attempts >= 0 ? shutdown.attempts : undefined;
     const lastState = shutdown.lastState === null || ["Shutdown", "Booted", "Shutting Down"].includes(shutdown.lastState)
         ? shutdown.lastState : undefined;
-    return ok !== undefined || reason !== undefined || attempts !== undefined || lastState !== undefined
+    const commandAttempts = shutdown.commandAttempts === 1 || shutdown.commandAttempts === 2 ? shutdown.commandAttempts : undefined;
+    const retryExecution = boundedNativeExecution(result.retryExecution);
+    return ok !== undefined || reason !== undefined || attempts !== undefined || lastState !== undefined || commandAttempts !== undefined || retryExecution
         ? { ...(ok !== undefined ? { ok } : {}), ...(reason !== undefined ? { reason } : {}),
-            ...(attempts !== undefined ? { attempts } : {}), ...(lastState !== undefined ? { lastState } : {}) }
+            ...(attempts !== undefined ? { attempts } : {}), ...(lastState !== undefined ? { lastState } : {}),
+            ...(commandAttempts !== undefined ? { commandAttempts } : {}), ...(retryExecution ? { retryExecution } : {}) }
         : undefined;
 }
 

@@ -82,8 +82,10 @@ export function createBrokerIosSimulatorLifecycle<Effect>(ports: BrokerIosSimula
             : ports.execute(command.effect,{timeoutMs: commandAllowance, outputLimit: ports.outputLimit});
         let success = brokerIosCommandSucceeded(execution);
         let shutdown: BrokerIosShutdownSettlement | undefined;
+        let retryExecution: BrokerIosProviderResult | undefined;
         if (success && stopping) {
             let attempts = 0;
+            let commandAttempts: 1 | 2 = 1;
             let lastState: BrokerIosShutdownState = null;
             shutdown = {ok: false, reason: "timed-out", attempts, lastState};
             while (true) {
@@ -93,23 +95,37 @@ export function createBrokerIosSimulatorLifecycle<Effect>(ports: BrokerIosSimula
                 try { observation = ports.observeShutdown(command.effect, ownerId, expected, {timeoutMs, outputLimit: ports.outputLimit}); }
                 catch { shutdown = {ok: false, reason: "observation-failed", attempts: attempts + 1, lastState}; break; }
                 attempts++;
-                lastState = observation.state;
-                if (!(remainingMs() > 0)) { shutdown = {ok: false, reason: "timed-out", attempts, lastState}; break; }
-                if (!observation.ok || !["Shutdown", "Booted", "Shutting Down"].includes(lastState || "")) {
+                const recognized = observation.ok && ["Shutdown", "Booted", "Shutting Down"].includes(observation.state || "");
+                if (recognized) lastState = observation.state;
+                if (!(Math.floor(remainingMs()) >= 1)) { shutdown = {ok: false, reason: "timed-out", attempts, lastState}; break; }
+                if (!recognized) {
                     shutdown = {ok: false, reason: "observation-failed", attempts, lastState}; break;
                 }
-                if (lastState === "Shutdown") { shutdown = {ok: true, attempts, lastState}; break; }
-                await ports.sleep(Math.min(100, remainingMs()));
+                if (observation.state === "Shutdown") { shutdown = {ok: true, attempts, lastState: "Shutdown"}; break; }
+                if (observation.state === "Booted" && commandAttempts === 1) {
+                    const retry = ports.executeShutdownIfCurrent(ownerId, parsed, expected, command.effect, {remainingMs, outputLimit: ports.outputLimit});
+                    if (retry.kind === "state-conflict") return {kind: "state-conflict", plan, device: retry.device, execution, success: false,
+                        publication: {found: retry.found, matched: false, device: retry.device},
+                        shutdown: {ok: false, reason: "observation-failed", attempts, lastState, commandAttempts}, mutatesHost: true, recoveryRequired: true,
+                        ...(auxiliary ? {auxiliary: auxiliary.result} : {})};
+                    if (retry.kind === "timed-out") { shutdown = {ok: false, reason: "timed-out", attempts, lastState}; break; }
+                    retryExecution = retry.execution;
+                    commandAttempts = 2;
+                }
+                const pauseMs = Math.min(100, Math.floor(remainingMs()));
                 shutdown = {ok: false, reason: "timed-out", attempts, lastState};
+                if (!(pauseMs >= 1)) break;
+                await ports.sleep(pauseMs);
             }
+            shutdown = {...shutdown, commandAttempts};
             success = shutdown.ok;
         }
 
-        if (shutdown?.ok && !(remainingMs() > 0)) { shutdown = {...shutdown, ok: false, reason: "timed-out"}; success = false; }
+        if (shutdown?.ok && !(Math.floor(remainingMs()) >= 1)) { shutdown = {...shutdown, ok: false, reason: "timed-out"}; success = false; }
         const publication = success ? ports.publish(ownerId,parsed.stateKey,parsed.deviceId,expected,{kind: parsed.command === "device_start" ? "start" : parsed.command === "device_stop" ? "stop" : "delete" }, stopping ? {remainingMs} : undefined) : undefined;
         if (shutdown?.ok && publication?.deadlineExpired) { shutdown = {...shutdown, ok: false, reason: "timed-out"}; success = false; }
         const device = success ? publication?.device : shutdown ? expected : plan?.device;
-        return {kind: publication && !publication.matched ? "state-conflict" : success ? "completed" : "operation-failed", plan, device, execution, success, publication, ...(auxiliary ? {auxiliary: auxiliary.result} : {}), ...(shutdown ? {shutdown, mutatesHost: true, recoveryRequired: !shutdown.ok} : {}) };
+        return {kind: publication && !publication.matched ? "state-conflict" : success ? "completed" : "operation-failed", plan, device, execution, success, publication, ...(retryExecution ? {retryExecution} : {}), ...(auxiliary ? {auxiliary: auxiliary.result} : {}), ...(shutdown ? {shutdown, mutatesHost: true, recoveryRequired: !shutdown.ok} : {}) };
     }
     return {create, start: existing, stop: existing, delete: existing, createRecord, planCreate, planExisting};
 }

@@ -604,6 +604,41 @@ otherwise inherit an unavailable developer key. Global Git configuration stays
 unchanged. The existing pointer-normalization race still fails closed with an
 explicit invalid-metadata diagnosis.
 
+## Oct29 bounded iOS shutdown recovery
+
+The recurring stop failure retains the first accepted native receipt and its
+unconfirmed completion. The correction permits one additional execution of
+the original shutdown effect only after a timely, identity-verified `Booted`.
+The owner inventory mutation lock and complete auxiliary-cleaned record
+comparison guard that execution against a missing or replaced record. Lock
+acquisition, retry, observation, pauses and final admission share the original
+monotonic allowance; the default five-second command budget is unchanged.
+`Shutting Down`, invalid or late observations and initial command failure do
+not trigger a retry. No third command is issued.
+
+Original and retry receipts remain separate. A failed retry can be followed by
+successful native confirmation, but neither receipt alone permits publication
+of `stopped`. The final complete-record comparison remains required. An
+unavailable observation no longer erases the last recognized state. Saved
+failure summaries project only the bounded retry execution and a one-or-two
+command count from the selected shutdown envelope.
+
+Protocol 13 makes the existing identity-verified replacement deliver the new
+handler to the isolated Level 3 broker. Actual Mac acceptance remains pending
+the focused iOS entrypoint after the necessary workspace build, assembly,
+MCP bundle and preflight. Existing macOS Level 2 and snapshot passes remain
+accepted. This finite recovery policy does not establish CoreSimulator's
+native cause; the original failure and subsequent cleanup remain distinct.
+
+The old single-command implementation first fails the new deterministic
+`Booted`-until-reissue regression. The final affected checks pass 173 distinct
+cases: 25 lifecycle contract/unit cases, 24 authenticated HTTP cases, 52 bounded
+error-output cases and 72 protocol/capability cases. Earlier failed reports
+retain test-fixture corrections for the flat retry result, value comparison of
+the cleaned record and the existing publication timestamp; production code
+was unchanged during those corrections. Package, architecture and real-test type checking,
+configured lint, protocol syntax, local references and diff checks pass.
+
 ## Known ceiling
 
 The positive packaged Mac destructive result above supersedes the following

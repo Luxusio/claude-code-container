@@ -56,9 +56,15 @@ For an unconfirmed broker shutdown, the saved artifact and short message also
 retain the existing `body.result.shutdown` or `result.shutdown` facts separately
 from the native shutdown receipt: boolean `ok`, nonnegative safe-integer
 `attempts`, `reason` limited to `timed-out` or `observation-failed`, and `lastState`
-limited to `Shutdown`, `Booted`, `Shutting Down` or null. Omit unknown fields and
-invalid values. These facts distinguish allowance exhaustion from rejected
-observation; they do not establish its native cause or change the stop policy.
+limited to `Shutdown`, `Booted`, `Shutting Down` or null. Retain optional
+`commandAttempts` only when it is the integer 1 or 2. Project a sibling
+`body.result.retryExecution` or `result.retryExecution` through the existing
+bounded native execution sanitizer into the saved shutdown facts; do not spread
+its raw record or replace the original shutdown receipt. Omit unknown fields
+and invalid values. These facts distinguish allowance exhaustion from rejected
+observation and preserve the guarded retry result. They do not establish the
+native cause. The [shutdown contract](REQ__ios-broker-shutdown.md) owns the finite
+reissue policy.
 
 When upload or download returns only a plain policy refusal, the collector may
 retain an explicitly allowlisted existing file-policy code at the beginning of

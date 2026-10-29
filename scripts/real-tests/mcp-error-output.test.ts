@@ -57,6 +57,86 @@ describe("MCP error output", () => {
     });
 
     describe("shutdown settlement evidence", () => {
+        it.each(["body.result", "result"])("keeps bounded retry evidence and command counts from %s without replacing the original receipt", envelope => {
+            for (const commandAttempts of [1, 2]) {
+                const original = { status: 0, signal: null, timedOut: false };
+                const retry = { status: null, signal: "SIGTERM", timedOut: true, errorCode: "ETIMEDOUT", diagnosticCode: "native-timeout" };
+                const shutdown = { ok: false, attempts: 3, commandAttempts, lastState: "Booted", reason: "timed-out" };
+                const result = {
+                    shutdown: { ...shutdown, rawReceipt: "PRIVATE-RAW-RECEIPT", inventory: "PRIVATE-INVENTORY" },
+                    execution: { mode: "exec", command: { ...original, stdout: "PRIVATE-FIRST-OUTPUT" } },
+                    ...(commandAttempts === 2 ? { retryExecution: { mode: "exec", ...retry,
+                        stdout: "PRIVATE-RETRY-OUTPUT", stderr: "PRIVATE-STDERR", args: ["PRIVATE-ARG"], path: "PRIVATE-PATH",
+                        receipt: { status: 99, raw: "PRIVATE-RECEIPT" }, arbitrary: "PRIVATE-RETRY-FIELD" } } : {}),
+                };
+                const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                    content: [{ type: "text", text: "PRIVATE-OUTPUT" }], structuredContent: {
+                        ok: false, error: "ios-simulator-shutdown-not-confirmed",
+                        ...(envelope === "body.result" ? { body: { result } } : { result }),
+                    }, __cccToolCallRecord: { name: "stop" } });
+
+                expect(failure.execution).toEqual(original);
+                expect(failure.shutdown).toEqual({ ...shutdown, ...(commandAttempts === 2 ? { retryExecution: retry } : {}) });
+                expect(failure).not.toHaveProperty("retryExecution");
+                expect(error.message).toContain(`"commandAttempts":${commandAttempts}`);
+                if (commandAttempts === 2) {
+                    expect(error.message).toContain('"retryExecution":');
+                    expect(error.message).toContain('"status":null');
+                    expect(error.message).toContain("native-timeout");
+                } else expect(error.message).not.toContain('"retryExecution":');
+                expect(error.message + saved).not.toContain("PRIVATE");
+            }
+        });
+
+        it.each([0, 3, -1, 1.5, "2", null, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])("omits an invalid native command attempt count %s", commandAttempts => {
+            const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                content: [{ type: "text", text: "PRIVATE-OUTPUT" }], structuredContent: {
+                    ok: false, error: "ios-simulator-shutdown-not-confirmed", result: {
+                        shutdown: { ok: false, attempts: 1, commandAttempts, lastState: "Booted", private: "PRIVATE-FIELD" },
+                    },
+                }, __cccToolCallRecord: { name: "stop" } });
+            expect(failure.shutdown).toEqual({ ok: false, attempts: 1, lastState: "Booted" });
+            expect(error.message).not.toContain('"commandAttempts":');
+            expect(error.message + saved).not.toContain("PRIVATE");
+        });
+
+        it("omits missing, malformed, private-only and raw retry receipts without inventing execution facts", () => {
+            for (const retryExecution of [undefined, null, [], "PRIVATE", { receipt: { status: 7, raw: "PRIVATE" } },
+                { status: "7", signal: "PRIVATE", timedOut: "true", errorCode: "PRIVATE", stdout: "PRIVATE" },
+                { status: Number.MAX_SAFE_INTEGER + 1, durationMs: Infinity, args: ["PRIVATE"] },
+                { command: { status: 7, signal: null, timedOut: false, stdout: "PRIVATE" } },
+            ]) {
+                const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                    content: [{ type: "text", text: "PRIVATE-OUTPUT" }], structuredContent: {
+                        ok: false, error: "ios-simulator-shutdown-not-confirmed", result: {
+                            shutdown: { ok: false, attempts: 1, commandAttempts: 2, lastState: "Booted" }, retryExecution,
+                        },
+                    }, __cccToolCallRecord: { name: "stop" } });
+                expect(failure.shutdown).toEqual({ ok: false, attempts: 1, commandAttempts: 2, lastState: "Booted" });
+                expect(error.message).not.toContain('"retryExecution":');
+                expect(error.message + saved).not.toContain("PRIVATE");
+            }
+        });
+
+        it("selects retry execution only from the exact sibling of the chosen shutdown result", () => {
+            const shutdown = { ok: false, attempts: 1, commandAttempts: 1, lastState: "Booted" };
+            const retryExecution = { status: 7, signal: null, timedOut: false, stdout: "PRIVATE-OUTPUT", arbitrary: "PRIVATE-FIELD" };
+            for (const extra of [
+                { result: { shutdown }, retryExecution },
+                { body: { result: { shutdown }, retryExecution } },
+                { result: { shutdown: { ...shutdown, retryExecution } } },
+                { body: { result: { shutdown } }, result: { shutdown, retryExecution } },
+            ]) {
+                const { error, saved, failure } = savedPayloadFailure({ isError: true,
+                    content: [{ type: "text", text: "PRIVATE-OUTPUT" }], structuredContent: {
+                        ok: false, error: "ios-simulator-shutdown-not-confirmed", ...extra,
+                    }, __cccToolCallRecord: { name: "stop" } });
+                expect(failure.shutdown).toEqual(shutdown);
+                expect(error.message).not.toContain('"retryExecution":');
+                expect(error.message + saved).not.toContain("PRIVATE");
+            }
+        });
+
         it.each(["body.result", "result"])("keeps %s settlement facts separate from a successful native shutdown receipt", envelope => {
             for (const shutdown of [
                 { ok: false, reason: "timed-out", attempts: 0, lastState: null },

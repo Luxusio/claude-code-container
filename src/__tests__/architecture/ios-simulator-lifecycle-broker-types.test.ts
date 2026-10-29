@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createBrokerIosSimulatorLifecycle } from "../../../packages/device-lab/src/device-lab/application/lifecycle/ios-simulator-lifecycle.js";
-import { brokerIosReplacement, type BrokerIosLifecycleInput, type BrokerIosLifecycleResponse, type BrokerIosProviderResult, type BrokerIosCreateResult } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
+import { brokerIosReplacement, type BrokerIosLifecycleInput, type BrokerIosLifecycleResponse, type BrokerIosProviderResult, type BrokerIosCreateResult, type BrokerIosConditionalShutdownExecution } from "../../../packages/device-lab/src/device-lab/domain/lifecycle/ios-simulator-lifecycle.js";
 import type { BrokerIosSimulatorLifecyclePorts } from "../../../packages/device-lab/src/device-lab/ports/lifecycle/ios-simulator-lifecycle.js";
 
 type Effect = { readonly token: unique symbol };
@@ -54,8 +54,21 @@ function contracts(ports: BrokerIosSimulatorLifecyclePorts<Effect>, input: Broke
     createBrokerIosSimulatorLifecycle(withoutPause);
     // @ts-expect-error each native inventory observation settles synchronously
     createBrokerIosSimulatorLifecycle({ ...ports, observeShutdown: async () => ({ ok: true, state: "Shutdown" }) });
+    const { executeShutdownIfCurrent, ...withoutConditionalShutdown } = ports;
+    // @ts-expect-error a reissue requires the complete-record guard and execution in one port
+    createBrokerIosSimulatorLifecycle(withoutConditionalShutdown);
+    const conditional: BrokerIosConditionalShutdownExecution = ports.executeShutdownIfCurrent(input.ownerId, input.parsed,
+        input.expectedDevice, effect, { remainingMs: () => 100, outputLimit: 32768 });
+    if (conditional.kind === "executed") {
+        const observed: BrokerIosProviderResult = conditional.execution;
+        void observed;
+    }
+    // @ts-expect-error the guarded native leaf must settle while holding the synchronous state lock
+    createBrokerIosSimulatorLifecycle({ ...ports, executeShutdownIfCurrent: async () => ({ kind: "timed-out" }) });
+    // @ts-expect-error a conflict must report whether the current record was found
+    createBrokerIosSimulatorLifecycle({ ...ports, executeShutdownIfCurrent: () => ({ kind: "state-conflict", device: null }) });
     void [outcomes, deletion, creation, executeCreate, prepareCreate];
-    void [observeShutdown, now, sleep];
+    void [observeShutdown, now, sleep, executeShutdownIfCurrent, conditional];
 }
 void contracts;
 
@@ -71,6 +84,7 @@ function shutdownFixture(options: {
     nativeDuration?: number; observationDuration?: number; timeoutMs?: number;
     states?: ShutdownState[]; nativeOk?: boolean; observationOk?: boolean;
     auxiliaryCommitted?: boolean; auxiliaryFailed?: boolean; successor?: boolean; publicationDuration?: number;
+    retryOk?: boolean; conditionalDuration?: number; replaceOnObservation?: boolean;
 } = {}) {
     let clock = 0, observationCount = 0;
     const original = { id: "ios-unit", udid: "owned-udid", simulatorName: "ccc-owner-unit", status: "running", extra: "retained" };
@@ -78,12 +92,22 @@ function shutdownFixture(options: {
     const successor = { ...original, name: "Successor", extra: "winner" };
     let current: unknown = options.successor ? successor : original;
     const trace: string[] = [], executions: Array<{ timeoutMs: number; outputLimit: number }> = [];
+    const executedEffects: StopEffect[] = [], conditionalGuards: Array<{ owner: string; parsed: unknown; expected: unknown; effect: StopEffect; remainingMs: number }> = [];
     const observations: Array<{ effect: StopEffect; owner: string; device: unknown; timeoutMs: number; outputLimit: number }> = [];
     const pauses: number[] = [], publications: Array<{ expected: unknown; kind: string }> = [];
     const execution: BrokerIosProviderResult = { ok: options.nativeOk !== false, mode: "exec", provider: "xcrun", receipt: { status: options.nativeOk === false ? 7 : 0, signal: null, timedOut: false } };
+    const retryExecution: BrokerIosProviderResult = { ok: options.retryOk !== false, mode: "exec", provider: "xcrun", receipt: { status: options.retryOk === false ? 9 : 0, signal: null, timedOut: false } };
     const effect: StopEffect = { kind: "shutdown" };
     const ports: BrokerIosSimulatorLifecyclePorts<StopEffect> = {
-        execute(_effect, allowance) { trace.push("execute"); executions.push(allowance); clock += options.nativeDuration || 0; return execution; },
+        execute(executedEffect, allowance) { trace.push("execute"); executions.push(allowance); executedEffects.push(executedEffect); clock += options.nativeDuration || 0; return executions.length === 1 ? execution : retryExecution; },
+        executeShutdownIfCurrent(owner, parsed, expected, guardedEffect, allowance) {
+            trace.push("conditional");
+            conditionalGuards.push({ owner, parsed, expected, effect: guardedEffect, remainingMs: allowance.remainingMs() });
+            clock += options.conditionalDuration || 0;
+            if (!(Math.floor(allowance.remainingMs()) > 0)) return { kind: "timed-out" };
+            if (JSON.stringify(current) !== JSON.stringify(expected)) return { kind: "state-conflict", found: current !== null, device: current };
+            return { kind: "executed", execution: ports.execute(guardedEffect, { timeoutMs: Math.floor(allowance.remainingMs()), outputLimit: allowance.outputLimit }) };
+        },
         executeCreate() { throw new Error("unexpected create"); },
         prepareCreate() { throw new Error("unexpected create planning"); },
         prepareExisting() { return { kind: "ready", effect, provider: "xcrun", canCompensate: true, bootEligible: false }; },
@@ -113,6 +137,7 @@ function shutdownFixture(options: {
             clock += options.observationDuration || 0;
             const states = options.states || ["Shutdown"];
             const state = states[Math.min(observationCount++, states.length - 1)];
+            if (options.replaceOnObservation) current = successor;
             return { ok: options.observationOk !== false, state };
         },
         now: () => clock,
@@ -121,34 +146,62 @@ function shutdownFixture(options: {
     const input: BrokerIosLifecycleInput<StopEffect> = { ownerId: "owner", expectedDevice: original,
         parsed: { ok: true, backend: "ios-simulator", stateKey: "ios", command: "device_stop", deviceId: original.id, force: false, dryRun: false },
         plan: { device: original, providerCommand: { kind: "ready", effect, provider: "xcrun", canCompensate: true, bootEligible: false } } };
-    return { ports, input, execution, original, cleaned, successor, trace, executions, observations, pauses, publications, current: () => current };
+    return { ports, input, execution, retryExecution, original, cleaned, successor, trace, executions, executedEffects, conditionalGuards,
+        observations, pauses, publications, current: () => current, replace: (value: unknown) => { current = value; }, advance: (ms: number) => { clock += ms; } };
 }
 
 describe("broker iOS shutdown settlement allowance", () => {
+    it("reissues shutdown once when native state remains Booted until the second command", async () => {
+        const f = shutdownFixture({ nativeDuration: 10 });
+        const ports: BrokerIosSimulatorLifecyclePorts<StopEffect> = {
+            ...f.ports,
+            executeShutdownIfCurrent(owner, parsed, expected, effect, options): BrokerIosConditionalShutdownExecution {
+                expect(owner).toBe(f.input.ownerId);
+                expect(parsed).toBe(f.input.parsed);
+                expect(expected).toBe(f.original);
+                expect(effect).toBe(f.executedEffects[0]);
+                return { kind: "executed", execution: f.ports.execute(effect, { timeoutMs: options.remainingMs(), outputLimit: options.outputLimit }) };
+            },
+            observeShutdown() { return { ok: true, state: f.executions.length < 2 ? "Booted" : "Shutdown" }; },
+        };
+        const result = await createBrokerIosSimulatorLifecycle(ports).stop(f.input);
+        expect(result).toMatchObject({ kind: "completed", shutdown: { ok: true, commandAttempts: 2, lastState: "Shutdown" } });
+        expect(f.executions).toHaveLength(2);
+        expect(f.current()).toEqual({ ...f.original, status: "stopped" });
+    });
     it("confirms native Shutdown after execution before publishing while excluding prior cleanup time", async () => {
         const f = shutdownFixture({ nativeDuration: 17 });
         const result = await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input);
-        expect(result).toMatchObject({ kind: "completed", shutdown: { ok: true, attempts: 1, lastState: "Shutdown" } });
+        expect(result).toMatchObject({ kind: "completed", shutdown: { ok: true, attempts: 1, commandAttempts: 1, lastState: "Shutdown" } });
         expect(f.trace).toEqual(["auxiliary", "execute", "observe", "publish"]);
         expect(f.executions).toEqual([{ timeoutMs: 1000, outputLimit: 32768 }]);
         expect(f.observations).toEqual([{ effect: { kind: "shutdown" }, owner: "owner", device: f.original, timeoutMs: 983, outputLimit: 32768 }]);
         expect(f.current()).toEqual({ ...f.original, status: "stopped" });
+        expect(f.conditionalGuards).toEqual([]); expect(result).not.toHaveProperty("retryExecution");
     });
-    it("rechecks Booted and Shutting Down without repeating shutdown and reduces every native allowance", async () => {
+    it("reissues only once for Booted and reduces every native allowance through Shutting Down", async () => {
         const f = shutdownFixture({ nativeDuration: 20, observationDuration: 10, states: ["Booted", "Shutting Down", "Shutdown"] });
         const result = await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input);
-        expect(result).toMatchObject({ kind: "completed", shutdown: { ok: true, attempts: 3, lastState: "Shutdown" } });
-        expect(f.executions).toHaveLength(1); expect(f.pauses).toEqual([100, 100]);
-        expect(f.observations.map(observation => observation.timeoutMs)).toEqual([980, 870, 760]);
+        expect(result).toMatchObject({ kind: "completed", shutdown: { ok: true, attempts: 3, commandAttempts: 2, lastState: "Shutdown" } });
+        expect(f.executions).toHaveLength(2);
+        expect(f.conditionalGuards).toHaveLength(1);
+        expect(f.executedEffects[1]).toBe(f.executedEffects[0]);
+        expect(f.executions[1].timeoutMs).toBeLessThan(f.observations[0].timeoutMs);
+        expect(f.observations[1].timeoutMs).toBeLessThan(f.executions[1].timeoutMs);
+        expect(f.observations[2].timeoutMs).toBeLessThan(f.observations[1].timeoutMs);
+        expect(f.executions.every(call => call.outputLimit === 32768 && call.timeoutMs > 0)).toBe(true);
         expect(f.trace.at(-1)).toBe("publish");
     });
     it("retains successful native execution but refuses publication when Booted exhausts the same allowance", async () => {
         const f = shutdownFixture({ timeoutMs: 240, nativeDuration: 30, observationDuration: 5, states: ["Booted"] });
         const result = await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input);
-        expect(result).toMatchObject({ kind: "operation-failed", success: false, execution: { receipt: { status: 0 } }, shutdown: { ok: false, reason: "timed-out", lastState: "Booted" } });
-        expect(f.executions).toHaveLength(1); expect(f.publications).toEqual([]); expect(f.current()).toEqual(f.original);
-        expect(f.observations.map(observation => observation.timeoutMs)).toEqual([210, 105]);
-        expect(f.pauses).toEqual([100, 100]);
+        expect(result).toMatchObject({ kind: "operation-failed", success: false, execution: { receipt: { status: 0 } }, shutdown: { ok: false, commandAttempts: 2, reason: "timed-out", lastState: "Booted" } });
+        expect(f.executions).toHaveLength(2); expect(f.conditionalGuards).toHaveLength(1);
+        expect(f.publications).toEqual([]); expect(f.current()).toEqual(f.original);
+        expect(f.observations[0].timeoutMs).toBe(210);
+        expect(f.executions[1].timeoutMs).toBeLessThan(210);
+        expect(f.observations.every(call => call.timeoutMs > 0 && call.timeoutMs <= 210)).toBe(true);
+        expect(f.pauses.every(pause => pause > 0 && pause <= 100)).toBe(true);
     });
     it("does not start an inventory call after shutdown consumes the allowance", async () => {
         const f = shutdownFixture({ timeoutMs: 240, nativeDuration: 240 });
@@ -170,6 +223,7 @@ describe("broker iOS shutdown settlement allowance", () => {
         const result = await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input);
         expect(result).toMatchObject({ kind: "operation-failed", execution: { receipt: { status: 7 } } });
         expect(result).not.toHaveProperty("shutdown"); expect(f.observations).toEqual([]); expect(f.pauses).toEqual([]); expect(f.publications).toEqual([]);
+        expect(f.executions).toHaveLength(1); expect(f.conditionalGuards).toEqual([]);
     });
     it("fails a rejected native observation immediately instead of treating it as transient Booted", async () => {
         const f = shutdownFixture({ observationOk: false, states: [null] });
@@ -196,5 +250,95 @@ describe("broker iOS shutdown settlement allowance", () => {
         expect(await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input)).toMatchObject({ kind: "operation-failed", shutdown: { ok: false, reason: "timed-out", lastState: "Shutdown" }, execution: { receipt: { status: 0 } } });
         expect(f.publications).toEqual([{ expected: f.original, kind: "stop" }]);
         expect(f.current()).toEqual(f.original);
+    });
+    it("polls Shutting Down without issuing a second shutdown", async () => {
+        const f = shutdownFixture({ states: ["Shutting Down", "Shutting Down", "Shutdown"] });
+        expect(await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input)).toMatchObject({ kind: "completed",
+            shutdown: { ok: true, commandAttempts: 1, attempts: 3, lastState: "Shutdown" } });
+        expect(f.executions).toHaveLength(1); expect(f.conditionalGuards).toEqual([]);
+        expect(f.pauses).toEqual([100, 100]);
+    });
+    it("refuses a Booted observation that arrives at the deadline before considering reissue", async () => {
+        const f = shutdownFixture({ nativeDuration: 40, observationDuration: 960, states: ["Booted"] });
+        expect(await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input)).toMatchObject({ kind: "operation-failed",
+            execution: { receipt: { status: 0 } }, shutdown: { ok: false, reason: "timed-out", commandAttempts: 1 } });
+        expect(f.executions).toHaveLength(1); expect(f.conditionalGuards).toEqual([]);
+        expect(f.observations).toHaveLength(1); expect(f.publications).toEqual([]);
+    });
+    it("spends the same command allowance waiting for the conditional guard and dispatches nothing after expiry", async () => {
+        const f = shutdownFixture({ nativeDuration: 20, observationDuration: 10, states: ["Booted"], conditionalDuration: 1000 });
+        const result = await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input);
+        expect(result).toMatchObject({ kind: "operation-failed", execution: { receipt: { status: 0 } },
+            shutdown: { ok: false, reason: "timed-out", commandAttempts: 1, lastState: "Booted" } });
+        expect(f.conditionalGuards).toHaveLength(1);
+        expect(f.conditionalGuards[0].remainingMs).toBeGreaterThan(0);
+        expect(f.conditionalGuards[0].remainingMs).toBeLessThanOrEqual(970);
+        expect(f.executions).toHaveLength(1); expect(f.observations).toHaveLength(1);
+        expect(f.publications).toEqual([]); expect(f.current()).toEqual(f.original);
+        expect(result).not.toHaveProperty("retryExecution");
+    });
+    it.each(["during-observation", "before-dispatch", "missing"])("refuses the reissue when the expected record changes %s", async replacement => {
+        const f = shutdownFixture({ states: ["Booted"], replaceOnObservation: replacement === "during-observation" });
+        const ports: BrokerIosSimulatorLifecyclePorts<StopEffect> = {
+            ...f.ports,
+            executeShutdownIfCurrent(...args: Parameters<BrokerIosSimulatorLifecyclePorts<StopEffect>["executeShutdownIfCurrent"]>) {
+                if (replacement !== "during-observation") f.replace(replacement === "missing" ? null : f.successor);
+                return f.ports.executeShutdownIfCurrent(...args);
+            },
+        };
+        const result = await createBrokerIosSimulatorLifecycle(ports).stop(f.input);
+        expect(result).toMatchObject({ kind: "state-conflict", execution: { receipt: { status: 0 } },
+            shutdown: { ok: false, commandAttempts: 1, lastState: "Booted" } });
+        expect(f.executions).toHaveLength(1); expect(f.conditionalGuards).toHaveLength(1);
+        expect(f.conditionalGuards[0].expected).toBe(f.original);
+        expect(f.current()).toEqual(replacement === "missing" ? null : f.successor);
+        expect(f.observations).toHaveLength(1); expect(f.publications).toEqual([]);
+        expect(result).not.toHaveProperty("retryExecution");
+    });
+    it("guards the auxiliary-cleaned full record and reuses the exact prepared effect", async () => {
+        const f = shutdownFixture({ auxiliaryCommitted: true, states: ["Booted", "Shutdown"] });
+        expect(await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input)).toMatchObject({ kind: "completed",
+            shutdown: { commandAttempts: 2, ok: true } });
+        expect(f.conditionalGuards).toHaveLength(1);
+        expect(f.conditionalGuards[0]).toMatchObject({ owner: "owner", parsed: f.input.parsed, expected: f.cleaned });
+        expect(f.conditionalGuards[0].expected).toEqual(f.cleaned);
+        expect(f.executedEffects[1]).toBe(f.executedEffects[0]);
+        for (const observation of f.observations) expect(observation.device).toEqual(f.cleaned);
+        expect(f.publications).toEqual([{ expected: f.cleaned, kind: "stop" }]);
+    });
+    it("continues confirmation after a failed reissue and preserves both immutable receipts on success", async () => {
+        const f = shutdownFixture({ retryOk: false, states: ["Booted", "Shutdown"] });
+        const result = await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input);
+        expect(result).toMatchObject({ kind: "completed", execution: { ok: true, receipt: { status: 0 } },
+            retryExecution: { ok: false, receipt: { status: 9 } }, shutdown: { ok: true, commandAttempts: 2, lastState: "Shutdown" } });
+        if ("execution" in result) expect(result.execution).toBe(f.execution);
+        if ("retryExecution" in result) expect(result.retryExecution).toBe(f.retryExecution);
+        expect(f.execution.receipt).toEqual({ status: 0, signal: null, timedOut: false });
+        expect(f.executions).toHaveLength(2); expect(f.observations).toHaveLength(2);
+        expect(f.current()).toEqual({ ...f.original, status: "stopped" });
+    });
+    it("keeps a failed reissue distinct while permanent Booted still fails without a third command", async () => {
+        const f = shutdownFixture({ retryOk: false, timeoutMs: 240, states: ["Booted"] });
+        expect(await createBrokerIosSimulatorLifecycle(f.ports).stop(f.input)).toMatchObject({ kind: "operation-failed",
+            execution: { ok: true, receipt: { status: 0 } }, retryExecution: { ok: false, receipt: { status: 9 } },
+            shutdown: { ok: false, reason: "timed-out", commandAttempts: 2, lastState: "Booted" } });
+        expect(f.executions).toHaveLength(2); expect(f.conditionalGuards).toHaveLength(1);
+        expect(f.observations.length).toBeGreaterThan(1);
+        expect(f.publications).toEqual([]); expect(f.current()).toEqual(f.original);
+    });
+    it.each(["Booted", "Shutting Down"] as const)("preserves the last valid %s state when a later observation is unavailable", async state => {
+        const f = shutdownFixture({ states: [state, null] });
+        const ports: BrokerIosSimulatorLifecyclePorts<StopEffect> = {
+            ...f.ports,
+            observeShutdown(...args: Parameters<BrokerIosSimulatorLifecyclePorts<StopEffect>["observeShutdown"]>) {
+                const observation = f.ports.observeShutdown(...args);
+                return observation.state === null ? { ok: false, state: null } : observation;
+            },
+        };
+        expect(await createBrokerIosSimulatorLifecycle(ports).stop(f.input)).toMatchObject({ kind: "operation-failed",
+            execution: { receipt: { status: 0 } }, shutdown: { ok: false, reason: "observation-failed", attempts: 2,
+                commandAttempts: state === "Booted" ? 2 : 1, lastState: state } });
+        expect(f.publications).toEqual([]); expect(f.current()).toEqual(f.original);
+        expect(f.executions).toHaveLength(state === "Booted" ? 2 : 1);
     });
 });

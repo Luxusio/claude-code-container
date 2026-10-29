@@ -10,8 +10,13 @@ iOS stop keeps its successful shutdown receipt separate from native completion.
 The existing command allowance covers shutdown, identity-checked inventory
 readback, polling pauses and final publication admission. A unique, timely
 `Shutdown` observation permits the existing full-record comparison; unresolved
-or invalid observations fail without claiming stopped state. Polling never
-reissues shutdown. See [shutdown confirmation](REQ__ios-broker-shutdown.md).
+or invalid observations fail without claiming stopped state. A timely verified
+`Booted` observation permits one reissue of the same prepared effect, under a
+remaining-budget owner inventory lock and complete expected-record comparison.
+It never reissues for `Shutting Down`; at most two native commands share the
+original allowance. Original and retry receipts remain separate, and neither
+permits stopped publication without native confirmation. See
+[shutdown confirmation](REQ__ios-broker-shutdown.md).
 
 macOS retains Tart/VZ/UTM selection and command planning. Explicit Tart boot waits use bounded IP observation. Failed boot observation reports the launched VM truthfully. Stop/delete settle auxiliary runtimes before provider commands and retain expected records for conditional publication; partial effects and cleanup failures stay visible.
 
