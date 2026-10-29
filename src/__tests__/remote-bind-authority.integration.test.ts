@@ -731,7 +731,7 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
         const lifecycle = join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`);
         const nativeStat = spawnSync("/bin/sh", ["-c", "command -v stat"], { encoding: "utf8" }).stdout.trim();
         const gnuStat = spawnSync(nativeStat, ["-c", "%d:%i", "-"], { input: "", encoding: "utf8" }).status === 0;
-        const stdinIdentity = `${shellEscapeArg(nativeStat)} ${gnuStat ? "-c %d:%i -" : "-f %d:%i"}`;
+        const stdinIdentity = `${shellEscapeArg(nativeStat)} ${gnuStat ? "-L -c %d:%i -" : "-f %d:%i"}`;
         writeFileSync(join(f.bin, "stat"), [
             "#!/bin/sh",
             '_ccc_fixture_follow=',
@@ -752,7 +752,7 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
                 ' (%d:%i) ;; (%Lp) _ccc_fixture_format=%a ;; (%z) _ccc_fixture_format=%s ;;',
                 ' (%Lp:%l:%z) _ccc_fixture_format=%a:%h:%s ;;',
                 ' (%d:%i:%Lp:%l:%z) _ccc_fixture_format=%d:%i:%a:%h:%s ;; (*) exit 96 ;; esac',
-                `if [ "$#" = 0 ]; then exec ${shellEscapeArg(nativeStat)} -c "$_ccc_fixture_format" -; fi`,
+                `if [ "$#" = 0 ]; then exec ${shellEscapeArg(nativeStat)} -L -c "$_ccc_fixture_format" -; fi`,
                 `exec ${shellEscapeArg(nativeStat)} ` + '${_ccc_fixture_follow:+"$_ccc_fixture_follow"} -c "$_ccc_fixture_format" "$@"',
             ] : [
                 `exec ${shellEscapeArg(nativeStat)} ` + '${_ccc_fixture_follow:+"$_ccc_fixture_follow"} -f "$_ccc_fixture_format" "$@"',
@@ -1066,15 +1066,62 @@ describe.runIf(process.platform !== "win32")("receiving-host global bind authori
 
     it("keeps the existing lifecycle signal trap while releasing only its own global claim", async () => {
         const f = fixture(); f.prepare(); const name = "ccc-owned-bind-signal";
-        const held = f.start(remoteSessionReservationShell(name, "8".repeat(32), 60,
-            remoteRuntimeBindAuthorityShell(waitBody(f.home), true)));
+        const diagnostic = join(f.home, "signal-diagnostic");
+        const shell = remoteSessionReservationShell(name, "8".repeat(32), 60,
+            remoteRuntimeBindAuthorityShell(waitBody(f.home), true));
+        const held = f.start(`exec 2>${shellEscapeArg(diagnostic)}; ${withScopeSignalDiagnostics(shell)}`);
         await waitForFile(join(f.home, "ready"));
         process.kill(-held.child.pid!, "SIGTERM");
         const result = await held.completed;
-        expect(result.code === 143 || result.signal === "SIGTERM").toBe(true);
-        expect(existsSync(f.lock)).toBe(false);
-        expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`))).toBe(false);
+        const evidence = JSON.stringify({ ...result, diagnostic: readFileSync(diagnostic, "utf8") });
+        expect(result.code === 143 || result.signal === "SIGTERM", evidence).toBe(true);
+        expect(existsSync(f.lock), evidence).toBe(false);
+        expect(existsSync(join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`)), evidence).toBe(false);
         expect(existsSync(f.marker)).toBe(true);
+    });
+
+    it.each(["standalone", "nested", "lifecycle"] as const)("finishes %s owned cleanup when another TERM arrives during claim release", async kind => {
+        const f = fixture(); f.prepare(); const name = "ccc-repeated-cleanup-signal";
+        const lifecycle = join(f.root, "remote-runtime", `lifecycle-${hashPath(name)}.lock`);
+        const global = remoteRuntimeBindAuthorityShell(waitBody(f.home), kind === "nested");
+        let shell = kind === "standalone" ? global
+            : kind === "nested" ? remoteSessionReservationShell(name, "6".repeat(32), 60, global)
+                : remoteLifecycleShell(name, waitBody(f.home));
+        const release = kind === "lifecycle" ? "_ccc_unlock" : "_ccc_bind_release";
+        const header = `${release}() {`;
+        expect(shell.split(header)).toHaveLength(2);
+        // Hold the actual final release callback, after its signal policy is installed.
+        // The original body, native joins and exact claim checks still run unchanged.
+        shell = shell.replace(header, [
+            `${release}() {`,
+            ' if [ -f "$HOME/arm-release-gate" ]; then',
+            '  _ccc_fixture_cleanup_pid=$(exec /bin/sh -c "printf %s \\$PPID")',
+            '  printf "%s" "$_ccc_fixture_cleanup_pid" > "$HOME/release-pid"',
+            '  while [ ! -f "$HOME/continue-release" ]; do sleep 0.01; done',
+            ' fi',
+            ` _ccc_fixture_original_release`,
+            '}',
+            '_ccc_fixture_original_release() {',
+        ].join("\n"));
+        const diagnostic = join(f.home, "release-diagnostic");
+        const held = f.start(`exec 2>${shellEscapeArg(diagnostic)}; ${shell}`);
+        await waitForFile(join(f.home, "ready"));
+        writeFileSync(join(f.home, "arm-release-gate"), "armed");
+        process.kill(held.child.pid!, "SIGTERM");
+        await waitForFile(join(f.home, "release-pid"));
+        const cleanupPid = Number(readFileSync(join(f.home, "release-pid"), "utf8"));
+        const group = spawnSync("/bin/ps", ["-p", String(cleanupPid), "-o", "pgid="], { encoding: "utf8" });
+        expect(group.status).toBe(0);
+        expect(Number(group.stdout.trim())).toBe(held.child.pid);
+        expect(existsSync(kind === "lifecycle" ? lifecycle : f.lock)).toBe(true);
+        process.kill(cleanupPid, "SIGTERM");
+        writeFileSync(join(f.home, "continue-release"), "continue");
+        const result = await held.completed;
+        const evidence = JSON.stringify({ ...result, diagnostic: readFileSync(diagnostic, "utf8") });
+        expect(existsSync(f.lock), evidence).toBe(false);
+        expect(existsSync(lifecycle), evidence).toBe(false);
+        expect(result, evidence).toEqual({ code: 143, signal: null });
+        expect(existsSync(f.effect)).toBe(false);
     });
 
     it.each(["standalone", "nested"])("joins a TERM-ignoring native child before %s claim release", async kind => {

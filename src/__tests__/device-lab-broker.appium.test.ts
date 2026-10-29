@@ -514,6 +514,85 @@ describe("device-lab host broker Appium session authority", () => {
         }
     });
 
+    it("rechecks an early Appium deadline wake-up before aborting its stalled request", async () => {
+        const cwd = "/project/broker-appium-early-deadline-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        let requestStarted!: () => void;
+        let upstreamClosed!: () => void;
+        const started = new Promise<void>(resolve => { requestStarted = resolve; });
+        const closed = new Promise<void>(resolve => { upstreamClosed = resolve; });
+        const appium = createServer((_req, res) => {
+            res.on("close", upstreamClosed);
+            requestStarted();
+        });
+        const appiumUrl = await listen(appium);
+        const port = (appium.address() as AddressInfo).port;
+        const commandRunner = vi.fn(() => { throw new Error("unexpected provider command"); });
+        const broker = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, commandRunner });
+        const baseUrl = await listen(broker);
+        writeBrokerDevices(ownerId, "android", [{
+            id: "pixel-wait", status: "running", backend: "android-emulator",
+            appium: currentProcessAppiumRuntime(appiumUrl, port, "early-deadline-runtime", { sessionId: "WAIT" }),
+        }]);
+        const nativeFetch = globalThis.fetch.bind(globalThis);
+        let upstreamSignal: AbortSignal | undefined;
+        vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+            const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+            if (url === `${appiumUrl}/session/WAIT/source`) upstreamSignal = init?.signal ?? undefined;
+            return nativeFetch(input, init);
+        });
+        let elapsed = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const scheduled = vi.spyOn(globalThis, "setTimeout");
+        const cancelled = vi.spyOn(globalThis, "clearTimeout");
+        let request: Promise<Response> | undefined;
+        try {
+            request = fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST", headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ method: "broker.appium.request", params: {
+                    backend: "android-emulator", deviceId: "pixel-wait", method: "GET", path: "/source", requestTimeoutMs: 350,
+                } }),
+            });
+            let settled = false;
+            void request.then(() => { settled = true; }, () => { settled = true; });
+            await started;
+            expect(upstreamSignal).toBeDefined();
+            const initialTimer = scheduled.mock.calls.findIndex(([, delay]) => delay === 350);
+            expect(initialTimer).toBeGreaterThanOrEqual(0);
+
+            // Native timers may wake before the monotonic target. The request must
+            // retain its fractional allowance instead of aborting and reporting 502.
+            elapsed = 349.5;
+            await vi.advanceTimersByTimeAsync(350);
+            expect(upstreamSignal!.aborted).toBe(false);
+            expect(settled).toBe(false);
+            const rearmedTimer = scheduled.mock.calls.findLastIndex(([, delay]) => delay === 1);
+            expect(rearmedTimer).toBeGreaterThan(initialTimer);
+            const rearmedHandle = scheduled.mock.results[rearmedTimer].value;
+
+            elapsed = 350;
+            await vi.advanceTimersByTimeAsync(1);
+            const response = await request;
+            expect(response.status).toBe(504);
+            expect(await response.json()).toMatchObject({ ok: false, error: "appium-request-timeout" });
+            expect(upstreamSignal!.aborted).toBe(true);
+            expect(commandRunner).not.toHaveBeenCalled();
+            await closed;
+            expect(cancelled).toHaveBeenCalledWith(rearmedHandle);
+        } finally {
+            appium.closeAllConnections();
+            broker.closeAllConnections();
+            await request?.catch(() => undefined);
+            await close(appium);
+            await close(broker);
+            // Clear Vitest's registered restorers before restoring native timers;
+            // otherwise afterEach can reinstall the captured fake timer functions.
+            vi.restoreAllMocks();
+            vi.useRealTimers();
+        }
+    });
+
     it.each([0, -1, 600001, "100", null, true])("rejects invalid wire observation allowance %s before Appium access", async (requestTimeoutMs) => {
         const cwd = "/project/broker-invalid-wait-test";
         const ownerId = deviceLabOwnerId(cwd);

@@ -5770,7 +5770,18 @@ async function readBoundedAppiumResponse(response: Response) {
 
 async function fetchAppiumJson(url: string, options: { method?: string; body?: unknown; timeoutMs?: number } = {}) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.min(DEVICE_BROKER_APPIUM_FETCH_MAX_TIMEOUT_MS, Math.max(1, options.timeoutMs || DEVICE_BROKER_COMMAND_TIMEOUT_MS)));
+    const timeoutMs = Math.min(DEVICE_BROKER_APPIUM_FETCH_MAX_TIMEOUT_MS, Math.max(1, options.timeoutMs || DEVICE_BROKER_COMMAND_TIMEOUT_MS));
+    const deadlineAt = performance.now() + timeoutMs;
+    let timer: ReturnType<typeof setTimeout>;
+    const abortAtDeadline = () => {
+        const remainingMs = deadlineAt - performance.now();
+        if (remainingMs > 0) {
+            timer = setTimeout(abortAtDeadline, Math.max(1, Math.ceil(remainingMs)));
+            return;
+        }
+        controller.abort();
+    };
+    timer = setTimeout(abortAtDeadline, timeoutMs);
     try {
         const response = await fetch(url, {
             method: options.method || "GET",

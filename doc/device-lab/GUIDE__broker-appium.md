@@ -20,6 +20,15 @@ Existing-session reuse requires successful status and session inspection and rem
 
 Session deletion without a session is a no-op. Failed deletion preserves session metadata, and successful deletion retains managed server fields. Record and clear refuse replacement of a live managed runtime. HTTP requests retain their allowlist, body and response limits, redirect refusal, and deadline behavior.
 
+The native HTTP timer checks a captured monotonic target when it wakes. An
+early callback schedules only the remaining fraction; it cannot abort a request
+while the application still has allowance and thereby turn expiry into a 502.
+Completion clears the latest scheduled handle. Keep real stalled-header/body
+coverage alongside the controlled early-wake regression. When a test spies on
+fake timer functions, clear the registered mock restorers before returning to
+real timers. Restoring individual spies alone can leave their restorers
+registered, allowing later cleanup to reinstall the fake functions.
+
 Verification uses ordinary application ports and the existing authenticated broker, HTTP, install, lease, and process fixtures. Controlled fixtures prove policy and native admission behavior; they do not certify a live Appium installation or a real connected device. Fresh strict compilation, affected tests, build, and package checks are coordinated separately before delivery.
 
 Instrumentation classification reads failed creation responses only. A successful response supplies its session ID before any outward serialization; publication or exact-session compensation retains cleanup authority when outward serialization fails.

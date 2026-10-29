@@ -403,3 +403,14 @@ Match the workflow's Node 24 major and check both ordinary routing and
 separate from provider prerequisite skips. Preserve the first failing reports,
 the corrected owner reports and the exact candidate identity. Local acceptance
 and a newly published GitHub Actions result are separate facts.
+
+The published `84b773c2` run `40817236916` reduces Linux failures to three per
+job, four distinct tests. Check both GNU-host delegates in BSD stdin fixtures,
+repeated cancellation at the final guarded release, and early native Appium
+timer wake-ups. The current remote owners retain process-group cancellation,
+successor refusals and exact claim release. The Appium owner retains real
+stalled-header/body checks alongside its controlled 349.5/350 ms regression;
+clear timer mock restorers before real timers to preserve following lock tests.
+Final local qualification is 158 remote passes plus 120 Appium passes and two
+existing skips. Reuse unaffected prior owner and native Mac results rather than
+repeating the full suite or claiming fresh platform acceptance.

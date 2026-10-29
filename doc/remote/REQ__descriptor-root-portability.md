@@ -21,6 +21,13 @@ observation and every failure refusal, without reopening the original pathname.
 
 Cancellation must work both for a signal to the owning shell PID and for a process-group signal. Every intermediate scope must retain ownership until its protected native foreground work has stopped; it must not release a claim merely because a child shell exited. When worker ownership is proved and cancellation is accepted, no later body statements may execute. If ownership cannot be proved, cancellation is refused: work may remain active, and its claims must remain held rather than reporting a completed cancellation.
 
+Once the final owned cleanup handler starts, repeated HUP/INT/TERM must not
+interrupt its native waits or claim release. Disable its EXIT callback while
+ignoring those signals through the existing ownership-qualified cleanup and
+original signal-status exit. A group signal and a supervisor's later qualified
+forward may overlap. This protection does not authorize releasing a refused or
+changed claim, skipping a native join, or signaling an unverified process.
+
 An interruptible supervisor may signal only its exact operation-owned worker and descendants admitted through captured native ancestry, process birth and command identity. Revalidate that proof immediately before a signal. A changed or unavailable identity authorizes neither a guessed signal nor successful claim release. Do not substitute unverified process-group membership for ownership. POSIX asynchronous jobs may inherit ignored SIGINT; cancellation may use TERM for the proved owned work while preserving the caller's HUP/INT/TERM exit status. Completion waits for that work to stop and can remain pending indefinitely if it refuses termination; claims remain held during that wait. Root or descendant replacement, delayed signal handling and cancellation before worker readiness require focused regression evidence.
 
 If a previously admitted descendant is reparented during cancellation, its unchanged birth and command permit waiting for its actual completion, without signaling it under the former ancestry. A parent already proved absent is distinct from an unavailable or changed process identity.

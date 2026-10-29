@@ -331,7 +331,7 @@ export function remoteLifecycleShell(containerName: string, body: string, lockWa
         "_ccc_lock_owned=0",
         "_ccc_release_guard() { [ \"$_ccc_guard_owned\" -eq 1 ] || return 0; case \"$_ccc_guard_backend\" in flock) flock -u 9 2>/dev/null || true; eval 'exec 9>&-' ;; shlock) if read -r _ccc_guard_pid < \"$_ccc_guard\" 2>/dev/null && [ \"$_ccc_guard_pid\" = \"$$\" ]; then rm -f \"$_ccc_guard\"; fi ;; esac; _ccc_guard_owned=0; }",
         "_ccc_unlock() { _ccc_refusal_empty || _ccc_refuse; [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || return 74; if command -v _ccc_bind_release >/dev/null 2>&1; then _ccc_bind_release || true; fi; if [ \"$_ccc_lock_owned\" -eq 1 ] && read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock\"; fi; _ccc_lock_owned=0; _ccc_release_guard; rm -f \"$_ccc_candidate\" 2>/dev/null || true; eval 'exec 8<&-' 2>/dev/null || true; }",
-        "_ccc_on_signal() { _ccc_signal_status=$1; trap - EXIT HUP INT TERM; wait 2>/dev/null || true; [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || exit 79; _ccc_unlock; exit \"$_ccc_signal_status\"; }",
+        "_ccc_on_signal() { _ccc_signal_status=$1; trap '' HUP INT TERM; trap - EXIT; wait 2>/dev/null || true; [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || exit 79; _ccc_unlock; exit \"$_ccc_signal_status\"; }",
         "trap 'if [ \"${_ccc_cleanup_refused:-0}\" != 1 ]; then _ccc_unlock; fi' EXIT",
         "trap '_ccc_on_signal 129' HUP",
         "trap '_ccc_on_signal 130' INT",
@@ -517,7 +517,7 @@ export function remoteRuntimeBindAuthorityShell(body: string, lifecycleHeld = fa
         // A losing publisher may remove only its captured, still single-link staging inode.
         // Native admission also protects displaced .release records; never delete a raced successor.
         "_ccc_bind_release() { [ \"$_ccc_bind_owned\" -eq 1 ] || [ \"$_ccc_bind_candidate_owned\" -eq 1 ] || return 0; _ccc_refusal_empty || _ccc_refuse; [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || return 74; _ccc_bind_release_status=0; if [ \"$_ccc_bind_candidate_owned\" -eq 1 ]; then _ccc_bind_candidate_owned=0; if _ccc_bind_claim_matches \"$_ccc_bind_candidate\"; then rm -f \"$_ccc_bind_candidate\" || _ccc_bind_release_status=74; fi; fi; if [ \"$_ccc_bind_owned\" -eq 1 ]; then _ccc_bind_owned=0; _ccc_bind_release_status=74; if _ccc_bind_claim_matches \"$_ccc_bind_lock\"; then _ccc_bind_release_path=$_ccc_bind_root_bound/codex-state.lock.${_ccc_bind_token%????????????????}.release; if [ ! -e \"$_ccc_bind_release_path\" ] && [ ! -L \"$_ccc_bind_release_path\" ] && mv \"$_ccc_bind_lock\" \"$_ccc_bind_release_path\"; then if _ccc_bind_claim_matches \"$_ccc_bind_release_path\" && rm -f \"$_ccc_bind_release_path\"; then _ccc_bind_release_status=0; fi; fi; fi; fi; eval 'exec 4<&- 5<&- 6<&- 7<&-' 2>/dev/null || true; return \"$_ccc_bind_release_status\"; }",
-        "_ccc_bind_signal() { _ccc_bind_signal_status=$1; trap - EXIT HUP INT TERM; _ccc_bind_release || true; [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || exit 79; exit \"$_ccc_bind_signal_status\"; }",
+        "_ccc_bind_signal() { _ccc_bind_signal_status=$1; trap '' HUP INT TERM; trap - EXIT; _ccc_bind_release || true; [ \"${_ccc_cleanup_refused:-0}\" != 1 ] || exit 79; exit \"$_ccc_bind_signal_status\"; }",
         "trap 'if [ \"${_ccc_cleanup_refused:-0}\" != 1 ]; then _ccc_bind_release; fi' EXIT",
         "trap '_ccc_bind_signal 129' HUP",
         "trap '_ccc_bind_signal 130' INT",

@@ -52,6 +52,17 @@ format calls explicitly dereference it with `-L`. Observe the retained descripto
 preserving all identity, ownership, type, mode, link-count and size checks;
 never fall back to reopening the original path. See
 [descriptor portability](../remote/REQ__descriptor-root-portability.md).
+BSD-format fixtures on a GNU-compatible host must also dereference retained
+stdin in their native translation and diagnostic probes. Continue forcing the
+BSD fallback and rejecting synthetic descriptor-path observations; otherwise
+the fixture reintroduces the host bug it is meant to isolate.
+
+Cancellation coverage must include a second signal at the actual owned release
+boundary, while retaining the original process-group case. Final cleanup ignores
+further catchable termination signals until its existing joins and guarded
+claim release complete. Never substitute a delay, owner-only signaling or an
+allowed lingering claim for the release contract. Preserve exact exit facts
+and stage diagnostics when an intermittent group case fails.
 
 Modern Git repair can rewrite sibling worktree links. Quarantine removal must
 publish and compensate only its captured target metadata under the original

@@ -746,6 +746,44 @@ E2E still pass. This comparison establishes no new failure group, rather than
 treating absent timing failures as a fix. Its full logs and comparison remain
 under the same archive's `latest-40810701259/` directory.
 
+### Oct29 published candidate: four remaining failures
+
+Run `40817236916` at `84b773c2` has three failures, 17,543 passes and 212
+skips in each Linux job, with four distinct failed tests across the two jobs.
+Windows static/ownership/package, Chrome and Podman E2E pass. Both Linux jobs
+fail two BSD stdin fixtures; ordinary Linux additionally fails stalled Appium
+headers (502 instead of 504), and Podman additionally leaves the global claim
+after process-group cancellation. Full logs are retained under
+`latest-40817236916/` in the same CI archive.
+
+The BSD fixture's two GNU-host stdin delegates now use `-L`; its forced BSD
+route, format assertions and poisoned descriptor-path observations remain.
+An isolated Ubuntu 26.04 uutils witness reproduces refusal 74 before this
+translation correction and successful retained-inode admission afterward.
+
+Final lifecycle and bind signal callbacks now ignore further HUP/INT/TERM
+before disabling EXIT and running their original guarded cleanup. Previously
+they restored default signals first, allowing a later supervisor TERM to kill
+cleanup with the claim held. Three deterministic actual-scope tests reproduce
+retained claims on the previous source and pass after correction. The existing
+process-group case remains and now preserves exact exit/stage diagnostics.
+
+The native Appium abort timer now checks its original monotonic target before
+aborting, rearming only the remaining fraction on an early wake. An actual
+broker/HTTP regression fails the previous source at 349.5 ms of a 350 ms
+allowance and passes the corrected source, including expiry classification,
+upstream closure and timer disposal. The CI log did not record callback timing;
+this establishes the mechanism, rather than the historical callback timestamp.
+Existing real stalled-header/body allowances and exact 504 assertions remain.
+
+The new regression initially leaked its timer mocks into following tests;
+clearing registered restorers before returning to real timers fixes that
+fixture issue. Retain its initial failed owner report separately. Final focused
+owner checks pass 158 remote assertions and 120 Appium assertions, with two
+existing Appium skips. Root and device-lab typechecks and affected-source lint
+pass. These are local candidate results, not a new Actions PASS or additional
+Mac/Windows host acceptance.
+
 ## Known ceiling
 
 The positive packaged Mac destructive result above supersedes the following

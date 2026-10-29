@@ -40,6 +40,14 @@ Instrumentation recovery retains the five fixed steps and permits the existing s
 A failed session deletion preserves metadata. Publication compares the captured generation and leaves a successor intact.
 Compensation deletes the exact newly created session; process termination and session deletion remain distinct effects.
 Request deadlines start after RPC queue admission and cover lock waiting, lease heartbeat, and Appium work.
+The native HTTP abort timer is a wake-up observation, not proof that its
+monotonic allowance has expired. Capture one target when the bounded request
+starts; an early callback rearms only the remaining interval. Abort at or after
+that target, and clear the latest timer after headers/body completion or failure.
+Keep the caller's allowance and deadline classification unchanged: an explicit
+observation expiry returns `appium-request-timeout` (504), while an upstream
+failure before expiry retains its separate failure result. Both stalled headers
+and stalled response bodies must release their upstream connection.
 
 ## Outward evidence and qualification
 
