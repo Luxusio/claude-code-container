@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fileSymlinkOrSkip } from "../helpers/file-symlink-fixture.js";
 
 const f = vi.hoisted(() => ({ home: "", faults: new Map<string, unknown>(), writes: [] as string[] }));
 vi.mock("os", async original => ({ ...await original<typeof import("os")>(), homedir: () => f.home }));
@@ -66,24 +67,43 @@ describe("private native facade, real lock and direct filesystem publication", (
         const { claude, codex } = prepare(profile);
         expect(api.buildMcpConfig(profile, () => { expect(existsSync(lockPath(profile))).toBe(true); expect(existsSync(codex)).toBe(false); })).toEqual(["host"]);
         expect(existsSync(lockPath(profile))).toBe(false);
-        expect(statSync(claude).mode & 0o777).toBe(0o600); expect(statSync(codex).mode & 0o777).toBe(0o600);
+        if (process.platform !== "win32") {
+            expect(statSync(claude).mode & 0o777).toBe(0o600); expect(statSync(codex).mode & 0o777).toBe(0o600);
+        }
         expect(JSON.parse(readFileSync(claude, "utf8")).mcpServers.host.url).toBe("http://host.docker.internal:9");
         expect(readFileSync(codex, "utf8")).toContain('url = "http://host.docker.internal:9"');
         expect(f.writes.filter(path => path === claude || path === codex)).toEqual([codex, claude]);
         const inode = statSync(codex).ino; f.writes = []; api.buildMcpConfig(profile);
         expect(statSync(codex).ino).toBe(inode); expect(f.writes).not.toContain(codex); expect(f.writes).toContain(claude);
     });
-    it("direct writes retain existing inode and mode and follow symlinks", () => {
+    it("direct writes retain existing regular-file inode and mode", () => {
+        const { claude, codex } = prepare("existing"); mkdirSync(dirname(codex), { recursive: true });
+        writeFileSync(codex, 'model = "keep"\n'); writeFileSync(claude, '{"theme":"keep"}');
+        chmodSync(codex, 0o640); chmodSync(claude, 0o644);
+        const codexBefore = statSync(codex); const claudeBefore = statSync(claude);
+        api.buildMcpConfig("existing");
+        expect(lstatSync(codex).isSymbolicLink()).toBe(false); expect(lstatSync(claude).isSymbolicLink()).toBe(false);
+        expect(statSync(codex).ino).toBe(codexBefore.ino); expect(statSync(claude).ino).toBe(claudeBefore.ino);
+        expect(statSync(codex).mode).toBe(codexBefore.mode); expect(statSync(claude).mode).toBe(claudeBefore.mode);
+        if (process.platform !== "win32") {
+            expect(statSync(codex).mode & 0o777).toBe(0o640); expect(statSync(claude).mode & 0o777).toBe(0o644);
+        }
+        expect(readFileSync(codex, "utf8")).toContain('model = "keep"'); expect(JSON.parse(readFileSync(claude, "utf8")).theme).toBe("keep");
+    });
+    it("direct writes retain existing inode and mode through file symlinks", context => {
         const { claude, codex } = prepare("linked"); mkdirSync(dirname(codex), { recursive: true });
         const codexTarget = join(f.home, "codex-target"); const claudeTarget = join(f.home, "claude-target");
         writeFileSync(codexTarget, 'model = "keep"\n'); writeFileSync(claudeTarget, '{"theme":"keep"}');
         chmodSync(codexTarget, 0o640); chmodSync(claudeTarget, 0o644);
-        symlinkSync(codexTarget, codex); symlinkSync(claudeTarget, claude);
-        const codexInode = statSync(codexTarget).ino; const claudeInode = statSync(claudeTarget).ino;
+        fileSymlinkOrSkip(context, codexTarget, codex); fileSymlinkOrSkip(context, claudeTarget, claude);
+        const codexBefore = statSync(codexTarget); const claudeBefore = statSync(claudeTarget);
         api.buildMcpConfig("linked");
         expect(lstatSync(codex).isSymbolicLink()).toBe(true); expect(lstatSync(claude).isSymbolicLink()).toBe(true);
-        expect(statSync(codexTarget).ino).toBe(codexInode); expect(statSync(claudeTarget).ino).toBe(claudeInode);
-        expect(statSync(codexTarget).mode & 0o777).toBe(0o640); expect(statSync(claudeTarget).mode & 0o777).toBe(0o644);
+        expect(statSync(codexTarget).ino).toBe(codexBefore.ino); expect(statSync(claudeTarget).ino).toBe(claudeBefore.ino);
+        expect(statSync(codexTarget).mode).toBe(codexBefore.mode); expect(statSync(claudeTarget).mode).toBe(claudeBefore.mode);
+        if (process.platform !== "win32") {
+            expect(statSync(codexTarget).mode & 0o777).toBe(0o640); expect(statSync(claudeTarget).mode & 0o777).toBe(0o644);
+        }
         expect(readFileSync(codexTarget, "utf8")).toContain('model = "keep"'); expect(JSON.parse(readFileSync(claudeTarget, "utf8")).theme).toBe("keep");
     });
     it("refuses exact container marker with no Codex publication or restoration", () => {

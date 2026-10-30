@@ -3357,6 +3357,7 @@ describe("clipboard-server", () => {
         it("returns false when other lock has dead PID (stale)", async () => {
             // PID 999999999 is virtually guaranteed to be dead
             const deadPid = 999999999;
+            mockSpawnSync.mockReturnValue({ status: 0, stdout: "MISSING\n", stderr: "" });
             mockExistsSync.mockImplementation(() => true);
             mockReaddirSync.mockReturnValue(["stale.lock"]);
             mockReadFileSync.mockImplementation((p: string) => {

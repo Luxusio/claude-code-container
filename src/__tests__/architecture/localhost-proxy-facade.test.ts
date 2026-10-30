@@ -1,6 +1,6 @@
 import * as net from "node:net";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -11,6 +11,7 @@ import type { RuntimeName } from "../../domain/container-runtime.js";
 import { createLocalhostProxy } from "../../application/localhost-proxy.js";
 import { proxyConnection, startProxy, stopProxy, tryConnect, PROXY_PORT } from "../../localhost-proxy.js";
 import { setupLocalhostProxy } from "../../localhost-proxy-setup.js";
+import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "@ccc/device-lab/providers/state/windows-system-powershell.mjs";
 
 const probe = vi.hoisted(() => ({ runtime: "docker", spawn: vi.fn(), reach: vi.fn(() => ({reachable:false,latencyMs:7})) }));
 vi.mock("child_process", () => ({spawnSync:probe.spawn}));
@@ -27,6 +28,7 @@ beforeEach(() => {
 });
 function track(socket: net.Socket) { sockets.add(socket); return socket; }
 const fixtureHost = "::1";
+const canRunContainerBash = process.platform !== "win32" && existsSync("/bin/bash");
 const failedDialHolders = new Set<() => Promise<void>>();
 async function listen(connection: (socket: net.Socket) => void) {
     const server = net.createServer(socket => connection(track(socket))); servers.add(server);
@@ -60,6 +62,52 @@ finally:
     sock.close()
 print(json.dumps({'type':'closed','nonce':nonce,'descriptor':sock.fileno()}), flush=True)
 `;
+// Windows has a system .NET runtime but need not have Python. Bind a real TCP
+// socket without Listen, retaining the allocation through the same stop nonce.
+const failedDialWindowsProgram = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$root = $env:CCC_PRIVATE_FAILED_DIAL_ROOT
+$nonce = $env:CCC_PRIVATE_FAILED_DIAL_NONCE
+if (-not [string]::Equals([Environment]::CurrentDirectory, $root, [StringComparison]::OrdinalIgnoreCase) -or -not $nonce) {
+    throw 'invalid private failed-dial holder startup'
+}
+$socket = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetworkV6, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp)
+function Write-HeldSocketFrame([string]$type) {
+    $endpoint = $socket.LocalEndPoint
+    $frame = @{
+        type = $type; nonce = $nonce; descriptor = $socket.Handle.ToInt64()
+        address = @($endpoint.Address.ToString(), $endpoint.Port, 0, 0)
+        socketType = [int]$socket.SocketType; protocol = [int]$socket.ProtocolType
+        soError = [int]$socket.GetSocketOption([Net.Sockets.SocketOptionLevel]::Socket, [Net.Sockets.SocketOptionName]::Error)
+    }
+    if ($type -eq 'ready') {
+        $frame.pid = $PID; $frame.pgid = $null; $frame.root = $root; $frame.phase = 'bound'
+        $frame.generation = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+    }
+    [Console]::Out.WriteLine(($frame | ConvertTo-Json -Compress))
+    [Console]::Out.Flush()
+}
+try {
+    $socket.DualMode = $false
+    $socket.ExclusiveAddressUse = $true
+    $socket.Bind([Net.IPEndPoint]::new([Net.IPAddress]::IPv6Loopback, 0))
+    Write-HeldSocketFrame 'ready'
+    if ([Console]::In.ReadLine() -cne $nonce) { throw 'unauthenticated private failed-dial holder stop' }
+    Write-HeldSocketFrame 'before-close'
+} finally { $socket.Dispose() }
+$disposed = $false
+try { [void]$socket.GetSocketOption([Net.Sockets.SocketOptionLevel]::Socket, [Net.Sockets.SocketOptionName]::Error) }
+catch {
+    $failure = $_.Exception
+    while ($failure.InnerException) { $failure = $failure.InnerException }
+    if ($failure -is [ObjectDisposedException]) { $disposed = $true } else { throw }
+}
+if (-not $disposed) { throw 'private failed-dial holder socket remained open' }
+[Console]::Out.WriteLine((@{ type = 'closed'; nonce = $nonce; descriptor = -1 } | ConvertTo-Json -Compress))
+[Console]::Out.Flush()
+`;
 interface FailedDialReceipt {
     type: string; pid: number; pgid: number | null; generation: string;
     root: string; nonce: string; descriptor: number; address: [string, number, number, number];
@@ -69,9 +117,17 @@ async function failedDialPort() {
     const directory = mkdtempSync(join(tmpdir(), "ccc-proxy-failed-dial-"));
     const nonce = randomBytes(24).toString("hex");
     const native = await vi.importActual<typeof import("child_process")>("child_process");
-    const executable = process.platform === "win32" ? "python" : "/usr/bin/python3";
-    const args = ["-I", "-S", "-c", failedDialProgram, directory, nonce];
-    const options = { cwd: directory, env: {}, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] };
+    const windows = process.platform === "win32";
+    const executable = windows ? canonicalWindowsPowerShellPath() : "/usr/bin/python3";
+    if (!executable) throw new Error(`Private IPv6 failed-dial fixture requires trusted system PowerShell; retained ${directory}`);
+    const args = windows ? hiddenWindowsPowerShellArgs(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+        Buffer.from(failedDialWindowsProgram, "utf16le").toString("base64")])
+        : ["-I", "-S", "-c", failedDialProgram, directory, nonce];
+    const env: NodeJS.ProcessEnv = windows ? {
+        SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
+        CCC_PRIVATE_FAILED_DIAL_ROOT: directory, CCC_PRIVATE_FAILED_DIAL_NONCE: nonce,
+    } : {};
+    const options = { cwd: directory, env, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], windowsHide: true, shell: false };
     const child = native.spawn(executable, args, options);
     let stdout = "", stderr = "", stopped = false;
     let readyResolve!: (value: FailedDialReceipt) => void;
@@ -205,7 +261,7 @@ it.each(["docker","podman"])("actual setup selects %s and exact 5000ms proc insp
     expect(args[4]).toBe('while read -r slot local_address remote_address state rest; do if [[ "$local_address" == "0100007F:4E1F" && "$state" == "0A" ]]; then exit 0; fi; done < /proc/net/tcp; exit 1');
     expect(options).toEqual({encoding:"utf-8",stdio:["pipe","pipe","pipe"],timeout:5000}); expect(warn).not.toHaveBeenCalled();
 });
-it.each([
+it.skipIf(!canRunContainerBash).each([
     ["0100007F:4E1F","0A",0], ["00000000:4E1F","0A",1], ["0200007F:4E1F","0A",1],
     ["0100007F:4E20","0A",1], ["0100007F:14E1F","0A",1], ["0100007F:4E1F","01",1],
 ])("actual production proc script inspects private table %s %s", async (address,state,status) => {

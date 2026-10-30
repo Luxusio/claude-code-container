@@ -6,6 +6,7 @@ import { createResumeProcessRunner, type ResumeProcessOptions, type ResumeProces
 import { missingResumeMetadata } from "../codex-resume-diagnostics.js";
 import { restoreResumeMetadata } from "../codex-resume-metadata.js";
 import { runCodexResumeRecovery } from "../codex-resume-recovery-runtime.js";
+import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "@ccc/device-lab/providers/state/windows-system-powershell.mjs";
 
 const id = "01a0c2d2-c645-7ec0-82b4-ab99ece25683";
 const otherId = "01a0c2d2-c645-7ec0-82b4-ab99ece25684";
@@ -230,7 +231,51 @@ describe("metadata stdio transport", () => {
         const runner = createResumeProcessRunner();
         const acknowledged = vi.fn();
         try {
-            const result = await runner.run([process.execPath, "-e", "require('node:fs').closeSync(0);process.stdout.write('STDIN_CLOSED\\n');setInterval(()=>{},1000)"], {
+            // On POSIX, close both Node's stream and its original descriptor.
+            const program = `
+                const fs=require('node:fs'), input=process.stdin, output=process.stdout;
+                input.once('close',()=>{
+                    try { fs.closeSync(0); } catch(error) { if(error.code!=='EBADF') throw error; }
+                    output.write('STDIN_CLOSED\\n');
+                });
+                input.destroy();
+                setInterval(()=>{},1000);
+            `;
+            let command = [process.execPath, "-e", program];
+            if (process.platform === "win32") {
+                // libuv deliberately leaves fd 0 open on Windows. Close the owned
+                // native handle directly, without opening Console.In or duplicating it.
+                const executable = canonicalWindowsPowerShellPath();
+                if (!executable) throw new Error("Requires trusted system PowerShell for the native broken-pipe fixture");
+                const windowsProgram = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$output = [Console]::Out
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class MetadataInputFixture {
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr GetStdHandle(int kind);
+    [DllImport("kernel32.dll", SetLastError=true)] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError=true)] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool GetHandleInformation(IntPtr handle, out uint flags);
+}
+'@
+$handle = [MetadataInputFixture]::GetStdHandle(-10)
+if ($handle -eq [IntPtr]::Zero -or $handle -eq [IntPtr]::new(-1)) { throw 'stdin handle unavailable' }
+if (-not [MetadataInputFixture]::CloseHandle($handle)) { throw 'stdin handle close failed' }
+$flags = [uint32]0
+if ([MetadataInputFixture]::GetHandleInformation($handle, [ref]$flags) -or [Runtime.InteropServices.Marshal]::GetLastWin32Error() -ne 6) {
+    throw 'stdin handle remained open'
+}
+$output.WriteLine('STDIN_CLOSED')
+$output.Flush()
+while ($true) { [Threading.Thread]::Sleep(1000) }
+`;
+                command = [executable, ...hiddenWindowsPowerShellArgs(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                    Buffer.from(windowsProgram, "utf16le").toString("base64")])];
+            }
+            const result = await runner.run(command, {
                 timeoutMs: 2000,
                 onStdoutLine(line) {
                     expect(line).toBe("STDIN_CLOSED");

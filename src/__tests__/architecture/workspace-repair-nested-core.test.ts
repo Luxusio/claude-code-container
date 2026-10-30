@@ -1,3 +1,4 @@
+import { isolateGitFixture } from "../helpers/git-fixture.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -62,12 +63,17 @@ function init(repository: string): void {
 
 describe("nested repair semantic decisions with native compensation", () => {
     let root: string;
-    beforeEach(() => { root = mkdtempSync(join(tmpdir(), "ccc-nested-repair-")); });
+    let restoreGitEnvironment: () => void;
+    beforeEach(() => {
+        root = mkdtempSync(join(tmpdir(), "ccc-nested-repair-"));
+        restoreGitEnvironment = isolateGitFixture(join(root, "home"));
+    });
     afterEach(() => {
         injection.processError = false;
         injection.semanticFailure = false;
         injection.addedReceipt = undefined;
         injection.compensatedReceipt = undefined;
+        restoreGitEnvironment();
         rmSync(root, { recursive: true, force: true });
     });
 

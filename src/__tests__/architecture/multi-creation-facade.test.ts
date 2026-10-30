@@ -1,3 +1,4 @@
+import { isolateGitFixture, gitFixturePath } from "../helpers/git-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -59,12 +60,11 @@ function branchExists(source: string, branch: string): boolean {
 
 describe("multi creation facade using real Git and native ownership", () => {
     let root: string;
+    let restoreGitEnvironment: () => void;
     let source: string;
     beforeEach(() => {
         root = mkdtempSync(join(tmpdir(), "ccc-multi-creation-"));
-        const home = join(root, "home"); mkdirSync(home);
-        vi.stubEnv("HOME", home); vi.stubEnv("USERPROFILE", home);
-        vi.stubEnv("GIT_CONFIG_GLOBAL", join(home, "gitconfig")); vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+        restoreGitEnvironment = isolateGitFixture(join(root, "home"));
         source = join(root, "source"); mkdirSync(source);
         init(join(source, "alpha")); init(join(source, "beta"));
         writeFileSync(join(source, "plain.txt"), "plain content\n");
@@ -72,7 +72,7 @@ describe("multi creation facade using real Git and native ownership", () => {
     });
     afterEach(() => {
         interception.rejectRegistration = false; interception.partialCopy = false;
-        rmSync(root, { recursive: true, force: true }); vi.unstubAllEnvs();
+        restoreGitEnvironment(); rmSync(root, { recursive: true, force: true });
     });
     it("routes multiple repos and ordinary files through application with synchronous mutable legacy results", () => {
         const branch = "multi-success"; const destination = getWorkspacePath(source, branch);
@@ -83,7 +83,7 @@ describe("multi creation facade using real Git and native ownership", () => {
         expect(result.copied).toEqual(["plain.txt"]);
         for (const name of ["alpha", "beta"]) {
             expect(git(join(destination, name), "branch", "--show-current")).toBe(branch);
-            expect(git(join(source, name), "worktree", "list", "--porcelain")).toContain(join(destination, name));
+            expect(git(join(source, name), "worktree", "list", "--porcelain")).toContain(gitFixturePath(join(destination, name)));
         }
         expect(readFileSync(join(destination, "plain.txt"), "utf8")).toBe("plain content\n");
         result.created[0].name = "mutable"; result.copied.push("mutable");
@@ -97,7 +97,7 @@ describe("multi creation facade using real Git and native ownership", () => {
         expect(error.cause).toBeInstanceOf(Error);
         expect(existsSync(join(destination, "alpha", ".git"))).toBe(true);
         expect(branchExists(join(source, "alpha"), branch)).toBe(true);
-        expect(git(join(source, "alpha"), "worktree", "list", "--porcelain")).toContain(join(destination, "alpha"));
+        expect(git(join(source, "alpha"), "worktree", "list", "--porcelain")).toContain(gitFixturePath(join(destination, "alpha")));
         expect(branchExists(join(source, "beta"), branch)).toBe(false);
         expect(existsSync(join(destination, "beta"))).toBe(false);
     });
@@ -111,7 +111,7 @@ describe("multi creation facade using real Git and native ownership", () => {
         for (const name of ["alpha", "beta"]) {
             expect(existsSync(join(destination, name))).toBe(false);
             expect(branchExists(join(source, name), branch)).toBe(false);
-            expect(git(join(source, name), "worktree", "list", "--porcelain")).not.toContain(join(destination, name));
+            expect(git(join(source, name), "worktree", "list", "--porcelain")).not.toContain(gitFixturePath(join(destination, name)));
             expect(readFileSync(join(source, name, "tracked.txt"), "utf8")).toBe("original\n");
         }
     });

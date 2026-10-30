@@ -1,3 +1,4 @@
+import { isolateGitFixture, gitFixturePath } from "../helpers/git-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -68,8 +69,10 @@ function registrationSnapshot(request: WorktreeAdditionRequest) {
 
 describe("real native worktree addition registration validation", () => {
     let root: string;
+    let restoreGitEnvironment: () => void;
     beforeEach(() => {
         root = mkdtempSync(join(tmpdir(), "ccc-worktree-addition-"));
+        restoreGitEnvironment = isolateGitFixture(join(root, "home"));
         interception.requests.length = 0;
         interception.receipts.length = 0;
         interception.snapshot = undefined;
@@ -80,6 +83,7 @@ describe("real native worktree addition registration validation", () => {
         interception.snapshot = undefined;
         interception.removeReceipt = true;
         interception.processError = false;
+        restoreGitEnvironment();
         rmSync(root, { recursive: true, force: true });
     });
 
@@ -94,7 +98,7 @@ describe("real native worktree addition registration validation", () => {
         expect(git(result.workspacePath, "rev-parse", "--abbrev-ref", "HEAD")).toBe("native-completion");
         expect(readFileSync(join(result.workspacePath, "owned.txt"), "utf8")).toBe("owned file\n");
         expect(interception.receipts[0]).not.toBeNull();
-        expect(git(source, "worktree", "list", "--porcelain")).toContain(result.workspacePath);
+        expect(git(source, "worktree", "list", "--porcelain")).toContain(gitFixturePath(result.workspacePath));
     });
 
     it("unified validates before nested repair and preserves the actual added root registration", () => {
@@ -116,7 +120,7 @@ describe("real native worktree addition registration validation", () => {
         expect(before).toBeDefined();
         expect(registrationSnapshot(interception.requests[0])).toEqual(before);
         expect(existsSync(join(destination, "nested", ".git"))).toBe(false);
-        expect(git(child, "worktree", "list", "--porcelain")).not.toContain(destination);
+        expect(git(child, "worktree", "list", "--porcelain")).not.toContain(gitFixturePath(destination));
     });
 
     it("multi records the actual child before validation and preserves it when outer rollback lacks a receipt", () => {

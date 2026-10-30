@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createNativeContainerDestructiveLifecycle } from "../../composition/container-destructive-lifecycle.js";
 import {
     bindMountSourceIdentityDigest, captureBindMountSourceIdentity,
@@ -385,13 +385,13 @@ cp.spawnSync = (command, argv, options) => {
 syncBuiltinESMExports();
 console.log = message => messages.push(['log',message]);
 console.error = message => messages.push(['error',message]);
-const { _setRuntimeInvocationForTest } = await import(${JSON.stringify(resolve(repository, "dist/container-runtime.js"))});
-const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import(${JSON.stringify(resolve(repository, "dist/ports/container-runtime-invocation.js"))});
+const { _setRuntimeInvocationForTest } = await import(${JSON.stringify(pathToFileURL(resolve(repository, "dist/container-runtime.js")).href)});
+const { NATIVE_RUNTIME_SELECTOR_KEYS } = await import(${JSON.stringify(pathToFileURL(resolve(repository, "dist/ports/container-runtime-invocation.js")).href)});
 _setRuntimeInvocationForTest({version:1,runtime:'docker',executable,
   transport:{kind:'docker',host:'unix:///fixture/engine.sock',configDirectory:'/fixture/config',
     tls:{enabled:false,verify:false,caFile:null,certFile:null,keyFile:null}},
   selectors:Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key => [key,null]))});
-const {createNativeContainerDestructiveLifecycle} = await import(${JSON.stringify(resolve(repository, "dist/composition/container-destructive-lifecycle.js"))});
+const {createNativeContainerDestructiveLifecycle} = await import(${JSON.stringify(pathToFileURL(resolve(repository, "dist/composition/container-destructive-lifecycle.js")).href)});
 const cleanup = {kind:'observed',stopped:1,skipped:2,failed:1};
 const lifecycle = createNativeContainerDestructiveLifecycle({
   resolvePath: () => '/fixture/project', projectId: () => 'fixture-project', containerName: () => 'fixture-container',

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { RuntimeBindGuard } from "../ports/runtime-bind-authority.js";
 import { createNativeContainerExecPorts } from "../composition/container-exec.js";
@@ -8,6 +8,7 @@ import { basename, dirname, join } from "node:path";
 import * as runtime from "../container-runtime.js";
 import { captureBindMountSourceIdentity, proveStoppedContainerProjectBindSource } from "../adapters/container-mount-observations.js";
 import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "./helpers/native-runtime-fixture.js";
+import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 
 const native = vi.hoisted(() => ({ spawnSync: vi.fn(), begin: vi.fn(), settle: vi.fn() }));
 vi.mock("child_process", async () => ({ ...await vi.importActual("child_process"), spawnSync: native.spawnSync }));
@@ -23,7 +24,16 @@ let destinations: string[];
 let calls: string[][];
 type CopyFault = "failure" | "timeout" | "signaled" | "missing" | "wrong nonce" | "oversized" | "symlink" | "changed host";
 
-function copyMarker(fault?: CopyFault) {
+function expectChallengeEntry(path: string, kind: "file" | "directory") {
+    const entry = lstatSync(path);
+    expect(entry.isSymbolicLink()).toBe(false);
+    expect(kind === "directory" ? entry.isDirectory() : entry.isFile()).toBe(true);
+    // Windows exposes read/write mode bits; POSIX hosts also enforce owner-only access.
+    const mask = process.platform === "win32" ? 0o600 : 0o777;
+    expect(entry.mode & mask).toBe((kind === "directory" ? 0o700 : 0o600) & mask);
+}
+
+function copyMarker(fault?: CopyFault, preparedSymlink?: { target: string; link: string }) {
     native.spawnSync.mockImplementation((...call: unknown[]) => {
         const [, argv, options] = normalizeNativeRuntimeCall(call) as [string, string[], { timeout?: number; killSignal?: string }];
         calls.push(argv);
@@ -33,17 +43,22 @@ function copyMarker(fault?: CopyFault) {
         expect(options).toMatchObject({ timeout: 5000, killSignal: "SIGKILL" });
         const destination = argv[2];
         destinations.push(destination);
-        expect(lstatSync(dirname(destination)).mode & 0o777).toBe(0o700);
+        expectChallengeEntry(dirname(destination), "directory");
         const marker = join(project, basename(argv[1]));
         const nonce = readFileSync(marker, "utf8");
         expect(nonce).toMatch(/^[a-f0-9]{64}$/);
-        expect(lstatSync(marker).mode & 0o777).toBe(0o600);
+        expectChallengeEntry(marker, "file");
         if (fault === "failure") return { status: 1, stdout: "", stderr: "copy unsupported" };
         if (fault === "timeout") return { status: null, error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) };
         if (fault === "signaled") return { status: null, signal: "SIGTERM" };
         if (fault === "missing") return { status: 0, stdout: "", stderr: "" };
-        if (fault === "symlink") symlinkSync(marker, destination);
-        else writeFileSync(destination, fault === "wrong nonce" ? "f".repeat(64) : fault === "oversized" ? nonce + nonce : nonce);
+        if (fault === "symlink") {
+            if (!preparedSymlink) throw new Error("file symlink fixture is missing");
+            writeFileSync(preparedSymlink.target, nonce);
+            renameSync(preparedSymlink.link, destination);
+            expect(lstatSync(destination).isSymbolicLink()).toBe(true);
+            expect(readFileSync(destination, "utf8")).toBe(nonce);
+        } else writeFileSync(destination, fault === "wrong nonce" ? "f".repeat(64) : fault === "oversized" ? nonce + nonce : nonce);
         if (fault === "changed host") {
             renameSync(project, `${project}.replaced`);
             const replacement = mkdtempSync(join(root, "replacement-"));
@@ -77,10 +92,23 @@ describe("stopped project bind proof", () => {
         expect(calls[0]).not.toContain("-L");
     });
 
-    it.each(["failure", "timeout", "signaled", "missing", "wrong nonce", "oversized", "symlink", "changed host"] as const)("never grants ownership after %s", fault => {
+    it.each(["failure", "timeout", "signaled", "missing", "wrong nonce", "oversized", "changed host"] as const)("never grants ownership after %s", fault => {
         copyMarker(fault);
         expect(proveStoppedContainerProjectBindSource(exactId, project, "/project/repo-id", captureBindMountSourceIdentity(project)).kind).not.toBe("verified");
         expect(calls).toHaveLength(1);
+        expect(native.spawnSync.mock.results.map(result => result.type)).toEqual(["return"]);
+    });
+
+    it("never grants ownership after symlink", context => {
+        const target = join(root, "symlink-marker"), link = join(root, "symlink-copy");
+        writeFileSync(target, "pending nonce");
+        // Establish native capability before entering the production catch boundary.
+        fileSymlinkOrSkip(context, target, link);
+        copyMarker("symlink", { target, link });
+        const result = proveStoppedContainerProjectBindSource(exactId, project, "/project/repo-id", captureBindMountSourceIdentity(project));
+        expect(calls).toHaveLength(1);
+        expect(native.spawnSync.mock.results.map(call => call.type)).toEqual(["return"]);
+        expect(result.kind).toBe("mismatch");
     });
 
     it.each([
@@ -118,7 +146,7 @@ describe("trusted current-image proof of inherited stopped mounts", () => {
             }
             expect(argv[0]).toBe("run");
             const cidPath = argv[argv.indexOf("--cidfile") + 1]; helperDirectories.push(dirname(cidPath));
-            expect(lstatSync(dirname(cidPath)).mode & 0o777).toBe(0o700);
+            expectChallengeEntry(dirname(cidPath), "directory");
             const markerPath = argv.at(-1)!;
             expect(markerPath).toMatch(/^\/project\/repo-id\/\.ccc-mount-identity-[a-f0-9]{32}$/);
             expect(argv).toEqual([

@@ -8179,12 +8179,16 @@ export function runBrokerBackendChild(
             ...(options.env ? { env: options.env } : {}),
             detached: process.platform !== "win32",
         }));
-        const spawnedProcessIdentity = readDeviceRuntimeProcessIdentity(child.pid, { remainingMs: commandRemainingMs });
+        let spawnedProcessIdentity: DeviceRuntimeProcessIdentity | null = null;
+        let identityPending = true;
+        let pendingClose: { status: number | null; signal: NodeJS.Signals | null } | undefined;
+        let cleanupRequested = false;
         let stdout = Buffer.alloc(0);
         let stderr = Buffer.alloc(0);
         let outputBytes = 0;
         let settled = false;
         let timedOut = false;
+        let commandExpired = false;
         let childError: Error | undefined;
         let nativeFailure: { status: number | null; signal: NodeJS.Signals | null } | undefined;
         let cleanup: BrokerProcessTreeCleanup | undefined;
@@ -8194,7 +8198,8 @@ export function runBrokerBackendChild(
             ? `process-tree cleanup failed${cleanup.error ? `: ${cleanup.error}` : ""}`
             : null;
         const terminateTree = () => {
-            if (cleanup) return;
+            cleanupRequested = true;
+            if (cleanup || identityPending) return;
             cleanup = options.terminateTree && completionRemainingMs()
                 ? options.terminateTree(child.pid)
                 : terminateBrokerSpawnedProcessTree(child.pid, {
@@ -8221,9 +8226,11 @@ export function runBrokerBackendChild(
         const finish = (status: number | null, signal: NodeJS.Signals | null) => {
             if (settled) return;
             if (!childError && !nativeFailure && !timedOut && status === 0 && !commandRemainingMs()) {
-                timedOut = true;
-                childError = timeoutError();
-                terminateTree();
+                expire();
+            }
+            if (identityPending) {
+                pendingClose = { status, signal };
+                return;
             }
             if (nativeFailure && !timedOut && status === null) ({ status, signal } = nativeFailure);
             settled = true;
@@ -8240,6 +8247,9 @@ export function runBrokerBackendChild(
             });
         };
         const append = (target: "stdout" | "stderr", chunk: Buffer) => {
+            if (settled) return;
+            if (!commandRemainingMs()) expire();
+            if (commandExpired) return;
             const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
             const remaining = Math.max(0, options.outputLimit - Math.min(outputBytes, options.outputLimit));
             if (remaining > 0) {
@@ -8263,6 +8273,8 @@ export function runBrokerBackendChild(
         });
         child.once("close", finish);
         const expire = () => {
+            if (settled) return;
+            commandExpired = true;
             if (!childError && !nativeFailure) {
                 timedOut = true;
                 childError = timeoutError();
@@ -8272,9 +8284,19 @@ export function runBrokerBackendChild(
         const remaining = commandRemainingMs();
         if (remaining) {
             timer = setTimeout(expire, remaining);
-            child.stdin?.end(input);
         }
         else expire();
+        void readDeviceRuntimeProcessIdentityAsync(child.pid, { remainingMs: commandRemainingMs }).then(identity => {
+            spawnedProcessIdentity = commandRemainingMs() ? identity : null;
+        }, () => {
+            spawnedProcessIdentity = null;
+        }).then(() => {
+            identityPending = false;
+            if (!commandRemainingMs()) expire();
+            if (cleanupRequested) terminateTree();
+            if (pendingClose) finish(pendingClose.status, pendingClose.signal);
+            else if (!childError && !commandExpired) child.stdin?.end(input);
+        });
     });
 }
 
@@ -8483,7 +8505,7 @@ async function defaultBrokerDeviceToolRunner(ownerId: string, parsed: DeviceTool
 export function boundedProviderCommandRunnerScript() {
     const windowsTerminationScript = JSON.stringify(windowsHandleBoundTerminationScript());
     return String.raw`
-const { spawn, spawnSync } = require("node:child_process");
+const { spawn, spawnSync, execFile } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 const { parentPort, workerData } = require("node:worker_threads");
@@ -8507,6 +8529,7 @@ let outputBytes = 0;
 let commandError;
 let nativeFailure;
 let timedOut = false;
+let commandExpired = false;
 let outputLimitExceeded = false;
 let cleanup;
 let settled = false;
@@ -8514,6 +8537,9 @@ let timer;
 let forceSettleTimer;
 let child;
 let spawnedIdentity;
+let identityPending = false;
+let pendingClose;
+let cleanupRequested = false;
 
 function remainingMs(deadlineAt) {
     const remaining = deadlineAt - performance.now();
@@ -8537,6 +8563,9 @@ function recordFailure(failure) {
 }
 
 function append(current, chunk) {
+    if (settled) return current;
+    if (!commandRemainingMs() || cancelled()) expire();
+    if (commandExpired) return current;
     const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     const remaining = Math.max(0, outputLimit - outputBytes);
     outputBytes += value.length;
@@ -8570,13 +8599,10 @@ function processIdentity(pid, remainingMs) {
             commandLine = readFileSync("/proc/" + pid + "/cmdline").toString("utf8").split("\0").filter(Boolean).join(" ");
         } else if (process.platform === "win32") {
             if (typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) return null;
-            const script = "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + pid + "' -ErrorAction SilentlyContinue; $H = Get-Process -Id " + pid + " -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = ${windowsStartTokenExpression("$H")}; commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
             const timeout = probeTimeout();
             if (!timeout) return null;
-            const observed = spawnSync(payload.windowsPowerShellPath, ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout, windowsHide: true });
-            const parsed = observed.status === 0 && observed.stdout && observed.stdout.trim() ? JSON.parse(observed.stdout) : null;
-            startToken = parsed && typeof parsed.startToken === "string" ? "windows:" + parsed.startToken : "";
-            commandLine = parsed && typeof parsed.commandLine === "string" ? parsed.commandLine : "";
+            const observed = spawnSync(payload.windowsPowerShellPath, windowsProcessIdentityArgs(pid), { encoding: "utf8", timeout, windowsHide: true });
+            return observed.status === 0 ? windowsProcessIdentityFromOutput(pid, observed.stdout, probeTimeout) : null;
         } else {
             let timeout = probeTimeout();
             if (!timeout) return null;
@@ -8591,6 +8617,38 @@ function processIdentity(pid, remainingMs) {
         return { pid, startToken, commandHash: createHash("sha256").update(commandLine).digest("hex") };
     } catch {
         return null;
+    }
+}
+
+function windowsProcessIdentityArgs(pid) {
+    const script = "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + pid + "' -ErrorAction SilentlyContinue; $H = Get-Process -Id " + pid + " -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = ${windowsStartTokenExpression("$H")}; commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
+    return ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+function windowsProcessIdentityFromOutput(pid, output, remainingMs) {
+    try {
+        const parsed = output && output.trim() ? JSON.parse(output) : null;
+        const startToken = parsed && typeof parsed.startToken === "string" ? "windows:" + parsed.startToken : "";
+        const commandLine = parsed && typeof parsed.commandLine === "string" ? parsed.commandLine : "";
+        if (!startToken || !commandLine || !remainingMs()) return null;
+        return { pid, startToken, commandHash: createHash("sha256").update(commandLine).digest("hex") };
+    } catch {
+        return null;
+    }
+}
+
+function readInitialWindowsProcessIdentity(pid, complete) {
+    const timeout = Math.min(5000, commandRemainingMs());
+    if (!timeout || typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) {
+        complete(null);
+        return;
+    }
+    try {
+        execFile(payload.windowsPowerShellPath, windowsProcessIdentityArgs(pid), {
+            encoding: "utf8", timeout, killSignal: "SIGKILL", windowsHide: true, maxBuffer: 64 * 1024,
+        }, (error, output) => complete(error ? null : windowsProcessIdentityFromOutput(pid, output, commandRemainingMs)));
+    } catch {
+        complete(null);
     }
 }
 
@@ -8678,7 +8736,8 @@ function terminateTree(pid, expectedIdentity) {
 }
 
 function terminateForFailure() {
-    if (cleanup) return;
+    cleanupRequested = true;
+    if (cleanup || identityPending) return;
     cleanup = terminateTree(child && child.pid, spawnedIdentity);
     if (!cleanup.ok) {
         const detail = cleanup.error ? ": " + cleanup.error : "";
@@ -8692,6 +8751,7 @@ function terminateForFailure() {
 
 function expire() {
     if (settled) return;
+    commandExpired = true;
     if (!commandError && !nativeFailure) {
         timedOut = true;
         commandError = "device-lab provider command timed out after " + payload.timeoutMs + "ms";
@@ -8705,8 +8765,12 @@ function settleSpawnPublication() {
 
 function publish(status, signal) {
     if (settled) return;
-    settleSpawnPublication();
     if (!commandError && !timedOut && status === 0 && (!commandRemainingMs() || cancelled())) expire();
+    if (identityPending) {
+        pendingClose = { status, signal };
+        return;
+    }
+    settleSpawnPublication();
     if (nativeFailure && !timedOut && status === null) ({ status, signal } = nativeFailure);
     settled = true;
     clearTimeout(timer);
@@ -8799,11 +8863,7 @@ if (admit()) {
         }
         if (child) {
             Atomics.store(control, 2, Number.isInteger(child.pid) ? child.pid : 0);
-            spawnedIdentity = processIdentity(child.pid, commandRemainingMs);
-            publishIdentity(spawnedIdentity);
-            settleSpawnPublication();
-            Atomics.notify(control, 2);
-            if (parentPort) parentPort.postMessage({ spawned: true, pid: child.pid });
+            identityPending = true;
             child.stdout.on("data", (chunk) => {
                 stdout = append(stdout, chunk);
                 if (outputBytes > outputLimit) terminateForFailure();
@@ -8827,24 +8887,42 @@ if (admit()) {
                 }
             });
             child.once("close", publish);
-            if (!spawnedIdentity && commandRemainingMs()) {
-                setTimeout(() => {
-                    if (settled) return;
-                    if (!commandRemainingMs()) { expire(); return; }
-                    if (!commandError && !nativeFailure) {
-                        commandError = "device-lab provider process identity could not be established";
-                        recordFailure({ error: commandError });
-                    }
-                    terminateForFailure();
-                }, Math.min(100, commandRemainingMs()));
-            }
             const remaining = commandRemainingMs();
             if (remaining && !cancelled()) {
                 timer = setTimeout(expire, remaining);
-                child.stdin.end(payload.input === undefined ? undefined : payload.input);
             }
             else expire();
             if (parentPort && admission) parentPort.on("message", () => { if (cancelled()) expire(); });
+            const completeInitialIdentity = (identity) => {
+                spawnedIdentity = identity;
+                identityPending = false;
+                publishIdentity(spawnedIdentity);
+                settleSpawnPublication();
+                Atomics.notify(control, 2);
+                if (parentPort) parentPort.postMessage({ spawned: true, pid: child.pid });
+                if (!commandRemainingMs() || cancelled()) expire();
+                if (cleanupRequested) terminateForFailure();
+                if (pendingClose) {
+                    publish(pendingClose.status, pendingClose.signal);
+                    return;
+                }
+                if (!spawnedIdentity && commandRemainingMs()) {
+                    setTimeout(() => {
+                        if (settled) return;
+                        if (!commandRemainingMs()) { expire(); return; }
+                        if (!commandError && !nativeFailure) {
+                            commandError = "device-lab provider process identity could not be established";
+                            recordFailure({ error: commandError });
+                        }
+                        terminateForFailure();
+                    }, Math.min(100, commandRemainingMs()));
+                }
+                if (!commandError && !nativeFailure && !commandExpired) {
+                    child.stdin.end(payload.input === undefined ? undefined : payload.input);
+                }
+            };
+            if (process.platform === "win32") readInitialWindowsProcessIdentity(child.pid, completeInitialIdentity);
+            else completeInitialIdentity(processIdentity(child.pid, commandRemainingMs));
         }
     }
 }

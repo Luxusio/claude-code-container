@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { spawn } from "child_process";
 import * as childProcess from "child_process";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     cleanupOwnerDevices,
@@ -1255,7 +1255,7 @@ describe("device-lab admin cleanup and stop commands", () => {
     });
 
     it("actual public session cleanup completes native physical iOS cleanup synchronously before removing its claim", () => {
-        const cwd = "/project/admin-cleanup-session-binding", profile = "chosen";
+        const cwd = resolve("/project/admin-cleanup-session-binding"), profile = "chosen";
         const { iosDeviceFile } = cleanupOnly(cwd, profile);
         const current = { id: "ios-real", status: "attached", udid: "REAL-IOS-UDID", nested: { raw: "kept" } };
         writeFileSync(iosDeviceFile, JSON.stringify({ devices: [current] }));
@@ -1311,7 +1311,7 @@ describe("device-lab admin cleanup and stop commands", () => {
     });
 
     it("actual public session reports the precise native cleanup fault after earlier effects and removes only its own claim", () => {
-        const cwd = "/project/admin-cleanup-session-raw-failure", profile = "chosen";
+        const cwd = resolve("/project/admin-cleanup-session-raw-failure"), profile = "chosen";
         const { androidFile, iosFile } = cleanupOnly(cwd, profile);
         const earlier = { id: "early", status: "stopped", pid: 999999 };
         writeFileSync(androidFile, JSON.stringify({ devices: [earlier] }));

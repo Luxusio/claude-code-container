@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { materializeUnixInstallPayload } from "../../scripts/install.js";
@@ -18,7 +18,7 @@ const safeCalls = [
 type FixtureMode = "healthy" | "names-mismatch" | "schema-mismatch" | "missing-schema" | "closed" | "malformed-response"
     | "malformed-payload" | "malformed-owned" | "missing-capability" | "wrong-status" | "failed-flow" | "malformed-flow"
     | "handshake-stall" | "tool-stall";
-type Event = { kind: string; token?: string; pid?: number; ppid?: number; cwd?: string; env?: Record<string, string>; homeEntries?: string[];
+type Event = { kind: string; token?: string; pid?: number; ppid?: number; cwd?: string; env?: Record<string, string>; homeDirectory?: string; homeEntries?: string[];
     id?: string | number; method?: string; params?: Record<string, unknown> };
 type ChildResult = { status: number | null; stdout: string; stderr: string; pid: number; elapsedMs: number; timedOut: boolean };
 
@@ -91,11 +91,12 @@ async function writeServer(path: string, logPath: string, token: string, mode: F
     const { TOOLS } = await import("../../device-lab-mcp/src/tools.mjs") as { TOOLS: Array<{ name: string; inputSchema: unknown }> };
     writeFileSync(path, [
         'import { appendFileSync, readdirSync } from "node:fs";',
+        'import { homedir } from "node:os";',
         'import { createInterface } from "node:readline";',
         `const mode = ${JSON.stringify(mode)};`,
         `const tools = ${JSON.stringify(TOOLS)};`,
         `const log = entry => appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(entry) + "\\n");`,
-        `log({kind:"birth",token:${JSON.stringify(token)},pid:process.pid,ppid:process.ppid,cwd:process.cwd(),env:process.env,homeEntries:readdirSync(process.env.HOME)});`,
+        `log({kind:"birth",token:${JSON.stringify(token)},pid:process.pid,ppid:process.ppid,cwd:process.cwd(),env:process.env,homeDirectory:homedir(),homeEntries:readdirSync(process.env.HOME)});`,
         'const stalled = mode === "handshake-stall" || mode === "tool-stall";',
         'if (stalled) { setInterval(() => {}, 1000); process.on("SIGTERM", () => {}); }',
         'const payload = value => ({content:[{type:"text",text:JSON.stringify(value)}]});',
@@ -216,10 +217,15 @@ function expectHealthyDiagnostic(result: ChildResult, events: Event[], callerEnv
     expect(birth.cwd).not.toBe(join(dirname(callerEnv.HOME!), unusualDirectory));
     expect(env.HOME).not.toBe(callerEnv.HOME);
     expect(env.USERPROFILE).toBe(env.HOME);
+    expect(birth.homeDirectory).toBe(env.HOME);
+    expect(birth.homeDirectory).not.toBe(callerEnv.USERPROFILE);
+    const drive = win32.parse(env.HOME).root.replace(/[\\/]$/, "");
+    expect(env.HOMEDRIVE).toBe(/^[A-Za-z]:$/.test(drive) ? drive : "");
+    expect(env.HOMEDRIVE + env.HOMEPATH).toBe(env.HOME);
     expect(env.APPDATA).toBe(join(env.HOME, "AppData", "Roaming"));
     expect(env.LOCALAPPDATA).toBe(join(env.HOME, "AppData", "Local"));
     expect(birth.homeEntries).not.toContain("caller-home-marker");
-    for (const key of ["HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA"]) {
+    for (const key of ["APPDATA", "LOCALAPPDATA"]) {
         expect(env[key], key).not.toBe(callerEnv[key]);
     }
     for (const key of ["NODE_OPTIONS", "NODE_PATH", "CCC_DEVICE_LAB_BROKER_TOKEN", "CCC_PROFILE", "CCC_REAL_DEVICE_LAB_MCP_SERVER",

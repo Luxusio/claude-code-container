@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { gitSigningKeyRewriteShell, sshCredentialCopyShell } from "../docker.js";
 
 const temporaryRoots: string[] = [];
+// These tests execute container shell programs against real POSIX filesystems.
+// Portable host dispatch/status contracts live in host-credential-refresh-facade.test.ts.
+const canRunContainerShell = process.platform !== "win32" && existsSync("/bin/sh");
+const canRunCredentialCopy = canRunContainerShell && existsSync("/usr/bin/python3");
 
 function makeRoot(): string {
     const root = mkdtempSync(join(tmpdir(), "ccc-git-signing-key-"));
@@ -59,7 +63,7 @@ function runRewrite(options: {
     }
 
     const result = spawnSync(
-        "sh",
+        "/bin/sh",
         [
             "-c",
             gitSigningKeyRewriteShell(),
@@ -90,7 +94,7 @@ afterEach(() => {
     }
 });
 
-describe("host Git signing-key rewrite", () => {
+describe.skipIf(!canRunContainerShell)("host Git signing-key rewrite", () => {
     it.each([
         {
             name: "macOS",
@@ -147,7 +151,7 @@ describe("host Git signing-key rewrite", () => {
         writeFileSync(join(copiedRoot, "id_ed25519"), "stale-key");
 
         const result = spawnSync(
-            "sh",
+            "/bin/sh",
             ["-c", gitSigningKeyRewriteShell(), "rewrite", configPath, "/Users/ecokjkim/.ssh", copiedRoot],
             { encoding: "utf8" },
         );
@@ -193,7 +197,7 @@ describe("host Git signing-key rewrite", () => {
         writeFileSync(join(copiedRoot, "id_ed25519"), "private-key");
 
         const result = spawnSync(
-            "sh",
+            "/bin/sh",
             ["-c", gitSigningKeyRewriteShell(), "rewrite", configPath, "/Users/ecokjkim/.ssh", copiedRoot],
             { encoding: "utf8" },
         );
@@ -204,18 +208,20 @@ describe("host Git signing-key rewrite", () => {
     });
 });
 
-describe("container SSH credential copy", () => {
+describe.skipIf(!canRunCredentialCopy)("container SSH credential copy", () => {
     function runCopy(
         sourceRoot: string,
         copiedRoot: string,
         env: NodeJS.ProcessEnv = process.env,
         privilegedRead = false,
     ) {
-        return spawnSync(
-            "sh",
+        const result = spawnSync(
+            "/bin/sh",
             ["-c", sshCredentialCopyShell(privilegedRead), "ccc-ssh-copy", sourceRoot, copiedRoot],
             { encoding: "utf8", env },
         );
+        if (result.error) throw result.error;
+        return result;
     }
 
     const canElevate = process.platform !== "win32" && process.getuid?.() !== 0
@@ -433,7 +439,7 @@ sys.exit(42)
             ["user.name", "Fixture"], ["user.email", "fixture@example.test"],
         ] as const) expect(git("config", "--file", configPath, key, value).status).toBe(0);
         expect(git("init", "--quiet").status).toBe(0);
-        const rewritten = spawnSync("sh", ["-c", gitSigningKeyRewriteShell(), "rewrite", configPath, "/Users/ecokjkim/.ssh", copied], { encoding: "utf8" });
+        const rewritten = spawnSync("/bin/sh", ["-c", gitSigningKeyRewriteShell(), "rewrite", configPath, "/Users/ecokjkim/.ssh", copied], { encoding: "utf8" });
         expect(rewritten.status, rewritten.stderr).toBe(0);
         expect(readSigningKeys(configPath)).toEqual([join(copied, "id_ed25519")]);
         writeFileSync(join(repository, "fixture.txt"), "fixture\n");

@@ -1,3 +1,4 @@
+import { isolateGitFixture } from "../helpers/git-fixture.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -159,7 +160,11 @@ function init(repository: string): void {
 
 describe("broken repair semantic admission and native compensation", () => {
     let root: string;
-    beforeEach(() => { root = mkdtempSync(join(tmpdir(), "ccc-broken-repair-")); });
+    let restoreGitEnvironment: () => void;
+    beforeEach(() => {
+        root = mkdtempSync(join(tmpdir(), "ccc-broken-repair-"));
+        restoreGitEnvironment = isolateGitFixture(join(root, "home"));
+    });
     afterEach(() => {
         injection.processStatus = undefined;
         injection.semanticFailure = false;
@@ -187,6 +192,7 @@ describe("broken repair semantic admission and native compensation", () => {
         injection.backupPath = undefined;
         injection.registrationBackupPath = undefined;
         injection.nativeConflict = undefined;
+        restoreGitEnvironment();
         rmSync(root, { recursive: true, force: true });
     });
 

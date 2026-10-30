@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     DeviceLabProjectEnumerationError,
@@ -294,7 +294,7 @@ describe("device-lab admin delete, prune, and CLI commands", () => {
     });
 
     it("resolves default cwd at invocation and retains every managed macOS refusal through the native facade", () => {
-        const cwd = "/project/admin-prune-managed-native";
+        const cwd = resolve("/project/admin-prune-managed-native");
         const { owner, macosFile } = fixture.setupFixture(cwd);
         const resources = [
             { providerResourceManaged: true }, { provisioning: "image-created" }, { provisioning: "image-cloned" },

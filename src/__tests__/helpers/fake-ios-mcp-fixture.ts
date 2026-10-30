@@ -456,6 +456,18 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
   fs.appendFileSync(log, 'appium-server-sigint ' + port + '\\n');
   server.close(() => process.exit(0));
 });
+// A private, generation-bound shutdown control exercises ordinary Node exit
+// diagnostics on Windows, whose native termination bypasses signal handlers.
+const shutdownControl = process.env.HOME + '/fake-ios-shutdown-' + process.pid + '.json';
+const shutdownTimer = setInterval(() => {
+  if (!fs.existsSync(shutdownControl)) return;
+  const control = JSON.parse(fs.readFileSync(shutdownControl, 'utf8'));
+  if (control.token !== token || control.pid !== process.pid) throw Error('foreign fixture shutdown control');
+  clearInterval(shutdownTimer);
+  fs.unlinkSync(shutdownControl);
+  server.close(() => process.exit(0));
+}, 10);
+shutdownTimer.unref();
 server.on('error', error => { diagnostic('error', error.code); process.exit(1); });
 diagnostic('bind');
 server.listen(port, '127.0.0.1', () => diagnostic('listening'));
@@ -610,6 +622,7 @@ export async function cleanupFakeIosMcpContext(context: FakeIosMcpContext | unde
     }
     for (const runtime of runtimes) {
         try {
+            let exitWitness: Promise<RuntimeExitObservation> | undefined;
             let observation = effects.inspect(runtime.identity, runtime.pid);
             if (observation.status === "exited") continue;
             if (observation.status !== "match") throw new Error("runtime generation " + observation.status);
@@ -617,18 +630,31 @@ export async function cleanupFakeIosMcpContext(context: FakeIosMcpContext | unde
                 if (Date.now() >= deadline) throw new Error("aggregate teardown deadline");
                 effects.beforeSignal?.(runtime.pid);
                 observation = effects.inspect(runtime.identity, runtime.pid); // Recheck after any intervening change.
-                if (observation.status === "exited") break;
+                if (observation.status === "exited") {
+                    if (exitWitness && await exitWitness !== "ended") throw new Error("runtime exit observation unavailable");
+                    break;
+                }
                 if (observation.status !== "match" || !contextMatches(context, owner) || !ownedRoots(owner) || !markersUnchanged() || !journalUnchanged()) throw new Error("runtime generation/marker changed before signal");
                 effects.signal(runtime.pid, signal);
-                const grace = signal === "SIGTERM" ? Math.min(deadline, Date.now() + 250) : deadline;
-                const waitMs = grace - Date.now();
+                const waitMs = deadline - Date.now();
                 if (waitMs <= 0) throw new Error("aggregate teardown deadline");
-                // Exit observation does not require a zombie's command line to
-                // retain its live hash. It never authorizes a later signal.
-                const exited = await bounded(effects.waitForExit(runtime.identity, waitMs), grace);
-                if (Date.now() > grace) throw new Error("runtime exit observation exceeded teardown allowance");
+                // Native exit proof owns the aggregate allowance. The short
+                // cooperative grace only schedules another authenticated signal;
+                // its expiry never proves exit or cancels an in-flight probe.
+                exitWitness ??= bounded(effects.waitForExit(runtime.identity, waitMs), deadline);
+                let graceTimer: ReturnType<typeof setTimeout> | undefined;
+                let exited: RuntimeExitObservation | "grace-expired";
+                try {
+                    exited = signal === "SIGTERM" ? await Promise.race([
+                        exitWitness,
+                        new Promise<"grace-expired">(resolve => {
+                            graceTimer = setTimeout(() => resolve("grace-expired"), Math.min(250, Math.max(0, deadline - Date.now())));
+                        }),
+                    ]) : await exitWitness;
+                } finally { if (graceTimer) clearTimeout(graceTimer); }
+                if (Date.now() > deadline) throw new Error("runtime exit observation exceeded teardown allowance");
                 if (exited === "ended") { observation = { status: "exited", liveness: "exited" }; break; }
-                if (exited !== "still-running") throw new Error("runtime exit observation unavailable");
+                if (exited !== "still-running" && exited !== "grace-expired") throw new Error("runtime exit observation unavailable");
             }
             if (observation.status !== "exited") throw new Error("runtime still live at teardown deadline");
         } catch (error) { verified = false; failures.push("runtime: " + String(error).slice(0, 512)); }

@@ -1,3 +1,5 @@
+import * as windowsProcesses from "@ccc/device-lab/windows-system-powershell.js";
+import * as runtimeIdentities from "@ccc/device-lab/device-lab-process-identity.js";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "fs";
 import { spawnSync } from "child_process";
 import { createHash } from "crypto";
@@ -71,7 +73,7 @@ vi.mock("worker_threads", async original => {
 });
 
 /** Execute the shipped Worker body at its native boundary, without real foreign PIDs. */
-function generatedRunnerFixture(options: {
+async function generatedRunnerFixture(options: {
     platform?: NodeJS.Platform;
     timeoutMs?: number;
     cleanupGraceMs?: number;
@@ -84,6 +86,7 @@ function generatedRunnerFixture(options: {
     terminationCostMs?: number;
     missingIdentity?: boolean;
     changedIdentity?: boolean;
+    holdInitialIdentity?: boolean;
 } = {}) {
     let now = 0;
     let identityReads = 0;
@@ -119,6 +122,8 @@ function generatedRunnerFixture(options: {
             commandLine: "node provider.js",
         });
     };
+    let releaseInitialIdentity: (() => void) | undefined;
+    const flush = () => new Promise<void>(resolve => setImmediate(resolve));
     let waits = 0;
     const atomics = {
         load: Atomics.load, store: Atomics.store, notify: Atomics.notify,
@@ -160,6 +165,13 @@ function generatedRunnerFixture(options: {
                     if (options.spawnError) throw new Error("native-spawn-threw");
                     return child;
                 },
+                execFile: (_file: string, args: string[], nativeOptions: { timeout: number }, callback: (error: null, stdout: string, stderr: string) => void) => {
+                    nativeRequests.push({ args, ...nativeOptions });
+                    const complete = () => callback(null, identity(), "");
+                    if (options.holdInitialIdentity) releaseInitialIdentity = complete;
+                    else complete();
+                    return new EventEmitter();
+                },
                 spawnSync: (_file: string, args: string[], nativeOptions: { timeout: number; env?: NodeJS.ProcessEnv }) => {
                     nativeRequests.push({ args, ...nativeOptions });
                     if (nativeOptions.env?.CCC_WINDOWS_TERMINATE_PID) {
@@ -195,9 +207,18 @@ function generatedRunnerFixture(options: {
         clearTimeout: (timer: object) => { timers.delete(timer); },
     };
     runInNewContext(boundedProviderCommandRunnerScript(), context);
+    await flush(); // Let an immediately completed native callback settle its Promise chain.
     return {
         child, spawns, dispatchStates, nativeRequests, signals, timers, admission, parentPort, control,
         advance: (milliseconds: number) => { now += milliseconds; },
+        releaseIdentity: async () => {
+            if (!releaseInitialIdentity) throw new Error("fixture expected a held initial identity query");
+            const release = releaseInitialIdentity;
+            releaseInitialIdentity = undefined;
+            release();
+            await flush();
+        },
+        flush,
         runNextTimer: () => {
             const next = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
             if (!next) throw new Error("fixture expected a pending timer");
@@ -400,6 +421,10 @@ describe("device broker timed-out process tree cleanup", () => {
                 return { pid: pid!, attempted: true, ok: true, signal: "SIGKILL", platform: process.platform };
             },
         }).then(result => { settled = true; return result; });
+        // The timer is armed before the native identity probe. Charge its
+        // elapsed time to the same fake clock before moving toward expiry.
+        await vi.advanceTimersByTimeAsync(40);
+        await new Promise<void>(resolve => setImmediate(resolve));
         fixture.setNow(99);
         await vi.advanceTimersByTimeAsync(59);
         expect(settled).toBe(false);
@@ -422,9 +447,11 @@ describe("device broker timed-out process tree cleanup", () => {
         const execution = runBrokerBackendChild("test-owned-script", "", {
             cwd: temporaryRoot(), timeoutMs: 100, outputLimit: 16,
         });
+        await new Promise<void>(resolve => setImmediate(resolve));
         fixture.child.stdout.emit("data", Buffer.from("effect-observed"));
         fixture.setNow(101);
         fixture.child.exitCode = status;
+        fixture.child.emit("exit", status, null);
         fixture.child.emit("close", status, null);
         expect(await execution).toMatchObject({ status, stdout: "effect-observed", timedOut: status === 0 });
         expect(vi.getTimerCount()).toBe(0);
@@ -454,6 +481,7 @@ describe("device broker timed-out process tree cleanup", () => {
             cwd: temporaryRoot(), timeoutMs: 100, outputLimit: 16, cleanupGraceMs: 50,
             terminateTree: pid => ({ pid: pid!, attempted: true, ok: true, signal: "SIGKILL", platform: process.platform }),
         });
+        await new Promise<void>(resolve => setImmediate(resolve));
         fixture.child.stdout.emit("data", Buffer.from("effect-observed"));
         fixture.setNow(30);
         fixture.child.exitCode = 7;
@@ -468,8 +496,42 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 
-    it("never bypasses worker process identity fencing with a direct child kill", () => {
-        const fixture = generatedRunnerFixture({ platform: "linux", missingIdentity: true });
+    it.each([false, true])("awaits backend initial identity after deadline and saved close without accepting late output (primary rejection=%s)", async rejected => {
+        const fixture = backendFixture();
+        const identity = brokerNativeGate<null>();
+        backendNative.identity = () => identity.result;
+        const inspect = vi.fn();
+        backendNative.inspect = inspect;
+        const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+        let settled = false;
+        const execution = runBrokerBackendChild("test-owned-script", "", {
+            cwd: temporaryRoot(), timeoutMs: 100, outputLimit: 16, cleanupGraceMs: 50,
+        }).then(result => {settled = true; return result;});
+        fixture.child.stdout.emit("data", Buffer.from("before"));
+        if (rejected) fixture.child.emit("error", new Error("native-primary-before-identity"));
+        fixture.setNow(101);
+        fixture.child.stderr.emit("data", Buffer.from("PRIVATE-LATE-OUTPUT".repeat(4)));
+        await vi.advanceTimersByTimeAsync(100);
+        fixture.child.exitCode = 0;
+        fixture.child.emit("close", 0, null);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(settled, "backend close must await its initial native observation").toBe(false);
+        expect(inspect).not.toHaveBeenCalled();
+        expect(kill).not.toHaveBeenCalled();
+        // The native adapter returns no authority for an observation completing
+        // after its captured command allowance, even if the OS query succeeded.
+        identity.release(null);
+        const result = await execution;
+        expect(result).toMatchObject({stdout: "before", stderr: "", timedOut: !rejected,
+            cleanup: {attempted: false, ok: false, error: "spawned-process-identity-missing"}});
+        expect(result.error?.message).toContain(rejected ? "native-primary-before-identity" : "timed out");
+        expect(inspect).not.toHaveBeenCalled();
+        expect(kill).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("never bypasses worker process identity fencing with a direct child kill", async () => {
+        const fixture = await generatedRunnerFixture({ platform: "linux", missingIdentity: true });
         for (let index = 0; index < 5 && !fixture.result(); index += 1) fixture.runNextTimer();
         expect(fixture.result()).toMatchObject({ cleanup: { attempted: false, ok: false } });
         expect(fixture.signals).toEqual([]);
@@ -505,11 +567,73 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(requests).toEqual([5000, 37]);
     });
 
-    it.each([0, 10])("shares admitted command and completion durations across transport, identity, termination and grace (transport %sms)", grantDelayMs => {
-        const fixture = generatedRunnerFixture({ admission: [40, 100], grantDelayMs, identityCostMs: 10, terminationCostMs: 25, cleanupGraceMs: 80 });
+    it.each([false, true])("holds Windows initial identity publication through expiry and a saved close (primary rejection=%s)", async rejected => {
+        const fixture = await generatedRunnerFixture({admission: [100, 400], holdInitialIdentity: true});
+        expect(fixture.admission?.[0]).toBe(4);
+        expect(fixture.child.stdout.listenerCount("data")).toBe(1);
+        expect([...fixture.timers.values()].some(timer => timer.at === 100)).toBe(true);
+        fixture.child.stdout.emit("data", Buffer.from("before"));
+        if (rejected) fixture.child.emit("error", new Error("native-primary-before-identity"));
+        const firstFailure = fixture.failureBytes();
+        fixture.advance(101);
+        fixture.child.stdout.emit("data", Buffer.from("PRIVATE-LATE-OUTPUT".repeat(4)));
+        fixture.runNextTimer();
+        fixture.close(0);
+        expect(fixture.result(), "close must await the initial native observation").toBeUndefined();
+        expect(fixture.admission?.[0]).toBe(4);
+        expect(fixture.nativeRequests).toHaveLength(1);
+        expect(fixture.child.kill).not.toHaveBeenCalled();
+        await fixture.releaseIdentity();
+        expect(fixture.admission?.[0]).toBe(5);
+        expect(fixture.publishedIdentity()).toBeUndefined();
+        expect(fixture.result()).toMatchObject({stdout: "before", outputLimitExceeded: false, timedOut: !rejected,
+            cleanup: {attempted: false, ok: false, error: "spawned-process-identity-missing"}});
+        if (rejected) {
+            const primaryError = JSON.parse(firstFailure!.toString("utf8")).error;
+            expect(primaryError).toContain("native-primary-before-identity");
+            expect(fixture.result().error).toBe(primaryError + "; process-tree cleanup failed: spawned-process-identity-missing");
+            expect(fixture.failureBytes()).toEqual(firstFailure);
+        }
+        expect(fixture.nativeRequests.filter(request => request.env?.CCC_WINDOWS_TERMINATE_PID)).toEqual([]);
+        expect(fixture.signals).toEqual([]);
+        expect(fixture.child.kill).not.toHaveBeenCalled();
+        expect(fixture.timers.size).toBe(0);
+    });
+
+    it.each(["deadline", "native rejection", "overflow"] as const)("retains timely Windows identity for one qualified cleanup after %s", async failure => {
+        const fixture = await generatedRunnerFixture({admission: [100, 400], holdInitialIdentity: true});
+        fixture.advance(20);
+        await fixture.releaseIdentity();
+        expect(fixture.publishedIdentity()).toMatchObject({pid: 7001, startToken: "windows:2026-10-02T02:11:08.7160248Z"});
+        expect(fixture.admission?.[0]).toBe(5);
+        fixture.child.stdout.emit("data", Buffer.from("before"));
+        if (failure === "native rejection") fixture.child.emit("error", new Error("native-primary-before-expiry"));
+        if (failure === "overflow") fixture.child.stdout.emit("data", Buffer.from("x".repeat(32)));
+        const firstFailure = fixture.failureBytes();
+        fixture.advance(81);
+        fixture.child.stdout.emit("data", Buffer.from("PRIVATE-LATE-OUTPUT".repeat(4)));
+        fixture.close(0);
+        const result = fixture.result();
+        expect(result).toMatchObject({timedOut: failure === "deadline", cleanup: {pid: 7001, attempted: true, ok: true}});
+        expect(result.stdout).not.toContain("PRIVATE-LATE-OUTPUT");
+        expect(result.stdout).toBe(failure === "overflow" ? "before" + "x".repeat(10) : "before");
+        expect(result.outputLimitExceeded).toBe(failure === "overflow");
+        if (failure !== "deadline") {
+            expect(result.error).toContain(failure === "overflow" ? "ENOBUFS" : "native-primary-before-expiry");
+            expect(fixture.failureBytes()).toEqual(firstFailure);
+        }
+        expect(fixture.nativeRequests.filter(request => request.env?.CCC_WINDOWS_TERMINATE_PID)).toHaveLength(1);
+        expect(fixture.nativeRequests[1].timeout).toBeLessThanOrEqual(400 - (failure === "overflow" ? 20 : 101));
+        expect(fixture.signals).toEqual([]);
+        expect(fixture.child.kill).not.toHaveBeenCalled();
+        expect(fixture.timers.size).toBe(0);
+    });
+
+    it.each([0, 10])("shares admitted command and completion durations across transport, identity, termination and grace (transport %sms)", async grantDelayMs => {
+        const fixture = await generatedRunnerFixture({ admission: [40, 100], grantDelayMs, identityCostMs: 10, terminationCostMs: 25, cleanupGraceMs: 80 });
         expect(fixture.spawns).toHaveLength(1);
         expect(fixture.nativeRequests[0].timeout).toBe(40 - grantDelayMs);
-        expect([...fixture.timers.values()].some(timer => timer.delay === 30 - grantDelayMs)).toBe(true);
+        expect([...fixture.timers.values()].some(timer => timer.at === 40)).toBe(true);
         fixture.runNextTimer();
         expect(fixture.nativeRequests[1].timeout).toBe(60);
         const termination = fixture.nativeRequests.find(request => request.env?.CCC_WINDOWS_TERMINATE_PID);
@@ -522,31 +646,31 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(fixture.timers.size).toBe(0);
     });
 
-    it("refuses a positive grant consumed by request-to-receive transport delay before any native work", () => {
-        const fixture = generatedRunnerFixture({ admission: [40, 100], grantDelayMs: 41 });
+    it("refuses a positive grant consumed by request-to-receive transport delay before any native work", async () => {
+        const fixture = await generatedRunnerFixture({ admission: [40, 100], grantDelayMs: 41 });
         expect(fixture.spawns).toEqual([]);
         expect(fixture.nativeRequests).toEqual([]);
         expect(fixture.result()).toMatchObject({ status: null, timedOut: true });
     });
 
-    it.each(["before-request", "after-grant"] as const)("prevents native spawn when admission is cancelled %s", cancel => {
-        const fixture = generatedRunnerFixture({ admission: [40, 100], cancel });
+    it.each(["before-request", "after-grant"] as const)("prevents native spawn when admission is cancelled %s", async cancel => {
+        const fixture = await generatedRunnerFixture({ admission: [40, 100], cancel });
         expect(fixture.spawns).toEqual([]);
         expect(fixture.nativeRequests).toEqual([]);
         expect(fixture.signals).toEqual([]);
         expect(fixture.result()).toMatchObject({ status: null, timedOut: true });
     });
 
-    it("prevents dispatch when parent revocation wins the atomic claim race", () => {
-        const fixture = generatedRunnerFixture({ admission: [100, 400], cancel: "before-claim" });
+    it("prevents dispatch when parent revocation wins the atomic claim race", async () => {
+        const fixture = await generatedRunnerFixture({ admission: [100, 400], cancel: "before-claim" });
         expect(fixture.admission?.[0]).toBe(-1);
         expect(fixture.spawns).toEqual([]);
         expect(fixture.nativeRequests).toEqual([]);
         expect(fixture.result()).toMatchObject({ status: null, timedOut: true });
     });
 
-    it("retains an in-flight dispatch claim until cancelled native spawn publishes its saved identity", () => {
-        const fixture = generatedRunnerFixture({ admission: [100, 400], cancel: "during-spawn" });
+    it("retains an in-flight dispatch claim until cancelled native spawn publishes its saved identity", async () => {
+        const fixture = await generatedRunnerFixture({ admission: [100, 400], cancel: "during-spawn" });
         expect(fixture.dispatchStates).toEqual([4]);
         expect(fixture.control[2]).toBe(7001);
         expect(fixture.publishedIdentity()).toMatchObject({ pid: 7001, startToken: "windows:2026-10-02T02:11:08.7160248Z" });
@@ -556,30 +680,30 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(fixture.result()).toMatchObject({ timedOut: true });
     });
 
-    it("acknowledges the dispatch claim when native spawn throws synchronously", () => {
-        const fixture = generatedRunnerFixture({ admission: [100, 400], spawnError: true });
+    it("acknowledges the dispatch claim when native spawn throws synchronously", async () => {
+        const fixture = await generatedRunnerFixture({ admission: [100, 400], spawnError: true });
         expect(fixture.dispatchStates).toEqual([4]);
         expect(fixture.admission?.[0]).toBe(5);
         expect(fixture.nativeRequests).toEqual([]);
         expect(fixture.result()).toMatchObject({ status: null, error: expect.stringContaining("native-spawn-threw"), timedOut: false });
     });
 
-    it.each([[0, 100], [40, 0], [-1, 100], [40, -1]])("refuses malformed admission durations %j", (command, completion) => {
-        const fixture = generatedRunnerFixture({ admission: [command, completion] });
+    it.each([[0, 100], [40, 0], [-1, 100], [40, -1]])("refuses malformed admission durations %j", async (command, completion) => {
+        const fixture = await generatedRunnerFixture({ admission: [command, completion] });
         expect(fixture.spawns).toEqual([]);
         expect(fixture.nativeRequests).toEqual([]);
         expect(fixture.result()?.status).toBeNull();
     });
 
-    it.each([2, 3])("refuses a pre-existing or already consumed admission grant (%s)", admissionState => {
-        const fixture = generatedRunnerFixture({ admission: [40, 100], admissionState });
+    it.each([2, 3])("refuses a pre-existing or already consumed admission grant (%s)", async admissionState => {
+        const fixture = await generatedRunnerFixture({ admission: [40, 100], admissionState });
         expect(fixture.spawns).toEqual([]);
         expect(fixture.nativeRequests).toEqual([]);
         expect(fixture.result()?.status).toBeNull();
     });
 
-    it("does not grant cleanup authority to an identity observation that finishes after completion expiry", () => {
-        const fixture = generatedRunnerFixture({ admission: [40, 45], identityCostMs: 10 });
+    it("does not grant cleanup authority to an identity observation that finishes after completion expiry", async () => {
+        const fixture = await generatedRunnerFixture({ admission: [40, 45], identityCostMs: 10 });
         for (let index = 0; index < 5 && !fixture.result(); index += 1) fixture.runNextTimer();
         expect(fixture.nativeRequests[1].timeout).toBe(5);
         expect(fixture.nativeRequests.filter(request => request.env?.CCC_WINDOWS_TERMINATE_PID)).toEqual([]);
@@ -587,16 +711,16 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(fixture.result()).toMatchObject({ status: null, cleanup: { attempted: false, ok: false } });
     });
 
-    it("refuses a late successful native close without losing observed output", () => {
-        const fixture = generatedRunnerFixture();
+    it("refuses a late successful native close without losing observed output", async () => {
+        const fixture = await generatedRunnerFixture();
         fixture.child.stdout.emit("data", Buffer.from("effect-observed"));
         fixture.advance(101);
         fixture.close(0);
         expect(fixture.result()).toMatchObject({ stdout: "effect-observed", timedOut: true });
     });
 
-    it("keeps genuine native rejection primary when its close arrives after command expiry", () => {
-        const fixture = generatedRunnerFixture({ admission: [100, 400], cleanupGraceMs: 200 });
+    it("keeps genuine native rejection primary when its close arrives after command expiry", async () => {
+        const fixture = await generatedRunnerFixture({ admission: [100, 400], cleanupGraceMs: 200 });
         fixture.child.emit("error", new Error("native-spawn-rejected"));
         const firstFailure = fixture.failureBytes();
         expect(JSON.parse(firstFailure!.toString("utf8"))).toMatchObject({ error: expect.stringContaining("native-spawn-rejected") });
@@ -608,8 +732,8 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(fixture.failureBytes()).toEqual(firstFailure);
     });
 
-    it("retains overflow while cleanup crosses command expiry and bounds final observation", () => {
-        const fixture = generatedRunnerFixture({ admission: [100, 400], identityCostMs: 10, cleanupGraceMs: 200 });
+    it("retains overflow while cleanup crosses command expiry and bounds final observation", async () => {
+        const fixture = await generatedRunnerFixture({ admission: [100, 400], identityCostMs: 10, cleanupGraceMs: 200 });
         fixture.child.stdout.emit("data", Buffer.from("x".repeat(32)));
         const firstFailure = fixture.failureBytes();
         expect(JSON.parse(firstFailure!.toString("utf8"))).toMatchObject({ error: expect.stringContaining("ENOBUFS"), outputLimitExceeded: true });
@@ -622,8 +746,8 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(fixture.failureBytes()).toEqual(firstFailure);
     });
 
-    it("publishes an early native exit once and preserves it while stdio delays close past command expiry", () => {
-        const fixture = generatedRunnerFixture({ admission: [100, 400] });
+    it("publishes an early native exit once and preserves it while stdio delays close past command expiry", async () => {
+        const fixture = await generatedRunnerFixture({ admission: [100, 400] });
         fixture.child.stdout.emit("data", Buffer.from("effect-observed"));
         fixture.advance(30);
         fixture.exit(7);
@@ -639,8 +763,8 @@ describe("device broker timed-out process tree cleanup", () => {
         expect(fixture.timers.size).toBe(0);
     });
 
-    it.each(["missing", "changed"])("refuses native termination for %s saved identity", kind => {
-        const fixture = generatedRunnerFixture({ missingIdentity: kind === "missing", changedIdentity: kind === "changed" });
+    it.each(["missing", "changed"])("refuses native termination for %s saved identity", async kind => {
+        const fixture = await generatedRunnerFixture({ missingIdentity: kind === "missing", changedIdentity: kind === "changed" });
         fixture.runNextTimer();
         expect(fixture.nativeRequests.filter(request => request.env?.CCC_WINDOWS_TERMINATE_PID)).toEqual([]);
         expect(fixture.signals).toEqual([]);
@@ -662,7 +786,7 @@ describe("device broker timed-out process tree cleanup", () => {
             : defaultProviderCommandRunner(command, { timeoutMs: 650, outputLimit: 1024 });
         try {
             expect(result, JSON.stringify(result)).toMatchObject({ timedOut: true });
-            expect(result.stdout).not.toContain("too-late");
+            expect(result.stdout, JSON.stringify({result, workerStartupMs: workerFixture.delayMs, deadlineMs: 650})).not.toContain("too-late");
             await expectProcessTreeExit(readyFile);
         } finally {
             await cleanupOwnedProcesses(readyFile, result.cleanup?.pid);
@@ -859,10 +983,11 @@ describe("device broker timed-out process tree cleanup", () => {
     });
 
     it.each([false, true])("uses only captured parent fallback time after a shorter wrapper expires (%s async)", async asynchronous => {
+        const startToken = process.platform === "win32" ? "windows:638000000000000000" : "linux:100";
         workerFixture.replacement = `
             const { workerData } = require('node:worker_threads');
             const control = new Int32Array(workerData.shared,0,4);
-            const identity=Buffer.from(JSON.stringify({pid:7004,startToken:'linux:100',commandHash:'${"a".repeat(64)}'}));
+            const identity=Buffer.from(JSON.stringify({pid:7004,startToken:${JSON.stringify(startToken)},commandHash:'${"a".repeat(64)}'}));
             new Uint8Array(workerData.identityShared).set(identity);
             Atomics.store(control,3,identity.length); Atomics.store(control,2,7004);
             setInterval(() => {},1000);
@@ -871,25 +996,40 @@ describe("device broker timed-out process tree cleanup", () => {
         let offset = 0;
         vi.spyOn(performance, "now").mockImplementation(() => actualNow() + offset);
         const remainders: number[] = [];
+        let inspections = 0;
         backendNative.inspect = (_expected, _pid, nativeOptions) => {
             const remainingMs = (nativeOptions as { remainingMs?: () => number }).remainingMs;
             remainders.push(remainingMs?.() ?? Number.NaN);
-            offset += 14900;
+            if (inspections++ === 0) offset += 14900;
             remainders.push(remainingMs?.() ?? Number.NaN);
-            return { status: "match" };
+            return { status: "match", current: _expected };
         };
+        // Windows requalifies the same identity before its handle-bound native
+        // termination. Keep every native boundary mocked for this synthetic PID.
+        vi.spyOn(runtimeIdentities, "readDeviceRuntimeProcessStartToken").mockReturnValue(startToken);
+        const terminate = vi.spyOn(windowsProcesses, "terminateWindowsProcessByStartToken")
+            .mockImplementation(pid => ({ok: true, pid, status: 0}));
+        const terminateAsync = vi.spyOn(windowsProcesses, "terminateWindowsProcessByStartTokenAsync")
+            .mockImplementation(async pid => ({ok: true, pid, status: 0}));
         const signal = vi.spyOn(process, "kill").mockImplementation(() => true);
         const command = { mode: "exec" as const, provider: "captured-fallback-provider", executable: process.execPath, args: [] };
         const result = asynchronous
             ? await defaultProviderCommandRunnerAsync(command, { timeoutMs: 30000, wrapperTimeoutMs: 150, cleanupGraceMs: 50, outputLimit: 16 })
             : defaultProviderCommandRunner(command, { timeoutMs: 30000, wrapperTimeoutMs: 150, cleanupGraceMs: 50, outputLimit: 16 });
         expect(result).toMatchObject({ timedOut: true, error: "device-lab provider wrapper timed out after 150ms" });
-        expect(remainders).toHaveLength(2);
+        expect(remainders).toHaveLength(process.platform === "win32" ? 4 : 2);
         expect(remainders[0]).toBeGreaterThan(14800);
         expect(remainders[0]).toBeLessThanOrEqual(15050);
         expect(remainders[1]).toBeGreaterThan(0);
         expect(remainders[1]).toBeLessThanOrEqual(150);
-        expect(signal).toHaveBeenCalledWith(-7004, "SIGKILL");
+        for (let index = 2; index < remainders.length; index++) {
+            expect(remainders[index]).toBeGreaterThan(0);
+            expect(remainders[index]).toBeLessThanOrEqual(remainders[index - 1]);
+        }
+        if (process.platform === "win32") {
+            expect(asynchronous ? terminateAsync : terminate).toHaveBeenCalledWith(7004, startToken, 10000, undefined, expect.any(Function));
+            expect(signal.mock.calls.some(([, signal]) => signal !== 0)).toBe(false);
+        } else expect(signal).toHaveBeenCalledWith(-7004, "SIGKILL");
     });
 
     it("rejects percent expansion and line breaks in Windows command-shell arguments", () => {

@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import type { Server } from "node:http";
 import { describe, expect, it } from "vitest";
 import { isolateDeviceLabTestEnvironment } from "../helpers/device-lab-test-environment.js";
+import { fileSymlinkOrSkip } from "../helpers/file-symlink-fixture.js";
 import { backendRoot, close, listen, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "../helpers/host-broker-test-fixture.js";
 import { createDeviceBrokerServer } from "@ccc/device-lab/device-lab-broker.js";
 import { deviceLabOwnerId } from "@ccc/device-lab/device-lab-owner.js";
@@ -142,15 +143,26 @@ describe("iOS authenticated broker lifecycle", () => {
             expect(c.records()).toEqual([winner]);
         });
     }, 30000);
-    it("executes actual malformed/linked native-state guards without provider effects", async () => {
+    it("executes actual malformed native-state guards without provider effects", async () => {
         await withHttp(async c => {
             const file = c.write([]); writeFileSync(file, "malformed raw owner file");
             expect((await c.invoke({ command: "device_start", deviceId: "ios-broker" })).status).toBeGreaterThanOrEqual(400); expect(c.calls).toEqual([]);
-            const target = join(c.home, "allocated-external-state.json"); writeFileSync(target, '{"devices":[]}');
-            rmSync(file); symlinkSync(target, file);
-            expect((await c.invoke({ command: "device_start", deviceId: "ios-broker" })).status).toBeGreaterThanOrEqual(400); expect(c.calls).toEqual([]);
-            expect(readFileSync(target, "utf8")).toBe('{"devices":[]}');
         });
+    }, 30000);
+    it("executes actual linked native-state guards without provider effects", async context => {
+        const directory = mkdtempSync(join(tmpdir(), "ccc-ios-broker-linked-state-"));
+        try {
+            const target = join(directory, "allocated-external-state.json"); writeFileSync(target, '{"devices":[]}');
+            const link = join(directory, "linked-state.json");
+            // Skip before withHttp: its error aggregation must not turn a Vitest
+            // capability skip into an assertion or listener-teardown failure.
+            fileSymlinkOrSkip(context, target, link);
+            await withHttp(async c => {
+                const file = c.write([]); rmSync(file); renameSync(link, file);
+                expect((await c.invoke({ command: "device_start", deviceId: "ios-broker" })).status).toBeGreaterThanOrEqual(400); expect(c.calls).toEqual([]);
+                expect(readFileSync(target, "utf8")).toBe('{"devices":[]}');
+            });
+        } finally { rmSync(directory, { recursive: true, force: true }); }
     }, 30000);
     it("retains the operation lock and serves HTTP while awaiting native shutdown instead of publishing on exit 0", async () => {
         await withHttp(async c => {

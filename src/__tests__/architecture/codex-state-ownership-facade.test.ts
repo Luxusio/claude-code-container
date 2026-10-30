@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dirname } from "path";
+import { dirname, join, parse, resolve } from "path";
 import * as runtimeFacade from "../../container-runtime.js";
 import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), stat: vi.fn(), realpath: vi.fn(), root: vi.fn(), runtime: vi.fn(), cli: vi.fn(), normalize: vi.fn(),
-    guard: Object.freeze({root: "/private/ccc"}), ticket: Object.freeze({owned: "codex helper"}), acquire: vi.fn(), begin: vi.fn(), settle: vi.fn(),
+    guard: Object.freeze({get root() { return resolve("/private/ccc"); }}), ticket: Object.freeze({owned: "codex helper"}), acquire: vi.fn(), begin: vi.fn(), settle: vi.fn(),
 }));
 vi.mock("child_process", () => ({ spawnSync: mocks.spawn }));
 vi.mock("fs", () => ({ lstatSync: mocks.stat, realpathSync: mocks.realpath }));
-vi.mock("../../home-layout.js", async original => ({ ...await original<typeof import("../../home-layout.js")>(), cccHome: () => "/private/ccc" }));
+vi.mock("../../home-layout.js", async original => ({ ...await original<typeof import("../../home-layout.js")>(), cccHome: () => mocks.guard.root }));
 vi.mock("../../adapters/runtime-bind-authority.js", () => ({
     withRuntimeBindGuard: (root: string, operation: (guard: unknown) => unknown, options: unknown) => {
         mocks.acquire(root, options);
@@ -22,7 +22,7 @@ vi.mock("../../container-runtime.js", async original => ({
 }));
 vi.mock("../../container-identity.js", () => ({ normalizeImageId: mocks.normalize }));
 const native = await import("../../codex-state-ownership.js");
-const root = "/private/ccc/codex";
+const root = join(mocks.guard.root, "codex");
 const principal = { uid: 1000, gid: 1000, mapping: "host" as const, contractVersion: "1" };
 const previous = { Image: "old", Mounts: [{ Type: "bind", Source: root, Destination: "/home/ccc/.codex" }] };
 const trace: unknown[][] = [];
@@ -53,7 +53,7 @@ const withActiveInspection = (payload: string, ids = "active") => mocks.spawn.mo
 describe("actual Codex retained-state native composition", () => {
     it("retains synchronous completion, scripts and exact bounded argv", () => {
         expect(invoke()).toBeUndefined();
-        expect(mocks.acquire).toHaveBeenCalledExactlyOnceWith("/private/ccc", {waitMs: 0});
+        expect(mocks.acquire).toHaveBeenCalledExactlyOnceWith(mocks.guard.root, {waitMs: 0});
         expect(mocks.begin).toHaveBeenCalledExactlyOnceWith(mocks.guard, runtimeFacade.getRuntimeInvocation());
         expect(mocks.settle).toHaveBeenCalledExactlyOnceWith(mocks.guard, mocks.ticket);
         const options = { encoding: "utf-8", input: undefined, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 };
@@ -62,7 +62,7 @@ describe("actual Codex retained-state native composition", () => {
             ["private-runtime", ["ps", "-q"], options],
             ["private-runtime", ["run", "--rm", "--network", "none", "--user", "root", "--mount", `type=bind,src=${root},dst=/state`, "--entrypoint", "python3", "new-normalized", "-c", native.codexStateMigrationScript, "/state", "1001", "1002", "1000", "1000", "8", "9"], options],
         ]);
-        expect(mocks.stat.mock.calls).toEqual([...Array(2)].flatMap(() => [root, dirname(root), dirname(dirname(root)), "/"].map(path => [path, { bigint: true }])));
+        expect(mocks.stat.mock.calls).toEqual([...Array(2)].flatMap(() => [root, dirname(root), dirname(dirname(root)), parse(root).root].map(path => [path, { bigint: true }])));
         expect(trace.at(-2)).toEqual(["normalize", "new"]);
     });
     it("keeps error-first native diagnostics, exit diagnostics and trim exceptions", () => {

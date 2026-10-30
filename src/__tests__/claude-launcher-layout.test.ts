@@ -18,14 +18,15 @@ import { buildClaudeLauncherReportCommand, buildClaudeProbeScript, type ClaudeLa
 // every subsequent run executed the same stale binary.
 //
 // No Docker needed on Linux: the POSIX shell program uses the Ubuntu image's
-// GNU utilities. Native filesystem and reporting cases remain portable below.
+// GNU utilities. These execution tests need a POSIX host; portable host dispatch
+// and readiness contracts remain exercised by container-setup.test.ts.
 
 let root: string
 let paths: ClaudeLayoutPaths
 
-// Version selection executes the Ubuntu container program with GNU timeout,
-// sort -V, find and mktemp. Filesystem-only adoption checks and doctor reports below
-// still run on the native host; they do not certify those Linux tool semantics.
+const canRunPosixShell = process.platform !== "win32" && existsSync("/bin/sh")
+// Version selection additionally needs the Ubuntu container's GNU utilities.
+// Adoption and doctor tests also execute shell programs; they need a POSIX host.
 const linuxContainerIt = it.skipIf(process.platform !== "linux")
 
 // PATH is pinned to the system directories on purpose. The script treats
@@ -36,11 +37,12 @@ const linuxContainerIt = it.skipIf(process.platform !== "linux")
 // machine running it happens to have claude installed.
 function runWithEnv(env: Record<string, string>): { status: number, stdout: string } {
     try {
-        const stdout = execFileSync("sh", ["-c", buildClaudeProbeScript(paths)], { encoding: "utf-8", env })
+        const stdout = execFileSync("/bin/sh", ["-c", buildClaudeProbeScript(paths)], { encoding: "utf-8", env })
         return { status: 0, stdout: stdout.trim() }
     } catch (error) {
-        const e = error as { status?: number, stdout?: string }
-        return { status: e.status ?? -1, stdout: (e.stdout ?? "").trim() }
+        const e = error as { status?: number | null, stdout?: string }
+        if (e.status == null) throw error
+        return { status: e.status, stdout: (e.stdout ?? "").trim() }
     }
 }
 
@@ -49,8 +51,9 @@ function run(): { status: number, stdout: string, stderr: string } {
     // throw, so a diagnostic printed by a run that SUCCEEDS was invisible to
     // the tests — and a skipped entry that costs the user a reinstall is
     // exactly such a diagnostic.
-    const result = spawnSync("sh", ["-c", buildClaudeProbeScript(paths)],
+    const result = spawnSync("/bin/sh", ["-c", buildClaudeProbeScript(paths)],
         { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+    if (result.error) throw result.error
     return {
         status: result.status ?? -1,
         stdout: (result.stdout ?? "").trim(),
@@ -94,7 +97,7 @@ beforeEach(() => {
 // guards are testable after all — the earlier claim that they were not is what
 // let a data-destroying mutant survive. Skipped, not silently passed, where the
 // kernel or the image will not give us one.
-const canBindMount = (() => {
+const canBindMount = process.platform === "linux" && canRunPosixShell && (() => {
     try {
         // The failure path is the one that arms the skip, so the cleanup has to
         // survive it. It does not probe /proc/self/mountinfo, which the guard
@@ -141,7 +144,7 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true })
 })
 
-describe("claude launcher layout", () => {
+describe.skipIf(!canRunPosixShell)("claude launcher layout", () => {
     describe("data directory placement", () => {
         it("points the XDG data dir at the persistent volume", () => {
             run()
@@ -1342,7 +1345,7 @@ describe("claude launcher layout", () => {
             mkdirSync(elsewhere, { recursive: true })
             writeFileSync(join(elsewhere, "2.1.261"), "a name the pattern matches")
 
-            const result = spawnSync("sh", ["-c", buildClaudeProbeScript(paths)],
+            const result = spawnSync("/bin/sh", ["-c", buildClaudeProbeScript(paths)],
                 { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" }, cwd: elsewhere })
 
             // Expanded, the candidate becomes 2.1.261, which is not in the
@@ -1501,7 +1504,7 @@ describe("claude launcher layout", () => {
     })
 })
 
-describe("what ccc doctor says about the launcher", () => {
+describe.skipIf(!canRunPosixShell)("what ccc doctor says about the launcher", () => {
     // The version alone was all doctor reported, and the version alone is
     // exactly what looks fine in the broken state: 2.1.241 is a real version,
     // printed by a real binary, at the right path. Only the shape distinguishes
@@ -1516,12 +1519,13 @@ describe("what ccc doctor says about the launcher", () => {
 
     function report(binPath: string): { status: number, stdout: string } {
         try {
-            const stdout = execFileSync("sh", ["-c", buildClaudeLauncherReportCommand(binPath, paths.dataDir)],
+            const stdout = execFileSync("/bin/sh", ["-c", buildClaudeLauncherReportCommand(binPath, paths.dataDir)],
                 { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
             return { status: 0, stdout: stdout.trim() }
         } catch (error) {
-            const e = error as { status?: number, stdout?: string }
-            return { status: e.status ?? -1, stdout: (e.stdout ?? "").trim() }
+            const e = error as { status?: number | null, stdout?: string }
+            if (e.status == null) throw error
+            return { status: e.status, stdout: (e.stdout ?? "").trim() }
         }
     }
 
@@ -1619,7 +1623,7 @@ describe("what ccc doctor says about the launcher", () => {
         // exits 2 for the not-updatable state, so read it the way doctor does
         let out = ""
         try {
-            out = execFileSync("sh", ["-c", buildClaudeLauncherReportCommand(launcher, globbyData)],
+            out = execFileSync("/bin/sh", ["-c", buildClaudeLauncherReportCommand(launcher, globbyData)],
                 { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
         } catch (error) {
             const e = error as { status?: number, stdout?: string }

@@ -1,7 +1,8 @@
+import { directorySymlink, fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "child_process";
 import { createServer } from "net";
-import { existsSync, readFileSync, writeFileSync, symlinkSync, unlinkSync, mkdtempSync, rmSync, renameSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSync, renameSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { inspectProcessIdentity } from "@ccc/device-lab/providers/state/process-identity.mjs";
@@ -35,13 +36,14 @@ async function appium(value: FakeIosMcpContext, selectedPort?: number) {
         env: { ...process.env, HOME: value.homeDir, FAKE_IOS_LOG: value.logPath }, stdio: "ignore",
     });
     children.push(child);
+    const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
     await until(() => existsSync(join(value.homeDir, `fake-ios-appium-${child.pid}.pid`)));
     const marker = join(value.homeDir, `fake-ios-appium-${child.pid}.pid`);
     const saved = originalMarkers.get(value) ?? new Map<string, string>();
     saved.set(marker, readFileSync(marker, "utf8")); originalMarkers.set(value, saved);
     const journalPath = join(value.homeDir, "fake-ios-allocation.jsonl");
     originalJournals.set(value, { path: journalPath, bytes: readFileSync(journalPath, "utf8") });
-    return { child, marker, requested };
+    return { child, marker, requested, exited };
     });
 }
 function controls(overrides: Partial<FakeIosLifetimeEffects> = {}) {
@@ -64,15 +66,14 @@ afterEach(async () => {
         const journal = originalJournals.get(value);
         if (journal) {
             if (journal.backup) {
-                try { unlinkSync(journal.path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+                rmSync(journal.path, { recursive: true, force: true });
                 renameSync(journal.backup, journal.path); // Restore the original inode, not a replacement oracle.
             }
             writeFileSync(journal.path, journal.bytes);
         }
         originalJournals.delete(value);
         for (const [marker, bytes] of originalMarkers.get(value) ?? []) {
-            try { unlinkSync(marker); }
-            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+            rmSync(marker, { recursive: true, force: true });
             writeFileSync(marker, bytes);
         }
         originalMarkers.delete(value);
@@ -103,9 +104,9 @@ describe("fake iOS fixture owned lifetime (actual portable Node service)", () =>
                 : inspectProcessIdentity(identity, pid),
             signal: (pid, signal) => { expect(pid).toBe(running.child.pid); signals.push(signal); process.kill(pid, signal); signaled = true; },
             waitForExit: async (identity, timeoutMs) => {
-                expect(identity).toEqual(expected); expect(timeoutMs).toBeGreaterThan(0); expect(timeoutMs).toBeLessThanOrEqual(250);
-                const result = await waitForExpectedRuntimeExitAsync(identity, timeoutMs);
-                waited = result === "ended"; return result;
+                expect(identity).toEqual(expected); expect(timeoutMs).toBeGreaterThan(0); expect(timeoutMs).toBeLessThanOrEqual(TIMEOUT);
+                await running.exited; // Exact returned child handle survives command-hash changes and PID reuse.
+                waited = true; return "ended";
             },
             remove: path => { expect(waited).toBe(true); removals.push(path); rmSync(path, { recursive: true, force: true }); },
         });
@@ -118,11 +119,16 @@ describe("fake iOS fixture owned lifetime (actual portable Node service)", () =>
         await until(() => fakeIosFixtureDiagnostics(value).includes('"phase":"listening"'));
         const signals: NodeJS.Signals[] = [];
         const fenced = controls({
-            signal: (pid, signal) => { expect(pid).toBe(running.child.pid); signals.push(signal); process.kill(pid, signal); },
-            waitForExit: async (identity, timeoutMs) => {
-                expect(await waitForExpectedRuntimeExitAsync(identity, timeoutMs)).toBe("ended");
-                await until(() => fakeIosFixtureDiagnostics(value).includes('"phase":"exit"'));
-                return "unavailable";
+            signal: (pid, signal) => {
+                expect(pid).toBe(running.child.pid); signals.push(signal);
+                const marker = JSON.parse(readFileSync(running.marker, "utf8"));
+                writeFileSync(join(value.homeDir, `fake-ios-shutdown-${pid}.json`), JSON.stringify({token: marker.token, pid}));
+            },
+            waitForExit: async identity => {
+                expect(identity).toEqual(JSON.parse(readFileSync(running.marker, "utf8")).identity);
+                await running.exited;
+                expect(fakeIosFixtureDiagnostics(value)).toContain('"phase":"exit"');
+                return "unavailable"; // Diagnostic output cannot substitute for the required exit witness.
             },
         });
         const close = vi.spyOn(value.client, "close").mockRejectedValue(new Error("primary close fault"));
@@ -161,17 +167,26 @@ describe("fake iOS fixture owned lifetime (actual portable Node service)", () =>
             expect(fakeIosFixtureDiagnostics(value)).not.toContain("appium-session-body");
         } finally { await new Promise<void>(resolve => listener.close(() => resolve())); }
     });
-    it.each(["malformed", "symlink", "foreign", "wrong-pid", "stale", "forged-command-hash"])("refuses %s marker without any signal/removal", { timeout: TIMEOUT }, async kind => {
+    it.each(["malformed", "junction", "foreign", "wrong-pid", "stale", "forged-command-hash"])("refuses %s marker without any signal/removal", { timeout: TIMEOUT }, async kind => {
         const value = await context(), running = await appium(value);
         const original = readFileSync(running.marker, "utf8"); const marker = JSON.parse(original);
         if (kind === "malformed") writeFileSync(running.marker, "not-json");
-        else if (kind === "symlink") { unlinkSync(running.marker); symlinkSync(value.logPath, running.marker); }
+        else if (kind === "junction") { unlinkSync(running.marker); directorySymlink(value.binDir, running.marker); }
         else writeFileSync(running.marker, JSON.stringify(kind === "foreign" ? { ...marker, token: "foreign" }
             : kind === "wrong-pid" ? { ...marker, pid: process.pid } : kind === "forged-command-hash" ? { ...marker, identity: { ...marker.identity, commandHash: "0".repeat(64) } }
                 : { ...marker, identity: { ...marker.identity, startToken: marker.identity.startToken + "-stale" } }));
         const fenced = controls();
         await expect(cleanupFakeIosMcpContext(value, { effects: fenced.effects })).rejects.toThrow();
         expect(fenced.attempts).toEqual({ signal: 0, remove: 0 }); expect(existsSync(value.homeDir)).toBe(true);
+    });
+    it("refuses a file-symlink marker without any signal/removal", { timeout: TIMEOUT }, async testContext => {
+        const value = await context(), running = await appium(value);
+        unlinkSync(running.marker);
+        fileSymlinkOrSkip(testContext, value.logPath, running.marker);
+        const fenced = controls();
+        await expect(cleanupFakeIosMcpContext(value, { effects: fenced.effects })).rejects.toThrow();
+        expect(fenced.attempts).toEqual({ signal: 0, remove: 0 });
+        expect(existsSync(value.homeDir)).toBe(true);
     });
     it.each(["unavailable", "successor"])("fails closed on %s identity immediately before signal", { timeout: TIMEOUT }, async kind => {
         const value = await context(); const running = await appium(value); let changed = false;
@@ -232,16 +247,16 @@ describe("fake iOS fixture owned lifetime (actual portable Node service)", () =>
         expect(fenced.attempts).toEqual({ signal: 0, remove: 0 });
         expect(existsSync(value.homeDir)).toBe(true); expect(running.child.exitCode).toBeNull();
     });
-    it.each(["missing", "symlink", "replaced", "truncated", "partial", "malformed", "foreign", "overcount"])("unknown %s allocation journal never authorizes a live process or removal", { timeout: TIMEOUT }, async kind => {
+    it.each(["missing", "junction", "replaced", "truncated", "partial", "malformed", "foreign", "overcount"])("unknown %s allocation journal never authorizes a live process or removal", { timeout: TIMEOUT }, async kind => {
         const value = await context(), running = await appium(value);
         await until(() => fakeIosFixtureDiagnostics(value).includes('"phase":"listening"'));
         const journal = originalJournals.get(value)!;
         const [header, record] = journal.bytes.trimEnd().split("\n");
         unlinkSync(running.marker); // Independent journal must account for this still-live generation.
-        if (["missing", "symlink", "replaced"].includes(kind)) {
+        if (["missing", "junction", "replaced"].includes(kind)) {
             journal.backup = journal.path + ".original-control";
             renameSync(journal.path, journal.backup);
-            if (kind === "symlink") symlinkSync(journal.backup, journal.path);
+            if (kind === "junction") directorySymlink(value.binDir, journal.path);
             if (kind === "replaced") writeFileSync(journal.path, journal.bytes);
         } else if (kind === "truncated") {
             await new Promise(resolve => setTimeout(resolve, 20));
@@ -255,6 +270,18 @@ describe("fake iOS fixture owned lifetime (actual portable Node service)", () =>
         expect(fenced.attempts).toEqual({ signal: 0, remove: 0 });
         expect(existsSync(value.homeDir)).toBe(true); expect(running.child.exitCode).toBeNull();
         // afterEach joins this exact ChildProcess first, then restores its original evidence.
+    });
+    it("file-symlink allocation journal never authorizes a live process or removal", { timeout: TIMEOUT }, async testContext => {
+        const value = await context(), running = await appium(value);
+        const journal = originalJournals.get(value)!;
+        unlinkSync(running.marker);
+        journal.backup = journal.path + ".original-control";
+        renameSync(journal.path, journal.backup);
+        fileSymlinkOrSkip(testContext, journal.backup, journal.path);
+        const fenced = controls();
+        await expect(cleanupFakeIosMcpContext(value, { effects: fenced.effects })).rejects.toThrow("UNKNOWN allocation coverage");
+        expect(fenced.attempts).toEqual({ signal: 0, remove: 0 });
+        expect(existsSync(value.homeDir)).toBe(true); expect(running.child.exitCode).toBeNull();
     });
     it("synchronous pending-start blocks cleanup during the actual Node identity pause", { timeout: TIMEOUT }, async () => {
         const value = await context(), pause = join(value.homeDir, "fake-ios-startup-pause");

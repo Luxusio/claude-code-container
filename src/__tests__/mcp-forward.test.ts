@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join } from "path";
+
+const defaultCodexConfigSuffix = join(".ccc", "profiles", "default", "codex", "config.toml");
 
 vi.mock("../codex-config-lock.js", () => ({ withCodexConfigLock: vi.fn((operation: () => unknown) => operation()) }));
 
@@ -143,7 +146,7 @@ describe("buildMcpConfig", () => {
     }
 
     function getWrittenCodexConfig(): string {
-        const call = writeFileSync.mock.calls.find(([path]) => String(path).endsWith(".ccc/profiles/default/codex/config.toml"));
+        const call = writeFileSync.mock.calls.find(([path]) => String(path).endsWith(defaultCodexConfigSuffix));
         expect(call).toBeDefined();
         return call![1] as string;
     }
@@ -178,7 +181,7 @@ describe("buildMcpConfig", () => {
         });
         const restoreAccess = vi.fn(() => expect(locked).toBe(true));
         writeFileSync.mockImplementation((path: string) => {
-            if (path.endsWith("codex/config.toml")) {
+            if (path.endsWith(join("codex", "config.toml"))) {
                 expect(locked).toBe(true);
                 expect(restoreAccess).toHaveBeenCalledOnce();
             }
@@ -284,22 +287,22 @@ describe("buildMcpConfig", () => {
         const existingCodexConfig = getWrittenCodexConfig();
 
         vi.clearAllMocks();
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockImplementation((p: string) => {
-            if (p.endsWith(".ccc/profiles/default/codex/config.toml")) return existingCodexConfig;
+            if (p.endsWith(defaultCodexConfigSuffix)) return existingCodexConfig;
             return "{}";
         });
 
         buildMcpConfig();
 
-        const codexWrites = writeFileSync.mock.calls.filter(([path]) => String(path).endsWith(".ccc/profiles/default/codex/config.toml"));
+        const codexWrites = writeFileSync.mock.calls.filter(([path]) => String(path).endsWith(defaultCodexConfigSuffix));
         expect(codexWrites).toHaveLength(0);
     });
 
     it("throws an actionable error when existing Codex config cannot be read", () => {
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockImplementation((p: string) => {
-            if (p.endsWith(".ccc/profiles/default/codex/config.toml")) {
+            if (p.endsWith(defaultCodexConfigSuffix)) {
                 const error = new Error("permission denied") as NodeJS.ErrnoException;
                 error.code = "EACCES";
                 throw error;
@@ -307,19 +310,23 @@ describe("buildMcpConfig", () => {
             return "{}";
         });
 
-        expect(() => buildMcpConfig()).toThrow(/sudo chown -R "\$USER:\$USER" "\/home\/testuser\/\.ccc\/profiles\/default\/codex"/);
+        expect(() => buildMcpConfig()).toThrow(`sudo chown -R "$USER:$USER" "${join("/home/testuser", ".ccc", "profiles", "default", "codex")}"`);
     });
 
     it("throws an actionable error when Codex config cannot be written", () => {
         writeFileSync.mockImplementation((p: string) => {
-            if (p.endsWith(".ccc/profiles/default/codex/config.toml")) {
+            if (p.endsWith(defaultCodexConfigSuffix)) {
                 const error = new Error("permission denied") as NodeJS.ErrnoException;
                 error.code = "EACCES";
                 throw error;
             }
         });
 
-        expect(() => buildMcpConfig()).toThrow(/Unable to write Codex config.*sudo chown -R "\$USER:\$USER" "\/home\/testuser\/\.ccc\/profiles\/default\/codex"/);
+        let failure: unknown;
+        try { buildMcpConfig(); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toMatch(/^Unable to write Codex config/);
+        expect((failure as Error).message).toContain(`sudo chown -R "$USER:$USER" "${join("/home/testuser", ".ccc", "profiles", "default", "codex")}"`);
     });
 
     it("writes Codex TOML arrays in the exact order needed for MCP startup", () => {
@@ -336,9 +343,9 @@ describe("buildMcpConfig", () => {
     });
 
     it("preserves user Codex config while replacing the prior ccc-managed block", () => {
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockImplementation((p: string) => {
-            if (p.endsWith(".ccc/profiles/default/codex/config.toml")) {
+            if (p.endsWith(defaultCodexConfigSuffix)) {
                 return [
                     'model = "gpt-5.2-codex"',
                     "",
@@ -365,9 +372,9 @@ describe("buildMcpConfig", () => {
     });
 
     it("removes legacy unmarked ccc-managed Codex MCP tables before writing", () => {
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockImplementation((p: string) => {
-            if (p.endsWith(".ccc/profiles/default/codex/config.toml")) {
+            if (p.endsWith(defaultCodexConfigSuffix)) {
                 return [
                     'model = "gpt-5.2-codex"',
                     "",
@@ -409,7 +416,7 @@ describe("buildMcpConfig", () => {
     });
 
     it("removes quoted and unquoted legacy env subtables without orphaning configuration", () => {
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockReturnValue([
             'model = "gpt-5.2-codex"',
             "[mcp_servers.x11-display.env] # old managed environment",
@@ -451,7 +458,7 @@ describe("buildMcpConfig", () => {
     });
 
     it("removes exact CCC X11 path aliases while preserving unrelated Codex X11 servers", () => {
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockReturnValue([
             '[mcp_servers."legacy display".env]',
             'OLD_ALIAS_ENV = "remove"',
@@ -507,7 +514,7 @@ describe("buildMcpConfig", () => {
             "# ccc-managed-mcp end",
             quote,
         ].join("\n");
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockReturnValue(`${retained}\n\n[mcp_servers.x11-display]\ncommand = "old-x11"\n`);
 
         buildMcpConfig();
@@ -528,7 +535,7 @@ describe("buildMcpConfig", () => {
             "[mcp_servers.custom.env_extra]",
             'KEEP = "yes"',
         ].join("\n");
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockReturnValue(retained);
 
         buildMcpConfig();
@@ -542,7 +549,7 @@ describe("buildMcpConfig", () => {
         ["'args'", "['node', '/opt/ccc/x11-mcp/server.mjs']"],
     ])("removes an exact retired alias using the quoted %s assignment key", (key, value) => {
         const retained = '[mcp_servers.x11]\ncommand = "custom-x11"\n[mcp_servers.x11.env]\nKEEP = "yes"';
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockReturnValue([
             "[mcp_servers.old-alias.env]",
             'OLD_ENV = "remove"',
@@ -566,7 +573,7 @@ describe("buildMcpConfig", () => {
             "[mcp_servers.custom.env]",
             'KEEP = "yes"',
         ].join("\n");
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockReturnValue(retained);
 
         buildMcpConfig();
@@ -576,7 +583,7 @@ describe("buildMcpConfig", () => {
     it.each(['"', "'"])("removes exact retired command and args aliases written with multiline %s strings", (quote) => {
         const triple = quote.repeat(3);
         const retained = '[mcp_servers.custom]\ncommand = "user-tool"';
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockReturnValue([
             "[mcp_servers.old-command]",
             `command = ${triple}\n/opt/ccc/x11-mcp/server.mjs${triple}`,
@@ -604,7 +611,7 @@ command = "user-tool"
 args = ["/opt/ccc/\\U00000078\\u0031\\u0031-mcp/server.mjs"]
 [mcp_servers.custom.env]
 KEEP = "yes"`;
-        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/profiles/default/codex/config.toml"));
+        existsSync.mockImplementation((p: string) => p.endsWith(defaultCodexConfigSuffix));
         readFileSync.mockReturnValue([
             String.raw`[mcp_servers."\U00000064evice-lab"]`,
             'command = "old-device-lab"',
@@ -897,7 +904,7 @@ KEEP = "yes"`;
         buildMcpConfig();
         // Should write to the default profile's claude.json
         const writePath = writeFileSync.mock.calls[writeFileSync.mock.calls.length - 1][0] as string;
-        expect(writePath).toBe("/home/testuser/.ccc/profiles/default/claude.json");
+        expect(writePath).toBe(join("/home/testuser", ".ccc", "profiles", "default", "claude.json"));
         expect(writePath).toMatch(/claude\.json$/);
     });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
-import { join, basename, dirname } from "path";
+import { join, basename, dirname, resolve } from "path";
 import { createHash } from "crypto";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -115,8 +115,9 @@ vi.mock("fs", async (importOriginal) => {
 });
 
 const mockGetProjectId = vi.fn();
+const fixtureLocks = resolve("/locks");
 vi.mock("../home-layout.js", async original => ({
-    ...await original<typeof import("../home-layout.js")>(), locksDir: () => "/locks",
+    ...await original<typeof import("../home-layout.js")>(), locksDir: () => fixtureLocks,
 }));
 vi.mock("@ccc/device-lab/project-identity.js", async original => ({
     ...await original<typeof import("@ccc/device-lab/project-identity.js")>(),
@@ -367,7 +368,7 @@ describe("session.ts", () => {
             const docker = await inspectActual();
             mockGetProjectId.mockReturnValue("project");
             mockSpawnSync.mockReturnValue({ status: 0, stdout: "\n" });
-            expect(docker.inspectSessionContainerOwnership("/fixture/project")).toEqual({ known: true, containerId: null });
+            expect(docker.inspectSessionContainerOwnership(resolve("/fixture/project"))).toEqual({ known: true, containerId: null });
             expect(mockSpawnSync).toHaveBeenCalledTimes(1);
             expect(mockSpawnSync.mock.calls[0][1][0]).toBe("ps");
         });
@@ -382,7 +383,7 @@ describe("session.ts", () => {
         ] as const)("keeps failed or ambiguous enumeration unknown: %j", async (result, reason) => {
             const docker = await inspectActual();
             mockGetProjectId.mockReturnValue("project"); mockSpawnSync.mockReturnValue(result);
-            expect(docker.inspectSessionContainerOwnership("/fixture/project")).toEqual({ known: false, containerId: null, reason });
+            expect(docker.inspectSessionContainerOwnership(resolve("/fixture/project"))).toEqual({ known: false, containerId: null, reason });
             expect(mockSpawnSync).toHaveBeenCalledTimes(1);
         });
 
@@ -416,7 +417,7 @@ describe("session.ts", () => {
                 Id: mode === "different ID" ? "b".repeat(64) : exactId,
                 State: { Running: true }, Config: { Labels: {
                     "ccc.managed": mode === "foreign" ? "false" : "true",
-                    "ccc.project.path": mode === "wrong project" ? "/different/project" : projectPath,
+                    "ccc.project.path": mode === "wrong project" ? resolve("/different/project") : projectPath,
                     "ccc.project.mount-identity": mode === "stale digest" ? "obsolete-directory-identity" : identity,
                 } },
             }) });
@@ -459,7 +460,7 @@ describe("session.ts", () => {
             const docker = await inspectActual();
             const { projectPath, inspected } = legacyFixture();
             // Other ordinary mounts do not change this project-only admission.
-            inspected.Mounts.push({ Source: "/fixture/credentials", Destination: "/home/ccc/.ssh", Type: "bind", RW: false });
+            inspected.Mounts.push({ Source: resolve("/fixture/credentials"), Destination: "/home/ccc/.ssh", Type: "bind", RW: false });
             expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
                 known: true, containerId: exactId, running: false, requiresLiveVerification: true,
             });
@@ -475,7 +476,12 @@ describe("session.ts", () => {
                 runtime: "docker", flavor: "docker-desktop", version: "0.0.0", socketPath: "/var/run/docker.sock",
                 rootless: false, remote: true, dockerDesktop: true,
             });
-            inspected.Mounts[0].Source = `${prefix}${projectPath}`;
+            const macProjectPath = "/Users/fixture/project";
+            const fs = await import("fs");
+            const nativeRealpath = fs.realpathSync;
+            vi.spyOn(fs, "realpathSync").mockImplementation(path => String(path) === macProjectPath
+                ? projectPath : nativeRealpath(path));
+            inspected.Mounts[0].Source = `${prefix}${macProjectPath}`;
             expect(docker.inspectSessionContainerOwnership(projectPath)).toEqual({
                 known: true, containerId: exactId, running: false, requiresLiveVerification: true,
             });
@@ -494,7 +500,7 @@ describe("session.ts", () => {
             if (mode === "missing bind") inspected.Mounts = [];
             if (mode === "duplicate bind") inspected.Mounts.push({ ...inspected.Mounts[0] });
             if (mode === "readonly bind") inspected.Mounts[0].RW = false;
-            if (mode === "wrong source") inspected.Mounts[0].Source = "/fixture/foreign-project";
+            if (mode === "wrong source") inspected.Mounts[0].Source = resolve("/fixture/foreign-project");
             if (mode === "stale digest") inspected.Config.Labels["ccc.project.mount-identity"] = "obsolete-directory-identity";
             if (mode === "unavailable host") mockLstatSync.mockImplementation(() => { throw new Error("private filesystem diagnostic"); });
             if (mode === "foreign") inspected.Config.Labels["ccc.managed"] = "false";
@@ -622,10 +628,10 @@ describe("session.ts", () => {
             if (fingerprint === "stale") inspected.Config.Labels["ccc.project.mount-identity"] = "f".repeat(64);
             let content = "";
             mockWriteFileSync.mockImplementation((_path: string, value: string) => { content = value; });
-            mockLstatSync.mockImplementation((path: string) => String(path).endsWith("/marker")
+            mockLstatSync.mockImplementation((path: string) => basename(String(path)) === "marker"
                 ? { isFile: () => true, isSymbolicLink: () => false, size: 64n, dev: 3n, ino: 4n }
                 : { isDirectory: () => true, isSymbolicLink: () => false, dev: 1n, ino: 2n });
-            mockReadFileSync.mockImplementation((path: string) => String(path).endsWith("/marker") ? content : undefined);
+            mockReadFileSync.mockImplementation((path: string) => basename(String(path)) === "marker" ? content : undefined);
             mockSpawnSync.mockImplementation((_command: string, args: string[]) => {
                 if (args[0] === "ps") return { status: 0, stdout: exactId };
                 if (args[0] === "inspect") return { status: 0, stdout: JSON.stringify(inspected) };
@@ -643,10 +649,10 @@ describe("session.ts", () => {
             const { projectPath, inspected } = legacyFixture();
             let content = "";
             mockWriteFileSync.mockImplementation((_path: string, value: string) => { content = value; });
-            mockLstatSync.mockImplementation((path: string) => String(path).endsWith("/marker")
+            mockLstatSync.mockImplementation((path: string) => basename(String(path)) === "marker"
                 ? { isFile: () => true, isSymbolicLink: () => false, size: 64n, dev: 3n, ino: 4n }
                 : { isDirectory: () => true, isSymbolicLink: () => false, dev: 1n, ino: 2n });
-            mockReadFileSync.mockImplementation((path: string) => String(path).endsWith("/marker") ? content : undefined);
+            mockReadFileSync.mockImplementation((path: string) => basename(String(path)) === "marker" ? content : undefined);
             mockSpawnSync.mockImplementation((_command: string, args: string[]) => {
                 if (args[0] === "ps") return { status: 0, stdout: exactId };
                 if (args[0] === "inspect") return { status: 0, stdout: JSON.stringify(inspected) };
@@ -790,7 +796,7 @@ describe("session.ts", () => {
         });
 
         it("refuses a missing path for which this invocation has no original receipt", () => {
-            const lockFile = "/locks/proj-abc--nonexistent.lock";
+            const lockFile = join(fixtureLocks, "proj-abc--nonexistent.lock");
             expect(() => removeSessionLock(lockFile)).toThrow("original direct-claim receipt");
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
@@ -893,7 +899,7 @@ describe("session.ts", () => {
         });
 
         it("preserves an unmarked legacy claim even when its PID matches this invocation", () => {
-            const currentLock = "/fake/locks/proj-abc--current.lock";
+            const currentLock = resolve("/fake/locks/proj-abc--current.lock");
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue([
                 "proj-abc--current.lock",
@@ -1409,7 +1415,7 @@ describe("session.ts", () => {
             mockReadFileSync.mockReturnValue(String(process.pid));
             vi.spyOn(process, "kill").mockImplementation(() => true);
 
-            const currentLockFile = "/locks/proj-abc--session1aabbccdd11223344.lock";
+            const currentLockFile = join(fixtureLocks, "proj-abc--session1aabbccdd11223344.lock");
             const result = hasOtherActiveSessions("proj-abc", currentLockFile);
 
             expect(result).toBe(true);
@@ -1419,7 +1425,7 @@ describe("session.ts", () => {
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue(["proj-abc--session1aabbccdd11223344.lock"]);
 
-            const currentLockFile = "/locks/proj-abc--session1aabbccdd11223344.lock";
+            const currentLockFile = join(fixtureLocks, "proj-abc--session1aabbccdd11223344.lock");
             const result = hasOtherActiveSessions("proj-abc", currentLockFile);
 
             expect(result).toBe(false);
@@ -1437,7 +1443,7 @@ describe("session.ts", () => {
 
             expect(hasOtherSessionClaims(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
             )).toBe(true);
             expect(getSessionLockClaimsForContainer("proj-abc")).toEqual([
                 "proj-abc--current.lock",
@@ -1454,7 +1460,7 @@ describe("session.ts", () => {
 
             expect(hasOtherSessionClaims(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
             )).toBe(false);
         });
 
@@ -1467,11 +1473,11 @@ describe("session.ts", () => {
 
             expect(hasOtherSessionClaims(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
             )).toBe(false);
             expect(hasOtherSessionClaims(
                 "proj-abc--p--work",
-                "/locks/proj-abc--p--work--profile.lock",
+                join(fixtureLocks, "proj-abc--p--work--profile.lock"),
             )).toBe(false);
         });
 
@@ -1502,7 +1508,7 @@ describe("session.ts", () => {
 
             const result = recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
                 recreate,
             );
 
@@ -1524,7 +1530,7 @@ describe("session.ts", () => {
 
             const result = recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
                 recreate,
                 replacementAllowed,
             );
@@ -1552,7 +1558,7 @@ describe("session.ts", () => {
 
             const result = recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
                 recreate,
                 replacementAllowed,
             );
@@ -1584,7 +1590,7 @@ describe("session.ts", () => {
 
             expect(recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
                 recreate,
                 () => false,
             )).toBe(false);
@@ -1617,7 +1623,7 @@ describe("session.ts", () => {
 
             expect(recreateContainerWithoutInterruptingSessions(
                 projectId,
-                `/locks/${second}`,
+                join(fixtureLocks, second),
                 recreate,
                 () => false,
             )).toBe(false);
@@ -1626,11 +1632,11 @@ describe("session.ts", () => {
             expect(mockSpawnSync).not.toHaveBeenCalled();
 
             mockGetProjectId.mockReturnValue(projectId);
-            setSession(`/locks/${second}`, "/home/user/proj");
+            setSession(join(fixtureLocks, second), resolve("/home/user/proj"));
             setSessionContainerId(SHARED_ID, false);
             cleanupSession();
 
-            expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${second}`);
+            expect(mockUnlinkSync).toHaveBeenCalledWith(join(fixtureLocks, second));
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(expect.stringContaining(first));
             expect(mockReadFileSync).toHaveBeenCalledWith(expect.stringContaining(first), "utf-8");
             expect(mockSpawnSync.mock.calls.some(call => call[1]?.includes("stop"))).toBe(false);
@@ -1647,7 +1653,7 @@ describe("session.ts", () => {
 
             const result = recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
-                "/locks/proj-abc--missing-current.lock",
+                join(fixtureLocks, "proj-abc--missing-current.lock"),
                 recreate,
             );
 
@@ -1671,7 +1677,7 @@ describe("session.ts", () => {
 
             expect(recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
                 recreate,
             )).toBe(true);
             expect(recreate).toHaveBeenCalledOnce();
@@ -1691,7 +1697,7 @@ describe("session.ts", () => {
 
             expect(recreateContainerWithoutInterruptingSessions(
                 "proj-abc--p--work",
-                "/locks/proj-abc--p--work--current.lock",
+                join(fixtureLocks, "proj-abc--p--work--current.lock"),
                 recreate,
             )).toBe(true);
             expect(recreate).toHaveBeenCalledOnce();
@@ -1705,7 +1711,7 @@ describe("session.ts", () => {
 
             expect(() => recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
                 recreate,
             )).toThrow("replacement failed");
             expect(mockWithSharedMutationLock).toHaveBeenCalledOnce();
@@ -1722,7 +1728,7 @@ describe("session.ts", () => {
 
             expect(recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
                 recreate,
             )).toBe(false);
             expect(recreate).not.toHaveBeenCalled();
@@ -1737,7 +1743,7 @@ describe("session.ts", () => {
 
             expect(() => recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
-                "/locks/proj-abc--current.lock",
+                join(fixtureLocks, "proj-abc--current.lock"),
                 recreate,
             )).toThrow("container lifecycle lock timeout");
             expect(recreate).not.toHaveBeenCalled();
@@ -1755,8 +1761,8 @@ describe("session.ts", () => {
         });
 
         it("setSession stores lockFile and projectPath, getCurrentSession retrieves them", () => {
-            const lockFile = "/locks/proj-abc--deadbeefdeadbeef.lock";
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, "proj-abc--deadbeefdeadbeef.lock");
+            const projectPath = resolve("/home/user/my-project");
 
             setSession(lockFile, projectPath);
             const session = getCurrentSession();
@@ -1766,8 +1772,8 @@ describe("session.ts", () => {
         });
 
         it("setSession stores profile when provided", () => {
-            const lockFile = "/locks/proj-abc--p--work--deadbeef.lock";
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, "proj-abc--p--work--deadbeef.lock");
+            const projectPath = resolve("/home/user/my-project");
 
             setSession(lockFile, projectPath, "work");
             const session = getCurrentSession();
@@ -1778,7 +1784,7 @@ describe("session.ts", () => {
         });
 
         it("clearSession resets lockFile and projectPath to null", () => {
-            setSession("/locks/some--current.lock", "/home/user/project");
+            setSession(join(fixtureLocks, "some--current.lock"), resolve("/home/user/project"));
             clearSession();
             const session = getCurrentSession();
 
@@ -1787,7 +1793,7 @@ describe("session.ts", () => {
         });
 
         it("clearSession also clears profile", () => {
-            setSession("/locks/some--p--work--lock.lock", "/home/user/project", "work");
+            setSession(join(fixtureLocks, "some--p--work--lock.lock"), resolve("/home/user/project"), "work");
             clearSession();
             const session = getCurrentSession();
 
@@ -1810,8 +1816,8 @@ describe("session.ts", () => {
             const projectId = "my-project-abc123";
             const sessionId = "aabbccddeeff00112233445566778899";
             const lockFileName = `${projectId}--${sessionId}.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
@@ -1840,8 +1846,8 @@ describe("session.ts", () => {
         it("stops the exact running container ID captured under the lifecycle lock", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync.mockReturnValue(true);
@@ -1870,8 +1876,8 @@ describe("session.ts", () => {
             const projectId = "my-project-abc123";
             const sessionId = "aabbccddeeff00112233445566778899";
             const lockFileName = `${projectId}--p--work--${sessionId}.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
             const containerName = "ccc-my-project-abc123--p--work";
 
             mockGetProjectId.mockReturnValue(projectId);
@@ -1901,8 +1907,8 @@ describe("session.ts", () => {
             const projectId = "my-project-abc123";
             const lockFileName1 = `${projectId}--session1aabbccdd11223344.lock`;
             const lockFileName2 = `${projectId}--session2eeff001122334455.lock`;
-            const lockFile = `/locks/${lockFileName1}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName1);
+            const projectPath = resolve("/home/user/my-project");
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync.mockReturnValue(true);
@@ -1942,10 +1948,10 @@ describe("session.ts", () => {
                 throw error;
             });
 
-            setSession(`/locks/${current}`, "/home/user/my-project");
+            setSession(join(fixtureLocks, current), resolve("/home/user/my-project"));
             cleanupSession();
 
-            expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
+            expect(mockUnlinkSync).toHaveBeenCalledWith(join(fixtureLocks, current));
             expect(mockIsContainerRunning).not.toHaveBeenCalled();
             expect(mockSpawnSync.mock.calls.some((call) => call[1]?.includes("stop"))).toBe(false);
         });
@@ -1972,12 +1978,12 @@ describe("session.ts", () => {
                 throw error;
             });
 
-            setSession(`/locks/${current}`, "/home/user/my-project");
+            setSession(join(fixtureLocks, current), resolve("/home/user/my-project"));
             setSessionContainerId(PINNED_ID, false);
             cleanupSession();
 
             expect(killSpy).not.toHaveBeenCalled();
-            expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
+            expect(mockUnlinkSync).toHaveBeenCalledWith(join(fixtureLocks, current));
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(expect.stringContaining(other));
             expect(mockSpawnSync.mock.calls.some((call) => call[1]?.includes("stop"))).toBe(false);
         });
@@ -1990,7 +1996,7 @@ describe("session.ts", () => {
                 throw error;
             });
 
-            setSession("/locks/my-project-abc123--current.lock", "/home/user/my-project");
+            setSession(join(fixtureLocks, "my-project-abc123--current.lock"), resolve("/home/user/my-project"));
             setSessionContainerId(PINNED_ID);
 
             expect(() => cleanupSession()).toThrow(error);
@@ -2022,13 +2028,13 @@ describe("session.ts", () => {
             mockIsContainerRunning.mockReturnValue(true);
             mockSpawnSync.mockReturnValue({ status: 0 });
 
-            setSession(`/locks/${current}`, "/home/user/my-project");
+            setSession(join(fixtureLocks, current), resolve("/home/user/my-project"));
             setSessionContainerId(PINNED_ID);
             const admission = createSessionLock(projectId);
             removeSessionLock(admission);
             cleanupSession();
 
-            expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
+            expect(mockUnlinkSync).toHaveBeenCalledWith(join(fixtureLocks, current));
             expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining(stale));
             expect(mockReadFileSync).toHaveBeenCalledWith(expect.stringContaining(stale), "utf-8");
             expect(mockSpawnSync).toHaveBeenCalledWith(fixtureInvocation.executable, stopArgs(PINNED_ID), { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL", shell: false, env: expect.any(Object) });
@@ -2056,13 +2062,13 @@ describe("session.ts", () => {
                 stderr: "",
             });
 
-            setSession(`/locks/${current}`, "/home/user/my-project");
+            setSession(join(fixtureLocks, current), resolve("/home/user/my-project"));
             setSessionContainerId(PINNED_ID);
             const admission = createSessionLock(projectId);
             removeSessionLock(admission);
             cleanupSession();
 
-            expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
+            expect(mockUnlinkSync).toHaveBeenCalledWith(join(fixtureLocks, current));
             expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining(foreign));
             expect(mockReadFileSync).toHaveBeenCalledWith(expect.stringContaining(foreign), "utf-8");
             expect(mockSpawnSync).toHaveBeenCalledWith(fixtureInvocation.executable, stopArgs(PINNED_ID), { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL", shell: false, env: expect.any(Object) });
@@ -2084,7 +2090,7 @@ describe("session.ts", () => {
             mockIsContainerRunning.mockReturnValue(true);
             mockSpawnSync.mockReturnValue({ status: 0 });
 
-            setSession(`/locks/${current}`, "/home/user/my-project");
+            setSession(join(fixtureLocks, current), resolve("/home/user/my-project"));
             cleanupSession();
 
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(expect.stringContaining(corrupt));
@@ -2121,7 +2127,7 @@ describe("session.ts", () => {
                 return result;
             });
 
-            setSession(`/locks/${current}`, "/home/user/my-project");
+            setSession(join(fixtureLocks, current), resolve("/home/user/my-project"));
             setSessionContainerId(PINNED_ID);
             cleanupSession();
 
@@ -2140,10 +2146,10 @@ describe("session.ts", () => {
                 return String(process.pid);
             });
 
-            setSession(`/locks/${current}`, "/home/user/my-project");
+            setSession(join(fixtureLocks, current), resolve("/home/user/my-project"));
             cleanupSession();
 
-            expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
+            expect(mockUnlinkSync).toHaveBeenCalledWith(join(fixtureLocks, current));
             expect(mockIsContainerRunning).not.toHaveBeenCalled();
             expect(mockSpawnSync).not.toHaveBeenCalled();
             expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
@@ -2157,7 +2163,7 @@ describe("session.ts", () => {
                 throw new Error("container lifecycle lock timeout");
             });
 
-            setSession("/locks/my-project-abc123--current.lock", "/home/user/my-project");
+            setSession(join(fixtureLocks, "my-project-abc123--current.lock"), resolve("/home/user/my-project"));
 
             expect(() => cleanupSession()).toThrow("container lifecycle lock timeout");
             expect(mockUnlinkSync).not.toHaveBeenCalled();
@@ -2166,7 +2172,7 @@ describe("session.ts", () => {
         });
 
         it("retries cleanup after a lifecycle lock acquisition failure", () => {
-            const lockFile = "/locks/my-project-abc123--current.lock";
+            const lockFile = join(fixtureLocks, "my-project-abc123--current.lock");
             mockGetProjectId.mockReturnValue("my-project-abc123");
             mockGetContainerName.mockReturnValue("ccc-my-project-abc123");
             mockExistsSync.mockReturnValue(true);
@@ -2177,7 +2183,7 @@ describe("session.ts", () => {
                 .mockImplementationOnce(() => { throw new Error("container lifecycle lock timeout"); })
                 .mockImplementation((_file: string, operation: () => unknown) => operation());
 
-            setSession(lockFile, "/home/user/my-project");
+            setSession(lockFile, resolve("/home/user/my-project"));
             expect(() => cleanupSession()).toThrow("container lifecycle lock timeout");
             expect(() => cleanupSession()).not.toThrow();
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
@@ -2188,8 +2194,8 @@ describe("session.ts", () => {
             // Only one base session (current), but there is also a profile session
             const baseLockFileName = `${projectId}--session1aabbccdd11223344.lock`;
             const profileLockFileName = `${projectId}--p--work--sessaabbccdd112233.lock`;
-            const lockFile = `/locks/${baseLockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, baseLockFileName);
+            const projectPath = resolve("/home/user/my-project");
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
@@ -2211,14 +2217,14 @@ describe("session.ts", () => {
 
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
             expect(mockSpawnSync).toHaveBeenCalledWith(fixtureInvocation.executable, stopArgs(PINNED_ID), expect.any(Object));
-            expect(mockUnlinkSync).not.toHaveBeenCalledWith(`/locks/${profileLockFileName}`);
+            expect(mockUnlinkSync).not.toHaveBeenCalledWith(join(fixtureLocks, profileLockFileName));
         });
 
         it("does not directly stop the global clipboard server during session cleanup", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
@@ -2244,8 +2250,8 @@ describe("session.ts", () => {
         it("retires a qualified no-target claim without deriving cleanup authority from ambient container state", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
@@ -2268,8 +2274,8 @@ describe("session.ts", () => {
         it("cleans up devices before docker stop when container is running", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
@@ -2306,8 +2312,8 @@ describe("session.ts", () => {
         it("still stops the container when device cleanup throws", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
@@ -2338,8 +2344,8 @@ describe("session.ts", () => {
         it("clears session state after cleanup so getCurrentSession returns nulls", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
@@ -2364,8 +2370,8 @@ describe("session.ts", () => {
         it("keeps cleanup incomplete when own claim unlink fails", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
@@ -2389,8 +2395,8 @@ describe("session.ts", () => {
         it("cleanupSession should be idempotent (second call is no-op)", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
@@ -2418,8 +2424,8 @@ describe("session.ts", () => {
             const projectId = "my-project-abc123";
             const lockFileName1 = `${projectId}--session1aabbccdd11223344.lock`;
             const lockFileName2 = `${projectId}--session2eeff001122334455.lock`;
-            const lockFile = `/locks/${lockFileName1}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName1);
+            const projectPath = resolve("/home/user/my-project");
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync.mockReturnValue(true);
@@ -2457,8 +2463,8 @@ describe("session.ts", () => {
         it("cleanup callback calls cleanupSession and process.exit(0) when signal fires", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
-            const lockFile = `/locks/${lockFileName}`;
-            const projectPath = "/home/user/my-project";
+            const lockFile = join(fixtureLocks, lockFileName);
+            const projectPath = resolve("/home/user/my-project");
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync

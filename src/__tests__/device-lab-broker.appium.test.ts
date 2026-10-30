@@ -4120,8 +4120,8 @@ describe("device-lab host broker Appium session authority", () => {
         const root = writeBrokerDevices(ownerId, "android", [original]), file = join(root, "devices.json");
         const before = readFileSync(file, "utf8");
         const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
-        const terminate = vi.spyOn(windowsProcesses, "terminateWindowsProcessByStartToken")
-            .mockImplementation(pid => ({ok: true, pid, status: 0}));
+        const terminate = vi.spyOn(windowsProcesses, "terminateWindowsProcessByStartTokenAsync")
+            .mockImplementation(async pid => ({ok: true, pid, status: 0}));
         const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0}), baseUrl = await listen(server);
         try {
             const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
@@ -4142,15 +4142,16 @@ describe("device-lab host broker Appium session authority", () => {
         const before = readFileSync(file, "utf8");
         const denied = Object.assign(new Error("process liveness probe denied"), {code: "EPERM"});
         vi.spyOn(process, "kill").mockImplementation(() => { throw denied; });
-        const terminate = vi.spyOn(windowsProcesses, "terminateWindowsProcessByStartToken")
-            .mockImplementation(pid => ({ok: false, pid, status: 1, reason: "process-handle-unavailable"}));
+        // Install the async native boundary before cleanup can inspect this test process.
+        const terminate = vi.spyOn(windowsProcesses, "terminateWindowsProcessByStartTokenAsync")
+            .mockImplementation(async pid => ({ok: false, pid, status: 1, reason: "process-handle-unavailable"}));
         const server = createDeviceBrokerServer({cwd, host: "127.0.0.1", port: 0}), baseUrl = await listen(server);
         try {
             const cleanup = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {method: "POST", headers: ownerRpcHeaders(ownerId),
                 body: JSON.stringify({method: "broker.cleanup.owner", params: {backend: "android", stopDevices: false}})});
             expect(cleanup.status).toBe(200);
             expect(await cleanup.json()).toMatchObject({ok: false, result: {changedDevices: 0, failed: 1}});
-            expect(terminate).toHaveBeenCalledWith(process.pid, original.appium.processIdentity.startToken, 10000, undefined, undefined);
+            expect(terminate).toHaveBeenCalledWith(process.pid, original.appium.processIdentity.startToken, 10000, undefined, expect.any(Function));
             expect(readFileSync(file, "utf8")).toBe(before);
         } finally { await close(server); cleanupOwner(ownerId); }
     });

@@ -12,6 +12,9 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
 const ENTRYPOINT = resolve(__dirname, '../../scripts/ccc-entrypoint.sh');
+// This executes the Linux container entrypoint and POSIX executable fixtures.
+// Windows host orchestration contracts are exercised without a host shell elsewhere.
+const canRunContainerBash = process.platform !== 'win32' && existsSync('/bin/bash');
 
 interface Fixture {
     dir: string;
@@ -110,8 +113,8 @@ function runEntrypoint(
     env: Record<string, string>,
     args: string[] = ['echo', 'CMD_RAN'],
 ) {
-    return spawnSync(
-        'bash',
+    const result = spawnSync(
+        '/bin/bash',
         [ENTRYPOINT, ...args],
         {
             env: {
@@ -133,9 +136,11 @@ function runEntrypoint(
             timeout: 10_000,
         },
     );
+    if (result.error) throw result.error;
+    return result;
 }
 
-describe('ccc-entrypoint.sh', () => {
+describe.skipIf(!canRunContainerBash)('ccc-entrypoint.sh', () => {
     let fx: Fixture;
 
     beforeEach(() => {

@@ -21,6 +21,11 @@ vi.mock("child_process", async (importOriginal) => {
     const actual = await importOriginal<typeof import("child_process")>();
     return {
         ...actual,
+        // Fixture routing is installed after this mock. Forward through the live
+        // builtin export so Windows executes the fixture with Node as well.
+        spawnSync(...args: Parameters<typeof actual.spawnSync>) {
+            return actual.spawnSync(...args);
+        },
         spawn(command: string, args: readonly string[], options: SpawnOptions) {
             const child = actual.spawn(command, args, options);
             if (command === recorderProcess.executable && args.some((arg) => arg.includes("screencapture"))) {

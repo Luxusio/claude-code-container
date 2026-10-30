@@ -16,7 +16,7 @@ const native = process.platform === "win32" && spawnSync(powershell, ["-NoProfil
 // Only ACL application is stubbed so these isolated fixtures remain accessible to the test user.
 function execute(body: string) {
     const root = mkdtempSync(join(tmpdir(), "nested-claim-"));
-    const script = `$ErrorActionPreference='Stop'\n${NESTED_CLAIM_FUNCTIONS}\n` +
+    const script = `$ErrorActionPreference='Stop'\n$ProgressPreference='SilentlyContinue'\n${NESTED_CLAIM_FUNCTIONS}\n` +
         `function Set-Acl { param($LiteralPath,$AclObject,$ErrorAction) }\n` +
         `$root='${root.replace(/'/g, "''")}'\n` +
         `function Claim($run='${runId}',$boot='${boot}',$op='acquire') { Invoke-NestedClaim -Root $root -RunId $run -BootId $boot -Operation $op -MutexName 'Local\\${root.split(/[\\/]/).pop()}' }\n` +
@@ -57,6 +57,7 @@ try {
     $jobs += Start-Job -ArgumentList $definitions,$root,$run -ScriptBlock {
       param($definitions,$root,$run)
       $ErrorActionPreference='Stop'
+      $ProgressPreference='SilentlyContinue'
       . ([scriptblock]::Create($definitions))
       try { Invoke-NestedClaim -Root $root -RunId $run -BootId '${boot}' -Operation 'acquire' -MutexName ('Local\\'+(Split-Path $root -Leaf)) } catch { 'refused' }
     }

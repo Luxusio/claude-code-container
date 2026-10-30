@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, linkSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fileSymlinkOrSkip } from "../helpers/file-symlink-fixture.js";
 import * as ts from "../../../packages/device-lab/src/device-lab-state-file.js";
 import * as shared from "../../../packages/device-lab/providers/state/state-file.mjs";
 
@@ -34,13 +35,16 @@ for (const [name, binding] of [["TS", ts], ["shared", shared]] as const) describ
         writeFileSync(file, "abc"); expect(binding.readDeviceLabBinaryFile(file, "f", 3)?.toString()).toBe("abc");
         control.oversizeRead = true; expect(() => binding.readDeviceLabBinaryFile(file, "f", 3)).toThrow("f-file-too-large");
     });
-    it("rejects oversized stat, symbolic links, hardlinks and nonordinary files", () => {
+    it("rejects oversized stat, hardlinks and nonordinary files", () => {
         const { root, file } = temporary(); writeFileSync(file, "abcd");
         expect(() => binding.readDeviceLabBinaryFile(file, "f", 3)).toThrow("f-file-too-large");
-        const symbolic = join(root, "symbolic"); symlinkSync(file, symbolic);
-        expect(() => binding.readDeviceLabBinaryFile(symbolic, "f", 99)).toThrow("f-state-invalid");
         linkSync(file, join(root, "hard")); expect(() => binding.readDeviceLabBinaryFile(file, "f", 99)).toThrow("f-state-invalid");
         expect(() => binding.readDeviceLabBinaryFile(root, "f", 99)).toThrow("f-state-invalid");
+    });
+    it("rejects symbolic links", context => {
+        const { root, file } = temporary(); writeFileSync(file, "abcd");
+        const symbolic = join(root, "symbolic"); fileSymlinkOrSkip(context, file, symbolic);
+        expect(() => binding.readDeviceLabBinaryFile(symbolic, "f", 99)).toThrow("f-state-invalid");
     });
     it("wraps pre-callback faults but preserves raw callback and read faults", () => {
         const { file } = temporary(); writeFileSync(file, "abc"); const fault = Error("native");

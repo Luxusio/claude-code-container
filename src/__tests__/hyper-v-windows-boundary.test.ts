@@ -62,7 +62,7 @@ describe("Hyper-V Windows package boundary", () => {
 
     it("keeps production consumers on layer entrypoints", () => {
         for (const path of [...sourceFiles(projectSourceRoot), ...sourceFiles(coreSourceRoot)]) {
-            const projectPath = relative(projectSourceRoot, path);
+            const projectPath = relative(projectSourceRoot, path).replace(/\\/g, "/");
             if (projectPath.startsWith("hyper-v-windows/") || projectPath.startsWith("__tests__/")) continue;
             const source = readFileSync(path, "utf8");
             for (const match of source.matchAll(/@ccc\/hyper-v\/(?:low-level|lifecycle)\/([^"']+)/g)) {

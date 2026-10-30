@@ -11881,7 +11881,11 @@ async function gate(name) {
 }
 async function main() {
     if (tool === 'process-inventory') {
-        if (args.length !== 2 || args[0] !== '-eo' || args[1] !== 'args=') throw Error('unallocated process inventory operation');
+        const probeArgs = args[0] === '-WindowStyle' && args[1] === 'Hidden' ? args.slice(2) : args;
+        const posixInventory = probeArgs.length === 2 && probeArgs[0] === '-eo' && probeArgs[1] === 'args=';
+        const windowsInventory = probeArgs.length === 4 && probeArgs[0] === '-NoProfile' && probeArgs[1] === '-NonInteractive'
+            && probeArgs[2] === '-Command' && probeArgs[3] === "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }";
+        if (!posixInventory && !windowsInventory) throw Error('unallocated process inventory operation');
         if (has('emulator-process')) console.log(fs.readFileSync(file('emulator-process'), 'utf8'));
         return;
     }
@@ -12136,7 +12140,12 @@ async function createAndroidHttpFixture(phase: AndroidHttpFixturePhase, helperOp
 // Isolate only the fake SDK's global inventory; PID/birth/command probes remain native.
 const androidHttpInventorySpawn = cp.spawn;
 cp.spawn = function(command, args = [], options = {}) {
-    return command === '/bin/ps' && Array.isArray(args) && args.length === 2 && args[0] === '-eo' && args[1] === 'args='
+    const probeArgs = args[0] === '-WindowStyle' && args[1] === 'Hidden' ? args.slice(2) : args;
+    const posixInventory = command === '/bin/ps' && probeArgs.length === 2 && probeArgs[0] === '-eo' && probeArgs[1] === 'args=';
+    const windowsInventory = path.win32.basename(command).toLowerCase() === 'powershell.exe' && probeArgs.length === 4
+        && probeArgs[0] === '-NoProfile' && probeArgs[1] === '-NonInteractive' && probeArgs[2] === '-Command'
+        && probeArgs[3] === ${JSON.stringify("Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }")};
+    return posixInventory || windowsInventory
         ? androidHttpInventorySpawn.call(this, path.join(root, 'process-inventory'), args, options)
         : androidHttpInventorySpawn.call(this, command, args, options);
 };
@@ -12297,7 +12306,8 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             expect(fixture.records(1)).toEqual([]);
             expect(fixture.nativeCalls().filter(call => call.tool === 'avdmanager' && call.args[0] === 'create')).toHaveLength(1);
             fixture.release();
-            expect(await first.result).toMatchObject({status: 200, body: {ok: true, result: {device: {id: 'responsive-pixel', port: 5586, status: 'stopped'}}}});
+            const firstReply = await first.result;
+            expect(firstReply, JSON.stringify({reply: firstReply, nativeCalls: fixture.nativeCalls()})).toMatchObject({status: 200, body: {ok: true, result: {device: {id: 'responsive-pixel', port: 5586, status: 'stopped'}}}});
             expect(await conflicting.result).toMatchObject({status: 409, body: {ok: false, error: 'android-emulator-port-conflict'}});
             expect(fixture.records()).toEqual([expect.objectContaining({id: 'responsive-pixel', port: 5586, status: 'stopped'})]);
             expect(fixture.records(1)).toEqual([]);
@@ -12321,7 +12331,9 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             expect(await start.result).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'running', bootReady: true}, boot: {ready: true}}}});
             const stopped = await stop.result;
             expect(stopped, JSON.stringify(stopped)).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped', bootReady: false}}}});
-            expect(fixture.nativeCalls()).toContainEqual(expect.objectContaining({tool: 'process-inventory', args: ['-eo', 'args=']}));
+            expect(fixture.nativeCalls()).toContainEqual(expect.objectContaining({tool: 'process-inventory', args: process.platform === 'win32'
+                ? ['-WindowStyle', 'Hidden', '-NoProfile', '-NonInteractive', '-Command', "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }"]
+                : ['-eo', 'args=']}));
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, status: 'stopped', bootReady: false, preferences: {keep: 'exact-publication-witness'}})]);
         } finally {await fixture.dispose();}
     });
@@ -12337,7 +12349,9 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             fixture.release();
             const stopped = await stop.result;
             expect(stopped, JSON.stringify(stopped)).toMatchObject({status: 200, body: {ok: true, result: {device: {status: 'stopped', bootReady: false}}}});
-            expect(fixture.nativeCalls()).toContainEqual(expect.objectContaining({tool: 'process-inventory', args: ['-eo', 'args=']}));
+            expect(fixture.nativeCalls()).toContainEqual(expect.objectContaining({tool: 'process-inventory', args: process.platform === 'win32'
+                ? ['-WindowStyle', 'Hidden', '-NoProfile', '-NonInteractive', '-Command', "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }"]
+                : ['-eo', 'args=']}));
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, status: 'stopped', bootReady: false})]);
         } finally {await fixture.dispose();}
     });
@@ -12358,12 +12372,12 @@ describe('emitted default-runner Android HTTP responsiveness', () => {
             const reply = await androidHttpFixtureBounded(cleanup.result, 6000, 'owner cleanup reset its captured Android execution allowance');
             expect(performance.now() - startedAt).toBeLessThan(7000);
             expect(existsSync(join(fixture.home, 'release-owner-cleanup'))).toBe(false);
-            expect(await nativeEndedAtReply, 'cleanup RPC must not return and release its device lock while its native stop can still resume').toBe(true);
+            expect(await nativeEndedAtReply, 'cleanup RPC must not return and release its device lock while its native stop can still resume: ' + JSON.stringify({reply, nativePid, nativeCalls: fixture.nativeCalls()})).toBe(true);
             expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
             expect(existsSync(join(fixture.home, 'active-emulator-5586'))).toBe(true);
             expect(reply).toMatchObject({status: 200, body: {ok: false, result: {changedDevices: 1, failed: 1,
                 results: [{stateKey: 'android', devices: [{deviceId: 'responsive-pixel', appium: {cleared: true},
-                    stop: {attempted: true, ok: false, execution: {provider: 'adb', timedOut: true, status: null}}}]}]}}});
+                    stop: {attempted: true, ok: false, execution: {provider: 'adb', timedOut: true, status: process.platform === 'win32' ? 4294967295 : null}}}]}]}}});
             const execution = reply.body.result.results[0].devices[0].stop.execution;
             expect(execution.cleanup).toEqual(expect.objectContaining({attempted: expect.any(Boolean), ok: expect.any(Boolean)}));
             expect(fixture.records()).toEqual([expect.objectContaining({...fixture.initial, appium: null, status: 'running'})]);
@@ -12450,7 +12464,7 @@ describe('emitted default-runner macOS HTTP responsiveness', () => {
             const {pid} = JSON.parse(readFileSync(join(fixture.home, 'helper-child'), 'utf8')) as {pid: number};
             const failed = await androidHttpFixtureBounded(start.result, 6000, 'parent helper deadline did not settle');
             expect(failed).toMatchObject({status: 502, body: {ok: false, error: 'macos-helper-readiness-timeout', result: {
-                helperPreparation: {error: 'macos-helper-readiness-timeout', execution: {status: null, signal: 'SIGKILL', timedOut: true}},
+                helperPreparation: {error: 'macos-helper-readiness-timeout', execution: {status: process.platform === 'win32' ? 4294967295 : null, signal: process.platform === 'win32' ? null : 'SIGKILL', timedOut: true}},
             }}});
             if (mode === 'invalid') expect(failed.body.result.helperPreparation).not.toHaveProperty('firstFailure');
             else expect(failed.body.result.helperPreparation.firstFailure).toEqual({provider: 'scp',
@@ -12696,7 +12710,7 @@ describe('emitted default-runner macOS HTTP responsiveness', () => {
             expect(await nativeEndedAtReply, 'cleanup must settle its finite native stop before replying or releasing the operation lock').toBe(true);
             expect(reply).toMatchObject({status: 200, body: {ok: false, result: {changedDevices: 0, failed: 1,
                 results: [{stateKey: 'macos', devices: [{deviceId: 'responsive-mac', stop: {attempted: true, ok: false,
-                    execution: {provider: 'tart', timedOut: true, status: null}}}]}]}}});
+                    execution: {provider: 'tart', timedOut: true, status: process.platform === 'win32' ? 4294967295 : null}}}]}]}}});
             expect(fixture.records()).toEqual([fixture.initial]);
             expect(existsSync(join(fixture.home, 'stop-requested'))).toBe(false);
             expect(existsSync(join(fixture.home, 'active-macos'))).toBe(true);

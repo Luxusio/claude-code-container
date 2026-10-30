@@ -208,7 +208,7 @@ cp.spawn = function(command, args = [], options = {}) {
     }
     if (command !== 'wscript.exe' || args[0] !== '//B') return androidSpawn(command, args, options);
     const script = fs.readFileSync(args[1], 'utf8');
-    const run = script.match(/^Shell\.Run "(.*)", 0, True\r?$/m);
+    const run = script.match(/^Shell\.Run "(.*)", 0, (?:True|False)\r?$/m);
     if (!run) throw new Error('invalid fake Android launcher');
     const line = run[1].replace(/""/g, '"');
     const prefix = '%ComSpec% /d /s /c "', suffix = ' >NUL 2>NUL"';

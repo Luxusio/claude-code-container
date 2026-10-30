@@ -1,4 +1,4 @@
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NATIVE_RUNTIME_SELECTOR_KEYS, type NativeRuntimeInvocation, type NativeRuntimeSelectors } from "../../ports/container-runtime-invocation.js";
 import { createHash } from "node:crypto";
@@ -17,7 +17,7 @@ const effects = vi.hoisted(() => ({
 vi.mock("fs", async original => ({ ...await original<typeof import("node:fs")>(),
     mkdirSync: effects.mkdir, lstatSync: effects.stat, chmodSync: effects.chmod,
     readdirSync: (...args: unknown[]) => [...new Set([...(effects.list(...args) as string[]),
-        ...[...records.keys()].filter(path => path.startsWith(`${fixtureLocks}/`)).map(path => basename(path))])]
+        ...[...records.keys()].filter(path => dirname(path) === fixtureLocks).map(path => basename(path))])]
         .filter(name => !retiredPaths.has(join(fixtureLocks, name))),
     readFileSync: effects.read,
     writeFileSync: (path: string, content: string, ...args: unknown[]) => {

@@ -1,8 +1,9 @@
 import * as childProcess from "child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 import {
     canonicalWindowsPowerShellPath,
     canonicalWindowsPowerShellPathAsync,
@@ -161,33 +162,43 @@ describe("canonical Windows PowerShell", () => {
         );
     });
 
-    it("resolves a plain test system root and rejects a linked executable", () => {
+    it("resolves a plain test system root", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-system-powershell-"));
         roots.push(root);
         const executable = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
         mkdirSync(dirname(executable), { recursive: true });
         writeFileSync(executable, "test");
         expect(canonicalWindowsPowerShellPath(root)).toBe(executable);
+    });
 
-        rmSync(executable);
+    it("rejects a linked executable", context => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-system-powershell-linked-"));
+        roots.push(root);
+        const executable = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+        mkdirSync(dirname(executable), { recursive: true });
         const target = join(root, "foreign.exe");
         writeFileSync(target, "foreign");
-        symlinkSync(target, executable, "file");
+        fileSymlinkOrSkip(context, target, executable);
         expect(canonicalWindowsPowerShellPath(root)).toBeNull();
     });
 
-    it("applies the same plain-file trust checks through the async PowerShell resolver", async () => {
+    it("resolves a plain test system root through the async PowerShell resolver", async () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-system-powershell-async-"));
         roots.push(root);
         const executable = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
         mkdirSync(dirname(executable), { recursive: true });
         writeFileSync(executable, "test");
         expect(await canonicalWindowsPowerShellPathAsync(root)).toBe(executable);
+    });
 
-        rmSync(executable);
+    it("rejects a linked executable through the async PowerShell resolver", async context => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-system-powershell-async-linked-"));
+        roots.push(root);
+        const executable = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+        mkdirSync(dirname(executable), { recursive: true });
         const target = join(root, "foreign.exe");
         writeFileSync(target, "foreign");
-        symlinkSync(target, executable, "file");
+        fileSymlinkOrSkip(context, target, executable);
         expect(await canonicalWindowsPowerShellPathAsync(root)).toBeNull();
     });
 

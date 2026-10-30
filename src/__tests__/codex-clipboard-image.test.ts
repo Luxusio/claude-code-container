@@ -22,7 +22,7 @@ afterEach(() => {
 
 describe("buildCodexClipboardImageRelativePath", () => {
     it("builds a stable project-relative png path", () => {
-        expect(buildCodexClipboardImageRelativePath(123)).toBe(join(".omx", "clipboard-images", "clipboard-123.png"));
+        expect(buildCodexClipboardImageRelativePath(123)).toBe(".omx/clipboard-images/clipboard-123.png");
     });
 });
 
@@ -172,11 +172,11 @@ describe("maybeAttachCodexClipboardImage", () => {
             readImage: async () => Buffer.from("png-bytes"),
         });
 
-        expect(result.relativeImagePath).toBe(join(".omx", "clipboard-images", "clipboard-123.png"));
+        expect(result.relativeImagePath).toBe(".omx/clipboard-images/clipboard-123.png");
         expect(result.args).toEqual([
             "codex",
             "--image",
-            join(".omx", "clipboard-images", "clipboard-123.png"),
+            ".omx/clipboard-images/clipboard-123.png",
             CODEX_CLIPBOARD_IMAGE_PROMPT,
         ]);
 

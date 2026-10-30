@@ -3,6 +3,7 @@ import { spawnSync, execFileSync } from 'child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { deviceLabTestHomeEnvironment } from './helpers/device-lab-test-environment.js'
 
 // Check Docker availability
 function isDockerAvailable(): boolean {
@@ -55,8 +56,11 @@ function runCcc(args: string[], options: { cwd?: string, timeout?: number, env?:
     }
     childEnv.NODE_ENV = 'test'
     childEnv.CCC_RUNTIME = 'docker'
-    if (cccHomeDir) childEnv.HOME = cccHomeDir
     Object.assign(childEnv, options.env ?? {})
+    const fixtureHome = options.env?.HOME ?? options.env?.USERPROFILE ?? cccHomeDir
+    if (fixtureHome) {
+        Object.assign(childEnv, deviceLabTestHomeEnvironment(fixtureHome))
+    }
 
     const result = spawnSync(process.execPath, [CCC_PATH, ...args], {
         encoding: 'utf-8',
@@ -222,8 +226,13 @@ describe.skipIf(!isDockerAvailable() || isInsideContainer())('E2E: Docker Integr
 
 describe('E2E: Docker Not Available', () => {
     it.skipIf(isDockerAvailable())('gracefully handles missing Docker', () => {
-        const result = runCcc(['status'])
-        // Should either error or show "not built"
-        expect(result.stdout + result.stderr).toBeTruthy()
+        const home = mkdtempSync(join(tmpdir(), 'ccc-no-docker-home-'))
+        try {
+            const result = runCcc(['status'], { env: { HOME: home } })
+            // Should either error or show "not built"
+            expect(result.stdout + result.stderr).toBeTruthy()
+        } finally {
+            rmSync(home, { recursive: true, force: true })
+        }
     })
 })

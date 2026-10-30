@@ -7,19 +7,18 @@ import { prepareRuntimeBindHome, withRuntimeBindGuard } from "../adapters/runtim
 
 const fixture = vi.hoisted(() => ({ home: "", spawn: vi.fn(), capture: vi.fn() }));
 vi.mock("os", async original => ({ ...await original<typeof import("os")>(), homedir: () => fixture.home }));
-vi.mock("child_process", async original => {
-    const native = await original<typeof import("child_process")>();
-    return { ...native, spawnSync: (...args: unknown[]) => {
-        const [command, argv, options] = args;
-        // The real private lock may observe this worker; no other native leaf escapes the fixture.
-        if (command === "/bin/ps" && Array.isArray(argv) && argv.length === 4
-            && argv[0] === "-p" && argv[1] === String(process.pid) && argv[2] === "-o"
-            && (argv[3] === "command=" || argv[3] === "lstart=")) {
-            return native.spawnSync(command, argv, options as import("child_process").SpawnSyncOptions);
-        }
-        return fixture.spawn(...normalizeNativeRuntimeCall(args));
-    } };
-});
+vi.mock("child_process", async original => ({
+    ...await original<typeof import("child_process")>(),
+    spawnSync: (...args: unknown[]) => fixture.spawn(...normalizeNativeRuntimeCall(args)),
+}));
+vi.mock("@ccc/device-lab/device-lab-process-identity.js", async original => ({
+    ...await original<typeof import("@ccc/device-lab/device-lab-process-identity.js")>(),
+    // Private lock identity is stable; runtime process effects remain a separate fixture.
+    readDeviceRuntimeProcessIdentity: (pid: unknown) => {
+        if (pid !== process.pid) throw new Error("Unexpected foreign process identity in runtime layout fixture");
+        return { pid: process.pid, startToken: "runtime-layout-fixture", commandHash: "a".repeat(64) };
+    },
+}));
 vi.mock("../adapters/container-runtime-invocation.js", async original => {
     const actual = await original<typeof import("../adapters/container-runtime-invocation.js")>();
     const {nativeRuntimeInvocationFixture} = await import("./helpers/native-runtime-fixture.js");

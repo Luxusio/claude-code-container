@@ -16,20 +16,23 @@ import {
     stopPhysicalLeaseHeartbeat,
 } from "@ccc/device-lab/providers/state/physical-lease-store.mjs";
 import { ownerId } from "@ccc/device-lab/providers/context.mjs";
+import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
+import { fileSymlinkOrSkip } from "./helpers/file-symlink-fixture.js";
 
 describe("device-lab MCP direct physical lease store", () => {
-    let originalHome: string | undefined;
+    let home: string;
+    let restoreEnvironment: () => void;
 
     beforeEach(() => {
-        originalHome = process.env.HOME;
-        process.env.HOME = mkdtempSync(join(tmpdir(), "ccc-physical-lease-store-test-home-"));
+        home = mkdtempSync(join(tmpdir(), "ccc-physical-lease-store-test-home-"));
+        restoreEnvironment = isolateDeviceLabTestEnvironment(home);
+        expect(homedir()).toBe(home);
     });
 
     afterEach(() => {
         vi.useRealTimers();
-        if (process.env.HOME) rmSync(process.env.HOME, { recursive: true, force: true });
-        if (originalHome === undefined) delete process.env.HOME;
-        else process.env.HOME = originalHome;
+        restoreEnvironment();
+        rmSync(home, { recursive: true, force: true });
     });
 
     function lockPath(backend: string, hardwareId: string) {
@@ -324,7 +327,7 @@ describe("device-lab MCP direct physical lease store", () => {
         })).toBe(true);
     });
 
-    it("fails closed on malformed or linked authoritative lease locks", () => {
+    it("fails closed on malformed authoritative lease locks", () => {
         const malformedHardware = "USB-MALFORMED";
         const malformedFile = lockPath("android-device", malformedHardware);
         mkdirSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks"), { recursive: true });
@@ -332,27 +335,30 @@ describe("device-lab MCP direct physical lease store", () => {
 
         expect(() => claimPhysicalLease("android-device", malformedHardware, "replacement")).toThrow("physical-lease-state-invalid");
         expect(readFileSync(malformedFile, "utf8")).toBe("{not-json");
+    });
 
-        const target = join(homedir(), "external-lease.json");
-        const targetLease = {
-            backend: "android-device",
-            hardwareId: "USB-LINKED",
-            ownerId: "foreign-owner",
-            deviceId: "foreign-device",
-            updatedAt: new Date().toISOString(),
-            ttlMs: 60000,
-            expiresAt: new Date(Date.now() + 60000).toISOString(),
-        };
-        writeFileSync(target, JSON.stringify(targetLease));
-        for (const kind of ["symbolic", "hard"] as const) {
+    for (const kind of ["hard", "symbolic"] as const) {
+        it(`fails closed on ${kind}-linked authoritative lease locks`, context => {
+            const target = join(homedir(), "external-lease.json");
+            const targetLease = {
+                backend: "android-device",
+                hardwareId: "USB-LINKED",
+                ownerId: "foreign-owner",
+                deviceId: "foreign-device",
+                updatedAt: new Date().toISOString(),
+                ttlMs: 60000,
+                expiresAt: new Date(Date.now() + 60000).toISOString(),
+            };
+            writeFileSync(target, JSON.stringify(targetLease));
             const hardwareId = `USB-${kind.toUpperCase()}`;
             const file = lockPath("android-device", hardwareId);
-            if (kind === "symbolic") symlinkSync(target, file);
+            mkdirSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks"), { recursive: true });
+            if (kind === "symbolic") fileSymlinkOrSkip(context, target, file);
             else linkSync(target, file);
             expect(() => claimPhysicalLease("android-device", hardwareId, "replacement")).toThrow("physical-lease-state-invalid");
             expect(JSON.parse(readFileSync(target, "utf8"))).toEqual(targetLease);
-        }
-    });
+        });
+    }
 
     it.runIf(process.platform !== "win32")("rejects linked direct-provider lease directories", () => {
         const physicalRoot = join(homedir(), ".ccc/devices/physical-leases");

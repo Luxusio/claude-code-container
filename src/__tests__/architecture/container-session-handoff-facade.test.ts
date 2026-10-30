@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { normalizeNativeRuntimeCall, preloadNativeRuntimeFixture } from "../helpers/native-runtime-fixture.js";
 
 const native = vi.hoisted(() => ({
-    bindGuard: Object.freeze({ root: "/fixture/home/.ccc" }) as import("../../ports/runtime-bind-authority.js").RuntimeBindGuard,
+    bindGuard: Object.freeze({ get root() { return resolve("/fixture/home/.ccc"); } }) as import("../../ports/runtime-bind-authority.js").RuntimeBindGuard,
     creationTicket: Object.freeze({}) as import("../../ports/runtime-bind-authority.js").RuntimeBindCreationTicket,
     authorityEvents: [] as string[],
     authorityHeld: false,
@@ -64,7 +65,7 @@ vi.mock("fs", async original => ({
     closeSync: native.close, rmSync: native.rm,
 }));
 vi.mock("os", async original => ({
-    ...await original<typeof import("node:os")>(), homedir: () => "/fixture/home",
+    ...await original<typeof import("node:os")>(), homedir: () => resolve("/fixture/home"),
 }));
 vi.mock("../../container-runtime.js", async original => ({
     ...await original<typeof import("../../container-runtime.js")>(),
@@ -99,9 +100,12 @@ vi.mock("../../session.js", () => ({
 vi.mock("@ccc/device-lab/device-lab-shared-state.js", async original => ({
     ...await original<typeof import("@ccc/device-lab/device-lab-shared-state.js")>(),
     withSharedMutationLock: (path: string, operation: () => unknown, options: { waitMs: number; reclaimStale?: boolean }) => {
-        if (!/^\/fixture\/home\/\.ccc\/(?:codex-state\.lock|run\/locks\/identity-[a-f0-9]{64}\.lock)$/.test(path)) throw new Error("unexpected fixture lock IO");
+        const codexState = path === join(native.bindGuard.root, "codex-state.lock");
+        const identity = dirname(path) === join(native.bindGuard.root, "run", "locks")
+            && /^identity-[a-f0-9]{64}\.lock$/.test(basename(path));
+        if (!codexState && !identity) throw new Error("unexpected fixture lock IO");
         expect(operation).toBeTypeOf("function");
-        expect(options).toEqual({ waitMs: path.endsWith("codex-state.lock") ? 600_000 : 1_260_000, reclaimStale: false });
+        expect(options).toEqual({ waitMs: codexState ? 600_000 : 1_260_000, reclaimStale: false });
         return operation();
     },
 }));
@@ -115,7 +119,7 @@ const baseImageId = `sha256:${"b".repeat(64)}`;
 const identityImageId = `sha256:${"c".repeat(64)}`;
 const { getClaudeJsonFile, IMAGE_NAME } = await import("../../utils.js");
 const id = "a".repeat(64);
-const project = "/fixture/project";
+const project = resolve("/fixture/project");
 const refusal = "Container identity changed before session handoff; refusing to join.";
 type Path = "fresh" | "existing" | "restart" | "deferred";
 
@@ -170,7 +174,7 @@ function fixture(path: Path) {
     native.fstat.mockImplementation(() => stat("owner.json"));
     native.read.mockReturnValue(Buffer.from("fixture"));
     const markers = new Map<string, string>();
-    native.write.mockImplementation((target: string, content: string) => { markers.set(target.slice(target.lastIndexOf("/") + 1), content); });
+    native.write.mockImplementation((target: string, content: string) => { markers.set(basename(target), content); });
     native.open.mockReturnValue(1);
     native.family.mockImplementation((_prefix, operation) => operation());
     native.spawn.mockImplementation((...rawCall) => {
@@ -231,7 +235,7 @@ function fixture(path: Path) {
                 const value = state.runArgs[index + 1];
                 if (argument === "-v") {
                     const match = value.match(/^(.*):(\/[^:]+)(?::ro)?$/)!;
-                    mounts.push({ Source: match[1], Destination: match[2], Type: match[1].startsWith("/") ? "bind" : "volume", RW: !value.endsWith(":ro") });
+                    mounts.push({ Source: match[1], Destination: match[2], Type: isAbsolute(match[1]) ? "bind" : "volume", RW: !value.endsWith(":ro") });
                 }
                 if (argument === "--tmpfs") mounts.push({ Source: "", Destination: value.split(":")[0], Type: "tmpfs", RW: true });
                 if (argument === "--label") labels[value.slice(0, value.indexOf("="))] = value.slice(value.indexOf("=") + 1);
@@ -242,7 +246,7 @@ function fixture(path: Path) {
         if (args[0] === "exec" && args[1] === id && args[2] === "sh" && args[4]?.includes('$(id -un)')) return result(0, `${identity.uid}:${identity.gid}:ccc:/home/ccc`);
         if (args[0] === "exec" && args[2] === "cat") {
             if (options?.encoding === null) return { ...result(), stdout: Buffer.from("fixture") };
-            return result(0, markers.get(args[3].slice(args[3].lastIndexOf("/") + 1)) ?? "");
+            return result(0, markers.get(basename(args[3])) ?? "");
         }
         if (args[0] === "exec" && args.includes("ccc-ssh-copy")) {
             trace.push("sync-finished");

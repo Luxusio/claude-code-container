@@ -162,6 +162,7 @@ describe("bounded Hyper-V Windows PowerShell file runner", () => {
                 return child;
             },
             taskkillImpl: taskkill,
+            processIdentityImpl: () => "same-process",
         });
         const result = await runner(request, {
             timeoutMilliseconds: kind === "timeout" ? 5 : 1000,

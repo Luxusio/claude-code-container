@@ -1,6 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
+import { gitFixturePath, isolateGitFixture, overwriteGitFixtureFile } from "./helpers/git-fixture.js";
+import { directorySymlink } from "./helpers/file-symlink-fixture.js";
 import {
     mkdirSync,
+    mkdtempSync,
+    cpSync,
     readdirSync,
     writeFileSync,
     rmSync,
@@ -64,28 +68,33 @@ import {
 } from "../worktree.js";
 import { workspaceRemovalFailureNote, assertRemovableWorkspace, strandedBranchNotice } from "../index.js";
 
+// Fixture homes are private even when production drops inherited Git configuration selectors.
+let gitFixtureHome: string;
+let restoreGitFixtureEnvironment: () => void;
+beforeAll(() => {
+    gitFixtureHome = mkdtempSync(join(tmpdir(), "ccc-git-home-"));
+    restoreGitFixtureEnvironment = isolateGitFixture(gitFixtureHome);
+});
+afterAll(() => {
+    restoreGitFixtureEnvironment();
+    rmSync(gitFixtureHome, { recursive: true, force: true });
+});
+
 /** Helper: create a real git repo with an initial commit */
 function initRepo(repoPath: string): void {
     mkdirSync(repoPath, { recursive: true });
-    spawnSync("git", ["init", "--initial-branch=master"], { cwd: repoPath, stdio: "pipe" });
-    spawnSync("git", ["config", "user.email", "t@t.com"], {
-        cwd: repoPath,
-        stdio: "pipe",
-    });
-    spawnSync("git", ["config", "user.name", "T"], {
-        cwd: repoPath,
-        stdio: "pipe",
-    });
-    spawnSync("git", ["config", "commit.gpgsign", "false"], {
-        cwd: repoPath,
-        stdio: "pipe",
-    });
+    const git = (...args: string[]): void => {
+        const result = spawnSync("git", args, { cwd: repoPath, encoding: "utf-8", stdio: "pipe" });
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+    };
+    git("init", "--initial-branch=master");
+    git("config", "user.email", "t@t.com");
+    git("config", "user.name", "T");
+    git("config", "commit.gpgsign", "false");
     writeFileSync(join(repoPath, "init.txt"), "init");
-    spawnSync("git", ["add", "."], { cwd: repoPath, stdio: "pipe" });
-    spawnSync("git", ["commit", "-m", "init"], {
-        cwd: repoPath,
-        stdio: "pipe",
-    });
+    git("add", ".");
+    git("commit", "-m", "init");
 }
 
 function installFailingCheckoutHook(repoPath: string): void {
@@ -417,7 +426,7 @@ describe("recreating a workspace with stale nested registration", () => {
             cwd: nested,
             encoding: "utf-8",
         });
-        expect(listed.stdout).toContain(`worktree ${nestedWorkspace}`);
+        expect(listed.stdout).toContain(`worktree ${gitFixturePath(nestedWorkspace)}`);
         expect(listed.stdout).toContain("locked offline");
         expect(existsSync(workspace)).toBe(false);
     });
@@ -466,14 +475,14 @@ describe("recreating a workspace with stale nested registration", () => {
             cwd: join(source, "a-stale"),
             encoding: "utf-8",
         });
-        expect(listed.stdout).toContain(`worktree ${join(workspace, "a-stale")}`);
+        expect(listed.stdout).toContain(`worktree ${gitFixturePath(join(workspace, "a-stale"))}`);
         expect(readdirSync(join(source, "a-stale", ".git"))
             .filter((name) => name.startsWith(".ccc-worktree-quarantine-"))).toEqual([]);
         const failedRepoList = spawnSync("git", ["worktree", "list", "--porcelain"], {
             cwd: join(source, "z-fail"),
             encoding: "utf-8",
         });
-        expect(failedRepoList.stdout).toContain(`worktree ${join(workspace, "z-fail")}`);
+        expect(failedRepoList.stdout).toContain(`worktree ${gitFixturePath(join(workspace, "z-fail"))}`);
         expect(readdirSync(join(source, "z-fail", ".git"))
             .filter((name) => name.startsWith(".ccc-worktree-quarantine-"))).toEqual([]);
     });
@@ -516,30 +525,33 @@ describe("parseWorktreeArg", () => {
 });
 
 describe("getWorkspacePath", () => {
+    const source = resolve("projects");
+
     it("creates sibling path with separator", () => {
-        const result = getWorkspacePath("/projects", "feature");
-        expect(result).toBe(`/projects${WORKTREE_SEPARATOR}feature`);
+        const result = getWorkspacePath(source, "feature");
+        expect(result).toBe(join(dirname(source), `projects${WORKTREE_SEPARATOR}feature`));
     });
 
     it("replaces / in branch name with -", () => {
-        const result = getWorkspacePath("/projects", "feature/login");
-        expect(result).toBe(`/projects${WORKTREE_SEPARATOR}feature-login`);
+        const result = getWorkspacePath(source, "feature/login");
+        expect(result).toBe(join(dirname(source), `projects${WORKTREE_SEPARATOR}feature-login`));
     });
 
     it("handles nested slashes", () => {
-        const result = getWorkspacePath("/projects", "user/feature/v2");
-        expect(result).toBe(`/projects${WORKTREE_SEPARATOR}user-feature-v2`);
+        const result = getWorkspacePath(source, "user/feature/v2");
+        expect(result).toBe(join(dirname(source), `projects${WORKTREE_SEPARATOR}user-feature-v2`));
     });
 
     it("returns consistent results", () => {
-        const r1 = getWorkspacePath("/projects", "feature");
-        const r2 = getWorkspacePath("/projects", "feature");
+        const r1 = getWorkspacePath(source, "feature");
+        const r2 = getWorkspacePath(source, "feature");
         expect(r1).toBe(r2);
     });
 
     it("creates path in parent directory", () => {
-        const result = getWorkspacePath("/home/user/my-project", "dev");
-        expect(result).toBe(`/home/user/my-project${WORKTREE_SEPARATOR}dev`);
+        const parent = resolve("home", "user");
+        const result = getWorkspacePath(join(parent, "my-project"), "dev");
+        expect(result).toBe(join(parent, `my-project${WORKTREE_SEPARATOR}dev`));
     });
 });
 
@@ -615,10 +627,7 @@ describe("scanDirectory", () => {
 
     it("includes symlinks as non-repo entries", () => {
         mkdirSync(join(tmpDir, "real-dir"));
-        symlinkSync(
-            join(tmpDir, "real-dir"),
-            join(tmpDir, "link-dir"),
-        );
+        directorySymlink(join(tmpDir, "real-dir"), join(tmpDir, "link-dir"));
 
         const entries = scanDirectory(tmpDir);
         const names = entries.map((e) => e.name).sort();
@@ -1053,7 +1062,7 @@ describe("createWorkspace", () => {
             cwd: repoPath,
             encoding: "utf-8",
         });
-        expect(listed.stdout).not.toContain(wsPath);
+        expect(listed.stdout).not.toContain(gitFixturePath(wsPath));
     });
 
     it.skipIf(process.platform === "win32")("preserves a replacement worktree during later multi-repo rollback", () => {
@@ -1270,7 +1279,7 @@ describe("createWorkspace", () => {
             cwd: repoInSource,
             encoding: "utf-8",
         });
-        expect(listed.stdout).not.toContain(workspace);
+        expect(listed.stdout).not.toContain(gitFixturePath(workspace));
         const remote = spawnSync(
             "git",
             ["config", "--local", "--get-all", "branch.remote-rollback.remote"],
@@ -1444,11 +1453,11 @@ describe("assertWorkspaceBranch", () => {
                 .toEqual(before);
             const notice = stderr.join("");
             expect(notice).toContain("Skipping nested Git repository");
-            expect(notice).toContain(orphan);
+            expect(notice).toContain(JSON.stringify(orphan));
             if (kind === "ENOTDIR") {
-                expect(notice).toContain(recorded);
+                expect(notice).toContain(JSON.stringify(recorded));
             } else {
-                expect(notice).toContain(join(repoPath, "missing-administration"));
+                expect(notice).toContain(JSON.stringify(join(repoPath, "missing-administration")).slice(1, -1));
                 expect(notice).toContain("\\u001b");
                 expect(notice).toContain("\\u202e");
                 expect(notice).not.toContain("\u001b");
@@ -1514,7 +1523,7 @@ describe("assertWorkspaceBranch", () => {
                 ? join(healthy, ".git", "worktrees", "orphan")
                 : join(workspace, "missing-administration", "orphan");
             expect(lstatSync(join(healthy, ".git")).isFile()).toBe(true);
-            writeFileSync(join(orphan, ".git"), `gitdir: ${recorded}\n`);
+            overwriteGitFixtureFile(join(orphan, ".git"), `gitdir: ${recorded}\n`);
             const before = capture();
             const stderr: string[] = [];
             const originalWrite = process.stderr.write;
@@ -1532,8 +1541,8 @@ describe("assertWorkspaceBranch", () => {
             expect(git(healthy, ["status", "--short"])).toContain(" M init.txt");
             const notice = stderr.join("");
             expect(notice).toContain("Skipping nested Git repository");
-            expect(notice).toContain(orphan);
-            expect(notice).toContain(recorded);
+            expect(notice).toContain(JSON.stringify(orphan));
+            expect(notice).toContain(JSON.stringify(recorded));
             expect(notice).not.toContain(JSON.stringify(healthy));
             expect(notice.split("Skipping nested Git repository").length - 1).toBe(1);
         });
@@ -1543,7 +1552,7 @@ describe("assertWorkspaceBranch", () => {
             const recorded = kind === "ENOTDIR"
                 ? join(healthy, ".git", "worktrees", "orphan")
                 : join(workspace, "missing-administration", "orphan");
-            writeFileSync(join(orphan, ".git"), `gitdir: ${recorded}\n`);
+            overwriteGitFixtureFile(join(orphan, ".git"), `gitdir: ${recorded}\n`);
             const before = capture();
             for (const detect of [isWorktreeWorkspace, detectWorktreeWorkspaceBranch]) {
                 expect(() => detect(workspace)).toThrow(DamagedWorkspaceMetadataError);
@@ -1559,7 +1568,7 @@ describe("assertWorkspaceBranch", () => {
             const recorded = kind === "ENOTDIR"
                 ? join(workspace, ".git", "worktrees", "root")
                 : join(workspace, "missing-administration", "root");
-            writeFileSync(rootGit, `gitdir: ${recorded}\n`);
+            overwriteGitFixtureFile(rootGit, `gitdir: ${recorded}\n`);
             writeFileSync(join(workspace, "init.txt"), "uncommitted root work");
             const files = [rootGit, join(workspace, "init.txt"), ...["HEAD", "index", "gitdir", "commondir"].map((name) => join(registration, name))];
             const before = files.map((file) => readFileSync(file));
@@ -1641,8 +1650,8 @@ describe("assertWorkspaceBranch", () => {
             expect(git(healthy, ["status", "--short"])).toContain(" M init.txt");
             const notice = stderr.join("");
             expect(notice).toContain("Skipping nested Git repository");
-            expect(notice).toContain(orphan);
-            expect(notice).not.toContain(healthy);
+            expect(notice).toContain(JSON.stringify(orphan));
+            expect(notice).not.toContain(JSON.stringify(healthy));
         });
 
         it("accepts a root branch that also differs from the workspace directory alias", () => {
@@ -1994,10 +2003,9 @@ describe("assertWorkspaceBranch", () => {
             ["commit", "--allow-empty", "-m", "init"],
         ]) spawnSync("git", args, { cwd: nestedSource, stdio: "pipe" });
 
-        // Named with an escape sequence, because the refusal interpolates the same
-        // repository-controlled path the NOTE does, into a string the CLI prints — and only the
-        // NOTE's escaping was covered. A mutation dropping it from here survived the suite.
-        const nestedName = `nested-api${String.fromCharCode(0x1b)}[31m`;
+        // POSIX permits the hostile filename; Win32 uses a valid name and the portable
+        // presenter test below retains the same control-character escaping contract.
+        const nestedName = process.platform === "win32" ? "nested-api" : `nested-api${String.fromCharCode(0x1b)}[31m`;
         const nestedPath = join(workspace, "services", nestedName);
         mkdirSync(join(workspace, "services"), { recursive: true });
         spawnSync("git", ["worktree", "add", nestedPath, "-b", "nested-branch"], { cwd: nestedSource, stdio: "pipe" });
@@ -2031,7 +2039,7 @@ describe("assertWorkspaceBranch", () => {
             expect(warned.errors.join(" ")).toContain("nested-api");
             expect(warned.errors.join(" "), "the warning reaches a terminal too")
                 .not.toContain(String.fromCharCode(0x1b));
-            expect(warned.errors.join(" ")).toContain("\\u001b");
+            if (process.platform !== "win32") expect(warned.errors.join(" ")).toContain("\\u001b");
             // The exact phrase, not just "-f": the workspace path contains a UUID, so a bare
             // toContain("-f") passes on the path and would have let the advice disappear.
             expect(warned.errors.join(" "), "and it must name the way through")
@@ -2050,6 +2058,19 @@ describe("assertWorkspaceBranch", () => {
         expect(existsSync(workspace), "the workspace is gone").toBe(false);
     });
 
+    it("escapes hostile removal paths even when the host cannot create those filenames", () => {
+        const hostile = `/workspace/services/nested-api\u001b[31m\u202e\u0007`;
+        const refusal = unmanagedPathRefusal(hostile, "broken-worktree");
+        expect(refusal).toContain("\\u001b");
+        expect(refusal).toContain("\\u202e");
+        expect(refusal).toContain("\\u0007");
+        expect(refusal).not.toContain("\u001b");
+        expect(refusal).not.toContain("\u202e");
+        expect(refusal).not.toContain("\u0007");
+        expect(refusal).toContain("git worktree repair");
+        expect(refusal).toContain("re-run with -f");
+    });
+
     // The third deliberate refusal. The other two are pinned by the tests around this one; this
     // one had no test anywhere in the repository, so a mutation softening it shipped green.
     it("still refuses a nested repository that escapes its parent through a symlinked component", () => {
@@ -2066,7 +2087,7 @@ describe("assertWorkspaceBranch", () => {
             ["commit", "--allow-empty", "-m", "init"],
         ]) spawnSync("git", args, { cwd: join(outside, "nested-api"), stdio: "pipe" });
 
-        symlinkSync(outside, join(workspace, "services"));
+        directorySymlink(outside, join(workspace, "services"));
         spawnSync("git", [
             "update-index", "--add", "--cacheinfo",
             `160000,${"0".repeat(39)}1,services/nested-api`,
@@ -2101,10 +2122,10 @@ describe("assertWorkspaceBranch", () => {
 
         const notice = stderr.join("");
         expect(notice, "the operator has to be told which directory was dropped").toContain("Skipping nested Git repository");
-        expect(notice).toContain(orphan);
+        expect(notice).toContain(JSON.stringify(orphan));
         expect(notice, "and must not be told it is an ownership problem")
             .not.toContain("not owned by its parent");
-        expect(notice, "the healthy sibling must not be dropped").not.toContain(healthy);
+        expect(notice, "the healthy sibling must not be dropped").not.toContain(JSON.stringify(healthy));
 
         // Mount preparation intentionally normalizes the healthy .git links; it must still
         // include their verified sources and leave the excluded checkout alone.
@@ -2196,7 +2217,7 @@ describe("assertWorkspaceBranch", () => {
         // a throw instead of a classification.
         const missingModuleGitDir = join(workspace, ".git", "modules", "webapp");
         expect(existsSync(missingModuleGitDir)).toBe(false);
-        writeFileSync(join(workspace, "webapp", ".git"), `gitdir: ${missingModuleGitDir}\n`);
+        overwriteGitFixtureFile(join(workspace, "webapp", ".git"), `gitdir: ${missingModuleGitDir}\n`);
         // The source must stop claiming the path too. While it still registers a worktree
         // here, ccc refuses the workspace as damaged — correctly, and that is a different
         // case from the one under test.
@@ -2216,7 +2237,7 @@ describe("assertWorkspaceBranch", () => {
         expect(detected, "a deleted submodule gitdir must not take the workspace down").toBeTruthy();
         const notice = stderr.join("");
         expect(notice).toContain("Skipping nested Git repository");
-        expect(notice).toContain(join(workspace, "webapp"));
+        expect(notice).toContain(JSON.stringify(join(workspace, "webapp")));
         expect(notice).not.toContain("not owned by its parent");
     });
 
@@ -2264,7 +2285,7 @@ describe("assertWorkspaceBranch", () => {
         expect(detected, "a stale registration must not take the workspace down").toBeTruthy();
         const notice = stderr.join("");
         expect(notice).toContain("Skipping nested Git repository");
-        expect(notice).toContain(join(workspace, "api"));
+        expect(notice).toContain(JSON.stringify(join(workspace, "api")));
         expect(notice, "the cause must be named, not buried under \"Unable to inspect\"")
             .toContain("no longer points back");
         expect(notice, "and the remedy must be named").toContain("git worktree repair");
@@ -2292,7 +2313,7 @@ describe("assertWorkspaceBranch", () => {
         });
 
         // Registration intact, gitfile broken — the state `git worktree prune` cannot clear.
-        writeFileSync(join(workspace, "webapp", ".git"), "gitdir: /nonexistent/modules/webapp\n");
+        overwriteGitFixtureFile(join(workspace, "webapp", ".git"), "gitdir: /nonexistent/modules/webapp\n");
 
         let message = "";
         let thrown: unknown;
@@ -2304,7 +2325,7 @@ describe("assertWorkspaceBranch", () => {
         }
         expect(message).toContain("Workspace Git metadata is missing or damaged.");
         expect(message, "the operator must learn which checkout to repair")
-            .toContain(join(workspace, "webapp"));
+            .toContain(JSON.stringify(join(workspace, "webapp")));
         // ccc offers to run it; it does not hand the operator a command to retype.
         expect(message).toContain("ccc can run that for you");
         expect(thrown, "the caller needs a repair plan, not prose").toBeInstanceOf(
@@ -2360,13 +2381,14 @@ describe("assertWorkspaceBranch", () => {
         ]) spawnSync("git", args, { cwd: nestedSource, stdio: "pipe" });
 
         const hostile = `svc${escape}[31m-${rightToLeftOverride}api${bell}`;
+        const nativeName = process.platform === "win32" ? "native-api" : hostile;
         mkdirSync(join(workspace, "services"), { recursive: true });
-        spawnSync("git", ["worktree", "add", join(workspace, "services", hostile), "-b", "nested-branch"], {
+        spawnSync("git", ["worktree", "add", join(workspace, "services", nativeName), "-b", "nested-branch"], {
             cwd: nestedSource, stdio: "pipe",
         });
         spawnSync("git", [
             "update-index", "--add", "--cacheinfo",
-            `160000,${"0".repeat(39)}1,services/${hostile}`,
+            `160000,${"0".repeat(39)}1,services/${nativeName}`,
         ], { cwd: workspace, stdio: "pipe" });
 
         const managementRoot = join(nestedSource, ".git", "worktrees");
@@ -2374,7 +2396,7 @@ describe("assertWorkspaceBranch", () => {
         expect(existsSync(management), "the nested worktree must really be registered").toBe(true);
         writeFileSync(
             management,
-            `/nosuchroot-zzz/ws/services/${escape}[5mBLINK${lineSeparator}x${paragraphSeparator}y/.git\n`,
+            `/nosuchroot-zzz/ws/services/${hostile}/${escape}[5mBLINK${lineSeparator}x${paragraphSeparator}y/.git\n`,
         );
 
         const stderr: string[] = [];
@@ -2483,6 +2505,11 @@ describe("assertWorkspaceBranch", () => {
             const middle = new Error("wrapped", { cause });
             (middle as unknown as Record<string, unknown>).recordedGitPath = "/b/.git";
             expect(unreachableRecordedGitPath(new Error("outer", { cause: middle }))).toBe("/b/.git");
+        });
+
+        it.each(["/recorded/competing\nworktree/.git", "/recorded/competing-worktree\n/.git", "/recorded/competing-worktree /.git"])("preserves the exact hostile recorded path %j", (recordedGitPath) => {
+            expect(unreachableRecordedGitPath(marked({ recordedGitPath, code: "ENOENT" })))
+                .toBe(recordedGitPath);
         });
 
         it("accepts ENOTDIR as well as ENOENT", () => {
@@ -2625,10 +2652,38 @@ describe("assertWorkspaceBranch", () => {
             expect(emptyMessage, "no diagnosis without its evidence")
                 .not.toContain("could not inspect");
 
-            // Unreadable: not knowing what is in there is the strongest reason to warn, not a
-            // reason to stay quiet. The first version of the check caught every error and
-            // answered "nothing here", so a directory readable only by another user reported
-            // empty and the operator was never told.
+            // Absent: nothing there at all. Refusing would hand the operator a remedy they
+            // cannot perform, so removal proceeds.
+            rmSync(uninitialized, { recursive: true, force: true });
+            const absentRemoval = removeWorkspace(repoPath, "feature-login", { force: true });
+            expect(absentRemoval.errors, "an absent path is not something to protect").toEqual([]);
+            expect(absentRemoval.removed.length).toBeGreaterThan(0);
+        } finally {
+            if (previous === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+            else process.env.GIT_ALLOW_PROTOCOL = previous;
+            rmSync(origin, { recursive: true, force: true });
+        }
+    });
+
+    // This dedicated row needs real POSIX permission denial; ordinary states above stay active.
+    it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("protects an unreadable uninitialized submodule before removing any root content", () => {
+        const origin = mkdtempSync(join(tmpdir(), "wt-permission-origin-"));
+        try {
+            initRepo(origin);
+            const git = (...args: string[]): void => {
+                const result = spawnSync("git", args, { cwd: repoPath, encoding: "utf-8", stdio: "pipe" });
+                expect(result.error).toBeUndefined();
+                expect(result.status, result.stderr).toBe(0);
+            };
+            git("-c", "protocol.file.allow=always", "submodule", "add", origin, "services/api");
+            git("commit", "-am", "add permission submodule");
+            const branch = "uninitialized-unreadable";
+            const workspace = getWorkspacePath(repoPath, branch);
+            branchWorkspaces.push(workspace);
+            git("worktree", "add", "-b", branch, workspace);
+            const uninitialized = join(workspace, "services", "api");
+            mkdirSync(uninitialized, { recursive: true });
+            const stranded = join(uninitialized, "STRANDED.txt");
             writeFileSync(stranded, "back again");
             // Uncommitted work in the workspace ROOT. It is what -f destroyed on its way to
             // failing on the unreadable directory, and nothing was watching it.
@@ -2636,7 +2691,7 @@ describe("assertWorkspaceBranch", () => {
             writeFileSync(operatorWork, "not committed anywhere");
             chmodSync(uninitialized, 0o111);
             try {
-                const unreadable = removeWorkspace(repoPath, "feature-login");
+                const unreadable = removeWorkspace(repoPath, branch);
                 expect(unreadable.removed, "an unreadable directory is not an empty one").toEqual([]);
                 // And the message says why, rather than telling them to move files they cannot see.
                 expect(unreadable.errors.join(" ")).toContain("could not read");
@@ -2650,7 +2705,7 @@ describe("assertWorkspaceBranch", () => {
                 // FIRST is the workspace root. Measured on this fixture at the commit that
                 // did let it through: `.git` gone, tracked files gone, the operator's
                 // untracked file gone, and ccc then refused to touch the remains at all.
-                const forcedUnreadable = removeWorkspace(repoPath, "feature-login", { force: true });
+                const forcedUnreadable = removeWorkspace(repoPath, branch, { force: true });
                 const forcedSaid = forcedUnreadable.errors.join(" ");
                 expect(forcedSaid, "it says ccc cannot read it, not that ownership changed")
                     .toContain("cannot delete a directory it cannot read");
@@ -2667,16 +2722,7 @@ describe("assertWorkspaceBranch", () => {
                 // The step above may have moved the directory this was restoring.
                 if (existsSync(uninitialized)) chmodSync(uninitialized, 0o755);
             }
-
-            // Absent: nothing there at all. Refusing would hand the operator a remedy they
-            // cannot perform, so removal proceeds.
-            rmSync(uninitialized, { recursive: true, force: true });
-            const absentRemoval = removeWorkspace(repoPath, "feature-login", { force: true });
-            expect(absentRemoval.errors, "an absent path is not something to protect").toEqual([]);
-            expect(absentRemoval.removed.length).toBeGreaterThan(0);
         } finally {
-            if (previous === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
-            else process.env.GIT_ALLOW_PROTOCOL = previous;
             rmSync(origin, { recursive: true, force: true });
         }
     });
@@ -2855,8 +2901,8 @@ describe("assertWorkspaceBranch", () => {
 
         const loopRoot = join(tmpdir(), `wt-loop-${randomUUID()}`);
         mkdirSync(loopRoot, { recursive: true });
-        symlinkSync(join(loopRoot, "b"), join(loopRoot, "a"));
-        symlinkSync(join(loopRoot, "a"), join(loopRoot, "b"));
+        directorySymlink(join(loopRoot, "b"), join(loopRoot, "a"));
+        directorySymlink(join(loopRoot, "a"), join(loopRoot, "b"));
 
         const management = join(nestedSource, ".git", "worktrees", "nested-api", "gitdir");
         expect(existsSync(management), "the nested worktree must really be registered").toBe(true);
@@ -2883,7 +2929,7 @@ describe("assertWorkspaceBranch", () => {
         mkdirSync(nestedPath, { recursive: true });
         const decoy = join(tmpdir(), `wt-decoy-git-${randomUUID()}`);
         mkdirSync(decoy, { recursive: true });
-        symlinkSync(decoy, join(nestedPath, ".git"));
+        directorySymlink(decoy, join(nestedPath, ".git"));
         spawnSync("git", [
             "update-index", "--add", "--cacheinfo",
             `160000,${"0".repeat(39)}1,services/linked-api`,
@@ -3454,6 +3500,12 @@ describe("initWithSubmodules", () => {
         spawnSync("git", ["add", "."], { cwd: repoInWorkspace, stdio: "pipe" });
         spawnSync("git", ["commit", "-m", "init"], { cwd: repoInWorkspace, stdio: "pipe" });
 
+        const remoteUrl = spawnSync("git", ["config", "--null", "--get", "remote.origin.url"], {
+            cwd: repoInWorkspace, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(remoteUrl.error).toBeUndefined();
+        expect(remoteUrl.status, remoteUrl.stderr).toBe(0);
+
         initWithSubmodules(cloneDir);
 
         const gitmodules = readFileSync(
@@ -3461,7 +3513,12 @@ describe("initWithSubmodules", () => {
             "utf-8",
         );
         // Should use the remote URL, not a relative path
-        expect(gitmodules).toContain(bareRepo);
+        const submoduleUrl = spawnSync("git", ["config", "-f", ".gitmodules", "--null", "--get", "submodule.my-repo.url"], {
+            cwd: cloneDir, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(submoduleUrl.error).toBeUndefined();
+        expect(submoduleUrl.status, submoduleUrl.stderr).toBe(0);
+        expect(submoduleUrl.stdout).toBe(remoteUrl.stdout);
         expect(gitmodules).not.toContain("url = ./");
     });
 
@@ -4293,7 +4350,7 @@ describe("createWorkspace (unified mode)", () => {
             ["for-each-ref", "--format=%(refname)", "refs/heads"],
             { cwd: external, encoding: "utf-8", stdio: "pipe" },
         ).stdout;
-        writeFileSync(
+        overwriteGitFixtureFile(
             join(parent, "repo-a", ".git"),
             `gitdir: ${join(external, ".git")}\n`,
         );
@@ -4413,7 +4470,7 @@ describe("createWorkspace (unified mode)", () => {
             stdio: "pipe",
         });
         expect(listed.status).toBe(0);
-        expect(listed.stdout).not.toContain(`worktree ${nestedWorktree}`);
+        expect(listed.stdout).not.toContain(`worktree ${gitFixturePath(nestedWorktree)}`);
         expect(detectWorktreeWorkspaceBranch(result.workspacePath))
             .toBe("deep-feature");
 
@@ -4637,7 +4694,7 @@ describe("createWorkspace (unified mode)", () => {
 
     it("does not traverse deep repository chains below an ignored root", () => {
         initRepo(tmpDir);
-        writeFileSync(join(tmpDir, ".gitignore"), "level-01/\n");
+        writeFileSync(join(tmpDir, ".gitignore"), "l01/\n");
         spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
         spawnSync("git", ["commit", "-m", "ignore deep chain"], {
             cwd: tmpDir,
@@ -4647,12 +4704,12 @@ describe("createWorkspace (unified mode)", () => {
         let repository = tmpDir;
         const names: string[] = [];
         for (let depth = 1; depth <= 21; depth += 1) {
-            const name = `level-${String(depth).padStart(2, "0")}`;
+            const name = `l${String(depth).padStart(2, "0")}`;
             repository = join(repository, name);
             names.push(name);
             initRepo(repository);
             if (depth < 21) {
-                const next = `level-${String(depth + 1).padStart(2, "0")}`;
+                const next = `l${String(depth + 1).padStart(2, "0")}`;
                 writeFileSync(join(repository, ".gitignore"), `${next}/\n`);
                 spawnSync("git", ["add", ".gitignore"], {
                     cwd: repository,
@@ -4914,7 +4971,7 @@ describe("repairWorkspace", () => {
             cwd: tmpDir,
             encoding: "utf-8",
         });
-        expect(listed.stdout).not.toContain(wsPath);
+        expect(listed.stdout).not.toContain(gitFixturePath(wsPath));
     });
 
     it("preserves unrelated stale registrations while rolling back a missing worktree", () => {
@@ -4948,8 +5005,8 @@ describe("repairWorkspace", () => {
             cwd: tmpDir,
             encoding: "utf-8",
         });
-        expect(listed.stdout).toContain(`worktree ${unrelated}`);
-        expect(listed.stdout).not.toContain(`worktree ${wsPath}`);
+        expect(listed.stdout).toContain(`worktree ${gitFixturePath(unrelated)}`);
+        expect(listed.stdout).not.toContain(`worktree ${gitFixturePath(wsPath)}`);
         expect(branchExistsInRepo(tmpDir, branch)).toBe("none");
 
         spawnSync("git", ["worktree", "remove", "--force", unrelated], {
@@ -5192,7 +5249,7 @@ describe("repairWorkspace", () => {
             cwd: failingRepo,
             encoding: "utf-8",
         });
-        expect(listed.stdout).not.toContain(nestedPath);
+        expect(listed.stdout).not.toContain(gitFixturePath(nestedPath));
         expect(isValidWorktree(wsPath, tmpDir)).toBe(true);
     });
 
@@ -6075,7 +6132,7 @@ describe("isValidWorktree", () => {
             stdio: "pipe",
         });
         expect(worktrees.status, worktrees.stderr).toBe(0);
-        expect(worktrees.stdout).toContain(`worktree ${result.workspacePath}`);
+        expect(worktrees.stdout).toContain(`worktree ${gitFixturePath(result.workspacePath)}`);
         expect(worktrees.stdout).not.toContain("prunable");
     });
 
@@ -6131,7 +6188,9 @@ describe("isValidWorktree", () => {
             .toThrow("refusing unsafe shared-branch worktree");
     });
 
-    it.each([
+    // Native Win32 filenames cannot represent these rows. Exact hostile metadata bytes
+    // remain covered by unreachableRecordedGitPath above; ordinary branch conflicts run everywhere.
+    it.skipIf(process.platform === "win32").each([
         "competing\nworktree",
         "competing-worktree\n",
         "competing-worktree ",
@@ -7538,7 +7597,7 @@ describe("fixBrokenWorktree", () => {
             cwd: join(tmpDir, "frontend"),
             encoding: "utf-8",
         });
-        expect(listed.stdout).toContain(`worktree ${unrelated}`);
+        expect(listed.stdout).toContain(`worktree ${gitFixturePath(unrelated)}`);
 
         spawnSync("git", ["worktree", "remove", "--force", unrelated], {
             cwd: join(tmpDir, "frontend"),
@@ -7575,7 +7634,7 @@ describe("fixBrokenWorktree", () => {
             cwd: nestedRepo,
             encoding: "utf-8",
         });
-        expect(listed.stdout).toContain(`worktree ${wsFrontend}`);
+        expect(listed.stdout).toContain(`worktree ${gitFixturePath(wsFrontend)}`);
         expect(listed.stdout).toContain("branch refs/heads/foreign-stale");
     });
 
@@ -7609,7 +7668,7 @@ describe("fixBrokenWorktree", () => {
             cwd: nestedRepo,
             encoding: "utf-8",
         });
-        expect(listed.stdout).toContain(`worktree ${wsFrontend}`);
+        expect(listed.stdout).toContain(`worktree ${gitFixturePath(wsFrontend)}`);
         expect(listed.stdout).toContain("branch refs/heads/stale-atomic");
     });
 
@@ -7645,7 +7704,7 @@ describe("fixBrokenWorktree", () => {
             cwd: nestedRepo,
             encoding: "utf-8",
         });
-        expect(listed.stdout.match(new RegExp(`worktree ${wsFrontend}`, "g")))
+        expect(listed.stdout.split("\n").filter(line => line === `worktree ${gitFixturePath(wsFrontend)}`))
             .toHaveLength(1);
         expect(listed.stdout).toContain("branch refs/heads/stale-cleanup");
 
@@ -7715,7 +7774,7 @@ describe("fixBrokenWorktree", () => {
             cwd: nestedRepo,
             encoding: "utf-8",
         });
-        expect(listed.stdout).not.toContain(wsFrontend);
+        expect(listed.stdout).not.toContain(gitFixturePath(wsFrontend));
     });
 
     it("does not remove a pre-existing legacy backup path", () => {
@@ -8012,7 +8071,7 @@ describe("removeWorkspace (unified mode)", () => {
             encoding: "utf-8",
             stdio: "pipe",
         });
-        expect(listed.stdout).not.toContain(nestedWorktree);
+        expect(listed.stdout).not.toContain(gitFixturePath(nestedWorktree));
         expect(branchExistsInRepo(nestedRepo, "deep-nested-rm")).toBe("none");
     });
 
@@ -8215,7 +8274,7 @@ describe("getWorktreeGitMounts", () => {
             stdio: "pipe",
         });
         const gitFile = join(wtPath, ".git");
-        expect(readFileSync(gitFile, "utf-8")).toContain(join(repoPath, ".git"));
+        expect(readFileSync(gitFile, "utf-8")).toContain(gitFixturePath(join(repoPath, ".git")));
 
         const mounts = getWorktreeGitMounts(
             wtPath,
@@ -8892,7 +8951,7 @@ describe("getWorktreeGitMounts", () => {
             cwd: repoPath,
             stdio: "pipe",
         });
-        writeFileSync(join(target, ".git"), readFileSync(join(foreign, ".git"), "utf-8"));
+        overwriteGitFixtureFile(join(target, ".git"), readFileSync(join(foreign, ".git"), "utf-8"));
 
         expect(() => getWorktreeGitMounts(target, true))
             .toThrow(/worktree metadata is invalid|ownership could not be verified/i);
@@ -9207,7 +9266,7 @@ describe("a worktree registered on the other side of the container boundary", ()
     // whether to move someone's worktree registry entry. The narrowing to ENOENT/ENOTDIR was
     // the load-bearing claim in that decision and nothing tested it — a mutation making every
     // error read as "absent" passed the whole suite.
-    it("will not displace a registration it merely cannot look at", () => {
+    it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("will not displace a registration it merely cannot look at", () => {
         const { src, workspacePath, nested } = workspaceWithSubmodule("feature-eacces");
         const blocked = join(root, "blocked");
         mkdirSync(join(blocked, "live"), { recursive: true });
@@ -9299,7 +9358,7 @@ describe("a worktree registered on the other side of the container boundary", ()
         // The name was freed and `git worktree add` took it, so what stands at `management`
         // now is the NEW entry — pointing at the workspace, not at the container path.
         expect(readFileSync(join(management, "gitdir"), "utf-8"), "the name was reused")
-            .toContain(workspacePath);
+            .toContain(gitFixturePath(workspacePath));
         // Deleting the old contents would be a guess about a machine that cannot be looked
         // at. The entry carries the other side's HEAD, index, refs and reflog; if that path
         // ever comes back, this is the only copy of them.
@@ -9402,7 +9461,7 @@ describe("removeWorkspace -f on a tracked submodule path holding ordinary files"
         expect(existsSync(workspacePath), "the work survives").toBe(true);
         expect(existsSync(join(nested, "stuff.txt"))).toBe(true);
         const said = refused.errors.join(" ");
-        expect(said, "the path, so the operator knows what is being protected").toContain(nested);
+        expect(said, "the path, so the operator knows what is being protected").toContain(JSON.stringify(nested));
         expect(said, "and the way through").toContain("re-run with -f");
         // Not "worktree ownership changed before deletion". That is an invariant name, not a
         // sentence an operator can act on, and it was what this refusal used to say.
@@ -9581,7 +9640,7 @@ describe("the remedy for an ownership refusal, run end to end", () => {
             initRepo(foreign);
             const nested = join(workspacePath, "services", "api");
             rmSync(nested, { recursive: true, force: true });
-            expect(spawnSync("cp", ["-a", foreign, nested], { stdio: "pipe" }).status).toBe(0);
+            cpSync(foreign, nested, { recursive: true });
             const note = noteFor(() => removeWorkspace(src, "remedy-u", { force: true }));
 
             followTheRemedy(note, workspacePath, src, [join(src, "services", "api")]);
@@ -9704,7 +9763,7 @@ describe("the CLI's removal assert and removeWorkspace's own", () => {
         const foreign = join(root, "foreign");
         initRepo(foreign);
         rmSync(nested, { recursive: true, force: true });
-        expect(spawnSync("cp", ["-a", foreign, nested], { stdio: "pipe" }).status).toBe(0);
+        cpSync(foreign, nested, { recursive: true });
 
         // The parity above must not have widened what is deletable: `allowTrackedGitlinks`
         // admits only gitlinks the workspace's own index tracks.
@@ -10624,6 +10683,18 @@ describe("the stranded-branch notice, run as printed", () => {
         rmSync(root, { recursive: true, force: true });
     });
 
+    function runPrintedCommands(commands: string[]): void {
+        for (const command of commands) {
+            // Let the host shell parse the printed quotes; splitting on spaces passes them
+            // literally to Git and breaks native Windows paths as well as paths with spaces.
+            const result = spawnSync(command, {
+                shell: true, cwd: tmpdir(), encoding: "utf-8", stdio: "pipe",
+            });
+            expect(result.error).toBeUndefined();
+            expect(result.status, `${command}\n${result.stderr}`).toBe(0);
+        }
+    }
+
     function strandedRepository(name: string, lock: boolean): string {
         const repository = join(root, "src", name);
         initRepo(repository);
@@ -10684,21 +10755,9 @@ describe("the stranded-branch notice, run as printed", () => {
         expect(
             commands.findIndex((line) => line.includes("unlock")),
             "unlock comes before the prune it enables",
-        ).toBeLessThan(commands.findIndex((line) => line.includes(`${api} worktree prune`)));
+        ).toBeLessThan(commands.findIndex((line) => line.includes(`${pasteableArgument(api)} worktree prune`)));
 
-        for (const command of commands) {
-            const argv = command.split(" ");
-            // Run from somewhere unrelated on purpose: `git worktree unlock` is scoped to the
-            // repository that recorded the registration and exits 128 in the wrong one, and a
-            // notice that has just listed two repositories cannot say "there". `-C` is what
-            // makes each line pasteable from wherever the operator is standing.
-            const result = spawnSync(argv[0], argv.slice(1), {
-                cwd: tmpdir(),
-                encoding: "utf-8",
-                stdio: "pipe",
-            });
-            expect(result.status, `${command}\n${result.stderr}`).toBe(0);
-        }
+        runPrintedCommands(commands);
 
         expect(
             strandedBranchRegistrations(source, "feat"),
@@ -10746,12 +10805,7 @@ describe("the stranded-branch notice, run as printed", () => {
             .split("\n")
             .map((line) => line.trim())
             .filter((line) => line.startsWith("git -C"));
-        const pasted = spawnSync("sh", ["-e", "-c", commands.join("\n")], {
-            cwd: tmpdir(),
-            encoding: "utf-8",
-            stdio: "pipe",
-        });
-        expect(pasted.status, pasted.stderr).toBe(0);
+        runPrintedCommands(commands);
         expect(strandedBranchRegistrations(source, "feat")).toEqual([]);
     });
     it("keeps a literal dash path behind the cleanup argument separator", () => {
@@ -10801,12 +10855,7 @@ describe("the stranded-branch notice, run as printed", () => {
             .split("\n")
             .map((line) => line.trim())
             .filter((line) => line.startsWith("git -C"));
-        const pasted = spawnSync("sh", ["-e", "-c", commands.join("\n")], {
-            cwd: tmpdir(),
-            encoding: "utf-8",
-            stdio: "pipe",
-        });
-        expect(pasted.status, pasted.stderr).toBe(0);
+        runPrintedCommands(commands);
         expect(strandedBranchRegistrations(source, "feat")).toEqual([]);
     });
 
@@ -10846,18 +10895,10 @@ describe("the stranded-branch notice, run as printed", () => {
             },
         ]);
 
-        for (const command of strandedBranchNotice("feat", stranded)
+        runPrintedCommands(strandedBranchNotice("feat", stranded)
             .split("\n")
             .map((line) => line.trim())
-            .filter((line) => line.startsWith("git -C"))) {
-            const argv = command.split(" ");
-            const result = spawnSync(argv[0], argv.slice(1), {
-                cwd: tmpdir(),
-                encoding: "utf-8",
-                stdio: "pipe",
-            });
-            expect(result.status, `${command}\n${result.stderr}`).toBe(0);
-        }
+            .filter((line) => line.startsWith("git -C")));
 
         expect(strandedBranchRegistrations(source, "feat"), "both holders gone").toEqual([]);
     });
@@ -10902,14 +10943,8 @@ describe("the stranded-branch notice, run as printed", () => {
 
         expect(commands[0], "double quotes: the one form bash, cmd and PowerShell agree on")
             .toContain(`"${source}"`);
-        // Through a shell, because splitting on spaces is what a shell does and what the bare
-        // form got wrong. `sh -e` fails the test on the first non-zero exit.
-        const pasted = spawnSync("sh", ["-e", "-c", commands.join("\n")], {
-            cwd: tmpdir(),
-            encoding: "utf-8",
-            stdio: "pipe",
-        });
-        expect(pasted.status, pasted.stderr).toBe(0);
+        // Execute the printed quotes through the host shell, stopping on the first failure.
+        runPrintedCommands(commands);
         expect(strandedBranchRegistrations(source, "feat")).toEqual([]);
     });
 });
@@ -10918,45 +10953,52 @@ describe("the stranded-branch notice, run as printed", () => {
 // the container boundary, which is the whole subject of this task — and then printed into a
 // block headed "Run these". So what a shell does with it is the question, and "it is escaped"
 // was the wrong answer: the escaped form was `JSON.stringify`, which is double quotes, and
-// `$( )` substitutes inside those. The assertion is therefore not on the text but on what a
-// shell sees after reading it.
+// `$( )` substitutes inside those. Portable quoting contracts are paired with actual
+// POSIX parsing wherever a POSIX shell is available.
 describe("pasteableArgument", () => {
-    function whatTheShellSees(emitted: string): string {
-        const ran = spawnSync("sh", ["-c", `printf '%s' ${emitted}`], {
-            encoding: "utf-8",
-            stdio: "pipe",
-        });
-        expect(ran.status, ran.stderr).toBe(0);
-        return ran.stdout;
-    }
+    const cases = [
+        ["an ordinary path", "/src/api", "/src/api"],
+        ["a path with a space", "/home/kj/My Projects/src", '"/home/kj/My Projects/src"'],
+        ["a Windows path with a space", "C:\\Users\\Kyeong Jae\\catchy", '"C:\\Users\\Kyeong Jae\\catchy"'],
+        ["a path that would substitute", "/project/$(id)/api", "'/project/$(id)/api'"],
+        ["a path with a backtick", "/project/`id`/api", "'/project/`id`/api'"],
+        ["a path with shell separators", "/project/x;id;#/api", '"/project/x;id;#/api"'],
+        ["a path with a quote", "/project/it's/api", '"/project/it\'s/api"'],
+        ["a path with a double quote", '/project/say"hi"/api', '\'/project/say"hi"/api\''],
+        ["a Windows path ending in a separator", "C:\\Users\\Kyeong Jae\\", "'C:\\Users\\Kyeong Jae\\'"],
+        ["a Windows path without a space", "C:\\dev\\proj", '"C:\\dev\\proj"'],
+        ["a UNC path", "\\\\server\\share\\repo", "'\\\\server\\share\\repo'"],
+        ["a path with a quote and an expander", "/project/it's$HOME/api", "'/project/it'\\''s$HOME/api'"],
+        ["a path with a cmd variable", "/project/%USERPROFILE%/api", "/project/%USERPROFILE%/api"],
+    ] as const;
 
-    it.each([
-        ["an ordinary path", "/src/api"],
-        ["a path with a space", "/home/kj/My Projects/src"],
-        ["a Windows path with a space", "C:\\Users\\Kyeong Jae\\catchy"],
-        ["a path that would substitute", "/project/$(id)/api"],
-        ["a path with a backtick", "/project/`id`/api"],
-        ["a path with shell separators", "/project/x;id;#/api"],
-        ["a path with a quote", "/project/it's/api"],
-        ["a path with a double quote", '/project/say"hi"/api'],
-        // Ending in a backslash is not a misparse, it is a parse failure: the backslash escapes
-        // the closing double quote and the whole pasted line dies on `unexpected EOF`.
-        ["a Windows path ending in a separator", "C:\\Users\\Kyeong Jae\\"],
-        // The rows that were missing, and the reason the bare-backslash defect survived a
-        // green suite: every Windows path in this table used to contain a space, so all of them
-        // took the quoted branch and the bare exception written for them was never exercised.
-        ["a Windows path without a space", "C:\\dev\\proj"],
-        ["a UNC path", "\\\\server\\share\\repo"],
-        // Both a quote AND an expander, so the `'\''` idiom actually executes. With only one or
-        // the other the value takes the double-quote branch and that line never runs.
-        ["a path with a quote and an expander", "/project/it's$HOME/api"],
-        ["a path with a cmd variable", "/project/%USERPROFILE%/api"],
-    ])("hands the shell %s unchanged", (_label, value) => {
-        expect(whatTheShellSees(pasteableArgument(value))).toBe(value);
+    // These quoting contracts run on every host, including hosts without a POSIX shell.
+    it.each(cases)("quotes %s without changing its text", (_label, value, expected) => {
+        expect(pasteableArgument(value)).toBe(expected);
+    });
+
+    it("hands every quoted argument to an available POSIX shell unchanged", (context) => {
+        const shell = ["sh", "bash"].find(candidate => {
+            const probe = spawnSync(candidate, ["-c", "printf ccc-posix-shell"], {
+                encoding: "utf-8", stdio: "pipe",
+            });
+            return !probe.error && probe.status === 0 && probe.stdout === "ccc-posix-shell";
+        });
+        if (!shell) {
+            context.skip("POSIX argument execution requires sh or bash; portable quoting contracts run separately");
+            return;
+        }
+        for (const [label, value] of cases) {
+            const ran = spawnSync(shell, ["-c", `printf '%s' ${pasteableArgument(value)}`], {
+                encoding: "utf-8", stdio: "pipe",
+            });
+            expect(ran.error, label).toBeUndefined();
+            expect(ran.status, ran.stderr).toBe(0);
+            expect(ran.stdout, label).toBe(value);
+        }
     });
 
     it("does not put an expanding value inside double quotes", () => {
-        // The specific shape that made the previous comment false. Single quotes, not double.
         expect(pasteableArgument("/project/$(id)/api")).toBe("'/project/$(id)/api'");
     });
 });
@@ -10997,8 +11039,8 @@ describe("workspace created inside another repository", () => {
 
         const note = warnings.join("");
         expect(note).toContain("Creating this workspace inside another Git repository");
-        expect(note).toContain(join(outer, `inner${WORKTREE_SEPARATOR}nested-branch`));
-        expect(note).toContain(outer);
+        expect(note).toContain(JSON.stringify(join(outer, `inner${WORKTREE_SEPARATOR}nested-branch`)));
+        expect(note).toContain(JSON.stringify(outer));
     });
 
     it("stays quiet when the workspace lands outside every repository", () => {

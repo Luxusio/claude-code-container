@@ -1,3 +1,4 @@
+import { isolateGitFixture, gitFixturePath, overwriteGitFixtureFile } from "../helpers/git-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -62,15 +63,11 @@ function nativeMetadata(destination: string) {
 
 describe("unified creation facade with real native ownership and Git", () => {
     let root: string;
+    let restoreGitEnvironment: () => void;
     let source: string;
     beforeEach(() => {
         root = mkdtempSync(join(tmpdir(), "ccc-unified-creation-"));
-        const home = join(root, "home");
-        mkdirSync(home);
-        vi.stubEnv("HOME", home);
-        vi.stubEnv("USERPROFILE", home);
-        vi.stubEnv("GIT_CONFIG_GLOBAL", join(home, "gitconfig"));
-        vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+        restoreGitEnvironment = isolateGitFixture(join(root, "home"));
         interception.calls.length = 0;
         interception.repairFailure = undefined;
         source = join(root, "source");
@@ -78,8 +75,8 @@ describe("unified creation facade with real native ownership and Git", () => {
     });
     afterEach(() => {
         interception.repairFailure = undefined;
+        restoreGitEnvironment();
         rmSync(root, { recursive: true, force: true });
-        vi.unstubAllEnvs();
     });
 
     it("delegates real root and nested creation through the factory with root-first mutable results", () => {
@@ -118,7 +115,7 @@ describe("unified creation facade with real native ownership and Git", () => {
         expect(interception.calls).toHaveLength(1);
         expect(existsSync(destination)).toBe(false);
         expect(branchExists(source, branch)).toBe(false);
-        expect(git(source, "worktree", "list", "--porcelain")).not.toContain(destination);
+        expect(git(source, "worktree", "list", "--porcelain")).not.toContain(gitFixturePath(destination));
         expect(readFileSync(join(source, "owned.txt"), "utf8")).toBe("initial content\n");
     });
     it("removes its failed root while retaining a pre-existing local branch", () => {
@@ -152,7 +149,7 @@ describe("unified creation facade with real native ownership and Git", () => {
         expect(readFileSync(join(destination, ".git"), "utf8")).toBe(registration);
         expect(readFileSync(join(saved, "owned.txt"), "utf8")).toBe("initial content\n");
         expect(branchExists(source, branch)).toBe(true);
-        expect(git(source, "worktree", "list", "--porcelain")).toContain(destination);
+        expect(git(source, "worktree", "list", "--porcelain")).toContain(gitFixturePath(destination));
     });
     it("preserves changed ownership and its branch instead of deleting by path", () => {
         const foreign = join(root, "foreign");
@@ -162,7 +159,7 @@ describe("unified creation facade with real native ownership and Git", () => {
         const original = new Error("injected repair failure");
         const foreignGit = `gitdir: ${join(foreign, ".git")}\n`;
         interception.repairFailure = () => {
-            writeFileSync(join(destination, ".git"), foreignGit);
+            overwriteGitFixtureFile(join(destination, ".git"), foreignGit);
             writeFileSync(join(destination, "successor.txt"), "foreign content\n");
             throw original;
         };
@@ -197,6 +194,6 @@ describe("unified creation facade with real native ownership and Git", () => {
         expect(nativeMetadata(destination)).toEqual(before);
         expect(readFileSync(join(destination, "owned.txt"), "utf8")).toBe("initial content\n");
         expect(git(source, "rev-parse", `refs/heads/${branch}`)).toBe(successor);
-        expect(git(source, "worktree", "list", "--porcelain")).toContain(destination);
+        expect(git(source, "worktree", "list", "--porcelain")).toContain(gitFixturePath(destination));
     });
 });

@@ -1,9 +1,10 @@
 import { createHash } from "crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, sep } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { describe, expect, it, vi } from "vitest";
+import { directorySymlink } from "../../src/__tests__/helpers/file-symlink-fixture.js";
 import { repoRoot } from "./helpers.ts";
 import { buildLevel3Artifacts } from "./support/level3-host.ts";
 import { hyperVWindowsFailureReason } from "./hyper-v-windows-vm-e2e.ts";
@@ -597,18 +598,21 @@ describe("Windows Setup diagnostics elevation request", () => {
     it("recognises its own entrypoint through realpath, not string equality", () => {
         const dir = mkdtempSync(join(tmpdir(), "ccc-entrypoint-"));
         try {
-            const real = join(dir, "scenario.mjs");
+            const realDir = join(dir, "real");
+            mkdirSync(realDir);
+            const real = join(realDir, "scenario.mjs");
             writeFileSync(real, "export const x = 1;\n");
             const url = pathToFileURL(real).href;
             expect(invokedAsEntrypoint(real, url), "the plain case must still match").toBe(true);
             expect(invokedAsEntrypoint(undefined, url)).toBe(false);
             expect(invokedAsEntrypoint(join(dir, "other.mjs"), url), "a different file is not the entrypoint").toBe(false);
             // The case a raw compare gets wrong: the same file reached by a path that is not
-            // byte-identical. A symlink stands in for the Windows short-name and casing divergences
+            // byte-identical. A directory alias stands in for the Windows short-name and casing divergences
             // this container cannot reproduce; realpath resolves both, string equality resolves
             // neither.
-            const link = join(dir, "link.mjs");
-            symlinkSync(real, link);
+            const aliasDir = join(dir, "alias");
+            directorySymlink(realDir, aliasDir);
+            const link = join(aliasDir, "scenario.mjs");
             expect(invokedAsEntrypoint(link, url), "same file, different spelling, still the entrypoint").toBe(true);
             expect(link === fileURLToPath(url), "and a raw string compare would have said no").toBe(false);
         } finally {

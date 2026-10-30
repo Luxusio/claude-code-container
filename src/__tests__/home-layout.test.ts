@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
+import { isolateDeviceLabTestEnvironment } from "./helpers/device-lab-test-environment.js";
 import {
     clipboardFilesDir,
     clipboardPortFile,
@@ -19,7 +20,7 @@ import {
 } from "../home-layout.js";
 
 let home: string;
-const originalHome = process.env.HOME;
+let restoreEnvironment: () => void;
 
 function ccc(...parts: string[]): string {
     return join(home, ".ccc", ...parts);
@@ -45,11 +46,12 @@ const noSessions = { hasLiveSessions: () => false, warn: () => {} };
 
 beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "ccc-home-layout-"));
-    process.env.HOME = home;
+    restoreEnvironment = isolateDeviceLabTestEnvironment(home);
+    expect(homedir()).toBe(home);
 });
 
 afterEach(() => {
-    process.env.HOME = originalHome;
+    restoreEnvironment();
     rmSync(home, { recursive: true, force: true });
 });
 
@@ -388,7 +390,8 @@ describe("config.json updates", () => {
     });
 });
 
-describe("remote claude folder script", () => {
+// This integration executes a remote POSIX shell against a POSIX filesystem.
+describe.skipIf(process.platform === "win32")("remote claude folder script", () => {
     async function resolveOnRemote(profile?: string): Promise<string> {
         const { remoteClaudeDirScript } = await import("../remote.js");
         const { spawnSync } = await vi.importActual<typeof import("child_process")>("child_process");

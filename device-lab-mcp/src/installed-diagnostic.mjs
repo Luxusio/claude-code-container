@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { DEFAULT_INHERITED_ENV_VARS, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -32,6 +32,8 @@ function currentDisplayStatus(value, label) {
 }
 
 function isolatedEnvironment(homeDir) {
+    const drive = win32.parse(homeDir).root.replace(/[\\/]$/, "");
+    const driveQualified = /^[A-Za-z]:$/.test(drive);
     const appData = join(homeDir, "AppData", "Roaming");
     const localAppData = join(homeDir, "AppData", "Local");
     const temp = join(homeDir, "tmp");
@@ -42,6 +44,8 @@ function isolatedEnvironment(homeDir) {
         ...Object.fromEntries(DEFAULT_INHERITED_ENV_VARS.map(key => [key, undefined])),
         HOME: homeDir,
         USERPROFILE: homeDir,
+        HOMEDRIVE: driveQualified ? drive : "",
+        HOMEPATH: driveQualified ? homeDir.slice(drive.length) : homeDir,
         APPDATA: appData,
         LOCALAPPDATA: localAppData,
         TMPDIR: temp,

@@ -307,7 +307,7 @@ cp.spawnSync=(command,argv,options)=>{
      const ownPath=session.getCurrentSession().lockFile;
      const own=ownPath&&existsSync(ownPath)?store.read(captureNativeSessionOwnership(ownPath),{prefix:projectId}):null;
      if(own?.observation.lastAcknowledged?.containerId===oldId&&own.observation.lastAcknowledged.cleanupEnabled===false){
-       claim=ownPath;guardian=own.observation.guardian.pid;falseAckBeforeFailure=true;raceInjected=true;
+       claim=ownPath;guardian=own.observation.guardian;falseAckBeforeFailure=true;raceInjected=true;
        if(scenario==='retained-mixed-cohort-race')seedRetained(2);
        else {
          const captured=retainedFiles.find(file=>file.path.endsWith('retained-1.lock.guardian.json'));
@@ -358,28 +358,36 @@ const {createNativeContainerExecPorts}=await import(${JSON.stringify(composition
 const {getProjectId}=await import(new URL('./utils.js',${JSON.stringify(sessionUrl)}));
 const {captureNativeSessionOwnership}=await import(new URL('./adapters/session-ownership.js',${JSON.stringify(sessionUrl)}));
 const {createNativeSessionClaimObservationStore}=await import(new URL('./adapters/session-claim-observation.js',${JSON.stringify(sessionUrl)}));
+const {encodeSessionClaim}=await import(new URL('./domain/session-claims.js',${JSON.stringify(sessionUrl)}));
+const {sessionLockLiveness}=await import(${JSON.stringify(sessionLockLivenessUrl)});
 projectId=getProjectId(project);
 const store=createNativeSessionClaimObservationStore();
 if(retainedScenario){
  const {locksDir}=await import(new URL('./home-layout.js',${JSON.stringify(sessionUrl)}));
- const {encodeSessionClaim}=await import(new URL('./domain/session-claims.js',${JSON.stringify(sessionUrl)}));
- const {sessionLockLiveness}=await import(${JSON.stringify(sessionLockLivenessUrl)});
  const {captureBindMountSourceIdentity,bindMountSourceIdentityDigest}=await import(new URL('./adapters/container-mount-observations.js',${JSON.stringify(sessionUrl)}));
- const reapedChildPid=()=>{
-   const result=originalSpawnSync(process.execPath,['-e',''],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','pipe'],windowsHide:true});
-   assert.equal(result.error,undefined,'fixture no-op child could not complete');
-   assert.equal(result.status,0,'fixture no-op child did not exit successfully');
-   assert.equal(result.signal,null,'fixture no-op child was signalled');
-   assert.ok(Number.isSafeInteger(result.pid)&&result.pid>0,'fixture no-op child did not supply a valid PID');
-   return result.pid;
+ const reapedChildIdentity=()=>{
+   const program=[
+     'import assert from "node:assert/strict"',
+     'const {processStartToken}=await import('+JSON.stringify(${JSON.stringify(sessionLockLivenessUrl)})+')',
+     'const startToken=processStartToken(process.pid)',
+     'assert.ok(startToken,"fixture child lacks native process identity")',
+     'process.stdout.write(JSON.stringify({pid:process.pid,startToken}))',
+   ].join(';');
+   const result=originalSpawnSync(process.execPath,['--input-type=module','--eval',program],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','pipe'],windowsHide:true});
+   assert.equal(result.error,undefined,'fixture identity child could not complete');
+   assert.equal(result.status,0,'fixture identity child did not exit successfully: '+result.stderr);
+   assert.equal(result.signal,null,'fixture identity child was signalled');
+   assert.ok(Number.isSafeInteger(result.pid)&&result.pid>0,'fixture identity child did not supply a valid PID');
+   const identity=JSON.parse(result.stdout);
+   assert.equal(identity.pid,result.pid);assert.equal(typeof identity.startToken,'string');assert.ok(identity.startToken.length>0);
+   return identity;
  };
- // Real, synchronously reaped child PIDs stay within the native observer's PID range.
- const deadOwner=reapedChildPid(),deadGuardian=reapedChildPid();
- assert.notEqual(deadOwner,deadGuardian,'fixture no-op child PID was reused');
- const staleReapedClaim=(pid,startToken)=>{
-   assert.throws(()=>process.kill(pid,0),{code:'ESRCH'},'fixture child PID was reused or remains live');
-   const content=encodeSessionClaim(pid,startToken,'monitored');
-   assert.equal(sessionLockLiveness(content),'stale','fixture child lacks native stale proof');
+ // Capture each real identity before its clean completion; a reused PID is a different process.
+ const deadOwner=reapedChildIdentity(),deadGuardian=reapedChildIdentity();
+ assert.notDeepEqual(deadOwner,deadGuardian,'fixture child process identity was reused');
+ const staleReapedClaim=identity=>{
+   const content=encodeSessionClaim(identity.pid,identity.startToken,'monitored');
+   assert.equal(sessionLockLiveness(content),'stale','completed fixture child lacks native stale identity proof');
    return content;
  };
  projectFingerprint=bindMountSourceIdentityDigest(captureBindMountSourceIdentity(project));
@@ -387,8 +395,8 @@ if(retainedScenario){
  session.withContainerLifecycleLock(projectId,()=>{
    seedRetained=index=>{
      const path=join(locksDir(),projectId+'--retained-'+index+'.lock'),generation='retained-generation-'+index;
-     const owner=staleReapedClaim(deadOwner,'retained-owner-'+index),guardian={pid:deadGuardian,startToken:'retained-guardian-'+index};
-     staleReapedClaim(guardian.pid,guardian.startToken);
+     const owner=staleReapedClaim(deadOwner),guardian={...deadGuardian};
+     staleReapedClaim(guardian);
      writeFileSync(path,owner,{mode:0o600,flag:'wx'});
      let old=store.begin({receipt:captureNativeSessionOwnership(path),binding:{lockFile:path,projectPath:project,prefix:projectId},
        runtimeInvocation:runtime.getRuntimeInvocation(),guardian,generation});
@@ -421,7 +429,7 @@ Object.assign(ports,{
      const currentPath=session.getCurrentSession().lockFile;
      const observed=currentPath?store.read(captureNativeSessionOwnership(currentPath),{prefix:projectId}):null;
      if(observed?.observation.lastAcknowledged?.containerId===oldId&&observed.observation.lastAcknowledged.cleanupEnabled===false){
-       claim=currentPath;guardian=observed.observation.guardian.pid;falseAckBeforeFailure=true;
+       claim=currentPath;guardian=observed.observation.guardian;falseAckBeforeFailure=true;
        return {...inspected,containerId:nextId};
      }
    }
@@ -430,7 +438,7 @@ Object.assign(ports,{
  async acquireOwnership(...args){
    const result=await acquire(...args); claim=result.lockFile;
    const snapshot=store.read(captureNativeSessionOwnership(claim),{prefix:projectId});
-   assert.ok(snapshot); assert.equal(snapshot.observation.pending,null); guardian=snapshot.observation.guardian.pid;
+   assert.ok(snapshot); assert.equal(snapshot.observation.pending,null); guardian=snapshot.observation.guardian;
    if(scenario==='stopped-upgrade') assert.equal(result.requiresLiveVerification,true);
    if(retainedScenario){assert.equal(result.existingOnly,true);assert.equal(result.existingId,oldId);assert.equal(snapshot.observation.lastAcknowledged.cleanupEnabled,false);
      if(retainedStopped){assert.equal(targetRunning,false);if(scenario==='retained-provisional')assert.equal(result.requiresLiveVerification,true);}}
@@ -555,8 +563,9 @@ assert.equal(existsSync(claim),false); assert.equal(existsSync(claim+'.guardian.
 assert.equal(readFileSync(join(project,'untracked.txt'),'utf8'),'uncommitted work\\n');
 assert.deepEqual(readdirSync(project),['untracked.txt']);
 const until=Date.now()+5000;
-while(Date.now()<until){try{process.kill(guardian,0);}catch(cause){if(cause.code==='ESRCH')break;throw cause;} await new Promise(resolve=>setTimeout(resolve,20));}
-try{process.kill(guardian,0);throw new Error('owned guardian did not exit');}catch(cause){if(cause.code!=='ESRCH')throw cause;}
+const guardianClaim=encodeSessionClaim(guardian.pid,guardian.startToken,'monitored');
+while(Date.now()<until){if(sessionLockLiveness(guardianClaim)==='stale')break;await new Promise(resolve=>setTimeout(resolve,20));}
+assert.equal(sessionLockLiveness(guardianClaim),'stale','owned guardian identity did not exit');
 console.log(JSON.stringify({retained,pending,mutationIntents,markerRead,removed,stopped,claimsRetired:true,
  ...(retryScenario?{retryStarts,secondDispatches,expectedAtRetry,ownTargetAtRetry}:{}),
  ...(retainedScenario?{retainedFiles:retainedFiles.length,commandLaunched,falseAckAtLaunch,cleanupFlags,exactStarts}: {}),
