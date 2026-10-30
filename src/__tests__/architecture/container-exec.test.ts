@@ -656,7 +656,7 @@ describe("container exec semantic workflow", () => {
         const environment = vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment;
         expect(environment).toEqual(expect.arrayContaining([
             ["CCC_CLIPBOARD_URL", connection.url], ["CCC_CLIPBOARD_TOKEN", connection.token],
-            ["CCC_CLIPBOARD_GENERATION", selected.generation],
+            ["CCC_CLIPBOARD_GENERATION", selected.generation], ["BROWSER", "/usr/local/bin/ccc-open-url"],
         ]));
         expect(environment.filter(([key]) => key === "CCC_CLIPBOARD_GENERATION")).toHaveLength(1);
         expect(f.events.indexOf("bridge-ready")).toBeLessThan(f.events.indexOf("prepare"));
@@ -1003,9 +1003,47 @@ describe("container exec semantic workflow", () => {
     it("preserves original Claude argument intent and requests its Node environment", async () => {
         const f = fixture(), args = ["literal with spaces", "$(never executed)"];
         await f.exec("/repo", ["claude", ...args]);
-        expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment).toEqual([...f.entries, ["MISE_NODE_VERSION", "22"], ["BASH_ENV", "/home/ccc/.bashrc_hooks"]]);
+        expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment).toEqual([...f.entries, ["MISE_NODE_VERSION", "22"], ["BASH_ENV", "/home/ccc/.bashrc_hooks"], ["CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS", "1"]]);
         expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0].command).toEqual({kind: "claude", arguments: args});
         expect(f.ports.prepareCodexCommand).not.toHaveBeenCalled();
+    });
+    it("defaults Claude permission launch environment after host forwarding and keeps explicit session override last", async () => {
+        const key = "CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS", f = fixture();
+        vi.mocked(f.ports.observeCommandEnvironment).mockReturnValue({forwarded: [[key, "0"]], skippedKeys: [], containerMarker: ["container", "docker"], hostLangPresent: true, hostTimezone: "Host/Zone"});
+        await f.exec("/repo", ["claude"], {env: {[key]: "0"}});
+        const environment = vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment;
+        expect(environment.filter(([name]) => name === key)).toEqual([[key, "0"], [key, "1"], [key, "0"]]);
+        expect(environment.at(-1)).toEqual([key, "0"]);
+        expect(Object.fromEntries(environment)[key]).toBe("0");
+    });
+    it.each(["codex", "opencode", "printf"])("does not add Claude permission launch environment to %s", async command => {
+        const f = fixture();
+        await f.exec("/repo", [command]);
+        const environment = vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment;
+        expect(environment.some(([name]) => name === "CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS")).toBe(false);
+    });
+    it.each(["codex", "claude"])("defaults %s browser to the selected host helper and preserves an explicit session override last", async tool => {
+        const f = fixture(), connection = {url: "http://host.docker.internal:4322", token: "current-token", generation: "a1b2c3d4e5f6"};
+        f.ports.clipboardConnection = () => connection;
+        vi.mocked(f.ports.observeCommandEnvironment).mockReturnValue({forwarded: [["BROWSER", "/host/browser"]], skippedKeys: [],
+            containerMarker: ["container", "docker"], hostLangPresent: true, hostTimezone: "Host/Zone"});
+        await f.exec("/repo", [tool], {env: {BROWSER: "/session/custom-browser"}});
+        const environment = vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment;
+        expect(environment).toEqual([
+            ["container", "docker"], ["BROWSER", "/host/browser"], ["MISE_TRUSTED_CONFIG_PATHS", "/project/repo-id"], ["TZ", "Host/Zone"],
+            ["CCC_CLIPBOARD_URL", connection.url], ["CCC_CLIPBOARD_TOKEN", connection.token], ["CCC_CLIPBOARD_GENERATION", connection.generation],
+            ...(tool === "claude" ? [["MISE_NODE_VERSION", "22"], ["BASH_ENV", "/home/ccc/.bashrc_hooks"],
+                ["CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS", "1"]] : []),
+            ["BROWSER", "/usr/local/bin/ccc-open-url"], ["BROWSER", "/session/custom-browser"],
+        ]);
+        expect(Object.fromEntries(environment).BROWSER).toBe("/session/custom-browser");
+    });
+    it.each(["opencode", "printf"])("does not add the CCC browser helper default to generic tool %s", async tool => {
+        const f = fixture();
+        f.ports.clipboardConnection = () => ({url: "http://host.docker.internal:4322", token: "current-token", generation: "a1b2c3d4e5f6"});
+        await f.exec("/repo", [tool]);
+        const environment = vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment;
+        expect(environment.some(([name]) => name === "BROWSER")).toBe(false);
     });
     it.each([
         {hostTimezone: "Host/Zone", observedTimezone: "Observed/Zone", expected: "Host/Zone"},
@@ -1182,7 +1220,7 @@ describe("native clipboard session handoff", () => {
     }
     const connection = {url: "http://host.docker.internal:4322", hostUrl: "http://127.0.0.1:4322",
         token: "current-generation-token", generation: "a1b2c3d4e5f6"};
-    const executablePaths = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-x11-bridge"].map(name => `/usr/local/bin/${name}`);
+    const executablePaths = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-open-url", "ccc-x11-bridge"].map(name => `/usr/local/bin/${name}`);
     function isAssetChecker(args: string[]) {
         return args[3] === "/usr/bin/sha256sum" || (args[3] === "/bin/sh" && args[6] === "ccc-clipboard-assets");
     }
@@ -1197,21 +1235,23 @@ describe("native clipboard session handoff", () => {
     }
 
     it.skipIf(originalNativePlatform === "win32" || !existsSync("/usr/bin/sha256sum")).each([
-        {state: "xclip mode0644", executableXclip: false},
-        {state: "policy mode0644", executableXclip: true},
-    ])("checks actual executable permissions with current bytes and $state", async ({executableXclip}) => {
+        {state: "xclip mode0644", nonExecutable: "xclip", staleAsset: undefined},
+        {state: "browser helper mode0644", nonExecutable: "ccc-open-url", staleAsset: undefined},
+        {state: "browser helper retained bytes", nonExecutable: undefined, staleAsset: "ccc-open-url"},
+        {state: "policy mode0644", nonExecutable: undefined, staleAsset: undefined},
+    ])("checks actual executable permissions and installed bytes with $state", async ({nonExecutable, staleAsset}) => {
         const actual = await vi.importActual<typeof import("child_process")>("child_process");
         const directory = mkdtempSync(join(tmpdir(), "ccc-installed-clipboard-mode-"));
         const mappedPaths = new Map<string, string>();
         let checkedInstalledFiles = false, attemptedBridgeLaunch = false;
         try {
-            for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-x11-bridge", "clipboard-x11-sync.sh"]) {
+            for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-open-url", "ccc-x11-bridge", "clipboard-x11-sync.sh"]) {
                 const source = name === "clipboard-x11-sync.sh" ? `lib/${name}` : name === "ccc-x11-bridge" ? name : `clipboard-shims/${name}`;
                 const installedPath = name === "clipboard-x11-sync.sh" ? `/usr/local/lib/ccc/${name}` : `/usr/local/bin/${name}`;
                 const path = join(directory, name);
                 const bytes = readFileSync(new URL(`../../../scripts/${source}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
-                writeFileSync(path, bytes);
-                chmodSync(path, name === "clipboard-x11-sync.sh" || (name === "xclip" && !executableXclip) ? 0o644 : 0o755);
+                writeFileSync(path, name === staleAsset ? "#!/bin/sh\n# retained browser helper\nexit 0\n" : bytes);
+                chmodSync(path, name === "clipboard-x11-sync.sh" || name === nonExecutable ? 0o644 : 0o755);
                 mappedPaths.set(installedPath, path);
             }
             const ports = nativePorts();
@@ -1239,7 +1279,7 @@ describe("native clipboard session handoff", () => {
                 return actual.spawnSync(args[3], argv, {...options, input: manifest});
             });
 
-            if (executableXclip) {
+            if (nonExecutable === undefined && staleAsset === undefined) {
                 expect(() => ports.startClipboardBridge("exact-container-id", connection)).not.toThrow();
                 expect(attemptedBridgeLaunch).toBe(true);
                 expect(stoppedNative.spawnSync).toHaveBeenCalledTimes(3);
@@ -1252,12 +1292,12 @@ describe("native clipboard session handoff", () => {
         } finally { rmSync(directory, {recursive: true, force: true}); }
     });
 
-    it.each(["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-x11-bridge", "clipboard-x11-sync.sh"])(
+    it.each(["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-open-url", "ccc-x11-bridge", "clipboard-x11-sync.sh"])(
         "refuses retained legacy %s bytes even when the old bridge would pretend readiness succeeds", retained => {
             const ports = nativePorts();
             const installed = new Map<string, Buffer>();
             const shipped = new Map<string, string>();
-            for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-x11-bridge", "clipboard-x11-sync.sh"]) {
+            for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-open-url", "ccc-x11-bridge", "clipboard-x11-sync.sh"]) {
                 const source = name === "clipboard-x11-sync.sh" ? `lib/${name}` : name === "ccc-x11-bridge" ? name : `clipboard-shims/${name}`;
                 const path = name === "clipboard-x11-sync.sh" ? `/usr/local/lib/ccc/${name}` : `/usr/local/bin/${name}`;
                 const bytes = Buffer.from(readFileSync(new URL(`../../../scripts/${source}`, import.meta.url), "utf8").replace(/\r\n/g, "\n"));

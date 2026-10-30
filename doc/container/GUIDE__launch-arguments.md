@@ -40,3 +40,23 @@ tests alone do not establish distribution parity.
 Real Docker/Podman, remote/Colima,
 rootless, SELinux and native Windows/macOS acceptance remain separate obligations.
 This operation does not certify the full architecture migration.
+
+For local Claude container execution, CCC merges
+`permissions.defaultMode: "bypassPermissions"` into the selected CCC-managed
+profile's `claude/settings.json`, creating it when absent and preserving other
+settings. Invalid or unsafe existing settings are preserved and reported as a
+failure. The automatic `--dangerously-skip-permissions` argument is removed;
+explicit user arguments remain intact. This is a user-level default, not an
+override of project settings, command-line choices or managed policy.
+The separate `ccc remote` transport retains its previous launch arguments; it
+does not synchronize this local profile setting to the receiving host.
+
+CCC supplies `CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS=1` in the process
+launch environment.
+Explicit session `--env` values take precedence. The setting applies to Claude
+commands; it is not written to a Claude settings file or applied to other tools.
+Claude Code 2.1.311 and later read this variable only at launch. In
+`bypassPermissions` mode it removes the additional critical-path Bash deletion
+confirmation; managed rules and hooks may still require approval. See the
+[official variable reference](https://code.claude.com/docs/en/env-vars) and
+[permission-mode behavior](https://code.claude.com/docs/en/permission-modes#turn-off-the-critical-path-removal-prompt-in-bypasspermissions-mode).

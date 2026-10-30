@@ -345,6 +345,13 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             if (commandTool?.needsNodeRuntime) {
                 envEntries.push(["MISE_NODE_VERSION", "22"], ["BASH_ENV", "/home/ccc/.bashrc_hooks"]);
             }
+            if (commandTool?.name === "claude") {
+                envEntries.push(["CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS", "1"]);
+            }
+            if (clipboard.url && clipboard.token && clipboard.generation
+                && (commandTool?.name === "claude" || commandTool?.name === "codex")) {
+                envEntries.push(["BROWSER", "/usr/local/bin/ccc-open-url"]);
+            }
             if (options.env) envEntries.push(...Object.entries(options.env));
 
             let preparationStatus: number | null = null;

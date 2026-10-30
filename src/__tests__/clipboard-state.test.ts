@@ -23,13 +23,13 @@ describe.skipIf(process.platform === "win32").each(["legacy", "run"] as const)("
     const daemons: Array<{pid: number; startToken: string}> = [];
     const childDiagnostics = new Map<ChildProcess, () => string>();
     let latestStartup: Promise<{code: number | null; stdout: string; stderr: string}> | undefined;
-    beforeEach(() => {
+    beforeEach(async () => {
         latestStartup = undefined;
         root = realpathSync(mkdtempSync(join(tmpdir(), "ccc-clipboard-state-"))); home = join(root, "home"); mkdirSync(home, {mode: 0o700});
         const prepared = prepareRuntimeBindHome(join(home, ".ccc")); withRuntimeBindGuard(prepared, () => {});
         const data = join(home, ".ccc", ...(layout === "run" ? ["run"] : []));
         mkdirSync(join(data, "locks"), {recursive: true, mode: 0o700});
-        portFile = join(data, "clipboard.port"); driver = join(root, "driver.mjs");
+        driver = join(root, "driver.mjs");
         const inertRuntime = join(root, "runtime.mjs");
         writeFileSync(inertRuntime, `#!${process.execPath}
 const args=process.argv.slice(2); if(!args.includes('ps')) process.exit(91);
@@ -54,9 +54,22 @@ const action=process.argv[2];
 if(action==='serve')process.argv=[process.execPath,join(${JSON.stringify(root)},'clipboard-server.js'),'--serve'];
 const clipboard=await import(${JSON.stringify(product("clipboard-server.js"))});
 if(action==='stop')await clipboard.stopClipboardServerIfLast(false);
-else if(action==='retire')await clipboard.retireClipboardServerFromPortFile(${JSON.stringify(portFile)});
+else if(action==='retire')await clipboard.retireClipboardServerFromPortFile(process.argv[3]);
 else if(action==='ensure')console.log(JSON.stringify(await clipboard.ensureClipboardSelection()));
+else if(action==='policy'){
+ const token='private-state-policy-fixture',instance=clipboard.createClipboardServer(token,'unsupported');
+ const port=await instance.start('127.0.0.1');
+ try{const response=await fetch('http://127.0.0.1:'+port+'/health',{headers:{Authorization:'Bearer '+token}});console.log(JSON.stringify(await response.json()));}
+ finally{instance.server.closeAllConnections();await new Promise(resolve=>instance.server.close(resolve));}
+}
 `);
+        const policy = await start("policy").exited;
+        expect(policy.code, policy.stderr).toBe(0);
+        const generation: string = JSON.parse(policy.stdout.trim()).version;
+        expect(generation).toMatch(/^[a-f0-9]{12}$/);
+        // Both layouts retain their own lock directory and current service
+        // publication is the policy sibling of that layout's legacy port file.
+        portFile = join(data, `clipboard.${generation}.port`);
     });
     afterEach(async () => {
         for (const socket of sockets) socket.destroy();
@@ -71,7 +84,7 @@ else if(action==='ensure')console.log(JSON.stringify(await clipboard.ensureClipb
         children.length = descriptors.length = sockets.length = daemons.length = 0; childDiagnostics.clear(); rmSync(root, {recursive: true, force: true});
     });
     function start(action: string) {
-        const child = spawn(process.execPath, [driver, action], {cwd: root,
+        const child = spawn(process.execPath, [driver, action, ...(action === "retire" ? [portFile] : [])], {cwd: root,
             env: {...process.env, HOME: home, USERPROFILE: home, CCC_HOME: undefined, CCC_PROFILE: undefined, NODE_OPTIONS: undefined, VITEST: undefined},
             stdio: ["ignore", "pipe", "pipe", "ipc"]});
         children.push(child); let stdout = "", stderr = "";

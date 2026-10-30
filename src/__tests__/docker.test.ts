@@ -1767,9 +1767,9 @@ describe("docker.ts module exports", () => {
     });
 
     describe("syncClipboardShims", () => {
-        it.each(["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"])("preserves installed %s bytes after a partial individual shim copy fails", failedShim => {
+        it.each(["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-open-url"])("preserves installed %s bytes after a partial individual shim copy fails", failedShim => {
             mockExistsSync.mockReturnValue(true);
-            const shimNames = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"];
+            const shimNames = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-open-url"];
             const files = new Map<string, {bytes: Buffer; mode: number}>();
             for (const name of shimNames) files.set(`/usr/local/bin/${name}`,
                 {bytes: Buffer.from(`#!/bin/sh\nprintf 'old ${name}'\n`), mode: 0o755});
@@ -1841,7 +1841,7 @@ describe("docker.ts module exports", () => {
             );
             const shims = cpCalls.map((c: unknown[]) => (c[1] as string[])[2]);
             const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
-            for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"]) {
+            for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-open-url"]) {
                 const copied = cpCalls.find(call => (call[1] as string[])[1] === join("/fake", "scripts", "clipboard-shims", name));
                 expect(copied).toBeDefined();
                 const target = (copied![1] as string[])[2];
@@ -1965,7 +1965,7 @@ describe("docker.ts module exports", () => {
             const policyStage = policyCopy[2].slice("ccc-test-abc123:".length);
             const shimStages = calls.filter(args => args[0] === "cp" && args[1].includes("clipboard-shims"))
                 .map(args => args[2].slice("ccc-test-abc123:".length));
-            expect(shimStages).toHaveLength(5);
+            expect(shimStages).toHaveLength(6);
             expect(calls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "rm", "-f", ...shimStages, stage, policyStage]);
             expect(calls.some(args => args[4] === "mv" && args.at(-1) === "/usr/local/bin/ccc-x11-bridge")).toBe(false);
         });
@@ -2010,7 +2010,7 @@ describe("docker.ts module exports", () => {
             const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
             const shimStages = calls.filter(args => args[0] === "cp" && args[1].includes("clipboard-shims"))
                 .map(args => args[2].slice("ccc-test-abc123:".length));
-            expect(shimStages).toHaveLength(5);
+            expect(shimStages).toHaveLength(6);
             expect(calls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "rm", "-f",
                 ...shimStages,
                 expect.stringMatching(/^\/usr\/local\/bin\/ccc-x11-bridge\.[a-f0-9]+\.new$/),

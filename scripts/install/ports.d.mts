@@ -2,8 +2,11 @@ export type InstallerRuntime = "docker" | "podman";
 export type InstallerBuildResult =
     | { status: "ready"; then?: never }
     | { status: "failed"; cause: unknown; then?: never };
+export type UnixLauncherAlias = { path: string; kind: "known-npm" | "shadowing"; preempts: boolean };
 export type InstallerEvent =
-    | { kind: "building" | "runtime-unavailable" | "image-built" | "path-present" | "path-added" | "path-removed" | "cli-installed" | "image-ready" | "image-partial-success" | "not-installed" }
+    | { kind: "building" | "runtime-unavailable" | "image-built" | "path-present" | "path-added" | "path-removed" | "image-ready" | "image-partial-success" | "not-installed" }
+    | { kind: "cli-installed"; command?: string }
+    | { kind: "unix-launcher-alias-updated" | "unix-launcher-shadowed"; path: string; target: string }
     | { kind: "runtime-selected"; runtime: InstallerRuntime }
     | { kind: "image-current"; hash: string }
     | { kind: "image-rebuilding"; runtime: InstallerRuntime; previousHash: string | null; hash: string }
@@ -43,6 +46,8 @@ export interface InstallerPorts {
     writeUnixPackage(sourceRoot: string, targetDir: string): undefined;
     unixWrapperContent(targetDir: string): string;
     writeUnixLauncher(path: string, targetDir: string): undefined;
+    observeUnixLauncherAliases(targetBin: string): readonly UnixLauncherAlias[];
+    publishUnixLauncherAlias(alias: UnixLauncherAlias, targetBin: string): undefined;
     writeWindowsLauncher(path: string): undefined;
     readUserPath(): string;
     writeUserPath(value: string): undefined;

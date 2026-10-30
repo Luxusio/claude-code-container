@@ -213,8 +213,8 @@ export function createInstallerApplication(ports) {
         return true;
     }
 
-    /** @param {string} sourceRoot @param {string} targetDir @param {string} [targetBin] */
-    function replaceUnixPayload(sourceRoot, targetDir, targetBin) {
+    /** @param {string} sourceRoot @param {string} targetDir @param {string} [targetBin] @param {() => void} [afterPublication] */
+    function replaceUnixPayload(sourceRoot, targetDir, targetBin, afterPublication) {
         const resolvedSourceRoot = ports.resolvePath(sourceRoot);
         const resolvedTargetDir = ports.resolvePath(targetDir);
         assertSeparatePayloadSource(resolvedSourceRoot, resolvedTargetDir);
@@ -280,6 +280,7 @@ export function createInstallerApplication(ports) {
                 }
             }
             if (failed) throw failure;
+            afterPublication?.();
         }, () => {
             // Validate aliases before creating absent parent scaffolding.
             assertSeparatePayloadSource(ports.realPath(resolvedSourceRoot), canonicalMissingTarget(resolvedTargetDir), true);
@@ -311,8 +312,23 @@ export function createInstallerApplication(ports) {
 
         const targetDir = ports.joinPath(installDir, "ccc-dist");
         const targetBin = ports.joinPath(installDir, "ccc");
+        let shadowed = false;
         try {
-            replaceUnixPayload(ports.sourceRoot(), targetDir, targetBin);
+            replaceUnixPayload(ports.sourceRoot(), targetDir, targetBin, () => {
+                try {
+                    for (const alias of ports.observeUnixLauncherAliases(targetBin)) {
+                        if (alias.kind === "known-npm") {
+                            ports.publishUnixLauncherAlias(alias, targetBin);
+                            ports.present({ kind: "unix-launcher-alias-updated", path: alias.path, target: targetBin });
+                        } else if (alias.preempts) {
+                            shadowed = true;
+                            ports.present({ kind: "unix-launcher-shadowed", path: alias.path, target: targetBin });
+                        }
+                    }
+                } catch (cause) {
+                    throw new Error(`Canonical CCC installation is published at ${targetBin}, but launcher repair is incomplete. Use ${targetBin} explicitly: ${failureDetail(cause)}`, { cause });
+                }
+            });
             ports.present({ kind: "installed", path: targetBin });
         } catch (e) {
             if (errorCode(e) === "EACCES") {
@@ -321,6 +337,7 @@ export function createInstallerApplication(ports) {
             }
             throw e;
         }
+        return shadowed ? targetBin : undefined;
     }
 
     /** @param {{skipImage?:boolean}} [options] */
@@ -328,8 +345,8 @@ export function createInstallerApplication(ports) {
         build();
         /** @type {ImageOutcome} */
         const image = skipImage ? { status: "skipped", reason: "--skip-image" } : buildImage();
-        linkBinary();
-        ports.present({ kind: "cli-installed" });
+        const command = linkBinary();
+        ports.present({ kind: "cli-installed", ...(command ? { command } : {}) });
         if (image.status === "ready") {
             ports.present({ kind: "image-ready" });
         } else if (image.status === "failed") {

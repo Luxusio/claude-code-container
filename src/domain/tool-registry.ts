@@ -60,7 +60,7 @@ export function createDefaultToolCatalog(): ToolDefinition[] {
             name: "claude",
             displayName: "Claude Code",
             binary: CLAUDE_BIN_PATH,
-            defaultFlags: ["--dangerously-skip-permissions"],
+            defaultFlags: [],
             credentialMounts: [
                 // Legacy hostDir; the real source is per profile (resolveCredentialHostPath, home-layout.ts).
                 { hostDir: ".ccc/claude", containerDir: "/home/ccc/.claude" },

@@ -21,6 +21,16 @@ new user requirements for a transaction framework or changed storage layout.
 - Keep the public payload export, `ccc-dist` path, pinned Node launcher,
   executable mode, literal argument forwarding and Windows installation behavior.
 - Direct invocation through a symlinked entry or ancestor must dispatch the installer when Node has resolved the same actual module. Comparing only lexical argument spelling with the canonical module URL must not silently return success without executing. Importing the module, including with unrelated or unavailable process arguments, must not dispatch installation.
+- A successful source installation must not leave a positively identified CCC
+  npm launcher earlier on PATH executing the previous package. This failure was
+  reproduced with identical package versions but different executable content,
+  and the user confirmed a Mise npm symlink preceding the newly installed
+  `/usr/local/bin/ccc`. After publishing the new launcher, converge only a
+  captured, unchanged symlink to the exact `claude-code-container` npm package
+  `bin.ccc` entry with expected ownership. Preserve npm package contents,
+  unrelated commands, unknown wrappers and changed path identities. Do not
+  solve this installation conflict by broadening broker process trust or
+  terminating the older broker.
 
 Private native subprocess tests must show that old CLI execution survives
 copy/package/launcher preparation and publication failures. Also exercise the

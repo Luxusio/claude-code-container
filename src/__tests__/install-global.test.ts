@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -11,7 +11,7 @@ afterEach(() => { for (const dir of fixtures.splice(0)) rmSync(dir, { recursive:
 // Execute the actual installer in an owned copy. Only its Unix destination is
 // redirected; no fixture can touch the machine's global CLI or User PATH.
 function fixture(packaged = false, directoryName?: string) {
-    const sandbox = mkdtempSync(join(tmpdir(), "ccc-install-"));
+    const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "ccc-install-")));
     fixtures.push(sandbox);
     const root = packaged ? join(sandbox, "node_modules", "ccc") : directoryName ? join(sandbox, directoryName) : sandbox;
     mkdirSync(root, { recursive: true });
@@ -19,6 +19,15 @@ function fixture(packaged = false, directoryName?: string) {
     const commands = join(root, "commands");
     mkdirSync(installDir);
     mkdirSync(commands);
+    const nodePrefix = join(root, "private-node-prefix"), nodeBin = join(nodePrefix, "bin");
+    mkdirSync(nodeBin, {recursive: true});
+    const privateNode = process.platform === "win32" ? process.execPath : join(nodeBin, "node");
+    const nodePrefixPreload = join(root, "private-node-prefix.mjs");
+    if (process.platform !== "win32") symlinkSync(process.execPath, privateNode);
+    // The installer may repair Node's sibling npm launcher. Keep that discovery
+    // inside this fixture while executing the real trusted Node binary.
+    writeFileSync(nodePrefixPreload, `Object.defineProperty(process,"execPath",{value:${JSON.stringify(privateNode)}});`);
+    const nodePrefixArgs = ["--import", pathToFileURL(nodePrefixPreload).href];
     for (const dir of ["scripts", "scripts/install", "scripts/localhost-proxy", "dist", "src", "packages/device-lab/providers/state", "device-lab-mcp"]) mkdirSync(join(root, dir), { recursive: true });
     const source = readFileSync(resolve("scripts/install.js"), "utf8");
     expect(source).toContain('return "/usr/local/bin";');
@@ -43,12 +52,15 @@ function fixture(packaged = false, directoryName?: string) {
         writeFileSync(join(commands, name), script);
         chmodSync(join(commands, name), 0o755);
     }
-    const run = (args: string[] = [], env: NodeJS.ProcessEnv = {}, nodeArgs: string[] = []) => spawnSync(process.execPath, [...nodeArgs, join(root, "scripts/install.js"), ...args], {
-        encoding: "utf8", timeout: 10000,
-        env: { ...process.env, CCC_RUNTIME: "", FIXTURE_LOG: log, ...env, PATH: commands },
-    });
+    const run = (args: string[] = [], env: NodeJS.ProcessEnv = {}, nodeArgs: string[] = []) => {
+        const invocationEnv = { ...process.env, CCC_RUNTIME: "", FIXTURE_LOG: log, ...env, PATH: env.PATH ?? commands };
+        if (env.SUDO_UID === undefined) delete invocationEnv.SUDO_UID;
+        return spawnSync(process.execPath, [...nodePrefixArgs, ...nodeArgs, join(root, "scripts/install.js"), ...args], {
+            encoding: "utf8", timeout: 10000, env: invocationEnv,
+        });
+    };
     const calls = () => existsSync(log) ? readFileSync(log, "utf8") : "";
-    return { root, installDir, run, calls };
+    return { root, installDir, run, calls, nodePrefix, nodeBin, privateNode, nodePrefixArgs };
 }
 
 type PublicationFault = "copy" | "package" | "launcher-write" | "launcher-chmod" | "backup-payload" | "publish-payload" | "publish-launcher" | "restore-payload" | "hold-copy";
@@ -127,6 +139,128 @@ function previousRunnableInstall(kind: "file" | "symlink" = "file") {
     return { ...f, launcher, payload, oldLauncher, oldPayload, oldEntry, expectOld };
 }
 
+function npmShadowFixture() {
+    const f = fixture();
+    const packageRoot = join(f.nodePrefix, "lib", "node_modules", "claude-code-container");
+    mkdirSync(join(packageRoot, "dist"), {recursive: true});
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({name: "claude-code-container", type: "module", version: "1.1.90", bin: {ccc: "dist/index.js"}}), {mode: 0o644});
+    const oldEntry = join(packageRoot, "dist", "index.js");
+    writeFileSync(oldEntry, `#!${process.execPath}\nprocess.stdout.write("old npm code 1.1.90\\n");`, {mode: 0o755});
+    const alias = join(f.nodeBin, "ccc");
+    symlinkSync("../lib/node_modules/claude-code-container/dist/index.js", alias);
+    writeFileSync(join(f.root, "package.json"), JSON.stringify({name: "claude-code-container", type: "module", version: "1.1.90"}));
+    writeFileSync(join(f.root, "dist", "index.js"), 'process.stdout.write("new canonical code 1.1.90\\n");');
+    const path = `${f.nodeBin}:${join(f.root, "commands")}:${f.installDir}`;
+    const runBare = () => spawnSync("ccc", [], {encoding: "utf8", timeout: 5000, env: {...process.env, PATH: path}});
+    return {...f, packageRoot, oldEntry, alias, path, runBare};
+}
+
+describe.skipIf(process.platform === "win32")("qualified Unix npm launcher shadow repair", () => {
+    it("keeps canonical-only installs working without alias qualification in an owned writable ancestor", () => {
+        const f = fixture();
+        const nodeAlias = join(f.nodeBin, "ccc"), pathAlias = join(f.root, "commands", "ccc");
+        expect(existsSync(nodeAlias)).toBe(false);
+        expect(existsSync(pathAlias)).toBe(false);
+        chmodSync(f.root, 0o777);
+        expect(statSync(f.root).mode & 0o777).toBe(0o777);
+
+        const installed = f.run(["--skip-image"]);
+
+        expect(installed.status, installed.stderr).toBe(0);
+        expect(installed.stdout).toContain("CLI installed.");
+        expect(installed.stdout).not.toContain("Updated CCC npm launcher:");
+        expect(existsSync(nodeAlias)).toBe(false);
+        expect(existsSync(pathAlias)).toBe(false);
+        expect(statSync(f.root).mode & 0o777).toBe(0o777);
+        const canonical = spawnSync(join(f.installDir, "ccc"), [], {encoding: "utf8", timeout: 5000, env: {...process.env, PATH: ""}});
+        expect(canonical.status, canonical.stderr).toBe(0);
+        expect(canonical.stdout).toContain("fixture CLI");
+    });
+
+    it("runs the new code through bare ccc after repairing the first-PATH same-version npm symlink", () => {
+        const f = npmShadowFixture();
+        const preserved = [join(f.packageRoot, "package.json"), f.oldEntry, join(f.root, "package.json"), join(f.root, "dist", "index.js")];
+        const before = preserved.map(path => privateEntry(path));
+        expect(f.runBare().stdout).toBe("old npm code 1.1.90\n");
+
+        const installed = f.run(["--skip-image"], {PATH: f.path});
+
+        expect(installed.status, installed.stderr).toBe(0);
+        const current = f.runBare();
+        expect(current.status, current.stderr).toBe(0);
+        expect(current.stdout).toBe("new canonical code 1.1.90\n");
+        expect(readlinkSync(f.alias)).toBe(join(f.installDir, "ccc"));
+        expect(installed.stdout).toContain(`Updated CCC npm launcher: ${f.alias}`);
+        expect(preserved.map(path => privateEntry(path))).toEqual(before);
+        expect(readdirSync(f.nodeBin).sort()).toEqual(["ccc", "node"]);
+    });
+
+    it.each(["regular wrapper", "foreign symlink", "dangling symlink"] as const)("preserves an unqualified first-PATH %s", kind => {
+        const f = npmShadowFixture();
+        rmSync(f.alias);
+        const foreign = join(f.root, "foreign-cli");
+        writeFileSync(foreign, `#!${process.execPath}\nprocess.stdout.write("foreign launcher\\n");`, {mode: 0o755});
+        if (kind === "regular wrapper") writeFileSync(f.alias, "#!/bin/sh\nprintf 'unknown wrapper\\n'\n", {mode: 0o755});
+        else symlinkSync(kind === "foreign symlink" ? foreign : join(f.root, "missing-target"), f.alias);
+        const original = privateEntry(f.alias), foreignBefore = privateEntry(foreign);
+        const packageBefore = [privateEntry(join(f.packageRoot, "package.json")), privateEntry(f.oldEntry)];
+
+        const installed = f.run(["--skip-image"], {PATH: f.path});
+
+        expect(installed.status, installed.stderr).toBe(0);
+        expect(privateEntry(f.alias)).toEqual(original);
+        expect(privateEntry(foreign)).toEqual(foreignBefore);
+        expect([privateEntry(join(f.packageRoot, "package.json")), privateEntry(f.oldEntry)]).toEqual(packageBefore);
+        const canonical = spawnSync(join(f.installDir, "ccc"), [], {encoding: "utf8", timeout: 5000, env: {...process.env, PATH: ""}});
+        expect(canonical.status, canonical.stderr).toBe(0);
+        expect(canonical.stdout).toBe("new canonical code 1.1.90\n");
+        expect(installed.stdout).not.toContain("Updated CCC npm launcher:");
+        if (kind !== "dangling symlink") {
+            expect(installed.stderr).toContain(f.alias);
+            expect(installed.stdout).toContain(`Run '${join(f.installDir, "ccc")} --help'`);
+        }
+    });
+
+    it.each(["identity replacement", "publication failure"] as const)("retains published canonical code when alias repair hits %s", fault => {
+        const f = npmShadowFixture(), preload = join(f.root, "alias-publication-fault.mjs");
+        const changed = join(f.root, "alias-fault-observed"), preservedLink = join(f.root, "previous-npm-link");
+        const foreign = join(f.root, "replacement-cli");
+        writeFileSync(foreign, `#!${process.execPath}\nprocess.stdout.write("replacement launcher\\n");`, {mode: 0o755});
+        const packageBefore = [privateEntry(join(f.packageRoot, "package.json")), privateEntry(f.oldEntry)];
+        const original = privateEntry(f.alias), foreignBefore = privateEntry(foreign);
+        writeFileSync(preload, `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';
+            const alias=${JSON.stringify(f.alias)},canonical=${JSON.stringify(join(f.installDir, "ccc"))},foreign=${JSON.stringify(foreign)};
+            const originalRename=fs.renameSync,originalSymlink=fs.symlinkSync;
+            let injected=false;
+            fs.symlinkSync=(target,path,...args)=>{
+                if(!injected&&target===canonical&&String(path).endsWith('.ccc-install-lock/ccc')&&${JSON.stringify(fault)}==='identity replacement'){
+                    injected=true;originalRename(alias,${JSON.stringify(preservedLink)});originalSymlink(foreign,alias);fs.writeFileSync(${JSON.stringify(changed)},'identity replaced');
+                }return originalSymlink(target,path,...args);
+            };
+            fs.renameSync=(source,target)=>{
+                if(target===alias&&${JSON.stringify(fault)}==='publication failure'){fs.writeFileSync(${JSON.stringify(changed)},'publication refused');throw Error('fixture npm alias publication denied');}
+                return originalRename(source,target);
+            };syncBuiltinESMExports();`);
+
+        const installed = f.run(["--skip-image"], {PATH: f.path}, ["--import", pathToFileURL(preload).href]);
+
+        expect(existsSync(changed)).toBe(true);
+        expect(installed.status).not.toBe(0);
+        expect(installed.stderr).toContain(`Canonical CCC installation is published at ${join(f.installDir, "ccc")}`);
+        expect(installed.stdout).not.toContain("CLI installed.");
+        const canonical = spawnSync(join(f.installDir, "ccc"), [], {encoding: "utf8", timeout: 5000, env: {...process.env, PATH: ""}});
+        expect(canonical.status, canonical.stderr).toBe(0);
+        expect(canonical.stdout).toBe("new canonical code 1.1.90\n");
+        expect(privateEntry(foreign)).toEqual(foreignBefore);
+        expect([privateEntry(join(f.packageRoot, "package.json")), privateEntry(f.oldEntry)]).toEqual(packageBefore);
+        if (fault === "identity replacement") {
+            expect(readlinkSync(f.alias)).toBe(foreign);
+            expect(privateEntry(preservedLink)).toEqual(original);
+        } else expect(privateEntry(f.alias)).toEqual(original);
+        expect(existsSync(`${f.alias}.ccc-install-lock`)).toBe(false);
+    });
+});
+
 describe.skipIf(process.platform === "win32")("failure-preserving native Unix publication", () => {
     it("creates the missing destination parent on a first private install", () => {
         const f = fixture();
@@ -185,7 +319,7 @@ describe.skipIf(process.platform === "win32")("failure-preserving native Unix pu
 
     it.each(["--skip-image", "--uninstall"])("refuses %s while a cooperating installer holds the destination guard", async operation => {
         const f = previousRunnableInstall(), fault = publicationPreload(f);
-        const child = spawn(process.execPath, ["--import", pathToFileURL(fault.preload).href, join(f.root, "scripts/install.js"), "--skip-image"], {
+        const child = spawn(process.execPath, [...f.nodePrefixArgs, "--import", pathToFileURL(fault.preload).href, join(f.root, "scripts/install.js"), "--skip-image"], {
             env: { ...process.env, PATH: join(f.root, "commands"), CCC_RUNTIME: "", FIXTURE_LOG: join(f.root, "calls"), FIXTURE_PUBLICATION_FAULT: "hold-copy" satisfies PublicationFault },
             stdio: ["ignore", "pipe", "pipe"],
         });
@@ -329,7 +463,7 @@ describe.skipIf(process.platform === "win32")("source global installer", () => {
         symlinkSync(join(f.root, "scripts", aliasKind === "entry" ? "install.js" : ""), alias,
             aliasKind === "entry" ? "file" : "dir");
         const entry = aliasKind === "entry" ? alias : join(alias, "install.js");
-        const result = spawnSync(process.execPath, [entry, "--skip-image"], {
+        const result = spawnSync(process.execPath, [...f.nodePrefixArgs, entry, "--skip-image"], {
             encoding: "utf8", timeout: 10_000,
             env: { ...process.env, PATH: join(f.root, "commands"), CCC_RUNTIME: "", FIXTURE_LOG: join(f.root, "calls") },
         });
@@ -619,7 +753,7 @@ function sudoSourceBuildFixture(options: {
     `;
     // Real private files, modes, links and inode metadata pass through unchanged.
     // Only ownership and lchown are simulated; this does not certify macOS sudo.
-    const filesystemModule = `export {existsSync,mkdirSync,mkdtempSync,realpathSync,rmdirSync,renameSync,unlinkSync,writeFileSync,chmodSync,cpSync,rmSync,readFileSync,readdirSync} from 'node:fs';
+    const filesystemModule = `export {constants,existsSync,mkdirSync,mkdtempSync,realpathSync,readlinkSync,symlinkSync,rmdirSync,renameSync,unlinkSync,writeFileSync,chmodSync,cpSync,rmSync,readFileSync,readdirSync,openSync,fstatSync,closeSync} from 'node:fs';
         import * as fs from 'node:fs';
         import {resolve} from 'node:path';
         const statePath=process.env.FIXTURE_OWNERSHIP;
@@ -669,7 +803,7 @@ function sudoSourceBuildFixture(options: {
         : [join(f.root, "scripts/install.js"), options.operation === "install" ? "--skip-image" : "--postinstall"];
     const runRecovery = (failRepairAt = env.FIXTURE_FAIL_REPAIR, failRepairAfter = env.FIXTURE_FAIL_REPAIR_AFTER) => {
         for (const path of [capture, observation, recovery]) rmSync(path, { force: true });
-        const result = spawnSync(process.execPath, ["--experimental-loader", pathToFileURL(loader).href, "--import", pathToFileURL(platform).href, ...invocation], {
+        const result = spawnSync(process.execPath, [...f.nodePrefixArgs, "--experimental-loader", pathToFileURL(loader).href, "--import", pathToFileURL(platform).href, ...invocation], {
             encoding: "utf8", timeout: 10000, env: { ...env, FIXTURE_FAIL_REPAIR: failRepairAt, FIXTURE_FAIL_REPAIR_AFTER: failRepairAfter },
         });
         const jsonLines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
@@ -692,7 +826,7 @@ describe.skipIf(process.platform === "win32")("sudo source build ownership", () 
         expect(f.result.status, f.result.stderr).toBe(0);
         expect(f.calls).toHaveLength(1);
         expect(f.calls[0]).toEqual({
-            command: process.execPath,
+            command: f.privateNode,
             args: ["-e", expect.any(String)],
             options: { cwd: f.root, stdio: "inherit", uid: Number(identity.sudoUid), gid: Number(identity.sudoGid) },
         });
@@ -810,7 +944,7 @@ describe.skipIf(process.platform === "win32")("bounded sudo generated-output rec
         );
         expect(f.recovery.at(-1)).toEqual({ kind: "build" });
         expect(f.calls).toEqual([{
-            command: process.execPath, args: ["-e", expect.any(String)],
+            command: f.privateNode, args: ["-e", expect.any(String)],
             options: { cwd: f.root, stdio: "inherit", uid: 501, gid: 20 },
         }]);
         for (const path of repairPaths) expect(f.owners[join(f.root, path)]).toEqual({ uid: 501, gid: 20 });

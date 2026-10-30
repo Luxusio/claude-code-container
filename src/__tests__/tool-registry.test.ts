@@ -130,8 +130,8 @@ describe("claude tool definition", () => {
         expect(tool.binary.length).toBeGreaterThan(0);
     });
 
-    it("has defaultFlags including --dangerously-skip-permissions", () => {
-        expect(tool.defaultFlags).toContain("--dangerously-skip-permissions");
+    it("leaves Claude permission mode to the selected profile instead of adding a bypass flag", () => {
+        expect(tool.defaultFlags).toEqual([]);
     });
 
     it("has needsNodeRuntime true", () => {

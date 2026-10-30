@@ -1,0 +1,52 @@
+#!/bin/sh
+# Open one web URL in the selected CCC host's default browser.
+
+if [ "$#" -ne 1 ]; then
+    echo "ccc-open-url: expected one http/https URL" >&2
+    exit 2
+fi
+
+case "${CCC_CLIPBOARD_GENERATION:-}" in
+    ????????????)
+        case "$CCC_CLIPBOARD_GENERATION" in
+            *[!0-9a-f]*) echo "ccc-open-url: current CCC host connection is unavailable" >&2; exit 1 ;;
+        esac
+        ;;
+    *) echo "ccc-open-url: current CCC host connection is unavailable" >&2; exit 1 ;;
+esac
+if [ -z "${CCC_CLIPBOARD_URL:-}" ] || [ -z "${CCC_CLIPBOARD_TOKEN:-}" ]; then
+    echo "ccc-open-url: current CCC host connection is unavailable" >&2
+    exit 1
+fi
+
+# Encode the argument as data; no URL content is evaluated by a shell.
+body=$(python3 -c '
+import json, sys
+try:
+    body = json.dumps({"url": sys.argv[1]}, ensure_ascii=False, separators=(",", ":"))
+    if len(body.encode("utf-8")) > 8192:
+        raise ValueError("oversized request")
+    sys.stdout.write(body)
+except Exception:
+    sys.exit(1)
+' "$1" 2>/dev/null) || {
+    echo "ccc-open-url: URL request is invalid or too large" >&2
+    exit 1
+}
+
+status=$(printf '%s' "$body" | curl -s --connect-timeout 3 --max-time 10 \
+    -H "Authorization: Bearer $CCC_CLIPBOARD_TOKEN" \
+    -H "Content-Type: application/json;charset=utf-8" \
+    --data-binary @- -o /dev/null -w '%{http_code}' \
+    "$CCC_CLIPBOARD_URL/host/open-url") || {
+    echo "ccc-open-url: unable to reach the selected CCC host browser service" >&2
+    exit 1
+}
+case "$status" in
+    204) exit 0 ;;
+    404) echo "ccc-open-url: selected host service lacks browser support; restart with the current CCC build" >&2 ;;
+    401) echo "ccc-open-url: selected CCC host connection was not authenticated" >&2 ;;
+    400|413|415) echo "ccc-open-url: host rejected the URL request; only absolute http/https URLs without credentials are supported" >&2 ;;
+    *) echo "ccc-open-url: selected host could not open its default browser" >&2 ;;
+esac
+exit 1

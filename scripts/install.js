@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { createInstallerApplication } from "./install/application.mjs";
-import { existsSync, lstatSync, lchownSync, mkdirSync, mkdtempSync, rmdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync, readdirSync } from "fs";
+import { errorCode } from "./install/domain.mjs";
+import { constants, existsSync, lstatSync, lchownSync, mkdirSync, mkdtempSync, rmdirSync, realpathSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync, readdirSync, openSync, fstatSync, closeSync } from "fs";
 import { createHash } from "crypto";
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -30,6 +31,165 @@ function getInstallDir() {
     } else {
         return "/usr/local/bin";
     }
+}
+
+/** @typedef {import('./install/ports.mjs').UnixLauncherAlias} UnixLauncherAlias */
+/** @typedef {{path:string, stat:import('fs').Stats}} UnixPathReceipt */
+/** @typedef {{link:UnixPathReceipt, value:string, parents:UnixPathReceipt[], files:{path:string,stat:import('fs').Stats,hash:string}[]}} UnixNpmAliasReceipt */
+/** @type {WeakMap<UnixLauncherAlias, {alias:UnixNpmAliasReceipt,target:UnixPathReceipt,targetParents:UnixPathReceipt[],uid:number}>} */
+const unixLauncherAliasReceipts = new WeakMap();
+
+function unixInvokingUid() {
+    const uid = process.getuid?.();
+    if (uid === undefined) throw new Error("Unix launcher ownership is unavailable.");
+    if (uid !== 0 || process.env.SUDO_UID === undefined) return uid;
+    const value = process.env.SUDO_UID;
+    if (!/^[1-9]\d*$/.test(value) || Number(value) > 2147483647) {
+        throw new Error("Unix launcher repair requires a canonical sudo invoking UID.");
+    }
+    return Number(value);
+}
+
+/** @param {import('fs').Stats} before @param {import('fs').Stats} after @param {boolean} [directory] */
+function sameUnixEntry(before, after, directory = false) {
+    return before.dev === after.dev && before.ino === after.ino && before.uid === after.uid
+        && before.gid === after.gid && before.mode === after.mode
+        && (directory || before.nlink === after.nlink && before.size === after.size
+            && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs);
+}
+
+/** @param {string} path @param {number} uid */
+function unixAliasParents(path, uid) {
+    /** @type {UnixPathReceipt[]} */
+    const parents = [];
+    for (let parent = dirname(path);;) {
+        const stat = lstatSync(parent);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || ![0, uid].includes(stat.uid)
+            || ((stat.mode & 0o022) !== 0 && !(stat.uid === 0 && (stat.mode & 0o1000) !== 0))) {
+            throw new Error("Unix launcher parent is not a qualified physical directory.");
+        }
+        parents.push({path: parent, stat});
+        const next = dirname(parent);
+        if (next === parent) return parents;
+        parent = next;
+    }
+}
+
+/** @param {string} path @param {number} uid @param {number} maxBytes @param {boolean} [executable] */
+function readUnixAliasFile(path, uid, maxBytes, executable = false) {
+    const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+        const stat = fstatSync(descriptor);
+        if (!stat.isFile() || ![0, uid].includes(stat.uid) || stat.nlink !== 1 || stat.size < 1
+            || stat.size > maxBytes || (stat.mode & 0o6022) !== 0 || executable && (stat.mode & 0o100) === 0) {
+            throw new Error("Unix launcher package file is not qualified.");
+        }
+        const bytes = readFileSync(descriptor);
+        if (!sameUnixEntry(stat, fstatSync(descriptor)) || !sameUnixEntry(stat, lstatSync(path))) {
+            throw new Error("Unix launcher package file changed during observation.");
+        }
+        return {path, stat, bytes, hash: createHash("sha256").update(bytes).digest("hex")};
+    } finally { closeSync(descriptor); }
+}
+
+/** @param {string} path @param {number} uid @returns {UnixNpmAliasReceipt} */
+function captureUnixNpmAlias(path, uid) {
+    const stat = lstatSync(path);
+    if (!stat.isSymbolicLink() || stat.uid !== uid || stat.nlink !== 1) throw new Error("Not an invoking-user npm symlink.");
+    const value = readlinkSync(path), entry = realpathSync(path), root = dirname(dirname(entry));
+    if (entry !== join(root, "dist", "index.js") || basename(root) !== "claude-code-container"
+        || basename(dirname(root)) !== "node_modules") throw new Error("Not the exact CCC npm entry.");
+    const parents = [...unixAliasParents(path, uid), ...unixAliasParents(entry, uid)];
+    const manifest = readUnixAliasFile(join(root, "package.json"), uid, 65536);
+    const metadata = JSON.parse(manifest.bytes.toString("utf8"));
+    if (metadata.name !== "claude-code-container" || !metadata.bin || typeof metadata.bin !== "object"
+        || !["dist/index.js", "./dist/index.js"].includes(metadata.bin.ccc)) throw new Error("Not the declared CCC npm launcher.");
+    const executable = readUnixAliasFile(entry, uid, 8 * 1024 * 1024, true);
+    if (!sameUnixEntry(stat, lstatSync(path)) || readlinkSync(path) !== value
+        || parents.some(parent => !sameUnixEntry(parent.stat, lstatSync(parent.path), true))) {
+        throw new Error("Unix npm launcher identity changed during observation.");
+    }
+    return {link: {path, stat}, value, parents, files: [manifest, executable]};
+}
+
+/** @param {string} targetBin @returns {UnixLauncherAlias[]} */
+function observeUnixLauncherAliases(targetBin) {
+    const target = resolve(targetBin), uid = unixInvokingUid();
+    const targetStat = lstatSync(target);
+    if (!targetStat.isFile() || targetStat.isSymbolicLink()) throw new Error("Published Unix launcher is not a regular file.");
+    const pathCandidates = (process.env.PATH || "").split(":").map(directory => resolve(directory || process.cwd(), "ccc"));
+    const targetIndex = pathCandidates.findIndex(path => {
+        try { return realpathSync(path) === realpathSync(target); } catch { return false; }
+    });
+    const candidates = [...new Set([join(dirname(process.execPath), "ccc"), ...pathCandidates])];
+    /** @type {UnixLauncherAlias[]} */
+    const aliases = [];
+    for (const path of candidates) {
+        if (path.length > 4096 || /[\x00-\x1f\x7f]/.test(path) || path === target) continue;
+        let stat;
+        try { stat = lstatSync(path); } catch (cause) { if (errorCode(cause) === "ENOENT") continue; throw cause; }
+        let resolved;
+        try { resolved = realpathSync(path); } catch { continue; } // Preserve dangling aliases.
+        if (resolved === realpathSync(target)) continue;
+        const index = pathCandidates.indexOf(path), preempts = index >= 0 && (targetIndex < 0 || index < targetIndex);
+        try {
+            const receipt = captureUnixNpmAlias(path, uid);
+            // Canonical-only installation needs no alias authority. Qualify
+            // this extra boundary only when a known npm link needs publication.
+            const targetParents = unixAliasParents(target, uid);
+            const alias = {path, kind: /** @type {const} */ ("known-npm"), preempts};
+            unixLauncherAliasReceipts.set(alias, {alias: receipt, target: {path: target, stat: targetStat}, targetParents, uid});
+            aliases.push(alias);
+        } catch {
+            if (preempts && (stat.isFile() || stat.isSymbolicLink())) aliases.push({path, kind: "shadowing", preempts});
+        }
+    }
+    return aliases;
+}
+
+/** @param {UnixLauncherAlias} observation @param {string} targetBin */
+function publishUnixLauncherAlias(observation, targetBin) {
+    const receipt = unixLauncherAliasReceipts.get(observation);
+    unixLauncherAliasReceipts.delete(observation);
+    if (!receipt || observation.kind !== "known-npm" || receipt.alias.link.path !== observation.path
+        || receipt.target.path !== resolve(targetBin)) throw new Error("Unix npm launcher publication has no captured receipt.");
+    const {alias, target, targetParents, uid} = receipt;
+    function revalidate() {
+        const current = captureUnixNpmAlias(alias.link.path, uid);
+        if (!sameUnixEntry(alias.link.stat, current.link.stat) || current.value !== alias.value
+            || current.files.some((file, index) => file.path !== alias.files[index].path
+                || file.hash !== alias.files[index].hash || !sameUnixEntry(file.stat, alias.files[index].stat))
+            || alias.parents.some(parent => !sameUnixEntry(parent.stat, lstatSync(parent.path), true))
+            || targetParents.some(parent => !sameUnixEntry(parent.stat, lstatSync(parent.path), true))
+            || !sameUnixEntry(target.stat, lstatSync(target.path))) throw new Error("Captured Unix npm launcher or published target changed.");
+    }
+    revalidate();
+    const guard = `${alias.link.path}.ccc-install-lock`;
+    mkdirSync(guard, {mode: 0o700});
+    const guardStat = lstatSync(guard), stage = join(guard, "ccc");
+    /** @type {import('fs').Stats | undefined} */
+    let stageStat;
+    try {
+        symlinkSync(target.path, stage);
+        const created = lstatSync(stage);
+        stageStat = created;
+        if (created.uid !== alias.link.stat.uid || created.gid !== alias.link.stat.gid) {
+            lchownSync(stage, alias.link.stat.uid, alias.link.stat.gid);
+        }
+        stageStat = lstatSync(stage);
+        revalidate();
+        if (!sameUnixEntry(guardStat, lstatSync(guard), true) || !sameUnixEntry(stageStat, lstatSync(stage))
+            || readlinkSync(stage) !== target.path) throw new Error("Owned Unix launcher stage changed.");
+        renameSync(stage, alias.link.path);
+    } finally {
+        if (!sameUnixEntry(guardStat, lstatSync(guard), true)) throw new Error(`Unix launcher repair guard changed; retained ${guard}.`);
+        if (existsSync(stage)) {
+            if (!stageStat || !sameUnixEntry(stageStat, lstatSync(stage))) throw new Error(`Unix launcher repair stage changed; retained ${guard}.`);
+            unlinkSync(stage);
+        }
+        rmdirSync(guard);
+    }
+    return undefined;
 }
 
 /** @param {readonly string[]} files @param {readonly string[]} directories */
@@ -199,7 +359,9 @@ function present(event) {
         case "permission-denied":
             console.error("Permission denied. Run with sudo:");
             console.error(`  sudo npm run ${event.operation}:global`); break;
-        case "cli-installed": console.log("\nCLI installed. Run 'ccc --help' to verify."); break;
+        case "cli-installed": console.log(`\nCLI installed. Run '${event.command || "ccc"} --help' to verify.`); break;
+        case "unix-launcher-alias-updated": console.log(`Updated CCC npm launcher: ${event.path} -> ${event.target}`); break;
+        case "unix-launcher-shadowed": console.warn(`CCC launcher at ${event.path} was preserved because its ownership could not be qualified. Use ${event.target} explicitly; this command still precedes it on PATH.`); break;
         case "image-ready": console.log("Container image ready."); break;
         case "image-partial-success": console.log("Container image build failed; CLI installation succeeded. Retry the image build when the container runtime is available."); break;
         case "image-skipped": console.log(`Container image build skipped (${event.reason}).`); break;
@@ -316,6 +478,8 @@ function installerApplication() {
             writeFileSync(path, unixWrapperContent(targetDir));
             chmodSync(path, 0o755);
         },
+        observeUnixLauncherAliases,
+        publishUnixLauncherAlias,
         writeWindowsLauncher: path => { writeFileSync(path, `@echo off\r\nnode "${distFile}" %*\r\n`); },
         readUserPath,
         writeUserPath: value => { writeUserPath(value); },

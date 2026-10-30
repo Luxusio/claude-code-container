@@ -192,8 +192,8 @@ function canRunPowerShellExe(): boolean {
 }
 
 /** Write text as stdin data, never as shell or PowerShell source. */
-interface PreparedClipboardTextWriter { command: string; args: string[]; input: Buffer }
-function prepareClipboardTextWriter(bytes: Buffer, plat: ClipboardPlatform): PreparedClipboardTextWriter | null {
+interface PreparedHostCommand { command: string; args: string[]; input: Buffer }
+function prepareClipboardTextWriter(bytes: Buffer, plat: ClipboardPlatform): PreparedHostCommand | null {
     let command: string;
     let args: string[];
     let input = bytes;
@@ -237,24 +237,27 @@ function prepareClipboardTextWriter(bytes: Buffer, plat: ClipboardPlatform): Pre
 function prepareNativeClipboardTextWrite(bytes: Buffer, plat: ClipboardPlatform): PreparedClipboardTextWrite {
     const prepared = prepareClipboardTextWriter(bytes, plat);
     if (!prepared) return { kind: "unavailable" };
-    return { kind: "ready", write: (timeoutMs) => executeClipboardTextWrite(prepared, plat, timeoutMs) };
+    return { kind: "ready", write: async (timeoutMs): Promise<ClipboardTextWriteResult> => ({
+        kind: await executeHostCommand(prepared, plat, timeoutMs) ? "written" : "failed",
+    }) };
 }
 
-function executeClipboardTextWrite(
-    prepared: PreparedClipboardTextWriter,
+function executeHostCommand(
+    prepared: PreparedHostCommand,
     plat: ClipboardPlatform,
     timeoutMs: number,
-): Promise<ClipboardTextWriteResult> {
+): Promise<boolean> {
     return new Promise((resolve) => {
         let child: ChildProcess;
         try {
             child = spawn(prepared.command, prepared.args, {
                 stdio: ["pipe", "ignore", "ignore"],
+                shell: false,
                 windowsHide: true,
                 ...(plat === "darwin" ? { env: { ...process.env, LC_CTYPE: "UTF-8" } } : {}),
             });
         } catch {
-            resolve({ kind: "failed" });
+            resolve(false);
             return;
         }
         let settled = false;
@@ -262,7 +265,7 @@ function executeClipboardTextWrite(
             if (settled) return;
             settled = true;
             clearTimeout(timer);
-            resolve({ kind: success ? "written" : "failed" });
+            resolve(success);
         };
         const terminate = () => {
             if (settled) return;
@@ -277,13 +280,58 @@ function executeClipboardTextWrite(
     });
 }
 
+const MAX_HOST_OPEN_URL_BYTES = 8192;
+
+function parseHostOpenUrl(text: string): string | null {
+    try {
+        const body: unknown = JSON.parse(text);
+        if (!body || typeof body !== "object" || Array.isArray(body)
+            || Object.keys(body).length !== 1 || !("url" in body) || typeof body.url !== "string"
+            || !/^https?:\/\//i.test(body.url) || /[\u0000-\u0020\u007f\\]/.test(body.url)) return null;
+        const url = new URL(body.url);
+        return (url.protocol === "http:" || url.protocol === "https:") && url.hostname
+            && !url.username && !url.password ? url.href : null;
+    } catch { return null; }
+}
+
+/** Launch the host's default browser. URLs never become command or script source. */
+function openHostUrl(url: string, plat: ClipboardPlatform): Promise<boolean> | null {
+    let prepared: PreparedHostCommand;
+    switch (plat) {
+        case "darwin":
+            prepared = { command: "/usr/bin/open", args: [url], input: Buffer.alloc(0) };
+            break;
+        case "linux-x11":
+        case "linux-wayland":
+            prepared = { command: "/usr/bin/xdg-open", args: [url], input: Buffer.alloc(0) };
+            break;
+        case "windows":
+        case "wsl": {
+            const powershell = clipboardPowerShellPath();
+            if (!powershell) return null;
+            prepared = { command: powershell, args: hiddenWindowsPowerShellArgs([
+                "-NoProfile", "-NonInteractive", "-Command",
+                "$ErrorActionPreference = 'Stop'; try { " +
+                "$url = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())); " +
+                "$start = [Diagnostics.ProcessStartInfo]::new(); $start.FileName = $url; " +
+                "$start.UseShellExecute = $true; [Diagnostics.Process]::Start($start) | Out-Null; exit 0 " +
+                "} catch { exit 1 }",
+            ]), input: Buffer.from(Buffer.from(url, "utf8").toString("base64"), "ascii") };
+            break;
+        }
+        default:
+            return null;
+    }
+    return executeHostCommand(prepared, plat, CLIPBOARD_WRITE_TIMEOUT_MS);
+}
+
 class ClipboardUploadError extends Error {
     constructor(readonly status: number) {
         super("Invalid clipboard upload");
     }
 }
 
-function readClipboardUpload(req: IncomingMessage): Promise<string> {
+function readClipboardUpload(req: IncomingMessage, maximumBytes = MAX_CLIPBOARD_TEXT_BYTES): Promise<string> {
     return new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
         let size = 0;
@@ -302,7 +350,7 @@ function readClipboardUpload(req: IncomingMessage): Promise<string> {
         };
         const onData = (chunk: Buffer) => {
             size += chunk.length;
-            if (size > MAX_CLIPBOARD_TEXT_BYTES) finish(new ClipboardUploadError(413));
+            if (size > maximumBytes) finish(new ClipboardUploadError(413));
             else chunks.push(chunk);
         };
         const onEnd = () => {
@@ -1405,6 +1453,36 @@ export function createClipboardServer(token: string, plat: ClipboardPlatform, op
                     res.end();
                 } catch (error) {
                     rejectUpload(error instanceof ClipboardUploadError ? error.status : 500);
+                }
+                return;
+            }
+
+            if (method === "POST" && url === "/host/open-url") {
+                const rejectOpen = (status: number) => {
+                    res.writeHead(status, { "Content-Type": "text/plain", "Connection": "close" });
+                    res.end("Host browser request failed");
+                    res.once("finish", () => req.destroy());
+                };
+                const contentType = req.headers["content-type"] ?? "";
+                if (!/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(contentType)) {
+                    rejectOpen(415);
+                    return;
+                }
+                const length = req.headers["content-length"];
+                if (length !== undefined && Number(length) > MAX_HOST_OPEN_URL_BYTES) {
+                    rejectOpen(413);
+                    return;
+                }
+                try {
+                    const target = parseHostOpenUrl(await readClipboardUpload(req, MAX_HOST_OPEN_URL_BYTES));
+                    if (!target) { rejectOpen(400); return; }
+                    const opening = openHostUrl(target, plat);
+                    if (!opening) { rejectOpen(501); return; }
+                    if (!await opening) { rejectOpen(502); return; }
+                    res.writeHead(204);
+                    res.end();
+                } catch (error) {
+                    rejectOpen(error instanceof ClipboardUploadError ? error.status : 502);
                 }
                 return;
             }

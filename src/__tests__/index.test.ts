@@ -1222,9 +1222,17 @@ describe('buildToolInvocation', () => {
     ])
   })
 
-  it('prepends defaultFlags for tools without subcommand metadata (claude)', () => {
+  it('preserves Claude arguments without automatically adding a permission flag', () => {
     const claude = getToolByName('claude')!
     expect(buildToolInvocation(claude, ['--continue'])).toEqual([
+      claude.binary,
+      '--continue',
+    ])
+  })
+
+  it('preserves an explicitly requested Claude permission flag', () => {
+    const claude = getToolByName('claude')!
+    expect(buildToolInvocation(claude, ['--dangerously-skip-permissions', '--continue'])).toEqual([
       claude.binary,
       '--dangerously-skip-permissions',
       '--continue',

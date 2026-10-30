@@ -388,7 +388,7 @@ it("public Claude startup verifies the final container and runs without Codex Ha
     expect(f.command).toHaveBeenCalledOnce();
     expect(f.command.mock.calls[0][1]).toContain(f.finalId);
     const args = f.command.mock.calls[0][1] as string[];
-    expect(args.slice(args.indexOf(f.finalId) + 1)).toEqual(["/home/ccc/.local/bin/claude", "--dangerously-skip-permissions", ...argumentsToClaude]);
+    expect(args.slice(args.indexOf(f.finalId) + 1)).toEqual(["/home/ccc/.local/bin/claude", ...argumentsToClaude]);
     expect(f.harness).not.toHaveBeenCalled();
     expect(f.events.indexOf("command")).toBeGreaterThan(f.events.indexOf("claude"));
 });
@@ -422,6 +422,7 @@ it("actual application and native preparation preserve environment duplicates an
         ["container", "docker"], ...f.forwarded, ["MISE_TRUSTED_CONFIG_PATHS", "/project/repo-id"], ["TZ", "Host/Zone"],
         ["CCC_CLIPBOARD_URL", "http://127.0.0.1:4321"], ["CCC_CLIPBOARD_TOKEN", "token:with:colon"],
         ["MISE_NODE_VERSION", "22"], ["BASH_ENV", "/home/ccc/.bashrc_hooks"],
+        ["CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS", "1"],
         ["LANG", "session-lang"], ["TZ", "Session/Zone"], ["MISE_NODE_VERSION", "23"],
     ]);
 });
@@ -446,11 +447,13 @@ it("outer CLI cleanup settles its started container when environment preparation
 
 it("native project setup and clipboard bridge keep their existing argv and stream policies", () => {
     const ports = createNativeContainerExecPorts({ ensureDirectories: () => {}, ensureProjectTools: async () => {}, assetDirectory: "/fixture/assets", trustedCliPath: "/fixture/ccc" });
-    f.spawn.mockReturnValue({status: 9, stdout: "", stderr: "fixture"});
+    f.spawn.mockReturnValueOnce({status: 9, stdout: "", stderr: "fixture"})
+        .mockReturnValue({status: 0, stdout: "", stderr: ""});
     expect(() => ports.installProjectTools(f.finalId, "/project/path with spaces")).not.toThrow();
     ports.startClipboardBridge(f.finalId, {url: "http://127.0.0.1:4321", token: "literal:token $(not shell)"});
     expect(f.spawn).toHaveBeenNthCalledWith(1, "docker", ["exec", "-w", "/project/path with spaces", f.finalId, "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y || true"], {stdio: "inherit"});
-    expect(f.spawn).toHaveBeenNthCalledWith(2, "docker", ["exec", "-d", "-e", "CCC_CLIPBOARD_URL=http://127.0.0.1:4321", "-e", "CCC_CLIPBOARD_TOKEN=literal:token $(not shell)", f.finalId, "/usr/local/bin/ccc-x11-bridge"], {stdio: "ignore"});
+    expect(f.spawn).toHaveBeenNthCalledWith(2, "docker", ["exec", "-d", "-e", "CCC_CLIPBOARD_URL=http://127.0.0.1:4321", "-e", "CCC_CLIPBOARD_TOKEN=literal:token $(not shell)", f.finalId, "/usr/local/bin/ccc-x11-bridge"], {stdio: "ignore", timeout: 15000});
+    expect(f.spawn).toHaveBeenNthCalledWith(3, "docker", ["exec", "-e", "CCC_CLIPBOARD_URL=http://127.0.0.1:4321", "-e", "CCC_CLIPBOARD_TOKEN=literal:token $(not shell)", f.finalId, "/usr/local/bin/ccc-x11-bridge", "--wait-ready"], {stdio: "ignore", timeout: 15000});
 });
 
 it("native post-exit conversation report retains the pinned target and piped UTF-8 recipe", () => {

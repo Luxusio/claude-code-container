@@ -3,10 +3,13 @@
 // used without CCC_PROFILE is the reserved profile "default"
 // (doc/common/REQ__ccc-home-layout.md).
 
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, type Stats } from "fs";
+import { createHash } from "crypto";
+import { homedir } from "os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { LAB_RUNNER_PROFILE_NAME } from "./utils.js";
-import { DEFAULT_PROFILE_NAME, profilesDir } from "./home-layout.js";
+import { DEFAULT_PROFILE_NAME, locksDir, profilesDir } from "./home-layout.js";
+import { withSharedMutationLock, writeJsonFileAtomically } from "@ccc/device-lab/device-lab-shared-state.js";
 
 import { createProfileCatalog, validateProfileName as validateCatalogProfileName } from "./application/profile-catalog.js";
 import type { BuiltinProfile, ProfileSettings } from "./ports/profile-catalog.js";
@@ -121,6 +124,96 @@ export function createProfile(name: string, settings?: ProfileSettings): void {
  */
 export function ensureProfile(name: string): boolean {
     return profileCatalog().ensure(name);
+}
+
+/** Merge the requested permission default into the selected CCC credential copy. */
+export function ensureClaudePermissionDefaults(claudeDirectory: string): void {
+    const directory = resolve(claudeDirectory);
+    const profileRoot = dirname(profilesDir());
+    const mounted = process.env.container === "docker" && directory === resolve(join(homedir(), ".claude"));
+    const root = mounted ? directory : profileRoot;
+    const child = relative(root, directory);
+    if ((!mounted && basename(directory) !== "claude") || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) {
+        throw new Error("Claude settings must belong to the selected CCC profile.");
+    }
+    const file = join(directory, "settings.json");
+    const key = createHash("sha256").update(file).digest("hex");
+    const owner = process.getuid?.();
+    const ordinary = (metadata: Stats) => !metadata.isSymbolicLink()
+        && (owner === undefined || metadata.uid === owner)
+        && (process.platform === "win32" || (metadata.mode & 0o022) === 0);
+    const same = (left: Stats, right: Stats) => left.dev === right.dev && left.ino === right.ino
+        && left.birthtimeMs === right.birthtimeMs;
+    const directories: Array<[string, Stats]> = [];
+    let current = root;
+    for (const component of ["", ...child.split(sep).filter(Boolean)]) {
+        current = component ? join(current, component) : current;
+        const metadata = lstatSync(current);
+        if (!ordinary(metadata) || !metadata.isDirectory()) throw new Error("Unsafe CCC Claude settings directory; preserved.");
+        directories.push([current, metadata]);
+    }
+    const checkDirectories = () => {
+        for (const [path, before] of directories) {
+            const after = lstatSync(path);
+            if (!ordinary(after) || !after.isDirectory() || !same(before, after)) throw new Error("CCC Claude settings directory changed; preserved.");
+        }
+    };
+    const lockDirectory = resolve(locksDir());
+    const lockChild = relative(profileRoot, lockDirectory);
+    if (lockChild === ".." || lockChild.startsWith(`..${sep}`) || isAbsolute(lockChild)) throw new Error("Claude settings lock must remain in CCC state.");
+    current = profileRoot;
+    for (const component of ["", ...lockChild.split(sep).filter(Boolean)]) {
+        checkDirectories();
+        current = component ? join(current, component) : current;
+        let metadata: Stats;
+        try { metadata = lstatSync(current); }
+        catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            if (current === profileRoot) throw new Error("CCC state root is unavailable for Claude settings; preserved.");
+            // Every parent is qualified before creating the next private directory.
+            try { mkdirSync(current, {mode: 0o700}); }
+            catch (created) { if ((created as NodeJS.ErrnoException).code !== "EEXIST") throw created; }
+            metadata = lstatSync(current);
+        }
+        if (!ordinary(metadata) || !metadata.isDirectory()) throw new Error("Unsafe CCC Claude settings lock directory; preserved.");
+        directories.push([current, metadata]);
+    }
+    checkDirectories();
+    withSharedMutationLock(join(lockDirectory, `claude-settings-${key}.lock`), () => {
+        checkDirectories();
+        let before: Stats | undefined;
+        let settings: Record<string, unknown> = {};
+        try {
+            before = lstatSync(file);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (before) {
+            if (!ordinary(before) || !before.isFile() || before.nlink !== 1) throw new Error("Unsafe CCC Claude settings file; preserved.");
+            const descriptor = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+            try {
+                const opened = fstatSync(descriptor);
+                if (!ordinary(opened) || !opened.isFile() || opened.nlink !== 1 || !same(before, opened)) throw new Error("CCC Claude settings file changed; preserved.");
+                try { settings = JSON.parse(readFileSync(descriptor, "utf8")) as Record<string, unknown>; }
+                catch { throw new Error("Invalid CCC Claude settings JSON; preserved."); }
+            } finally { closeSync(descriptor); }
+        }
+        if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("CCC Claude settings must be a JSON object; preserved.");
+        const permissions = settings.permissions;
+        if (permissions !== undefined && (!permissions || typeof permissions !== "object" || Array.isArray(permissions))) throw new Error("CCC Claude permissions must be a JSON object; preserved.");
+        const existing = permissions as Record<string, unknown> | undefined;
+        checkDirectories();
+        let after: Stats | undefined;
+        try { after = lstatSync(file); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        if (before ? !after || !ordinary(after) || !after.isFile() || after.nlink !== 1 || !same(before, after)
+            || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs : after !== undefined) {
+            throw new Error("CCC Claude settings changed before publication; preserved.");
+        }
+        if (existing?.defaultMode === "bypassPermissions") return;
+        writeJsonFileAtomically(file, {...settings, permissions: {...existing, defaultMode: "bypassPermissions"}});
+        checkDirectories();
+    }, {waitMs: 5_000, reclaimStale: false});
 }
 
 /**

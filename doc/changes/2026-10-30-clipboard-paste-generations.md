@@ -86,3 +86,42 @@ See [generation ownership](../clipboard/REQ__clipboard-generation-coexistence.md
 [image behavior](../common/REQ__clipboard-image-bridge.md). Reverting code must
 preserve existing runtime publications and older processes; cleanup still
 requires their original ownership proofs.
+
+Follow-up verification on October 30 used the saved Mac npm report with 44
+failures in five files. Twenty-two clipboard-state failures followed the old
+publication filename; the fixture now follows the authenticated generation.
+One startup fixture retained a failed installation result for subsequent
+clipboard preparation; that failure is now scoped to the intended call.
+The other 21 failures read workspace or embedded modules that temporarily
+disappeared during the original run. No shared-output test mutator was
+established. The current five owners pass 395 tests with two platform skips;
+this does not establish a fresh full Mac suite PASS or explain who replaced
+those files. Details and report paths are in
+[the saved-failure status](../../results/tests/clipboard-paste-2026-10-30/saved-failure-status.json).
+
+Additional changes prepare the selected local Claude profile permission
+default, forward the requested Claude launch variable, and repair positively
+identified npm launcher links that shadow the source installer. Unknown
+launchers and unverified running broker processes remain protected. The
+separate remote transport retains its previous launch behavior.
+
+Container Claude and Codex sessions with the current authenticated host
+connection receive a browser helper. It sends a bounded HTTP/HTTPS URL to
+the host service, which invokes its default browser without treating URL
+content as shell code. Explicit session environment overrides remain last.
+The new extracted package and Unix materialized payload both report policy
+`f2b0577977a9` and pass strict declaration checks; earlier native clipboard
+evidence above belongs to policy `c02026440612`.
+
+Actual generated-content Cmd+V tests now cover both Linux TUIs through five
+native Mac terminals. Zed attaches the image in both tools. Ghostty and VS
+Code do not attach it with Cmd+V; iTerm2 opens its image-paste dialog, and
+IntelliJ inserts a host-only temporary image path. Ctrl+V attaches the same
+image in all five. These mixed results are remaining terminal integration
+gaps, not an all-terminal acceptance PASS. Actual Windows and Slack UI
+acceptance remain unverified.
+
+After reviewing these results, the user explicitly chose to preserve the
+clients' default image shortcut, Ctrl+V. No terminal-specific Cmd+V integration
+or host preference change is added. The historical Cmd+V observations and QA
+findings remain recorded; they do not override this clarified shortcut scope.

@@ -63,6 +63,8 @@ function nativeLeaves(platform: "unix" | "windows" = "unix") {
         writeUnixPackage: (_source, target) => { mutations.push(`package:${target}`); files.set(paths.join(target, "package.json"), "native package bytes"); },
         unixWrapperContent: () => "native Unix launcher bytes",
         writeUnixLauncher: (value, target) => { mutations.push(`unix-launcher:${target}`); files.set(value, "native Unix launcher bytes"); },
+        observeUnixLauncherAliases: () => [],
+        publishUnixLauncherAlias: () => undefined,
         writeWindowsLauncher: value => { mutations.push(`windows-launcher:${value}`); files.set(value, "native Windows launcher bytes"); },
         readUserPath: () => userPath, writeUserPath: value => { mutations.push("write-user-path"); userPath = value; },
         present: event => { events.push(event); },
@@ -73,6 +75,65 @@ function nativeLeaves(platform: "unix" | "windows" = "unix") {
 }
 
 describe("installer application decisions", () => {
+    it("repairs observed known npm launchers only after canonical publication and while its destination guard is held", () => {
+        const f = nativeLeaves(), alias = {path: "/private-node/bin/ccc", kind: "known-npm" as const, preempts: true};
+        const chronology: string[] = [];
+        f.ports.observeUnixLauncherAliases = target => {
+            expect(target).toBe("/owned-bin/ccc");
+            expect(f.files.get(target)).toBe("native Unix launcher bytes");
+            expect(f.files.get("/owned-bin/ccc-dist/package.json")).toBe("native package bytes");
+            expect(f.directories.has("/owned-bin/ccc-dist.install-lock")).toBe(true);
+            chronology.push("observe"); return [alias];
+        };
+        f.ports.publishUnixLauncherAlias = (observed, target) => {
+            expect(observed).toBe(alias); expect(target).toBe("/owned-bin/ccc");
+            expect(f.directories.has("/owned-bin/ccc-dist.install-lock")).toBe(true);
+            chronology.push("alias-published");
+        };
+        const present = f.ports.present;
+        f.ports.present = event => { if (event.kind === "cli-installed") chronology.push("installed"); return present(event); };
+
+        createInstallerApplication(f.ports).install({skipImage: true});
+
+        expect(chronology).toEqual(["observe", "alias-published", "installed"]);
+        expect(f.events).toContainEqual({kind: "unix-launcher-alias-updated", path: alias.path, target: "/owned-bin/ccc"});
+        expect(f.events).toContainEqual({kind: "cli-installed"});
+        expect(f.directories.has("/owned-bin/ccc-dist.install-lock")).toBe(false);
+    });
+
+    it("reports the published canonical command when an unqualified launcher still preempts PATH", () => {
+        const f = nativeLeaves(), unknown = {path: "/private-node/bin/ccc", kind: "shadowing" as const, preempts: true};
+        f.ports.observeUnixLauncherAliases = () => [unknown, {path: "/later/bin/ccc", kind: "shadowing", preempts: false}];
+        f.ports.publishUnixLauncherAlias = () => { throw new Error("unknown launchers must be preserved"); };
+
+        createInstallerApplication(f.ports).install({skipImage: true});
+
+        expect(f.files.get("/owned-bin/ccc")).toBe("native Unix launcher bytes");
+        expect(f.events).toContainEqual({kind: "unix-launcher-shadowed", path: unknown.path, target: "/owned-bin/ccc"});
+        expect(f.events).not.toContainEqual({kind: "unix-launcher-shadowed", path: "/later/bin/ccc", target: "/owned-bin/ccc"});
+        expect(f.events).toContainEqual({kind: "cli-installed", command: "/owned-bin/ccc"});
+        expect(f.events.some(event => event.kind === "unix-launcher-alias-updated")).toBe(false);
+    });
+
+    it.each(["observation", "publication"] as const)("retains the published canonical installation when alias %s fails", phase => {
+        const f = nativeLeaves(), failure = new Error(`fixture alias ${phase} failed`);
+        const alias = {path: "/private-node/bin/ccc", kind: "known-npm" as const, preempts: true};
+        f.ports.observeUnixLauncherAliases = () => { if (phase === "observation") throw failure; return [alias]; };
+        f.ports.publishUnixLauncherAlias = () => { throw failure; };
+        let caught: unknown;
+
+        try { createInstallerApplication(f.ports).install({skipImage: true}); } catch (error) { caught = error; }
+
+        expect(caught).toBeInstanceOf(Error);
+        expect(caught).toMatchObject({cause: failure});
+        expect((caught as Error).message).toContain("Canonical CCC installation is published at /owned-bin/ccc");
+        expect(f.files.get("/owned-bin/ccc")).toBe("native Unix launcher bytes");
+        expect(f.files.get("/owned-bin/ccc-dist/package.json")).toBe("native package bytes");
+        expect(f.directories.has("/owned-bin/ccc-dist.install-lock")).toBe(false);
+        expect([...f.directories].some(path => path.includes("install-stage-"))).toBe(false);
+        expect(f.events.some(event => event.kind === "cli-installed" || event.kind === "unix-launcher-alias-updated")).toBe(false);
+    });
+
     it.each(["unix", "windows"] as const)("propagates the original source postinstall build failure on %s without installing", platform => {
         const f = nativeLeaves(platform);
         const previousFiles = new Map(f.files), previousPath = f.userPath();

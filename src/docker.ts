@@ -1222,7 +1222,7 @@ export function ensureImage(): void {
 
 // === Clipboard Shim Sync ===
 
-const CLIPBOARD_SHIMS = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"];
+const CLIPBOARD_SHIMS = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-open-url"];
 
 export function syncClipboardShims(containerName: string, distDir: string): void {
     const invoke = (args: string[]) => runtimeSpawnSync(args, { stdio: "ignore", timeout: 15000 });

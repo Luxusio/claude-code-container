@@ -1,17 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
+import { chmodSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { vi } from "vitest";
 
 // We need to mock PROFILES_DIR to use a temp dir
-const mockProfilesDir = mkdtempSync(join(tmpdir(), "ccc-test-profiles-"));
+const mockRoot = mkdtempSync(join(tmpdir(), "ccc-test-profiles-"));
+const mockProfilesDir = join(mockRoot, "profiles");
+mkdirSync(mockProfilesDir, {mode: 0o700});
+afterAll(() => rmSync(mockRoot, {recursive: true, force: true}));
 
 vi.mock("../home-layout.js", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
         ...actual,
         profilesDir: () => mockProfilesDir,
+        locksDir: () => join(mockRoot, "locks"),
     };
 });
 
@@ -24,6 +28,7 @@ const {
     BUILTIN_PROFILES,
     isBuiltinProfile,
     ensureProfile,
+    ensureClaudePermissionDefaults,
 } = await import("../profile.js");
 
 describe("validateProfileName", () => {
@@ -228,5 +233,88 @@ describe("ensureProfile", () => {
 
     it("throws for unknown non-builtin profile", () => {
         expect(() => ensureProfile("nonexistent-profile")).toThrow();
+    });
+});
+
+describe("selected CCC Claude permission defaults", () => {
+    beforeEach(() => {
+        for (const name of readdirSync(mockProfilesDir)) rmSync(join(mockProfilesDir, name), {recursive: true, force: true});
+    });
+
+    it.each(["default", "work"])("creates settings for a new selected %s profile only", name => {
+        const directory = join(mockProfilesDir, name, "claude");
+        mkdirSync(directory, {recursive: true, mode: 0o700});
+        ensureClaudePermissionDefaults(directory);
+        expect(JSON.parse(readFileSync(join(directory, "settings.json"), "utf8"))).toEqual({permissions: {defaultMode: "bypassPermissions"}});
+        expect(existsSync(join(mockProfilesDir, name === "default" ? "work" : "default"))).toBe(false);
+        if (process.platform !== "win32") expect(statSync(join(directory, "settings.json")).mode & 0o777).toBe(0o600);
+    });
+
+    it("merges existing settings while preserving other permissions, hooks, environment and keys", () => {
+        createProfile("work");
+        const directory = join(mockProfilesDir, "work", "claude"), file = join(directory, "settings.json");
+        const original = {permissions: {defaultMode: "default", allow: ["Read"], deny: ["Bash(secrets)"], additionalDirectories: ["/fixture"]},
+            env: {FIXTURE: "preserve"}, hooks: {SessionStart: [{hooks: [{type: "command", command: "fixture-only"}]}]}, model: "preserve-model", unknown: {nested: true}};
+        writeFileSync(file, JSON.stringify(original), {mode: 0o600});
+        ensureClaudePermissionDefaults(directory);
+        expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({...original, permissions: {...original.permissions, defaultMode: "bypassPermissions"}});
+        expect(readdirSync(directory)).toEqual(["settings.json"]);
+        expect(readdirSync(join(mockRoot, "locks"))).toEqual([]);
+    });
+
+    it("does not rewrite an existing bypass default", () => {
+        const directory = join(mockProfilesDir, "work", "claude"), file = join(directory, "settings.json");
+        mkdirSync(directory, {recursive: true, mode: 0o700});
+        const bytes = '{ "permissions": { "defaultMode": "bypassPermissions" }, "env": { "KEEP": "value" } }\n';
+        writeFileSync(file, bytes, {mode: 0o600});
+        const before = statSync(file);
+        ensureClaudePermissionDefaults(directory);
+        expect(readFileSync(file, "utf8")).toBe(bytes);
+        expect(statSync(file).ino).toBe(before.ino);
+        expect(statSync(file).mtimeMs).toBe(before.mtimeMs);
+    });
+
+    it.each(['{"privateFixture":"preserve",', "null", "[]", '{"permissions":null}', '{"permissions":[]}'])("preserves invalid settings without a partial publication: %s", bytes => {
+        const directory = join(mockProfilesDir, "work", "claude"), file = join(directory, "settings.json");
+        mkdirSync(directory, {recursive: true, mode: 0o700});
+        writeFileSync(file, bytes, {mode: 0o600});
+        expect(() => ensureClaudePermissionDefaults(directory)).toThrow(/preserved/);
+        expect(readFileSync(file, "utf8")).toBe(bytes);
+        expect(readdirSync(directory)).toEqual(["settings.json"]);
+    });
+
+    it.skipIf(process.platform === "win32")("preserves a settings symlink and its target", () => {
+        const directory = join(mockProfilesDir, "work", "claude"), target = join(mockRoot, "unselected-settings.json");
+        mkdirSync(directory, {recursive: true, mode: 0o700});
+        writeFileSync(target, '{"keep":true}', {mode: 0o600});
+        symlinkSync(target, join(directory, "settings.json"));
+        expect(() => ensureClaudePermissionDefaults(directory)).toThrow(/Unsafe CCC Claude settings file/);
+        expect(readFileSync(target, "utf8")).toBe('{"keep":true}');
+    });
+
+    it("preserves hard-linked settings and their other name", () => {
+        const directory = join(mockProfilesDir, "work", "claude"), target = join(mockRoot, "linked-settings.json");
+        mkdirSync(directory, {recursive: true, mode: 0o700});
+        writeFileSync(target, '{"keep":"linked"}', {mode: 0o600});
+        linkSync(target, join(directory, "settings.json"));
+        expect(() => ensureClaudePermissionDefaults(directory)).toThrow(/Unsafe CCC Claude settings file/);
+        expect(readFileSync(target, "utf8")).toBe('{"keep":"linked"}');
+    });
+
+    it.skipIf(process.platform === "win32")("refuses a linked selected directory before writing outside it", () => {
+        const directory = join(mockProfilesDir, "work", "claude"), outside = join(mockRoot, "outside-claude");
+        mkdirSync(join(mockProfilesDir, "work"), {recursive: true, mode: 0o700});
+        mkdirSync(outside, {mode: 0o700});
+        symlinkSync(outside, directory);
+        expect(() => ensureClaudePermissionDefaults(directory)).toThrow(/Unsafe CCC Claude settings directory/);
+        expect(readdirSync(outside)).toEqual([]);
+    });
+
+    it.skipIf(process.platform === "win32")("refuses writable-by-other settings without changing its bytes", () => {
+        const directory = join(mockProfilesDir, "work", "claude"), file = join(directory, "settings.json");
+        mkdirSync(directory, {recursive: true, mode: 0o700});
+        writeFileSync(file, '{"keep":"unsafe-mode"}'); chmodSync(file, 0o666);
+        expect(() => ensureClaudePermissionDefaults(directory)).toThrow(/Unsafe CCC Claude settings file/);
+        expect(readFileSync(file, "utf8")).toBe('{"keep":"unsafe-mode"}');
     });
 });

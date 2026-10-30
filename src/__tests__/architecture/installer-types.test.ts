@@ -14,6 +14,7 @@ const ports: InstallerPorts = {
     removeFile: () => undefined, removeDirectory: () => undefined, ensureDirectory: () => undefined,
     copy: () => undefined, writeUnixPackage: () => undefined, unixWrapperContent: () => "native Unix launcher",
     writeUnixLauncher: () => undefined, writeWindowsLauncher: () => undefined,
+    observeUnixLauncherAliases: () => [], publishUnixLauncherAlias: () => undefined,
     readUserPath: () => "", writeUserPath: () => undefined, present: () => undefined,
     terminate: code => { throw new Error(`terminated ${code}`); },
 };

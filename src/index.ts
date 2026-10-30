@@ -90,6 +90,7 @@ import {
     BUILTIN_PROFILES,
     isBuiltinProfile,
     ensureProfile,
+    ensureClaudePermissionDefaults,
 } from "./profile.js";
 import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
@@ -205,6 +206,7 @@ function ensureDirs(profile?: string): void {
     // A new default-profile folder is marked as the no-profile account (home-layout.ts).
     if (claudeDir === join(defaultProfileDir(), "claude")) ensureDefaultProfileDir();
     mkdirSync(claudeDir, { recursive: true, mode: 0o700 });
+    ensureClaudePermissionDefaults(claudeDir);
     // Ensure claude.json exists for file mount (onboarding state)
     const claudeJsonFile = getClaudeJsonFile(profile);
     if (!existsSync(claudeJsonFile)) {
