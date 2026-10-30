@@ -8,6 +8,14 @@
 
 The root unit Vitest setup canonicalizes its temporary-directory base before fixture imports. MCP fixture transports also receive an explicitly owned private temp directory. Real Level 3 host setup stays separate. See [shared failure diagnosis](GUIDE__test-failure-groups.md) for path, native prerequisite and stale fixture groups and their evidence limits.
 
+Remote bind-authority failures preserve bounded, fixture-owned cancellation
+diagnostics under `results/ci/remote-bind-authority-*.json` before cleanup. CI's
+two Linux unit jobs upload only these files on failure; they do not publish
+arbitrary temporary trees, host process inventories or credential stores.
+This captures the refusal phase when a timeout prevents an assertion from
+printing its diagnostic. It does not classify an unexplained timeout as fixed
+or permit weaker process-identity checks.
+
 ## Level 3 broker preflight failures
 
 `npm run test:level3` builds its artifacts, then verifies the host broker before starting provider tests. The `CCC host broker repair preflight failed` diagnostic preserves both available output streams from the broker status command, followed by its exit status, signal, spawn error, and configured timeout. Protocol mismatch and later attestation failures have separate diagnostics. `error=none` means the child had no spawn error; `timeoutMs=180000` states the limit and does not mean a timeout occurred.

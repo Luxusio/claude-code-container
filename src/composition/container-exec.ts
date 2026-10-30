@@ -208,7 +208,7 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
             runtimeSpawnSync(["exec", "-w", workdir, target, "sh", "-c",
                 "mise trust -a >/dev/null 2>&1 || true; mise install -y || true"], { stdio: "inherit" });
         },
-        startClipboardBridge(target, connection) {
+        startClipboardBridge(target, connection, readiness = { required: true }) {
             if (!connection.url) return;
             if (connection.generation) assertClipboardClientAssetsCurrent(target, bindings.assetDirectory);
             // The bridge starts for every session and reuses an existing X11 daemon.
@@ -219,6 +219,7 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
             const started = runtimeSpawnSync(["exec", "-d", ...environment, target, "/usr/local/bin/ccc-x11-bridge"],
                 { stdio: "ignore", timeout: 15000 });
             if (started.error || started.status !== 0) throw new Error("Clipboard synchronization could not start; existing sessions were preserved.");
+            if (!readiness.required) return;
             const ready = runtimeSpawnSync(["exec", ...environment, target, "/usr/local/bin/ccc-x11-bridge", "--wait-ready"],
                 { stdio: "ignore", timeout: 15000 });
             if (ready.error || ready.status !== 0) throw new Error("Clipboard synchronization did not become ready; retry after the host clipboard is available.");

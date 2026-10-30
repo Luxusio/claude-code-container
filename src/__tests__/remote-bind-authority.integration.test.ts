@@ -1,5 +1,5 @@
 import {
-    chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
+    chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync,
     renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -23,7 +23,41 @@ type OwnedChild = { child: ChildProcess; closed: boolean; completed: Promise<{ c
 const children: OwnedChild[] = [];
 const containerId = "a".repeat(64);
 
-afterEach(async () => {
+function captureFailureDiagnostics(testName: string) {
+    const fixtures = roots.slice(0, 8).map((root, index) => {
+        let diagnostic: string | undefined;
+        let truncated = false;
+        let fd: number | undefined;
+        try {
+            // Only this fixture's fixed diagnostic file is read; never follow a replacement link.
+            fd = openSync(join(root, "signal-diagnostic"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+            const stat = fstatSync(fd);
+            if (stat.isFile()) {
+                const bytes = Buffer.alloc(16 * 1024);
+                diagnostic = bytes.subarray(0, readSync(fd, bytes, 0, bytes.length, 0)).toString("utf8");
+                truncated = stat.size > bytes.length;
+            }
+        } catch { /* A fixture need not have signal diagnostics. */ }
+        finally { if (fd !== undefined) closeSync(fd); }
+        return { index, diagnostic, truncated };
+    });
+    const ownedChildren = children.slice(0, 32).map(({ child, closed }) => ({
+        pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, closed,
+    }));
+    const directory = join(process.cwd(), "results", "ci");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const file = join(directory, `remote-bind-authority-${hashPath(`${testName}:${process.pid}:${Date.now()}`)}.json`);
+    writeFileSync(file, JSON.stringify({ testName, fixtures, ownedChildren }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+    console.error(`Remote bind authority failure diagnostics: ${file}`);
+}
+
+afterEach(async context => {
+    // Vitest marks assertion failures and timeouts before running afterEach.
+    // Capture before killing owned children or deleting their private fixture roots.
+    if (context.task.result?.state === "fail") {
+        try { captureFailureDiagnostics(context.task.name); }
+        catch { console.error("Remote bind authority failure diagnostics could not be saved"); }
+    }
     for (const owned of children.splice(0)) {
         if (!owned.closed && owned.child.exitCode === null && owned.child.signalCode === null && owned.child.pid) {
             // Every group here was created detached by this fixture; never target another process.
@@ -176,7 +210,7 @@ function runControlledScopeCancel(f: ReturnType<typeof fixture>, probe: ScopeCan
         ' case "$1:$2" in',
         '  (-TERM:31001) printf term > "$HOME/controlled-term" ;;',
         '  (-CONT:31001) printf resumed > "$HOME/controlled-resumed" ;;',
-        '  (-0:31001) if [ "$_ccc_fixture_after" = unavailable ]; then return 0; fi; printf "No such process\\n" >&2; return 1 ;;',
+        '  (-0:31001) if [ "$_ccc_fixture_after" = absent ] || [ -f "$HOME/controlled-joined" ]; then printf "No such process\\n" >&2; return 1; fi; return 0 ;;',
         '  (-0:31002) printf "No such process\\n" >&2; return 1 ;;',
         " esac",
         " return 0",
@@ -309,6 +343,46 @@ function withScopeSignalDiagnostics(shell: string): string {
 }
 
 describe.runIf(process.platform !== "win32")("receiving-host global bind authority", () => {
+    it.each(["absent", "live", "birth-changed", "parent-changed", "permission-denied", "unknown"] as const)(
+        "requires positive PID absence for an exiting command observation (%s)", async phase => {
+            const f = fixture();
+            const native = join(f.home, "exit-observation.cjs");
+            writeFileSync(native, `require("node:fs").writeFileSync(${JSON.stringify(join(f.home, "ready"))}, "ready"); setInterval(() => {}, 1000);`);
+            const held = f.start(`${shellEscapeArg(process.execPath)} ${shellEscapeArg(native)}`);
+            await waitForFile(join(f.home, "ready"));
+            const pid = held.child.pid!;
+            const observed = spawnSync("/bin/ps", ["-ww", "-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "state=", "-o", "lstart=", "-o", "command="], { encoding: "utf8" });
+            expect(observed.status).toBe(0);
+            const match = /^\s*(\d+)\s+(\d+)\s+\S+\s+((?:\S+\s+){4}\S+)\s+(.*)$/.exec(observed.stdout.trim());
+            expect(match).not.toBeNull();
+            const [, , parent, rawBirth, command] = match!;
+            const birth = rawBirth.split(/\s+/).join(" ");
+            const record = `${pid}|${parent}|${birth}|${command}`;
+            // Model the inferred non-atomic ps exit sample: live state with a bracketed
+            // command. The native PID is real; only this ps sample is fixed.
+            const row = `${pid} ${phase === "parent-changed" ? Number(parent) + 1 : parent} R ${phase === "birth-changed" ? birth.replace(/\d{4}$/, "1970") : birth} [sh]`;
+            if (phase !== "live") {
+                process.kill(-pid, "SIGKILL");
+                await held.completed;
+            }
+            const generated = remoteLifecycleShell("ccc-exit-observation", ":");
+            const helpers = generated.slice(generated.indexOf("_ccc_scope_observe() {"), generated.indexOf("_ccc_scope_capture() {"))
+                .replaceAll("/bin/ps", "_ccc_fixture_ps");
+            const result = f.run([
+                `_ccc_fixture_ps() { printf '%s\\n' ${shellEscapeArg(row)}; }`,
+                'kill() { [ "$1" = -0 ] || exit 98; printf "%s\\n" "$*" >> "$HOME/absence-queries";',
+                ...(phase === "permission-denied" ? [' printf "Operation not permitted\\n" >&2; return 1; }']
+                    : phase === "unknown" ? [' return 1; }'] : [' command kill "$@"; }']),
+                helpers,
+                `_ccc_scope_match ${shellEscapeArg(record)} signal`,
+            ].join("\n"));
+            expect(result.status, result.stderr).toBe(phase === "absent" ? 1 : 74);
+            const query = join(f.home, "absence-queries");
+            if (phase === "birth-changed" || phase === "parent-changed") expect(existsSync(query)).toBe(false);
+            else expect(readFileSync(query, "utf8")).toBe(`-0 ${pid}\n`);
+        },
+    );
+
     it.each([["R", 1], ["S", 2]] as const)("resumes an unadmitted %s root that reaches its admission STOP after %s post-TERM probes", (before, unadmittedStopAfter) => {
         const f = fixture();
         const { result, claim, events } = runControlledScopeCancel(f, { before, after: "T", unadmittedStopAfter });

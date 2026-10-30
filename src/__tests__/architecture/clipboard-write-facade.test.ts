@@ -48,7 +48,7 @@ describe("Clipboard text-write actual public native facade", () => {
         const expected = platform === "linux-x11" ? ["xclip", ["-selection", "clipboard", "-in", "-target", "UTF8_STRING"]]
             : platform === "linux-wayland" ? ["wl-copy", ["--type", "text/plain;charset=utf-8"]] : ["pbcopy", []];
         expect(native.spawn.mock.calls[0].slice(0, 2)).toEqual(expected);
-        const options = native.spawn.mock.calls[0][2]; expect(options).toMatchObject({ stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+        const options = native.spawn.mock.calls[0][2]; expect(options).toMatchObject({ stdio: ["pipe", "ignore", "ignore"], windowsHide: true, shell: false });
         if (platform === "darwin") expect(options.env).toEqual({ ...process.env, LC_CTYPE: "UTF-8" }); else expect(options).not.toHaveProperty("env");
         expect(child.stdin.end).toHaveBeenCalledWith(Buffer.from(text, "utf8"));
         child.emit("exit", 0); await expect(promise).resolves.toBeUndefined(); expect(vi.getTimerCount()).toBe(0);
@@ -59,7 +59,7 @@ describe("Clipboard text-write actual public native facade", () => {
         expect(command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
         const script = "$ErrorActionPreference = 'Stop'; try { Add-Type -AssemblyName System.Windows.Forms; $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())); if ($text.Length -eq 0) { [Windows.Forms.Clipboard]::Clear() } else { [Windows.Forms.Clipboard]::SetText($text) }; exit 0 } catch { exit 1 }";
         expect(args).toEqual(["-WindowStyle", "Hidden", "-STA", "-NoProfile", "-NonInteractive", "-Command", script]);
-        expect(options).toEqual({ stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+        expect(options).toEqual({ stdio: ["pipe", "ignore", "ignore"], windowsHide: true, shell: false });
         expect(child.stdin.end.mock.calls[0][0]).toEqual(Buffer.from(Buffer.from(text).toString("base64"), "ascii")); expect(script).toMatch(/^[\x00-\x7f]*$/);
         child.emit("exit", 0); await promise;
     });

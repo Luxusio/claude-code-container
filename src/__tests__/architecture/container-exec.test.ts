@@ -605,7 +605,7 @@ describe("container exec semantic workflow", () => {
         });
         await f.exec("/repo", ["codex"]);
         const connection = {url: "http://127.0.0.1:4321", token: "current-token"};
-        expect(f.ports.startClipboardBridge).toHaveBeenCalledWith("final-id", connection);
+        expect(f.ports.startClipboardBridge).toHaveBeenCalledWith("final-id", connection, {required: true});
         expect(f.ports.attachClipboardImage).toHaveBeenCalledWith("/project/repo", ["codex"], {enabled: true, clipboardUrl: connection.url, clipboardToken: connection.token});
         expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment).toEqual(expect.arrayContaining([
             ["CCC_CLIPBOARD_URL", connection.url], ["CCC_CLIPBOARD_TOKEN", connection.token],
@@ -677,6 +677,28 @@ describe("container exec semantic workflow", () => {
         expect(f.ports.disposeCommand).not.toHaveBeenCalled();
         expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
         expect(f.events.slice(-2)).toEqual(["first-sync-refused", "cleanup"]);
+    });
+    it.each(["claude", "codex"])("launches arbitrary echo without requiring first sync with default %s setup metadata", async defaultTool => {
+        const f = fixture({running: true});
+        f.ports.defaultTool = () => f.ports.tool(defaultTool)!;
+        const connection = {url: "http://127.0.0.1:4322", token: "current-token", generation: "a1b2c3d4e5f6"};
+        f.ports.clipboardConnection = () => connection;
+        vi.mocked(f.ports.startClipboardBridge).mockImplementation((_target, _connection, readiness) => {
+            if (readiness?.required !== false) throw new Error("host clipboard first sync unavailable");
+        });
+        await expect(f.exec("/repo", ["echo", "podman-output"], {interactive: false})).resolves.toBe(0);
+        expect(f.ports.startClipboardBridge).toHaveBeenCalledExactlyOnceWith("final-id", connection, {required: false});
+        expect(f.ports.launchCommand).toHaveBeenCalledExactlyOnceWith(f.handle, {interactive: false, terminal: false, codexRecovery: false});
+    });
+    it("retains required first sync for an explicitly selected tool update command", async () => {
+        const f = fixture({running: true}), tool = f.ports.tool("codex")!;
+        await f.exec("/repo", tool.updateCommand, {tool, interactive: false});
+        expect(f.ports.startClipboardBridge).toHaveBeenCalledExactlyOnceWith("final-id", {}, {required: true});
+    });
+    it.each(["codex", "claude", "gemini", "opencode"])("requires first sync for known %s commands even without a terminal", async tool => {
+        const f = fixture({running: true});
+        await f.exec("/repo", [tool, "--help"], {interactive: false});
+        expect(f.ports.startClipboardBridge).toHaveBeenCalledExactlyOnceWith("final-id", {}, {required: true});
     });
     it("publishes startup intent, positive own start and ready while the one lifecycle guard is held", async () => {
         const f = fixture(), publications: string[] = [];
@@ -995,7 +1017,7 @@ describe("container exec semantic workflow", () => {
         vi.mocked(f.ports.attachClipboardImage).mockResolvedValue({args: ["codex", "--image", "/tmp/image with spaces.png"]});
         await f.exec("/repo", ["codex"], {env: overrides});
         expect(f.ports.observeCommandEnvironment).toHaveBeenCalledOnce();
-        expect(f.ports.startClipboardBridge).toHaveBeenCalledWith("final-id", connection);
+        expect(f.ports.startClipboardBridge).toHaveBeenCalledWith("final-id", connection, {required: true});
         expect(vi.mocked(f.ports.prepareCommand).mock.calls[0][0]).toMatchObject({environment: [...f.entries, ["CCC_CLIPBOARD_URL", "http://clipboard"], ["CCC_CLIPBOARD_TOKEN", "token"], ["LANG", "session-lang"], ["TZ", "Session/Zone"]], command: {kind: "command", arguments: ["codex", "--image", "/tmp/image with spaces.png"]}});
         expect(f.events.indexOf("attach")).toBeLessThan(f.events.indexOf("prepare")); expect(f.events.indexOf("bridge")).toBeLessThan(f.events.indexOf("prepare"));
         expect(f.ports.report).toHaveBeenCalledWith({kind: "environment-skipped", keys: ["LARGE_A", "LARGE_B"]});
@@ -1341,6 +1363,26 @@ describe("native clipboard session handoff", () => {
                 portFile: "/fixture/generation/clipboard.port", generation: connection.generation})).toEqual(connection);
             expect(stoppedNative.spawnSync).not.toHaveBeenCalled();
         } finally { original.mockRestore(); }
+    });
+
+    it("starts the verified bridge without waiting for first sync when an arbitrary command does not require paste", () => {
+        const ports = nativePorts();
+        stoppedNative.spawnSync.mockReset().mockReturnValue({status: 0, signal: null, stdout: "", stderr: ""});
+        ports.startClipboardBridge("exact-container-id", connection, {required: false});
+        const calls = stoppedNative.spawnSync.mock.calls.map(call => normalizeNativeRuntimeCall(call));
+        expect(calls).toHaveLength(2);
+        expectAssetChecker(calls[0][1] as string[]);
+        expect(calls[1][1]).toEqual(["exec", "-d", "-e", `CCC_CLIPBOARD_URL=${connection.url}`,
+            "-e", `CCC_CLIPBOARD_TOKEN=${connection.token}`, "-e", `CCC_CLIPBOARD_GENERATION=${connection.generation}`,
+            "exact-container-id", "/usr/local/bin/ccc-x11-bridge"]);
+    });
+
+    it.each(["asset-check", "detached-launch"])("still rejects arbitrary-command startup when %s fails", stage => {
+        const ports = nativePorts();
+        stoppedNative.spawnSync.mockReset().mockReturnValueOnce({status: stage === "asset-check" ? 1 : 0, signal: null, stdout: "", stderr: ""})
+            .mockReturnValue({status: 1, signal: null, stdout: "", stderr: ""});
+        expect(() => ports.startClipboardBridge("exact-container-id", connection, {required: false})).toThrow(/Clipboard/);
+        expect(stoppedNative.spawnSync).toHaveBeenCalledTimes(stage === "asset-check" ? 1 : 2);
     });
 
     it("waits for a finite first sync using the same selected endpoint and credentials as its detached bridge", () => {

@@ -35,3 +35,11 @@ The separately requested `CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS=1`
 must be supplied in the process launch environment: Claude ignores it inside
 the settings `env` block. Keep explicit launch overrides and managed policy
 behavior visible; do not claim that every permission constraint is removed.
+
+Known coding-tool commands require the selected clipboard bridge's finite first
+sync before launch, including tool subcommands and noninteractive invocations.
+Arbitrary commands such as `ccc echo setup` start the same background bridge
+without waiting for host clipboard content to become available, even when the
+default coding tool supplies setup metadata. An explicit command tool remains
+subject to first sync, including its update commands. Current-generation client
+asset checks and detached bridge startup failures remain fatal for both classes.

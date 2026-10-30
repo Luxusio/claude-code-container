@@ -84,7 +84,13 @@ CCC_SCOPE_RECORD
 _ccc_scope_match() {
     _ccc_scope_decode "$1"
     _ccc_scope_observe "$_ccc_expected_pid" || return $?
-    [ "$_ccc_observed_birth" = "$_ccc_expected_birth" ] && [ "$_ccc_observed_command" = "$_ccc_expected_command" ] || return 74
+    [ "$_ccc_observed_birth" = "$_ccc_expected_birth" ] || return 74
+    if [ "$_ccc_observed_command" != "$_ccc_expected_command" ]; then
+        [ "$_ccc_observed_parent" = "$_ccc_expected_parent" ] || return 74
+        # ps can sample state before exit and command after it; only positive absence retires that record.
+        _ccc_scope_absent=$(LC_ALL=C kill -0 "$_ccc_expected_pid" 2>&1) && return 74
+        case "$_ccc_scope_absent" in (*'No such process'*) return 1 ;; (*) return 74 ;; esac
+    fi
     [ "$2" = join ] || [ "$_ccc_observed_parent" = "$_ccc_expected_parent" ] || return 2
 }
 _ccc_scope_capture() {

@@ -119,7 +119,7 @@ export interface ContainerExecPorts<Prepared> {
     isRestartRequired(error: unknown): boolean;
     attachClipboardImage(path: string, command: string[], options: { enabled: boolean; clipboardUrl?: string; clipboardToken?: string }): Promise<{ args: string[] }>;
     installProjectTools(target: string, workdir: string): void;
-    startClipboardBridge(target: string, connection: ContainerExecClipboardConnection): void;
+    startClipboardBridge(target: string, connection: ContainerExecClipboardConnection, readiness?: { required: boolean }): void;
     observeCommandEnvironment(): ContainerExecEnvironmentFacts;
     prepareCommand(intent: ContainerExecCommandIntent): Prepared;
     prepareCodexCommand(prepared: Prepared): ContainerExecCodexPreparation;

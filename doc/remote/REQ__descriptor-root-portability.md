@@ -32,6 +32,14 @@ An interruptible supervisor may signal only its exact operation-owned worker and
 
 If a previously admitted descendant is reparented during cancellation, its unchanged birth and command permit waiting for its actual completion, without signaling it under the former ancestry. A parent already proved absent is distinct from an unavailable or changed process identity.
 
+Native process state and displayed command can be sampled across process exit.
+When an observation retains the captured birth and parent but its command differs,
+one read-only `kill -0` check may establish positive PID absence through an explicit
+`No such process` result. Only that positive absence permits retiring the captured
+record without a signal. A live PID, permission failure or unknown result retains
+refusal; changed birth or parent cannot use this exception. Do not retry ambiguous
+observations, adopt the changed command, or signal using partial identity proof.
+
 After an identity-qualified TERM, a fresh read-only observation determines whether the worker needs CONT. Unavailable observations or changed process birth or ancestry retain refusal. Only a stopped worker may receive CONT, after another full birth, command and ancestry match and a fresh stopped-state check immediately before the signal. Other observed states require no resume signal; retain the captured records, owned-child wait, refusal-channel checks and positive completion joins. A changed displayed command, unknown state or exiting indication alone never proves completion. Before initial admission is proved, keep observing under held claims until positive absence or a fully revalidated stop permits its one resume: the worker can enter its initial stop after earlier non-stopped observations. An already admitted worker retains the single post-signal state observation before its normal wait. Failed capture authorizes no subsequent descendant signals; retain discovered records for qualified joins rather than dropping a descendant whose parent disappeared.
 
 An ordinary protected-command failure, including exit status 79, remains that command's result and permits normal cleanup once the work has completed and claim identity still matches. Internal ownership refusal requires separate operation-owned evidence; no ordinary exit code establishes refusal. Any private transport for this evidence must preserve stdin and public output, remain tied to an admitted inode, and leave no persistent record or new package requirement.

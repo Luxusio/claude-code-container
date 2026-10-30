@@ -16,7 +16,7 @@ describe("shared tool launcher authority", () => {
         for (const tool of tools) expect(registry.getToolByName(tool.name)).toBe(tool);
         expect(tools).toEqual([
             { name: "claude", displayName: "Claude Code", binary: CLAUDE_BIN_PATH,
-                defaultFlags: ["--dangerously-skip-permissions"], credentialMounts: [
+                defaultFlags: [], credentialMounts: [
                     { hostDir: ".ccc/claude", containerDir: "/home/ccc/.claude" },
                     { hostDir: ".claude/ide", containerDir: "/home/ccc/.claude/ide" }],
                 needsNodeRuntime: true, updateCommand: ["claude", "update"], installCommand: "curl -fsSL https://claude.ai/install.sh | bash" },

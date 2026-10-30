@@ -326,7 +326,9 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             const resolvedCmd = await attachContainerExecClipboardImage(
                 fullPath, cmd, commandTool, { ...clipboard, url: clipboard.hostUrl ?? clipboard.url }, ports.attachClipboardImage,
             );
-            ports.startClipboardBridge(containerName, clipboard);
+            // Ordinary commands do not depend on paste; keep synchronization in
+            // the background while coding tools retain the first-sync gate.
+            ports.startClipboardBridge(containerName, clipboard, { required: commandTool !== undefined });
             const environment = ports.observeCommandEnvironment();
             if (environment.skippedKeys.length > 0) ports.report({ kind: "environment-skipped", keys: environment.skippedKeys });
             const envEntries: Array<[string, string]> = [
