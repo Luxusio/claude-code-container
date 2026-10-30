@@ -143,7 +143,7 @@ On a native Windows host with Windows PowerShell and Windows Forms, run the
 controlled native acquisition witnesses:
 
 ```sh
-node node_modules/vitest/vitest.mjs run src/__tests__/clipboard-server.test.ts -t 'native seekable MemoryStream|native text when the advertised PNG stream is empty|native empty advertised PNG without valid text or image fallback' --maxWorkers=1
+node node_modules/vitest/vitest.mjs run src/__tests__/clipboard-server.test.ts -t 'native seekable MemoryStream|native text when the advertised PNG stream is empty|native empty advertised PNG' --maxWorkers=1
 ```
 
 These execute the generated PowerShell acquisition code with an in-memory
@@ -161,6 +161,12 @@ do not close Windows or actual TUI acceptance. Do not persist a user's clipboard
 or authentication token as test evidence. See
 [generation ownership](../clipboard/REQ__clipboard-generation-coexistence.md)
 and [the clipboard guide](../clipboard/GUIDE__clipboard-bridge.md).
+
+For an actual Slack source case on a Mac, immediately after copying the image,
+`osascript -e 'clipboard info'` reports native format labels and byte sizes.
+It needs no build and does not print image/text contents. Preserve that source
+observation separately; synthetic PNG/TIFF fixtures do not identify Slack's
+formats or prove its actual shortcut-paste flow.
 
 ## Native residual verification follow-up
 

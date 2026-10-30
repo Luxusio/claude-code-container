@@ -87,13 +87,6 @@ int main(int argc, const char *argv[]) {
                     result[@"text"] = text;
                 }
 
-                if (png.length == 0 && text.length == 0
-                    && ([[pb types] containsObject:NSPasteboardTypePNG]
-                        || [[pb types] containsObject:NSPasteboardTypeTIFF])) {
-                    printf("{\"error\":\"clipboard-read-failed\"}\n%s\n", MARKER);
-                    continue;
-                }
-
                 result[@"targets"] = targets;
 
                 NSData *json = [NSJSONSerialization dataWithJSONObject:result

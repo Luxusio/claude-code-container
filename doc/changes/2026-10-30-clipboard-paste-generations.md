@@ -15,10 +15,11 @@ This changes the shared clipboard service. Device-provider broker version
 discovery is outside this change.
 
 The native Mac helper now skips empty PNG data and converts available TIFF.
-An empty advertised image may fall back to valid text; an unreadable image
-without valid fallback remains an error. Windows raw seekable PNG streams rewind
+Successful empty formats retain the existing text/file fallbacks; native
+transport and framing failures remain errors. Windows raw seekable PNG streams rewind
 before copying. Darwin helper source participates in the policy fingerprint and
 selects a complete hash-qualified helper binary instead of an older global one.
+Its directory chain is qualified before execution, compilation and publication.
 
 Before launching a TUI, CCC checks the selected X11 bridge's first successful
 sync. Positive X11 selection-owner loss can restore unchanged host content;
@@ -28,17 +29,24 @@ HTTP within five seconds. Clipboard readers use bounded transport requests.
 
 Regression evidence is recorded in
 [the current owner inventory](../../results/tests/clipboard-paste-2026-10-30/current-evidence.json).
-Sixteen focused owners contain 1,070 passing tests and 18 platform skips. Older
+Sixteen focused owners contain 1,076 passing tests and 19 platform skips. Older
 RED reports are retained: stale endpoint selection, lost X11 ownership, native
 Mac empty-PNG conversion and stalled/partial startup HTTP each had a failing
 witness. TypeScript, affected-source lint and shell syntax checks also passed.
 These are focused checks, not a new full-suite or GitHub Actions result.
 
-[Actual device-lab Mac evidence](../../results/tests/clipboard-paste-2026-10-30/native-macos/candidate-v2/native-observation.json)
+[Actual device-lab Mac evidence](../../results/tests/clipboard-paste-2026-10-30/native-macos/candidate-v3/native-observation.json)
 uses an owned disposable macOS 26.5 ARM64 VM. The exact helper passed native
-TIFF conversion, image → text → empty → identical image, explicit read failure,
-valid text fallback and recovery. Text and empty stages exposed zero image
+TIFF conversion, image → text → empty → identical image, successful empty-format
+capture, valid text/file-reference fallback frames and recovery. Text and empty stages exposed zero image
 bytes. The earlier failed native observations remain separate.
+
+The [actual packaged Mac HTTP flow](../../results/tests/clipboard-paste-2026-10-30/native-macos/candidate-v3/http-native-observation.json)
+also passed eight generated transitions on native Node 22.22.1, including real
+AppleScript file-URL lookup and JS file fallback. Its authenticated policy is
+`c02026440612`. Text/empty responses contain no earlier image; the owned
+service and helper stopped afterward. This remains separate from Slack and
+actual CLI shortcut acceptance.
 
 The [native commands](../verification/GUIDE__regression-test-entrypoints.md#live-clipboard-paste-and-service-generations)
 include private AppKit conversion and controlled Windows PowerShell acquisition

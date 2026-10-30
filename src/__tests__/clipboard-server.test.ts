@@ -902,10 +902,12 @@ describe("clipboard-server", () => {
                 expect(snapshot!.text).toEqual(Buffer.from(text)); expect(snapshot!.imagePng).toBeNull();
             }, 20_000);
 
-            it.runIf(nativeWindowsHost)("refuses a native empty advertised PNG without valid text or image fallback", async () => {
+            it.runIf(nativeWindowsHost)("captures native empty advertised PNG without text or image as a valid empty snapshot", async () => {
                 const output = await nativeWindowsDataObject(Buffer.alloc(0));
-                expect(JSON.parse(output)).toEqual({error: "clipboard-read-failed"});
-                expect(parseWindowsClipboardSnapshot(output)).toBeNull();
+                expect(JSON.parse(output)).not.toHaveProperty("error");
+                const snapshot = parseWindowsClipboardSnapshot(output);
+                expect(snapshot).not.toBeNull(); expect(snapshot!.targets).toEqual([]);
+                expect(snapshot!.text).toBeNull(); expect(snapshot!.imagePng).toBeNull();
             }, 20_000);
 
             it("should handle empty output", () => {

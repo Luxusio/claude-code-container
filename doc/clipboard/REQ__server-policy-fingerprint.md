@@ -56,6 +56,10 @@ Darwin helper binaries use
 directory. Only a complete, private, executable regular file for the captured
 source qualifies. Compilation uses owned stages and no-replace publication;
 an older global binary cannot satisfy current readiness and remains untouched.
+Readiness, compilation and publication qualify the captured directory chain
+from the CCC root through the helper directory: owned directories, no symlinks
+and no write access for other users. A directory or ancestor substitution cannot
+make an executable eligible merely by keeping its hash-qualified basename.
 
 Verify each listed runtime file and the facade by independent byte mutation,
 the framing rule, each read failure, import-time capture, missing-static-module

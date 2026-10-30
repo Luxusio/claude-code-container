@@ -6,7 +6,7 @@ import { resolve, join } from "path";
 import { fileURLToPath } from "url";
 import { createHash } from "crypto";
 import { tmpdir } from "os";
-import { readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, symlinkSync } from "fs";
+import { readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, symlinkSync, chmodSync, renameSync } from "fs";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn(), platform: "win32", home: "" }));
 vi.mock("child_process", async () => ({ ...await vi.importActual<typeof import("child_process")>("child_process"), spawn: native.spawn, spawnSync: native.spawnSync }));
@@ -26,6 +26,7 @@ let unstable: boolean;
 let splitFrames: boolean;
 let snapshotReads: number;
 let afterSnapshot: (() => void) | undefined;
+let nativeSnapshotOverride: Record<string, unknown> | undefined;
 let server: Server | undefined;
 let port: number;
 let mod: typeof import("../clipboard-server.js");
@@ -54,7 +55,7 @@ function fakeProcess() {
             let value: unknown;
             if (reading) {
                 snapshotReads++;
-                value = { marker: state.sequence, changeCount: state.sequence,
+                value = nativeSnapshotOverride ?? { marker: state.sequence, changeCount: state.sequence,
                     targets: state.image ? ["image/png"] : state.text ? ["text/plain"] : [],
                     text: state.text, imagePng: state.image?.toString("base64") ?? null };
                 afterSnapshot?.();
@@ -105,6 +106,7 @@ beforeEach(async () => {
     splitFrames = false;
     snapshotReads = 0;
     afterSnapshot = undefined;
+    nativeSnapshotOverride = undefined;
     children = [];
     server = undefined;
     token = "image-test-token";
@@ -325,6 +327,37 @@ it.skipIf(process.platform === "win32")("serves actual Claude shell target/image
 
 
 describe("Darwin helper generation readiness", () => {
+    it.each([
+        ["bin", "symlink"], ["bin", "writable"],
+        ["run", "symlink"], ["run", "writable"],
+        ["ccc-root", "symlink"], ["ccc-root", "writable"],
+    ] as const)("refuses native helper and compiler execution through a %s %s ancestor", async (ancestor, unsafe) => {
+        const directory = ancestor === "bin" ? join(fixtureHome, ".ccc", "run", "bin")
+            : ancestor === "run" ? join(fixtureHome, ".ccc", "run") : join(fixtureHome, ".ccc");
+        const legacy = join(fixtureHome, ".ccc", "run", "bin", "clipboard-helper-darwin");
+        writeFileSync(legacy, "previous helper must remain untouched\n", {mode: 0o700});
+        const legacyBytes = readFileSync(legacy), legacyInode = statSync(legacy).ino;
+        const currentBytes = readFileSync(helperBinary), currentInode = statSync(helperBinary).ino;
+        if (unsafe === "symlink") {
+            const relocated = join(fixtureHome, `relocated-${ancestor}`);
+            renameSync(directory, relocated); symlinkSync(relocated, directory, "dir");
+        } else chmodSync(directory, 0o777);
+        native.spawn.mockImplementation((command: string) => {
+            const proc = fakeProcess(); children.push(proc);
+            if (command !== helperBinary && command !== legacy) {
+                queueMicrotask(() => {proc.exitCode = 1; proc.emit("exit", 1); proc.emit("close", 1);});
+            }
+            return proc;
+        });
+        await start("darwin");
+        expect((await get("targets")).status).toBe(503);
+        expect(native.spawn.mock.calls.some(([command]) => command === helperBinary || command === legacy
+            || /(?:^|[/\\])(?:cc|clang|gcc)(?:\.exe)?$/.test(String(command))),
+        "Unsafe native helper ancestry must not authorize either execution or compilation").toBe(false);
+        expect(readFileSync(legacy)).toEqual(legacyBytes); expect(statSync(legacy).ino).toBe(legacyInode);
+        expect(readFileSync(helperBinary)).toEqual(currentBytes); expect(statSync(helperBinary).ino).toBe(currentInode);
+    });
+
     it.runIf(originalProcessPlatform === "darwin")("converts native TIFF when a private pasteboard advertises an empty PNG", async () => {
         native.platform = "darwin";
         const nativeProcesses = await vi.importActual<typeof import("child_process")>("child_process");
@@ -360,6 +393,69 @@ int main(void) {
         expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
         const observed: {valid: boolean; pngBytes: number; tiffBytes: number} = JSON.parse(result.stdout.trim());
         expect(observed.valid).toBe(true); expect(observed.pngBytes).toBeGreaterThan(0); expect(observed.tiffBytes).toBeGreaterThan(0);
+    }, 45_000);
+
+    it.runIf(originalProcessPlatform === "darwin")("keeps a native empty PNG plus file URL frame valid for the image-file fallback", async () => {
+        native.platform = "darwin";
+        const nativeProcesses = await vi.importActual<typeof import("child_process")>("child_process");
+        const source = fileURLToPath(new URL("../../scripts/clipboard-helper-darwin.m", import.meta.url));
+        const witness = join(fixtureHome, "native-empty-png-file-url.m"), executable = join(fixtureHome, "native-empty-png-file-url");
+        const imagePath = join(fixtureHome, "generated-file-url-image.png"), inputPath = join(fixtureHome, "native-read-command");
+        writeFileSync(imagePath, png, {mode: 0o600}); writeFileSync(inputPath, "READ\n", {mode: 0o600});
+        // The exact shipped main reads only the unique private pasteboard:
+        // redirect its class accessor inside this isolated native process and
+        // restore it even if the candidate exits the read loop early.
+        writeFileSync(witness, `#define main ccc_shipped_helper_main
+#include ${JSON.stringify(source)}
+#undef main
+#import <objc/runtime.h>
+static NSPasteboard *ccc_fixture_board;
+static id ccc_fixture_general_pasteboard(id receiver, SEL selector) { return ccc_fixture_board; }
+int main(int argc, const char *argv[]) {
+  @autoreleasepool {
+    if (argc != 3) return 2;
+    ccc_fixture_board = [NSPasteboard pasteboardWithUniqueName];
+    NSURL *url = [NSURL fileURLWithPath:[[NSString alloc] initWithUTF8String:argv[2]]];
+    [ccc_fixture_board declareTypes:@[NSPasteboardTypePNG, NSPasteboardTypeFileURL] owner:nil];
+    [ccc_fixture_board setData:[NSData data] forType:NSPasteboardTypePNG];
+    [ccc_fixture_board setString:url.absoluteString forType:NSPasteboardTypeFileURL];
+    if ([ccc_fixture_board dataForType:NSPasteboardTypePNG].length != 0
+        || [ccc_fixture_board dataForType:NSPasteboardTypeTIFF].length != 0
+        || [ccc_fixture_board stringForType:NSPasteboardTypeString] != nil
+        || ![[ccc_fixture_board stringForType:NSPasteboardTypeFileURL] isEqualToString:url.absoluteString]) {
+      [ccc_fixture_board releaseGlobally]; return 3;
+    }
+    if (!freopen(argv[1], "r", stdin)) { [ccc_fixture_board releaseGlobally]; return 4; }
+    Method accessor = class_getClassMethod([NSPasteboard class], @selector(generalPasteboard));
+    if (!accessor) { [ccc_fixture_board releaseGlobally]; return 5; }
+    IMP previous = method_setImplementation(accessor, (IMP)ccc_fixture_general_pasteboard);
+    int status = 6;
+    @try { status = ccc_shipped_helper_main(0, NULL); }
+    @finally { method_setImplementation(accessor, previous); [ccc_fixture_board releaseGlobally]; ccc_fixture_board = nil; }
+    return status;
+  }
+}
+`, {mode: 0o600});
+        const compiled = nativeProcesses.spawnSync("/usr/bin/clang", ["-fobjc-arc", "-framework", "Cocoa", witness, "-o", executable], {encoding: "utf8", timeout: 30_000});
+        expect(compiled.error).toBeUndefined(); expect(compiled.status, compiled.stderr).toBe(0);
+        const result = nativeProcesses.spawnSync(executable, [inputPath, imagePath], {encoding: "utf8", timeout: 10_000});
+        expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+        const lines = result.stdout.trim().split(/\r?\n/);
+        expect(lines).toHaveLength(2); expect(lines[1]).toBe(marker);
+        const captured = mod.parseDarwinHelperOutput(lines[0]);
+        expect(captured).not.toBeNull(); expect(captured!.targets).toEqual([]);
+        expect(captured!.text).toBeNull(); expect(captured!.imagePng).toBeNull();
+        expect(captured!.marker).toMatch(/^\d+$/);
+        // Keep the real native frame intact at the HTTP boundary. Only the
+        // subsequent file-URL lookup is an isolated fixture source; the
+        // fallback reads the actual generated PNG from this private home.
+        nativeSnapshotOverride = JSON.parse(lines[0]);
+        state = {sequence: Number(captured!.marker), image: null, text: null};
+        native.spawnSync.mockImplementation(command => ({status: command === "osascript" ? 0 : 1,
+            stdout: command === "osascript" ? Buffer.from(imagePath) : Buffer.alloc(0), stderr: Buffer.alloc(0)}));
+        await start("darwin");
+        expect((await get("image/png")).body).toEqual(png);
+        expect((await get("text")).status).toBe(204);
     }, 45_000);
 
     it.each(["stale-global", "empty-current", "nonexecutable-current", "symlink-current"] as const)("does not execute a %s artifact as the current native helper", async artifact => {

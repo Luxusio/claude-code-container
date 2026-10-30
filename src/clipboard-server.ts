@@ -392,19 +392,57 @@ export function parseDarwinHelperOutput(output: string): Omit<ClipboardSnapshot,
     }
 }
 
-/**
- * Fast check: is the native helper binary ready to use?
- * No compilation — just checks if binary exists. Used at request time.
- */
+type DarwinHelperDirectory = { path: string; stat: BigIntStats };
+
+function safeDarwinHelperDirectory(stat: BigIntStats): boolean {
+    return stat.isDirectory() && !stat.isSymbolicLink()
+        && (!process.getuid || (stat.uid === BigInt(process.getuid()) && (stat.mode & 0o022n) === 0n));
+}
+
+function captureDarwinHelperDirectories(helperDirectory: string, createMissing = false): DarwinHelperDirectory[] | null {
+    try {
+        const root = resolve(cccHome()), directory = resolve(helperDirectory);
+        const suffix = relative(root, directory);
+        if (!suffix || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) return null;
+        const paths = [root];
+        for (const part of suffix.split(sep)) paths.push(join(paths.at(-1)!, part));
+        return paths.map(path => {
+            let stat: BigIntStats;
+            try { stat = lstatSync(path, { bigint: true }); }
+            catch (error) {
+                if (!createMissing || path === root || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+                // Validate each existing parent before creating its direct child.
+                mkdirSync(path, { mode: 0o700 });
+                stat = lstatSync(path, { bigint: true });
+            }
+            if (!safeDarwinHelperDirectory(stat)) throw new Error("Unsafe clipboard helper directory");
+            return { path, stat };
+        });
+    } catch { return null; }
+}
+
+function darwinHelperDirectoriesMatch(directories: readonly DarwinHelperDirectory[]): boolean {
+    try {
+        return directories.every(before => {
+            const current = lstatSync(before.path, { bigint: true });
+            return safeDarwinHelperDirectory(current) && current.dev === before.stat.dev
+                && current.ino === before.stat.ino && current.birthtimeNs === before.stat.birthtimeNs;
+        });
+    } catch { return false; }
+}
+
+/** Qualify the captured helper generation and its owned directory chain. */
 function isDarwinHelperReady(): string | null {
     if (platform() !== "darwin") return null;
     const binary = darwinHelperBinary();
     if (!binary) return null;
+    const directories = captureDarwinHelperDirectories(dirname(binary));
+    if (!directories) return null;
     try {
         const stat = lstatSync(binary);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size === 0
             || (process.getuid && (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0 || (stat.mode & 0o100) === 0))) return null;
-        return binary;
+        return darwinHelperDirectoriesMatch(directories) ? binary : null;
     } catch { return null; }
 }
 
@@ -430,11 +468,9 @@ function compileDarwinHelperAsync(): void {
     try {
         const binary = darwinHelperBinary();
         if (!binary || darwinHelperSource === undefined || isDarwinHelperReady()) return;
-        const binDir = helperBinDir();
-        mkdirSync(binDir, { recursive: true, mode: 0o700 });
-        const parent = lstatSync(binDir, { bigint: true });
-        if (!parent.isDirectory() || parent.isSymbolicLink()
-            || (process.getuid && (parent.uid !== BigInt(process.getuid()) || (parent.mode & 0o022n) !== 0n))) return;
+        const binDir = dirname(binary);
+        const directories = captureDarwinHelperDirectories(binDir, true);
+        if (!directories || !darwinHelperDirectoriesMatch(directories)) return;
         const nonce = randomBytes(16).toString("hex");
         sourcePath = join(binDir, `.clipboard-helper-${nonce}.m`);
         outputPath = join(binDir, `.clipboard-helper-${nonce}.bin`);
@@ -452,9 +488,7 @@ function compileDarwinHelperAsync(): void {
         child.once("close", code => {
             try {
                 if (code !== 0) return;
-                const currentParent = lstatSync(binDir, { bigint: true });
-                if (!currentParent.isDirectory() || currentParent.isSymbolicLink() || currentParent.dev !== parent.dev
-                    || currentParent.ino !== parent.ino || currentParent.birthtimeNs !== parent.birthtimeNs) return;
+                if (!darwinHelperDirectoriesMatch(directories)) return;
                 // The compiler may replace its output. Capture only a private,
                 // complete regular file in this exclusively reserved stage.
                 const compiled = lstatSync(outputPath!, { bigint: true });
@@ -470,6 +504,7 @@ function compileDarwinHelperAsync(): void {
                 } finally { closeSync(fd); }
                 // No replace: concurrent compilers and older running binaries
                 // keep their exact files and processes.
+                if (!darwinHelperDirectoriesMatch(directories)) return;
                 linkSync(outputPath!, binary);
             } catch { /* Compilation failure keeps the existing fallback. */ }
             finally { cleanup(); }
@@ -870,13 +905,11 @@ export function buildWindowsClipboardReadCommand(
         `$imageExts = @(${extensions})`,
         `$sharedHost = ${sharedHost}`,
         `$sharedContainer = ${sharedContainer}`,
-        "$nativeImagePresent = $false",
         "$dataObj = [System.Windows.Forms.Clipboard]::GetDataObject()",
         "if ($dataObj) {",
         "  foreach ($fmt in @('PNG', 'image/png')) {",
         "    try {",
         "      if ($dataObj.GetDataPresent($fmt)) {",
-        "        $nativeImagePresent = $true",
         "        $data = $dataObj.GetData($fmt)",
         "        $bytes = $null",
         "        if ($data -is [byte[]]) { $bytes = $data }",
@@ -897,7 +930,6 @@ export function buildWindowsClipboardReadCommand(
         "  }",
         "}",
         "$img = [System.Windows.Forms.Clipboard]::GetImage()",
-        "if ($img) { $nativeImagePresent = $true }",
         "if (!$r.imagePng -and !$img -and [System.Windows.Forms.Clipboard]::ContainsFileDropList()) {",
         "  $files = [System.Windows.Forms.Clipboard]::GetFileDropList()",
         "  foreach ($file in $files) {",
@@ -989,7 +1021,6 @@ export function buildWindowsClipboardReadCommand(
         "  try { $img.Dispose() } catch { }",
         "}",
         "if ($text -and !$r.imagePng -and !$r.text) { $r.targets += 'text/plain'; $r.text = $text }",
-        "if ($nativeImagePresent -and !$r.imagePng -and !$r.text -and !($r.targets -contains 'application/x-ccc-copied-image-file')) { throw 'clipboard-read-failed' }",
         "$r | ConvertTo-Json -Compress",
         "} catch { '{\"error\":\"clipboard-read-failed\"}' } finally { $ErrorActionPreference = $previousErrorActionPreference }",
     ].join("; ");

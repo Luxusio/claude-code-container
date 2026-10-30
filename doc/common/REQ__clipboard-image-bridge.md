@@ -12,6 +12,12 @@ Codex image paste through CCC must survive host clipboard image type variation a
   image → text → empty → identical-image transitions. At the text/empty stage,
   an older image target or payload must not remain attached. Startup `--image`
   attachment alone does not establish this live-paste behavior.
+- User-explicit source case, 2026-10-30: copying an image from Slack also fails.
+  Actual Slack pasteboard formats and the CLI shortcut path require observation;
+  a synthetic TIFF witness does not establish Slack acceptance. Diagnostic logs
+  may retain bounded format names, sizes and coherence facts, never clipboard
+  contents, file URLs or credentials. Native Windows remains pending while only
+  a Mac device-lab host is available.
 - Derived from that recurrence: the selected X11 bridge needs a bounded,
   positive first-sync observation before paste readiness is claimed. Recover
   unchanged host content after positively observed selection-owner loss;
@@ -26,6 +32,8 @@ Codex image paste through CCC must survive host clipboard image type variation a
   data is not an image and must not suppress an available TIFF/other supported
   conversion fallback. Native read failures remain errors, and all advertised
   image targets still require captured nonempty bytes.
+  Merely advertising an empty image format does not prove acquisition failed;
+  preserve the existing coherent empty snapshot and copied-file fallback.
 - Concurrent clipboard consumers (Claude target checks, Codex image reads and the X11 bridge) must receive their own complete native responses. Persistent native helper operations must not cross-consume marker and snapshot frames. A delimiter occurring inside clipboard text is data, not a response terminator.
 - For Windows/WSL and macOS persistent helpers, an unavailable, malformed, interrupted or timed-out native read is an HTTP error, not an empty clipboard. Only a successfully read empty snapshot returns 204. Failed reads must not create marker-backed negative cache entries; a subsequent request must recover even when the host clipboard marker has not changed. Image targets must agree with captured nonempty image bytes.
 - Native snapshots must be coherent with the clipboard change marker. Changes during a read require bounded retry instead of caching mixed or stale content. Empty/no-image cache reuse must be short and bounded so delayed image rendering can recover even under an unchanged marker. Image → text → empty → the same image must remain observable to all consumers.
