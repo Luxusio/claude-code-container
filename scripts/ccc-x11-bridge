@@ -19,6 +19,7 @@ source "$BRIDGE_POLICY" || { return 1 2>/dev/null || exit 1; }
 bridge_init() {
     umask 077
     bridge_tmp=$(mktemp -d "${TMPDIR:-/tmp}/ccc-clipboard.XXXXXXXX") || return 1
+    bridge_ready_stage=""
     clipboard_x11_sync_init
     export DISPLAY="$DISPLAY_N"
 }
@@ -54,6 +55,37 @@ bridge_read_local() {
         head -c 1048577 > "$bridge_tmp/local") || result=1
     [ "$(wc -c < "$bridge_tmp/local")" -le 1048576 ] || return 2
     return "$result"
+}
+
+# Failed target conversion is not proof of an unowned selection. Query the
+# server directly, using Python and libX11 already shipped with the container.
+bridge_selection_owner_absent() {
+    timeout -k 1 2 /usr/bin/python3 - "$DISPLAY_N" 2>/dev/null <<'PY'
+import ctypes
+import os
+import sys
+
+try:
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x11.XInternAtom.restype = ctypes.c_ulong
+    x11.XGetSelectionOwner.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XGetSelectionOwner.restype = ctypes.c_ulong
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    display = x11.XOpenDisplay(os.fsencode(sys.argv[1]))
+    if not display:
+        sys.exit(2)
+    try:
+        atom = x11.XInternAtom(display, b"CLIPBOARD", 1)
+        owner = x11.XGetSelectionOwner(display, atom) if atom else 0
+    finally:
+        x11.XCloseDisplay(display)
+except Exception:
+    sys.exit(2)
+sys.exit(0 if owner == 0 else 1)
+PY
 }
 
 bridge_http_get() {
@@ -100,8 +132,19 @@ bridge_upload_local() {
     case "$status" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
-bridge_cycle() {
-    local url=${CCC_CLIPBOARD_URL:-} token=${CCC_CLIPBOARD_TOKEN:-} record
+bridge_generation_pinned() {
+    [[ "${CCC_CLIPBOARD_GENERATION:-}" =~ ^[a-f0-9]{12}$ ]]
+}
+
+# Caller-local URL/token variables retain their pairing for the whole cycle.
+bridge_resolve_connection() {
+    local record
+    url=${CCC_CLIPBOARD_URL:-}
+    token=${CCC_CLIPBOARD_TOKEN:-}
+    if bridge_generation_pinned; then
+        [ -n "$url" ] && [ -n "$token" ]
+        return $?
+    fi
     # Refresh the endpoint and credential as a pair, preserving the session host.
     if [ -f "$CCC_CLIPBOARD_PORT_FILE" ] && [ -r "$CCC_CLIPBOARD_PORT_FILE" ] &&
         record=$(awk -F: '
@@ -119,13 +162,47 @@ bridge_cycle() {
         esac
     fi
     [ -n "$url" ] || return 1
+}
+
+bridge_connection_signature() {
+    local url token generation=legacy
+    bridge_resolve_connection || return 1
+    if bridge_generation_pinned; then generation=$CCC_CLIPBOARD_GENERATION; fi
+    printf '%s\0%s\0%s' "$generation" "$url" "$token" | sha256sum | cut -d' ' -f1
+}
+
+bridge_code_signature() {
+    printf '%s:%s' "$(bridge_signature "$BRIDGE_SCRIPT")" "$(bridge_signature "$BRIDGE_POLICY")"
+}
+
+bridge_cycle() {
+    local url token
+    bridge_resolve_connection || return 1
     clipboard_x11_sync_cycle
+}
+
+bridge_mark_ready() {
+    [ "$initialized" = 1 ] && [ -f "$LOCK_DIR/running" ] && [ ! -L "$LOCK_DIR/running" ] || return 1
+    [ "$(head -n 1 "$LOCK_DIR/running")" = "$$" ] || return 1
+    if [ -f "$LOCK_DIR/ready" ] && [ ! -L "$LOCK_DIR/ready" ] && cmp -s "$LOCK_DIR/running" "$LOCK_DIR/ready"; then
+        return 0
+    fi
+    bridge_ready_stage=$(mktemp "$LOCK_DIR/.ready.XXXXXXXX") || return 1
+    cp -- "$LOCK_DIR/running" "$bridge_ready_stage" || { rm -f -- "$bridge_ready_stage"; bridge_ready_stage=""; return 1; }
+    if [ "$(head -n 1 "$LOCK_DIR/running")" = "$$" ] && cmp -s "$LOCK_DIR/running" "$bridge_ready_stage"; then
+        mv -f -- "$bridge_ready_stage" "$LOCK_DIR/ready" || { rm -f -- "$bridge_ready_stage"; bridge_ready_stage=""; return 1; }
+        bridge_ready_stage=""
+    else
+        rm -f -- "$bridge_ready_stage"
+        bridge_ready_stage=""
+        return 1
+    fi
 }
 
 sync_loop() {
     bridge_init || return 1
     while :; do
-        bridge_cycle || true
+        if bridge_cycle; then bridge_mark_ready || true; fi
         sleep 0.4
     done
 }
@@ -151,12 +228,37 @@ bridge_exit() {
     bridge_cleanup
     # A replacement may already own the record; never remove its state.
     if [ -f "$LOCK_DIR/running" ] && [ "$(head -n 1 "$LOCK_DIR/running")" = "$$" ]; then
+        if [ -f "$LOCK_DIR/ready" ] && [ ! -L "$LOCK_DIR/ready" ] && cmp -s "$LOCK_DIR/running" "$LOCK_DIR/ready"; then
+            rm -f -- "$LOCK_DIR/ready"
+        fi
         rm -f -- "$LOCK_DIR/running"
     fi
+    if [ -n "${bridge_ready_stage:-}" ]; then rm -f -- "$bridge_ready_stage"; fi
+}
+
+# This mode observes an already-started bridge; it never claims or signals one.
+bridge_wait_ready() {
+    local generation connection observed i
+    local -a state=()
+    generation=$(bridge_code_signature) || return 1
+    connection=$(bridge_connection_signature) || return 1
+    for ((i=0; i<100; i++)); do
+        if [ -f "$LOCK_DIR/running" ] && [ ! -L "$LOCK_DIR/running" ] &&
+            [ -f "$LOCK_DIR/ready" ] && [ ! -L "$LOCK_DIR/ready" ]; then
+            mapfile -t state < "$LOCK_DIR/running"
+            if [ "${#state[@]}" = 4 ] && [ "${state[2]}" = "$generation" ] && [ "${state[3]}" = "$connection" ] &&
+                observed=$(bridge_process_start "${state[0]}") && [ "$observed" = "${state[1]}" ] &&
+                cmp -s "$LOCK_DIR/running" "$LOCK_DIR/ready"; then
+                return 0
+            fi
+        fi
+        sleep 0.1
+    done
+    return 1
 }
 
 bridge_main() {
-    local generation pid start observed i
+    local generation connection pid start observed i
     local -a state=()
     umask 077
     mkdir -p "$LOCK_DIR" || return 1
@@ -164,14 +266,15 @@ bridge_main() {
     # Serialize startup/replacement, but release before spawning child owners.
     exec 9>"$LOCK_DIR/startup.lock" || return 1
     flock -w 10 9 || return 1
-    generation="$(bridge_signature "$BRIDGE_SCRIPT"):$(bridge_signature "$BRIDGE_POLICY")"
+    generation=$(bridge_code_signature) || return 1
+    connection=$(bridge_connection_signature) || return 1
     if [ -f "$LOCK_DIR/running" ]; then
         mapfile -t state < "$LOCK_DIR/running"
         pid=${state[0]:-}
         if observed=$(bridge_process_start "$pid"); then
             start=${state[1]:-$observed}
             if [ "$observed" = "$start" ]; then
-                if [ "${state[2]:-}" = "$generation" ] && [ "${state[3]:-}" = "${CCC_CLIPBOARD_URL:-}" ]; then
+                if [ "${state[2]:-}" = "$generation" ] && [ "${state[3]:-}" = "$connection" ]; then
                     exec 9>&-
                     return 0
                 fi
@@ -188,7 +291,7 @@ bridge_main() {
         fi
     fi
     start=$(bridge_process_start "$$") || return 1
-    printf '%s\n' "$$" "$start" "$generation" "${CCC_CLIPBOARD_URL:-}" > "$LOCK_DIR/running.new"
+    printf '%s\n' "$$" "$start" "$generation" "$connection" > "$LOCK_DIR/running.new"
     mv -f "$LOCK_DIR/running.new" "$LOCK_DIR/running"
     trap bridge_exit EXIT
     trap 'exit 0' TERM INT
@@ -206,5 +309,9 @@ bridge_main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-    bridge_main
+    case "${1:-}" in
+        '') bridge_main ;;
+        --wait-ready) bridge_wait_ready ;;
+        *) exit 2 ;;
+    esac
 fi

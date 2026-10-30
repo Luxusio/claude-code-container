@@ -63,6 +63,7 @@ case "$*" in *http_code*) /bin/cat >/dev/null; printf '200';; *) printf 'fixture
                     BASH_ENV: "",
                     CCC_CLIPBOARD_URL: `http://${host}:42000`,
                     CCC_CLIPBOARD_TOKEN: "current-session-token",
+                    CCC_CLIPBOARD_GENERATION: "",
                     CCC_TEST_PORT_FILE: portFile,
                     CCC_TEST_AUTH_CAPTURE: captureFile,
                 },

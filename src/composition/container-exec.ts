@@ -161,7 +161,8 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         clipboardConnection(selection) {
             if (!selection) return {};
             const host = process.platform === "linux" && !isDockerDesktop() ? "127.0.0.1" : "host.docker.internal";
-            return { url: `http://${host}:${selection.port}`, token: selection.token };
+            return { url: `http://${host}:${selection.port}`, hostUrl: `http://127.0.0.1:${selection.port}`,
+                token: selection.token, ...(selection.generation ? { generation: selection.generation } : {}) };
         },
         worktreeMounts: getWorktreeGitMounts,
         containerName: getContainerName,
@@ -208,11 +209,18 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
                 "mise trust -a >/dev/null 2>&1 || true; mise install -y || true"], { stdio: "inherit" });
         },
         startClipboardBridge(target, connection) {
+            if (!connection.url) return;
             // The bridge starts for every session and reuses an existing X11 daemon.
             const environment: string[] = [];
             if (connection.url) environment.push("-e", `CCC_CLIPBOARD_URL=${connection.url}`);
             if (connection.token) environment.push("-e", `CCC_CLIPBOARD_TOKEN=${connection.token}`);
-            runtimeSpawnSync(["exec", "-d", ...environment, target, "/usr/local/bin/ccc-x11-bridge"], { stdio: "ignore" });
+            if (connection.generation) environment.push("-e", `CCC_CLIPBOARD_GENERATION=${connection.generation}`);
+            const started = runtimeSpawnSync(["exec", "-d", ...environment, target, "/usr/local/bin/ccc-x11-bridge"],
+                { stdio: "ignore", timeout: 15000 });
+            if (started.error || started.status !== 0) throw new Error("Clipboard synchronization could not start; existing sessions were preserved.");
+            const ready = runtimeSpawnSync(["exec", ...environment, target, "/usr/local/bin/ccc-x11-bridge", "--wait-ready"],
+                { stdio: "ignore", timeout: 15000 });
+            if (ready.error || ready.status !== 0) throw new Error("Clipboard synchronization did not become ready; retry after the host clipboard is available.");
         },
         observeCommandEnvironment() {
             const forwarded = collectForwardedEnv(process.env);

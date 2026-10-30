@@ -32,7 +32,7 @@ export interface ContainerExecReplacementPorts {
 export type ContainerExecReplacementReason =
     | { reason: "ownership-unverified" | "identity-absent" | "identity-changed" }
     | { reason: "other-claims"; claims: string[] };
-export interface ContainerExecClipboardConnection { url?: string; token?: string; }
+export interface ContainerExecClipboardConnection { url?: string; hostUrl?: string; token?: string; generation?: string; }
 export interface ContainerExecEnvironmentFacts {
     forwarded: Array<[string, string]>;
     skippedKeys: string[];

@@ -8,14 +8,15 @@ export function createClipboardServerLifecycle<Lock, Child, Guard, Requester>(
     ports: ClipboardServerLifecyclePorts<Lock, Child, Guard, Requester>,
     serverVersion: string,
 ) {
-    const selection = (record: ClipboardPortRecord, portFile = ports.portFilePath()): ClipboardSelection =>
-        Object.freeze({ ...record, portFile });
+    const generation = ports.generation === serverVersion && /^[a-f0-9]{12}$/.test(serverVersion) ? serverVersion : undefined;
+    const selection = (record: ClipboardPortRecord, portFile = ports.portFilePath(), current = false): ClipboardSelection =>
+        Object.freeze({ ...record, portFile, ...(current && generation ? { generation } : {}) });
     async function ensureClipboardSelection(requester?: Requester): Promise<ClipboardSelection | null> {
         const bindAddr = "127.0.0.1";
         const existing = ports.readPortFile();
         if (existing && !existing.retired) {
             const health = await ports.checkHealth(existing.port, existing.token, bindAddr);
-            if (health.alive && health.version === serverVersion && ports.portRecordMatches(existing, ports.portFilePath())) return selection(existing);
+            if (health.alive && health.version === serverVersion && ports.portRecordMatches(existing, ports.portFilePath())) return selection(existing, ports.portFilePath(), true);
         }
         const lockPath = ports.startupLockPath();
         let lock = ports.tryAcquireStartupLock(lockPath);
@@ -28,7 +29,7 @@ export function createClipboardServerLifecycle<Lock, Child, Guard, Requester>(
                 if (info && !info.retired && info.token !== existing?.token) {
                     const health = await ports.checkHealth(info.port, info.token, bindAddr);
                     if (ports.now() >= deadline) break;
-                    if (health.alive && health.version === serverVersion && ports.portRecordMatches(info, ports.portFilePath())) return selection(info);
+                    if (health.alive && health.version === serverVersion && ports.portRecordMatches(info, ports.portFilePath())) return selection(info, ports.portFilePath(), true);
                 }
                 lock = ports.tryAcquireStartupLock(lockPath);
                 if (lock) break;
@@ -46,43 +47,49 @@ export function createClipboardServerLifecycle<Lock, Child, Guard, Requester>(
                 const current = ports.readPortFile(path);
                 const health: ClipboardHealthResult = current && !current.retired ? await ports.checkHealth(current.port, current.token, bindAddr) : { alive: false };
                 if (current && !ports.portRecordMatches(current, path)) return null;
-                if (current && !current.retired && health.alive && health.version === serverVersion) return selection(current, path);
+                if (current && !current.retired && health.alive && health.version === serverVersion) return selection(current, path, true);
                 const defer = () => {
                     ports.warnUpgradeDeferred();
                     return current && !current.retired && health.alive ? selection(current, path) : null;
                 };
-                if (ports.hasOtherSessions(requester)) return defer();
+                // Only native admission of a fresh, disjoint generation can coexist
+                // with other sessions. Existing writers retain every original veto.
+                const concurrentCreation = !!generation && current === null;
+                if (!concurrentCreation && ports.hasOtherSessions(requester)) return defer();
                 let publish = ports.preparePublication(path, guard);
                 if (!publish) return defer();
-                if (current && !current.retired) {
-                    // Silence and a legacy HTTP 200 do not settle a previous writer.
-                    if (!health.alive || health.retirement !== "writer-settlement-v1" || !ports.portRecordMatches(current, path)
-                        || ports.hasOtherSessions(requester)) return defer();
-                    if (!await ports.requestShutdown(current.port, current.token)) return defer();
-                    ports.markRetired(current, path, guard);
-                    if (ports.hasOtherSessions(requester)) return null;
-                    publish = ports.preparePublication(path, guard);
-                    if (!publish) return null;
-                }
-                if (ports.hasOtherSessions(requester)) return null;
-                const publishRecord = publish;
-                const child = await ports.launchDaemon(ports.daemonScriptPath(), record => {
-                    if (ports.hasOtherSessions(requester)) throw new Error("Clipboard session ownership changed before publication");
-                    return publishRecord(record);
-                });
-                ports.unrefDaemon(child);
-                const deadline = ports.now() + STARTUP_POLL_TIMEOUT_MS;
-                while (ports.now() < deadline) {
-                    await ports.sleep(Math.min(STARTUP_POLL_INTERVAL_MS, deadline - ports.now()));
-                    if (ports.now() >= deadline) break;
-                    const info = ports.readPortFile(path);
-                    if (info && !info.retired && info.token !== current?.token) {
-                        const observed = await ports.checkHealth(info.port, info.token, bindAddr);
-                        if (ports.now() >= deadline) break;
-                        if (observed.alive && observed.version === serverVersion && ports.portRecordMatches(info, path)) return selection(info, path);
+                try {
+                    if (current && !current.retired) {
+                        // Silence and a legacy HTTP 200 do not settle a previous writer.
+                        if (!health.alive || health.retirement !== "writer-settlement-v1" || !ports.portRecordMatches(current, path)
+                            || ports.hasOtherSessions(requester)) return defer();
+                        if (!await ports.requestShutdown(current.port, current.token)) return defer();
+                        ports.markRetired(current, path, guard);
+                        if (ports.hasOtherSessions(requester)) return null;
+                        publish.dispose?.();
+                        publish = ports.preparePublication(path, guard);
+                        if (!publish) return null;
                     }
-                }
-                throw new Error("Clipboard server failed to start within timeout");
+                    if (!concurrentCreation && ports.hasOtherSessions(requester)) return null;
+                    const publishRecord = publish;
+                    const child = await ports.launchDaemon(ports.daemonScriptPath(), record => {
+                        if (!concurrentCreation && ports.hasOtherSessions(requester)) throw new Error("Clipboard session ownership changed before publication");
+                        return publishRecord(record);
+                    });
+                    ports.unrefDaemon(child);
+                    const deadline = ports.now() + STARTUP_POLL_TIMEOUT_MS;
+                    while (ports.now() < deadline) {
+                        await ports.sleep(Math.min(STARTUP_POLL_INTERVAL_MS, deadline - ports.now()));
+                        if (ports.now() >= deadline) break;
+                        const info = ports.readPortFile(path);
+                        if (info && !info.retired && info.token !== current?.token) {
+                            const observed = await ports.checkHealth(info.port, info.token, bindAddr);
+                            if (ports.now() >= deadline) break;
+                            if (observed.alive && observed.version === serverVersion && ports.portRecordMatches(info, path)) return selection(info, path, true);
+                        }
+                    }
+                    throw new Error("Clipboard server failed to start within timeout");
+                } finally { publish?.dispose?.(); }
             });
         } finally {
             ports.releaseStartupLock(lock);

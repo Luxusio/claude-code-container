@@ -16,7 +16,7 @@ clipboard_x11_sync_apply_host() {
 }
 
 clipboard_x11_sync_cycle() {
-    local local_result=0 local_sig
+    local local_result=0 local_sig restore_missing=0
     if [ "$initialized" = 0 ]; then
         # A restarted container must not publish its stale X11 selection.
         bridge_read_host && clipboard_x11_sync_apply_host || return 1
@@ -38,7 +38,13 @@ clipboard_x11_sync_cycle() {
     fi
 
     bridge_read_host || return 1
-    if [ "$host_sig" != "$last_host_sig" ]; then
+    if [ "$host_sig" = "$last_host_sig" ]; then
+        # A dead owner or restarted X server loses its selection even though
+        # the host bytes did not change. Nontext or unreadable owners remain.
+        bridge_selection_owner_absent || return 0
+        restore_missing=1
+    fi
+    if [ "$host_sig" != "$last_host_sig" ] || [ "$restore_missing" = 1 ]; then
         # Host polling can take seconds. Keep a local copy made during that
         # request for publication on the next cycle instead of overwriting it.
         local_result=0
@@ -48,6 +54,7 @@ clipboard_x11_sync_cycle() {
             local_sig="$(bridge_local_signature)"
             [ "$local_sig" = "$last_local_sig" ] || return 1
         fi
+        if [ "$restore_missing" = 1 ]; then bridge_selection_owner_absent || return 1; fi
         clipboard_x11_sync_apply_host || return 1
     fi
 }

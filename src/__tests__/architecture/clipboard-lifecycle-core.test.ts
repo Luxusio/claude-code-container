@@ -3,17 +3,20 @@ import {createClipboardServerLifecycle} from "../../application/clipboard/server
 import type {ClipboardHealthResult, ClipboardPortRecord} from "../../domain/clipboard/server-lifecycle.js";
 import type {ClipboardServerLifecyclePorts} from "../../ports/clipboard/server-lifecycle.js";
 
-function fixture() {
+function fixture(generation?: string) {
     const calls: unknown[] = [], lock = {owner: "startup"}, child = {owner: "daemon"}, guard = {owner: "global"};
     const requester = {claim: "this requester"};
     let held = false, now = 0, record: ClipboardPortRecord | null = null;
     let health: ClipboardHealthResult = {alive: false};
     let otherSessions = false, bindUsers = false, publicationAllowed = true;
     const assertHeld = () => { if (!held) throw new Error("effect escaped global guard"); };
+    const version = generation ?? "current";
     const ports: ClipboardServerLifecyclePorts<typeof lock, typeof child, typeof guard, typeof requester> = {
+        ...(generation ? { generation } : {}),
         readPortFile: path => { calls.push(["read", path]); return record; },
         portRecordMatches: observed => observed === record,
-        portFilePath: () => "/private/port", startupLockPath: () => "/private/starting",
+        portFilePath: () => generation ? `/private/clipboard.${generation}.port` : "/private/port",
+        startupLockPath: () => generation ? `/private/clipboard.${generation}.starting` : "/private/starting",
         tryAcquireStartupLock: path => { calls.push(["startup", path]); return lock; },
         recoverDeadStartupLock: path => { calls.push(["recover", path]); return false; },
         releaseStartupLock: value => { calls.push(["release", value]); return undefined; },
@@ -36,12 +39,12 @@ function fixture() {
         daemonScriptPath: () => "/private/clipboard-server.js",
         launchDaemon: async (script, publish) => {
             assertHeld(); calls.push(["launch", script]);
-            publish({port: 4321, token: "new-token"}); health = {alive: true, version: "current", retirement: "writer-settlement-v1"};
+            publish({port: 4321, token: "new-token"}); health = {alive: true, version, retirement: "writer-settlement-v1"};
             return child;
         },
         unrefDaemon: value => { calls.push(["unref", value]); return undefined; },
     };
-    return {calls, ports, guard, lock, child, requester, app: createClipboardServerLifecycle(ports, "current"),
+    return {calls, ports, guard, lock, child, requester, app: createClipboardServerLifecycle(ports, version),
         setRecord: (value: ClipboardPortRecord | null) => { record = value; },
         setHealth: (value: ClipboardHealthResult) => { health = value; },
         setOtherSessions: (value: boolean) => { otherSessions = value; },
@@ -56,6 +59,62 @@ function effects(calls: readonly unknown[]): string[] {
 }
 
 describe("Clipboard lifecycle admission policy", () => {
+    it("publishes a fresh admitted generation alongside other live sessions without retiring their service", async () => {
+        const generation = "0123456789ab", f = fixture(generation);
+        f.setOtherSessions(true);
+        expect(await f.app.ensureClipboardSelection(f.requester)).toEqual({
+            port: 4321, token: "new-token", portFile: `/private/clipboard.${generation}.port`, generation,
+        });
+        expect(f.calls).toContainEqual(["startup", `/private/clipboard.${generation}.starting`]);
+        expect(f.calls).toContainEqual(["prepare-publication", `/private/clipboard.${generation}.port`, f.guard]);
+        expect(effects(f.calls)).toEqual(["launch", "publish"]);
+        expect(f.calls.some(call => Array.isArray(call) && call[0] === "retired")).toBe(false);
+        expect(f.calls.at(-1)).toEqual(["release", f.lock]);
+    });
+    it.each(["bind-users", "publication"] as const)("keeps the fresh-generation %s refusal even while older sessions are active", async veto => {
+        const f = fixture("0123456789ab"); f.setOtherSessions(true);
+        if (veto === "bind-users") f.setBindUsers(true);
+        else f.setPublicationAllowed(false);
+        expect(await f.app.ensureClipboardSelection()).toBeNull();
+        expect(effects(f.calls)).toEqual([]);
+        expect(f.calls.at(-1)).toEqual(["release", f.lock]);
+    });
+    it("returns a known generation only with its current authenticated publication", async () => {
+        const generation = "0123456789ab", f = fixture(generation);
+        f.setRecord({port: 1234, token: "generation-token"}); f.setHealth({alive: true, version: generation});
+        expect(await f.app.ensureClipboardSelection()).toEqual({
+            port: 1234, token: "generation-token", portFile: `/private/clipboard.${generation}.port`, generation,
+        });
+        expect(f.calls).not.toContain("global-enter");
+        expect(effects(f.calls)).toEqual([]);
+    });
+    it("retains the existing-generation other-session veto instead of replacing its writer", async () => {
+        const f = fixture("0123456789ab"); f.setOtherSessions(true);
+        f.setRecord({port: 9, token: "existing-writer"});
+        f.setHealth({alive: true, version: "previous", retirement: "writer-settlement-v1"});
+        const selected = await f.app.ensureClipboardSelection();
+        expect(selected).toMatchObject({port: 9, token: "existing-writer"});
+        expect(selected).not.toHaveProperty("generation");
+        expect(effects(f.calls)).toEqual([]);
+        expect(f.calls).toContain("deferred");
+    });
+    it.each(["published", "launch-error"] as const)("disposes its prepared generation publication after %s while still holding admission", async outcome => {
+        const f = fixture("0123456789ab");
+        const prepare = f.ports.preparePublication;
+        f.ports.preparePublication = (path, guard) => {
+            const publication = prepare(path, guard)!;
+            return Object.assign(publication, {dispose: () => {
+                expect(f.calls.at(-1)).not.toBe("global-exit");
+                f.calls.push("dispose-publication");
+            }});
+        };
+        if (outcome === "launch-error") f.ports.launchDaemon = async () => { throw new Error("owned daemon launch rejected"); };
+        if (outcome === "published") expect(await f.app.ensureClipboardSelection()).toMatchObject({generation: "0123456789ab"});
+        else await expect(f.app.ensureClipboardSelection()).rejects.toThrow("owned daemon launch rejected");
+        expect(f.calls.filter(call => call === "dispose-publication")).toHaveLength(1);
+        expect(f.calls.indexOf("dispose-publication")).toBeLessThan(f.calls.indexOf("global-exit"));
+        expect(f.calls.at(-1)).toEqual(["release", f.lock]);
+    });
     it("reuses one authenticated same-version selection without locks, sessions or native inventory", async () => {
         const f = fixture(); f.setRecord({port: 1234, token: "secret:bytes"}); f.setHealth({alive: true, version: "current"});
         expect(await f.app.ensureClipboardSelection(f.requester)).toEqual({port: 1234, token: "secret:bytes", portFile: "/private/port"});

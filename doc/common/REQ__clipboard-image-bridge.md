@@ -6,6 +6,26 @@ status: accepted
 Codex image paste through CCC must survive host clipboard image type variation and present an attachable image to the containerized Codex command.
 
 ## Observable Behavior
+- User-explicit recurrence, 2026-10-30: both Codex and Claude fail during
+  screenshot/image-copy shortcut paste on macOS and Windows; text paste can
+  repeatedly produce an earlier image. Live consumers must follow current
+  image → text → empty → identical-image transitions. At the text/empty stage,
+  an older image target or payload must not remain attached. Startup `--image`
+  attachment alone does not establish this live-paste behavior.
+- Derived from that recurrence: the selected X11 bridge needs a bounded,
+  positive first-sync observation before paste readiness is claimed. Recover
+  unchanged host content after positively observed selection-owner loss;
+  a failed text read, nontext owner or unavailable X11 observation alone does
+  not authorize overwriting a current local selection.
+- Current clipboard implementation delivery must follow
+  [concurrent generation ownership](../clipboard/REQ__clipboard-generation-coexistence.md).
+  Rebuilding source while silently selecting an older daemon is not current
+  behavior acceptance. Preserve the existing native marker and failure rules.
+- Derived native input continuity: a seekable Windows raw image stream must be
+  read from its beginning, including when returned at EOF. Empty macOS PNG
+  data is not an image and must not suppress an available TIFF/other supported
+  conversion fallback. Native read failures remain errors, and all advertised
+  image targets still require captured nonempty bytes.
 - Concurrent clipboard consumers (Claude target checks, Codex image reads and the X11 bridge) must receive their own complete native responses. Persistent native helper operations must not cross-consume marker and snapshot frames. A delimiter occurring inside clipboard text is data, not a response terminator.
 - For Windows/WSL and macOS persistent helpers, an unavailable, malformed, interrupted or timed-out native read is an HTTP error, not an empty clipboard. Only a successfully read empty snapshot returns 204. Failed reads must not create marker-backed negative cache entries; a subsequent request must recover even when the host clipboard marker has not changed. Image targets must agree with captured nonempty image bytes.
 - Native snapshots must be coherent with the clipboard change marker. Changes during a read require bounded retry instead of caching mixed or stale content. Empty/no-image cache reuse must be short and bounded so delayed image rendering can recover even under an unchanged marker. Image → text → empty → the same image must remain observable to all consumers.

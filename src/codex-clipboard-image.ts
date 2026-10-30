@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "fs";
-import { request as httpRequest } from "http";
+import { request as httpRequest, type ClientRequest, type IncomingMessage } from "http";
 import { join, posix } from "path";
 import { createCodexClipboardImageAttachment } from "./application/tool-session/codex-clipboard-image.js";
 import type { ClipboardImageAttachmentResult } from "./domain/tool-session/codex-clipboard-image.js";
@@ -12,25 +12,46 @@ export async function readClipboardImagePng(
     clipboardToken: string,
 ): Promise<Buffer | null> {
     return new Promise((resolve) => {
-        const req = httpRequest(
+        let settled = false;
+        let req: ClientRequest | undefined;
+        let response: IncomingMessage | undefined;
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        const finish = (image: Buffer | null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(deadline);
+            response?.destroy();
+            req?.destroy();
+            resolve(image);
+        };
+        req = httpRequest(
             `${clipboardUrl}/clipboard/image/png`,
             {
                 headers: { Authorization: `Bearer ${clipboardToken}` },
             },
             (res) => {
+                response = res;
+                res.on("error", () => finish(null));
+                res.on("aborted", () => finish(null));
+                res.on("close", () => finish(null));
+                if (settled) { res.destroy(); return; }
                 const chunks: Buffer[] = [];
                 res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
                 res.on("end", () => {
-                    if (res.statusCode !== 200) {
-                        resolve(null);
+                    if (res.statusCode !== 200 || !res.complete) {
+                        finish(null);
                         return;
                     }
                     const body = Buffer.concat(chunks);
-                    resolve(body.length > 0 ? body : null);
+                    finish(body.length > 0 ? body : null);
                 });
             },
         );
-        req.on("error", () => resolve(null));
+        req.on("error", () => finish(null));
+        req.on("close", () => { if (!response) finish(null); });
+        // This optional prelaunch attachment must not hold up interactive
+        // startup indefinitely, including when a response stalls after headers.
+        deadline = setTimeout(() => finish(null), 5000);
         req.end();
     });
 }

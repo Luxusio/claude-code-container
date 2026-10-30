@@ -4,6 +4,7 @@ import type {ContainerExecPorts} from "../../ports/container-exec.js";
 import type {RuntimeBindGuard} from "../../ports/runtime-bind-authority.js";
 import {createDefaultToolCatalog} from "../../domain/tool-registry.js";
 import {createContainerExistingLifecycle} from "../../application/container-existing-lifecycle.js";
+import {createNativeContainerExecPorts} from "../../composition/container-exec.js";
 import {assertBindMountSourceIdentity, captureBindMountSourceIdentity} from "../../adapters/container-mount-observations.js";
 import {inspectSessionContainerOwnership} from "../../docker.js";
 import * as nativeRuntime from "../../container-runtime.js";
@@ -607,6 +608,73 @@ describe("container exec semantic workflow", () => {
             ["CCC_CLIPBOARD_URL", connection.url], ["CCC_CLIPBOARD_TOKEN", connection.token],
         ]));
     });
+    it.each(["codex", "claude"])("reuses the immutable legacy mount while %s uses the guarded current generation", async tool => {
+        const f = fixture({running: true});
+        const selected = Object.freeze({port: 4322, token: "current-generation-token",
+            portFile: "/owned/generations/a1b2c3d4e5f6/clipboard.port", generation: "a1b2c3d4e5f6"});
+        const legacyMount = "/owned/legacy/clipboard.port";
+        const connection = {url: "http://host.docker.internal:4322", hostUrl: "http://127.0.0.1:4322",
+            token: selected.token, generation: selected.generation};
+        f.ports.ensureClipboard = vi.fn(async () => selected);
+        f.ports.clipboardPortFile = vi.fn(() => legacyMount);
+        let validated = false, bridgeReady = false;
+        f.ports.validateClipboard = vi.fn(async (candidate, guard) => {
+            expect(candidate).toBe(selected); expect(guard).toBe(f.stateGuard);
+            validated = true; return selected;
+        });
+        f.ports.clipboardConnection = vi.fn(candidate => {
+            expect(validated).toBe(true); expect(candidate).toBe(selected); return connection;
+        });
+        const start = f.ports.startContainer;
+        f.ports.startContainer = vi.fn<ContainerExecPorts<symbol>["startContainer"]>((...args) => {
+            expect(validated).toBe(true);
+            expect(args[3]).toBe(legacyMount);
+            expect(args[8]).toBe("final-id");
+            expect(args[10]).toBe(f.stateGuard);
+            return start(...args);
+        });
+        vi.mocked(f.ports.startClipboardBridge).mockImplementation((target, candidate) => {
+            expect(target).toBe("final-id"); expect(candidate).toEqual(connection);
+            bridgeReady = true; f.events.push("bridge-ready");
+        });
+        vi.mocked(f.ports.prepareCommand).mockImplementation(() => {
+            expect(bridgeReady).toBe(true); f.events.push("prepare"); return f.handle;
+        });
+        await expect(f.exec("/repo", [tool])).resolves.toBe(0);
+        expect(f.ports.clipboardPortFile).toHaveBeenCalledOnce();
+        expect(f.ports.validateClipboard).toHaveBeenCalledOnce();
+        expect(f.ports.startContainer).toHaveBeenCalledOnce();
+        expect(f.ports.recordSessionOwnStartInHeldLifecycleLock).not.toHaveBeenCalled();
+        if (tool === "codex") {
+            expect(f.ports.attachClipboardImage).toHaveBeenCalledExactlyOnceWith("/project/repo", [tool],
+                {enabled: true, clipboardUrl: connection.hostUrl, clipboardToken: connection.token});
+            expect(f.events.indexOf("attach")).toBeLessThan(f.events.indexOf("bridge-ready"));
+        } else expect(f.ports.attachClipboardImage).not.toHaveBeenCalled();
+        const environment = vi.mocked(f.ports.prepareCommand).mock.calls[0][0].environment;
+        expect(environment).toEqual(expect.arrayContaining([
+            ["CCC_CLIPBOARD_URL", connection.url], ["CCC_CLIPBOARD_TOKEN", connection.token],
+            ["CCC_CLIPBOARD_GENERATION", selected.generation],
+        ]));
+        expect(environment.filter(([key]) => key === "CCC_CLIPBOARD_GENERATION")).toHaveLength(1);
+        expect(f.events.indexOf("bridge-ready")).toBeLessThan(f.events.indexOf("prepare"));
+        expect(f.events.indexOf("bridge-ready")).toBeLessThan(f.events.indexOf("launch"));
+    });
+    it.each(["codex", "claude"])("does not launch %s after finite first clipboard sync is refused", async tool => {
+        const f = fixture({running: true}), failure = new Error("clipboard bridge initial sync was not confirmed");
+        f.ports.clipboardConnection = () => ({url: "http://host.docker.internal:4322", token: "current-token",
+            hostUrl: "http://127.0.0.1:4322", generation: "a1b2c3d4e5f6"});
+        vi.mocked(f.ports.startClipboardBridge).mockImplementation(() => {
+            f.events.push("first-sync-refused"); throw failure;
+        });
+        await expect(f.exec("/repo", [tool])).rejects.toBe(failure);
+        if (tool === "codex") expect(f.ports.attachClipboardImage).toHaveBeenCalledOnce();
+        else expect(f.ports.attachClipboardImage).not.toHaveBeenCalled();
+        expect(f.ports.prepareCommand).not.toHaveBeenCalled();
+        expect(f.ports.launchCommand).not.toHaveBeenCalled();
+        expect(f.ports.disposeCommand).not.toHaveBeenCalled();
+        expect(f.ports.cleanupSession).toHaveBeenCalledOnce();
+        expect(f.events.slice(-2)).toEqual(["first-sync-refused", "cleanup"]);
+    });
     it("publishes startup intent, positive own start and ready while the one lifecycle guard is held", async () => {
         const f = fixture(), publications: string[] = [];
         let held = false;
@@ -1100,6 +1168,61 @@ describe("replacement ownership observations", () => {
         {claims: ["session.lock"], id: "expected", exists: true, result: null},
     ])("returns bounded ownership facts for $result", ({claims, id, exists, result}) => {
         expect(containerExecReplacementBlockReason("name", "prefix", "/owned/session.lock", "expected", {claims: () => claims, lockName: () => "session.lock", status: () => ({exists, containerId: id, running: true, imageId: "image"})})).toEqual(result);
+    });
+});
+
+describe("native clipboard session handoff", () => {
+    function nativePorts() {
+        preloadNativeRuntimeFixture(nativeRuntime);
+        return createNativeContainerExecPorts({ensureDirectories: vi.fn(), ensureProjectTools: async () => {},
+            assetDirectory: "/fixture/assets", trustedCliPath: "/fixture/ccc.js"});
+    }
+    const connection = {url: "http://host.docker.internal:4322", hostUrl: "http://127.0.0.1:4322",
+        token: "current-generation-token", generation: "a1b2c3d4e5f6"};
+
+    it.each(["darwin", "win32"] as const)("keeps the %s host attachment URL distinct from the container endpoint", platform => {
+        const original = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+        try {
+            stoppedNative.spawnSync.mockReset();
+            const ports = nativePorts();
+            expect(ports.clipboardConnection({port: 4322, token: connection.token,
+                portFile: "/fixture/generation/clipboard.port", generation: connection.generation})).toEqual(connection);
+            expect(stoppedNative.spawnSync).not.toHaveBeenCalled();
+        } finally { original.mockRestore(); }
+    });
+
+    it("waits for a finite first sync using the same selected endpoint and credentials as its detached bridge", () => {
+        const ports = nativePorts();
+        stoppedNative.spawnSync.mockReset().mockReturnValue({status: 0, signal: null, stdout: "", stderr: ""});
+        ports.startClipboardBridge("exact-container-id", connection);
+        const calls = stoppedNative.spawnSync.mock.calls.map(call => normalizeNativeRuntimeCall(call));
+        const environment = ["-e", `CCC_CLIPBOARD_URL=${connection.url}`, "-e", `CCC_CLIPBOARD_TOKEN=${connection.token}`,
+            "-e", `CCC_CLIPBOARD_GENERATION=${connection.generation}`];
+        expect(calls).toHaveLength(2);
+        expect(calls[0][1]).toEqual(["exec", "-d", ...environment, "exact-container-id", "/usr/local/bin/ccc-x11-bridge"]);
+        expect(calls[1][1]).toEqual(["exec", ...environment, "exact-container-id", "/usr/local/bin/ccc-x11-bridge", "--wait-ready"]);
+        for (const [, , options] of calls) {
+            expect(options).toMatchObject({stdio: "ignore", timeout: expect.any(Number)});
+            expect((options as {timeout: number}).timeout).toBeGreaterThan(0);
+            expect((options as {timeout: number}).timeout).toBeLessThanOrEqual(20000);
+        }
+    });
+
+    it.each(["detached-launch", "first-sync", "first-sync-timeout"] as const)("refuses the native session handoff after %s failure", stage => {
+        const ports = nativePorts();
+        const success = {status: 0, signal: null, stdout: "", stderr: ""};
+        const failure = stage === "first-sync-timeout"
+            ? {status: null, signal: "SIGTERM", error: new Error("fixture readiness timeout"), stdout: "", stderr: ""}
+            : {status: 1, signal: null, stdout: "", stderr: ""};
+        stoppedNative.spawnSync.mockReset().mockReturnValueOnce(stage === "detached-launch" ? failure : success)
+            .mockReturnValueOnce(failure);
+        expect(() => ports.startClipboardBridge("exact-container-id", connection)).toThrow(/Clipboard synchronization/);
+        const calls = stoppedNative.spawnSync.mock.calls.map(call => normalizeNativeRuntimeCall(call));
+        expect(calls).toHaveLength(stage === "detached-launch" ? 1 : 2);
+        for (const [, args] of calls) {
+            expect(args).toContain("exact-container-id");
+            expect((args as string[])[0]).toBe("exec");
+        }
     });
 });
 

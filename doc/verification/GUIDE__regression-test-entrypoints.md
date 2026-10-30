@@ -108,6 +108,60 @@ The fixture creates a uniquely named, network-disabled container. After successf
 
 Test existence, ordinary collection, portable execution and native acceptance are different claims. The portable Node fixtures do not prove real NTFS operations. An unrun or skipped UID case does not prove actual Docker ownership migration. macOS Slack clipboard and actual macOS sudo recovery need their native platform evidence; the exact missing-`pngjs` → restore-dependencies → successful-build sequence remains separately unverified. These entry points do not certify every historical failure or the whole architecture migration.
 
+## Live clipboard paste and service generations
+
+Use the affected owners to distinguish delivery from native capture. The
+private-HOME daemon integration owner exercises actual emitted `dist` processes
+and authenticated HTTP with an inert native-runtime fixture. Rebuild root
+TypeScript emission before that owner; this does not require rerunning unrelated
+provider suites. Run the focused portable groups from the checkout root:
+
+```sh
+node node_modules/typescript/bin/tsc -p tsconfig.json
+node node_modules/vitest/vitest.mjs run src/__tests__/clipboard-global-admission.integration.test.ts src/__tests__/architecture/clipboard-policy-fingerprint.test.ts src/__tests__/architecture/clipboard-lifecycle-core.test.ts src/__tests__/architecture/clipboard-lifecycle-facade.test.ts --maxWorkers=2
+node node_modules/vitest/vitest.mjs run src/__tests__/clipboard-shims.test.ts src/__tests__/clipboard-copy-shims.test.ts src/__tests__/clipboard-x11-copy.test.ts src/__tests__/architecture/container-exec.test.ts src/__tests__/clipboard-image-server.test.ts src/__tests__/codex-clipboard-image.test.ts --maxWorkers=2
+```
+
+The X11 owner needs its actual private Xvfb/xclip prerequisites. It checks
+image → text → empty → identical image, current endpoint selection despite an
+old mounted record, first-sync readiness, and positive selection-owner loss
+without overwriting another local owner. A missing native prerequisite is a
+skip or environment blocker, not proof that stale-image paste is fixed.
+
+For a Mac with AppKit and the command-line compiler, run only the private
+pasteboard conversion witness without a project build:
+
+```sh
+node node_modules/vitest/vitest.mjs run src/__tests__/clipboard-image-server.test.ts -t 'converts native TIFF when a private pasteboard advertises an empty PNG' --maxWorkers=1
+```
+
+It compiles the exact candidate helper conversion function and uses a uniquely
+named private pasteboard. It does not read the user's general clipboard or
+exercise an interactive CLI.
+
+On a native Windows host with Windows PowerShell and Windows Forms, run the
+controlled native acquisition witnesses:
+
+```sh
+node node_modules/vitest/vitest.mjs run src/__tests__/clipboard-server.test.ts -t 'native seekable MemoryStream|native text when the advertised PNG stream is empty|native empty advertised PNG without valid text or image fallback' --maxWorkers=1
+```
+
+These execute the generated PowerShell acquisition code with an in-memory
+data object, including a seekable PNG stream positioned at EOF. They do not
+exercise the desktop clipboard, container transport or either CLI's shortcut.
+Running them elsewhere skips native cases and cannot count as Windows PASS.
+
+Actual device-lab acceptance uses generated content in an owned disposable
+fixture and records the candidate/helper hash, OS/client versions, target
+types, byte sizes and image digests. Keep Mac native helper observations,
+Linux HTTP/shim/X11 checks, native Windows observations and actual Codex/Claude
+TUI paste results distinct. The current connected device-lab host supplies a
+Mac VM; Windows backends are unavailable there. The Mac component observations
+do not close Windows or actual TUI acceptance. Do not persist a user's clipboard
+or authentication token as test evidence. See
+[generation ownership](../clipboard/REQ__clipboard-generation-coexistence.md)
+and [the clipboard guide](../clipboard/GUIDE__clipboard-bridge.md).
+
 ## Native residual verification follow-up
 
 The shared macOS VM E2E runner uses the provider's existing 300,000 ms boot

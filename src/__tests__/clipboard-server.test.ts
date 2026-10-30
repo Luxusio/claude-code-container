@@ -8,6 +8,7 @@ import {tmpdir} from "node:os";
 import {NATIVE_RUNTIME_SELECTOR_KEYS} from "../ports/container-runtime-invocation.js";
 
 const portBacking = vi.hoisted(() => ({root: "", file: "", descriptors: new Set<number>()}));
+const nativeWindowsHost = process.platform === "win32";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 // Must be declared before import of the module under test.
@@ -159,8 +160,6 @@ function httpPost(port: number, path: string, headers?: Record<string, string>):
 // Runtime files live under ~/.ccc/run (doc/common/REQ__ccc-home-layout.md).
 const DATA_DIR = join("/home/testuser", ".ccc", "run");
 const LOCKS_DIR = join(DATA_DIR, "locks");
-const PORT_FILE = join(DATA_DIR, "clipboard.port");
-const STARTING_LOCK = join(DATA_DIR, "clipboard.starting.v2");
 const POLICY_HASH_FILES = [
     "clipboard-server.js",
     "domain/clipboard/snapshot.js",
@@ -173,6 +172,7 @@ const POLICY_HASH_FILES = [
     "adapters/runtime-bind-authority.js",
     "adapters/runtime-bind-users.js",
     "application/runtime-bind-admission.js",
+    "../scripts/clipboard-helper-darwin.m",
 ];
 function currentPolicyVersion(): string {
     const content = "file-content-for-hash";
@@ -183,6 +183,8 @@ function currentPolicyVersion(): string {
     }
     return hash.digest("hex").slice(0, 12);
 }
+const PORT_FILE = join(DATA_DIR, `clipboard.${currentPolicyVersion()}.port`);
+const STARTING_LOCK = join(DATA_DIR, `clipboard.${currentPolicyVersion()}.starting`);
 
 // ─── Test Suite ───────────────────────────────────────────────────────────────
 
@@ -849,6 +851,62 @@ describe("clipboard-server", () => {
                 expect(command).not.toContain("GetText()");
                 expect(command).not.toContain("GetFileDropList()");
             });
+
+            async function nativeWindowsDataObject(payload: Buffer, text = ""): Promise<string> {
+                const nativeProcesses = await vi.importActual<typeof import("child_process")>("child_process");
+                const {canonicalWindowsPowerShellPath} = await import("@ccc/device-lab/windows-system-powershell.js");
+                const powershell = canonicalWindowsPowerShellPath();
+                expect(powershell, "A native Windows host must provide its canonical Windows PowerShell").not.toBeNull();
+                const fixtureType = "using System; using System.Drawing; using System.Windows.Forms; using System.Collections.Specialized; public static class CCCFixtureClipboard { public static IDataObject Data; public static string Text = String.Empty; public static IDataObject GetDataObject() { return Data; } public static Image GetImage() { return null; } public static bool ContainsFileDropList() { return false; } public static StringCollection GetFileDropList() { return new StringCollection(); } public static string GetText() { return Text; } }";
+                // Replace only the clipboard source with an in-memory IDataObject.
+                // The actual generated Stream/CopyTo branch executes unchanged;
+                // no user's desktop clipboard is read or written.
+                const command = buildWindowsClipboardReadCommand("C:\\ccc-owned-fixture", "/owned-fixture")
+                    .replaceAll("[System.Windows.Forms.Clipboard]", "[CCCFixtureClipboard]")
+                    .replaceAll("[CCCClipboardSequence]::GetClipboardSequenceNumber()", "7");
+                const script = [
+                    "$ErrorActionPreference='Stop'",
+                    "Add-Type -AssemblyName System.Windows.Forms",
+                    `Add-Type -TypeDefinition '${fixtureType}' -ReferencedAssemblies @('System.Windows.Forms','System.Drawing')`,
+                    `$payload=[Convert]::FromBase64String('${payload.toString("base64")}')`,
+                    "$stream=New-Object System.IO.MemoryStream",
+                    "$stream.Write($payload,0,$payload.Length)",
+                    `if ($stream.Length -ne ${payload.length} -or $stream.Position -ne $stream.Length) { throw 'EOF fixture setup failed' }`,
+                    "$fixture=New-Object System.Windows.Forms.DataObject",
+                    "$fixture.SetData('PNG',$false,$stream)",
+                    "$observed=$fixture.GetData('PNG')",
+                    `if ($observed -isnot [System.IO.Stream] -or !$observed.CanSeek -or $observed.Position -ne $observed.Length -or $observed.Length -ne ${payload.length}) { throw 'Native EOF data object witness failed' }`,
+                    "[CCCFixtureClipboard]::Data=$fixture",
+                    `[CCCFixtureClipboard]::Text='${text.replaceAll("'", "''")}'`,
+                    command,
+                ].join("; ");
+                const result = nativeProcesses.spawnSync(powershell!, ["-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+                    {encoding: "utf8", windowsHide: true, timeout: 15_000});
+                expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+                return result.stdout.trim();
+            }
+
+            it.runIf(nativeWindowsHost)("reads the full PNG from a native seekable MemoryStream positioned at EOF", async () => {
+                const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ioAAAAASUVORK5CYII=", "base64");
+                const snapshot = JSON.parse(await nativeWindowsDataObject(png));
+                expect(snapshot.targets).toContain("image/png");
+                expect(Buffer.from(snapshot.imagePng, "base64")).toEqual(png);
+            }, 20_000);
+
+            it.runIf(nativeWindowsHost)("preserves native text when the advertised PNG stream is empty", async () => {
+                const text = "ccc-native-empty-png-text-fixture";
+                const output = await nativeWindowsDataObject(Buffer.alloc(0), text);
+                expect(JSON.parse(output)).not.toHaveProperty("error");
+                const snapshot = parseWindowsClipboardSnapshot(output);
+                expect(snapshot).not.toBeNull(); expect(snapshot!.targets).toEqual(["text/plain"]);
+                expect(snapshot!.text).toEqual(Buffer.from(text)); expect(snapshot!.imagePng).toBeNull();
+            }, 20_000);
+
+            it.runIf(nativeWindowsHost)("refuses a native empty advertised PNG without valid text or image fallback", async () => {
+                const output = await nativeWindowsDataObject(Buffer.alloc(0));
+                expect(JSON.parse(output)).toEqual({error: "clipboard-read-failed"});
+                expect(parseWindowsClipboardSnapshot(output)).toBeNull();
+            }, 20_000);
 
             it("should handle empty output", () => {
                 const output = "";

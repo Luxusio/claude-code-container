@@ -110,6 +110,11 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             // the port file exists and can be bind-mounted (file mount requires the file
             // to already exist at docker run time).
             let clipboardSelection = await ports.ensureClipboard().catch(() => null);
+            // The session's service endpoint may advance while an existing
+            // container retains its exact legacy file bind. Native startup
+            // still validates that mount; new clients use the selected pair.
+            const clipboardMountPath = clipboardSelection?.generation
+                ? ports.clipboardPortFile() : clipboardSelection?.portFile;
 
             // Detect worktree mounts (source .git directories needed for git operations)
             const worktreeMounts = ports.worktreeMounts(
@@ -171,13 +176,15 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             let startup: ReturnType<ContainerExecPorts<Prepared>["prepareContainer"]>;
             const startContainer = async (
                 mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
-                portFile: string | undefined = clipboardSelection?.portFile,
+                portFile: string | undefined = clipboardMountPath,
                 onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
             ): Promise<string> => {
                 const readyId = await ports.stateLock(async bindGuard => {
                     clipboardSelection = await ports.validateClipboard(clipboardSelection, bindGuard);
                     // Validation and native bind share this held global capability.
-                    const selectedPortFile = clipboardSelection?.portFile === portFile ? portFile : undefined;
+                    const selectedPortFile = clipboardSelection && (clipboardSelection.generation
+                        ? portFile === clipboardMountPath : clipboardSelection.portFile === portFile)
+                        ? portFile : undefined;
                     return ports.lifecycleLock(sessionContainerPrefix, () => {
                         let readyContainerId: string | null = null;
                         startup.start(
@@ -317,7 +324,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
 
             const clipboard = ports.clipboardConnection(clipboardSelection);
             const resolvedCmd = await attachContainerExecClipboardImage(
-                fullPath, cmd, commandTool, clipboard, ports.attachClipboardImage,
+                fullPath, cmd, commandTool, { ...clipboard, url: clipboard.hostUrl ?? clipboard.url }, ports.attachClipboardImage,
             );
             ports.startClipboardBridge(containerName, clipboard);
             const environment = ports.observeCommandEnvironment();
@@ -332,6 +339,7 @@ export function createContainerExec<Prepared>(ports: ContainerExecPorts<Prepared
             if (clipboard.url) {
                 envEntries.push(["CCC_CLIPBOARD_URL", clipboard.url]);
                 if (clipboard.token) envEntries.push(["CCC_CLIPBOARD_TOKEN", clipboard.token]);
+                if (clipboard.generation) envEntries.push(["CCC_CLIPBOARD_GENERATION", clipboard.generation]);
             }
             // Tool compatibility overrides follow host forwarding; explicit session overrides win last.
             if (commandTool?.needsNodeRuntime) {

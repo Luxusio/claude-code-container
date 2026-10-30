@@ -216,6 +216,79 @@ describe("maybeAttachCodexClipboardImage", () => {
 
 
 describe("readClipboardImagePng", () => {
+    it.each(["before headers", "during the body"])("settles a stalled owned response within five seconds %s", async stage => {
+        const sockets = new Set<Socket>();
+        let requestObserved!: () => void;
+        const observed = new Promise<void>(resolve => { requestObserved = resolve; });
+        const server = createServer((_request, response) => {
+            if (stage === "during the body") {
+                response.writeHead(200, {"Content-Length": "4096"});
+                response.write(Buffer.from([137, 80, 78, 71]));
+            }
+            requestObserved();
+        });
+        server.on("connection", socket => {
+            sockets.add(socket); socket.once("close", () => sockets.delete(socket));
+        });
+        let result: Promise<Buffer | null> | undefined;
+        try {
+            await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+            const address = server.address();
+            if (!address || typeof address === "string") throw new Error("Expected an owned TCP listener");
+            // Fake only the operation deadline; TCP and event-loop scheduling
+            // remain real, and server receipt proves that the read started.
+            vi.useFakeTimers({toFake: ["setTimeout", "clearTimeout"]});
+            let settled = false;
+            result = readClipboardImagePng(`http://127.0.0.1:${address.port}`, "fixture-token");
+            void result.then(() => { settled = true; });
+            await observed;
+            await vi.advanceTimersByTimeAsync(4999);
+            expect(settled).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled).toBe(true);
+            await expect(result).resolves.toBeNull();
+            expect(vi.getTimerCount()).toBe(0);
+        } finally {
+            vi.useRealTimers();
+            for (const socket of sockets) socket.destroy();
+            if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+            // An old reader may remain pending after partial headers. Do not
+            // await that bug in cleanup or keep any native connection alive.
+            void result;
+        }
+    });
+
+    it("settles a real partial-body disconnect without returning truncated image bytes", async () => {
+        const sockets = new Set<Socket>();
+        let partialSent!: () => void;
+        const sent = new Promise<void>(resolve => { partialSent = resolve; });
+        const server = createServer((_request, response) => {
+            response.writeHead(200, {"Content-Length": "4096", "Connection": "close"});
+            response.end(Buffer.from([137, 80, 78, 71]), partialSent);
+        });
+        server.on("connection", socket => {
+            sockets.add(socket); socket.once("close", () => sockets.delete(socket));
+        });
+        let witnessTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+            const address = server.address();
+            if (!address || typeof address === "string") throw new Error("Expected an owned TCP listener");
+            const result = readClipboardImagePng(`http://127.0.0.1:${address.port}`, "fixture-token");
+            await sent;
+            // This watchdog bounds the test; the response's actual finish,
+            // declared length and TCP close exercise IncomingMessage abort.
+            const observed = await Promise.race([result, new Promise<"unsettled">(resolve => {
+                witnessTimer = setTimeout(() => resolve("unsettled"), 1000);
+            })]);
+            expect(observed).toBeNull();
+        } finally {
+            clearTimeout(witnessTimer);
+            for (const socket of sockets) socket.destroy();
+            if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        }
+    });
+
     it.each([
         { name: "returns exact nonempty 200 bytes", status: 200, body: Buffer.from([137, 80, 78, 71, 0, 255]), disconnect: false },
         { name: "returns null for empty 200", status: 200, body: Buffer.alloc(0), disconnect: false },

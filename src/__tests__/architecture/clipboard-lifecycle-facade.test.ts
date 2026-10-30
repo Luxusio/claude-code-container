@@ -48,7 +48,7 @@ vi.mock("fs", async actual => {
     return {...fs, readFileSync: native.read, existsSync: native.exists,
         lstatSync: (path: import("node:fs").PathLike, options?: {bigint?: boolean}) => {
             const observed = fs.lstatSync(path, options as {bigint: true});
-            if (String(path) !== join(native.root, "port") || native.namedDevice === "native") return observed;
+            if (String(path) !== join(native.root, "clipboard.aaaaaaaaaaaa.port") || native.namedDevice === "native") return observed;
             const dev = native.namedDevice === "zero" ? (options?.bigint ? 0n : 0)
                 : typeof observed.dev === "bigint" ? observed.dev + 1n : Number(observed.dev) + 1;
             return Object.create(observed, {dev: {value: dev, enumerable: true}});
@@ -61,7 +61,7 @@ beforeEach(async () => {
     vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); version = "aaaaaaaaaaaa"; native.namedDevice = "native"; native.realHash = false;
     fs = await vi.importActual<typeof import("node:fs")>("node:fs");
     fixtureRoot = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "ccc-clipboard-health-"))); native.root = fixtureRoot;
-    fs.writeFileSync(join(native.root, "port"), "1234:secret:with:colon", {mode: 0o600});
+    fs.writeFileSync(join(native.root, "clipboard.aaaaaaaaaaaa.port"), "1234:secret:with:colon", {mode: 0o600});
     native.exists.mockImplementation(fs.existsSync);
     native.read.mockImplementation((...args: Parameters<typeof fs.readFileSync>) => {
         if (typeof args[0] === "string" && args[0].endsWith(".js")) return "fixture-policy";
@@ -103,7 +103,7 @@ describe("Clipboard lifecycle actual public native facade", () => {
         expect(vi.getTimerCount()).toBe(0);
     });
     it("uses the native monotonic clock for contention despite forward and backward wall jumps", async () => {
-        fs.rmSync(join(native.root, "port")); const allowance = 13500; native.acquire.mockReturnValue(null);
+        fs.rmSync(join(native.root, "clipboard.aaaaaaaaaaaa.port")); const allowance = 13500; native.acquire.mockReturnValue(null);
         let monotonic = 0;
         vi.spyOn(performance, "now").mockImplementation(() => monotonic);
         const wall = vi.spyOn(Date, "now").mockReturnValue(0);
@@ -161,19 +161,19 @@ describe("Clipboard lifecycle actual public native facade", () => {
         expect(native.acquire).not.toHaveBeenCalled(); expect(req.destroy).toHaveBeenCalledTimes(operation === "end" ? 1 : 0);
     });
     it.each([" 12:raw:token \n", "65535:token", "1234:legacy:retired-v1", `1234:${"a".repeat(32)}:retired-v`])("preserves active token bytes without mistaking a colon suffix for a terminal receipt: %s", async raw => {
-        fs.writeFileSync(join(native.root, "port"), raw);
+        fs.writeFileSync(join(native.root, "clipboard.aaaaaaaaaaaa.port"), raw);
         expect(await mod.ensureClipboardServer()).toBe(Number.parseInt(raw.trim().split(":", 1)[0], 10));
         expect(native.request.mock.calls[0][0].headers.Authorization).toBe(`Bearer ${raw.trim().slice(raw.trim().indexOf(":") + 1)}`);
     });
     it("never treats a strict retired record as a live selection even if old health would say alive", async () => {
-        fs.writeFileSync(join(native.root, "port"), `retired-v1:1234:${"a".repeat(32)}`);
+        fs.writeFileSync(join(native.root, "clipboard.aaaaaaaaaaaa.port"), `retired-v1:1234:${"a".repeat(32)}`);
         const afterRead = new Error("entered guarded admission instead of reusing retired state");
         native.acquire.mockImplementation(() => {throw afterRead;});
         await expect(mod.ensureClipboardSelection()).rejects.toBe(afterRead);
         expect(native.request).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
     });
     it("returns the authenticated port and token as one selection", async () => {
-        expect(await mod.ensureClipboardSelection()).toEqual({port: 1234, token: "secret:with:colon", portFile: join(native.root, "port")});
+        expect(await mod.ensureClipboardSelection()).toEqual({port: 1234, token: "secret:with:colon", portFile: join(native.root, "clipboard.aaaaaaaaaaaa.port"), generation: "aaaaaaaaaaaa"});
         expect(native.acquire).not.toHaveBeenCalled(); expect(native.spawn).not.toHaveBeenCalled();
     });
     it.each(["zero", "other"] as const)("Windows named device %s requires an exact positive opened-file identity", async device => {
@@ -181,7 +181,7 @@ describe("Clipboard lifecycle actual public native facade", () => {
         Object.defineProperty(process, "platform", {...descriptor, value: "win32"}); native.namedDevice = device;
         try {
             if (device === "zero") {
-                expect(await mod.ensureClipboardSelection()).toEqual({port: 1234, token: "secret:with:colon", portFile: join(native.root, "port")});
+                expect(await mod.ensureClipboardSelection()).toEqual({port: 1234, token: "secret:with:colon", portFile: join(native.root, "clipboard.aaaaaaaaaaaa.port"), generation: "aaaaaaaaaaaa"});
                 expect(native.acquire).not.toHaveBeenCalled(); expect(native.request).toHaveBeenCalledOnce();
             } else {
                 const afterRead = new Error("named nonzero device mismatch preserved"); native.acquire.mockImplementation(() => {throw afterRead;});

@@ -9,6 +9,13 @@ import { fileURLToPath } from "node:url";
 type Capture = { method: string; path: string; auth?: string; type?: string; body: Buffer };
 const shimDir = fileURLToPath(new URL("../../scripts/clipboard-shims/", import.meta.url));
 const sample = Buffer.from("  한글 😀 ' \" $(echo unsafe) `echo unsafe`\r\nsecond\n\n", "utf8");
+const readClients: Array<[string, string[]]> = [
+    ["xclip", ["-selection", "clipboard", "-o"]], ["xsel", ["--clipboard", "--output"]],
+    ["wl-paste", []], ["pbpaste", []],
+];
+const copyClients: Array<[string, string[]]> = [
+    ["wl-copy", []], ["xclip", ["-selection", "clipboard", "-i"]], ["xsel", ["--clipboard", "--input"]],
+];
 
 // These scripts run inside Linux containers; native Windows does not require sh.
 describe.skipIf(process.platform === "win32")("actual clipboard copy shell clients", () => {
@@ -22,6 +29,8 @@ describe.skipIf(process.platform === "win32")("actual clipboard copy shell clien
     let decoy: Server;
     let decoyUrl: string;
     let decoyRequests: number;
+    let decoyStatus: number;
+    let decoyBody: Buffer;
 
     beforeEach(async () => {
         captured = [];
@@ -42,7 +51,7 @@ describe.skipIf(process.platform === "win32")("actual clipboard copy shell clien
         fixtureRoot = mkdtempSync(join(tmpdir(), "ccc-copy-shims-"));
         mkdirSync(join(fixtureRoot, ".ccc", "clipboard"), { recursive: true });
         portFile = join(fixtureRoot, ".ccc", "clipboard", "clipboard.port");
-        for (const name of ["wl-copy", "xclip", "xsel"]) {
+        for (const name of ["wl-copy", "xclip", "xsel", "wl-paste", "pbpaste"]) {
             const source = readFileSync(`${shimDir}${name}`, "utf8");
             expect(source).toContain("/run/ccc/clipboard.port");
             const isolated = source.replaceAll("/run/ccc/clipboard.port", '"$CCC_TEST_PORT_FILE"');
@@ -50,7 +59,9 @@ describe.skipIf(process.platform === "win32")("actual clipboard copy shell clien
             writeFileSync(join(fixtureRoot, name), isolated, { mode: 0o600 });
         }
         decoyRequests = 0;
-        decoy = createServer((_req, res) => { decoyRequests++; res.writeHead(500); res.end(); });
+        decoyStatus = 500;
+        decoyBody = Buffer.alloc(0);
+        decoy = createServer((_req, res) => { decoyRequests++; res.writeHead(decoyStatus); res.end(decoyBody); });
         await new Promise<void>((resolve) => decoy.listen(0, "127.0.0.1", resolve));
         const decoyAddress = decoy.address();
         if (!decoyAddress || typeof decoyAddress === "string") throw new Error("Decoy failed to bind");
@@ -66,15 +77,17 @@ describe.skipIf(process.platform === "win32")("actual clipboard copy shell clien
         expect(decoyRequests).toBe(0);
     });
 
-    function run(name: string, args: string[], input = sample, endpoint = url) {
+    function run(name: string, args: string[], input = sample, endpoint = url,
+        selection?: { url: string; token: string; generation?: string }) {
         // Mounted metadata wins over stale environment values, but both endpoints
         // and every byte of metadata belong exclusively to this test.
         writeFileSync(portFile, endpoint ? `${new URL(endpoint).port}:test-copy-token` : "invalid", { mode: 0o600 });
         return new Promise<{ code: number | null; stdout: Buffer; stderr: string }>((resolve, reject) => {
             const child = spawn("sh", [join(fixtureRoot, name), ...args], {
                 env: { ...process.env, ENV: "", BASH_ENV: "", HOME: fixtureRoot, TMPDIR: fixtureRoot,
-                    CCC_TEST_PORT_FILE: portFile, CCC_CLIPBOARD_URL: endpoint ? decoyUrl : "",
-                    CCC_CLIPBOARD_TOKEN: "stale-fixture-token" },
+                    CCC_TEST_PORT_FILE: portFile, CCC_CLIPBOARD_URL: selection?.url ?? (endpoint ? decoyUrl : ""),
+                    CCC_CLIPBOARD_TOKEN: selection?.token ?? "stale-fixture-token",
+                    CCC_CLIPBOARD_GENERATION: selection?.generation ?? "" },
                 stdio: ["pipe", "pipe", "pipe"],
             });
             const stdout: Buffer[] = [];
@@ -92,14 +105,62 @@ describe.skipIf(process.platform === "win32")("actual clipboard copy shell clien
         });
     }
 
-    function expectWrite(body: Buffer) {
+    function expectWrite(body: Buffer, token = "test-copy-token") {
         expect(captured).toHaveLength(1);
         expect(captured[0].method).toBe("POST");
         expect(captured[0].path).toBe("/clipboard/text");
         expect(captured[0].type).toMatch(/^text\/plain(?:;\s*charset=utf-8)?$/i);
-        expect(captured[0].auth).toBe("Bearer test-copy-token");
+        expect(captured[0].auth).toBe(`Bearer ${token}`);
         expect(captured[0].body).toEqual(body);
     }
+
+    it.each(readClients)("%s pins current-generation text instead of reading the old mounted image endpoint", async (name, args) => {
+        responseStatus = 200;
+        responseBody = Buffer.from("current session text 한글 😀");
+        decoyStatus = 200;
+        decoyBody = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ioAAAAASUVORK5CYII=", "base64");
+        const result = await run(name as string, args as string[], Buffer.alloc(0), decoyUrl,
+            { url, token: "current-generation-token", generation: "a1b2c3d4e5f6" });
+        expect(result.code, result.stderr).toBe(0);
+        expect(result.stdout).toEqual(responseBody);
+        expect(captured).toEqual([expect.objectContaining({ method: "GET", path: "/clipboard/text",
+            auth: "Bearer current-generation-token" })]);
+        expect(readFileSync(portFile, "utf8")).toBe(`${new URL(decoyUrl).port}:test-copy-token`);
+        expect(decoyRequests).toBe(0);
+    });
+
+    it.each(readClients.flatMap(([name, args]) =>
+        [undefined, "not-a-generation", "a1b2c3d4e5f", "a1b2c3d4e5f60"].map(generation => ({name, args, generation}))))(
+        "$name refreshes the mounted endpoint when generation is $generation", async ({name, args, generation}) => {
+            responseStatus = 200;
+            responseBody = Buffer.from("legacy refreshed text 한글");
+            const result = await run(name, args, Buffer.alloc(0), url,
+                {url: decoyUrl, token: "stale-session-token", generation});
+            expect(result.code, result.stderr).toBe(0);
+            expect(result.stdout).toEqual(responseBody);
+            expect(captured).toEqual([expect.objectContaining({method: "GET", path: "/clipboard/text",
+                auth: "Bearer test-copy-token"})]);
+            expect(decoyRequests).toBe(0);
+        });
+
+    it.each(copyClients.flatMap(([name, args]) =>
+        [sample, Buffer.alloc(0)].map(input => ({name, args, input, size: input.length}))))(
+        "$name writes $size exact bytes to the pinned current endpoint", async ({name, args, input}) => {
+            const result = await run(name, args, input, decoyUrl,
+                {url, token: "current-generation-token", generation: "a1b2c3d4e5f6"});
+            expect(result.code, result.stderr).toBe(0);
+            expectWrite(input, "current-generation-token");
+            expect(readFileSync(portFile, "utf8")).toBe(`${new URL(decoyUrl).port}:test-copy-token`);
+            expect(decoyRequests).toBe(0);
+        });
+
+    it.each(copyClients)("%s still refreshes mounted write credentials for an invalid generation", async (name, args) => {
+        const result = await run(name, args, sample, url,
+            {url: decoyUrl, token: "stale-session-token", generation: "not-a-generation"});
+        expect(result.code, result.stderr).toBe(0);
+        expectWrite(sample);
+        expect(decoyRequests).toBe(0);
+    });
 
     it.each([
         ["wl-copy", []],

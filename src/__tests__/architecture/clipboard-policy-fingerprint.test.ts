@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import { createServer, request, type Server } from "http";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { EventEmitter } from "events";
-import { join, relative, resolve } from "path";
+import { dirname, join, relative, resolve } from "path";
 import { tmpdir } from "os";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
@@ -56,7 +56,9 @@ const files = [
     "adapters/runtime-bind-authority.js",
     "adapters/runtime-bind-users.js",
     "application/runtime-bind-admission.js",
+    "../scripts/clipboard-helper-darwin.m",
 ] as const;
+const capturedReads = [files.at(-1)!, ...files.slice(0, -1)];
 const sourceRoot = fileURLToPath(new URL("../../", import.meta.url));
 const fixtureEnvKeys = ["HOME", "USERPROFILE", "TMPDIR"] as const;
 let priorEnvironment: Record<typeof fixtureEnvKeys[number], string | undefined>;
@@ -128,14 +130,14 @@ async function reload() {
     vi.resetModules();
     return load();
 }
-function publish(port: number, token: string) {
+function publish(port: number, token: string, generation?: string) {
     const directory = join(native.home, ".ccc", "run");
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const portFile = join(directory, "clipboard.port");
+    const portFile = join(directory, generation ? `clipboard.${generation}.port` : "clipboard.port");
     writeFileSync(portFile, `${port}:${token}`, { mode: 0o600 });
     return portFile;
 }
-async function oldPeer(version: string, settlement = false) {
+async function oldPeer(version: string, settlement = false, generation?: string) {
     const token = settlement ? "a".repeat(32) : "private-old-peer-token";
     const calls: { path: string; authorization?: string }[] = [];
     const server = createServer((req, response) => {
@@ -153,7 +155,7 @@ async function oldPeer(version: string, settlement = false) {
     });
     servers.push(server);
     const port = await new Promise<number>(done => server.listen(0, "127.0.0.1", () => done((server.address() as { port: number }).port)));
-    const portFile = publish(port, token);
+    const portFile = publish(port, token, generation);
     return { port, token, portFile, calls };
 }
 
@@ -162,10 +164,10 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
         const instance = await load();
         expect(instance.version).toMatch(/^[a-f0-9]{12}$/);
         expect(instance.version).toBe(expectedVersion());
-        expect(native.reads).toEqual(files);
+        expect(native.reads).toEqual(capturedReads);
         expect(await health(instance.port)).toEqual({ service: "ccc-clipboard" });
         expect(await health(instance.port, "wrong-token")).toEqual({ service: "ccc-clipboard" });
-        expect(native.reads).toEqual(files);
+        expect(native.reads).toEqual(capturedReads);
     });
 
     it.each(files)("changes the native facade version when %s changes", async file => {
@@ -196,7 +198,7 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
         expect((await reload()).version).toBe(expectedVersion());
     });
 
-    it("captures the version at import and excludes external helper contents", async () => {
+    it("captures the version at import and excludes unrelated external helper contents", async () => {
         const imported = await load();
         native.contents.set(files[2], "new policy after import");
         native.contents.set("clipboard-helper-darwin.m", "new external helper");
@@ -206,9 +208,23 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
         expect(native.reads.every(file => files.includes(file as typeof files[number]))).toBe(true);
     });
 
+    it("changes the authenticated policy when the shipped Darwin helper changes", async () => {
+        const shippedHelper = "../scripts/clipboard-helper-darwin.m";
+        native.contents.set(shippedHelper, "// shipped AppKit helper generation one\n");
+        const before = await load();
+        native.contents.set(shippedHelper, "// shipped AppKit helper generation two\n");
+        // A running service keeps its captured policy, while a newly imported
+        // service must not advertise the old policy for a changed native helper.
+        expect((await health(before.port, before.token)).version).toBe(before.version);
+        const after = await reload();
+        expect(after.version).toMatch(/^[a-f0-9]{12}$/);
+        expect(after.version).not.toBe(before.version);
+        expect(native.reads).toContain(shippedHelper);
+    });
+
     it("reuses authenticated current-version metadata without launching a daemon", async () => {
         const instance = await load();
-        publish(instance.port, instance.token);
+        publish(instance.port, instance.token, instance.version);
         expect(await instance.mod.ensureClipboardServer()).toBe(instance.port);
         expect(native.spawn).not.toHaveBeenCalled();
     });
@@ -216,7 +232,7 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
     it("defers a mutated policy upgrade when native bind-user observations are uncertain", async () => {
         const previousVersion = expectedVersion();
         native.contents.set(files[4], "changed snapshot policy");
-        const peer = await oldPeer(previousVersion);
+        const peer = await oldPeer(previousVersion, false, expectedVersion());
         const before = statSync(peer.portFile);
         const bytes = readFileSync(peer.portFile, "utf8");
         native.bindUsers = true;
@@ -230,10 +246,73 @@ describe("fixed compiled Clipboard policy fingerprint", () => {
         expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Clipboard update deferred"));
     });
 
+    it("selects a separate current policy while an authenticated legacy service and another session remain live", async () => {
+        // Admit this newly created home before publishing the legacy fixture.
+        // Existing homes cannot acquire complete history by guessing it later.
+        const { prepareRuntimeBindHome, withRuntimeBindGuard } = await import("../../adapters/runtime-bind-authority.js");
+        const prepared = prepareRuntimeBindHome(join(native.home, ".ccc"));
+        withRuntimeBindGuard(prepared, () => {});
+        const peer = await oldPeer("owned-previous-policy");
+        const before = statSync(peer.portFile, { bigint: true });
+        const bytes = readFileSync(peer.portFile, "utf8");
+        const sessions = join(native.home, ".ccc", "run", "locks");
+        mkdirSync(sessions, { recursive: true, mode: 0o700 });
+        writeFileSync(join(sessions, "other-live-session.lock"), String(process.pid), { mode: 0o600 });
+        const instance = await load();
+        const successorToken = "b".repeat(32);
+        let successorPort = 0;
+        let publicationPath = "";
+        const unref = vi.fn();
+        const protocol: string[] = [];
+        native.spawn.mockImplementation(() => {
+            const successor = instance.mod.createClipboardServer(successorToken, "unsupported");
+            servers.push(successor.server);
+            const child = Object.assign(new EventEmitter(), {
+                unref,
+                disconnect: vi.fn(),
+                send: (message: { type: string; runtimeInvocation?: unknown; receipt?: { path: string; bytes: string } }, callback: (error: Error | null) => void) => {
+                    protocol.push(message.type);
+                    if (message.type === "initialize") {
+                        expect(readFileSync(peer.portFile, "utf8")).toBe(bytes);
+                        void successor.start("127.0.0.1").then(port => {
+                            successorPort = port;
+                            child.emit("message", { type: "ready", port, token: successorToken });
+                        });
+                    } else if (message.type === "published") {
+                        publicationPath = message.receipt!.path;
+                        expect(publicationPath).not.toBe(peer.portFile);
+                        expect(readFileSync(publicationPath, "utf8")).toBe(`${successorPort}:${successorToken}`);
+                        expect(readFileSync(peer.portFile, "utf8")).toBe(bytes);
+                        queueMicrotask(() => child.emit("message", { type: "committed" }));
+                    } else throw new Error("Unexpected parent publisher message");
+                    callback(null);
+                    return true;
+                },
+            });
+            return child;
+        });
+
+        const selected = await instance.mod.ensureClipboardSelection();
+        expect(selected).not.toBeNull();
+        expect(selected!.port).not.toBe(peer.port);
+        expect(selected).toMatchObject({ port: successorPort, token: successorToken, generation: instance.version });
+        expect(selected!.portFile).toBe(publicationPath);
+        expect(dirname(publicationPath)).toBe(dirname(peer.portFile));
+        expect(readFileSync(peer.portFile, "utf8")).toBe(bytes);
+        const after = statSync(peer.portFile, { bigint: true });
+        expect({ dev: after.dev, ino: after.ino, birthtime: after.birthtimeNs, size: after.size })
+            .toEqual({ dev: before.dev, ino: before.ino, birthtime: before.birthtimeNs, size: before.size });
+        expect(peer.calls.filter(call => call.path === "/shutdown")).toEqual([]);
+        expect(await health(peer.port, peer.token)).toMatchObject({ service: "ccc-clipboard", valid: true, version: "owned-previous-policy" });
+        expect((await health(successorPort, successorToken)).version).toBe(instance.version);
+        expect(unref).toHaveBeenCalledOnce();
+        expect(protocol).toEqual(["initialize", "published"]);
+    }, 10000);
+
     it("authenticates retirement and publishes a new token for an upgraded policy", async () => {
         const previousVersion = expectedVersion();
         native.contents.set(files[5], "changed text write policy");
-        const peer = await oldPeer(previousVersion, true);
+        const peer = await oldPeer(previousVersion, true, expectedVersion());
         const inode = statSync(peer.portFile).ino;
         const instance = await load();
         const unref = vi.fn();

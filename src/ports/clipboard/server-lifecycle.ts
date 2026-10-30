@@ -1,6 +1,9 @@
 import type { ClipboardHealthResult, ClipboardPortRecord } from "../../domain/clipboard/server-lifecycle.js";
 
+export type ClipboardPublication = ((record: ClipboardPortRecord) => unknown) & { dispose?(): void };
+
 export interface ClipboardServerLifecyclePorts<Lock, Child, Guard, Requester> {
+    readonly generation?: string;
     readPortFile(path?: string): ClipboardPortRecord | null;
     portFilePath(): string;
     portRecordMatches(record: ClipboardPortRecord, path: string): boolean;
@@ -13,7 +16,7 @@ export interface ClipboardServerLifecyclePorts<Lock, Child, Guard, Requester> {
     withGlobalGuard<T>(operation: (guard: Guard) => Promise<T>): Promise<T>;
     hasOtherSessions(requester?: Requester): boolean;
     portMayHaveBindUsers(path: string, guard: Guard): boolean;
-    preparePublication(path: string, guard: Guard): ((record: ClipboardPortRecord) => unknown) | null;
+    preparePublication(path: string, guard: Guard): ClipboardPublication | null;
     markRetired(record: ClipboardPortRecord, path: string, guard: Guard): void;
     warnUpgradeDeferred(): undefined;
     /** Monotonic elapsed time in milliseconds. */

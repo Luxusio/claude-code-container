@@ -1,5 +1,5 @@
 import { createClipboardServerLifecycle } from "../../application/clipboard/server-lifecycle.js";
-import type { ClipboardServerLifecyclePorts } from "../../ports/clipboard/server-lifecycle.js";
+import type { ClipboardPublication, ClipboardServerLifecyclePorts } from "../../ports/clipboard/server-lifecycle.js";
 import type { ensureClipboardServer, stopClipboardServerIfLast, retireClipboardServerFromPortFile, ensureClipboardSelection } from "../../clipboard-server.js";
 import type { ClipboardSelection } from "../../domain/clipboard/server-lifecycle.js";
 
@@ -16,6 +16,16 @@ function compileContracts(ports: ClipboardServerLifecyclePorts<{ lock: true }, {
     const selection: Promise<ClipboardSelection | null> = app.ensureClipboardSelection({requester: true});
     const retire: Promise<void> = app.retireClipboardServerFromPortFile("raw-port"); const release: undefined = ports.releaseStartupLock({ lock: true });
     void [ready, selection, stop, retire, release];
+    const legacy: ClipboardSelection = {port: 1234, token: "legacy", portFile: "legacy.port"};
+    const current: ClipboardSelection = {...legacy, generation: "0123456789ab"};
+    const plainPublication: ClipboardPublication = () => undefined;
+    const ownedPublication: ClipboardPublication = Object.assign(plainPublication, {dispose: () => {}});
+    const generationPorts: typeof ports = {...ports, generation: "0123456789ab", preparePublication: () => ownedPublication};
+    void [legacy, current, generationPorts];
+    // @ts-expect-error Generation identifiers are strings, never a numeric policy guess.
+    const invalidSelection: ClipboardSelection = {...legacy, generation: 12}; void invalidSelection;
+    // @ts-expect-error A publication cleanup cannot require an unprovided ownership parameter.
+    const invalidPublication: ClipboardPublication = Object.assign(() => undefined, {dispose: (_guard: {guard: true}) => {}}); void invalidPublication;
     // @ts-expect-error Server version is supplied at composition import time.
     createClipboardServerLifecycle(ports);
     // @ts-expect-error Release is an ignored synchronous effect, not void.

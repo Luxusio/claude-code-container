@@ -23,21 +23,21 @@ static NSData *PNGDataFromImage(NSImage *image) {
 
 static NSData *PNGDataFromPasteboard(NSPasteboard *pb) {
     NSData *png = [pb dataForType:NSPasteboardTypePNG];
-    if (png) return png;
+    if (png.length > 0) return png;
 
     NSData *tiff = [pb dataForType:NSPasteboardTypeTIFF];
-    if (tiff) {
+    if (tiff.length > 0) {
         NSData *converted = PNGDataFromImage([[NSImage alloc] initWithData:tiff]);
-        if (converted) return converted;
+        if (converted.length > 0) return converted;
     }
 
     for (NSPasteboardType type in [pb types]) {
         NSData *data = [pb dataForType:type];
-        if (!data) continue;
+        if (data.length == 0) continue;
 
         NSImage *image = [[NSImage alloc] initWithData:data];
         NSData *converted = PNGDataFromImage(image);
-        if (converted) return converted;
+        if (converted.length > 0) return converted;
     }
 
     return nil;
@@ -75,7 +75,7 @@ int main(int argc, const char *argv[]) {
 
                 // Normalize common image pasteboard payloads to PNG for Codex.
                 NSData *png = PNGDataFromPasteboard(pb);
-                if (png) {
+                if (png.length > 0) {
                     [targets addObject:@"image/png"];
                     result[@"imagePng"] = [png base64EncodedStringWithOptions:0];
                 }
@@ -85,6 +85,13 @@ int main(int argc, const char *argv[]) {
                 if (text) {
                     [targets addObject:@"text/plain"];
                     result[@"text"] = text;
+                }
+
+                if (png.length == 0 && text.length == 0
+                    && ([[pb types] containsObject:NSPasteboardTypePNG]
+                        || [[pb types] containsObject:NSPasteboardTypeTIFF])) {
+                    printf("{\"error\":\"clipboard-read-failed\"}\n%s\n", MARKER);
+                    continue;
                 }
 
                 result[@"targets"] = targets;

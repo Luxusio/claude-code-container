@@ -29,9 +29,9 @@ let control: ChildProcess;
 let lines: string[];
 let stderr: string;
 
-async function waitFor(check: () => boolean, timeout = 4000) {
+async function waitFor(check: () => boolean | Promise<boolean>, timeout = 4000) {
     const end = Date.now() + timeout;
-    while (!check()) {
+    while (!await check()) {
         if (Date.now() > end) throw new Error(`Condition timed out. Bridge stderr: ${stderr}`);
         await new Promise(resolve => setTimeout(resolve, 20));
     }
@@ -46,7 +46,11 @@ async function own(text: Buffer, target = "UTF8_STRING") {
     const proc = spawn("/usr/bin/xclip", ["-selection", "clipboard", "-t", target, "-i", "-quiet"], { env, stdio: ["pipe", "ignore", "ignore"] });
     procs.push(proc);
     proc.stdin!.end(text);
-    await new Promise(resolve => setTimeout(resolve, 40));
+    await waitFor(async () => {
+        try { return (await read(target)).equals(text); }
+        catch { return false; }
+    });
+    return proc;
 }
 
 const read = (target = "UTF8_STRING") => command("/usr/bin/xclip", ["-selection", "clipboard", "-t", target, "-o"]);
@@ -66,7 +70,8 @@ async function cycle() {
     return lines.filter(line => line.startsWith("DONE:")).at(-1);
 }
 
-function clipboardServer(credential: () => string = () => token, requestLog: () => typeof requests = () => requests): Server {
+function clipboardServer(credential: () => string = () => token, requestLog: () => typeof requests = () => requests,
+    snapshot?: { image: Buffer | null; text: Buffer }): Server {
     return createServer((req, res) => {
         requestLog().push({ method: req.method!, path: req.url!, auth: req.headers.authorization });
         if (req.headers.authorization !== `Bearer ${credential()}`) { res.writeHead(401).end(); return; }
@@ -78,27 +83,44 @@ function clipboardServer(credential: () => string = () => token, requestLog: () 
                 const body = Buffer.concat(chunks);
                 posts.push(body);
                 if (failPosts) { res.writeHead(503).end(); return; }
-                hostText = body;
-                hostImage = null;
+                if (snapshot) { snapshot.text = body; snapshot.image = null; }
+                else { hostText = body; hostImage = null; }
                 res.writeHead(204).end();
             });
         } else if (req.url === "/clipboard/image/png") {
-            res.writeHead(hostImage ? 200 : 204).end(hostImage ?? undefined);
+            const image = snapshot ? snapshot.image : hostImage;
+            res.writeHead(image ? 200 : 204).end(image ?? undefined);
         } else if (req.url === "/clipboard/text") {
-            const snapshot = hostText;
-            const send = () => res.writeHead(snapshot.length ? 200 : 204).end(snapshot);
+            const text = snapshot ? snapshot.text : hostText;
+            const send = () => res.writeHead(text.length ? 200 : 204).end(text);
             if (deferTextRead) releaseTextRead = send;
             else send();
         } else res.writeHead(404).end();
     });
 }
 
-async function privateEndpoint(credential: string) {
+async function privateEndpoint(credential: string, snapshot?: { image: Buffer | null; text: Buffer }) {
     const endpointRequests: typeof requests = [];
-    const endpoint = clipboardServer(() => credential, () => endpointRequests);
+    const endpoint = clipboardServer(() => credential, () => endpointRequests, snapshot);
     extraServers.push(endpoint);
     await new Promise<void>(resolve => endpoint.listen(0, "127.0.0.1", resolve));
     return { port: (endpoint.address() as { port: number }).port, requests: endpointRequests };
+}
+
+function launchBridge(args: string[] = []) {
+    const proc = spawn("bash", [script, ...args], { env, stdio: ["ignore", "ignore", "pipe"] });
+    proc.stderr!.on("data", chunk => { stderr += chunk; });
+    procs.push(proc);
+    return proc;
+}
+
+async function waitUntilBridgeReady() {
+    const waiter = launchBridge(["--wait-ready"]);
+    return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`Bridge readiness did not settle. ${stderr}`)), 15000);
+        waiter.once("error", error => { clearTimeout(timeout); reject(error); });
+        waiter.once("close", (code, signal) => { clearTimeout(timeout); resolve({ code, signal }); });
+    });
 }
 
 describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
@@ -129,6 +151,7 @@ describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
             LOCK_DIR: join(dir, "state"), TMPDIR: dir, REAL_XCLIP: "/usr/bin/xclip",
             CCC_CLIPBOARD_URL: `http://127.0.0.1:${port}`, CCC_CLIPBOARD_TOKEN: token,
             CCC_CLIPBOARD_PORT_FILE: join(dir, "port") };
+        delete env.CCC_CLIPBOARD_GENERATION;
     });
 
     afterEach(async () => {
@@ -252,6 +275,143 @@ describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
         await cycle();
         expect(posts).toEqual([]);
     });
+
+    it("uses the pinned current generation instead of pasting the old mounted endpoint's image", async () => {
+        const oldImage = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ioAAAAASUVORK5CYII=", "base64");
+        hostImage = oldImage;
+        const current = { image: null as Buffer | null, text: Buffer.from("current copied text 한글 😀\n") };
+        const currentToken = "current-generation-token";
+        const endpoint = await privateEndpoint(currentToken, current);
+        const legacyRecord = readFileSync(join(dir, "port"));
+        env.CCC_CLIPBOARD_URL = `http://127.0.0.1:${endpoint.port}`;
+        env.CCC_CLIPBOARD_TOKEN = currentToken;
+        env.CCC_CLIPBOARD_GENERATION = "a1b2c3d4e5f6";
+        await startControl();
+        await cycle();
+        expect((await read("TARGETS")).toString()).not.toContain("image/png");
+        expect(await read()).toEqual(current.text);
+        expect(requests).toEqual([]);
+        expect(endpoint.requests.length).toBeGreaterThan(0);
+        expect(endpoint.requests.every(request => request.auth === `Bearer ${currentToken}`)).toBe(true);
+        expect(readFileSync(join(dir, "port"))).toEqual(legacyRecord);
+
+        current.image = oldImage;
+        await cycle();
+        expect(await read("image/png")).toEqual(oldImage);
+        current.image = null;
+        current.text = Buffer.alloc(0);
+        await cycle();
+        expect(await read()).toEqual(Buffer.alloc(0));
+        expect((await read("TARGETS")).toString()).not.toContain("image/png");
+        current.image = oldImage;
+        await cycle();
+        expect(await read("image/png")).toEqual(oldImage);
+        expect(posts).toEqual([]);
+        expect(requests).toEqual([]);
+    });
+
+    it.each([undefined, "not-a-generation"])("keeps mounted endpoint refresh for legacy generation %s", async generation => {
+        const current = { image: null as Buffer | null, text: Buffer.from("unselected environment endpoint") };
+        const endpoint = await privateEndpoint("unselected-token", current);
+        env.CCC_CLIPBOARD_URL = `http://127.0.0.1:${endpoint.port}`;
+        env.CCC_CLIPBOARD_TOKEN = "unselected-token";
+        if (generation !== undefined) env.CCC_CLIPBOARD_GENERATION = generation;
+        await startControl();
+        await cycle();
+        expect(await read()).toEqual(hostText);
+        expect(endpoint.requests).toEqual([]);
+        expect(requests.every(request => request.auth === `Bearer ${token}`)).toBe(true);
+    });
+
+    it("recovers unchanged host image only after the fixture selection owner exits", async () => {
+        const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ioAAAAASUVORK5CYII=", "base64");
+        const localImage = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+        hostImage = image;
+        await startControl();
+        await cycle();
+        expect(await read("image/png")).toEqual(image);
+        const owner = await own(localImage, "image/png");
+        expect(await read("image/png")).toEqual(localImage);
+        await cycle();
+        expect(await read("image/png")).toEqual(localImage);
+        expect(posts).toEqual([]);
+
+        const exited = once(owner, "exit");
+        owner.kill("SIGTERM");
+        await exited;
+        await waitFor(async () => {
+            try { await read("TARGETS"); return false; }
+            catch { return true; }
+        });
+        expect(procs[0].exitCode).toBeNull();
+        await cycle();
+        expect(await read("image/png")).toEqual(image);
+        expect(posts).toEqual([]);
+    });
+
+    it("preserves a foreign image when selection ownership cannot be observed", async () => {
+        const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ioAAAAASUVORK5CYII=", "base64");
+        const localImage = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+        const transport = join(dir, "real-xclip");
+        writeFileSync(transport, '#!/bin/sh\nexport DISPLAY="$CCC_FIXTURE_X11_DISPLAY"\nexec /usr/bin/xclip "$@"\n', { mode: 0o700 });
+        let unavailableDisplay = 65535;
+        while (existsSync(`/tmp/.X11-unix/X${unavailableDisplay}`)) unavailableDisplay -= 1;
+        expect(unavailableDisplay).toBeGreaterThan(0);
+        env.DISPLAY_N = `:${unavailableDisplay}`;
+        env.CCC_FIXTURE_X11_DISPLAY = display;
+        env.REAL_XCLIP = transport;
+        hostImage = image;
+        await startControl();
+        await cycle();
+        expect(await read("image/png")).toEqual(image);
+        await own(localImage, "image/png");
+        expect(await read("image/png")).toEqual(localImage);
+        await cycle();
+        expect(await read("image/png")).toEqual(localImage);
+        expect(posts).toEqual([]);
+        expect(procs[0].exitCode).toBeNull();
+    });
+
+    it("does not report first-sync readiness while host reads fail, then readies exact current text", async () => {
+        const stale = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ioAAAAASUVORK5CYII=", "base64");
+        await own(stale, "image/png");
+        failHostReads = true;
+        launchBridge();
+        await waitFor(() => requests.some(request => request.path === "/clipboard/image/png"));
+        const unavailable = await waitUntilBridgeReady();
+        expect(unavailable.signal, stderr).toBeNull();
+        expect(unavailable.code, stderr).not.toBe(0);
+        expect(await read("image/png")).toEqual(stale);
+        failHostReads = false;
+        const ready = await waitUntilBridgeReady();
+        expect(ready, stderr).toEqual({ code: 0, signal: null });
+        expect(await read()).toEqual(hostText);
+        expect((await read("TARGETS")).toString()).not.toContain("image/png");
+        expect(posts).toEqual([]);
+    }, 20000);
+
+    it("replaces an owned bridge when its pinned bearer changes on the same endpoint", async () => {
+        env.CCC_CLIPBOARD_GENERATION = "a1b2c3d4e5f6";
+        const first = launchBridge();
+        expect(await waitUntilBridgeReady(), stderr).toEqual({ code: 0, signal: null });
+        expect(await read()).toEqual(hostText);
+        const legacyRecord = readFileSync(join(dir, "port"));
+        token = "rotated-generation-token";
+        env.CCC_CLIPBOARD_TOKEN = token;
+        hostText = Buffer.from("current text after bearer rotation 한글\n");
+        requests = [];
+        const replacement = launchBridge();
+        const recordPath = join(dir, "state", "running");
+        await waitFor(() => existsSync(recordPath) && readFileSync(recordPath, "utf8").split("\n")[0] === String(replacement.pid), 8000);
+        await waitFor(() => first.exitCode !== null || first.signalCode !== null);
+        expect(await waitUntilBridgeReady(), stderr).toEqual({ code: 0, signal: null });
+        expect(await read()).toEqual(hostText);
+        expect(requests.length).toBeGreaterThan(0);
+        expect(requests.every(request => request.auth === `Bearer ${token}`)).toBe(true);
+        expect(readFileSync(recordPath, "utf8")).not.toContain(token);
+        expect(readFileSync(join(dir, "port"))).toEqual(legacyRecord);
+        expect(procs[0].exitCode).toBeNull();
+    }, 20000);
 
     it("refreshes the mounted bearer token before publishing", async () => {
         await startControl();

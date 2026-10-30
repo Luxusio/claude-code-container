@@ -3,16 +3,14 @@ import { EventEmitter, once } from "events";
 import { PassThrough, Writable } from "stream";
 import { createServer, request, type Server } from "http";
 import { resolve, join } from "path";
+import { fileURLToPath } from "url";
+import { createHash } from "crypto";
 import { tmpdir } from "os";
-import { readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "fs";
+import { readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, symlinkSync } from "fs";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn(), platform: "win32", home: "" }));
 vi.mock("child_process", async () => ({ ...await vi.importActual<typeof import("child_process")>("child_process"), spawn: native.spawn, spawnSync: native.spawnSync }));
 vi.mock("os", async () => ({ ...await vi.importActual<typeof import("os")>("os"), platform: () => native.platform, homedir: () => native.home }));
-vi.mock("fs", async () => {
-    const actual = await vi.importActual<typeof import("fs")>("fs");
-    return { ...actual, existsSync: (path: string) => String(path).endsWith("clipboard-helper-darwin") || actual.existsSync(path) };
-});
 vi.mock("@ccc/device-lab/windows-system-powershell.js", async () => ({
     ...await vi.importActual<typeof import("@ccc/device-lab/windows-system-powershell.js")>("@ccc/device-lab/windows-system-powershell.js"),
     canonicalWindowsPowerShellPath: () => "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
@@ -83,6 +81,7 @@ function fakeProcess() {
 const originalProcessPlatform = process.platform;
 const fixtureHomeKeys = ["HOME", "USERPROFILE", "TMPDIR"] as const;
 let fixtureHome: string;
+let helperBinary: string;
 let originalHomeEnvironment: Record<typeof fixtureHomeKeys[number], string | undefined>;
 
 beforeEach(async () => {
@@ -90,6 +89,12 @@ beforeEach(async () => {
     originalHomeEnvironment = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, TMPDIR: process.env.TMPDIR };
     for (const key of fixtureHomeKeys) process.env[key] = fixtureHome;
     native.home = fixtureHome;
+    const helperHash = createHash("sha256").update(readFileSync(fileURLToPath(new URL("../../scripts/clipboard-helper-darwin.m", import.meta.url)))).digest("hex").slice(0, 16);
+    const helperDirectory = join(fixtureHome, ".ccc", "run", "bin"); mkdirSync(helperDirectory, {recursive: true, mode: 0o700});
+    helperBinary = join(helperDirectory, `clipboard-helper-darwin-${helperHash}`);
+    // Native execution is mocked below; the real private filesystem still
+    // supplies the complete executable artifact that readiness must qualify.
+    writeFileSync(helperBinary, "fixture complete native executable\n", {mode: 0o700});
     Object.defineProperty(process, "platform", { configurable: true, get: () => native.platform });
     vi.resetModules();
     vi.clearAllMocks();
@@ -150,6 +155,7 @@ describe.each(["windows", "darwin"] as const)("real HTTP %s native image reads",
         expect(codex).toEqual(png);
         expect(children).toHaveLength(1);
         if (platform === "windows") expect(native.spawn.mock.calls[0][1]).toContain("-STA");
+        else expect(native.spawn.mock.calls[0][0]).toBe(helperBinary);
     });
 
     it("treats literal delimiter text as data and reconstructs split UTF-8 frames", async () => {
@@ -317,6 +323,67 @@ it.skipIf(process.platform === "win32")("serves actual Claude shell target/image
     }
 });
 
+
+describe("Darwin helper generation readiness", () => {
+    it.runIf(originalProcessPlatform === "darwin")("converts native TIFF when a private pasteboard advertises an empty PNG", async () => {
+        native.platform = "darwin";
+        const nativeProcesses = await vi.importActual<typeof import("child_process")>("child_process");
+        const source = fileURLToPath(new URL("../../scripts/clipboard-helper-darwin.m", import.meta.url));
+        const witness = join(fixtureHome, "native-empty-png-witness.m"), executable = join(fixtureHome, "native-empty-png-witness");
+        // Include the candidate's exact conversion function in the same native
+        // translation unit. Only main is renamed; no conversion is mirrored.
+        writeFileSync(witness, `#define main ccc_shipped_helper_main
+#include ${JSON.stringify(source)}
+#undef main
+int main(void) {
+  @autoreleasepool {
+    NSPasteboard *board = [NSPasteboard pasteboardWithUniqueName];
+    NSBitmapImageRep *image = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:1 pixelsHigh:1 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:4 bitsPerPixel:32];
+    if (!board || !image) return 2;
+    unsigned char *pixel = [image bitmapData]; pixel[0] = 17; pixel[1] = 93; pixel[2] = 181; pixel[3] = 255;
+    NSData *tiff = [image TIFFRepresentation];
+    [board declareTypes:@[NSPasteboardTypePNG, NSPasteboardTypeTIFF] owner:nil];
+    [board setData:[NSData data] forType:NSPasteboardTypePNG];
+    [board setData:tiff forType:NSPasteboardTypeTIFF];
+    if ([board dataForType:NSPasteboardTypePNG].length != 0 || [board dataForType:NSPasteboardTypeTIFF].length == 0) { [board releaseGlobally]; return 3; }
+    NSData *captured = PNGDataFromPasteboard(board);
+    NSBitmapImageRep *decoded = captured.length ? [NSBitmapImageRep imageRepWithData:captured] : nil;
+    BOOL valid = captured.length > 0 && decoded.pixelsWide == 1 && decoded.pixelsHigh == 1;
+    printf("{\\"valid\\":%s,\\"pngBytes\\":%lu,\\"tiffBytes\\":%lu}\\n", valid ? "true" : "false", (unsigned long)captured.length, (unsigned long)tiff.length);
+    [board releaseGlobally]; return valid ? 0 : 4;
+  }
+}
+`, {mode: 0o600});
+        const compiled = nativeProcesses.spawnSync("/usr/bin/clang", ["-fobjc-arc", "-framework", "Cocoa", witness, "-o", executable], {encoding: "utf8", timeout: 30_000});
+        expect(compiled.error).toBeUndefined(); expect(compiled.status, compiled.stderr).toBe(0);
+        const result = nativeProcesses.spawnSync(executable, [], {encoding: "utf8", timeout: 10_000});
+        expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+        const observed: {valid: boolean; pngBytes: number; tiffBytes: number} = JSON.parse(result.stdout.trim());
+        expect(observed.valid).toBe(true); expect(observed.pngBytes).toBeGreaterThan(0); expect(observed.tiffBytes).toBeGreaterThan(0);
+    }, 45_000);
+
+    it.each(["stale-global", "empty-current", "nonexecutable-current", "symlink-current"] as const)("does not execute a %s artifact as the current native helper", async artifact => {
+        const legacy = join(fixtureHome, ".ccc", "run", "bin", "clipboard-helper-darwin");
+        writeFileSync(legacy, "fixture previously shipped executable\n", {mode: 0o700});
+        const legacyBytes = readFileSync(legacy), legacyInode = statSync(legacy).ino;
+        rmSync(helperBinary);
+        if (artifact === "empty-current") writeFileSync(helperBinary, "", {mode: 0o700});
+        if (artifact === "nonexecutable-current") writeFileSync(helperBinary, "partial current executable\n", {mode: 0o600});
+        if (artifact === "symlink-current") symlinkSync(legacy, helperBinary);
+        native.spawn.mockImplementation((command: string) => {
+            if (command === legacy || command === helperBinary) throw new Error("Unqualified helper execution");
+            const proc = fakeProcess(); children.push(proc);
+            // The isolated compiler/fallback process fails; no real host
+            // clipboard or compiler is invoked by this framing test.
+            queueMicrotask(() => {proc.exitCode = 1; proc.emit("exit", 1); proc.emit("close", 1);});
+            return proc;
+        });
+        await start("darwin");
+        expect((await get("targets")).status).toBe(503);
+        expect(native.spawn.mock.calls.some(([command]) => command === legacy || command === helperBinary)).toBe(false);
+        expect(readFileSync(legacy)).toEqual(legacyBytes); expect(statSync(legacy).ino).toBe(legacyInode);
+    });
+});
 
 describe("macOS native image fallback reaches the Codex reader", () => {
     it("tries pngpaste after a valid native snapshot has no image", async () => {

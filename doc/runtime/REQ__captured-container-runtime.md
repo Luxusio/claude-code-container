@@ -53,6 +53,30 @@ acknowledge irreversible writer retirement under the guard; legacy or unhealthy
 peers without a positive witness defer automatic replacement. Direct publication
 and parent-owned launch must use the same admission ownership without reentry.
 
+A known current clipboard policy may instead create a private
+`clipboard.<12hex>.port` sibling while an older service remains in use. This
+requires complete, nonpending authority history and safe existing parents.
+Qualify an exclusively created stage through retained native inventories,
+flush its owned descriptor, and publish with an atomic no-replace link. Unknown
+inventory, ancestor overlap, an unresolvable retained source or any final-path
+successor refuses creation. Neither a different policy hash nor an unused
+sibling name proves absence of bind users. Existing-generation replacement
+and retirement retain the original session and bind-user vetoes.
+
+The selected allowed generation path travels with parent-owned launch,
+initialization, commit validation, watchdog and retirement. A receipt for
+another generation, even with matching bytes, cannot authorize the writer.
+Cleanup consumes only the exact owned stage or captured publication; it cannot
+remove an older generation or a successor. See
+[the concurrent clipboard contract](../clipboard/REQ__clipboard-generation-coexistence.md).
+
+Current sessions carry the selected URL, token and known generation together.
+Updated shims and the X11 bridge use that pair rather than refreshing it from
+an older immutable mounted port record. Reusing a container preserves the
+original exact mount verification and captured runtime; endpoint selection
+does not authorize container replacement, peer shutdown or arbitrary bind
+source substitution. Unmarked legacy clients retain mounted-record refresh.
+
 Normal clipboard retirement leaves a strictly decoded terminal state on the
 existing port-file inode, so a later admitted start can proceed without contacting
 an already retired daemon. Capture the exact file identity and contents at

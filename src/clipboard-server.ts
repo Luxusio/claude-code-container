@@ -26,6 +26,8 @@ import {
     openSync,
     closeSync,
     mkdirSync,
+    linkSync,
+    unlinkSync,
 } from "fs";
 import { join, dirname, basename, relative, isAbsolute, sep, resolve } from "path";
 import { platform } from "os";
@@ -40,6 +42,7 @@ import { nativeSessionOwnershipMatches, captureNativeSessionOwnership } from "./
 import type { SessionOwnershipReceipt } from "./ports/session-ownership.js";
 import type { RuntimeBindGuard, RuntimeBindHomePreparation } from "./ports/runtime-bind-authority.js";
 import type { NativeRuntimeInvocation } from "./ports/container-runtime-invocation.js";
+import type { ClipboardPublication } from "./ports/clipboard/server-lifecycle.js";
 import type { ClipboardPortRecord, ClipboardSelection } from "./domain/clipboard/server-lifecycle.js";
 import { sessionLockLiveness } from "./session-lock-liveness.js";
 import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "@ccc/device-lab/windows-system-powershell.js";
@@ -58,6 +61,13 @@ export type { ClipboardPlatform };
 
 // === Version (for auto-restart on upgrade) ===
 // Fixed compiled policy closure preserves upgrade detection after application extraction.
+const DARWIN_HELPER_ASSET = "../scripts/clipboard-helper-darwin.m";
+// Capture the shipped helper independently: source-based callers may lack
+// compiled policy files, but must still qualify the native helper they run.
+const darwinHelperSource = (() => {
+    try { return readFileSync(join(dirname(fileURLToPath(import.meta.url)), DARWIN_HELPER_ASSET), "utf-8"); }
+    catch { return undefined; }
+})();
 function getServerHash(): string {
     try {
         const directory = dirname(fileURLToPath(import.meta.url));
@@ -73,10 +83,12 @@ function getServerHash(): string {
             "adapters/runtime-bind-authority.js",
             "adapters/runtime-bind-users.js",
             "application/runtime-bind-admission.js",
+            DARWIN_HELPER_ASSET,
         ];
         const hash = createHash("sha256").update("ccc-clipboard-policy-v2\0");
         for (const file of files) {
-            const content = readFileSync(join(directory, file), "utf-8");
+            const content = file === DARWIN_HELPER_ASSET ? darwinHelperSource : readFileSync(join(directory, file), "utf-8");
+            if (content === undefined) throw new Error("Clipboard helper source is unavailable");
             hash.update(file).update("\0").update(String(Buffer.byteLength(content, "utf8")))
                 .update("\0").update(content).update("\0");
         }
@@ -84,6 +96,19 @@ function getServerHash(): string {
     } catch { return "unknown"; }
 }
 const SERVER_VERSION = getServerHash();
+const DARWIN_HELPER_SOURCE_HASH = darwinHelperSource === undefined ? null
+    : createHash("sha256").update(darwinHelperSource).digest("hex").slice(0, 16);
+
+function currentClipboardPortFile(): string {
+    return /^[a-f0-9]{12}$/.test(SERVER_VERSION)
+        ? join(dirname(clipboardPortFile()), `clipboard.${SERVER_VERSION}.port`) : clipboardPortFile();
+}
+
+function clipboardStartupPath(portFile: string): string {
+    const legacy = clipboardPortFile();
+    return dirname(portFile) === dirname(legacy) && /^clipboard\.[a-f0-9]{12}\.port$/.test(basename(portFile))
+        ? portFile.replace(/\.port$/, ".starting") : clipboardStartingLock();
+}
 
 // === Constants ===
 // Paths resolve on every use: the ~/.ccc layout can migrate after this module loads
@@ -333,12 +358,8 @@ export function parseAppleScriptImageData(buf: Buffer): Buffer | null {
 // Mirrors the Windows PowerShell pattern: one persistent process for fast clipboard reads.
 // Uses a compiled Objective-C binary that accesses NSPasteboard directly (~5ms per read).
 
-function darwinHelperSourceHashFile(): string {
-    return join(helperBinDir(), "clipboard-helper-darwin.hash");
-}
-
-function darwinHelperBinary(): string {
-    return join(helperBinDir(), "clipboard-helper-darwin");
+function darwinHelperBinary(): string | null {
+    return DARWIN_HELPER_SOURCE_HASH ? join(helperBinDir(), `clipboard-helper-darwin-${DARWIN_HELPER_SOURCE_HASH}`) : null;
 }
 let persistentDarwin: ChildProcess | null = null;
 
@@ -377,8 +398,14 @@ export function parseDarwinHelperOutput(output: string): Omit<ClipboardSnapshot,
  */
 function isDarwinHelperReady(): string | null {
     if (platform() !== "darwin") return null;
-    if (!existsSync(darwinHelperBinary())) return null;
-    return darwinHelperBinary();
+    const binary = darwinHelperBinary();
+    if (!binary) return null;
+    try {
+        const stat = lstatSync(binary);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size === 0
+            || (process.getuid && (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0 || (stat.mode & 0o100) === 0))) return null;
+        return binary;
+    } catch { return null; }
 }
 
 /**
@@ -387,36 +414,67 @@ function isDarwinHelperReady(): string | null {
  * First requests fall back to osascript; once compile finishes, native helper is used.
  */
 function compileDarwinHelperAsync(): void {
+    let sourcePath: string | undefined;
+    let outputPath: string | undefined;
+    let sourceReceipt: BigIntStats | undefined;
+    let outputReceipt: BigIntStats | undefined;
+    const removeOwned = (path: string | undefined, receipt: BigIntStats | undefined) => {
+        if (!path || !receipt) return;
+        try {
+            const current = lstatSync(path, { bigint: true });
+            if (current.isFile() && !current.isSymbolicLink() && current.dev === receipt.dev
+                && current.ino === receipt.ino && current.birthtimeNs === receipt.birthtimeNs) unlinkSync(path);
+        } catch { /* A missing or replaced stage is not ours to remove. */ }
+    };
+    const cleanup = () => { removeOwned(sourcePath, sourceReceipt); removeOwned(outputPath, outputReceipt); };
     try {
-        const __fn = fileURLToPath(import.meta.url);
-        const sourcePath = join(dirname(__fn), "..", "scripts", "clipboard-helper-darwin.m");
-        if (!existsSync(sourcePath)) return;
-
-        const sourceContent = readFileSync(sourcePath, "utf-8");
-        const sourceHash = createHash("sha256").update(sourceContent).digest("hex").slice(0, 16);
-
-        // Already up-to-date?
-        if (existsSync(darwinHelperBinary())) {
-            try {
-                const existingHash = readFileSync(darwinHelperSourceHashFile(), "utf-8").trim();
-                if (existingHash === sourceHash) return;
-            } catch { /* recompile */ }
-        }
-
+        const binary = darwinHelperBinary();
+        if (!binary || darwinHelperSource === undefined || isDarwinHelperReady()) return;
         const binDir = helperBinDir();
-        mkdirSync(binDir, { recursive: true });
-
+        mkdirSync(binDir, { recursive: true, mode: 0o700 });
+        const parent = lstatSync(binDir, { bigint: true });
+        if (!parent.isDirectory() || parent.isSymbolicLink()
+            || (process.getuid && (parent.uid !== BigInt(process.getuid()) || (parent.mode & 0o022n) !== 0n))) return;
+        const nonce = randomBytes(16).toString("hex");
+        sourcePath = join(binDir, `.clipboard-helper-${nonce}.m`);
+        outputPath = join(binDir, `.clipboard-helper-${nonce}.bin`);
+        const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);
+        const sourceFd = openSync(sourcePath, flags, 0o600);
+        try { sourceReceipt = fstatSync(sourceFd, { bigint: true }); writeFileSync(sourceFd, darwinHelperSource); }
+        finally { closeSync(sourceFd); }
+        const outputFd = openSync(outputPath, flags, 0o700);
+        try { outputReceipt = fstatSync(outputFd, { bigint: true }); }
+        finally { closeSync(outputFd); }
         const child = spawn("cc", [
-            "-framework", "AppKit", "-framework", "Foundation",
-            "-O2", "-o", darwinHelperBinary(), sourcePath,
+            "-framework", "AppKit", "-framework", "Foundation", "-O2", "-o", outputPath, sourcePath,
         ], { stdio: "ignore" });
-
-        child.on("close", (code) => {
-            if (code === 0) {
-                try { writeFileSync(darwinHelperSourceHashFile(), sourceHash); } catch { /* ignore */ }
-            }
+        child.once("error", cleanup);
+        child.once("close", code => {
+            try {
+                if (code !== 0) return;
+                const currentParent = lstatSync(binDir, { bigint: true });
+                if (!currentParent.isDirectory() || currentParent.isSymbolicLink() || currentParent.dev !== parent.dev
+                    || currentParent.ino !== parent.ino || currentParent.birthtimeNs !== parent.birthtimeNs) return;
+                // The compiler may replace its output. Capture only a private,
+                // complete regular file in this exclusively reserved stage.
+                const compiled = lstatSync(outputPath!, { bigint: true });
+                if (!compiled.isFile() || compiled.isSymbolicLink() || compiled.nlink !== 1n || compiled.size === 0n
+                    || (process.getuid && compiled.uid !== BigInt(process.getuid()))) return;
+                outputReceipt = compiled;
+                const fd = openSync(outputPath!, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+                try {
+                    const opened = fstatSync(fd, { bigint: true });
+                    if (!portPathMatches(opened, compiled)) return;
+                    fchmodSync(fd, 0o700);
+                    fsyncSync(fd);
+                } finally { closeSync(fd); }
+                // No replace: concurrent compilers and older running binaries
+                // keep their exact files and processes.
+                linkSync(outputPath!, binary);
+            } catch { /* Compilation failure keeps the existing fallback. */ }
+            finally { cleanup(); }
         });
-    } catch { /* compilation unavailable — osascript fallback will be used */ }
+    } catch { cleanup(); /* Compilation unavailable: retain the native fallback. */ }
 }
 
 function ensurePersistentDarwin(): ChildProcess | null {
@@ -812,16 +870,19 @@ export function buildWindowsClipboardReadCommand(
         `$imageExts = @(${extensions})`,
         `$sharedHost = ${sharedHost}`,
         `$sharedContainer = ${sharedContainer}`,
+        "$nativeImagePresent = $false",
         "$dataObj = [System.Windows.Forms.Clipboard]::GetDataObject()",
         "if ($dataObj) {",
         "  foreach ($fmt in @('PNG', 'image/png')) {",
         "    try {",
         "      if ($dataObj.GetDataPresent($fmt)) {",
+        "        $nativeImagePresent = $true",
         "        $data = $dataObj.GetData($fmt)",
         "        $bytes = $null",
         "        if ($data -is [byte[]]) { $bytes = $data }",
         "        elseif ($data -is [System.IO.Stream]) {",
         "          $msRaw = New-Object System.IO.MemoryStream",
+        "          if ($data.CanSeek) { $data.Position = 0 }",
         "          $data.CopyTo($msRaw)",
         "          $bytes = $msRaw.ToArray()",
         "          $msRaw.Dispose()",
@@ -836,6 +897,7 @@ export function buildWindowsClipboardReadCommand(
         "  }",
         "}",
         "$img = [System.Windows.Forms.Clipboard]::GetImage()",
+        "if ($img) { $nativeImagePresent = $true }",
         "if (!$r.imagePng -and !$img -and [System.Windows.Forms.Clipboard]::ContainsFileDropList()) {",
         "  $files = [System.Windows.Forms.Clipboard]::GetFileDropList()",
         "  foreach ($file in $files) {",
@@ -927,6 +989,7 @@ export function buildWindowsClipboardReadCommand(
         "  try { $img.Dispose() } catch { }",
         "}",
         "if ($text -and !$r.imagePng -and !$r.text) { $r.targets += 'text/plain'; $r.text = $text }",
+        "if ($nativeImagePresent -and !$r.imagePng -and !$r.text -and !($r.targets -contains 'application/x-ccc-copied-image-file')) { throw 'clipboard-read-failed' }",
         "$r | ConvertTo-Json -Compress",
         "} catch { '{\"error\":\"clipboard-read-failed\"}' } finally { $ErrorActionPreference = $previousErrorActionPreference }",
     ].join("; ");
@@ -1203,6 +1266,7 @@ export function createClipboardServer(token: string, plat: ClipboardPlatform, op
     publicationCommitted?: () => boolean;
     retirePublication?: (guard?: RuntimeBindGuard) => void;
     runtimeInvocation?: NativeRuntimeInvocation;
+    publicationPath?: string;
 } = {}): { server: Server; start: (bindAddr: string) => Promise<number>; shutdown: () => void } {
     let noActiveSessionsSince: number | null = null;
     let idleTimer: ReturnType<typeof setInterval>;
@@ -1376,7 +1440,7 @@ export function createClipboardServer(token: string, plat: ClipboardPlatform, op
         orphanCheckPending = true;
         void runWithNativeRuntimeInvocation(options.runtimeInvocation, () => withRuntimeBindGuardAsync(cccHome(), async guard => {
             if (retiring || hasAnyActiveSessionsExcept(null)) return;
-            const portFile = clipboardPortFile();
+            const portFile = options.publicationPath ?? clipboardPortFile();
             const selected = readPortFile(portFile);
             const address = server.address();
             if (!selected || !address || typeof address === "string" || selected.token !== token || selected.port !== address.port) return;
@@ -1491,12 +1555,15 @@ export async function validateClipboardSelection(selected: ClipboardSelection | 
         const health = await checkServerHealth(selected.port, selected.token, "127.0.0.1");
         const after = capturePortFile(selected.portFile);
         assertRuntimeBindAuthorityCurrent(guard, snapshot);
-        if (!health.alive || !after || !samePortReceipt(current, after)) return null;
+        if (!health.alive || !after || !samePortReceipt(current, after)
+            || (selected.generation !== undefined && (selected.generation !== SERVER_VERSION
+                || !/^[a-f0-9]{12}$/.test(selected.generation) || selected.portFile !== currentClipboardPortFile()
+                || health.version !== selected.generation))) return null;
         return selected;
     } catch { return null; }
 }
 
-function preparePortPublication(portFile: string, guard: RuntimeBindGuard): ((record: ClipboardPortRecord) => PublishedClipboardReceipt) | null {
+function preparePortPublication(portFile: string, guard: RuntimeBindGuard): ClipboardPublication | null {
     try {
         const snapshot = readRuntimeBindAuthority(guard);
         const root = resolve(guard.root);
@@ -1521,7 +1588,7 @@ function preparePortPublication(portFile: string, guard: RuntimeBindGuard): ((re
             try { lstatSync(portFile); return null; }
             catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null; }
         } else if (!decodePortFile(expected)) return null;
-        const assertCurrent = () => {
+        const assertParents = () => {
             assertRuntimeBindAuthorityCurrent(guard, snapshot);
             for (const before of ancestors) {
                 const stat = lstatSync(before.path, { bigint: true });
@@ -1533,6 +1600,9 @@ function preparePortPublication(portFile: string, guard: RuntimeBindGuard): ((re
                 try { lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
                 throw new Error("Clipboard publication parent changed");
             }
+        };
+        const assertCurrent = () => {
+            assertParents();
             const current = capturePortFile(portFile);
             if (expected ? !current || !samePortReceipt(expected, current) : current !== null) throw new Error("Clipboard publication target changed");
             if (!expected) {
@@ -1540,6 +1610,82 @@ function preparePortPublication(portFile: string, guard: RuntimeBindGuard): ((re
                 throw new Error("Clipboard publication target changed");
             }
         };
+        if (!expected && /^[a-f0-9]{12}$/.test(SERVER_VERSION) && portFile === currentClipboardPortFile()) {
+            // An exclusively created sibling is distinct from an older mounted
+            // port inode. Scan that existing inode so ancestor mounts and unknown
+            // runtime history still veto creation without treating every sibling
+            // file bind as an overlapping mount.
+            if (snapshot.coverage !== "complete" || snapshot.pending || missing.length !== 0) return null;
+            assertCurrent();
+            const stage = join(dirname(portFile), `.${basename(portFile)}.${randomBytes(16).toString("hex")}.pending`);
+            const fd = openSync(stage, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL
+                | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), 0o600);
+            const owned = fstatSync(fd, { bigint: true });
+            let receipt = capturePortFile(stage);
+            let closed = false;
+            let settled = false;
+            const sameOwned = (stat: BigIntStats) => stat.isFile() && stat.dev === owned.dev && stat.ino === owned.ino
+                && stat.birthtimeNs === owned.birthtimeNs && (!process.getuid
+                    || (stat.uid === BigInt(process.getuid()) && (stat.mode & 0o777n) === 0o600n));
+            const stageMatches = () => {
+                if (!receipt || !sameOwned(receipt.stat)) return false;
+                const opened = fstatSync(fd, { bigint: true });
+                const named = lstatSync(stage, { bigint: true });
+                return sameOwned(opened) && named.isFile() && !named.isSymbolicLink()
+                    && named.ino === opened.ino && named.birthtimeNs === opened.birthtimeNs
+                    && (named.dev === opened.dev || (process.platform === "win32" && named.dev === 0n))
+                    && opened.nlink === receipt.stat.nlink && named.nlink === opened.nlink
+                    && opened.size === receipt.stat.size && named.size === opened.size
+                    && opened.mtimeNs === receipt.stat.mtimeNs && named.mtimeNs === opened.mtimeNs
+                    && opened.ctimeNs === receipt.stat.ctimeNs && named.ctimeNs === opened.ctimeNs;
+            };
+            const dispose = () => {
+                if (closed) return;
+                try { assertParents(); if (stageMatches()) unlinkSync(stage); }
+                catch { /* Never unlink a changed stage or a successor parent. */ }
+                finally { closed = true; closeSync(fd); }
+            };
+            try {
+                if (!receipt || !sameOwned(owned) || owned.nlink !== 1n || !stageMatches()
+                    || clipboardPortMayHaveBindUsers(stage, guard)) { dispose(); return null; }
+                assertCurrent();
+                const publish: ClipboardPublication = record => {
+                    if (closed || settled) throw new Error("Clipboard publication has already settled");
+                    settled = true;
+                    assertCurrent();
+                    if (!stageMatches()) throw new Error("Clipboard publication stage changed");
+                    try {
+                        ftruncateSync(fd, 0);
+                        writeFileSync(fd, `${record.port}:${record.token}`);
+                    } finally {
+                        const written = capturePortFile(stage);
+                        if (written && sameOwned(written.stat)) receipt = written;
+                    }
+                    fsyncSync(fd);
+                    assertCurrent();
+                    if (!stageMatches()) throw new Error("Clipboard publication stage changed");
+                    // Atomic no-replace publication. An intervening final path
+                    // wins; it is never truncated, renamed over or removed.
+                    linkSync(stage, portFile);
+                    const linked = fstatSync(fd, { bigint: true });
+                    if (sameOwned(linked)) receipt = { stat: linked, bytes: `${record.port}:${record.token}` };
+                    const target = lstatSync(portFile, { bigint: true });
+                    if (!sameOwned(linked) || linked.nlink !== 2n || !stageMatches() || !target.isFile()
+                        || target.isSymbolicLink() || target.nlink !== 2n || target.ino !== linked.ino
+                        || target.birthtimeNs !== linked.birthtimeNs
+                        || (target.dev !== linked.dev && !(process.platform === "win32" && target.dev === 0n))) {
+                        throw new Error("Clipboard publication link changed");
+                    }
+                    dispose();
+                    const committed = capturePortFile(portFile);
+                    if (!committed || !sameOwned(committed.stat) || committed.stat.nlink !== 1n
+                        || committed.bytes !== `${record.port}:${record.token}`) throw new Error("Clipboard publication could not be captured");
+                    return publicationReceipt(portFile, committed);
+                };
+                publish.dispose = dispose;
+                return publish;
+            } catch { dispose(); return null; }
+        }
         const scope = expected ? portFile : ancestors[0]?.path;
         if (!scope || clipboardPortMayHaveBindUsers(scope, guard)) return null;
         assertCurrent();
@@ -1593,12 +1739,12 @@ function publicationMatches(before: PublishedClipboardReceipt, current: Clipboar
     return Object.keys(after).every(key => after[key as keyof PublishedClipboardReceipt] === before[key as keyof PublishedClipboardReceipt]);
 }
 
-function decodePublicationReceipt(value: unknown, port: number, token: string): PublishedClipboardReceipt {
+function decodePublicationReceipt(value: unknown, port: number, token: string, expectedPath: string): PublishedClipboardReceipt {
     if (!value || typeof value !== "object") throw new Error("Clipboard commit receipt is unavailable");
     const record = value as Record<string, unknown>;
     const keys = ["path", "bytes", "device", "inode", "birthtime", "mtime", "ctime"];
     if (Object.keys(record).length !== keys.length || keys.some(key => typeof record[key] !== "string")
-        || record.path !== clipboardPortFile() || record.bytes !== `${port}:${token}`
+        || record.path !== expectedPath || record.bytes !== `${port}:${token}`
         || keys.slice(2).some(key => !/^[0-9]+$/.test(record[key] as string))) throw new Error("Invalid clipboard commit receipt");
     return Object.freeze({ path: record.path as string, bytes: record.bytes as string, device: record.device as string,
         inode: record.inode as string, birthtime: record.birthtime as string, mtime: record.mtime as string, ctime: record.ctime as string });
@@ -1743,7 +1889,7 @@ function checkServerHealth(port: number, expectedToken: string, bindAddr: string
  * If a server is already running (verified via health check + token), reuses it.
  * Otherwise starts a new detached server process.
  */
-function launchClipboardDaemon(serverScript: string, publish: (record: ClipboardPortRecord) => unknown): Promise<ChildProcess> {
+function launchClipboardDaemon(serverScript: string, publish: (record: ClipboardPortRecord) => unknown, publicationPath: string): Promise<ChildProcess> {
     const runtimeInvocation = peekRuntimeInvocation();
     if (!runtimeInvocation) return Promise.reject(new Error("Clipboard runtime authority is unavailable"));
     return new Promise((resolve, reject) => {
@@ -1805,21 +1951,23 @@ function launchClipboardDaemon(serverScript: string, publish: (record: Clipboard
         child.once("exit", onExit);
         child.once("disconnect", onDisconnect);
         if (performance.now() >= deadline) { finish(new Error("Clipboard daemon publication timed out")); return; }
-        try { child.send({ type: "initialize", runtimeInvocation }, error => { if (error) onError(); }); }
+        try { child.send({ type: "initialize", runtimeInvocation, publicationPath }, error => { if (error) onError(); }); }
         catch { onError(); }
     });
 }
 
-function createNativeClipboardLifecycle() {
+function createNativeClipboardLifecycle(publicationPath = currentClipboardPortFile()) {
     let homePreparation: RuntimeBindHomePreparation | undefined;
+    const generation = /^[a-f0-9]{12}$/.test(SERVER_VERSION) && publicationPath === currentClipboardPortFile() ? SERVER_VERSION : undefined;
     return createClipboardServerLifecycle({
-        readPortFile,
+        generation,
+        readPortFile: (path = publicationPath) => readPortFile(path),
         portRecordMatches,
-        portFilePath: () => clipboardPortFile(),
+        portFilePath: () => publicationPath,
         startupLockPath: () => {
             // The startup slot can create the root: capture exclusive genesis first.
             homePreparation ??= prepareRuntimeBindHome(cccHome());
-            return clipboardStartingLock();
+            return clipboardStartupPath(publicationPath);
         },
         tryAcquireStartupLock: tryAcquireClipboardStartupLock,
         recoverDeadStartupLock: recoverDeadClipboardStartupLock,
@@ -1841,7 +1989,7 @@ function createNativeClipboardLifecycle() {
         now: () => performance.now(),
         sleep: (milliseconds) => new Promise((r) => setTimeout(r, milliseconds)),
         daemonScriptPath: () => fileURLToPath(import.meta.url).replace(/\.ts$/, ".js"),
-        launchDaemon: launchClipboardDaemon,
+        launchDaemon: (script, publish) => launchClipboardDaemon(script, publish, publicationPath),
         unrefDaemon: (child) => { child.unref(); return undefined; },
     }, SERVER_VERSION);
 }
@@ -1856,7 +2004,7 @@ export function stopClipboardServerIfLast(hasOtherActiveSessions: boolean): Prom
     return createNativeClipboardLifecycle().stopClipboardServerIfLast(hasOtherActiveSessions);
 }
 export function retireClipboardServerFromPortFile(portFile: string): Promise<void> {
-    return createNativeClipboardLifecycle().retireClipboardServerFromPortFile(portFile);
+    return createNativeClipboardLifecycle(portFile).retireClipboardServerFromPortFile(portFile);
 }
 
 /**
@@ -1909,6 +2057,7 @@ if (isMainModule && process.argv.includes("--serve")) {
         let publishedReceipt: PublishedClipboardReceipt | undefined;
         let daemonPort: number | undefined;
         let daemonToken: string | undefined;
+        let publicationPath: string | undefined;
         const stop = () => {
             publicationEnabled = false;
             publishedReceipt = undefined;
@@ -1924,9 +2073,9 @@ if (isMainModule && process.argv.includes("--serve")) {
             if (!message || typeof message !== "object" || !("type" in message)) return;
             if (message.type === "published" && initialized && daemon?.server.listening && publicationEnabled && !committed) {
                 try {
-                    if (!("receipt" in message) || daemonPort === undefined || !daemonToken) { stop(); return; }
+                    if (!("receipt" in message) || daemonPort === undefined || !daemonToken || !publicationPath) { stop(); return; }
                     if (performance.now() >= publicationDeadline) { stop(); return; }
-                    const receipt = decodePublicationReceipt(message.receipt, daemonPort, daemonToken);
+                    const receipt = decodePublicationReceipt(message.receipt, daemonPort, daemonToken, publicationPath);
                     const current = capturePortFile(receipt.path);
                     if (!current || !publicationMatches(receipt, current)) { stop(); return; }
                     // Descriptor reads can outlast the budget even when their
@@ -1944,6 +2093,9 @@ if (isMainModule && process.argv.includes("--serve")) {
             initialized = true;
             try {
                 const invocation = validateNativeRuntimeInvocation(message.runtimeInvocation);
+                const path = "publicationPath" in message ? message.publicationPath : clipboardPortFile();
+                if (typeof path !== "string" || (path !== clipboardPortFile() && path !== currentClipboardPortFile())) { stop(); return; }
+                publicationPath = path;
                 const token = randomBytes(16).toString("hex");
                 daemonToken = token;
                 const plat = detectPlatform();
@@ -1957,6 +2109,7 @@ if (isMainModule && process.argv.includes("--serve")) {
                         if (guard && receipt) writeRetiredPublication(receipt, guard);
                     },
                     runtimeInvocation: invocation,
+                    publicationPath,
                 });
                 void daemon.start("127.0.0.1").then(port => {
                     if (!publicationEnabled || !process.connected || performance.now() >= publicationDeadline) { stop(); return; }

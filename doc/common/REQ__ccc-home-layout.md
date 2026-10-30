@@ -22,6 +22,7 @@ folder, keeps disposable runtime files in one place, and keeps settings in one f
 │   │   └── codex/         # mounted at /home/ccc/.codex
 │   └── <name>/            # same three entries per named profile
 ├── run/                   # disposable: locks/, clipboard.port, clipboard.starting.v2,
+│                          # clipboard.<12hex>.port, clipboard.<12hex>.starting,
 │                          # clipboard-files/, bin/
 ├── devices/               # device lab state (unchanged)
 └── device-broker-private/ # host-only broker state (unchanged)
@@ -42,6 +43,15 @@ Paths inside the container do not change.
 3. Session locks, the clipboard bridge port file, clipboard file transfers and the
    macOS clipboard helper live under `run/`. Do not remove mounted runtime files while any running or stopped container
    still references them.
+   - Known current clipboard policies use `clipboard.<12hex>.port` with an
+     independent `clipboard.<12hex>.starting` slot. These are private siblings
+     of the legacy `clipboard.port`; adding a generation neither moves nor
+     replaces an older publication. The legacy schema and migration rules stay
+     intact. See [generation ownership](../clipboard/REQ__clipboard-generation-coexistence.md).
+   - Darwin helpers live at
+     `run/bin/clipboard-helper-darwin-<source-sha256-first-16-hex>`. A new helper
+     is staged and published without replacing an older binary. A code update
+     or rollback does not authorize deleting files used by an existing daemon.
 4. `ccc remote` saves a project's remote config in `config.json` under
    `remote.<project-hash>`. Configs saved by older versions in
    `remote/<project-hash>.json` are still read.
@@ -140,6 +150,14 @@ receiving-host writes without captured native authority retain incomplete
 coverage. Unknown coverage keeps credentials, port-file identity and the current
 bridge intact. An automatic bridge replacement requires a positive shared-writer
 retirement witness; health failure or an HTTP response alone is insufficient.
+
+A separate current-generation publication is a distinct creation, not authority
+to replace an older bridge. It requires complete, nonpending runtime history,
+safe existing parents, exclusive owned staging and a successful no-replace
+publication under the global guard. Ancestor binds, an unresolvable retained
+source, unknown inventory or a changed successor retain their vetoes. A new
+session can use this endpoint while a reused container preserves its verified
+legacy file bind; no general mount-source substitution is allowed.
 
 ### Layout checks
 

@@ -9,7 +9,18 @@ fi
 
 # Refresh port and token from one valid record after a daemon restart.
 # Keep the session hostname (including bracketed IPv6) and fallback together.
-if [ -f /run/ccc/clipboard.port ] && [ -r /run/ccc/clipboard.port ] &&
+# A current-generation session owns its paired endpoint. An older container's
+# immutable mount remains available only to legacy/unmarked sessions.
+_ccc_clipboard_pinned=
+case "${CCC_CLIPBOARD_GENERATION:-}" in
+    ????????????)
+        case "$CCC_CLIPBOARD_GENERATION" in
+            *[!0-9a-f]*) ;;
+            *) _ccc_clipboard_pinned=1 ;;
+        esac
+        ;;
+esac
+if [ -z "$_ccc_clipboard_pinned" ] && [ -f /run/ccc/clipboard.port ] && [ -r /run/ccc/clipboard.port ] &&
     _clipboard_record=$(awk -F: '
         NR == 1 && NF == 2 && $1 ~ /^[0-9]+$/ && length($1) <= 5 &&
         $1 > 0 && $1 <= 65535 && $2 ~ /^[A-Za-z0-9_-]+$/ { record = $0 }

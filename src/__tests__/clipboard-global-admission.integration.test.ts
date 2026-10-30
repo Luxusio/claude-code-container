@@ -1,5 +1,5 @@
 import {spawn, type ChildProcess} from "node:child_process";
-import {chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync} from "node:fs";
+import {chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync} from "node:fs";
 import {request} from "node:http";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -15,7 +15,7 @@ const productUrl = (name: string) => pathToFileURL(join(repository, "dist", name
 const exactId = "d".repeat(64);
 interface Result {code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string}
 interface OwnedProcess {pid: number; startToken: string}
-interface RecordValue {port: number; token: string; portFile: string}
+interface RecordValue {port: number; token: string; portFile: string; generation?: string}
 
 async function eventually(predicate: () => boolean | Promise<boolean>, description: string, milliseconds = 12_000) {
     const deadline = performance.now() + milliseconds;
@@ -43,9 +43,9 @@ function http(record: RecordValue, path: string, method = "GET"): Promise<{statu
 }
 
 describe.runIf(process.platform === "linux")("clipboard native global admission", () => {
-    let root: string, home: string, portFile: string, driver: string, runtime: string;
+    let root: string, home: string, portFile: string, currentPortFile: string, generation: string, driver: string, runtime: string;
     const children = new Set<ChildProcess>(), daemons: OwnedProcess[] = [], published: RecordValue[] = [], descriptors: number[] = [];
-    beforeEach(() => {
+    beforeEach(async () => {
         root = mkdtempSync(join(tmpdir(), "ccc-clipboard-global-")); home = join(root, "home");
         mkdirSync(home, {mode: 0o700}); mkdirSync(join(root, "config"), {mode: 0o700});
         const prepared = prepareRuntimeBindHome(join(home, ".ccc")); withRuntimeBindGuard(prepared, () => {});
@@ -62,7 +62,7 @@ let claim=null; try{claim=JSON.parse(readFileSync(join(home,'.ccc','codex-state.
 appendFileSync(join(root,'native.jsonl'),JSON.stringify({args,claim})+'\\n');
 if(mode==='unreachable') process.exit(72);
 if(args[0]==='ps') process.stdout.write(mode==='stopped'?id+'\\n':'');
-else if(args[0]==='inspect') process.stdout.write(JSON.stringify([{Id:id,State:{Running:false},Mounts:[{Type:'bind',Source:${JSON.stringify(portFile)},Destination:'/run/ccc/clipboard.port'}]}]));
+else if(args[0]==='inspect') process.stdout.write(JSON.stringify([{Id:id,State:{Running:false},Mounts:[{Type:'bind',Source:existsSync(join(root,'bind-source'))?readFileSync(join(root,'bind-source'),'utf8'):${JSON.stringify(portFile)},Destination:'/run/ccc/clipboard.port'}]}]));
 else if(args[0]==='info') process.stdout.write('{}');
 `);
         chmodSync(runtime, 0o700);
@@ -84,10 +84,10 @@ Object.defineProperty(performance,'now',{configurable:true,value:()=>now});
 process.prependListener('message',message=>{if(message&&message.type==='published')now+=60000;});
 `);
         writeFileSync(join(root, "terminal-fsync-failure.cjs"), `
-const fs=require('node:fs'),portFile=${JSON.stringify(portFile)},root=${JSON.stringify(root)},nativeFsync=fs.fsyncSync;
+const fs=require('node:fs'),runDirectory=${JSON.stringify(join(home, ".ccc", "run"))},root=${JSON.stringify(root)},nativeFsync=fs.fsyncSync;
 fs.fsyncSync=function(fd){
  let target;try{target=fs.readlinkSync('/proc/self/fd/'+fd);}catch{}
- if(target===portFile&&/^retired-v1:[1-9][0-9]{0,4}:[a-f0-9]{32}$/.test(fs.readFileSync(target,'utf8'))){
+ if(target&&require('node:path').dirname(target)===runDirectory&&/^clipboard(?:\\.[a-f0-9]{12})?\\.port$/.test(require('node:path').basename(target))&&/^retired-v1:[1-9][0-9]{0,4}:[a-f0-9]{32}$/.test(fs.readFileSync(target,'utf8'))){
   let claim=null;try{claim=JSON.parse(fs.readFileSync(root+'/home/.ccc/codex-state.lock','utf8')).pid;}catch{}
   fs.appendFileSync(root+'/terminal-attempts.jsonl',JSON.stringify({pid:process.pid,claim})+'\\n',{mode:0o600});
   const error=new Error('owned terminal fsync failure');error.code='EIO';throw error;
@@ -117,7 +117,16 @@ const authority=await import(${JSON.stringify(productUrl("adapters/runtime-bind-
 const runtime=await import(${JSON.stringify(productUrl("container-runtime.js"))});
 const {NATIVE_RUNTIME_SELECTOR_KEYS}=await import(${JSON.stringify(productUrl("ports/container-runtime-invocation.js"))});
 runtime._setRuntimeInvocationForTest({version:1,runtime:'docker',executable:${JSON.stringify(runtime)},transport:{kind:'docker',host:'unix:///inert/clipboard.sock',configDirectory:join(root,'config'),tls:{enabled:false,verify:false,caFile:null,certFile:null,keyFile:null}},selectors:Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key=>[key,null]))});
-if(mode==='hold'){
+const clipboard=await import(${JSON.stringify(productUrl("clipboard-server.js"))});
+async function currentPolicy(){
+ const token='policy-fixture',instance=clipboard.createClipboardServer(token,'unsupported');
+ const port=await instance.start('127.0.0.1');
+ try{const response=await fetch('http://127.0.0.1:'+port+'/health',{headers:{Authorization:'Bearer '+token}});return (await response.json()).version;}
+ finally{instance.server.closeAllConnections();await new Promise(resolve=>instance.server.close(resolve));}
+}
+if(mode==='policy'){
+ const generation=await currentPolicy();console.log(JSON.stringify({generation,portFile:join(home,'.ccc','run','clipboard.'+generation+'.port')}));
+} else if(mode==='hold'){
  await authority.withRuntimeBindGuardAsync(join(home,'.ccc'),async()=>{process.send?.({held:true});await new Promise(resolve=>process.once('message',resolve));});
 } else if(mode==='pending') {
  authority.withRuntimeBindGuard(join(home,'.ccc'),guard=>authority.beginRuntimeBindCreation(guard,runtime.peekRuntimeInvocation()));
@@ -151,7 +160,8 @@ if(mode==='hold'){
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  mkdirSync(join(home,'.ccc','run'),{recursive:true,mode:0o700});
- writeFileSync(${JSON.stringify(portFile)},server.address().port+':'+token,{mode:0o600});process.send?.({ready:true});
+ const path=join(home,'.ccc','run','clipboard.'+await currentPolicy()+'.port');
+ writeFileSync(path,server.address().port+':'+token,{mode:0o600});process.send?.({ready:true});
 } else if(mode==='legacy') {
  const {createServer}=await import('node:http');const token='a'.repeat(32);
  const server=createServer((req,res)=>{if(req.headers.authorization!=='Bearer '+token){res.writeHead(401);res.end();return;}
@@ -163,29 +173,30 @@ if(mode==='hold'){
  (await import('node:fs')).mkdirSync(join(home,'.ccc','run'),{recursive:true,mode:0o700});
  writeFileSync(${JSON.stringify(portFile)},server.address().port+':'+token,{mode:0o600});process.send?.({ready:true});
 } else {
- const clipboard=await import(${JSON.stringify(productUrl("clipboard-server.js"))});
  if(mode==='validate'){
   const selected=JSON.parse(readFileSync(join(root,'selected.json'),'utf8'));
   const value=await authority.withRuntimeBindGuardAsync(join(home,'.ccc'),guard=>clipboard.validateClipboardSelection(selected,guard));
   console.log(JSON.stringify(value));
- }else if(mode==='child-expiry'){
+ }else if(mode==='child-expiry'||mode==='child-wrong-generation'){
   const outcome=await authority.withRuntimeBindGuardAsync(join(home,'.ccc'),async()=>{
+   const captured=mode==='child-expiry'?${JSON.stringify(portFile)}:join(home,'.ccc','run','clipboard.'+await currentPolicy()+'.port');
+   const receiptPath=mode==='child-expiry'?captured:join(home,'.ccc','run','clipboard.ffffffffffff.port');
    const child=childProcess.spawn(process.execPath,[${JSON.stringify(join(repository, "dist", "clipboard-server.js"))},'--serve','--parent-publisher'],{
-    env:{...process.env,NODE_OPTIONS:'--require='+JSON.stringify(join(root,'expired-published.cjs'))},stdio:['ignore','ignore','pipe','ipc']});
+    env:{...process.env,NODE_OPTIONS:mode==='child-expiry'?'--require='+JSON.stringify(join(root,'expired-published.cjs')):undefined},stdio:['ignore','ignore','pipe','ipc']});
    let committed=false,issued=null;
    child.on('message',message=>{
     if(message?.type==='ready'){
      mkdirSync(join(home,'.ccc','run'),{recursive:true,mode:0o700});
-     const bytes=message.port+':'+message.token;writeFileSync(${JSON.stringify(portFile)},bytes,{mode:0o600});
-     const file=statSync(${JSON.stringify(portFile)},{bigint:true});
-     issued={path:${JSON.stringify(portFile)},bytes,device:String(file.dev),inode:String(file.ino),birthtime:String(file.birthtimeNs),mtime:String(file.mtimeNs),ctime:String(file.ctimeNs)};
+     const bytes=message.port+':'+message.token;writeFileSync(receiptPath,bytes,{mode:0o600});
+     const file=statSync(receiptPath,{bigint:true});
+     issued={path:receiptPath,bytes,device:String(file.dev),inode:String(file.ino),birthtime:String(file.birthtimeNs),mtime:String(file.mtimeNs),ctime:String(file.ctimeNs)};
      child.send({type:'published',receipt:issued});
     }else if(message?.type==='committed'){committed=true;child.kill('SIGTERM');}
    });
    const exited=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(code,signal)=>resolve({code,signal}));});
-   child.send({type:'initialize',runtimeInvocation:runtime.peekRuntimeInvocation()});
+   child.send({type:'initialize',runtimeInvocation:runtime.peekRuntimeInvocation(),publicationPath:captured});
    const result=await exited;
-   return {committed,issued,result,bytes:readFileSync(${JSON.stringify(portFile)},'utf8'),inode:String(statSync(${JSON.stringify(portFile)},{bigint:true}).ino)};
+   return {committed,issued,result,bytes:readFileSync(receiptPath,'utf8'),inode:String(statSync(receiptPath,{bigint:true}).ino)};
   });console.log(JSON.stringify(outcome));
  }else if(mode==='sessions'){
   const {captureNativeSessionOwnership}=await import(${JSON.stringify(productUrl("adapters/session-ownership.js"))});
@@ -204,6 +215,11 @@ if(mode==='hold'){
  }
 }
 `);
+        const policy = await start("policy").result;
+        expect(policy.code, policy.stderr).toBe(0);
+        const selectedPolicy: {generation: string; portFile: string} = JSON.parse(policy.stdout.trim());
+        generation = selectedPolicy.generation; currentPortFile = selectedPolicy.portFile;
+        expect(generation).toMatch(/^[a-f0-9]{12}$/);
     });
     afterEach(async () => {
         for (const record of published) await http(record, "/shutdown", "POST").catch(() => undefined);
@@ -229,9 +245,13 @@ if(mode==='hold'){
         const result = new Promise<Result>((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({code, signal, stdout, stderr})); });
         return {child, result};
     }
-    function readRecord(): RecordValue {
-        const [port, ...token] = readFileSync(portFile, "utf8").trim().split(":");
-        return {port: Number(port), token: token.join(":"), portFile};
+    function readRecord(path = currentPortFile): RecordValue {
+        const [port, ...token] = readFileSync(path, "utf8").trim().split(":");
+        return {port: Number(port), token: token.join(":"), portFile: path, ...(path === currentPortFile ? {generation} : {})};
+    }
+    function privateRunFiles(): string[] {
+        const directory = join(home, ".ccc", "run");
+        return existsSync(directory) ? readdirSync(directory).sort() : [];
     }
     function trace(): Array<{args: string[]; claim: number | null}> {
         return existsSync(join(root, "native.jsonl")) ? readFileSync(join(root, "native.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
@@ -249,12 +269,58 @@ if(mode==='hold'){
         expect(JSON.parse(reused.stdout.trim())).toEqual(selection); expect(trace()).toEqual(observations);
     }, 20_000);
 
+    it("concurrent current-generation requests preserve a live legacy service, session and stopped-container bind", async () => {
+        const legacy = start("legacy"); await new Promise<void>(resolve => legacy.child.once("message", () => resolve()));
+        const previous = readRecord(portFile), bytes = readFileSync(portFile, "utf8"), before = statSync(portFile, {bigint: true});
+        published.push(previous);
+        const locks = join(home, ".ccc", "run", "locks"); mkdirSync(locks, {mode: 0o700});
+        writeFileSync(join(locks, "legacy-session.lock"), String(legacy.child.pid), {mode: 0o600});
+        writeFileSync(join(root, "mode"), "stopped");
+        const requests = [start("ensure"), start("ensure"), start("ensure")];
+        const results = await Promise.all(requests.map(value => value.result));
+        for (const result of results) expect(result.code, result.stderr).toBe(0);
+        const selections: RecordValue[] = results.map(value => JSON.parse(value.stdout.trim()));
+        expect(selections[0]).toMatchObject({portFile: currentPortFile, generation});
+        expect(selections[0].port).not.toBe(previous.port); expect(selections[0].token).not.toBe(previous.token);
+        expect(selections[1]).toEqual(selections[0]); expect(selections[2]).toEqual(selections[0]);
+        published.push(selections[0]); expect(daemons).toHaveLength(1);
+        expect(readRecord()).toEqual(selections[0]);
+        const currentBytes = readFileSync(currentPortFile, "utf8"), currentInode = statSync(currentPortFile).ino;
+        const refusedStop = await start("stop").result; expect(refusedStop.code, refusedStop.stderr).toBe(0);
+        expect(readFileSync(currentPortFile, "utf8")).toBe(currentBytes); expect(statSync(currentPortFile).ino).toBe(currentInode);
+        expect(readFileSync(portFile, "utf8")).toBe(bytes);
+        const after = statSync(portFile, {bigint: true});
+        expect([after.dev, after.ino, after.birthtimeNs, after.size]).toEqual([before.dev, before.ino, before.birthtimeNs, before.size]);
+        expect(JSON.parse((await http(previous, "/health")).body)).toMatchObject({valid: true, version: "legacy"});
+        expect(JSON.parse((await http(selections[0], "/health")).body)).toMatchObject({valid: true, version: generation});
+        expect(existsSync(join(root, "legacy-shutdown"))).toBe(false);
+        expect(privateRunFiles()).toEqual([`clipboard.${generation}.port`, "clipboard.port", "locks"].sort());
+    }, 30_000);
+
+    it.each(["ancestor-bind", "missing-current-path-bind", "pending-history", "unknown-inventory"] as const)("a fresh generation retains the %s veto beside a live legacy service", async veto => {
+        const legacy = start("legacy"); await new Promise<void>(resolve => legacy.child.once("message", () => resolve()));
+        const previous = readRecord(portFile), bytes = readFileSync(portFile, "utf8"), inode = statSync(portFile).ino;
+        published.push(previous);
+        if (veto === "ancestor-bind" || veto === "missing-current-path-bind") {
+            expect(existsSync(currentPortFile)).toBe(false);
+            writeFileSync(join(root, "mode"), "stopped");
+            writeFileSync(join(root, "bind-source"), veto === "ancestor-bind" ? join(home, ".ccc", "run") : currentPortFile);
+        } else if (veto === "pending-history") expect((await start("pending").result).code).toBe(0);
+        else writeFileSync(join(root, "mode"), "unreachable");
+        const result = await start("ensure").result; expect(result.code, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout.trim())).toBeNull(); expect(daemons).toEqual([]);
+        expect(readFileSync(portFile, "utf8")).toBe(bytes); expect(statSync(portFile).ino).toBe(inode);
+        expect(privateRunFiles()).toEqual(["clipboard.port"]);
+        expect((await http(previous, "/health")).status).toBe(200);
+        expect(existsSync(join(root, "legacy-shutdown"))).toBe(false);
+    }, 20_000);
+
     it("cannot publish between creation's held guard and final inventory", async () => {
         const owner = start("hold");
         await new Promise<void>(resolve => owner.child.once("message", () => resolve()));
         const waiter = start("ensure");
         await new Promise(resolve => setTimeout(resolve, 150));
-        expect(existsSync(portFile)).toBe(false); expect(trace()).toEqual([]); expect(waiter.child.exitCode).toBeNull();
+        expect(existsSync(currentPortFile)).toBe(false); expect(trace()).toEqual([]); expect(waiter.child.exitCode).toBeNull();
         owner.child.send({release: true}); expect((await owner.result).code).toBe(0);
         const result = await waiter.result; expect(result.code, result.stderr).toBe(0);
         published.push(JSON.parse(result.stdout.trim())); expect(readRecord()).toEqual(published[0]);
@@ -303,23 +369,34 @@ if(mode==='hold'){
         expect(readFileSync(portFile, "utf8")).toBe(outcome.issued.bytes);
     }, 20_000);
 
+    it("an actual child rejects a complete receipt from a different generation without modifying it", async () => {
+        const result = await start("child-wrong-generation").result; expect(result.code, result.stderr).toBe(0);
+        const outcome: {committed: boolean; issued: {path: string; bytes: string; inode: string}; bytes: string; inode: string} = JSON.parse(result.stdout.trim());
+        expect(outcome.issued).toBeTruthy(); expect(outcome.issued.path).not.toBe(currentPortFile);
+        expect(outcome.committed).toBe(false); expect(outcome.bytes).toBe(outcome.issued.bytes); expect(outcome.inode).toBe(outcome.issued.inode);
+        expect(existsSync(currentPortFile)).toBe(false);
+        expect(readFileSync(outcome.issued.path, "utf8")).toBe(outcome.issued.bytes);
+    }, 20_000);
+
     it.each(["pending", "incomplete", "unreachable"] as const)("refuses first publication for %s authority", async mode => {
         if (mode === "pending") expect((await start("pending").result).code).toBe(0);
         else if (mode === "incomplete") writeFileSync(join(home, ".ccc", "runtime-bind-authority", "receiving-host-incomplete"), "", {mode: 0o600});
         else writeFileSync(join(root, "mode"), "unreachable");
         const result = await start("ensure").result; expect(result.code, result.stderr).toBe(0);
-        expect(JSON.parse(result.stdout.trim())).toBeNull(); expect(existsSync(portFile)).toBe(false); expect(daemons).toEqual([]);
+        expect(JSON.parse(result.stdout.trim())).toBeNull(); expect(existsSync(portFile)).toBe(false);
+        expect(existsSync(currentPortFile)).toBe(false); expect(daemons).toEqual([]);
+        expect(privateRunFiles()).toEqual([]);
     }, 20_000);
     it.each(["retired-v1:1234:broken", `retired-v1:1234:${"a".repeat(32)}\n`, `retired-v2:1234:${"a".repeat(32)}`])("never treats an unknown or partial terminal record as restart authority: %s", async bytes => {
-        mkdirSync(join(home, ".ccc", "run"), {mode: 0o700}); writeFileSync(portFile, bytes, {mode: 0o600});
+        mkdirSync(join(home, ".ccc", "run"), {mode: 0o700}); writeFileSync(currentPortFile, bytes, {mode: 0o600});
         const result = await start("ensure").result; expect(result.code, result.stderr).toBe(0);
-        expect(JSON.parse(result.stdout.trim())).toBeNull(); expect(readFileSync(portFile, "utf8")).toBe(bytes); expect(daemons).toEqual([]);
+        expect(JSON.parse(result.stdout.trim())).toBeNull(); expect(readFileSync(currentPortFile, "utf8")).toBe(bytes); expect(daemons).toEqual([]);
     }, 20_000);
 
     it.each(["disconnect", "timeout"] as const)("a precommit parent %s cannot leave a late child publication or retirement marker", async failure => {
         const parent = start(`precommit-${failure}`);
         await eventually(() => existsSync(join(root, "child-listening")) && daemons.length === 1, "owned uncommitted listener");
-        const daemon = daemons[0]; expect(existsSync(portFile)).toBe(false);
+        const daemon = daemons[0]; expect(existsSync(currentPortFile)).toBe(false);
         if (failure === "disconnect") parent.child.kill("SIGKILL");
         const result = await parent.result;
         if (failure === "disconnect") expect(result.signal).toBe("SIGKILL");
@@ -327,33 +404,47 @@ if(mode==='hold'){
         await eventually(() => startToken(daemon.pid) !== daemon.startToken, "precommit child relinquishment");
         writeFileSync(join(root, "release-ready"), "late callback release");
         await new Promise(resolve => setTimeout(resolve, 100));
-        expect(existsSync(portFile)).toBe(false);
+        expect(existsSync(currentPortFile)).toBe(false);
+        if (failure === "timeout") expect(privateRunFiles()).toEqual([]);
+    }, 20_000);
+
+    it("refuses a foreign successor at final generation publication and removes only its own staging file", async () => {
+        const parent = start("precommit-successor");
+        await eventually(() => existsSync(join(root, "child-listening")) && daemons.length === 1, "owned uncommitted generation listener");
+        const bytes = `43210:${"f".repeat(32)}`; writeFileSync(currentPortFile, bytes, {mode: 0o600});
+        const inode = statSync(currentPortFile).ino;
+        writeFileSync(join(root, "release-ready"), "publish against successor");
+        const result = await parent.result; expect(result.code, result.stderr).toBe(1);
+        expect(readFileSync(currentPortFile, "utf8")).toBe(bytes); expect(statSync(currentPortFile).ino).toBe(inode);
+        await eventually(() => startToken(daemons[0].pid) !== daemons[0].startToken, "uncommitted child relinquishment after publication refusal");
+        expect(privateRunFiles()).toEqual([`clipboard.${generation}.port`]);
     }, 20_000);
 
     it("stopped background containers veto last-session retirement without any live session record", async () => {
         const started = await start("ensure").result; expect(started.code, started.stderr).toBe(0);
         const record: RecordValue = JSON.parse(started.stdout.trim()); published.push(record);
-        const before = readFileSync(portFile, "utf8"); writeFileSync(join(root, "mode"), "stopped");
+        const before = readFileSync(currentPortFile, "utf8"); writeFileSync(join(root, "mode"), "stopped");
+        writeFileSync(join(root, "bind-source"), currentPortFile);
         const stopped = await start("stop").result; expect(stopped.code, stopped.stderr).toBe(0);
-        expect(readFileSync(portFile, "utf8")).toBe(before); expect((await http(record, "/health")).status).toBe(200);
+        expect(readFileSync(currentPortFile, "utf8")).toBe(before); expect((await http(record, "/health")).status).toBe(200);
         expect(trace().some(value => value.args[0] === "inspect")).toBe(true);
     }, 20_000);
 
     it("normal orphan settlement marks and restarts on the same held port-file inode", async () => {
         const started = await start("ensure").result; expect(started.code, started.stderr).toBe(0);
         const record: RecordValue = JSON.parse(started.stdout.trim()); published.push(record);
-        const descriptor = openSync(portFile, "r"); descriptors.push(descriptor); const inode = fstatSync(descriptor).ino;
-        await eventually(() => readFileSync(portFile, "utf8") === `retired-v1:${record.port}:${record.token}`, "one-shot orphan terminal record", 30_000);
+        const descriptor = openSync(currentPortFile, "r"); descriptors.push(descriptor); const inode = fstatSync(descriptor).ino;
+        await eventually(() => readFileSync(currentPortFile, "utf8") === `retired-v1:${record.port}:${record.token}`, "one-shot orphan terminal record", 30_000);
         expect(fstatSync(descriptor).ino).toBe(inode); expect(readFileSync(descriptor, "utf8")).toBe(`retired-v1:${record.port}:${record.token}`);
         const restarted = await start("ensure").result; expect(restarted.code, restarted.stderr).toBe(0);
         const next: RecordValue = JSON.parse(restarted.stdout.trim()); published.push(next);
         expect(next.portFile).toBe(record.portFile); expect(next.token).not.toBe(record.token);
-        expect(fstatSync(descriptor).ino).toBe(inode); expect(readFileSync(portFile, "utf8")).toBe(`${next.port}:${next.token}`);
+        expect(fstatSync(descriptor).ino).toBe(inode); expect(readFileSync(currentPortFile, "utf8")).toBe(`${next.port}:${next.token}`);
     }, 40_000);
 
     it("a terminal marker fsync failure rejects the actual upgrade request before any replacement daemon starts", async () => {
         const peer = start("settlement-peer"); await new Promise<void>(resolve => peer.child.once("message", () => resolve()));
-        const original = readRecord(), bytes = readFileSync(portFile, "utf8"), inode = statSync(portFile).ino;
+        const original = readRecord(), bytes = readFileSync(currentPortFile, "utf8"), inode = statSync(currentPortFile).ino;
         const upgrading = start("ensure", true), failed = await upgrading.result;
         expect(failed.code, failed.stderr).toBe(1); expect(failed.stderr).toContain("owned terminal fsync failure");
         expect(JSON.parse(readFileSync(join(root, "peer-settled"), "utf8"))).toEqual({listenerClosed: true});
@@ -361,13 +452,13 @@ if(mode==='hold'){
         expect(daemons).toEqual([]);
         const attempts = readFileSync(join(root, "terminal-attempts.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
         expect(attempts).toEqual([{pid: upgrading.child.pid, claim: upgrading.child.pid}]);
-        expect(readFileSync(portFile, "utf8")).toBe(`retired-v1:${bytes}`); expect(statSync(portFile).ino).toBe(inode);
+        expect(readFileSync(currentPortFile, "utf8")).toBe(`retired-v1:${bytes}`); expect(statSync(currentPortFile).ino).toBe(inode);
         // A complete marker remains truthful after sealing even if its flush
         // failed. Only a later, fresh guarded request may recognize it.
         const restarted = await start("ensure").result; expect(restarted.code, restarted.stderr).toBe(0);
         const successor: RecordValue = JSON.parse(restarted.stdout.trim()); published.push(successor);
-        expect(successor.token).not.toBe(original.token); expect(successor.portFile).toBe(portFile);
-        expect(statSync(portFile).ino).toBe(inode); expect(readFileSync(portFile, "utf8")).toBe(`${successor.port}:${successor.token}`);
+        expect(successor.token).not.toBe(original.token); expect(successor.portFile).toBe(currentPortFile);
+        expect(statSync(currentPortFile).ino).toBe(inode); expect(readFileSync(currentPortFile, "utf8")).toBe(`${successor.port}:${successor.token}`);
         expect(readFileSync(join(root, "terminal-attempts.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
     }, 20_000);
 
@@ -376,7 +467,7 @@ if(mode==='hold'){
         const record: RecordValue = JSON.parse(started.stdout.trim()); published.push(record);
         const daemon = daemons[0]; expect(daemon).toBeDefined();
         expect(daemon.startToken).toMatch(/^[0-9]+$/); expect(startToken(daemon.pid)).toBe(daemon.startToken);
-        const bytes = readFileSync(portFile, "utf8"), descriptor = openSync(portFile, "r"); descriptors.push(descriptor);
+        const bytes = readFileSync(currentPortFile, "utf8"), descriptor = openSync(currentPortFile, "r"); descriptors.push(descriptor);
         const inode = fstatSync(descriptor).ino;
         expect(existsSync(join(root, "terminal-attempts.jsonl"))).toBe(false);
         expect((await http(record, "/health")).status).toBe(200);
@@ -392,7 +483,7 @@ if(mode==='hold'){
         expect(attempts).toEqual([{pid: daemon.pid, claim: daemon.pid}]);
         await expect(http(record, "/health")).rejects.toSatisfy((error: NodeJS.ErrnoException) =>
             error.code === "ECONNREFUSED" || error.code === "ECONNRESET");
-        expect(readFileSync(portFile, "utf8")).toBe(`retired-v1:${bytes}`); expect(statSync(portFile).ino).toBe(inode);
+        expect(readFileSync(currentPortFile, "utf8")).toBe(`retired-v1:${bytes}`); expect(statSync(currentPortFile).ino).toBe(inode);
         expect(fstatSync(descriptor).ino).toBe(inode); expect(readFileSync(descriptor, "utf8")).toBe(`retired-v1:${bytes}`);
         // The qualified process has ceased, so it cannot retry against this
         // complete record or acquire authority over a future publication.
@@ -402,21 +493,23 @@ if(mode==='hold'){
     it("an orphan consumes only its original publication receipt and preserves a same-byte successor inode", async () => {
         const started = await start("ensure").result; expect(started.code, started.stderr).toBe(0);
         const record: RecordValue = JSON.parse(started.stdout.trim()); published.push(record);
-        const descriptor = openSync(portFile, "r"); descriptors.push(descriptor); const original = fstatSync(descriptor).ino;
-        const bytes = readFileSync(portFile, "utf8"); renameSync(portFile, join(root, "original-port")); writeFileSync(portFile, bytes, {mode: 0o600});
-        const successor = statSync(portFile).ino; expect(successor).not.toBe(original);
+        const descriptor = openSync(currentPortFile, "r"); descriptors.push(descriptor); const original = fstatSync(descriptor).ino;
+        const bytes = readFileSync(currentPortFile, "utf8"); renameSync(currentPortFile, join(root, "original-port")); writeFileSync(currentPortFile, bytes, {mode: 0o600});
+        const successor = statSync(currentPortFile).ino; expect(successor).not.toBe(original);
         const daemon = daemons[0]; expect(daemon).toBeDefined();
         await eventually(() => startToken(daemon.pid) !== daemon.startToken, "orphan original receipt consumption", 30_000);
-        expect(readFileSync(portFile, "utf8")).toBe(bytes); expect(statSync(portFile).ino).toBe(successor);
+        expect(readFileSync(currentPortFile, "utf8")).toBe(bytes); expect(statSync(currentPortFile).ino).toBe(successor);
         expect(fstatSync(descriptor).ino).toBe(original); expect(readFileSync(descriptor, "utf8")).toBe(bytes);
     }, 40_000);
 
-    it("never shuts down a legacy late-unlink writer even when all retained inventories are empty", async () => {
+    it("keeps a legacy late-unlink writer unchanged while admitting a separate current generation", async () => {
         const legacy = start("legacy"); await new Promise<void>(resolve => legacy.child.once("message", () => resolve()));
-        const before = readFileSync(portFile, "utf8"), record = readRecord(); published.push(record);
+        const before = readFileSync(portFile, "utf8"), record = readRecord(portFile); published.push(record);
         const result = await start("ensure").result; expect(result.code, result.stderr).toBe(0);
-        expect(JSON.parse(result.stdout.trim())).toEqual(record); expect(readFileSync(portFile, "utf8")).toBe(before);
-        expect(existsSync(join(root, "legacy-shutdown"))).toBe(false); expect(daemons).toEqual([]);
+        const selected: RecordValue = JSON.parse(result.stdout.trim()); published.push(selected);
+        expect(selected).toMatchObject({portFile: currentPortFile, generation}); expect(selected.port).not.toBe(record.port);
+        expect(readFileSync(portFile, "utf8")).toBe(before);
+        expect(existsSync(join(root, "legacy-shutdown"))).toBe(false); expect(daemons).toHaveLength(1);
         expect((await http(record, "/health")).status).toBe(200);
     }, 20_000);
 });
