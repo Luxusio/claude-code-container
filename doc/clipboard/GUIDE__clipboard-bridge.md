@@ -32,6 +32,15 @@ retain their platform-appropriate host address. Startup image HTTP reads have
 a five-second total budget and settle unavailable on incomplete or failed
 responses. This optional attachment path does not prove live shortcut paste.
 
+Client synchronization stages each shim before replacing its installed file,
+normalizes line endings and installs executable clients as root-owned mode 755.
+The shared policy remains root-owned mode 644. A failed partial copy preserves
+the previous installed shim. Before a generation-pinned bridge starts, CCC checks
+the installed bytes of all five shims, bridge and policy against the shipped
+assets, and checks executable access for the six programs. Failed delivery
+therefore stops the new session before an older bridge can report false readiness.
+Unmarked legacy sessions retain best-effort synchronization.
+
 The host Clipboard bridge composes three specialized application seams in
 `src/clipboard-server.ts`: snapshot/cache/fallback, text write, and server
 ensure/retire. The [architecture ADR](../common/ADR__ccc-target-architecture.md)
@@ -153,8 +162,9 @@ The shipped Darwin source is also captured independently to select
 `clipboard-helper-darwin-<source-sha256-first-16-hex>`. Readiness requires a
 complete private executable regular file for that source. Compilation stages
 and publishes owned output without replacing an older helper. Empty PNG data
-continues to TIFF/other image conversion; an unreadable advertised image with
-no valid image or text fallback remains a read error. Windows seekable raw PNG
+continues to TIFF/other image conversion. Successfully captured empty formats
+retain the coherent empty snapshot and existing text/file fallbacks; acquisition,
+transport, framing and coherence failures remain read errors. Windows seekable raw PNG
 streams are rewound before copying. These narrow repairs preserve image-copy
 priority and native error handling.
 

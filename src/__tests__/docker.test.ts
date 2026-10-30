@@ -53,7 +53,7 @@ import type { SpawnSyncReturns } from "child_process";
 import type { RuntimeBindGuard } from "../ports/runtime-bind-authority.js";
 import { createHash } from "crypto";
 import { homedir } from "os";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { ContainerRestartRequiredError, formatContainerStartupError } from "../container-restart-guidance.js";
 
 // Image building and retained-state repair have dedicated shell/identity suites.
@@ -1767,7 +1767,70 @@ describe("docker.ts module exports", () => {
     });
 
     describe("syncClipboardShims", () => {
-        it("should docker cp each shim file that exists and chmod +x", () => {
+        it.each(["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"])("preserves installed %s bytes after a partial individual shim copy fails", failedShim => {
+            mockExistsSync.mockReturnValue(true);
+            const shimNames = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"];
+            const files = new Map<string, {bytes: Buffer; mode: number}>();
+            for (const name of shimNames) files.set(`/usr/local/bin/${name}`,
+                {bytes: Buffer.from(`#!/bin/sh\nprintf 'old ${name}'\n`), mode: 0o755});
+            const finalTarget = `/usr/local/bin/${failedShim}`;
+            const original = Buffer.from(files.get(finalTarget)!.bytes);
+            const foreignStage = "/usr/local/bin/xclip.foreign.new";
+            files.set(foreignStage, {bytes: Buffer.from("unrelated invocation stage"), mode: 0o600});
+            let partialCopyObserved = false;
+            spawnSyncMock.mockImplementation((_executable, rawArgs) => {
+                const args = rawArgs as string[];
+                if (args[0] === "cp") {
+                    const name = basename(args[1]);
+                    const destination = args[2].slice("ccc-test-abc123:".length);
+                    if (name === failedShim) {
+                        files.set(destination, {bytes: Buffer.from("#!/bin/sh\r\nPARTIAL COPY"), mode: 0o600});
+                        partialCopyObserved = true;
+                        return makeResult(1);
+                    }
+                    files.set(destination, {bytes: Buffer.from(`#!/bin/sh\r\nprintf 'new ${name}'\r\n`), mode: 0o600});
+                    return makeResult(0);
+                }
+                expect(args.slice(0, 4)).toEqual(["exec", "-u", "root", "ccc-test-abc123"]);
+                const command = args[4];
+                if (command === "sed") {
+                    for (const path of args.slice(7)) {
+                        const entry = files.get(path);
+                        if (!entry) return makeResult(1);
+                        entry.bytes = Buffer.from(entry.bytes.toString().replace(/\r\n/g, "\n"));
+                    }
+                } else if (command === "chmod") {
+                    for (const path of args.slice(6)) {
+                        const entry = files.get(path);
+                        if (!entry) return makeResult(1);
+                        entry.mode = args[5] === "+x" ? entry.mode | 0o111 : parseInt(args[5], 8);
+                    }
+                } else if (command === "mv") {
+                    const entry = files.get(args.at(-2)!);
+                    if (!entry) return makeResult(1);
+                    files.set(args.at(-1)!, entry); files.delete(args.at(-2)!);
+                } else if (command === "rm") {
+                    for (const path of args.slice(6)) files.delete(path);
+                } else if (command !== "install" && command !== "chown") {
+                    throw new Error(`Unexpected clipboard delivery command: ${command}`);
+                }
+                return makeResult(0);
+            });
+
+            expect(() => syncClipboardShims("ccc-test-abc123", "/fake/dist")).not.toThrow();
+
+            expect(partialCopyObserved).toBe(true);
+            expect(files.get(finalTarget)).toEqual({bytes: original, mode: 0o755});
+            for (const name of shimNames.filter(name => name !== failedShim)) {
+                const installed = files.get(`/usr/local/bin/${name}`)!;
+                expect(installed.bytes).toEqual(Buffer.from(`#!/bin/sh\nprintf 'new ${name}'\n`));
+                expect(installed.mode & 0o111).toBe(0o111);
+            }
+            expect(files.get(foreignStage)?.bytes).toEqual(Buffer.from("unrelated invocation stage"));
+            expect([...files.keys()].filter(path => path.endsWith(".new"))).toEqual([foreignStage]);
+        });
+
+        it("stages each available shim and atomically publishes normalized executable files", () => {
             mockExistsSync.mockReturnValue(true);
             spawnSyncMock.mockReturnValue(makeResult(0));
 
@@ -1777,20 +1840,24 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "cp"
             );
             const shims = cpCalls.map((c: unknown[]) => (c[1] as string[])[2]);
-            expect(shims).toContain("ccc-test-abc123:/usr/local/bin/xclip");
-            expect(shims).toContain("ccc-test-abc123:/usr/local/bin/wl-paste");
-            expect(shims).toContain("ccc-test-abc123:/usr/local/bin/pbpaste");
+            const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
+            for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"]) {
+                const copied = cpCalls.find(call => (call[1] as string[])[1] === join("/fake", "scripts", "clipboard-shims", name));
+                expect(copied).toBeDefined();
+                const target = (copied![1] as string[])[2];
+                expect(target).toMatch(new RegExp(`^ccc-test-abc123:/usr/local/bin/${name}\\.[a-f0-9]+\\.new$`));
+                const stage = target.slice("ccc-test-abc123:".length);
+                const normalized = calls.findIndex(args => args[4] === "sed" && args.includes(stage));
+                const owned = calls.findIndex(args => args[4] === "chown" && args[5] === "root:root" && args.includes(stage));
+                const executable = calls.findIndex(args => args[4] === "chmod" && args[5] === "755" && args.includes(stage));
+                const published = calls.findIndex(args => args[4] === "mv" && args.at(-2) === stage && args.at(-1) === `/usr/local/bin/${name}`);
+                expect(normalized).toBeGreaterThan(calls.indexOf(copied![1] as string[]));
+                expect(owned).toBeGreaterThan(normalized);
+                expect(executable).toBeGreaterThan(owned);
+                expect(published).toBeGreaterThan(executable);
+            }
             expect(shims).toEqual(expect.arrayContaining([expect.stringMatching(/^ccc-test-abc123:\/usr\/local\/bin\/ccc-x11-bridge\.[a-f0-9]+\.new$/)]));
             expect(shims).toEqual(expect.arrayContaining([expect.stringMatching(/^ccc-test-abc123:\/usr\/local\/lib\/ccc\/clipboard-x11-sync\.sh\.[a-f0-9]+\.new$/)]));
-
-            // Should also chmod +x all copied shims
-            const chmodCalls = spawnSyncMock.mock.calls.filter(
-                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "exec" && (c[1] as string[]).includes("chmod")
-            );
-            const chmodArgs = chmodCalls.find(call => (call[1] as string[]).includes("+x"))![1] as string[];
-            expect(chmodArgs).toContain("+x");
-            expect(chmodArgs).toContain("/usr/local/bin/xclip");
-            expect(chmodArgs).toContain("/usr/local/bin/pbpaste");
         });
 
         it("should skip when shims directory does not exist", () => {
@@ -1867,13 +1934,17 @@ describe("docker.ts module exports", () => {
             const policyCopy = spawnSyncMock.mock.calls.map(call => call[1] as string[])
                 .find(args => args[0] === "cp" && args[1] === join("/fake", "scripts", "lib", "clipboard-x11-sync.sh"))!;
             const policyStage = policyCopy[2].slice("ccc-test-abc123:".length);
-            expect(execCalls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "chown", "root:root", policyStage]);
+            const bridgeCopy = spawnSyncMock.mock.calls.map(call => call[1] as string[])
+                .find(args => args[0] === "cp" && args[1] === join("/fake", "scripts", "ccc-x11-bridge"))!;
+            const bridgeStage = bridgeCopy[2].slice("ccc-test-abc123:".length);
+            expect(execCalls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "chown", "root:root", bridgeStage, policyStage]);
+            expect(execCalls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "chmod", "755", bridgeStage, policyStage]);
             expect(execCalls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "chmod", "644", policyStage]);
             // Provisioning installs permissions; the long-running bridge is not launched as root here.
             expect(execCalls.some(args => args[4] === "/usr/local/bin/ccc-x11-bridge")).toBe(false);
         });
 
-        it.each(["sed", "chmod", "install", "mv"])("preserves the old bridge and cleans both stages when %s fails", failingCommand => {
+        it.each(["sed", "chmod", "install", "mv"])("preserves the old bridge and cleans every owned stage when %s fails", failingCommand => {
             mockExistsSync.mockReturnValue(true);
             spawnSyncMock.mockImplementation((_executable, rawArgs) => {
                 const args = rawArgs as string[];
@@ -1892,7 +1963,10 @@ describe("docker.ts module exports", () => {
             const stage = copy[2].slice("ccc-test-abc123:".length);
             const policyCopy = calls.find(args => args[0] === "cp" && args[1] === join("/fake", "scripts", "lib", "clipboard-x11-sync.sh"))!;
             const policyStage = policyCopy[2].slice("ccc-test-abc123:".length);
-            expect(calls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "rm", "-f", stage, policyStage]);
+            const shimStages = calls.filter(args => args[0] === "cp" && args[1].includes("clipboard-shims"))
+                .map(args => args[2].slice("ccc-test-abc123:".length));
+            expect(shimStages).toHaveLength(5);
+            expect(calls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "rm", "-f", ...shimStages, stage, policyStage]);
             expect(calls.some(args => args[4] === "mv" && args.at(-1) === "/usr/local/bin/ccc-x11-bridge")).toBe(false);
         });
 
@@ -1909,23 +1983,36 @@ describe("docker.ts module exports", () => {
             mockExistsSync.mockReturnValue(true);
             const policySource = join("/fake", "scripts", "lib", "clipboard-x11-sync.sh");
             const bridgeSource = join("/fake", "scripts", "ccc-x11-bridge");
-            const shimState = { copied: false, normalized: false, executable: false };
+            const shimState = { copied: false, normalized: false, executable: false, published: false };
+            let shimStage: string | undefined;
             spawnSyncMock.mockImplementation((_executable, rawArgs) => {
                 const args = rawArgs as string[];
-                if (args[0] === "cp" && args[2] === "ccc-test-abc123:/usr/local/bin/xclip") shimState.copied = true;
-                if (args[4] === "sed" && args.includes("/usr/local/bin/xclip")) shimState.normalized = true;
-                if (args[4] === "chmod" && args[5] === "+x" && args.includes("/usr/local/bin/xclip")) shimState.executable = true;
+                if (args[0] === "cp" && args[1] === join("/fake", "scripts", "clipboard-shims", "xclip")) {
+                    shimStage = args[2].slice("ccc-test-abc123:".length);
+                    expect(shimStage).toMatch(/^\/usr\/local\/bin\/xclip\.[a-f0-9]+\.new$/);
+                    shimState.copied = true;
+                }
+                if (shimStage && args[4] === "sed" && args.includes(shimStage)) shimState.normalized = true;
+                if (shimStage && args[4] === "chmod" && args[5] === "755" && args.includes(shimStage)) shimState.executable = true;
+                if (shimStage && args[4] === "mv" && args.at(-2) === shimStage && args.at(-1) === "/usr/local/bin/xclip") {
+                    expect(shimState).toEqual({copied: true, normalized: true, executable: true, published: false});
+                    shimState.published = true;
+                }
                 const failed = phase === "policy-directory" ? args[4] === "install" && args.at(-1) === "/usr/local/lib/ccc"
                     : phase === "policy-copy" ? args[0] === "cp" && args[1] === policySource
                     : phase === "bridge-copy" ? args[0] === "cp" && args[1] === bridgeSource
                     : args[4] === "chmod" && args[5] === "644";
-                if (failed) expect(shimState).toEqual({ copied: true, normalized: true, executable: true });
+                if (failed) expect(shimState).toEqual({ copied: true, normalized: true, executable: true, published: true });
                 return makeResult(failed ? 1 : 0);
             });
             syncClipboardShims("ccc-test-abc123", "/fake/dist");
-            expect(shimState).toEqual({ copied: true, normalized: true, executable: true });
+            expect(shimState).toEqual({ copied: true, normalized: true, executable: true, published: true });
             const calls = spawnSyncMock.mock.calls.map(call => call[1] as string[]);
+            const shimStages = calls.filter(args => args[0] === "cp" && args[1].includes("clipboard-shims"))
+                .map(args => args[2].slice("ccc-test-abc123:".length));
+            expect(shimStages).toHaveLength(5);
             expect(calls).toContainEqual(["exec", "-u", "root", "ccc-test-abc123", "rm", "-f",
+                ...shimStages,
                 expect.stringMatching(/^\/usr\/local\/bin\/ccc-x11-bridge\.[a-f0-9]+\.new$/),
                 expect.stringMatching(/^\/usr\/local\/lib\/ccc\/clipboard-x11-sync\.sh\.[a-f0-9]+\.new$/)]);
             expect(calls.some(args => args[4] === "mv" && args.at(-1) === "/usr/local/bin/ccc-x11-bridge")).toBe(false);

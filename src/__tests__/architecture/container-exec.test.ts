@@ -9,13 +9,16 @@ import {assertBindMountSourceIdentity, captureBindMountSourceIdentity} from "../
 import {inspectSessionContainerOwnership} from "../../docker.js";
 import * as nativeRuntime from "../../container-runtime.js";
 import {getProjectId} from "../../utils.js";
-import {mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from "node:fs";
+import {chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {basename, join} from "node:path";
+import {fileURLToPath} from "node:url";
+import {createHash} from "node:crypto";
 import {normalizeNativeRuntimeCall, preloadNativeRuntimeFixture} from "../helpers/native-runtime-fixture.js";
 
 const stoppedNative = vi.hoisted(() => ({spawnSync: vi.fn()}));
 vi.mock("child_process", async () => ({...await vi.importActual("child_process"), spawnSync: stoppedNative.spawnSync}));
+const originalNativePlatform = process.platform;
 
 function fixture(options: {running?: boolean; replace?: boolean} = {}) {
     const catalog = createDefaultToolCatalog(), events: string[] = [];
@@ -1172,13 +1175,122 @@ describe("replacement ownership observations", () => {
 });
 
 describe("native clipboard session handoff", () => {
-    function nativePorts() {
+    function nativePorts(assetDirectory = fileURLToPath(new URL("../../../dist", import.meta.url))) {
         preloadNativeRuntimeFixture(nativeRuntime);
         return createNativeContainerExecPorts({ensureDirectories: vi.fn(), ensureProjectTools: async () => {},
-            assetDirectory: "/fixture/assets", trustedCliPath: "/fixture/ccc.js"});
+            assetDirectory, trustedCliPath: "/fixture/ccc.js"});
     }
     const connection = {url: "http://host.docker.internal:4322", hostUrl: "http://127.0.0.1:4322",
         token: "current-generation-token", generation: "a1b2c3d4e5f6"};
+    const executablePaths = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-x11-bridge"].map(name => `/usr/local/bin/${name}`);
+    function isAssetChecker(args: string[]) {
+        return args[3] === "/usr/bin/sha256sum" || (args[3] === "/bin/sh" && args[6] === "ccc-clipboard-assets");
+    }
+    function expectAssetChecker(args: string[]) {
+        expect(args.slice(0, 5)).toEqual(["exec", "-i", "exact-container-id", "/bin/sh", "-c"]);
+        expect(args[5]).toContain("-f");
+        expect(args[5]).toContain("-x");
+        expect(args[5]).toContain("exec /usr/bin/sha256sum --check --status");
+        expect(args[5]).not.toContain(connection.token);
+        expect(args[5]).not.toContain(connection.url);
+        expect(args.slice(6)).toEqual(["ccc-clipboard-assets", ...executablePaths]);
+    }
+
+    it.skipIf(originalNativePlatform === "win32" || !existsSync("/usr/bin/sha256sum")).each([
+        {state: "xclip mode0644", executableXclip: false},
+        {state: "policy mode0644", executableXclip: true},
+    ])("checks actual executable permissions with current bytes and $state", async ({executableXclip}) => {
+        const actual = await vi.importActual<typeof import("child_process")>("child_process");
+        const directory = mkdtempSync(join(tmpdir(), "ccc-installed-clipboard-mode-"));
+        const mappedPaths = new Map<string, string>();
+        let checkedInstalledFiles = false, attemptedBridgeLaunch = false;
+        try {
+            for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-x11-bridge", "clipboard-x11-sync.sh"]) {
+                const source = name === "clipboard-x11-sync.sh" ? `lib/${name}` : name === "ccc-x11-bridge" ? name : `clipboard-shims/${name}`;
+                const installedPath = name === "clipboard-x11-sync.sh" ? `/usr/local/lib/ccc/${name}` : `/usr/local/bin/${name}`;
+                const path = join(directory, name);
+                const bytes = readFileSync(new URL(`../../../scripts/${source}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+                writeFileSync(path, bytes);
+                chmodSync(path, name === "clipboard-x11-sync.sh" || (name === "xclip" && !executableXclip) ? 0o644 : 0o755);
+                mappedPaths.set(installedPath, path);
+            }
+            const ports = nativePorts();
+            stoppedNative.spawnSync.mockReset().mockImplementation((...call: unknown[]) => {
+                const [, rawArgs, rawOptions] = normalizeNativeRuntimeCall(call);
+                const args = rawArgs as string[];
+                if (!isAssetChecker(args)) {
+                    attemptedBridgeLaunch = true;
+                    return {status: 0, signal: null, stdout: "", stderr: ""};
+                }
+                expectAssetChecker(args);
+                const options = rawOptions as import("child_process").SpawnSyncOptions & {input: string | Buffer};
+                const seenPaths: string[] = [];
+                const manifest = Buffer.from(options.input).toString().trim().split("\n").map(line => {
+                    const match = /^([a-f0-9]{64}) [ *](\/usr\/local\/\S+)$/.exec(line);
+                    expect(match, `invalid SHA manifest line ${line}`).not.toBeNull();
+                    const path = mappedPaths.get(match![2]);
+                    expect(path, `unexpected installed path ${match![2]}`).toBeDefined();
+                    seenPaths.push(match![2]);
+                    return `${match![1]}  ${path}\n`;
+                }).join("");
+                expect(new Set(seenPaths)).toEqual(new Set(mappedPaths.keys()));
+                const argv = args.slice(4).map(arg => mappedPaths.get(arg) ?? arg);
+                checkedInstalledFiles = true;
+                return actual.spawnSync(args[3], argv, {...options, input: manifest});
+            });
+
+            if (executableXclip) {
+                expect(() => ports.startClipboardBridge("exact-container-id", connection)).not.toThrow();
+                expect(attemptedBridgeLaunch).toBe(true);
+                expect(stoppedNative.spawnSync).toHaveBeenCalledTimes(3);
+            } else {
+                expect(() => ports.startClipboardBridge("exact-container-id", connection)).toThrow(/Clipboard client assets/);
+                expect(attemptedBridgeLaunch).toBe(false);
+                expect(stoppedNative.spawnSync).toHaveBeenCalledOnce();
+            }
+            expect(checkedInstalledFiles).toBe(true);
+        } finally { rmSync(directory, {recursive: true, force: true}); }
+    });
+
+    it.each(["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-x11-bridge", "clipboard-x11-sync.sh"])(
+        "refuses retained legacy %s bytes even when the old bridge would pretend readiness succeeds", retained => {
+            const ports = nativePorts();
+            const installed = new Map<string, Buffer>();
+            const shipped = new Map<string, string>();
+            for (const name of ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste", "ccc-x11-bridge", "clipboard-x11-sync.sh"]) {
+                const source = name === "clipboard-x11-sync.sh" ? `lib/${name}` : name === "ccc-x11-bridge" ? name : `clipboard-shims/${name}`;
+                const path = name === "clipboard-x11-sync.sh" ? `/usr/local/lib/ccc/${name}` : `/usr/local/bin/${name}`;
+                const bytes = Buffer.from(readFileSync(new URL(`../../../scripts/${source}`, import.meta.url), "utf8").replace(/\r\n/g, "\n"));
+                installed.set(path, name === retained ? Buffer.from("#!/bin/sh\n# retained legacy client\nexit 0\n") : bytes);
+                shipped.set(path, createHash("sha256").update(bytes).digest("hex"));
+            }
+            let checkedInstalledBytes = false, attemptedBridgeLaunch = false;
+            stoppedNative.spawnSync.mockReset().mockImplementation((...call: unknown[]) => {
+                const [, rawArgs, options] = normalizeNativeRuntimeCall(call);
+                const args = rawArgs as string[];
+                if (isAssetChecker(args)) {
+                    expectAssetChecker(args);
+                    expect(options).toMatchObject({timeout: 15000});
+                    const manifest = Buffer.from((options as {input: string | Buffer}).input).toString();
+                    const entries = manifest.trim().split("\n").map(line => {
+                        const match = /^([a-f0-9]{64}) [ *](\/usr\/local\/\S+)$/.exec(line);
+                        expect(match, `invalid SHA manifest line ${line}`).not.toBeNull();
+                        return [match![2], match![1]] as const;
+                    });
+                    expect(new Map(entries)).toEqual(shipped);
+                    checkedInstalledBytes = true;
+                    const matches = entries.every(([path, expected]) => createHash("sha256").update(installed.get(path)!).digest("hex") === expected);
+                    return {status: matches ? 0 : 1, signal: null, stdout: "", stderr: ""};
+                }
+                attemptedBridgeLaunch = true;
+                return {status: 0, signal: null, stdout: "", stderr: ""};
+            });
+
+            expect(() => ports.startClipboardBridge("exact-container-id", connection)).toThrow(/Clipboard/);
+            expect(checkedInstalledBytes).toBe(true);
+            expect(attemptedBridgeLaunch).toBe(false);
+            expect(stoppedNative.spawnSync).toHaveBeenCalledOnce();
+        });
 
     it.each(["darwin", "win32"] as const)("keeps the %s host attachment URL distinct from the container endpoint", platform => {
         const original = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
@@ -1198,10 +1310,13 @@ describe("native clipboard session handoff", () => {
         const calls = stoppedNative.spawnSync.mock.calls.map(call => normalizeNativeRuntimeCall(call));
         const environment = ["-e", `CCC_CLIPBOARD_URL=${connection.url}`, "-e", `CCC_CLIPBOARD_TOKEN=${connection.token}`,
             "-e", `CCC_CLIPBOARD_GENERATION=${connection.generation}`];
-        expect(calls).toHaveLength(2);
-        expect(calls[0][1]).toEqual(["exec", "-d", ...environment, "exact-container-id", "/usr/local/bin/ccc-x11-bridge"]);
-        expect(calls[1][1]).toEqual(["exec", ...environment, "exact-container-id", "/usr/local/bin/ccc-x11-bridge", "--wait-ready"]);
-        for (const [, , options] of calls) {
+        expect(calls).toHaveLength(3);
+        expectAssetChecker(calls[0][1] as string[]);
+        expect(calls[0][2]).toMatchObject({input: expect.any(String), stdio: ["pipe", "ignore", "ignore"], timeout: 15000});
+        expect(String((calls[0][2] as {input: string}).input)).not.toContain(connection.token);
+        expect(calls[1][1]).toEqual(["exec", "-d", ...environment, "exact-container-id", "/usr/local/bin/ccc-x11-bridge"]);
+        expect(calls[2][1]).toEqual(["exec", ...environment, "exact-container-id", "/usr/local/bin/ccc-x11-bridge", "--wait-ready"]);
+        for (const [, , options] of calls.slice(1)) {
             expect(options).toMatchObject({stdio: "ignore", timeout: expect.any(Number)});
             expect((options as {timeout: number}).timeout).toBeGreaterThan(0);
             expect((options as {timeout: number}).timeout).toBeLessThanOrEqual(20000);
@@ -1214,15 +1329,54 @@ describe("native clipboard session handoff", () => {
         const failure = stage === "first-sync-timeout"
             ? {status: null, signal: "SIGTERM", error: new Error("fixture readiness timeout"), stdout: "", stderr: ""}
             : {status: 1, signal: null, stdout: "", stderr: ""};
-        stoppedNative.spawnSync.mockReset().mockReturnValueOnce(stage === "detached-launch" ? failure : success)
+        stoppedNative.spawnSync.mockReset().mockReturnValueOnce(success)
+            .mockReturnValueOnce(stage === "detached-launch" ? failure : success)
             .mockReturnValueOnce(failure);
         expect(() => ports.startClipboardBridge("exact-container-id", connection)).toThrow(/Clipboard synchronization/);
         const calls = stoppedNative.spawnSync.mock.calls.map(call => normalizeNativeRuntimeCall(call));
-        expect(calls).toHaveLength(stage === "detached-launch" ? 1 : 2);
+        expect(calls).toHaveLength(stage === "detached-launch" ? 2 : 3);
         for (const [, args] of calls) {
             expect(args).toContain("exact-container-id");
             expect((args as string[])[0]).toBe("exec");
         }
+    });
+
+    it.each(["unavailable", "timeout"] as const)("does not launch the bridge when installed asset verification is %s", failure => {
+        const ports = nativePorts();
+        stoppedNative.spawnSync.mockReset().mockReturnValue(failure === "unavailable"
+            ? {status: 127, signal: null, stdout: "", stderr: "fixture: sha256sum unavailable"}
+            : {status: null, signal: "SIGTERM", error: new Error("fixture verifier timeout"), stdout: "", stderr: ""});
+        expect(() => ports.startClipboardBridge("exact-container-id", connection)).toThrow(/Clipboard client assets/);
+        const calls = stoppedNative.spawnSync.mock.calls.map(call => normalizeNativeRuntimeCall(call));
+        expect(calls).toHaveLength(1);
+        expectAssetChecker(calls[0][1] as string[]);
+        expect(calls[0][2]).toMatchObject({timeout: 15000, input: expect.any(String)});
+    });
+
+    it("refuses marked sessions before native execution when local shipped assets are missing", () => {
+        const ports = nativePorts("/fixture/ccc-missing-delivery-assets/dist");
+        stoppedNative.spawnSync.mockReset();
+        expect(() => ports.startClipboardBridge("exact-container-id", connection)).toThrow(/Clipboard client assets are unavailable/);
+        expect(stoppedNative.spawnSync).not.toHaveBeenCalled();
+    });
+
+    it("keeps absent clipboard connections a no-op even when a generation is present", () => {
+        const ports = nativePorts("/fixture/ccc-missing-delivery-assets/dist");
+        stoppedNative.spawnSync.mockReset();
+        expect(() => ports.startClipboardBridge("exact-container-id", {token: connection.token, generation: connection.generation})).not.toThrow();
+        expect(stoppedNative.spawnSync).not.toHaveBeenCalled();
+    });
+
+    it("preserves unmarked legacy startup without requiring current local assets or an installed hash checker", () => {
+        const ports = nativePorts("/fixture/ccc-missing-delivery-assets/dist");
+        stoppedNative.spawnSync.mockReset().mockReturnValue({status: 0, signal: null, stdout: "", stderr: ""});
+        ports.startClipboardBridge("exact-container-id", {url: connection.url, token: connection.token});
+        const calls = stoppedNative.spawnSync.mock.calls.map(call => normalizeNativeRuntimeCall(call));
+        expect(calls).toHaveLength(2);
+        expect(calls[0][1]).toEqual(["exec", "-d", "-e", `CCC_CLIPBOARD_URL=${connection.url}`,
+            "-e", `CCC_CLIPBOARD_TOKEN=${connection.token}`, "exact-container-id", "/usr/local/bin/ccc-x11-bridge"]);
+        expect(calls[1][1]).toEqual(["exec", "-e", `CCC_CLIPBOARD_URL=${connection.url}`,
+            "-e", `CCC_CLIPBOARD_TOKEN=${connection.token}`, "exact-container-id", "/usr/local/bin/ccc-x11-bridge", "--wait-ready"]);
     });
 });
 

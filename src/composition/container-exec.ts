@@ -12,7 +12,7 @@ import { isWorktreeWorkspace, assertWorkspaceReady, getWorktreeGitMounts } from 
 import {
     ensureDockerRunning, inspectSessionContainerOwnership, getManagedProjectContainerIdentity, getContainerName, getContainerStatus,
     startProjectContainer, prepareProjectContainerStartup, withProjectContainerStateLockAsync, restoreCodexConfigHostOwnership, isContainerRunning,
-    prepareCodexConfigForContainer, syncClipboardShims, ensureContainerManagerSocketAccess, isDockerDesktop,
+    prepareCodexConfigForContainer, syncClipboardShims, assertClipboardClientAssetsCurrent, ensureContainerManagerSocketAccess, isDockerDesktop,
 } from "../docker.js";
 import {
     acquireHostSessionOwnership, withProjectFamilyLifecycleLockAsync, withContainerLifecycleLockAsync,
@@ -210,6 +210,7 @@ export function createNativeContainerExecPorts(bindings: ContainerExecNativeBind
         },
         startClipboardBridge(target, connection) {
             if (!connection.url) return;
+            if (connection.generation) assertClipboardClientAssetsCurrent(target, bindings.assetDirectory);
             // The bridge starts for every session and reuses an existing X11 daemon.
             const environment: string[] = [];
             if (connection.url) environment.push("-e", `CCC_CLIPBOARD_URL=${connection.url}`);

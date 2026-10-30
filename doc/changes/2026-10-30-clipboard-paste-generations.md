@@ -22,14 +22,18 @@ selects a complete hash-qualified helper binary instead of an older global one.
 Its directory chain is qualified before execution, compilation and publication.
 
 Before launching a TUI, CCC checks the selected X11 bridge's first successful
-sync. Positive X11 selection-owner loss can restore unchanged host content;
+sync. Partial client copies leave installed shims intact. Marked sessions verify
+all seven installed client assets and program execution permissions before
+starting the bridge, so old clients cannot silently bypass generation pinning.
+Positive X11 selection-owner loss can restore unchanged host content;
 failed or unavailable observations cannot authorize overwriting another owner.
 Host-side startup attachment uses loopback and settles incomplete or stalled
 HTTP within five seconds. Clipboard readers use bounded transport requests.
 
 Regression evidence is recorded in
 [the current owner inventory](../../results/tests/clipboard-paste-2026-10-30/current-evidence.json).
-Sixteen focused owners contain 1,076 passing tests and 19 platform skips. Older
+Twenty focused owners account for 1,599 passing tests and 27 platform skips,
+using the recorded per-case corrections without repeating unchanged owners. Older
 RED reports are retained: stale endpoint selection, lost X11 ownership, native
 Mac empty-PNG conversion and stalled/partial startup HTTP each had a failing
 witness. TypeScript, affected-source lint and shell syntax checks also passed.
@@ -47,6 +51,28 @@ AppleScript file-URL lookup and JS file fallback. Its authenticated policy is
 `c02026440612`. Text/empty responses contain no earlier image; the owned
 service and helper stopped afterward. This remains separate from Slack and
 actual CLI shortcut acceptance.
+
+Actual Docker verification used an owned container without network or host
+mounts. It checked seven normalized assets as the ordinary container user,
+root ownership and final permissions, then refused retained old shim, bridge,
+policy and nonexecutable same-byte clients before bridge dispatch. Recovery and
+exact fixture deletion were confirmed; the initial permission failure remains
+in a separate report. This verifies delivery, not actual TUI paste.
+
+The production Darwin daemon compiler entry was also exercised with real clang:
+eight cases passed, including unsafe directory ancestry and a substituted
+compile output. Two old-candidate controls reproduced the unsafe compiler
+entry. The durable native test uses the same driver, skips on non-Darwin hosts
+and records child exit and owned cleanup.
+
+The user's actual Slack format listing contained 410,317 PNG bytes and
+9,490,384 TIFF bytes. A generated 1600×1500 fixture placed 537,830 PNG bytes
+and 9,603,966 TIFF bytes on the native Mac pasteboard, and the packaged service
+returned the exact PNG. Its
+image → text → empty → identical image sequence passed, with zero image bytes
+after text and empty. The same generated image passed HTTP/Codex-consumer and
+actual private X11 delivery checks. This is equivalent-size synthetic coverage;
+Slack itself and the shortcut-paste TUIs were not exercised.
 
 The [native commands](../verification/GUIDE__regression-test-entrypoints.md#live-clipboard-paste-and-service-generations)
 include private AppKit conversion and controlled Windows PowerShell acquisition

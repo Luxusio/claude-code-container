@@ -6,6 +6,8 @@ import { tmpdir } from "os";
 import { resolve, join } from "path";
 import { createInterface } from "readline";
 import { once } from "events";
+import {createHash} from "crypto";
+import {createSlackSizedClipboardImageFixture, slackClipboardImageMinimums} from "./helpers/clipboard-image-fixture.js";
 
 const script = resolve("scripts/ccc-x11-bridge");
 const policy = resolve("scripts/lib/clipboard-x11-sync.sh");
@@ -248,6 +250,31 @@ describe.skipIf(!available)("real isolated X11 clipboard bridge", () => {
         expect(hostText).toEqual(local);
         expect(posts).toEqual([local]);
     });
+
+    it("delivers a Slack-sized generated PNG through real X11 and removes its image target when text replaces it", async () => {
+        const fixture = createSlackSizedClipboardImageFixture();
+        expect(fixture.png.length).toBeGreaterThanOrEqual(slackClipboardImageMinimums.pngBytes);
+        expect(fixture.rgbaBytes).toBeGreaterThanOrEqual(slackClipboardImageMinimums.rgbaBytes);
+        hostImage = fixture.png; hostText = Buffer.alloc(0);
+        await startControl(); expect(await cycle()).toBe("DONE:0");
+        const received = await read("image/png");
+        expect(received.length).toBe(fixture.png.length);
+        expect(createHash("sha256").update(received).digest("hex")).toBe(fixture.sha256);
+        expect((await read("TARGETS")).toString()).toContain("image/png");
+        hostImage = null; hostText = Buffer.from("ccc-large-image-to-text 한글 😀\n");
+        expect(await cycle()).toBe("DONE:0");
+        expect(await read()).toEqual(hostText);
+        expect((await read("TARGETS")).toString()).not.toContain("image/png");
+        const fallback = await read("image/png").catch(error => {
+            expect(error).toMatchObject({code: 1});
+            return null;
+        });
+        if (fallback !== null) {
+            expect(fallback).toEqual(hostText);
+            expect(createHash("sha256").update(fallback).digest("hex")).not.toBe(fixture.sha256);
+        }
+        await cycle(); expect(posts).toEqual([]);
+    }, 20_000);
 
     it("retains image on host 503 and observes image to text to empty to identical image", async () => {
         const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ioAAAAASUVORK5CYII=", "base64");

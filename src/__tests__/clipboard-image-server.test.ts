@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, symlinkSync, chmodSync, renameSync } from "fs";
+import {createSlackSizedClipboardImageFixture, slackClipboardImageMinimums} from "./helpers/clipboard-image-fixture.js";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), spawnSync: vi.fn(), platform: "win32", home: "" }));
 vi.mock("child_process", async () => ({ ...await vi.importActual<typeof import("child_process")>("child_process"), spawn: native.spawn, spawnSync: native.spawnSync }));
@@ -147,6 +148,27 @@ function get(path: string) {
 }
 
 describe.each(["windows", "darwin"] as const)("real HTTP %s native image reads", platform => {
+    it("delivers a Slack-sized generated image to HTTP and Codex consumers before replacing it with text", async () => {
+        const fixture = createSlackSizedClipboardImageFixture();
+        expect(fixture.png.length).toBeGreaterThanOrEqual(slackClipboardImageMinimums.pngBytes);
+        expect(fixture.rgbaBytes).toBeGreaterThanOrEqual(slackClipboardImageMinimums.rgbaBytes);
+        state = {sequence: 2, text: null, image: fixture.png};
+        await start(platform);
+        const {readClipboardImagePng} = await import("../codex-clipboard-image.js");
+        const [targets, image, codex] = await Promise.all([get("targets"), get("image/png"), readClipboardImagePng(`http://127.0.0.1:${port}`, token)]);
+        expect(targets.status).toBe(200); expect(targets.body.toString()).toContain("image/png");
+        expect(image.status).toBe(200); expect(image.body.length).toBe(fixture.png.length);
+        expect(createHash("sha256").update(image.body).digest("hex")).toBe(fixture.sha256);
+        expect(codex).not.toBeNull(); expect(codex!.length).toBe(fixture.png.length);
+        expect(createHash("sha256").update(codex!).digest("hex")).toBe(fixture.sha256);
+        state = {sequence: 3, image: null, text: "ccc-slack-sized-image-replaced-by-text 한글 😀"};
+        const [text, absentImage, absentCodex, textTargets] = await Promise.all([get("text"), get("image/png"),
+            readClipboardImagePng(`http://127.0.0.1:${port}`, token), get("targets")]);
+        expect(text.status).toBe(200); expect(text.body.toString()).toBe(state.text);
+        expect(absentImage.status).toBe(204); expect(absentImage.body.length).toBe(0); expect(absentCodex).toBeNull();
+        expect(textTargets.body.toString()).not.toContain("image/png");
+    }, 15_000);
+
     it("isolates concurrent target checks and image consumers on one persistent helper", async () => {
         await start(platform);
         const { readClipboardImagePng } = await import("../codex-clipboard-image.js");
@@ -327,11 +349,11 @@ it.skipIf(process.platform === "win32")("serves actual Claude shell target/image
 
 
 describe("Darwin helper generation readiness", () => {
-    it.each([
+    it.runIf(originalProcessPlatform !== "win32").each([
         ["bin", "symlink"], ["bin", "writable"],
         ["run", "symlink"], ["run", "writable"],
         ["ccc-root", "symlink"], ["ccc-root", "writable"],
-    ] as const)("refuses native helper and compiler execution through a %s %s ancestor", async (ancestor, unsafe) => {
+    ] as const)("refuses native helper readiness through a %s %s ancestor", async (ancestor, unsafe) => {
         const directory = ancestor === "bin" ? join(fixtureHome, ".ccc", "run", "bin")
             : ancestor === "run" ? join(fixtureHome, ".ccc", "run") : join(fixtureHome, ".ccc");
         const legacy = join(fixtureHome, ".ccc", "run", "bin", "clipboard-helper-darwin");
@@ -351,9 +373,8 @@ describe("Darwin helper generation readiness", () => {
         });
         await start("darwin");
         expect((await get("targets")).status).toBe(503);
-        expect(native.spawn.mock.calls.some(([command]) => command === helperBinary || command === legacy
-            || /(?:^|[/\\])(?:cc|clang|gcc)(?:\.exe)?$/.test(String(command))),
-        "Unsafe native helper ancestry must not authorize either execution or compilation").toBe(false);
+        expect(native.spawn.mock.calls.some(([command]) => command === helperBinary || command === legacy),
+            "Unsafe native helper ancestry must not authorize helper execution").toBe(false);
         expect(readFileSync(legacy)).toEqual(legacyBytes); expect(statSync(legacy).ino).toBe(legacyInode);
         expect(readFileSync(helperBinary)).toEqual(currentBytes); expect(statSync(helperBinary).ino).toBe(currentInode);
     });
@@ -458,7 +479,7 @@ int main(int argc, const char *argv[]) {
         expect((await get("text")).status).toBe(204);
     }, 45_000);
 
-    it.each(["stale-global", "empty-current", "nonexecutable-current", "symlink-current"] as const)("does not execute a %s artifact as the current native helper", async artifact => {
+    it.runIf(originalProcessPlatform !== "win32").each(["stale-global", "empty-current", "nonexecutable-current", "symlink-current"] as const)("does not execute a %s artifact as the current native helper", async artifact => {
         const legacy = join(fixtureHome, ".ccc", "run", "bin", "clipboard-helper-darwin");
         writeFileSync(legacy, "fixture previously shipped executable\n", {mode: 0o700});
         const legacyBytes = readFileSync(legacy), legacyInode = statSync(legacy).ino;

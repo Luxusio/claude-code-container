@@ -1225,69 +1225,105 @@ export function ensureImage(): void {
 const CLIPBOARD_SHIMS = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"];
 
 export function syncClipboardShims(containerName: string, distDir: string): void {
+    const invoke = (args: string[]) => runtimeSpawnSync(args, { stdio: "ignore", timeout: 15000 });
     const shimsDir = join(distDir, "..", "scripts", "clipboard-shims");
-    const copied: string[] = [];
-    for (const shim of CLIPBOARD_SHIMS) {
-        const src = join(shimsDir, shim);
-        if (existsSync(src)) {
-            const result = runtimeSpawnSync(["cp", src, `${containerName}:/usr/local/bin/${shim}`]);
-            if (!result.error && result.status === 0) copied.push(`/usr/local/bin/${shim}`);
-        }
-    }
-    // Already-copied shims must remain runnable even if asset staging fails.
-    if (copied.length > 0) {
-        const normalized = runtimeSpawnSync(["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...copied]);
-        if (normalized.error || normalized.status !== 0) return;
-        const executable = runtimeSpawnSync(["exec", "-u", "root", containerName, "chmod", "+x", ...copied]);
-        if (executable.error || executable.status !== 0) return;
-    }
     const bridgeSource = join(distDir, "..", "scripts", "ccc-x11-bridge");
     const policySource = join(distDir, "..", "scripts", "lib", "clipboard-x11-sync.sh");
     const suffix = randomBytes(8).toString("hex");
+    const shimStages = CLIPBOARD_SHIMS.map(name => ({ name,
+        stage: `/usr/local/bin/${name}.${suffix}.new`, destination: `/usr/local/bin/${name}` }));
     const bridgeStage = `/usr/local/bin/ccc-x11-bridge.${suffix}.new`;
     const policyStage = `/usr/local/lib/ccc/clipboard-x11-sync.sh.${suffix}.new`;
     let bridgeCopied = false;
     let policyCopied = false;
     try {
+        const copied: typeof shimStages = [];
+        for (const shim of shimStages) {
+            const source = join(shimsDir, shim.name);
+            if (!existsSync(source)) continue;
+            const result = invoke(["cp", source, `${containerName}:${shim.stage}`]);
+            if (!result.error && result.status === 0) copied.push(shim);
+        }
+        // A failed copy or normalization never truncates an installed client.
+        if (copied.length > 0) {
+            const paths = copied.map(shim => shim.stage);
+            const normalized = invoke(["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...paths]);
+            if (normalized.error || normalized.status !== 0) return;
+            const owner = invoke(["exec", "-u", "root", containerName, "chown", "root:root", ...paths]);
+            if (owner.error || owner.status !== 0) return;
+            const executable = invoke(["exec", "-u", "root", containerName, "chmod", "755", ...paths]);
+            if (executable.error || executable.status !== 0) return;
+            for (const shim of copied) {
+                const published = invoke(["exec", "-u", "root", containerName, "mv", "-f", shim.stage, shim.destination]);
+                if (published.error || published.status !== 0) return;
+            }
+        }
         // A bridge replacement requires its complete policy asset. Publish the
         // normalized policy first; failures leave the old bridge runnable.
         if (existsSync(bridgeSource) && existsSync(policySource)) {
-            const policyDirectory = runtimeSpawnSync([
+            const policyDirectory = invoke([
                 "exec", "-u", "root", containerName,
                 "install", "-d", "-m", "755", "-o", "root", "-g", "root", "/usr/local/lib/ccc",
             ]);
             if (policyDirectory.error || policyDirectory.status !== 0) return;
-            const policy = runtimeSpawnSync(["cp", policySource, `${containerName}:${policyStage}`]);
+            const policy = invoke(["cp", policySource, `${containerName}:${policyStage}`]);
             policyCopied = !policy.error && policy.status === 0;
             if (!policyCopied) return;
-            const bridge = runtimeSpawnSync(["cp", bridgeSource, `${containerName}:${bridgeStage}`]);
+            const bridge = invoke(["cp", bridgeSource, `${containerName}:${bridgeStage}`]);
             bridgeCopied = !bridge.error && bridge.status === 0;
             if (!bridgeCopied) return;
         }
         if (!bridgeCopied || !policyCopied) return;
         const stages = [bridgeStage, policyStage];
-        const normalized = runtimeSpawnSync(["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...stages]);
+        const normalized = invoke(["exec", "-u", "root", containerName, "sed", "-i", "s/\r$//", ...stages]);
         if (normalized.error || normalized.status !== 0) return;
-        const executable = runtimeSpawnSync(["exec", "-u", "root", containerName, "chmod", "+x", ...stages]);
+        const executable = invoke(["exec", "-u", "root", containerName, "chmod", "755", ...stages]);
         if (executable.error || executable.status !== 0) return;
         if (bridgeCopied && policyCopied) {
-            const policyOwner = runtimeSpawnSync(["exec", "-u", "root", containerName, "chown", "root:root", policyStage]);
+            const policyOwner = invoke(["exec", "-u", "root", containerName, "chown", "root:root", ...stages]);
             if (policyOwner.error || policyOwner.status !== 0) return;
-            const policyMode = runtimeSpawnSync(["exec", "-u", "root", containerName, "chmod", "644", policyStage]);
+            const policyMode = invoke(["exec", "-u", "root", containerName, "chmod", "644", policyStage]);
             if (policyMode.error || policyMode.status !== 0) return;
             // Root installs files; the daemon remains the ordinary ccc process.
-            const stateDirectory = runtimeSpawnSync([
+            const stateDirectory = invoke([
                 "exec", "-u", "root", containerName,
                 "install", "-d", "-m", "700", "-o", "ccc", "-g", "ccc", "/run/ccc-x11-bridge",
             ]);
             if (stateDirectory.error || stateDirectory.status !== 0) return;
-            const publishedPolicy = runtimeSpawnSync(["exec", "-u", "root", containerName, "mv", "-f", policyStage, "/usr/local/lib/ccc/clipboard-x11-sync.sh"]);
+            const publishedPolicy = invoke(["exec", "-u", "root", containerName, "mv", "-f", policyStage, "/usr/local/lib/ccc/clipboard-x11-sync.sh"]);
             if (publishedPolicy.error || publishedPolicy.status !== 0) return;
-            runtimeSpawnSync(["exec", "-u", "root", containerName, "mv", "-f", bridgeStage, "/usr/local/bin/ccc-x11-bridge"]);
+            invoke(["exec", "-u", "root", containerName, "mv", "-f", bridgeStage, "/usr/local/bin/ccc-x11-bridge"]);
         }
     } finally {
         // cp may fail after creating a partial stage; both names are ours.
-        runtimeSpawnSync(["exec", "-u", "root", containerName, "rm", "-f", bridgeStage, policyStage]);
+        invoke(["exec", "-u", "root", containerName, "rm", "-f", ...shimStages.map(shim => shim.stage), bridgeStage, policyStage]);
+    }
+}
+
+/** Current-generation sessions require the exact installed client assets. */
+export function assertClipboardClientAssetsCurrent(containerName: string, distDir: string): void {
+    const scripts = join(distDir, "..", "scripts");
+    const assets = [
+        ...CLIPBOARD_SHIMS.map(name => [`clipboard-shims/${name}`, `/usr/local/bin/${name}`]),
+        ["ccc-x11-bridge", "/usr/local/bin/ccc-x11-bridge"],
+        ["lib/clipboard-x11-sync.sh", "/usr/local/lib/ccc/clipboard-x11-sync.sh"],
+    ];
+    let manifest: string;
+    try {
+        manifest = assets.map(([source, destination]) => {
+            const bytes = readFileSync(join(scripts, source), "utf8").replace(/\r$/gm, "");
+            if (!bytes.length) throw new Error("Empty clipboard client asset");
+            return `${createHash("sha256").update(bytes).digest("hex")}  ${destination}\n`;
+        }).join("");
+    } catch { throw new Error("Clipboard client assets are unavailable; reinstall the current CCC build."); }
+    const executablePaths = assets.map(([, destination]) => destination).filter(path => path.startsWith("/usr/local/bin/"));
+    // Only fixed program text is evaluated. Paths are positional data, and
+    // the manifest contains hashes of shipped assets, never clipboard data.
+    const check = 'for asset in "$@"; do [ -f "$asset" ] && [ -x "$asset" ] || exit 1; done; exec /usr/bin/sha256sum --check --status';
+    const verified = runtimeSpawnSync(["exec", "-i", containerName, "/bin/sh", "-c", check, "ccc-clipboard-assets", ...executablePaths],
+        { input: manifest, encoding: "utf8", stdio: ["pipe", "ignore", "ignore"], timeout: 15000 });
+    if (verified.error || verified.status !== 0) {
+        throw new Error("Clipboard client assets are not current; synchronization was refused before launching this session.");
     }
 }
 
