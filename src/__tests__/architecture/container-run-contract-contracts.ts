@@ -10,7 +10,9 @@ function contracts(
     const application = createContainerRunContract(options, ports);
     const strict: boolean | null = application.matches("image", "preflight");
     const live: boolean | null = application.matches("image", "live");
-    const deferred: boolean = application.safeToDefer();
+    const deferred: boolean | null = application.safeToDefer();
+    // @ts-expect-error Unavailable live proof is not an authoritative unsafe mismatch.
+    const unsafeWithoutProof: boolean = application.safeToDefer();
     const observed: ReturnType<ContainerRunContractPorts["inspect"]> = createNativeContainerRunContractPorts(native).inspect();
     const { inspect, ...withoutInspection } = ports;
     // @ts-expect-error Inspection is required; there are no ambient defaults.
@@ -42,6 +44,6 @@ function contracts(
     createNativeContainerRunContractPorts(withoutRuntime);
     // @ts-expect-error Native inspection is synchronous.
     createNativeContainerRunContractPorts({ ...native, inspect: async () => null });
-    void [strict, live, deferred, observed, inspect, pending, selectedRuntime];
+    void [strict, live, deferred, unsafeWithoutProof, observed, inspect, pending, selectedRuntime];
 }
 void contracts;

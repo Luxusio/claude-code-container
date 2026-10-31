@@ -1450,7 +1450,7 @@ function containerRunContractIsSafeToDefer(
     identity: ContainerUserIdentity,
     reportUnsafe: (reason: string) => void = () => undefined,
     bindGuard?: RuntimeBindGuard,
-): boolean {
+): boolean | null {
     return containerRunContract(containerName, requiredMounts, labRunner, projectPath, identity,
         reportUnsafe, bindGuard).safeToDefer();
 }
@@ -1997,6 +1997,7 @@ function startProjectContainerLocked(
         finish: (id) => { finish(id, restartedByInvocation); },
     }, {
         startCli: cli,
+        beforeStop: beforeMutation,
         beforeStart: existingContainerId === undefined ? prepareRetainedState : () => { assertRetainedTarget(false); },
         afterStart: (id) => {
             if (existingContainerId !== undefined) {

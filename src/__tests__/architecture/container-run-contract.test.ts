@@ -101,7 +101,7 @@ describe("run contract state and fresh authority", () => {
             .mockReturnValueOnce(null);
         expect(check()).toBe(true);
         expect(check()).toBe(false);
-        expect(check()).toBe(mode === "strict" ? null : false);
+        expect(check()).toBeNull();
         expect(f.ports.inspect).toHaveBeenCalledTimes(3);
         expect(f.ports.report.mock.calls.map(([reason]) => reason)).toEqual([
             "container identity changed during contract inspection", "container contract inspection failed",
@@ -127,11 +127,11 @@ describe("strict run contract decisions", () => {
         ["missing ID", f => { f.observation.containerId = () => null; }, "bind mount identities could not be verified"],
         ["changed ID", f => { f.observation.containerId = () => "successor"; }, "container identity changed during contract inspection"],
     ];
-    it.each(refusals)("refuses %s before either policy can prove mounts", (_name, change, reason) => {
+    it.each(refusals)("refuses %s before either policy can prove mounts", (name, change, reason) => {
         const f = fixture(); change(f); strictFailure(f, reason);
         expect(f.observation.verifyMounts).not.toHaveBeenCalled();
         const deferred = fixture(); change(deferred);
-        expect(deferred.app.safeToDefer()).toBe(false);
+        expect(deferred.app.safeToDefer()).toBe(name === "missing ID" ? null : false);
         expect(deferred.events).toEqual([`report:${reason}`]);
         expect(deferred.observation.verifyMounts).not.toHaveBeenCalled();
         expect(deferred.ports.effectiveUserMatches).not.toHaveBeenCalled();
@@ -255,7 +255,7 @@ describe("deferred admission and failure translation", () => {
 
     it.each(["stopped", "unknown"] as const)("refuses %s defer without live probes", running => {
         const f = fixture(); f.observation.runningState = () => running;
-        expect(f.app.safeToDefer()).toBe(false);
+        expect(f.app.safeToDefer()).toBeNull();
         expect(f.events).toEqual(["report:container is not confirmed running for safe defer"]);
         expect(f.ports.effectiveUserMatches).not.toHaveBeenCalled();
         expect(f.observation.verifyMounts).not.toHaveBeenCalled();
@@ -263,7 +263,7 @@ describe("deferred admission and failure translation", () => {
 
     it("refuses effective-user mismatch before mount proof", () => {
         const f = fixture(); f.ports.effectiveUserMatches.mockReturnValue(false);
-        expect(f.app.safeToDefer()).toBe(false);
+        expect(f.app.safeToDefer()).toBeNull();
         expect(f.events).toEqual(["report:container UID/GID does not match the host identity"]);
         expect(f.observation.verifyMounts).not.toHaveBeenCalled();
     });
@@ -273,7 +273,7 @@ describe("deferred admission and failure translation", () => {
             const f = fixture(); f.observation.verifyMounts = () => ({ kind, reason: "proof reason" });
             f.host.devices = vi.fn(() => { throw new Error("late device read"); });
             expect(mode === "strict" ? f.app.matches(image, "live") : f.app.safeToDefer())
-                .toBe(mode === "strict" && kind === "retryable" ? null : false);
+                .toBe(kind === "retryable" ? null : false);
             expect(f.events).toEqual(mode === "strict" && kind === "mismatch"
                 ? ["report:proof reason", "debug:proof reason"] : ["report:proof reason"]);
             expect(f.host.devices).not.toHaveBeenCalled();
@@ -284,7 +284,7 @@ describe("deferred admission and failure translation", () => {
         const f = fixture(); const fault = { kind: "native fault" };
         f.observation.verifyMounts = () => { throw fault; };
         const check = () => mode === "strict" ? f.app.matches(image, "live") : f.app.safeToDefer();
-        expect(check()).toBe(mode === "strict" ? null : false);
+        expect(check()).toBeNull();
         expect(f.events).toEqual(["report:container contract inspection failed"]);
         expect(f.ports.isRuntimeUnavailable).toHaveBeenCalledExactlyOnceWith(fault);
         f.ports.inspect.mockImplementation(() => { throw fault; }); f.events.length = 0;
@@ -301,5 +301,16 @@ describe("deferred admission and failure translation", () => {
             expect.fail("runtime error was swallowed");
         } catch (error) { expect(error).toBe(unavailable); }
         expect(f.events).toEqual([]);
+    });
+
+    it("keeps an early image mismatch separate from unavailable current mount proof", () => {
+        const f = fixture();
+        f.observation.imageId = () => `sha256:${"2".repeat(64)}`;
+        f.observation.verifyMounts = vi.fn(() => ({ kind: "retryable" as const, reason: "current mount probe unavailable" }));
+        expect(f.app.matches(image, "live")).toBe(false);
+        expect(f.observation.verifyMounts).not.toHaveBeenCalled();
+        expect(f.app.safeToDefer()).toBeNull();
+        expect(f.observation.verifyMounts).toHaveBeenCalledExactlyOnceWith("safe-defer");
+        expect(f.ports.report).toHaveBeenLastCalledWith("current mount probe unavailable");
     });
 });

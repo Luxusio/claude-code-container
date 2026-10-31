@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ContainerRestartRequiredError } from "../../container-restart-guidance.js";
 import { createNativeContainerExistingLifecycle } from "../../composition/container-existing-lifecycle.js";
+import { createContainerMountVerification } from "../../application/container-mount-verification.js";
+import { createContainerRunContract } from "../../application/container-run-contract.js";
+import type { ObservedMountContract, RequiredMountContract } from "../../bind-mount-verification.js";
+import type { ContractInspection } from "../../ports/container-run-contract.js";
 
 const native = vi.hoisted(() => ({ spawn: vi.fn(), runtime: vi.fn() }));
 vi.mock("child_process", async original => ({
@@ -148,6 +152,138 @@ describe("existing container application through native composition", () => {
         expect(f.lifecycle.replace({ containerName: name, expectedContainerId: id, reason: "changed", replacementGuard: operation => { operation(); return true; } })).toBe(true);
         expect(native.spawn).toHaveBeenCalledExactlyOnceWith("podman", ["rm", id], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 120000, killSignal: "SIGKILL" });
         expect(f.ports.managedIdentity).not.toHaveBeenCalled();
+    });
+
+    it("publishes intent before the captured ordinary stop and prepares retained state only after stopped proof", () => {
+        let running = true;
+        const f = fixture({
+            inspectContract: (_id, report) => { report("missing mount /project/repo/nested/.git"); return false; },
+            safeToDefer: (_id, report) => { report("missing mount /project/repo/nested/.git"); return false; },
+            identity: vi.fn(() => ({ containerId: id, running })),
+            managedIdentity: vi.fn(() => ({ containerId: id, running })),
+            isRunning: () => running,
+        });
+        f.context.beforeStop = () => { f.order.push("intent"); };
+        f.context.beforeRemove = () => {
+            expect(running).toBe(false);
+            f.order.push("retained-state");
+        };
+        native.spawn.mockImplementation((cli: string, args: readonly string[]) => {
+            expect(cli).toBe("podman");
+            if (args[0] === "stop") { expect(running).toBe(true); f.order.push("stop"); running = false; }
+            else { expect(args[0]).toBe("rm"); expect(running).toBe(false); f.order.push("remove"); }
+            return { status: 0 };
+        });
+        native.runtime.mockReturnValue("docker");
+        const recreated = vi.fn();
+        expect(f.lifecycle.run({ containerName: name, managedProjectPath: "/fixture/project",
+            initiallyRunningContainerId: id, replacementGuard: operation => { operation(); return true; }, onRecreate: recreated,
+        })).toEqual({ kind: "continue-to-create" });
+        expect(native.spawn.mock.calls.map(call => call.slice(0, 2))).toEqual([
+            ["podman", ["stop", id]], ["podman", ["rm", id]],
+        ]);
+        expect(native.spawn.mock.calls[0][2]).toMatchObject({ timeout: 30000, killSignal: "SIGKILL" });
+        expect(native.spawn.mock.calls[1][2]).toMatchObject({ timeout: 120000, killSignal: "SIGKILL" });
+        expect(f.order.indexOf("intent")).toBeLessThan(f.order.indexOf("stop"));
+        expect(f.order.indexOf("stop")).toBeLessThan(f.order.indexOf("retained-state"));
+        expect(f.order.indexOf("retained-state")).toBeLessThan(f.order.indexOf("remove"));
+        expect(recreated).toHaveBeenCalledTimes(1);
+        expect(f.ports.finish).not.toHaveBeenCalled();
+        expect(native.runtime).not.toHaveBeenCalled();
+    });
+
+    it.each(["missing-first", "unavailable-first"] as const)("preserves the running container when real missing-mount evidence also contains unavailable proof (%s)", order => {
+        const root: RequiredMountContract = { containerPath: "/fixture/project", type: "bind", readonly: false, presence: "core", sourceKind: "filesystem" };
+        const missing = { ...root, containerPath: "/fixture/project/nested/.git" };
+        const observed: ObservedMountContract[] = [{ sourceState: "present", containerPath: root.containerPath, type: "bind", writable: true }];
+        const mounts = createContainerMountVerification(order === "missing-first" ? [missing, root] : [root, missing], {
+            resetAttempt: () => {}, cleanup: () => {},
+            observeHostIdentity: () => ({ kind: "verified", via: "identity" }),
+            observeSource: () => ({ kind: "filesystem", pathMatch: "match" }),
+            proveFilesystem: () => ({ kind: "retryable", reason: "root live source proof unavailable" }),
+            proveDaemon: () => { throw new Error("unexpected daemon proof"); },
+            inspectCreated: () => { throw new Error("unexpected created-container inspection"); },
+            requiresFinalDaemonProof: () => false,
+            withRetry: operation => operation(true),
+        });
+        const image = `sha256:${"1".repeat(64)}`;
+        const observation: ContractInspection = {
+            runningState: () => "running", imageId: () => image, containerId: () => id,
+            identityLabels: () => ({ version: "1", uid: "1000", gid: "1000", mapping: "host" }),
+            environment: () => ({ labRunner: "1", labStatus: "unsupported", labStateDirectory: "/lab", labNetworkMode: "user" }),
+            hostConfiguration: () => ({ privileged: false, initEnabled: () => true, deviceRequestsPresent: () => false,
+                kvmReferencePresent: () => false, devices: () => [], groups: () => [], groupCount: () => 0 }),
+            managedLabel: () => "true", projectPathIdentity: () => "matching",
+            projectMountIdentity: () => ({ kind: "missing" }), deviceLabMountIdentity: () => ({ kind: "missing" }),
+            brokerAuthMountPresent: () => false,
+            verifyMounts: mode => {
+                if (mode === "stopped-preflight") throw new Error("unexpected stopped preflight");
+                return mounts.verifyExisting(observed, mode);
+            },
+        };
+        let report = (_reason: string): void => {};
+        const contract = createContainerRunContract({ containerId: id,
+            identity: { uid: 1000, gid: 1000, mapping: "host", contractVersion: "1" },
+            labRunner: { status: "unsupported", stateVolumeName: "lab", stateContainerDir: "/lab", networkMode: "user" },
+            brokerAuthContainerPath: "/run/broker-auth",
+        }, {
+            inspect: () => observation, effectiveUserMatches: () => true, brokerAuthMountRequired: () => false,
+            report: reason => report(reason), debugStrictFailure: () => {}, isRuntimeUnavailable: () => false,
+        });
+        // Admission still refuses the missing core mount. A separate unavailable live proof
+        // must reach lifecycle as unknown rather than authorizing destructive repair.
+        expect(mounts.verifyExisting(observed, "strict")).toMatchObject({ kind: "mismatch", containerPath: missing.containerPath });
+        expect(contract.matches(image, "live")).toBe(false);
+        expect(contract.safeToDefer()).toBeNull();
+        const f = fixture({
+            identity: () => ({ containerId: id, running: true }),
+            inspectContract: (_id, reportReason) => { report = reportReason; return contract.matches(image, "live"); },
+            safeToDefer: (_id, reportReason) => { report = reportReason; return contract.safeToDefer(); },
+        });
+        const intent = vi.fn(), retained = vi.fn(), recreated = vi.fn();
+        f.context.beforeStop = intent; f.context.beforeRemove = retained;
+        expect(() => f.lifecycle.run({ containerName: name, managedProjectPath: root.containerPath,
+            initiallyRunningContainerId: id, replacementGuard: operation => { operation(); return true; }, onRecreate: recreated,
+        })).toThrow("root live source proof unavailable");
+        expect(intent).not.toHaveBeenCalled();
+        expect(native.spawn).not.toHaveBeenCalled();
+        expect(retained).not.toHaveBeenCalled();
+        expect(recreated).not.toHaveBeenCalled();
+        expect(f.ports.managedIdentity).not.toHaveBeenCalled();
+        expect(f.ports.finish).not.toHaveBeenCalled();
+    });
+
+    it.each([{ status: 1 }, { status: null }, { status: 0, error: new Error("stop timed out") }])("does not remove a running-repair target after failed or uncertain stop: %j", result => {
+        const f = fixture({
+            inspectContract: () => false, safeToDefer: () => false,
+            identity: () => ({ containerId: id, running: true }),
+            managedIdentity: () => ({ containerId: id, running: true }),
+        });
+        const intent = vi.fn(), retained = vi.fn(), recreated = vi.fn();
+        f.context.beforeStop = intent;
+        f.context.beforeRemove = retained;
+        native.spawn.mockReturnValue(result);
+        expect(() => f.lifecycle.run({ containerName: name, managedProjectPath: "/fixture/project",
+            initiallyRunningContainerId: id, replacementGuard: operation => { operation(); return true; }, onRecreate: recreated,
+        })).toThrow("could not be stopped");
+        expect(intent).toHaveBeenCalledTimes(1);
+        expect(native.spawn.mock.calls.map(call => call[1])).toEqual([["stop", id]]);
+        expect(retained).not.toHaveBeenCalled();
+        expect(recreated).not.toHaveBeenCalled();
+    });
+
+    it("does not stop if publishing the mutation intent fails", () => {
+        const f = fixture({
+            inspectContract: () => false, safeToDefer: () => false,
+            identity: () => ({ containerId: id, running: true }),
+            managedIdentity: () => ({ containerId: id, running: true }),
+        });
+        const failure = new Error("mutation intent could not be published");
+        f.context.beforeStop = () => { throw failure; };
+        expect(() => f.lifecycle.run({ containerName: name, managedProjectPath: "/fixture/project",
+            initiallyRunningContainerId: id, replacementGuard: operation => { operation(); return true; },
+        })).toThrow(failure);
+        expect(native.spawn).not.toHaveBeenCalled();
     });
 
     it.each([{ status: 1 }, { status: null }, { status: 0, error: new Error("remove denied") }])("preserves stopped removal failure, suppressing callbacks: %j", result => {

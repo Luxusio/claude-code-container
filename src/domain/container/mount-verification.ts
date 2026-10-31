@@ -124,7 +124,9 @@ export function verifyMountSet(
     options: { policy: MountPresencePolicy; allowUnexpected?: boolean },
 ): MountVerification {
     const shape = validateObservedMountSet(requiredMounts, observedMounts, options.allowUnexpected);
-    if (shape.kind === "mismatch") return shape;
+    if (shape.kind === "mismatch") {
+        return options.policy === "safe-defer" ? { ...shape, kind: "retryable" } : shape;
+    }
     const observedByPath = new Map<string, ObservedMountContract>();
     for (const mount of observedMounts) {
         observedByPath.set(mount.containerPath as string, mount);
@@ -132,15 +134,24 @@ export function verifyMountSet(
 
     let result: MountVerification = { kind: "verified", via: "shape" };
     for (const required of requiredMounts) {
-        result = combineMountVerification(
-            result,
-            classifyRequiredMount(
-                required,
-                observedByPath.get(required.containerPath),
-                evidence.get(required.containerPath) ?? {},
-                options.policy,
-            ),
+        const observed = observedByPath.get(required.containerPath);
+        const facts = evidence.get(required.containerPath) ?? {};
+        if (options.policy === "safe-defer" && observed) {
+            // Unavailable proof cannot become repair authority through a
+            // different mount's mismatch or an earlier shape/access refusal.
+            if (facts.sourcePathUnavailable) {
+                return { kind: "retryable", reason: `bind source unreadable for ${required.containerPath}`,
+                    containerPath: required.containerPath };
+            }
+            if (facts.liveProof?.kind === "retryable") {
+                return withPath(facts.liveProof, required.containerPath);
+            }
+        }
+        const candidate = classifyRequiredMount(
+            required, observed, facts, options.policy,
         );
+        if (options.policy === "safe-defer" && candidate.kind === "retryable") return candidate;
+        result = combineMountVerification(result, candidate);
     }
     return result;
 }

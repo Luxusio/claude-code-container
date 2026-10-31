@@ -42,6 +42,34 @@ export function createContainerExistingLifecycle(ports: ContainerExistingLifecyc
         return guarded && replacementConfirmed;
     }
 
+    function repairRunningContract(request: ContainerReplacementRequest): boolean {
+        const { expectedContainerId, initiallyRunningContainerId, managedProjectPath,
+            replacementGuard, reason, onRecreate } = request;
+        if (!expectedContainerId || initiallyRunningContainerId !== expectedContainerId
+            || !managedProjectPath || !replacementGuard) return false;
+        let replacementConfirmed = false;
+        const guarded = replacementGuard(() => {
+            if (replacementConfirmed) return;
+            const current = ports.managedIdentity(expectedContainerId, managedProjectPath);
+            if (!current || current.containerId !== expectedContainerId || !current.running) return;
+            ports.assertProjectSources();
+            ports.assertDeviceSources();
+            ports.assertFilesystemSources();
+            ports.reportRecreation(reason);
+            ports.stop(expectedContainerId);
+            const stopped = ports.managedIdentity(expectedContainerId, managedProjectPath);
+            if (!stopped || stopped.containerId !== expectedContainerId || stopped.running) return;
+            ports.assertProjectSources();
+            ports.assertDeviceSources();
+            ports.assertFilesystemSources();
+            // The ordinary removal boundary still refuses an external restart.
+            ports.remove(expectedContainerId);
+            onRecreate?.();
+            replacementConfirmed = true;
+        });
+        return guarded && replacementConfirmed;
+    }
+
     function run(request: ContainerExistingLifecycleRequest): ContainerExistingLifecycleResult {
         const {
             containerName, debug, managedProjectPath, initiallyRunningContainerId,
@@ -105,22 +133,28 @@ export function createContainerExistingLifecycle(ports: ContainerExistingLifecyc
                             );
                         }
                         let unsafeDeferReason = "unknown safety mismatch";
-                        if (!ports.safeToDefer(
+                        const deferred = ports.safeToDefer(
                             listedContainer.containerId,
                             (reason) => { unsafeDeferReason = reason; },
-                        )) {
-                            ports.throwUnsafeDefer(unsafeDeferReason);
+                        );
+                        if (deferred !== true) {
+                            if (deferred !== false || !repairRunningContract({
+                                containerName, reason: contractMismatchReason,
+                                expectedContainerId: listedContainer.containerId, managedProjectPath,
+                                initiallyRunningContainerId, replacementGuard, onRecreate: markRecreated,
+                            })) ports.throwUnsafeDefer(unsafeDeferReason);
+                        } else {
+                            if (!ports.isRunning(containerName)) {
+                                throw new Error("Container contract update is required, but automatic replacement was not authorized.");
+                            }
+                            if (!ports.canExecAfterBriefRetry(listedContainer.containerId)) {
+                                throw new Error("Running container is unavailable; automatic destructive recovery was refused.");
+                            }
+                            ports.reportDeferred(contractMismatchReason);
+                            ports.fixSsh(listedContainer.containerId);
+                            ports.syncGit(listedContainer.containerId);
+                            return finish(listedContainer.containerId);
                         }
-                        if (!ports.isRunning(containerName)) {
-                            throw new Error("Container contract update is required, but automatic replacement was not authorized.");
-                        }
-                        if (!ports.canExecAfterBriefRetry(listedContainer.containerId)) {
-                            throw new Error("Running container is unavailable; automatic destructive recovery was refused.");
-                        }
-                        ports.reportDeferred(contractMismatchReason);
-                        ports.fixSsh(listedContainer.containerId);
-                        ports.syncGit(listedContainer.containerId);
-                        return finish(listedContainer.containerId);
                     }
                 } else {
                     replace({ containerName, reason: contractMismatchReason, onRecreate });

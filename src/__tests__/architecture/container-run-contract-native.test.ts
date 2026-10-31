@@ -148,6 +148,19 @@ describe("native run contract observations", () => {
 });
 
 describe("native staged faults at the run contract boundary", () => {
+    it.each(["absent inspection", "unknown running state", "unconfirmed user", "retryable mount", "missing mount"] as const)("classifies %s after an early image mismatch without guessing repair authority", decision => {
+        const f = fixture();
+        f.raw.Image = `sha256:${"2".repeat(64)}`;
+        expect(f.app.matches(image, "live")).toBe(false);
+        expect(f.context.verifyMounts).not.toHaveBeenCalled();
+        if (decision === "absent inspection") f.context.inspect.mockReturnValue(null);
+        else if (decision === "unknown running state") f.raw.State = {};
+        else if (decision === "unconfirmed user") f.context.effectiveUserMatches.mockReturnValue(false);
+        else f.context.verifyMounts.mockReturnValue({ kind: decision === "retryable mount" ? "retryable" : "mismatch",
+            reason: "missing mount /project/catchy-secrets/duribun-mockup/.git" });
+        expect(f.app.safeToDefer()).toBe(decision === "missing mount" ? false : null);
+    });
+
     it.each(["device", "group"] as const)("keeps JSON %s coercion behind earlier refusal decisions", field => {
         for (const decision of ["image", "management", "state", "mount"] as const) {
             const f = fixture();
@@ -169,7 +182,7 @@ describe("native staged faults at the run contract boundary", () => {
             const f = fixture();
             if (field === "device") f.host.Devices = [{ PathOnHost: { toString: "invalid" }, PathInContainer: "/dev/kvm" }];
             else f.host.GroupAdd = [{ toString: "invalid" }];
-            expect(mode === "strict" ? f.app.matches(image, "live") : f.app.safeToDefer()).toBe(mode === "strict" ? null : false);
+            expect(mode === "strict" ? f.app.matches(image, "live") : f.app.safeToDefer()).toBeNull();
             expect(f.context.report.mock.calls).toEqual([["container contract inspection failed"]]);
             expect(f.context.debugStrictFailure).not.toHaveBeenCalled();
             expect(f.context.isRuntimeUnavailable.mock.calls[0][0]).toBeInstanceOf(TypeError);

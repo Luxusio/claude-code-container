@@ -3,6 +3,7 @@ import {mkdtempSync, rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {expect, it} from "vitest";
+import {deviceLabTestHomeEnvironment} from "../helpers/device-lab-test-environment.js";
 
 const compositionUrl = new URL("../../../dist/composition/container-exec.js", import.meta.url).href;
 const sessionUrl = new URL("../../../dist/session.js", import.meta.url).href;
@@ -13,6 +14,99 @@ const cleanupApplicationUrl = new URL("../../../dist/application/session-cleanup
 const runtimeUrl = new URL("../../../dist/container-runtime.js", import.meta.url).href;
 const invocationPortUrl = new URL("../../../dist/ports/container-runtime-invocation.js", import.meta.url).href;
 const bindAuthorityUrl = new URL("../../../dist/adapters/runtime-bind-authority.js", import.meta.url).href;
+
+it.each(["sole", "live-peer", "unknown-peer"] as const)("emitted missing-mount repair respects %s claims and preserves real Git work and scratch", async scenario => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-running-mount-repair-"));
+    const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+import assert from 'node:assert/strict';
+import cp from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import {mkdirSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
+import {basename,join} from 'node:path';
+const root=${JSON.stringify(root)},scenario=${JSON.stringify(scenario)};
+writeFileSync(join(root,'.gitconfig'),'');
+const originalSpawnSync=cp.spawnSync;
+function git(...args){
+ const result=originalSpawnSync('git',['-c','core.autocrlf=false','-c','commit.gpgsign=false',
+   '-c','user.name=CCC fixture','-c','user.email=fixture@example.invalid',...args],{cwd:root,encoding:'utf8',windowsHide:true});
+ assert.equal(result.error,undefined);assert.equal(result.status,0,result.stderr);return result.stdout;
+}
+const source=join(root,'source'),project=join(root,'worktree'),scratch=join(root,'scratch'),claims=join(root,'claims');
+git('init','-b','main',source);writeFileSync(join(source,'tracked.txt'),'base\\n');
+git('-C',source,'add','.');git('-C',source,'commit','-m','fixture');git('-C',source,'worktree','add','-b','task',project);
+mkdirSync(scratch);mkdirSync(claims);
+writeFileSync(join(project,'tracked.txt'),'uncommitted edit\\n');
+writeFileSync(join(project,'untracked.txt'),'untracked work\\n');writeFileSync(join(scratch,'note'),'AI scratch\\n');
+const own=join(claims,'current.lock'),peer=join(claims,'peer.lock');writeFileSync(own,'current session');
+if(scenario!=='sole')writeFileSync(peer,scenario);
+const retained=[join(project,'tracked.txt'),join(project,'untracked.txt'),join(project,'.git'),join(scratch,'note'),own,
+ ...(scenario==='sole'?[]:[peer])].map(path=>({path,bytes:readFileSync(path)}));
+const before=git('-C',project,'status','--porcelain=v1'),common=git('-C',project,'rev-parse','--git-common-dir');
+assert.match(before,/tracked.txt/);assert.match(before,/untracked.txt/);
+const id='a'.repeat(64),executable=join(root,'private-runtime'),effects=[];
+let running=true,intents=0,migrations=0,callbacks=0,stoppedProof=false;
+cp.spawnSync=(command,argv,options)=>{
+ if(command!==executable)return originalSpawnSync(command,argv,options);
+ const args=argv.slice(argv.indexOf('--tlskey=')+1);
+ assert.equal(options.shell,false);assert.deepEqual(args,[args[0],id]);
+ if(args[0]==='stop'){assert.equal(intents,1);assert.equal(running,true);running=false;effects.push('stop');}
+ else {assert.equal(args[0],'rm');assert.equal(running,false);assert.equal(migrations,1);effects.push('rm');}
+ return {status:0,stdout:id,stderr:''};
+};
+syncBuiltinESMExports();
+const runtime=await import(${JSON.stringify(runtimeUrl)});
+const {NATIVE_RUNTIME_SELECTOR_KEYS}=await import(${JSON.stringify(invocationPortUrl)});
+runtime._setRuntimeInvocationForTest({version:1,runtime:'docker',executable,
+ transport:{kind:'docker',host:'unix:///fixture/running-mount-repair.sock',configDirectory:join(root,'config'),
+ tls:{enabled:false,verify:false,caFile:null,certFile:null,keyFile:null}},
+ selectors:Object.fromEntries(NATIVE_RUNTIME_SELECTOR_KEYS.map(key=>[key,null]))});
+const {createNativeContainerExistingLifecycle}=await import(new URL('./composition/container-existing-lifecycle.js',${JSON.stringify(sessionUrl)}));
+const {containerExecReplacementBlockReason}=await import(${JSON.stringify(applicationUrl)});
+const noop=()=>{},reason='missing mount /project/catchy-secrets/duribun-mockup/.git';
+const lifecycle=createNativeContainerExistingLifecycle({
+ listContainer:()=>({known:true,containerId:id}),identity:()=>({containerId:id,running}),
+ managedIdentity:(target,path)=>{assert.equal(target,id);assert.equal(path,project);if(!running)stoppedProof=true;return {containerId:id,running};},
+ assertProjectSources:noop,assertDeviceSources:noop,assertFilesystemSources:noop,
+ inspectContract:(_id,report)=>{report(reason);return false;},verifyBeforeSetup:()=>{throw new Error('unexpected setup of old container');},
+ safeToDefer:(_id,report)=>{report(reason);return false;},isRunning:()=>running,canExec:()=>true,canExecAfterBriefRetry:()=>true,
+ deviceSourcesMatch:()=>true,syncMcp:noop,fixSsh:noop,syncGit:noop,finish:()=>{throw new Error('unexpected join of old container');}
+},{startCli:'docker',requiredMountDestinations:()=>['/project/catchy-secrets/duribun-mockup/.git'],projectPath:project,
+ beforeStop(){intents++;effects.push('intent');},beforeRemove(){assert.equal(stoppedProof,true);migrations++;effects.push('retained-state');}});
+const replacementGuard=operation=>{
+ const veto=containerExecReplacementBlockReason('fixture','fixture',own,id,{
+  claims:()=>readdirSync(claims),lockName:basename,status:()=>({exists:true,running,containerId:id,imageId:'image'})});
+ if(veto)return false;operation();return true;
+};
+const log=console.log;console.log=()=>{};
+let result,failure;
+try{result=lifecycle.run({containerName:'fixture',managedProjectPath:project,initiallyRunningContainerId:id,replacementGuard,
+ onRecreate(){callbacks++;}});}catch(error){failure=error;}finally{console.log=log;}
+if(scenario==='sole'){assert.equal(failure,undefined);assert.deepEqual(result,{kind:'continue-to-create'});
+ assert.deepEqual(effects,['intent','stop','retained-state','rm']);assert.equal(callbacks,1);}
+else {assert.ok(failure);assert.deepEqual(effects,[]);assert.equal(callbacks,0);assert.equal(running,true);}
+for(const saved of retained)assert.deepEqual(readFileSync(saved.path),saved.bytes);
+assert.equal(git('-C',project,'status','--porcelain=v1'),before);assert.equal(git('-C',project,'rev-parse','--git-common-dir'),common);
+process.stdout.write(JSON.stringify({scenario,repaired:scenario==='sole',callbacks,effects,workPreserved:true,gitLinked:true})+'\\n');
+`], {cwd: root, env: {...environment, ...deviceLabTestHomeEnvironment(root), CCC_HOME: undefined, CCC_PROFILE: undefined,
+        GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(root, ".gitconfig")}, stdio: ["ignore", "pipe", "pipe"]});
+    let stdout = "", stderr = "";
+    child.stdout.on("data", data => { stdout += String(data); });
+    child.stderr.on("data", data => { stderr += String(data); });
+    const completed = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    const timeout = setTimeout(() => child.kill(), 15000);
+    try {
+        expect(await completed, stderr).toBe(0);
+        const repaired = scenario === "sole";
+        expect(JSON.parse(stdout.trim())).toEqual({scenario,repaired,callbacks:repaired?1:0,
+            effects:repaired?["intent","stop","retained-state","rm"]:[],workPreserved:true,gitLinked:true});
+    } finally {
+        clearTimeout(timeout);
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        await completed.catch(() => undefined);
+        rmSync(root, {recursive: true, force: true});
+    }
+}, 20000);
 
 it("native exec lifecycle acquisition yields to the real owner's timer and enters only after release", async () => {
     const root = mkdtempSync(join(tmpdir(), "ccc-exec-lifecycle-"));

@@ -124,13 +124,17 @@ export function createContainerRunContract(
         }
     }
 
-    function safeToDefer(): boolean {
+    function safeToDefer(): boolean | null {
         const unsafe = (reason: string) => {
             ports.report(reason);
             return false;
         };
+        const unavailable = (reason: string) => {
+            ports.report(reason);
+            return null;
+        };
         const inspected = ports.inspect();
-        if (!inspected) return unsafe("container contract inspection failed");
+        if (!inspected) return unavailable("container contract inspection failed");
         try {
             if (inspected.managedLabel() !== "true") return unsafe("container is not CCC-managed");
             if (inspected.projectPathIdentity() !== "matching") return unsafe("project path identity changed");
@@ -141,12 +145,13 @@ export function createContainerRunContract(
             if (!host) return unsafe("container host configuration is malformed");
             if (host.privileged) return unsafe("stale privileged container");
             const observedId = inspected.containerId();
-            if (observedId === null) return unsafe("bind mount identities could not be verified");
+            if (observedId === null) return unavailable("bind mount identities could not be verified");
             if (observedId !== containerId) return unsafe("container identity changed during contract inspection");
-            if (inspected.runningState() !== "running") return unsafe("container is not confirmed running for safe defer");
-            if (!ports.effectiveUserMatches(identity)) return unsafe("container UID/GID does not match the host identity");
+            if (inspected.runningState() !== "running") return unavailable("container is not confirmed running for safe defer");
+            if (!ports.effectiveUserMatches(identity)) return unavailable("container UID/GID does not match the host identity");
             const mounts = inspected.verifyMounts("safe-defer");
-            if (mounts.kind === "retryable" || mounts.kind === "mismatch") return unsafe(mounts.reason);
+            if (mounts.kind === "retryable") return unavailable(mounts.reason);
+            if (mounts.kind === "mismatch") return unsafe(mounts.reason);
             const devices = host.devices();
             if (host.deviceRequestsPresent()) return unsafe("unexpected host device requests");
             const groups = host.groups();
@@ -163,7 +168,7 @@ export function createContainerRunContract(
             return true;
         } catch (error) {
             if (ports.isRuntimeUnavailable(error)) throw error;
-            return unsafe("container contract inspection failed");
+            return unavailable("container contract inspection failed");
         }
     }
 

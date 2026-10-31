@@ -64,6 +64,15 @@ describe("container mount semantic admission", () => {
         expect(f.trace).toEqual(["reset", "cleanup"]);
     });
 
+    it.each(["invalid source", "duplicate"])("keeps %s observations unavailable for automatic repair", fault => {
+        const f = fixture();
+        if (fault === "invalid source") f.observed[0].sourceState = "invalid";
+        else f.observed.push({ ...f.observed[0] });
+        expect(f.app.verifyExisting(f.observed, "safe-defer").kind).toBe("retryable");
+        expect(f.trace).toEqual(["reset", "cleanup"]);
+        expect(f.retryDecisions).toEqual([true]);
+    });
+
     it("changed host identity prevents alias or challenge observations", () => {
         const f = fixture(); f.state.host = { kind: "mismatch", reason: "host was replaced" };
         expect(f.app.verifyExisting(f.observed, "strict")).toEqual(mismatch("bind source identity changed for /project"));

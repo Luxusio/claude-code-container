@@ -11,6 +11,7 @@ export interface NativeContainerExistingLifecycleContext {
     startCli: string;
     beforeStart?(): void;
     afterStart?(id: string): void;
+    beforeStop?(): void;
     beforeRemove?(): void;
     requiredMountDestinations(): readonly string[];
     projectPath: string;
@@ -34,6 +35,7 @@ export function createNativeContainerExistingLifecycle(
             context.afterStart?.(id);
         },
         stop: (id) => {
+            context.beforeStop?.();
             const stopped = runner.spawnSync(["stop", id], {
                 timeout: 30_000, killSignal: "SIGKILL",
                 encoding: "utf-8",

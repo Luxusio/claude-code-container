@@ -71,5 +71,5 @@ export interface ContainerRunContractOptions {
 
 export interface ContainerRunContract {
     matches(desiredImageId: string, phase: "preflight" | "live"): boolean | null;
-    safeToDefer(): boolean;
+    safeToDefer(): boolean | null;
 }

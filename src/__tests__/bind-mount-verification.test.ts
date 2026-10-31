@@ -132,6 +132,49 @@ describe("bind mount verification", () => {
         expect(result.kind).toBe("mismatch");
     });
 
+    it.each(["missing-first", "unavailable-first"] as const)("does not authorize repair when a missing core mount accompanies unavailable proof (%s)", order => {
+        const root = { ...regularBind, containerPath: "/project", presence: "core" as const };
+        const missing = { ...root, containerPath: "/project/nested/.git" };
+        const required = order === "missing-first" ? [missing, root] : [root, missing];
+        const observed: ObservedMountContract[] = [{ sourceState: "present", containerPath: root.containerPath, type: "bind", writable: true }];
+        const evidence = new Map<string, MountEvidence>([[root.containerPath, {
+            sourcePathMatches: true, liveProof: { kind: "retryable", reason: "root live proof unavailable" },
+        }]]);
+        expect(verifyMountSet(required, observed, evidence, { policy: "strict" })).toEqual({
+            kind: "mismatch", reason: `missing mount ${missing.containerPath}`, containerPath: missing.containerPath,
+        });
+        expect(verifyMountSet(required, observed, evidence, { policy: "safe-defer" })).toEqual({
+            kind: "retryable", reason: "root live proof unavailable", containerPath: root.containerPath,
+        });
+        evidence.set(root.containerPath, { sourcePathMatches: true, liveProof: { kind: "verified", via: "identity" } });
+        for (const policy of ["strict", "safe-defer"] as const) {
+            expect(verifyMountSet(required, observed, evidence, { policy })).toEqual({
+                kind: "mismatch", reason: `missing mount ${missing.containerPath}`, containerPath: missing.containerPath,
+            });
+        }
+    });
+
+    it.each([
+        ["type", { type: "volume", writable: true }, { sourcePathMatches: true, liveProof: { kind: "retryable", reason: "live proof unavailable" } }],
+        ["access", { type: "bind", writable: false }, { sourcePathMatches: true, liveProof: { kind: "retryable", reason: "live proof unavailable" } }],
+        ["source", { type: "bind", writable: true }, { sourcePathMatches: false, liveProof: { kind: "retryable", reason: "host identity unavailable" } }],
+        ["unreadable source", { type: "volume", writable: true }, { sourcePathUnavailable: true }],
+    ] satisfies Array<[string, { type: string; writable: boolean }, MountEvidence]>)
+    ("keeps unavailable evidence visible despite a same-mount %s mismatch", (_label, shape, facts) => {
+        const observed: ObservedMountContract[] = [{ sourceState: "present", containerPath: regularBind.containerPath, ...shape }];
+        const evidence = new Map([[regularBind.containerPath, facts]]);
+        expect(verifyMountSet([regularBind], observed, evidence, { policy: "strict" }).kind).toBe("mismatch");
+        const deferred = verifyMountSet([regularBind], observed, evidence, { policy: "safe-defer" });
+        expect(deferred.kind).toBe("retryable");
+        expect("containerPath" in deferred && deferred.containerPath).toBe(regularBind.containerPath);
+    });
+
+    it("does not treat malformed mount observations as permission to repair", () => {
+        const malformed: ObservedMountContract[] = [{ sourceState: "invalid", containerPath: regularBind.containerPath, type: "bind", writable: true }];
+        expect(verifyMountSet([regularBind], malformed, new Map(), { policy: "strict" }).kind).toBe("mismatch");
+        expect(verifyMountSet([regularBind], malformed, new Map(), { policy: "safe-defer" }).kind).toBe("retryable");
+    });
+
 
     it.each(["empty", "invalid"] as const)("keeps %s normalized source distinct from a valid filesystem bind", sourceState => {
         const result = verifyMountSet(

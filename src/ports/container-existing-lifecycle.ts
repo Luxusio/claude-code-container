@@ -37,7 +37,7 @@ export interface ContainerExistingLifecyclePorts {
     // A match never authorizes setup; verifyBeforeSetup is mandatory before helpers.
     inspectContract(id: string, reportReason: (reason: string) => void): boolean | null;
     verifyBeforeSetup(id: string): undefined;
-    safeToDefer(id: string, reportReason: (reason: string) => void): boolean;
+    safeToDefer(id: string, reportReason: (reason: string) => void): boolean | null;
     isRunning(name: string): boolean;
     canExec(id: string): boolean;
     canExecAfterBriefRetry(id: string): boolean;

@@ -40,6 +40,107 @@ const join = ["live:id", "mcp:id", "ssh:id", "git:id", "matches", "finish:id"];
 const guard = (operation: () => void) => { operation(); return true; };
 const replacement = { containerName: "name", reason: "reason", expectedContainerId: "id" };
 
+function runningMountFixture() {
+    const f = fixture();
+    const reason = "missing mount /project/catchy-secrets/duribun-mockup/.git";
+    f.state.contract = false;
+    f.state.safe = false;
+    f.state.identity = { containerId: "id", running: true };
+    f.ports.inspectContract = (id, report) => { f.trace.push(`contract:${id}`); report(reason); return false; };
+    f.ports.safeToDefer = (id, report) => { f.trace.push(`safe:${id}`); report(reason); return false; };
+    f.ports.stop = id => {
+        f.trace.push(`stop:${id}`);
+        f.state.running = false;
+        f.state.identity = { containerId: id, running: false };
+        f.state.managed = { containerId: id, running: false };
+    };
+    const request = { containerName: "name", managedProjectPath: "/project/catchy-secrets",
+        initiallyRunningContainerId: "id", replacementGuard: guard };
+    return { ...f, reason, request };
+}
+
+describe("automatic recovery of an unsafe running mount contract", () => {
+    it("repairs the sole startup-running managed target once and continues to creation", () => {
+        const f = runningMountFixture();
+        let callbacks = 0;
+        const result = f.app.run({ ...f.request,
+            replacementGuard: operation => { f.trace.push("guard"); operation(); operation(); return true; },
+            onRecreate: () => { callbacks++; },
+        });
+        expect(result).toEqual({ kind: "continue-to-create" });
+        expect(f.trace.filter(event => event === "stop:id")).toHaveLength(1);
+        expect(f.trace.filter(event => event === "remove:id")).toHaveLength(1);
+        expect(callbacks).toBe(1);
+        expect(f.trace.indexOf("managed:id:/project/catchy-secrets")).toBeGreaterThan(f.trace.indexOf("guard"));
+        expect(f.trace.indexOf("stop:id")).toBeLessThan(f.trace.indexOf("remove:id"));
+        expect(f.trace.some(event => /^(start|mcp|ssh|git|finish):/.test(event))).toBe(false);
+    });
+
+    it.each(["live peer", "unobservable peer"])("preserves the target when the session guard vetoes %s", () => {
+        const f = runningMountFixture();
+        expect(() => f.app.run({ ...f.request, replacementGuard: () => false })).toThrow(f.reason);
+        expect(f.trace.some(event => /^(stop|remove|start|finish):/.test(event))).toBe(false);
+    });
+
+    it.each(["project", "startup ID"])("cannot infer running repair authority without the %s", absent => {
+        const f = runningMountFixture();
+        expect(() => f.app.run({ ...f.request,
+            ...(absent === "project" ? { managedProjectPath: undefined } : { initiallyRunningContainerId: undefined }),
+        })).toThrow(f.reason);
+        expect(f.trace.some(event => /^(stop|remove|start|finish):/.test(event))).toBe(false);
+    });
+
+    it.each([null, { containerId: "successor", running: true }, { containerId: "id", running: false }])("requires a current managed running identity before stopping: %s", managed => {
+        const f = runningMountFixture(); f.state.managed = managed;
+        expect(() => f.app.run(f.request)).toThrow(f.reason);
+        expect(f.trace.some(event => /^(stop|remove|start|finish):/.test(event))).toBe(false);
+    });
+
+    it.each([null, { containerId: "successor", running: false }, { containerId: "id", running: true }])("does not remove an unqualified post-stop target: %s", managed => {
+        const f = runningMountFixture();
+        f.ports.stop = id => { f.trace.push(`stop:${id}`); f.state.managed = managed; };
+        expect(() => f.app.run(f.request)).toThrow(f.reason);
+        expect(f.trace.filter(event => event === "stop:id")).toHaveLength(1);
+        expect(f.trace.some(event => /^(remove|start|finish):/.test(event))).toBe(false);
+    });
+
+    it("preserves the first stop failure without removing or recreating", () => {
+        const f = runningMountFixture(), failure = new Error("controlled stop failure");
+        let callbacks = 0;
+        f.ports.stop = id => { f.trace.push(`stop:${id}`); throw failure; };
+        expect(() => f.app.run({ ...f.request, onRecreate: () => { callbacks++; } })).toThrow(failure);
+        expect(f.trace.filter(event => event === "stop:id")).toHaveLength(1);
+        expect(f.trace.some(event => /^(remove|start|finish):/.test(event))).toBe(false);
+        expect(callbacks).toBe(0);
+    });
+
+    it("rejects unavailable live safety proof instead of converting it to repair authority", () => {
+        const f = runningMountFixture();
+        f.ports.safeToDefer = (_id, report) => { report("container contract inspection failed"); return null; };
+        expect(() => f.app.run(f.request)).toThrow("container contract inspection failed");
+        expect(f.trace.some(event => /^(stop|remove|start|finish):/.test(event))).toBe(false);
+    });
+
+    it("does not stop after an image mismatch masks a retryable live mount observation", () => {
+        const f = runningMountFixture();
+        f.ports.inspectContract = (_id, report) => { report("image or user identity changed"); return false; };
+        f.ports.safeToDefer = (_id, report) => { report("mount probe unavailable"); return null; };
+        expect(() => f.app.run(f.request)).toThrow("mount probe unavailable");
+        expect(f.trace.some(event => /^(managed|stop|remove|start|finish):/.test(event))).toBe(false);
+    });
+
+    it("checks source identities again inside the held guard before stopping", () => {
+        const f = runningMountFixture(), failure = new Error("source changed inside guard");
+        let reads = 0;
+        f.ports.assertFilesystemSources = () => {
+            f.trace.push("filesystem");
+            if (++reads > 2) throw failure;
+        };
+        expect(() => f.app.run(f.request)).toThrow(failure);
+        expect(f.trace.some(event => /^(stop|remove|start|finish):/.test(event))).toBe(false);
+    });
+});
+
 describe("existing lifecycle explicit construction", () => {
     it("validates every callable without effects", () => {
         const f = fixture();

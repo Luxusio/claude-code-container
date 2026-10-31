@@ -80,7 +80,9 @@ export function createContainerMountVerification(
     ): MountVerification {
         ports.resetAttempt();
         const shape = validateObservedMountSet(requiredMounts, observed, allowUnexpected);
-        if (shape.kind === "mismatch") return shape;
+        if (shape.kind === "mismatch") {
+            return policy === "safe-defer" ? { ...shape, kind: "retryable" } : shape;
+        }
         const byPath = new Map(observed.map(mount => [mount.containerPath, mount]));
         const evidence = new Map<string, MountEvidence>();
         for (const required of requiredMounts) {
